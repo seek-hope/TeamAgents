@@ -84,7 +84,7 @@ pub fn execute(options: &ApprovalOptions) -> Result<Json, (i32, String)> {
     }
 }
 
-fn connect(socket: &Path) -> Result<Client, (i32, String)> {
+pub(crate) fn connect(socket: &Path) -> Result<Client, (i32, String)> {
     Client::connect(socket).map_err(|error| {
         (
             2,

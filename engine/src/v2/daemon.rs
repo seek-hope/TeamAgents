@@ -216,7 +216,7 @@ async fn handle(request: &Json, supervisor: &SupervisorHandle, session_db: &Path
     let method = request.get("method").and_then(|v| v.as_str()).unwrap_or("");
     let params = request.get("params").cloned().unwrap_or(json!({}));
     match method {
-        "checkpoint" | "events" | "history" | "tasks" | "grants" | "approvals" | "goals" => {
+        "checkpoint" | "events" | "history" | "tasks" | "grants" | "approvals" | "goals" | "surfaces" => {
             match read_only(session_db, session_id, |conn| read_method(method, &params, conn)) {
                 Ok(result) => reply(true, result),
                 Err(error) => reply(false, json!(error)),
@@ -431,6 +431,41 @@ fn read_method(method: &str, params: &Json, conn: &rusqlite::Connection) -> Resu
             let mut entries: Vec<Json> = rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("history: {e}"))?;
             entries.reverse(); // chronological order
             Ok(json!({"instance_id": instance, "entries": entries}))
+        }
+        // D-349: the per-request surface record — the tool *names* each model request was offered and whether
+        // the surface check authorized that set. A request that ran before the record existed reads `null`
+        // (its row was migrated, not invented): the reader can tell "not recorded" from "recorded empty".
+        "surfaces" => {
+            let instance = params.get("instance_id").and_then(|v| v.as_str());
+            let limit = params.get("limit").and_then(|v| v.as_i64()).unwrap_or(200);
+            let mut stmt = conn
+                .prepare(
+                    "SELECT request_id, instance_id, epoch, goal_id, kind, status, offered_tools, surface_authorized
+                     FROM model_requests
+                     WHERE (?1 IS NULL OR instance_id = ?1)
+                     ORDER BY rowid DESC LIMIT ?2",
+                )
+                .map_err(|e| format!("surfaces prepare: {e}"))?;
+            let rows = stmt
+                .query_map(rusqlite::params![instance, limit], |row| {
+                    let offered: Option<String> = row.get(6)?;
+                    Ok(json!({
+                        "request_id": row.get::<_, String>(0)?,
+                        "instance_id": row.get::<_, String>(1)?,
+                        "epoch": row.get::<_, i64>(2)?,
+                        "goal_id": row.get::<_, Option<String>>(3)?,
+                        "kind": row.get::<_, String>(4)?,
+                        "status": row.get::<_, String>(5)?,
+                        "offered_tools": offered
+                            .as_deref()
+                            .and_then(|text| serde_json::from_str::<Json>(text).ok())
+                            .unwrap_or(Json::Null),
+                        "surface_authorized": row.get::<_, i64>(7)? == 1,
+                    }))
+                })
+                .map_err(|e| format!("surfaces query: {e}"))?;
+            let surfaces: Vec<Json> = rows.collect::<Result<_, _>>().map_err(|e| format!("surfaces rows: {e}"))?;
+            Ok(json!({"surfaces": surfaces}))
         }
         "tasks" => {
             let mut stmt = conn

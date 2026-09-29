@@ -11,7 +11,9 @@ pub const V2_FORMAT_ID: &str = "teamagents-v2";
 /// 2 → 3 (D-71): the runtime's own closing notes (`goal-close-`, `goal-block-`,
 /// `turn-close-`) move from the member's `assistant` kind to `runtime`, so no
 /// reader can mistake the runtime's word for the model's answer.
-pub const V2_SCHEMA_VERSION: i64 = 3;
+/// D-348/D-349: v4 records, per model request, the tool names it was offered and whether the surface check
+/// authorized that set (`model_requests.offered_tools` / `.surface_authorized`, D-341's decision for D-143).
+pub const V2_SCHEMA_VERSION: i64 = 4;
 
 /// Request kinds (§4.1 ModelRequest): an ordinary turn request advances the
 /// instance phase; a compression request only produces a summary (§7, A20).

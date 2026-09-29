@@ -138,7 +138,13 @@ CREATE TABLE IF NOT EXISTS model_requests (
     est_prompt_tokens INTEGER,
     -- 'turn' | 'compression' (R22/A20): both are billed to the goal and
     -- archived as attempts; only a turn request moves the instance phase.
-    kind TEXT NOT NULL DEFAULT 'turn'
+    kind TEXT NOT NULL DEFAULT 'turn',
+    -- D-349 (the decision D-341 made for D-143): what the request was *offered* — the tool names, as a JSON
+    -- array, never a schema or a payload (`docs/TOOLS.md` holds those) — and whether the surface check
+    -- authorized that set against the grants at assembly time. Written once, at registration: a later grant
+    -- changes the *next* request's record and never rewrites this one.
+    offered_tools TEXT,
+    surface_authorized INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS attempts (
@@ -427,6 +433,14 @@ fn migrate(conn: &Connection, from: i64) -> Result<(), String> {
             // identified by the envelope the runtime itself generated (a model
             // entry carries its decision id there, never one of these).
             2 => rewrite_closing_notes(&tx)?,
+            // 3 → 4 (D-349): the per-request surface record. Past requests keep NULL/0: the record did not
+            // exist when they ran, and inventing one would be the inference this column exists to replace.
+            3 => tx
+                .execute_batch(
+                    "ALTER TABLE model_requests ADD COLUMN offered_tools TEXT;
+                     ALTER TABLE model_requests ADD COLUMN surface_authorized INTEGER NOT NULL DEFAULT 0;",
+                )
+                .map_err(|e| format!("migrate 3 -> 4: {e}"))?,
             other => return Err(format!("no migration step from v2 schema version {other}")),
         }
         version += 1;
@@ -684,10 +698,12 @@ mod tests {
         let p = path("migrate");
         {
             let conn = open(&p, true).unwrap();
-            // the previous (v1) shape: no compression columns, older stamp
+            // the previous (v1) shape: no compression columns, no per-request surface record, older stamp
             conn.execute_batch(
                 "ALTER TABLE context_entries DROP COLUMN compressed_by;
                  ALTER TABLE model_requests DROP COLUMN kind;
+                 ALTER TABLE model_requests DROP COLUMN offered_tools;
+                 ALTER TABLE model_requests DROP COLUMN surface_authorized;
                  UPDATE meta SET value = '1' WHERE key = 'schema_version';",
             )
             .unwrap();
@@ -739,6 +755,8 @@ mod tests {
                          '{\"role\":\"assistant\",\"content\":\"the real answer\"}', 'dec-1', 0),
                         ('i1', 0, 3, 'i1:0:3', 'tool_result',
                          '{\"role\":\"tool\",\"tool_call_id\":\"c1\",\"content\":\"out\"}', 'op-1', 0);
+                 ALTER TABLE model_requests DROP COLUMN offered_tools;
+                 ALTER TABLE model_requests DROP COLUMN surface_authorized;
                  UPDATE meta SET value = '2' WHERE key = 'schema_version';",
             )
             .unwrap();

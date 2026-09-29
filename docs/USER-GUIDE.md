@@ -507,6 +507,9 @@ teamagents goals open --id g2 --attach i-leader --check 'tests=python3 -m pytest
                                         # after a goal settles: open the next one, attached to the Leader,
                                         # with your own required checks (§8) and an optional --deadline
                                         # the session's [limits]/[[checks]] bound it too (D-64/D-268)
+teamagents surface [--id i-leader]      # what each model request was offered: the tool names it carried and
+                                        # whether the surface check authorized them (D-349, the record D-143
+                                        # asked for) — a fact in the session, not a log line to infer from
 teamagents goals cancel --id g-spent    # close a goal nothing can spend (its ceiling or deadline is gone):
                                         # it settles CANCELLED and the instance its refusal parked runs again
                                         # (D-341/D-344); a goal still carrying running work is refused

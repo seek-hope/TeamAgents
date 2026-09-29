@@ -198,6 +198,124 @@ async fn boot(tag: &str, scripts: HashMap<String, Vec<Json>>) -> (Root, DaemonHa
     (root, handle)
 }
 
+/// D-349 (the decision D-341 made for D-143): per model request the session records what the request was
+/// *offered* — the tool names — and whether the surface check authorized that set, so "was this tool offered?"
+/// is a fact in the record instead of an inference from a `TEAMAGENTS_LOG_SURFACE=1` log line. The witness
+/// exists for the A03 divergence, so the test drives the case it exists for: a grant issued *after* a request
+/// changes the next request's record, and the earlier record is not rewritten. Read back through the daemon's
+/// own reader (and the CLI verb over it), not by reaching into the database.
+#[tokio::test]
+async fn the_surface_record_follows_the_grants_and_is_written_once_per_request() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let scripts =
+        HashMap::from([("i-leader".to_string(), vec![finish_call("first turn"), finish_call("second turn")])]);
+    let (root, handle) = boot("surface-record", scripts).await;
+    let socket = root.dir.join("state/daemon.sock");
+    let mut client = Client::connect(&socket).await;
+
+    /// Poll the checkpoint until the instance is READY again: a turn is over.
+    async fn wait_ready(client: &mut Client, instance: &str) {
+        for _ in 0..600 {
+            let reply = client.call("checkpoint", json!({})).await;
+            let ready = reply["result"]["snapshot"]["instances"]
+                .as_array()
+                .map(|rows| rows.iter().any(|row| row["id"] == json!(instance) && row["phase"] == json!("READY")))
+                .unwrap_or(false);
+            if ready {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("{instance} never returned to READY");
+    }
+    /// The records this session carries, newest first, as the daemon's reader reports them.
+    async fn records(client: &mut Client) -> Vec<Json> {
+        let reply = client.call("surfaces", json!({})).await;
+        assert_eq!(reply["ok"], json!(true), "{reply}");
+        reply["result"]["surfaces"].as_array().cloned().unwrap_or_default()
+    }
+    /// Poll until the instance has `count` surface records: `begin_request` writes the record, so its
+    /// appearance is the request being registered.
+    async fn wait_records(client: &mut Client, instance: &str, count: usize) {
+        for _ in 0..600 {
+            let reply = client.call("surfaces", json!({})).await;
+            let seen = reply["result"]["surfaces"]
+                .as_array()
+                .map(|rows| rows.iter().filter(|row| row["instance_id"] == json!(instance)).count())
+                .unwrap_or(0);
+            if seen >= count {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("{instance} did not reach {count} surface record(s)");
+    }
+    let names = |row: &Json| -> Vec<String> {
+        row["offered_tools"]
+            .as_array()
+            .map(|list| list.iter().filter_map(|name| name.as_str().map(str::to_string)).collect())
+            .unwrap_or_default()
+    };
+
+    // the first turn: the leader's bootstrap grants give it the collaboration tools, and no shell grant exists
+    let first_input = client.command("surface-input-1", "submit_input", input_params("one")).await;
+    assert_eq!(first_input["ok"], json!(true), "{first_input}");
+    wait_records(&mut client, "i-leader", 1).await;
+    wait_ready(&mut client, "i-leader").await;
+    let first = records(&mut client).await;
+    let first_leader = first.iter().find(|row| row["instance_id"] == json!("i-leader")).cloned().unwrap_or_default();
+    let offered = names(&first_leader);
+    for gated in ["wait", "send", "delegate", "spawn", "cancel_task"] {
+        assert!(offered.iter().any(|name| name == gated), "{gated} was not offered: {offered:?}");
+    }
+    assert!(!offered.iter().any(|name| name == "shell"), "no shell grant exists yet: {offered:?}");
+    assert_eq!(first_leader["surface_authorized"], json!(true), "the surface check authorized it: {offered:?}");
+    assert_eq!(first_leader["kind"], json!("turn"));
+
+    // a *grant change* after that request. The boot profile defines no shell tool, so the vehicle is the
+    // mirror of D-341's "a grant issued after a request": revoke the leader's own `message` grant — the same
+    // rule from the other side, the surface follows the grants.
+    let grants = client.call("grants", json!({})).await;
+    let message_grant = grants["result"]["grants"]
+        .as_array()
+        .and_then(|rows| {
+            rows.iter().find(|row| row["subject"] == json!("i-leader") && row["action"] == json!("message")).cloned()
+        })
+        .expect("the leader's message grant");
+    let revoked = client
+        .command(
+            "surface-revoke-1",
+            "revoke_grant",
+            json!({"grant_id": message_grant["id"], "reason": "the surface record's own test"}),
+        )
+        .await;
+    assert_eq!(revoked["ok"], json!(true), "{revoked}");
+
+    // the second turn is offered it; the first record is not rewritten
+    let second_input = client.command("surface-input-2", "submit_input", input_params("two")).await;
+    assert_eq!(second_input["ok"], json!(true), "{second_input}");
+    wait_records(&mut client, "i-leader", 2).await;
+    wait_ready(&mut client, "i-leader").await;
+    let after = records(&mut client).await;
+    let second_leader = after
+        .iter()
+        .find(|row| row["instance_id"] == json!("i-leader") && row["request_id"] != first_leader["request_id"])
+        .cloned()
+        .unwrap_or_default();
+    let offered_second = names(&second_leader);
+    assert!(
+        !offered_second.iter().any(|name| name == "send"),
+        "the revocation reaches the next request: {offered_second:?}"
+    );
+    assert!(offered_second.iter().any(|name| name == "delegate"), "{offered_second:?}");
+    assert_eq!(second_leader["surface_authorized"], json!(true));
+    let first_again =
+        after.iter().find(|row| row["request_id"] == first_leader["request_id"]).cloned().unwrap_or_default();
+    assert_eq!(first_again, first_leader, "the earlier record is a fact about its own request, not the instance");
+
+    handle.shutdown().await.expect("shutdown");
+}
+
 fn input_params(text: &str) -> Json {
     json!({"instance_id": "i-leader", "envelope_id": format!("env-{}", uuid::Uuid::new_v4()), "text": text})
 }

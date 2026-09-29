@@ -2409,6 +2409,96 @@ fn the_goal_surface_lists_and_opens_goals_through_the_daemon() {
     assert!(out.contains("opened goal goal-third (1 required check(s))"), "{out}");
 }
 
+/// D-349 (the decision D-341 made for D-143): `teamagents surface` reads back, per model request, the tool
+/// *names* the request was offered and whether the surface check authorized that set — a fact in the record
+/// instead of an inference from a `TEAMAGENTS_LOG_SURFACE=1` log line. The record is written when the request
+/// is registered, so a turn that then fails at the provider still leaves one: that is the shape the witness
+/// exists for, and it is what this test drives through the verb.
+#[test]
+fn the_surface_verb_reads_back_what_a_request_was_offered() {
+    let root = Scratch::new("surface-verb");
+    let (config_home, state, ws) = (root.join("config"), root.join("root"), root.join("ws"));
+    std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
+    std::fs::create_dir_all(&ws).unwrap();
+    std::fs::write(
+        config_home.join("teamagents/config.toml"),
+        "[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\n\
+         api_key_env = \"TA_SURFACE_KEY\"\nbase_url = \"http://127.0.0.1:1/v1\"\ntimeout = 5\n",
+    )
+    .unwrap();
+    let env = |command: &mut Command| {
+        command
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_STATE_HOME", root.join("state"))
+            .env("TA_SURFACE_KEY", "test-value");
+    };
+    let mut daemon = Command::new(env!("CARGO_BIN_EXE_teamagents"));
+    env(&mut daemon);
+    let daemon = daemon
+        .args(["daemon", "--state-root"])
+        .arg(&state)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("start the daemon");
+    let mut daemon_guard = Daemon(daemon);
+    let socket = state.join("daemon.sock");
+    for _ in 0..200 {
+        if socket.exists() && std::os::unix::net::UnixStream::connect(&socket).is_ok() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let report = |args: &[&str]| -> (i32, String, String) {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_teamagents"));
+        env(&mut command);
+        let output = command.args(args).arg("--state-root").arg(&state).output().expect("run the CLI");
+        (
+            output.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    };
+    // nothing has asked yet: the reader says so rather than pretending to a record
+    let (code, out, stderr) = report(&["surface", "--json"]);
+    assert_eq!(code, 0, "{stderr}");
+    let empty: serde_json::Value = serde_json::from_str(&out).expect("JSON report");
+    assert_eq!(empty["surfaces"], serde_json::json!([]), "{out}");
+    // one input: the provider is unreachable, the turn fails — and the request's record still exists
+    let _ = report(&["exec", "say something"]);
+    for _ in 0..200 {
+        let (code, out, _) = report(&["surface", "--json"]);
+        if code == 0
+            && serde_json::from_str::<serde_json::Value>(&out)
+                .is_ok_and(|value| value["surfaces"] != serde_json::json!([]))
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let (code, out, stderr) = report(&["surface", "--json", "--id", "i-leader"]);
+    assert_eq!(code, 0, "{stderr}");
+    let parsed: serde_json::Value = serde_json::from_str(&out).expect("JSON report");
+    let rows = parsed["surfaces"].as_array().cloned().unwrap_or_default();
+    assert!(!rows.is_empty(), "{out}");
+    let offered: Vec<String> = rows[0]["offered_tools"]
+        .as_array()
+        .expect("the record carries names")
+        .iter()
+        .filter_map(|name| name.as_str().map(str::to_string))
+        .collect();
+    assert!(offered.iter().any(|name| name == "wait"), "{offered:?}");
+    assert!(offered.iter().any(|name| name == "delegate"), "{offered:?}");
+    assert_eq!(rows[0]["surface_authorized"], serde_json::json!(true), "{out}");
+    assert_eq!(rows[0]["instance_id"], serde_json::json!("i-leader"));
+    // a prefix that names no instance is a client error (2, as the shared resolver uses), not an empty answer
+    let (code, _, stderr) = report(&["surface", "--id", "i-nobody"]);
+    assert_eq!(code, 2, "{stderr}");
+    assert!(stderr.contains("i-nobody"), "{stderr}");
+    daemon_guard.stop();
+    std::fs::remove_dir_all(&root).expect("the state root goes away with its daemon");
+}
+
 /// D-341/D-344: the user's lever on a goal nothing can spend — A18's known gap. A goal whose ceiling or
 /// deadline is gone stays `ACTIVE` for ever, refusing new work and still listed as the status `goals list`
 /// reports, and the instance its refusal parked has no path back; `goals cancel --id ID` is the missing half.

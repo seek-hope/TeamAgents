@@ -48,10 +48,11 @@ the handler re-checks who may do this rather than trusting the request.
 | `checkpoint` | — | `snapshot`, `watermark` | `engine/src/v2/daemon.rs:391` |
 | `events` | `since` | `events`, `resync_required`, `watermark` | `engine/src/v2/daemon.rs:398` |
 | `history` | `instance_id`, `limit` | `entries`, `envelope_id`, `epoch`, `idx`, `instance_id`, `kind`, `message` | `engine/src/v2/daemon.rs:407` |
-| `tasks` | — | `assignee`, `goal_id`, `id`, `status`, `tasks` | `engine/src/v2/daemon.rs:435` |
-| `approvals` | — | `approvals`, `id`, `operation_id`, `preview`, `tool` | `engine/src/v2/daemon.rs:451` |
-| `goals` | — | `attached_instances`, `deadline`, `goals`, `id`, `known_usage`, `limits`, `status`, `unknown_usage` | `engine/src/v2/daemon.rs:480` |
-| `grants` | — | `action`, `grants`, `id`, `issuer`, `parent_grant_id`, `resource_scope`, `revision`, `revoked`, `subject` | `engine/src/v2/daemon.rs:515` |
+| `surfaces` | `instance_id`, `limit` | `epoch`, `goal_id`, `instance_id`, `kind`, `offered_tools`, `request_id`, `status`, `surface_authorized`, `surfaces` | `engine/src/v2/daemon.rs:438` |
+| `tasks` | — | `assignee`, `goal_id`, `id`, `status`, `tasks` | `engine/src/v2/daemon.rs:470` |
+| `approvals` | — | `approvals`, `id`, `operation_id`, `preview`, `tool` | `engine/src/v2/daemon.rs:486` |
+| `goals` | — | `attached_instances`, `deadline`, `goals`, `id`, `known_usage`, `limits`, `status`, `unknown_usage` | `engine/src/v2/daemon.rs:515` |
+| `grants` | — | `action`, `grants`, `id`, `issuer`, `parent_grant_id`, `resource_scope`, `revision`, `revoked`, `subject` | `engine/src/v2/daemon.rs:550` |
 
 ### Commands (executed by the control plane)
 
@@ -74,7 +75,7 @@ the handler re-checks who may do this rather than trusting the request.
 | `fire_timer` | `now` | yes | `core/src/v2/control.rs:140` |
 | `blocked_report` | — | yes | `core/src/v2/control.rs:141` |
 | `submit_input` | `envelope_id`, `instance_id`, `text` | yes | `core/src/v2/control.rs:142` |
-| `begin_request` | `est_prompt_tokens`, `instance_id`, `request_id`, `request_ref`, `revision` | yes | `core/src/v2/control.rs:143` |
+| `begin_request` | `est_prompt_tokens`, `instance_id`, `offered_tools`, `request_id`, `request_ref`, `revision`, `surface_authorized` | yes | `core/src/v2/control.rs:143` |
 | `record_attempt` | `attempt_id`, `elapsed_ms`, `error_class`, `request_id`, `response_ref`, `status`, `unknown_usage`, `usage` | yes | `core/src/v2/control.rs:144` |
 | `begin_compression` | `est_prompt_tokens`, `instance_id`, `request_id`, `request_ref` | yes | `core/src/v2/control.rs:145` |
 | `compress_context` | `attempt_id`, `instance_id`, `keep_ids`, `request_id`, `summary` | yes | `core/src/v2/control.rs:146` |
@@ -124,6 +125,8 @@ literals in `engine/src/v2/daemon.rs`; this table is that list. A row is one lit
 | `events` arm | `events`, `watermark`, `resync_required` |
 | `history` arm | `epoch`, `idx`, `kind`, `envelope_id`, `message` |
 | `history` arm | `instance_id`, `entries` |
+| `surfaces` arm | `request_id`, `instance_id`, `epoch`, `goal_id`, `kind`, `status`, `offered_tools`, `surface_authorized` |
+| `surfaces` arm | `surfaces` |
 | `tasks` arm | `id`, `goal_id`, `assignee`, `status` |
 | `tasks` arm | `tasks` |
 | `approvals` arm | `id`, `operation_id`, `tool`, `preview` |

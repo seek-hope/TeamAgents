@@ -1535,6 +1535,11 @@ fn begin_request(tx: &Connection, session_id: &str, params: &Json, identity: &Id
     let request_ref = params["request_ref"].as_str().unwrap_or("");
     let expected_revision = params["revision"].as_i64().ok_or("begin_request.revision required")?;
     let est = params["est_prompt_tokens"].as_i64().unwrap_or(0);
+    // D-350: the surface this request carries — the tool *names* the driver offered it, and whether that set
+    // passed the surface check against the grants at assembly time. Bounded by construction: names only.
+    let offered =
+        params["offered_tools"].as_array().map(|names| serde_json::to_string(names).unwrap_or_else(|_| "[]".into()));
+    let authorized = params["surface_authorized"].as_bool().unwrap_or(false) as i64;
     let (session, epoch, lifecycle, phase, revision) = load_instance(tx, instance_id)?;
     if session != session_id {
         return Err("instance does not belong to this session".to_string());
@@ -1575,9 +1580,10 @@ fn begin_request(tx: &Connection, session_id: &str, params: &Json, identity: &Id
         }
     }
     tx.execute(
-        "INSERT INTO model_requests (request_id, instance_id, epoch, goal_id, request_ref, status, est_prompt_tokens)
-         VALUES (?1, ?2, ?3, ?4, ?5, 'PENDING', ?6)",
-        rusqlite::params![request_id, instance_id, epoch, goal_id, request_ref, est],
+        "INSERT INTO model_requests (request_id, instance_id, epoch, goal_id, request_ref, status, est_prompt_tokens,
+                                     offered_tools, surface_authorized)
+         VALUES (?1, ?2, ?3, ?4, ?5, 'PENDING', ?6, ?7, ?8)",
+        rusqlite::params![request_id, instance_id, epoch, goal_id, request_ref, est, offered, authorized],
     )
     .map_err(|e| format!("begin_request {request_id}: {e}"))?;
     tx.execute(
@@ -1823,9 +1829,12 @@ fn begin_compression(tx: &Connection, session_id: &str, params: &Json, identity:
         }
     }
     tx.execute(
+        // A compression request carries no tools, so its record says exactly that (D-350) rather than
+        // repeating the instance's surface, which it was never offered.
         "INSERT INTO model_requests
-             (request_id, instance_id, epoch, goal_id, request_ref, status, est_prompt_tokens, kind)
-         VALUES (?1, ?2, ?3, ?4, ?5, 'PENDING', ?6, ?7)",
+             (request_id, instance_id, epoch, goal_id, request_ref, status, est_prompt_tokens, kind,
+              offered_tools, surface_authorized)
+         VALUES (?1, ?2, ?3, ?4, ?5, 'PENDING', ?6, ?7, '[]', 1)",
         rusqlite::params![request_id, instance_id, epoch, goal_id, request_ref, est, REQUEST_KIND_COMPRESSION],
     )
     .map_err(|e| format!("begin_compression {request_id}: {e}"))?;

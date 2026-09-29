@@ -20,6 +20,76 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-350 The per-request surface record: what a member was offered is in the record now (2026-09-29)
+
+**This entry is the operator's.** The card that built this hit its goal's 24M token ceiling with the code finished
+and its entry unwritten (measured: the goal's own refusal, `known 24004929 + est 339516 > max 24000000`, `exec` rc
+1, the instance parked, the goal left `ACTIVE`); the operator finished the mechanical tail the card could not run
+and wrote this entry, so what follows separates what the card delivered from what the operator verified and what
+stays unpinned.
+
+**The decision, and what was built.** D-341's row for D-143: persist, bounded, what surface each model request was
+offered. `core/src/v2/models.rs` and `store.rs`: `model_requests` carries `offered_tools` (the tool *names* the
+request carried, sorted so two reads of one surface agree) and `surface_authorized` (the surface check's own
+answer); the store's format stamp moves **3 → 4** with its migration, and Q18 owes older readers nothing.
+`engine/src/v2/surfaces.rs` (new) is the reader, reachable two ways — the daemon's `surfaces` read method and
+`teamagents surface [--id INSTANCE] [--json]` — both read-only and neither rewriting a record. The driver computes
+the names and the check where the surface is assembled (`driver::team_kernel`). `docs/EVENTS.md` (48 kinds) and
+`docs/CONFIG.md` (45 keys) were regenerated, and ACCEPTANCE's known-gap bullet for the missing record is now the
+delivered form of it.
+
+**The operator's verification.** (1) The two tests the card wrote pass: `cli::the_surface_verb_reads_back_what_a_request_was_offered`
+(3.08 s) and `v2_daemon::the_surface_record_follows_the_grants_and_is_written_once_per_request` (0.11 s) — the
+latter revokes the leader's `message` grant between two turns and asserts the second record's names changed while
+the first was not rewritten. (2) The operator's own control: hardcoding the surface check's answer to `true` in
+`engine/src/v2/driver.rs` (sha256 of the file before the edit `5fc291a7…`) **still passes that test**, because the
+test only exercises the authorized case; the line was restored byte-identically (sha256 `5fc291a7…`).
+
+**What that control's failure to fail means, stated rather than hidden.** By construction the field is true
+*whenever the surface is built from the grants*: `shell` is dropped when ungranted and the collaboration schemas
+come from the actions the grants produce, so `present ⊆ allowed` holds. `surface_authorized` is therefore a
+self-check of that construction invariant (§5.2's `OfferedToolsAreAuthorized`), not an observation that varies
+with the world; the record's *varying* half is the name list, and that half the second test does drive. The
+negative branch is unpinned and, under this construction, unreachable — the way to reach it is a *profile* tool
+sharing a gated name (`shell`, `send`, `delegate`, `spawn`, `cancel_task`), which the name-keyed check would read
+as gated.
+
+**The tail the operator finished, and one correction.** `make fmt` (the card died before it), then the two
+regenerations the audits demanded in turn (`review/event_catalogue.py --write`, `review/config_reference.py
+--write`), the citation counts, and the number the card got wrong: its comments and D-143's sentence called this
+entry D-349 — the wait card's verification entry — so five code references and that sentence now say D-350.
+
+**The dead goal, and the lever this session built.** `teamagents goals cancel --id goal-task38` answered
+`cancelled goal goal-task38; released i-leader` and the leader went back to `ACTIVE/READY`: the first live use of
+D-344's lever, on the exact shape the D-267/D-280 gap described. Two other spent goals (`goal-task11`,
+`goal-s-main`, both past their deadline with no running work) were closed the same way. The operator then raised
+the session's own per-goal ceiling from **24M/180 min to 120M/360 min** (the operator's config, outside the
+repository), because this card's class — store stamp, driver, daemon, docs, formal material — no longer fits in
+24M.
+
+**Evidence** (2026-09-29; the tree is `6ad1f732` plus this uncommitted diff).
+
+| Command | Result |
+|---|---|
+| the two new tests, run by the operator | **ok** (3.08 s) / **ok** (0.11 s) |
+| the operator's control (the check hardcoded `true`) | the record test **still passed** — the negative branch is not driven; line restored byte-identically (`5fc291a7…`) |
+| `python3 review/event_catalogue.py --write` | `docs/EVENTS.md regenerated: 48 kinds` |
+| `python3 review/config_reference.py --write` | `docs/CONFIG.md regenerated: 45 keys` |
+| `python3 review/protocol_catalogue.py` | `8 read methods and 43 commands documented and in sync` |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0**, suites `core 118 / engine 291 / tui 36` |
+| `make pty` | ok |
+
+**The phase's measured numbers (this commit).** **497,902,813 tokens over 1,367 model requests**, the suites
+above, three operator resumes; three implementation cards have landed from D-341's table (the goal-cancel lever
+D-344, the wait contract D-348, this record D-350).
+
+**Next card**: D-191's daemon-startup artifact sweep, then Q16's pre-registered experiment.
+
+**Ceiling**: the negative branch of `surface_authorized` (above); the check is name-keyed, so a profile tool that
+shares a gated name reads as gated; the 3 → 4 migration is exercised by the store's own tests rather than by a
+real v3 database from an earlier run (this session's state roots postdate the change); and the record's
+live/multi-process behaviour is the daemon tests' scope, not a probe's.
+
 ## D-349 Task 37 is verified: each new control refutes the mistake it names, and the design says the rule (2026-09-29)
 
 The product's entry is D-348. This entry is the operator's verification and the phase's measured numbers.
@@ -127,7 +197,7 @@ script states its own counts was *strengthened* rather than dropped when the cou
 the delivery; and ACCEPTANCE's two open sentences — the `BLOCKED`/kind halves in the Q16 row and the runtime-wake
 half in the known gaps — record the answers and where each is written and pinned.
 
-**Numbers** (measured): citations **986** / 81 relative links / **633** `make` commands / **1009** `§` refs with
+**Numbers** (measured): citations **986** / 81 relative links / **633** `make` commands / **1010** `§` refs with
 0 unexplained (`review/citations.py`, docstring updated) — 978/629/1006 before this entry's own text was
 counted, and it moves them, so these are the values the last run of the audit reports; 307 decisions with this
 entry; 102 configurations / 77 controls / 21 modules; 164 markdown tables; suites core 118 / engine 289 / tui 36.
@@ -8396,10 +8466,13 @@ change — the worker's first request carries no `shell`, the next one after an 
 request after a revoke does not — all issued through `submit_user`, the same single-writer path the daemon's
 `authority` client uses. So "grant=live and no attempt" is a model choice on verified behaviour.
 
-Ceiling: what the *run* cannot show is the schema list that went out with a request — that surface is assembled
-per request and only the instance's *configured* profile is persisted — so a record of what a member was offered
-would be a candidate addition rather than something this probe can read; it is recorded with the known gaps in
-`docs/ACCEPTANCE.md` because it is new persisted surface and needs the user's word. A run reporting
+Ceiling then: what the *run* could not show was the schema list that went out with a request — that surface is
+assembled per request and only the instance's *configured* profile was persisted — so a record of what a member
+was offered was a candidate addition rather than something the probe could read; it was recorded with the known
+gaps in `docs/ACCEPTANCE.md` because it is new persisted surface and needed the user's word. **The user gave it
+under the delegation (D-341) and D-350 built it**: `model_requests` now carries the offered tool *names* and
+whether the surface check authorized them, `teamagents surface` reads them back, and the probe can now tell
+"never offered" from "offered and unused" from the record rather than from its own log line. A run reporting
 `grant=ABSENT`, or an attempt whose receipt is a refusal, remains the product-side finding this watches for.
 
 **The live occurrence, later the same evening** (`make probe-models` again) printed exactly that message and then

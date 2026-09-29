@@ -7,7 +7,7 @@ model probe sets and the three formal gates).
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 118 / engine 289 / tui 36 test targets) and `make pty` passes — re-measured 2026-09-29: `pty v2 smoke: ok`, rc 0, 41 s, credential-free; both are
+`make check` is green (core 118 / engine 291 / tui 36 test targets) and `make pty` passes — re-measured 2026-09-29: `pty v2 smoke: ok`, rc 0, 41 s, credential-free; both are
 preconditions for every item below. `make check` includes `make language-check`, which fails on non-English
 characters outside the two documented exceptions (`README.zh-CN.md` and the frozen material under
 `review/eval`).
@@ -334,12 +334,21 @@ responses while the team arm pays orchestration and integration — the distribu
 rule would be a coin flip. A separating experiment has to cap what one response can carry, which is a
 design decision **for the user**.
 
-- **What a member was offered at a request is not recorded.** The tool surface is computed per request
-  (`driver::team_kernel`, from the bindings and the live grants) and only the instance's *configured* profile is
-  persisted, so after a run nothing says which tools a member was actually offered when it answered. Two
-  diagnoses on 2026-09-26 would have been direct instead of inferential with that record (D-140's "did it try?"
-  and D-143's "was the tool there?"). Recording it means a change to `model_requests` (a column) or a new event,
-  which is new persisted and protocol-visible surface, so it needs the user's word.
+- ~~**What a member was offered at a request is not recorded.**~~ **Delivered since D-349** (the decision D-341
+  made for this row). The gap, as the record stated it: the tool surface is computed per request
+  (`driver::team_kernel`, from the bindings and the live grants) and only the instance's *configured* profile was
+  persisted, so after a run nothing said which tools a member was actually offered when it answered — two
+  diagnoses on 2026-09-26 (D-140's "did it try?" and D-143's "was the tool there?") would have been direct
+  instead of inferential with that record. **The record exists now**: `model_requests` carries, per request, the
+  offered tool **names** (a JSON array — never a schema or a prompt) and whether the surface check authorized
+  that set (`OfferedToolsAreAuthorized`'s question, asked again at assembly rather than assumed); `teamagents
+  surface [--id INSTANCE] [--json]` reads it back over the same daemon read the other read-only surfaces use.
+  Pinned by `v2_daemon::the_surface_record_follows_the_grants_and_is_written_once_per_request` — a grant change
+  between requests reaches the *next* request's record and never rewrites the earlier one — and by
+  `cli::the_surface_verb_reads_back_what_a_request_was_offered` through the real binary. The schema version is
+  **4**; an older *v2* session is migrated (the two columns added, past requests reading `null`, because v2's own
+  upgrades are migrate-or-refuse), while a foreign, unstamped or newer-stamped database is still refused with the
+  reason named. `TEAMAGENTS_LOG_SURFACE=1` stays as the live witness it always was.
 
 - **A worker needs the user's grant for the shared-workspace shell** (D-61): a spawned worker holds no
   `shell@workspace` (§5.1), so until the user runs `teamagents authority grant --subject <id> --action shell

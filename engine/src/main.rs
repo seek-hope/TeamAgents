@@ -27,6 +27,7 @@ usage: teamagents [--cwd DIR] [--state-root PATH] [--model KEY] [--full-auto]\n\
   teamagents artifacts [list] [--json]          what this state root holds on disk (bytes, owner, presence)\n\
   teamagents artifacts gc [--json]              collect the artifacts nothing references (needs no session)\n\
   teamagents runners [list] [--json]            the job runners this state root still carries\n\
+  teamagents surface [--id INSTANCE] [--json]   what each model request was offered: tool names, authorized\n\
   teamagents runners stop [--id JOB]            ask them to retire (a runner with a running command refuses)\n\
   teamagents runners stop --service --yes [--id JOB]   stop the group a settled command left behind\n\
   teamagents daemon [--state-root PATH] [--cwd DIR] [--model KEY] [--full-auto]\n\
@@ -260,7 +261,7 @@ fn parse_args() -> Args {
                 i += 1;
             }
             "serve" | "init" | "doctor" | "validate" | "sessions" | "version" | "exec" | "authority" | "approvals"
-            | "instances" | "tasks" | "runners" | "artifacts" | "goals" => {
+            | "instances" | "tasks" | "runners" | "artifacts" | "goals" | "surface" => {
                 if args.command.is_some() {
                     reject("two entry points were given: pick one (teamagents --help lists them)");
                 }
@@ -283,7 +284,15 @@ fn parse_args() -> Args {
                 if matches!(
                     args.command.as_deref(),
                     Some(
-                        "exec" | "authority" | "approvals" | "instances" | "tasks" | "runners" | "artifacts" | "goals"
+                        "exec"
+                            | "authority"
+                            | "approvals"
+                            | "instances"
+                            | "tasks"
+                            | "runners"
+                            | "artifacts"
+                            | "goals"
+                            | "surface"
                     )
                 ) =>
             {
@@ -328,7 +337,7 @@ fn parse_args() -> Args {
             "--id"
                 if matches!(
                     args.command.as_deref(),
-                    Some("approvals" | "instances" | "tasks" | "runners" | "goals")
+                    Some("approvals" | "instances" | "tasks" | "runners" | "goals" | "surface")
                 ) =>
             {
                 if args.approval_id.is_some() {
@@ -859,6 +868,25 @@ fn run_tasks(args: &Args) -> i32 {
 /// Deliberately not a client of the running session: the leftover this exists for is the one whose session is
 /// gone. It talks to the *runners* (whose token socket is in each job directory's `job.json`), so a session
 /// that is live is only reported, never required.
+/// `teamagents surface`: the read-only record of what each model request was offered (D-349, the decision
+/// D-341 made for D-143): the tool *names* a request carried and whether the surface check authorized that set.
+fn run_surface(args: &Args) -> i32 {
+    use teamagents_engine::v2::surfaces::{SurfaceCommand, SurfaceOptions};
+    let state_root = args.state_root.clone().map(PathBuf::from).unwrap_or_else(teamagents_engine::v2_root);
+    if let Some(other) = args.positional.as_deref() {
+        eprintln!(
+            "surface: unknown command {other:?}; use `teamagents surface [--id INSTANCE] [--json]` — \n\
+             the read-only record of what a request was offered (`--id` resolves by prefix, see `instances`)"
+        );
+        return 2;
+    }
+    teamagents_engine::v2::surfaces::run(SurfaceOptions {
+        socket: state_root.join("daemon.sock"),
+        command: SurfaceCommand::List { instance: args.approval_id.clone() },
+        json_out: args.exec_json,
+    })
+}
+
 fn run_runners(args: &Args) -> i32 {
     use teamagents_engine::v2::runners::{RunnersCommand, RunnersOptions};
     let state_root = args.state_root.clone().map(PathBuf::from).unwrap_or_else(teamagents_engine::v2_root);
@@ -1153,6 +1181,7 @@ fn main() {
         Some("instances") => run_instances(&args),
         Some("tasks") => run_tasks(&args),
         Some("runners") => run_runners(&args),
+        Some("surface") => run_surface(&args),
         Some("artifacts") => run_artifacts(&args),
         _ if args.plain || args.resume.is_some() || args.team.is_some() => {
             eprintln!("--plain/--resume/--team are no longer supported; use teamagents (TUI) or teamagents exec.");

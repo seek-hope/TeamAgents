@@ -1117,7 +1117,10 @@ impl<P: Provider> Driver<P> {
     /// offered; send/delegate/spawn schemas appear only while the instance
     /// holds a matching grant (§5.1). The dispatch boundary re-checks the
     /// grant regardless (§6.1), so a stale schema never authorizes.
-    async fn team_kernel(&self, snapshot: &Snapshot) -> Result<KernelInstance, String> {
+    /// Returns the kernel, plus the surface record D-350 persists with the request: the tool *names* this
+    /// instance was offered, and whether the surface check authorized that set against the grants (the same
+    /// question the dispatch boundary asks, asked again here rather than assumed).
+    async fn team_kernel(&self, snapshot: &Snapshot) -> Result<(KernelInstance, Vec<String>, bool), String> {
         let instance = self.config.instance_id.clone();
         let surface_of = instance.clone();
         let actions = self
@@ -1166,8 +1169,28 @@ impl<P: Provider> Driver<P> {
         // than into the stored profile so a spawned child never inherits the
         // parent's bound services; the child's own driver merges its own.
         profile.tools.extend(self.toolkit.mcp_schemas());
+        // D-350: the names the request carries, sorted so two runs of one surface read alike, and the surface
+        // check's own answer: the *gated* tools offered must be exactly the gated tools the grants allow. The
+        // ungated families (the profile's own tools, bound services, `wait`) are not grant-gated and are not
+        // part of the question; a mismatch is the D-60/D-143 defect, recorded rather than inferred.
+        let mut names: Vec<String> =
+            profile.tools.iter().filter_map(|tool| tool["function"]["name"].as_str().map(str::to_string)).collect();
+        names.sort();
+        let gated =
+            |name: &str| matches!(name, "shell" | "send" | "delegate" | "spawn" | teamagents_core::kernel::CANCEL_TOOL);
+        let allowed: std::collections::BTreeSet<&str> = actions
+            .iter()
+            .copied()
+            .chain(if shell { Some("shell") } else { None })
+            .filter(|name| gated(name))
+            .collect();
+        let present: std::collections::BTreeSet<&str> =
+            names.iter().map(String::as_str).filter(|name| gated(name)).collect();
+        // `OfferedToolsAreAuthorized` (§5.2): what the request offers must be what the grants allow. The
+        // converse is not required — a tool the profile never defines is not offered however the grants read
+        // (`shell` is the live case: granted here, undefined in this profile) — so the check is the subset.
+        let surface_authorized = present.is_subset(&allowed);
         if std::env::var_os(SURFACE_LOG_ENV).is_some() {
-            let names: Vec<&str> = profile.tools.iter().filter_map(|tool| tool["function"]["name"].as_str()).collect();
             eprintln!(
                 "driver: surface {surface_of} shell={} tools={}",
                 if shell { "yes" } else { "no" },
@@ -1194,7 +1217,11 @@ that delegated it learns the outcome only from a settlement.";
         if !rules.is_empty() {
             profile.instructions = format!("{}\n\n{rules}", profile.instructions);
         }
-        Ok(KernelInstance::new(self.config.instance_id.clone(), snapshot.epoch as u64, profile))
+        Ok((
+            KernelInstance::new(self.config.instance_id.clone(), snapshot.epoch as u64, profile),
+            names,
+            surface_authorized,
+        ))
     }
 
     /// Crash recovery (§6.3): classify the persisted position once, then let
@@ -1413,7 +1440,7 @@ that delegated it learns the outcome only from a settlement.";
                 Err(error) => return Err(error),
             }
         }
-        let kernel = self.team_kernel(snapshot).await?;
+        let (kernel, offered_tools, surface_authorized) = self.team_kernel(snapshot).await?;
         let request_id = format!("req-{}", uuid::Uuid::new_v4());
         let mut request = kernel.prepare_request(&entries, &request_id);
         // L2 (§7, A20): a summary is taken before the request is fixed and
@@ -1430,7 +1457,8 @@ that delegated it learns the outcome only from a settlement.";
                     format!("begin-{request_id}"),
                     "begin_request",
                     json!({"instance_id": self.config.instance_id, "request_id": request_id,
-                           "revision": revision, "est_prompt_tokens": request.est_prompt_tokens}),
+                           "revision": revision, "est_prompt_tokens": request.est_prompt_tokens,
+                           "offered_tools": offered_tools, "surface_authorized": surface_authorized}),
                 ),
                 Identity::Instance(self.config.instance_id.clone()),
             )
@@ -1494,7 +1522,7 @@ that delegated it learns the outcome only from a settlement.";
             Some(request) => request.clone(),
             None => {
                 let entries = self.context_entries(snapshot).await?;
-                self.team_kernel(snapshot).await?.prepare_request(&entries, &request_id)
+                self.team_kernel(snapshot).await?.0.prepare_request(&entries, &request_id)
             }
         };
         let attempt = self.attempt_count(&request_id).await? + 1;
