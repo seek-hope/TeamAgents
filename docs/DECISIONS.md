@@ -20,6 +20,42 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-346 The published release is this product, and the probe that checks it agrees (2026-09-29)
+
+The release's external half, recorded by the operator. The tag `v0.2.0` (commit `76926407`) and `main` were pushed
+to `origin` — `77d08e42..76926407` for the branch, so the remote now carries the tree the documents describe, not
+only the tag. The Release workflow (`on: push: tags: ["v*"]`) run **36515043086** completed **success** and
+published a non-draft, non-prerelease release at 2026-09-29T03:01:01Z with three assets: `install.sh` (8,052
+bytes), `SHA256SUMS` (193 bytes) and `teamagents-0.2.0-x86_64-unknown-linux-musl.tar.gz` (**6,125,023 bytes**,
+against the rehearsal's 6,024 KiB — the same tree built by the workflow's own flags).
+
+**The probe that used to fail now passes against the real artifact.** `python3 review/install_check.py` (network,
+not part of `make check`) downloaded the published release, verified its SHA-256, refused a corrupted archive
+without touching an existing installation, installed `v0.2.0` and then asserted the positive half D-343 inverted
+its expectation to: `[product] the installed help describes the current surface`. That is the fact the four
+caveat statements had denied since D-203, verified from the published bytes rather than from the tree.
+
+**Other runs the push started.** Rust CI on the tag (36515043090) and on `main` (36515042916) were still in
+progress when this entry was written; they are the repository's own gate on the pushed state and their outcome is
+reported to the user rather than claimed here.
+
+**Evidence** (2026-09-29).
+
+| Command | Result |
+|---|---|
+| `git push origin refs/tags/v0.2.0` | new tag `v0.2.0 -> v0.2.0` |
+| `git push origin main` | `77d08e42..76926407  main -> main` (fast-forward) |
+| `gh run view 36515043086` | `completed success` |
+| `gh release view v0.2.0` | not draft, not prerelease, three assets as above |
+| `python3 review/install_check.py` | **rc=0** — corrupted archive refused (exit 1, install untouched), `v0.2.0` installed, binaries run, `[product] the installed help describes the current surface` |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — the same tree, after the entries were written |
+| `make pty` | ok |
+
+**Ceiling.** The release's own assets are the workflow's output; this entry verifies them by downloading and
+installing them once, not by re-running the workflow. The tag is immutable once published: any later fix lands as
+a new tag, and the documents that now say "the latest release is this product" stay true only as long as the
+newest tag is a v2 tag (`review/release_artifact.py` reads exactly that).
+
 ## D-345 Task 36 is verified: the lever releases what it parked, and the operator's own control says so (2026-09-29)
 
 The product's entry is D-344. This entry is the operator's verification and the phase's measured numbers.
@@ -126,7 +162,7 @@ the operator's step.
 yes`), `docs/EVENTS.md` regenerated (48 kinds; `goal_cancelled`, listed with no reader in this tree yet, as
 `goal_created` is), the A18 known-gaps bullet now records the delivered lever instead of asking for the user's
 word, `docs/USER-GUIDE.md` documents the verb and its refusal, and the CLI synopsis carries
-`goals cancel --id ID`. Measured numbers: citations **964** / 81 relative links / **619** `make` commands /
+`goals cancel --id ID`. Measured numbers: citations **966** / 81 relative links / **624** `make` commands /
 **1003** `§` refs, 0 unexplained (`review/citations.py`, docstring updated) — 954/615 before this entry's own
 text was counted, and it moves them, so these are the values the last run of the audit reports; decisions 303
 with this entry; configurations 99 / controls 74 / modules 21 (`review/verification_catalogue.py`); suites as

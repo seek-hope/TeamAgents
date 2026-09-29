@@ -5,7 +5,15 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
-## 0. Gate status (re-run 2026-09-28 at `4550a0e5`)
+## 0. Gate status (re-run 2026-09-29 at `76926407`)
+
+* **This round (2026-09-29) added the goal-cancel lever's rule and re-ran all three targets on that tree.**
+  `make verify-model-all`: all **24** configurations `No error has been found` (rc 0).
+  `make verify-model-counterexamples`: **74** controls refuted (rc 0) — the new `MC_control_cancel.cfg` is
+  the seventy-fourth, refuted on `CancelledGoalReleasesParkedInstances`. `make verify-kani`: `Complete - 3
+  successfully verified harnesses, 0 failures, 3 total` (rc 0). The configurations, controls and harnesses
+  are the ones the sections below count; the round changed `V2Control.tla`'s `CancelGoal`,
+  `ReleaseOnCancel` and `CancelledGoalReleasesParkedInstances` and nothing else in the material.
 
 * **D-295 measured the pure-function layer's remaining reach and changed no material.** The unproven item 7
   below named three functions "only reached by bounded enumeration"; a Kani harness on the one this crate can
