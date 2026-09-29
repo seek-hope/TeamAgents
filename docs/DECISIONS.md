@@ -20,6 +20,36 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-347 The pin fixed the pushed state's CI, and the operator decided not to re-cut for a document-only difference (2026-09-29)
+
+**The CI the push started, and what it caught.** Both pushed commits failed the repository's own Rust CI
+(36515043090 on the tag, 36515042916 on `main`), and the failure was the operator's own pinning obligation: the
+report's section 0 still named `4550a0e5` while `76926407` changed `verification/tla`, so
+`review/verification_catalogue.py` failed with exactly that sentence. The pin landed in `27c5cda6` (all three
+formal targets re-run there: `make verify-model-all` 24/24, `make verify-model-counterexamples` 74/74,
+`make verify-kani` 3/3), and CI on that commit is **success**.
+
+**Decided: no re-cut for the document-only difference.** The tag `v0.2.0` points at `76926407`, whose tree still
+carries the pre-pin heading, so that one commit's CI run stays red. The operator decides **not** to cut a
+`v0.2.1`: the published assets are built from the same code as `27c5cda6`, the probe that installs them passes
+(D-346), and the only difference is a document that names which commit the gates ran at — a new tag would publish
+new binaries and a new release note for it, which is noise a release should not carry. The canonical state is
+`main` (green, pinned); the tag is the artifact. If a later change ever needs publishing, it is published from
+`main` under a new version, and this entry is the reason the tag's own CI is not treated as a defect.
+
+**Evidence** (2026-09-29).
+
+| Command | Result |
+|---|---|
+| `gh run list --workflow=ci.yml` at `76926407` | `completed failure` — the stale-heading failure, quoted in D-346's round |
+| the same at `27c5cda6` (the pin) | `completed success` |
+| `make verify-model-all` / `verify-model-counterexamples` / `verify-kani` on the pinned tree | rc 0 / rc 0 (74 refuted) / rc 0 (3 harnesses) |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0**, run after the pin's edits |
+| `make pty` | ok |
+
+**Ceiling.** The decision is the operator's under D-341; if the user prefers a green tag, a `v0.2.1` cut from
+`main` is one version bump and one tag away, and nothing else in this entry changes.
+
 ## D-346 The published release is this product, and the probe that checks it agrees (2026-09-29)
 
 The release's external half, recorded by the operator. The tag `v0.2.0` (commit `76926407`) and `main` were pushed
@@ -162,7 +192,7 @@ the operator's step.
 yes`), `docs/EVENTS.md` regenerated (48 kinds; `goal_cancelled`, listed with no reader in this tree yet, as
 `goal_created` is), the A18 known-gaps bullet now records the delivered lever instead of asking for the user's
 word, `docs/USER-GUIDE.md` documents the verb and its refusal, and the CLI synopsis carries
-`goals cancel --id ID`. Measured numbers: citations **966** / 81 relative links / **624** `make` commands /
+`goals cancel --id ID`. Measured numbers: citations **966** / 81 relative links / **629** `make` commands /
 **1003** `§` refs, 0 unexplained (`review/citations.py`, docstring updated) — 954/615 before this entry's own
 text was counted, and it moves them, so these are the values the last run of the audit reports; decisions 303
 with this entry; configurations 99 / controls 74 / modules 21 (`review/verification_catalogue.py`); suites as
