@@ -3996,6 +3996,47 @@ mod tests {
         cleanup(&path);
     }
 
+    /// A06's title half — "a message applied across a **restart**" — at the code level. The dedup key is the
+    /// persisted envelope row (its primary key), and the sibling test above never reopens the control plane, so
+    /// nothing drove the key surviving a restart; the formal `AtMostOncePerEnvelope` says a replay after a lost
+    /// `APPLIED` marker appends nothing, and this is the code side of that. A second connection over the same
+    /// database is the restart: the same envelope under a *new* command id is still refused, the context still
+    /// holds one entry — and a genuinely new envelope still applies, so the reopen did not break the inbox.
+    #[test]
+    fn submit_input_keeps_the_envelope_dedup_across_a_reopen() {
+        let (mut ctl, path) = control("input-reopen");
+        create_instance(&mut ctl, "i1");
+        let first = ctl
+            .submit(
+                cmd("in-1", "submit_input", json!({"instance_id": "i1", "envelope_id": "e1", "text": "hello"})),
+                Identity::User,
+            )
+            .expect("input");
+        assert_eq!(first["applied"], json!(true));
+        assert_eq!(context_count(&ctl, "i1"), 1);
+        // the restart: reopen the same database
+        drop(ctl);
+        let mut ctl = Control::open(&path, "s1", true).expect("reopen control");
+        let err = ctl
+            .submit(
+                cmd("in-restart", "submit_input", json!({"instance_id": "i1", "envelope_id": "e1", "text": "hello"})),
+                Identity::User,
+            )
+            .unwrap_err();
+        assert!(err.contains("envelope e1"), "the persisted key still refuses the replay: {err}");
+        assert_eq!(context_count(&ctl, "i1"), 1, "and nothing was appended twice");
+        // a new envelope still applies across the same restart
+        let second = ctl
+            .submit(
+                cmd("in-2", "submit_input", json!({"instance_id": "i1", "envelope_id": "e2", "text": "again"})),
+                Identity::User,
+            )
+            .expect("new input");
+        assert_eq!(second["applied"], json!(true));
+        assert_eq!(context_count(&ctl, "i1"), 2);
+        cleanup(&path);
+    }
+
     #[test]
     fn begin_request_requires_ready_phase_and_current_revision() {
         let (mut ctl, path) = control("begin");

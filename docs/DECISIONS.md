@@ -20,6 +20,75 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-328 Task 29 is verified: A06's "across a restart" half had no code-level test (2026-09-29)
+
+The product's entry is D-327. This entry is the operator's verification and the phase's measured numbers.
+
+**What the audit found.** A06's title is "a message applied across a **restart**", and the row's cited tests drove
+the envelope dedup **without ever reopening the control plane** — so the restart half, the title's own claim,
+rested on nothing at the code level. The persisted envelope row is the dedup key and `V2Control`'s
+`AtMostOncePerEnvelope` is its formal counterpart. The new test
+`control::submit_input_keeps_the_envelope_dedup_across_a_reopen` applies `e1` (one context entry), **reopens the
+same database** (the restart), replays `e1` under a *new* command id — refused with "envelope e1" and nothing
+appended twice — and then shows a *new* envelope still applies across the same restart. Test-only; no product
+code changed.
+
+**Verified.** The operator's own control defeats the persisted key (the `submit_input` INSERT's row id made
+per-call unique, `format!("{envelope_id}-again-{sequence}")`) and the new test fails with `called
+Result::unwrap_err() on an Ok value: {"envelope_id": "e1", "applied": false, …}` — the replay no longer hits the
+key — and restoring the file byte-identically (sha256 `0bfe2784…`, `git status` clean of it) puts it back to `ok`.
+`env -u DEEPSEEK_API_KEY make check` `rc=0` (25 green targets) and `make pty` ok, and the goal settled only after
+its own required check passed — the twenty-sixth of twenty-eight machine-gated deliveries.
+
+**The audit's yield.** Seventeen cards have produced **eighteen findings**: eight coverage, nine claims and one
+product defect; two of the eighteen fixed an audit rather than a document. The coverage holes and the claim holes
+now alternate in runs — this one is coverage — which is a sign the matrix has both kinds left in quantity.
+
+**The phase's measured numbers (this commit).** **Twenty-eight deliveries**, **401,979,746 tokens over 1,019
+model requests**, the suites at `core 115 / engine 288 / tui 36`, and an operator cost of twenty-nine verification
+rounds and three resumes. Four of the twenty-eight defects came from the operator's supervision or its probes.
+
+**Next card**: the row-by-row audit continues (twenty-one rows unaudited), still preferring rows whose citations
+are globs (which hide which test a claim rests on) or whose titles name two things (where the orphan cards came
+from). The 155-name orphan sweep stays available in D-324's measurement.
+
+**Ceiling**: the new test drives the dedup across a *reopen* of the same database, which is what a restart is for
+the control plane; a restart that also loses the database is a different question (the design says a lost database
+is a lost session, and `AtMostOncePerEnvelope` is stated over a persisted key). The remaining twenty-one rows are
+still prose-first.
+
+## D-327 A06's "across a restart" half had no code-level test; the dedup key now has one (2026-09-29)
+
+**The row and what its evidence asserts.** A06 ("A message applied across a **restart**") cites
+`submit_input_applies_context_once_per_envelope` and `command_replay_returns_stored_receipt_and_rejects_conflict`,
+plus the queueing/boundary tests and the formal properties. Reading the first test closely: it drives the first
+apply, the *same command id* replay (a stored receipt) and the *same envelope id under a new command id* (refused
+with "envelope e1") — **all without ever reopening the control plane**. The restart half therefore rested on the
+formal `V2Inbox::AtMostOncePerEnvelope` alone: "a replay after a lost `APPLIED` marker appends nothing". The row's
+own title claims the *restart* at the code level, and the dedup key is the persisted envelope row.
+
+**The change (coverage, not behaviour).** A new test in `core/src/v2/control.rs`,
+`submit_input_keeps_the_envelope_dedup_across_a_reopen`: submit `e1`, **drop the `Control` and open a second one
+over the same database** (the restart), then the same envelope under a *new* command id — refused with "envelope
+e1" and the context still holds one entry; then a genuinely new envelope `e2` still applies, so the reopen did not
+break the inbox. A06's row now cites it as the code side of the restart half. **No product code changed.**
+
+**Evidence** (2026-09-29; the tree is `e99cf3d1` plus this uncommitted diff).
+
+| Command | Result |
+|---|---|
+| `cargo test --offline --manifest-path core/Cargo.toml --lib submit_input_keeps_the_envelope_dedup_across_a_reopen` | **ok** (0.00 s); the sibling test still **ok** |
+| pre-fix control: the `submit_input` INSERT's row id made per-call unique — `envelope_id,` → `format!("{envelope_id}-again-{sequence}"),` (the persisted dedup key defeated) | **both** tests **FAILED**: each `called Result::unwrap_err() on an Ok value: {"envelope_id": "e1", "applied": false, "instance_revision": 0}` — the replay no longer hit the persisted key; the line was restored byte-identically (`diff` clean) |
+| a first control attempt with a *deterministic* suffix **passed**, because the same suffixed id still collided — the control needs a per-call value, and that is what I then used | recorded as the measurement that made the control correct |
+| `python3 review/test_counts.py --write` | `core: 114 -> 115` (the new test) |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+
+**Ceiling.** The restart here is a *second connection over the same database* — the level the control plane owns;
+a *process* restart adds nothing to this rule (the state is in the file) but is not driven by this test. The
+control's replay reply (`applied: false`) shows a second layer alongside the primary key; I did not chase which
+branch answers first in every ordering, because the row's claim — the dedup key surviving — is what the test
+pins. The formal `AtMostOncePerEnvelope` and its refuted control are unchanged and still cited.
+
 ## D-326 Task 28 is verified: A20's sibling — A30's "DB write boundaries" named three orphan tests (2026-09-29)
 
 The product's entry is D-325. This entry is the operator's verification and the phase's measured numbers.
