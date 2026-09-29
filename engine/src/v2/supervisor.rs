@@ -61,6 +61,14 @@ pub struct SupervisorHandle {
     _lock: std::fs::File,
 }
 
+impl SupervisorHandle {
+    /// The session's own single writer (D-351): the sweep at daemon start drives the collector through it
+    /// rather than opening a second `Control` beside the coordinator lock this handle holds.
+    pub fn storage(&self) -> &Storage {
+        &self.storage
+    }
+}
+
 fn command(id: impl Into<String>, method: &str, params: Json) -> Command {
     Command { command_id: id.into(), method: method.into(), params }
 }

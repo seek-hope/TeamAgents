@@ -316,6 +316,73 @@ async fn the_surface_record_follows_the_grants_and_is_written_once_per_request()
     handle.shutdown().await.expect("shutdown");
 }
 
+/// D-351 (D-191's cadence, decided by D-341): a daemon start is the collector's second trigger. The daemon
+/// outlives a driver, so a root whose last driver never boots again used to keep its DELETING rows and their
+/// bytes until one did; now **one** sweep at startup collects them — through the supervisor that holds the
+/// coordinator lock and owns the session's single writer, never by opening a second `Control` beside it, and
+/// with no timer. The negative half is the collector's own rule, so the sweep cannot be read as "the daemon
+/// deletes things": a STAGING artifact, a held one and a referenced one keep their rows and their bytes.
+#[tokio::test]
+async fn the_daemon_sweeps_the_artifact_root_once_at_startup() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("artifact-sweep");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let db = root.dir.join("session.sqlite");
+    let artifact_dir = root.dir.join("state/artifacts");
+    std::fs::create_dir_all(&artifact_dir).unwrap();
+    let write = |name: &str| -> String {
+        let path = artifact_dir.join(name);
+        std::fs::write(&path, b"bytes to collect").unwrap();
+        path.to_string_lossy().to_string()
+    };
+    let (live, staging, held, referenced) = (write("live"), write("staging"), write("held"), write("referenced"));
+    {
+        let control = teamagents_core::v2::Control::open(&db, "s-test", true).expect("seed the store");
+        let insert = |id: &str, completeness: &str, owner: Option<&str>, path: &str| {
+            control
+                .connection()
+                .execute(
+                    "INSERT INTO artifacts (id, session_id, digest, size, kind, owner_scope, storage_ref,
+                                            completeness, owner_ref, created)
+                     VALUES (?1, 's-test', 'sha256:seed', 16, 'text', 'session', ?2, ?3, ?4, 0.0)",
+                    rusqlite::params![id, path, completeness, owner],
+                )
+                .expect("seed an artifact row");
+        };
+        insert("art-live", "LIVE", None, &live);
+        insert("art-staging", "STAGING", None, &staging);
+        insert("art-held", "LIVE", Some("i-leader"), &held);
+        insert("art-referenced", "LIVE", None, &referenced);
+        // what separates a collectable artifact from a referenced one is the reference itself
+        control
+            .connection()
+            .execute(
+                "INSERT INTO model_requests (request_id, instance_id, epoch, request_ref, status)
+                 VALUES ('req-holds-art', 'i-leader', 0, 'art-referenced', 'COMPLETE')",
+                [],
+            )
+            .expect("seed a reference");
+    }
+    let handle = serve(config(&root, HashMap::new())).await.expect("daemon");
+    // the accept loop starts after the sweep, so a served greeting is the sweep having finished
+    let _client = Client::connect(&root.dir.join("state/daemon.sock")).await;
+    let reader = teamagents_core::v2::Control::open_read_only(&db, "s-test").expect("read the store");
+    let row = |id: &str| -> Option<String> {
+        reader.connection().query_row("SELECT completeness FROM artifacts WHERE id = ?1", [id], |row| row.get(0)).ok()
+    };
+    assert_eq!(row("art-live"), None, "the unreferenced artifact is collected at startup");
+    assert!(!std::path::Path::new(&live).exists(), "and its bytes are gone");
+    // a STAGING row is not collectable at all: the boot's own abandon rule may mark it ABANDONED, but the
+    // sweep must leave the row and its bytes where they are
+    assert!(row("art-staging").is_some(), "a STAGING row is not collected");
+    assert!(std::path::Path::new(&staging).exists(), "a STAGING row keeps its bytes");
+    assert_eq!(row("art-held").as_deref(), Some("LIVE"), "a held artifact is untouched");
+    assert!(std::path::Path::new(&held).exists(), "a held artifact keeps its bytes");
+    assert_eq!(row("art-referenced").as_deref(), Some("LIVE"), "a referenced artifact is untouched");
+    assert!(std::path::Path::new(&referenced).exists(), "a referenced artifact keeps its bytes");
+    handle.shutdown().await.expect("shutdown");
+}
+
 fn input_params(text: &str) -> Json {
     json!({"instance_id": "i-leader", "envelope_id": format!("env-{}", uuid::Uuid::new_v4()), "text": text})
 }

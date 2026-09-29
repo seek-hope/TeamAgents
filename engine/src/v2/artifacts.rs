@@ -38,6 +38,7 @@
 //! §9's words — or under their own knob is a policy the user has not stated, and it is recorded as an open
 //! question rather than guessed at here.
 
+use rusqlite::OptionalExtension;
 use serde_json::{json, Value as Json};
 use std::path::{Path, PathBuf};
 
@@ -196,6 +197,91 @@ fn open(db: &Path, writable: bool) -> Result<teamagents_core::v2::Control, (i32,
             })
         }
     }
+}
+
+/// The collector's algorithm, driven through a session's own single writer (D-351). Claim the unreferenced
+/// LIVE artifacts (one command, one transaction), delete their bytes *outside* it — a file operation may not
+/// run inside one — then collect each row. The order is the model's (`V2Artifact::GcClaim` then `GcDelete`),
+/// and a failure between the deletion and the row removal leaves the row DELETING, which the next sweep
+/// retries: a file that is already gone is the outcome we wanted, not an error.
+///
+/// Both triggers that have a live writer run exactly this: a driver's boot, and — since D-351, the decision
+/// D-341 made for D-191 — the daemon's start, through the supervisor that holds the coordinator lock. The
+/// on-demand verb cannot use this transport: no session is live, so *it* holds that lock and owns the store,
+/// and drives the same two commands through `collect_once`. There is one algorithm here; what differs is who
+/// owns the writer, which is exactly what the lock decides.
+pub async fn sweep_through(storage: &super::storage::Storage, limit: i64) -> Result<Json, String> {
+    let claimed = storage
+        .call({
+            let command_id = format!("gc-claim-{}", uuid::Uuid::new_v4());
+            move |control| {
+                control.submit(
+                    teamagents_core::v2::Command {
+                        command_id,
+                        method: "artifact_gc_claim".into(),
+                        params: json!({"limit": limit}),
+                    },
+                    teamagents_core::v2::Identity::System,
+                )
+            }
+        })
+        .await??;
+    let ids: Vec<String> = claimed["claimed"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|value| value.as_str().map(str::to_string))
+        .collect();
+    let mut collected: Vec<String> = Vec::new();
+    let mut freed = 0u64;
+    let mut failed: Vec<Json> = Vec::new();
+    for id in ids {
+        let row: Option<(String, i64)> = storage
+            .call({
+                let id = id.clone();
+                move |control| {
+                    control
+                        .connection()
+                        .query_row(
+                            "SELECT storage_ref, size FROM artifacts WHERE id = ?1 AND completeness = 'DELETING'",
+                            [&id],
+                            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+                        )
+                        .optional()
+                        .map_err(|e| format!("collect read {id}: {e}"))
+                }
+            })
+            .await??;
+        let mut removed = 0u64;
+        if let Some((path, size)) = row {
+            match std::fs::remove_file(&path) {
+                Ok(()) => removed = size.max(0) as u64,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    failed.push(json!({"id": id, "path": path, "error": error.to_string()}));
+                    continue; // the row stays DELETING; the next sweep retries
+                }
+            }
+        }
+        storage
+            .call({
+                let id = id.clone();
+                move |control| {
+                    control.submit(
+                        teamagents_core::v2::Command {
+                            command_id: format!("collect-{id}"),
+                            method: "artifact_collect".into(),
+                            params: json!({"id": id}),
+                        },
+                        teamagents_core::v2::Identity::System,
+                    )
+                }
+            })
+            .await??;
+        collected.push(id);
+        freed += removed;
+    }
+    Ok(json!({"collected": collected, "freed_bytes": freed, "failed": failed}))
 }
 
 /// §4.3's collection, exactly as a driver's boot runs it: claim (one transaction), delete the bytes (outside it),

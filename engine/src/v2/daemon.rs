@@ -98,6 +98,26 @@ where
             return Err(format!("bind {}: {e}", config.socket.display()));
         }
     };
+    // D-351 (D-191's cadence, decided by D-341): **one** collection sweep at daemon start — the daemon is the
+    // process that outlives a driver, so it is the second trigger a root whose last driver never boots again
+    // needs, and the decision was explicitly *against* a timer. Its position is the point: it runs after the
+    // supervisor has taken the coordinator lock and after the socket bind, before the accept loop, so the root
+    // is swept before any client sees it and a second daemon for this root cannot sweep twice. It drives the
+    // collector *through that supervisor's own single writer* — the lock and the writer are the same handle —
+    // never by opening a second `Control` beside them, which is what the lock exists to prevent. One sweep.
+    match crate::v2::artifacts::sweep_through(supervisor.storage(), 1000).await {
+        Ok(report) => {
+            let collected = report["collected"].as_array().map(Vec::len).unwrap_or(0);
+            if collected > 0 {
+                let freed = report["freed_bytes"].as_u64().unwrap_or(0);
+                eprintln!(
+                    "teamagents: artifacts: collected {collected} unreferenced artifact(s), {freed} byte(s), \
+                     at daemon start"
+                );
+            }
+        }
+        Err(error) => eprintln!("teamagents: artifact sweep at daemon start skipped: {error}"),
+    }
     let shutdown = Arc::new(AtomicBool::new(false));
     let stopped = Arc::new(tokio::sync::Notify::new());
     let task = {

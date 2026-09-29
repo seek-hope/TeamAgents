@@ -1328,49 +1328,18 @@ that delegated it learns the outcome only from a settlement.";
     /// confirmed with the user; a root whose last driver never boots again keeps its DELETING rows (and their
     /// bytes) until one does, which the `doctor` artifact row reports.
     async fn collect_claimed_artifacts(&mut self) -> Result<(), String> {
-        let claimed = self
-            .submit(
-                self.command(format!("gc-claim-{}", uuid::Uuid::new_v4()), "artifact_gc_claim", json!({"limit": 100})),
-                Identity::System,
-            )
-            .await?;
-        let ids: Vec<String> = claimed["claimed"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|value| value.as_str().map(str::to_string))
-            .collect();
-        for id in ids {
-            let path: Option<String> = self
-                .storage
-                .call({
-                    let id = id.clone();
-                    move |control| {
-                        control
-                            .connection()
-                            .query_row(
-                                "SELECT storage_ref FROM artifacts WHERE id = ?1 AND completeness = 'DELETING'",
-                                [&id],
-                                |row| row.get(0),
-                            )
-                            .optional()
-                            .map_err(|e| format!("collect read {id}: {e}"))
-                    }
-                })
-                .await??;
-            if let Some(path) = path {
-                match std::fs::remove_file(&path) {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => {
-                        eprintln!("driver: could not delete artifact {id} at {path}: {error}");
-                        continue; // the row stays DELETING; the next boot retries
-                    }
-                }
-            }
-            let _ = self
-                .submit(self.command(format!("collect-{id}"), "artifact_collect", json!({"id": id})), Identity::System)
-                .await;
+        // D-351: one algorithm, two triggers. The sweep itself lives in `v2::artifacts::sweep_through`, driven
+        // through this driver's storage worker (the session's own single writer); the daemon's start calls the
+        // same function through its supervisor, and the on-demand verb drives the same two commands from the
+        // process that holds the coordinator lock when no session is live.
+        let report = crate::v2::artifacts::sweep_through(&self.storage, 100).await?;
+        for failure in report["failed"].as_array().into_iter().flatten() {
+            eprintln!(
+                "driver: could not delete artifact {} at {}: {}",
+                failure["id"].as_str().unwrap_or(""),
+                failure["path"].as_str().unwrap_or(""),
+                failure["error"].as_str().unwrap_or("")
+            );
         }
         Ok(())
     }

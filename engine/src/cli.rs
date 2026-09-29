@@ -320,8 +320,10 @@ pub fn doctor(state_root: Option<PathBuf>) -> i32 {
         }
     }
     // D-174 asked this row to say what is really there and what is not done; D-191 implemented the half that
-    // was missing, so the row now states what collection *does* (a driver's boot claims unreferenced artifacts,
-    // deletes their bytes and collects their rows) and what it still does not (a schedule beyond boot).
+    // was missing and D-351 (the decision D-341 made for it) completed the cadence, so the row states the whole
+    // policy: a driver's boot claims unreferenced artifacts, deletes their bytes and collects their rows; a
+    // daemon start sweeps once through the same collector; `artifacts gc` does it on demand. There is
+    // deliberately no timer — that was the decision, not an omission.
     if let Some((files, bytes)) = artifact_footprint(&v2_root) {
         optional_check(
             &mut results,
@@ -330,7 +332,8 @@ pub fn doctor(state_root: Option<PathBuf>) -> i32 {
             format!(
                 "{files} file(s), {:.1} MB under {}/instances/*/artifacts; oversized tool output is pruned per \
                  member (512 MB), model responses are kept as evidence, and unreferenced artifacts are \
-                 collected when a driver boots (DESIGN §4.4; a schedule beyond that is not implemented)",
+                 collected when a driver boots, once when a daemon starts, and on demand (`teamagents \
+                 artifacts gc`) — deliberately not on a timer (DESIGN §4.4; D-191/D-351)",
                 bytes as f64 / 1_048_576.0,
                 v2_root.display()
             ),

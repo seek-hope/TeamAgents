@@ -20,6 +20,120 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-352 Task 40 is verified: the sweep rides the supervisor's own writer, and the operator's control breaks it (2026-09-29)
+
+The product's entry is D-351. This entry is the operator's verification and the phase's measured numbers.
+
+**What the operator verified.** (1) The pin: `v2_daemon::the_daemon_sweeps_the_artifact_root_once_at_startup`
+passes (0.06 s) — four artifacts seeded with their bytes, and after the start only the unreferenced LIVE one's
+row and file are gone while the STAGING, the held and the referenced one keep both. (2) The operator's own
+control: the daemon's call `artifacts::sweep_through(supervisor.storage(), 1000)` changed to a claim limit of
+**0** (`engine/src/v2/daemon.rs`, the file's sha256 before the edit `33654863…`) makes that test **FAIL** with
+`assertion left == right failed: the unreferenced artifact is collected at startup; left: Some("LIVE"),
+right: None` — so the assertion really rides on the startup sweep rather than on the seeding — and the line
+restored byte-identically (sha256 `33654863…`) puts it back to **ok** (0.06 s). (3) The defect this card was sent
+back to fix, checked live: the daemon started from this tree's binary prints **no**
+`artifact sweep at daemon start skipped: state root already has a coordinator` line, where the previous iteration
+printed it on every start. Silence is the right reading: the daemon logs the sweep only when it collects
+something, and today's root holds nothing collectable, so what the start proves is that the path no longer fails
+against the coordinator lock; the collection itself is the test's evidence.
+
+**The shape that made it work.** D-351's resolution is the one the finding demanded: the sweep runs through
+`SupervisorHandle::storage()` — the handle that owns both the coordinator lock and the session's single writer —
+instead of opening a second `Control` beside the lock. The previous attempt's path-based helper was removed
+rather than left unreachable, and the driver's boot calls the same `sweep_through`, so the boot and the daemon
+cannot drift.
+
+**Evidence** (2026-09-30; the tree is `aaf092fe` plus this card's uncommitted diff).
+
+| Command | Result |
+|---|---|
+| the new daemon test, run by the operator | **ok** (0.06 s) |
+| the operator's control (the claim limit set to 0) | the test **FAILED**: `left: Some("LIVE")`, `right: None`; line restored byte-identically (`33654863…`), test **ok** again |
+| a daemon started from this tree's binary | starts clean: no `skipped: … already has a coordinator` line (the previous iteration printed it every start) |
+| `python3 review/test_counts.py` | `core 118 / engine 292 / tui 36` |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `make pty` | ok |
+
+**The phase's measured numbers (this commit).** **521,635,657 tokens over 1,430 model requests**, the suites
+above, three operator resumes; four implementation cards have landed from D-341's table (the goal-cancel lever
+D-344, the wait contract D-348, the per-request surface record D-350, this cadence D-351). One card in this
+stretch was lost to the environment rather than to the product: the daemon it ran under had been started without
+`TEAMAGENTS_RUNNER_BIN`, every `shell` call failed, and the card settled `BLOCKED` saying so (D-351's own note).
+
+**Next card**: Q16's pre-registered experiment (D-259/D-264) — the last row of D-341's table that still needs
+work, and the one that decides nothing less than whether the design's collaboration claim can be separated from
+its single-instance baseline.
+
+**Ceiling**: the operator verified the pin, the control and the daemon's live start, not the full `make check`
+sweep of the three crates by hand (the gate is the evidence for that, re-run here); the on-demand verb's own
+tests are unchanged by this card, and the sweep's behaviour on a root with gigabytes of DELETING rows is a bound
+the collector's own rules state, not something measured here.
+
+## D-351 The artifact cadence is complete: a driver's boot, one sweep when a daemon starts, and the verb — no timer (2026-09-29)
+
+**The decision.** D-341's row for D-191: the collector keeps the cadence it has (a driver's boot, and
+`teamagents artifacts gc` on demand) and gains **one sweep when a daemon starts** — explicitly *not* a timer,
+a cadence thread or a second collector.
+
+**The finding this card carried, and how it is resolved.** The previous attempt left two contradictory shapes in
+the tree, and the card said so: the build that ran took the coordinator lock *inside* the sweep, so on a live
+daemon it printed `artifact sweep at daemon start skipped: state root already has a coordinator` — the
+supervisor holds that lock (`SupervisorHandle._lock`), so a sweep that takes it can never run at daemon start —
+while the source then took no lock at all, which would have swept beside the daemon's own writer. Neither is
+right, and both are fixed the same way: the sweep now runs **through the daemon's own supervisor** — the same
+handle that holds the coordinator lock *and* owns the session's single writer (`SupervisorHandle::storage()`,
+one thread owning one `Control`, §4.1) — so no second `Control` is opened beside the lock, and nothing needs to
+take the lock a second time. `Storage` is both the lock's owner and the writer, which is why this is the only
+shape that can work.
+
+**Where the sweep sits.** In the daemon's `serve`, *after* `supervisor::start` (which takes the coordinator lock
+and opens the store) and *after* the socket bind, *before* the accept loop is spawned: so a second daemon for
+the same root cannot sweep twice (it cannot get past the supervisor's lock, and it fails the bind even if it
+did), no sweep runs while another writer holds the root, and the root is swept before any client is served —
+a client's greeting is itself the proof that the sweep finished, which is what the test relies on. One sweep per
+daemon start, and a failure is logged (`… skipped: …`), never fatal to the daemon.
+
+**One algorithm, two transports.** `engine/src/v2/artifacts.rs::sweep_through(&Storage, limit)` is the
+collector: claim the unreferenced LIVE artifacts (one command, one transaction), delete their bytes *outside* it,
+collect each row (one command each), leaving a row DELETING when a deletion fails so the next sweep retries.
+The driver's boot no longer has its own copy — `Driver::collect_claimed_artifacts` now calls it (one
+implementation, so the boot and the daemon cannot drift) — and the on-demand verb is unchanged: it cannot use
+this transport (no session is live, so *it* holds the coordinator lock and owns the store) and drives the same
+two commands through its own `sweep`/`census`/`open` composition, unchanged. The previous attempt's
+`collect_once` helper (a path-based sweep written for the daemon hook) was removed, not kept: with the hook now
+driven through the supervisor's writer, nothing called it, and a helper no code reaches is exactly what the
+dead-code check refuses. The *transport* differs because the lock owner differs; the algorithm is one.
+
+**Pinned** (`v2_daemon::the_daemon_sweeps_the_artifact_root_once_at_startup`): a state root is seeded with four
+artifacts *and their bytes* before the daemon starts — one unreferenced LIVE, one STAGING, one held
+(`owner_ref`), one referenced from `model_requests.request_ref` — and after the start the unreferenced one's row
+*and* file are gone while the other three keep both. The negative half is the collector's own rule, so the
+startup sweep cannot be read as "the daemon deletes things". One measurement from writing it: the boot's
+existing abandon pass may mark the STAGING row `ABANDONED`, which is not a collection — the test asserts the row
+survives and its bytes are kept, which is the rule that matters.
+
+**`doctor`** now states the whole policy in its artifact row: collected when a driver boots, once when a daemon
+starts, and on demand (`teamagents artifacts gc`) — deliberately not on a timer — and the comment above it says
+the same, so the row no longer reads as an omission.
+
+**The record closed.** D-191's "what stays open" passage now records the delivered cadence (D-341's word, D-351's
+implementation) instead of calling it the user's; ACCEPTANCE's A30 row tail and the known-gaps bullet that
+carried the cadence question say the same and name the pin.
+
+**Numbers** (measured): suites `review/test_counts.py` -> **core 118 / engine 292 / tui 36** (engine +1 for the
+new daemon test); citations **1005** / 81 relative links / **637** `make` / **1012** § refs, 0 unexplained
+(`review/citations.py`, docstring updated); decisions 310 live entries, newest-first, all unique with this one; no `verification/tla`,
+`verification/kani` or `core/src/kernel/types.rs` touched, so section 0 does not apply — the sweep is a
+recording/deletion policy the model already covers (`V2Artifact`'s `GcClaim`/`GcDelete`), and D-191 re-ran that
+model when it built the collector.
+
+**Uncommitted, for the operator.** `engine/src/v2/{artifacts.rs,daemon.rs,driver.rs,supervisor.rs}`,
+`engine/src/cli.rs`, `engine/tests/v2_daemon.rs`, `docs/{ACCEPTANCE,DECISIONS}.md`,
+`review/{citations.py,README.md}`, `AGENTS.md`, `.github/release-notes.md`. The previous card's half-finished
+attempt (the `collect_once` composition and the daemon hook) is corrected here rather than reverted: the
+composition stays, the hook now goes through the writer.
+
 ## D-350 The per-request surface record: what a member was offered is in the record now (2026-09-29)
 
 **This entry is the operator's.** The card that built this hit its goal's 24M token ceiling with the code finished
@@ -6581,12 +6695,14 @@ referenced LIVE row and an already-collected one, and asserts the row leaves the
 recorded; `make verify-model-all` is green on the artifact configuration (241 states generated, `No error has
 been found`, 242 s for the eleven) — the model needed no change, because the delete step was always in it.
 
-**What stays open is a policy, not a mechanism**: DESIGN says collection is "scheduled separately" without
-naming the schedule, so the sweep runs *when a driver boots* — no timer and no daemon-level cadence — and a root
-whose last driver never boots again keeps its DELETING rows and their bytes until one does. The `doctor` row now
-states exactly that ("collected when a driver boots (… a schedule beyond that is not implemented)"), and
-choosing a cadence — an interval, or a maintenance verb to run on demand — is the user's call. The `ponytail:`
-comment on the sweep names the same ceiling.
+**What stayed open was a policy, not a mechanism**: DESIGN says collection is "scheduled separately" without
+naming the schedule, so the sweep ran *when a driver boots* — no timer, no daemon-level cadence — and a root
+whose last driver never boots again kept its DELETING rows and their bytes until one did. **The user's word came
+under the delegation (D-341) and D-351 delivered it**: the cadence is now a driver's boot **+ one sweep when a
+daemon starts** (through the supervisor that holds the coordinator lock and owns the session's single writer —
+never a second `Control` beside it) **+ the on-demand `teamagents artifacts gc` verb**, and *deliberately not a
+timer*. The `doctor` row states that whole policy now, and the `ponytail:` comment on the sweep names the same
+decision instead of a ceiling.
 
 ## D-190 The install guide is a user-facing document like the other two (2026-09-27)
 
