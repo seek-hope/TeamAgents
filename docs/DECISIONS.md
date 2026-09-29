@@ -20,6 +20,30 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-342 The release decision stands; the public tag push waits for the user's explicit approval (2026-09-29)
+
+D-341 decided to publish v0.2.0. `make release-rehearsal` on `c635dba3` is green: the version gate passes, the
+musl release build of both binaries succeeds, the archive is 6024 KiB with its `SHA256SUMS` and `install.sh`, and
+a smoke install writes its config and state root and runs.
+
+**The push itself was refused before it ran, and nothing was published.** The operator then asked to tag and push
+`v0.2.0`. The platform's own review refused the command: pushing the tag would disclose 342 previously
+unpublished local commits in a public repository and trigger the release workflow, an irreversible public act
+whose payload and destination the user has not approved — and the reviewer noted that the release had been
+authorized by an entry the operator wrote itself. The operator did not retry it another way. Measured after the
+refusal: no `v0.2.0` exists in this clone and none exists on the remote, so the published state is unchanged.
+
+**What this changes, and what it does not.** The decision stands — the release is to be cut from this tree — and
+only its execution waits, because it is public and irreversible rather than an open design question; that is the
+one class of act this phase still asks the user for. Everything else D-341 decided proceeds now, through the same
+loop. The documents that say the published release is not this product stay true of the remote until the push
+happens, so no document work is owed before then.
+
+**Ceiling.** A decision taken and executed as far as the platform allows without public disclosure. If the user
+approves the push, the release is one command (`git tag -a v0.2.0 && git push origin refs/tags/v0.2.0`) followed
+by the document work D-341's release row already names; if they decline, the tree stays a source install and
+`docs/INSTALL.md` keeps its caveat.
+
 ## D-341 The user delegated the open decision queue to the operator; every open item is decided here (2026-09-29)
 
 **The delegation.** On 2026-09-29 the user wrote that they are taking no part in decisions for now and that the
@@ -30,7 +54,7 @@ implementation exists.
 
 | Item(s) | Decision | What implements it |
 |---|---|---|
-| D-203, the release | **publish v0.2.0** from this tree: the version bump and the rehearsal are done, so the remaining act is the tag; the caveat statements in both READMEs and `docs/INSTALL.md` then come out | the operator pushes the tag after `make release-rehearsal` on the frozen commit, then a card updates the documents and recomputes `review/release_artifact.py`'s fact |
+| D-203, the release | **publish v0.2.0** from this tree: the version bump and the rehearsal are done, so the remaining act is the tag; the caveat statements in both READMEs and `docs/INSTALL.md` then come out | the operator pushes the tag after `make release-rehearsal` on the frozen commit (rehearsal green on `c635dba3`), then a card updates the documents and recomputes `review/release_artifact.py`'s fact — **the push itself waits for the user's explicit go-ahead, D-342** |
 | D-267/D-280, a goal with no close lever | **add one**: a goal whose ceiling or deadline is spent can be closed, and the instance it parked can run again | a card: the control-plane verb, `teamagents goals cancel --id`, the protocol and events pages, and the goal-lifecycle rules of `V2Control` with their controls |
 | D-240, `max_retries` | **wire it**: the configured value is the one the transport retry loop uses | a card |
 | D-102, `instruction_files` | **implement it**: the named files' text enters every member's prompt at prompt-build time, user-config only and bounded | a card |
@@ -73,7 +97,7 @@ wrong; the entry now says exactly what the greps return.
 | `MC_authority_trustsurface.cfg` / `MC_authority_stalesurface.cfg` (operator's runs, D-338) | violated / temporal violation |
 | grep for `MC_grants` across `docs/ACCEPTANCE.md` at `15a0130f` | 0 hits — the finding stands |
 | grep for the two property names in the matrix at `15a0130f` | `OfferedToolsAreAuthorized` in A02's row; `StaleSurfaceCatchesUp` in A03's (D-337) — the correction |
-| `python3 review/citations.py` | **945 citations / 81 relative links / 607 `make` commands / 1003 `§`-references, 0 unexplained** — the frozen tree's counts, this entry's own text and D-341's included |
+| `python3 review/citations.py` | **945 citations / 81 relative links / 608 `make` commands / 1003 `§`-references, 0 unexplained** — the frozen tree's counts, this entry's own text and D-341's included |
 | `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
 | `make pty` | ok |
 
@@ -126,7 +150,7 @@ verification file changed: the claim was true in aggregate and uncheckable in de
 | TLC on `MC_grants_stale_offered_surface.cfg` (`V2Grants.tla`) | `Error: Invariant OfferedToolsAreAuthorized is violated.` — a property named by no row before this one |
 | TLC on `MC_authority_trustsurface.cfg` / `MC_authority_stalesurface.cfg` (recorded in D-337, same day) | `AuthorizedEffectsOnly is violated.` / `StaleSurfaceCatchesUp` — the second named by no row |
 | `grep` for `MC_grants` across the matrix, and for `too wide`/`wider`/`OverWide` across the cfgs and both modules | no row names any `MC_grants*` control; no rule or control models a too-wide-but-not-stale surface |
-| `python3 review/citations.py` after the row edit, after D-340's and after D-341's | 945 citations / 81 links / 607 `make` / 1003 `§`, 0 unexplained (937/603/1002 before the operator's entries); the docstring moved 925→945 citations and 603→607 `make` across them |
+| `python3 review/citations.py` after the row edit, after D-340's and after D-341's | 945 citations / 81 links / 608 `make` / 1003 `§`, 0 unexplained (937/603/1002 before the operator's entries); the docstring moved 925→945 citations and 603→607 `make` across them |
 | `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
 
 **Ceiling.** A claim-precision fix, with a measured correction of my own first reading: the "stale or too-wide"
