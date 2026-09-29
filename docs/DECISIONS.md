@@ -20,6 +20,90 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-332 Task 31 is verified: the control's rule is NoEffectBeforeAccept, and the operator's own TLC run says so (2026-09-29)
+
+The product's entry is D-331. This entry is the operator's verification and the phase's measured numbers.
+
+**What the operator verified.** (1) `MC_jobs_spawn_first.cfg` under this tree's TLC reports **`Invariant
+NoEffectBeforeAccept is violated`** (36 states generated, 22 distinct found) — the property D-331 says the row's
+sentence never named, re-run from the operator's side rather than read. (2) The ordering the row now states is in
+the code: `engine/src/jobs/runner.rs`'s `go` branch sets `START_ACCEPTED` and persists it before the spawn
+happens. (3) The operator's own control: removing that `persist()` (the file's sha256 before the edit
+`c36a4dca…`) makes `jobs_runner::runner_crash_after_accept_recovers_as_outcome_unknown` **FAIL** with `assertion
+left == right failed; left: "READY", right: "START_ACCEPTED"` — the modelled counterfactual state, a READY
+journal with a real effect — and restoring the line byte-identically (sha256 `c36a4dca…`, `git diff` clean) puts
+the test back to **ok** (0.03 s).
+
+**The false start, confirmed as one.** D-331 records that it first suspected a real defect in the spawn-then-record
+order and that the measurement corrected it. The operator confirms the correction independently: the accept is
+persisted before the spawn is attempted, so the state the model refutes is unreachable in the code. What the row
+gained is precision (the ordering, the code anchor, the property its control reports), not a behaviour change.
+
+**Evidence** (2026-09-29; the tree is `799cf7c6` plus this uncommitted diff).
+
+| Command | Result |
+|---|---|
+| `MC_jobs_spawn_first.cfg` under TLC, re-run by the operator | **`Error: Invariant NoEffectBeforeAccept is violated`** (36 states generated, 22 distinct) |
+| reading `engine/src/jobs/runner.rs`'s `go` branch | `START_ACCEPTED` is set and persisted before the spawn |
+| the operator's control (that `persist()` removed) | the cited test **FAILED**: `left: "READY"`, `right: "START_ACCEPTED"` (0.02 s) |
+| restoring the control byte-identically | sha256 `c36a4dca…`; `git diff` clean; the test **ok** again (0.03 s) |
+| `python3 review/citations.py` | recomputed after this entry too: 899 citations, 81 relative links, 596 `make` commands, 997 `§`-references, 0 unexplained |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `make pty` | ok |
+
+**The audit's yield.** Nineteen cards have produced twenty findings: eight coverage holes, eleven claim holes and
+one product defect. Seventeen rows are audited; nineteen remain.
+
+**The phase's measured numbers (this commit).** **Thirty deliveries**, **426,011,774 tokens over 1,054 model
+requests**, the suites at `core 115 / engine 288 / tui 36`, and an operator cost of thirty-one verification rounds
+and three resumes.
+
+**Next card**: nineteen rows remain. This card's shape — a formal sentence that named two properties while its
+cited control refutes a third — suggests reading each remaining row's *control list* against the property names
+the row states.
+
+**Ceiling**: the operator re-ran the one control the row cites, plus the code anchor; A11's other halves (the
+daemon-crash probe of D-119 and the graceful-stop probe of D-152) stay the dated live evidence they were, and no
+model file was touched.
+
+## D-331 A11's formal sentence never named the rule its control refutes, and the code's ordering pins it (2026-09-29)
+
+**What I suspected, and what the measurement said.** Reading A11 ("daemon and runner crash separately") I
+followed its formal citation to `MC_jobs_spawn_first.cfg` and then read the runner's `start_command`
+(`engine/src/jobs/runner.rs`): it spawns the child and only *then* records the pid and persists. That looked like
+the model's own counterfactual — `SpawnBeforeAccept`, "the command ran, but no acceptance was ever persisted, so
+the journal still says READY — invisible to recovery" — i.e. a possible product defect. **The measurement
+corrected it**: the caller persists the accept first. The `go` branch sets `START_ACCEPTED` and persists it
+*before* calling `start_command` ("Accept first, persist before any spawn (§6.2): a crash after this point is
+OUTCOME_UNKNOWN on recovery, never 'not run'"), so `NoEffectBeforeAccept` holds and there is no window of the
+counterfactual's kind. I record the false start because a summary that stayed silent would leave the opposite
+impression: the *shape* is right, and the row simply never said so.
+
+**What the cited evidence actually asserts.** `MC_jobs_spawn_first.cfg` is refuted, and the property TLC reports
+is **`NoEffectBeforeAccept`** — measured 2026-09-29 by running it: `Error: Invariant NoEffectBeforeAccept is
+violated`. That is a *third* property, not the two the row's sentence names beside the control. And the ordering
+is not only modelled: `jobs_runner::runner_crash_after_accept_recovers_as_outcome_unknown` kills the runner right
+after the accept and asserts the *persisted* journal says `START_ACCEPTED` (not `READY`) before the recovery
+read — the code-level pin of the same rule.
+
+**The change (the claim, not the code).** A11's sentence now names the ordering, the code anchor ("Accept first,
+persist before any spawn (§6.2)"), the test that drives it, and the property its control actually refutes. No
+product or test code changed.
+
+**Evidence** (2026-09-29; the tree is `799cf7c6` plus this uncommitted diff).
+
+| Command | Result |
+|---|---|
+| `MC_jobs_spawn_first.cfg` under TLC | **`Error: Invariant NoEffectBeforeAccept is violated`** — the property the control reports, which the row's sentence never named |
+| the code reading | the `go` branch persists `START_ACCEPTED` before `start_command`; `start_command`'s spawn-then-record order is *inside* that accept, so the model's counterfactual state is unreachable |
+| counter-control: the accept's `persist()` removed from the `go` branch | the cited test **FAILED**: `assertion left == right failed`, `left: "READY"`, `right: "START_ACCEPTED"` — exactly the modelled counterfactual state (a READY journal with the effect real); the line was restored byte-identically (`diff` clean) |
+| `cargo test --offline --manifest-path engine/Cargo.toml --test jobs_runner runner_crash_after_accept_recovers_as_outcome_unknown -- --exact` after the restore | **ok** (0.04 s) |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+
+**Ceiling.** No defect: the ordering the model proves is implemented and pinned by a test. What the row gained is
+precision — the control's rule and the code anchor — not a behaviour change. A11's other halves (the daemon-crash
+probe, the graceful-stop probe) are the dated live evidence, unchanged; the model and its controls are untouched.
+
 ## D-330 Task 30 is verified: A27's glob proved routing, and the operator's re-measurement made one number exact (2026-09-29)
 
 The product's entry is D-329. This entry is the operator's verification and the phase's measured numbers.
