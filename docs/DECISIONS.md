@@ -20,6 +20,98 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-338 Task 34 is verified: the two misattributed controls really do refute A04's rule, and the operator's own TLC runs say so (2026-09-29)
+
+The product's entry is D-337. This entry is the operator's verification and the phase's measured numbers.
+
+**What the operator verified.** (1) The attribution, by running all four authority configurations itself:
+`MC_authority.cfg` — the positive one — reports `No error has been found`; `MC_authority_trustsurface.cfg`
+reports `Error: Action property AuthorizedEffectsOnly is violated.`, and its own comment calls that shape "the
+mistake §6.1/A04 forbids"; `MC_authority_badview.cfg` and `MC_authority_stalesurface.cfg` each report `Error:
+Temporal properties were violated.`. So two of the three controls A03's old sentence claimed do refute the
+*dispatch re-check*, and the trustsurface run names that property in its own output. (2) The properties A03's
+rewritten sentence names are the module's own: `V2Authority.tla` defines `EveryLiveGrantBecomesRevocable`,
+`CascadeTakesTheSubtree` and the temporal `CascadeOnlyTakesTheSubtree`, and its header comment reads them the way
+the row now does (the view must carry the id; children die; only a grant the user named may root a revocation).
+
+**No byte-identical restore, by design.** D-337 says so itself: it reverted no line, because the finding is an
+attribution error in prose about configurations that exist and refute what the row now says they refute. The
+operator's control is therefore the four runs above, taken independently — the same measurement from the other
+side, with the positive config as its own control.
+
+**Evidence** (2026-09-29; the tree is `3a0a2eb1` plus this uncommitted diff).
+
+| Command | Result |
+|---|---|
+| `MC_authority.cfg` under TLC, run by the operator | `Model checking completed. No error has been found.` |
+| `MC_authority_trustsurface.cfg` | `Error: Action property AuthorizedEffectsOnly is violated.` — the property the old sentence never named |
+| `MC_authority_badview.cfg` and `MC_authority_stalesurface.cfg` | each `Error: Temporal properties were violated.` |
+| reading the cfgs | the trustsurface cfg's own comment names §6.1/A04 as the rule whose mistake it models |
+| reading `verification/tla/V2Authority.tla` | the three properties the row names are defined there |
+| `python3 review/citations.py` | **925 citations / 81 relative links / 603 `make` commands / 1002 `§`-references, 0 unexplained** — the frozen tree's counts, this entry's own text included |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `make pty` | ok |
+
+**The audit's yield.** Twenty-two cards have produced twenty-three findings: ten coverage holes, twelve claim
+holes and one product defect. Twenty rows are audited; sixteen remain.
+
+**The phase's measured numbers (this commit).** **Thirty-three deliveries**, **432,727,896 tokens over 1,123
+model requests**, the suites at `core 115 / engine 288 / tui 36`, and an operator cost of thirty-four verification
+rounds and three resumes.
+
+**Next card**: sixteen rows remain. A03's shape is a new one worth naming in the card: a row that claims
+*aggregate* formal evidence ("its three negative controls are refuted") without naming a property or a control —
+invisible to the D-331/D-335 sweeps, which keyed on a row naming an `MC_*.cfg` at all.
+
+**Ceiling**: the operator ran the four authority configurations and read the model, but did not re-run the full
+`make verify-model-all` (24 configurations) or `make verify-model-counterexamples` (every control); those remain
+the phase's recorded runs. A04's own sentence and its control citations stay unaudited, as D-337 says, and the
+operator agrees they belong to a later card.
+
+## D-337 A03 said "its three negative controls are refuted"; two of them refute A04's rule, not A03's (2026-09-29)
+
+**What the row claims.** A03 ("Limited delegation and parent revocation") closes its evidence with: "formally,
+`V2Authority` (`make verify-model-all`) proves the view carries what a revoke needs, the cascade takes exactly the
+subtree, and its three negative controls (`make verify-model-counterexamples`) are refuted." It names no property
+and no control — which is why the control-versus-property sweeps of D-331 and D-335 could not see it: both keyed
+on a row naming an `MC_*.cfg`.
+
+**What the three controls actually refute** (measured 2026-09-29 from each cfg's own stated expectation and, where
+TLC names it, from the run itself):
+
+| control | refutes | whose rule |
+|---|---|---|
+| `MC_authority_badview.cfg` | `EveryLiveGrantBecomesRevocable` | this row's: the view carries what a revoke needs (the view without `id`) |
+| `MC_authority_trustsurface.cfg` | `AuthorizedEffectsOnly` — the run printed `Error: Action property AuthorizedEffectsOnly is violated.` | **A04's**: the cfg's comment calls it "the mistake §6.1/A04 forbids — dispatch trusts the cached model-visible surface instead of re-reading the live grants at the linearization point" |
+| `MC_authority_stalesurface.cfg` | `StaleSurfaceCatchesUp` | **A04's**: the model-visible surface computed once and never recomputed |
+
+So the sentence handed the module's whole control set to this row's claim; one third of it is the *dispatch
+re-check* rule, which A04 — whose own formal sentence names `AuthorizedEffectsOnly` and the stale-or-too-wide
+surface controls — is the row for. From A03 alone a reader could not tell which rule each refutation defends.
+
+**The change.** A03's formal sentence now names the two properties this row rests on
+(`EveryLiveGrantBecomesRevocable`; `CascadeTakesTheSubtree` plus the temporal `CascadeOnlyTakesTheSubtree`, whose
+comment is "only a grant the user named may be the root of a revocation") and says which control refutes which
+rule, with the two dispatch-re-check controls marked as §6.1/A04's rather than this row's. No product, test or
+verification file changed: the aggregate claim was true (three controls are refuted) and misattributed in detail.
+
+**Evidence** (2026-09-29; HEAD `3a0a2eb1` plus this uncommitted diff).
+
+| Command | Result |
+|---|---|
+| TLC on `MC_authority_trustsurface.cfg` (`V2Authority.tla`) | `Error: Action property AuthorizedEffectsOnly is violated.` — TLC named a property the old sentence never mentioned |
+| TLC on `MC_authority_badview.cfg` and `MC_authority_stalesurface.cfg` | both refuted (`Error: Temporal properties were violated.`); the property each must break is stated in its own cfg comment (`EveryLiveGrantBecomesRevocable`, `StaleSurfaceCatchesUp`) |
+| the positive config `MC_authority.cfg` | lists the properties the module proves, including `CascadeTakesTheSubtree`; the temporal `CascadeOnlyTakesTheSubtree` and `EveryLiveGrantBecomesRevocable` are the two the row's prose describes |
+| `python3 review/citations.py`, after the row edit, after this entry and after D-338's | **925 citations / 81 links / 603 `make` / 1002 `§`, 0 unexplained** (908/598/998 after the row edit alone, 916/600/1000 before the operator's entry); `review/citations.py`'s docstring and `review/README.md`'s make-citation count were updated to the measured numbers, which each gate run after the edits required (D-223/D-234) |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+
+**Ceiling.** A claim-precision fix. I reverted no line, so there is no byte-identical restore to report here: the
+control is the refutation measurement itself (the `trustsurface` run prints a property name the old sentence
+omitted), taken against the cfgs' own stated expectations. `verification/tla` was read and run, not modified (TLC
+scratch under `states/` is untracked and is cleared by the target's own runs; `git status` shows no change there).
+The cascade rule has no control among these three — it is an invariant of the positive config; A04's own sentence
+and control citations remain unaudited and belong to a later card.
+
 ## D-336 Task 33 is verified: the client's resume cursor is pinned by the test the row never named (2026-09-29)
 
 The product's entry is D-335. This entry is the operator's verification and the phase's measured numbers.
