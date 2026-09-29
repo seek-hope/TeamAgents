@@ -20,6 +20,33 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-341 The user delegated the open decision queue to the operator; every open item is decided here (2026-09-29)
+
+**The delegation.** On 2026-09-29 the user wrote that they are taking no part in decisions for now and that the
+operator decides. Sixteen entries in this log were waiting on that answer; each now carries a pointer to this
+entry, and the queue is closed as a queue. Every decision below is the operator's, taken with the design and the
+measured record as the authority, and each names what implements it — a decision is not evidence that the
+implementation exists.
+
+| Item(s) | Decision | What implements it |
+|---|---|---|
+| D-203, the release | **publish v0.2.0** from this tree: the version bump and the rehearsal are done, so the remaining act is the tag; the caveat statements in both READMEs and `docs/INSTALL.md` then come out | the operator pushes the tag after `make release-rehearsal` on the frozen commit, then a card updates the documents and recomputes `review/release_artifact.py`'s fact |
+| D-267/D-280, a goal with no close lever | **add one**: a goal whose ceiling or deadline is spent can be closed, and the instance it parked can run again | a card: the control-plane verb, `teamagents goals cancel --id`, the protocol and events pages, and the goal-lifecycle rules of `V2Control` with their controls |
+| D-240, `max_retries` | **wire it**: the configured value is the one the transport retry loop uses | a card |
+| D-102, `instruction_files` | **implement it**: the named files' text enters every member's prompt at prompt-build time, user-config only and bounded | a card |
+| D-191, the artifact cadence | **no timer**: the boot sweep plus the on-demand `artifacts gc` verb is the policy, and the daemon sweeps once at startup too | a small card |
+| D-192, `archived_days` | **implement it** under the guards the model already states (a live reference and evaluation evidence are never evicted) | a card, carrying section 0 if the model's rules move |
+| D-143, the offered surface | **persist it, bounded**: per model request, the tool names offered and whether the dispatch was authorized | a card (the store's format stamp moves) |
+| D-255/D-257/D-265, the delegator's wait | **no automatic wake, and the condition kinds stay apart**: a `message` condition stays a message, a reported `BLOCKED` stays a report; the delegator's own cancel tool (D-265) and its timer are the mechanism | a card that writes the rule into DESIGN §5.3 and pins it |
+| D-61, the worker's shell | **no change**: no shell by default, and the Leader still cannot hand out its own shell authority — the boundary stays the design's | none, unless the refusal should name the grant command (a small card) |
+| D-259/D-264, Q16 | **run the experiment the measured mechanism points to** — a per-response output ceiling that takes the solo arm's batching away — pre-registered, and keep all three readings in the record instead of re-labelling the requirement | a card on the evaluation harness |
+| D-249, D-150, D-96 | already closed by their own entries: the stream report was implemented, `daemon --stop` shipped in D-248, and D-96 quotes the user's words | none |
+
+**Ceiling.** This entry decides; it implements nothing. Each "what implements it" row is a card the operator will
+dispatch through the same loop — one bounded task, the goal's own required check, and the operator's verification
+and commit — and the loop's audit of the acceptance matrix resumes between them. The two items whose cards touch
+`verification/tla` carry the section-0 obligations when they land.
+
 ## D-340 Task 35 is verified: A04's controls do refute those rules, and the operator's re-measurement corrected one claim in the entry (2026-09-29)
 
 The product's entry is D-339. This entry is the operator's verification and the phase's measured numbers.
@@ -46,7 +73,7 @@ wrong; the entry now says exactly what the greps return.
 | `MC_authority_trustsurface.cfg` / `MC_authority_stalesurface.cfg` (operator's runs, D-338) | violated / temporal violation |
 | grep for `MC_grants` across `docs/ACCEPTANCE.md` at `15a0130f` | 0 hits — the finding stands |
 | grep for the two property names in the matrix at `15a0130f` | `OfferedToolsAreAuthorized` in A02's row; `StaleSurfaceCatchesUp` in A03's (D-337) — the correction |
-| `python3 review/citations.py` | **945 citations / 81 relative links / 606 `make` commands / 1002 `§`-references, 0 unexplained** — the frozen tree's counts, this entry's own text included |
+| `python3 review/citations.py` | **945 citations / 81 relative links / 607 `make` commands / 1003 `§`-references, 0 unexplained** — the frozen tree's counts, this entry's own text and D-341's included |
 | `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
 | `make pty` | ok |
 
@@ -99,7 +126,7 @@ verification file changed: the claim was true in aggregate and uncheckable in de
 | TLC on `MC_grants_stale_offered_surface.cfg` (`V2Grants.tla`) | `Error: Invariant OfferedToolsAreAuthorized is violated.` — a property named by no row before this one |
 | TLC on `MC_authority_trustsurface.cfg` / `MC_authority_stalesurface.cfg` (recorded in D-337, same day) | `AuthorizedEffectsOnly is violated.` / `StaleSurfaceCatchesUp` — the second named by no row |
 | `grep` for `MC_grants` across the matrix, and for `too wide`/`wider`/`OverWide` across the cfgs and both modules | no row names any `MC_grants*` control; no rule or control models a too-wide-but-not-stale surface |
-| `python3 review/citations.py` after the row edit, and after D-340's | 945 citations / 81 links / 606 `make` / 1002 `§`, 0 unexplained (937/603/1002 before the operator's entry); the docstring moved 925→945 across both |
+| `python3 review/citations.py` after the row edit, after D-340's and after D-341's | 945 citations / 81 links / 607 `make` / 1003 `§`, 0 unexplained (937/603/1002 before the operator's entries); the docstring moved 925→945 citations and 603→607 `make` across them |
 | `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
 
 **Ceiling.** A claim-precision fix, with a measured correction of my own first reading: the "stale or too-wide"
@@ -2603,6 +2630,8 @@ once"; the continuation request is real behaviour the other tests cover. Flake 1
 
 ## D-280 Task 5 is verified end to end on the state that failed, and the phase's own operating cost is recorded (2026-09-28)
 
+**Resolved (2026-09-29): the operator decided it under the user's delegation — D-341.**
+
 The product's entry for the fourth delivery is D-279 (the request view now pairs every tool answer with its own
 call, so a reused `check-<round>-<position>` id cannot orphan a `tool` message). This entry is the operator's
 verification — the strongest the phase has produced — and the phase's own numbers.
@@ -3276,6 +3305,8 @@ today.
 
 ## D-265 The delegator gets its own exit from a task it delegated (2026-09-28)
 
+**Resolved (2026-09-29): the operator decided it under the user's delegation — D-341.**
+
 The measurements left one product hole with a lever on the *delegator's* side: a member that ends its turn
 without settling leaves its task `RUNNING` (D-65's ceiling), and the delegator had **no way to close it** — the
 design says "the requester or the user closes it" (§5.3), but only the *user* had a path (`teamagents tasks
@@ -3309,6 +3340,8 @@ assisted-retry path it enables (close the part, re-delegate it) is not measured 
 still be slow to notice an abandoned part — what it can now do is act once it has.
 
 ## D-264 Round 7: the paired metric is confirmed, on a pre-registered rule, and the question closes (2026-09-28)
+
+**Resolved (2026-09-29): the operator decided it under the user's delegation — D-341.**
 
 Round 6 pre-registered `max(D) < min(B)` — a distributional non-overlap bar — for "time until every unit is
 verified green", and failed it (D-261). That bar was the wrong form for a **paired** design: three repeats per
@@ -3487,6 +3520,8 @@ the round-5 batches).
 
 ## D-259 Round 5's verdict: the race cannot separate the arms, and the mechanism is measured (2026-09-28)
 
+**Resolved (2026-09-29): the operator decided it under the user's delegation — D-341.**
+
 Round 5's pre-registration (`review/eval/r2-p6/design-r5.md`) said a candidate is a **race task** only if the
 calibration's `median(solo) >= 1.5 x median(team)`, and that the formal round runs only from a race task. The
 calibration ran (`runs/2026-09-28-r5-calib12/`, 3 repeats × {B, D} × `twelve-deliverables`, the primary
@@ -3568,6 +3603,8 @@ and not something this entry claims to have fixed; and the race tasks reuse unit
 orchestration rather than novel difficulty.
 
 ## D-257 Round 5's race material, and the reconnaissance that found the loss mode instead (2026-09-28)
+
+**Resolved (2026-09-29): the operator decided it under the user's delegation — D-341.**
 
 Round 5 asks the question the four recorded rounds could not: does the collaboration *mechanism* pay when the
 work is delegated (D-254), with the treatment D-256 measured (`directive + the user's grant`). It needs tasks a
@@ -3689,6 +3726,8 @@ inspection that re-verifies is indistinguishable from one that explores; a wall-
 the quality of collaboration; and the grant pass makes a *harness* arm competent, not the product's default.
 
 ## D-255 The delegator's wait gets an unambiguous contract (the walk-up to round 4's 575.6 s stall) (2026-09-28)
+
+**Resolved (2026-09-29): the operator decided it under the user's delegation — D-341.**
 
 D-254's pilot left one measurement unread: *why* one D trial's wall clock was 575.6 s in a single gap. Reading
 it settled the question, and the answer is a contract defect rather than a runtime one. `control::condition_state`
@@ -3996,6 +4035,8 @@ protocol this one does not speak is reported `unreachable` and falls back to tha
 and a settled job's child is gone.
 
 ## D-249 `exec --stream-json`: the events while the run waits, then the report (2026-09-27)
+
+**Resolved (2026-09-29): the operator decided it under the user's delegation — D-341.**
 
 `docs/PRODUCT-COMPARISON.md` §2 listed streaming as the third item in decision order — Codex's `codex exec
 --json` streams typed items and Hermes streams tool output — and called it "additive surface, no design change",
@@ -4384,6 +4425,8 @@ cannot happen once the create succeeded except through a race; and the evidence 
 than a probe, because the shape needs a doctored directory, not a session.
 
 ## D-240 `[models.*].max_retries` is accepted and never applied (2026-09-27)
+
+**Resolved (2026-09-29): the operator decided it under the user's delegation — D-341.**
 
 Every model profile carries `max_retries: i64`, whose absent value D-239 had just made the reference state
 honestly (5), and nothing reads it. Measured 2026-09-27 by tracing every mention in the three crates: the driver's
@@ -5645,6 +5688,8 @@ shape) is visible in the count, not hidden by it.
 
 ## D-203 Both READMEs recommended an install that is not this product (2026-09-27)
 
+**Resolved (2026-09-29): the operator decided it under the user's delegation — D-341.**
+
 `docs/INSTALL.md` §1 carries a dated note that the latest published release (`v0.1.2`) is the **earlier
 implementation**, and `docs/ACCEPTANCE.md`'s known gaps state the same fact at length — but the README, the page a
 reader is *recommended* the install from, did not, and neither did the Chinese mirror of it. A reader who follows
@@ -6008,6 +6053,8 @@ line before the commit — the catalogue-of-the-audits checking the audit that w
 
 ## D-192 The retention rule is modeled before it is destructive (2026-09-27)
 
+**Resolved (2026-09-29): the operator decided it under the user's delegation — D-341.**
+
 D-75 left `[retention]` as the one config surface that is *accepted and reported as not applied*, and it named
 its reason: "deleting history is destructive and the design ties it to conditions that need their own
 verification (ordinary history may be cleaned; live references and evaluation evidence may never be evicted), so
@@ -6041,6 +6088,8 @@ has, D-191), with the four guards the controls pin down — and the `doctor` row
 change with it.
 
 ## D-191 The artifacts model had a delete step the product never took (2026-09-27)
+
+**Resolved (2026-09-29): the operator decided it under the user's delegation — D-341.**
 
 DESIGN §4.3 specifies the whole collection pipeline — "GC first claims an unreferenced object as DELETING inside
 a transaction, then refuses new references and only afterwards deletes the file, and a failed deletion can be
@@ -6660,6 +6709,8 @@ Ceiling: a test that panics *while a detached daemon is live* can still leave th
 tree); that is the leak guard's half, and it stops and reports those by pid (D-147/D-150).
 
 ## D-174 `/artifacts/` was described as shared, and nothing collects artifacts (2026-09-27)
+
+**Resolved (2026-09-29): the operator decided it under the user's delegation — D-341.**
 
 Two defects in the artifact subsystem, found while checking where the `reason` row field of D-165 is documented.
 
@@ -7569,6 +7620,8 @@ failed TLS where `curl` succeeded, so the probe prefers the machine's trust stor
 
 ## D-150 The only stop a user could perform was the one that skipped the shutdown (2026-09-26)
 
+**Resolved (2026-09-29): the operator decided it under the user's delegation — D-341.**
+
 Continuing the first-run audit that produced D-149. A user who wants to stop their session has one instruction
 in the guide: "stop that daemon (Ctrl-C in its terminal)" — three times (§1, §3, the troubleshooting table) —
 but the daemon a *client* starts is detached by design ("starts `teamagents daemon` detached and hands the
@@ -7886,6 +7939,8 @@ and the daemon check's remaining question (the paragraph above) needs the next `
 kept.
 
 ## D-143 The two probes that failed the sweep now say which shape they saw (2026-09-26)
+
+**Resolved (2026-09-29): the operator decided it under the user's delegation — D-341.**
 
 Three of D-141's failures were reported as bare assertions, and a bare assertion is what made them expensive to
 diagnose. Each now names the evidence it has.
@@ -9501,6 +9556,8 @@ command had not started (D-83), the supervisor fixture read a receipt the runtim
 and this one crashed a window the effect had not entered.
 
 ## D-102 `instruction_files` promised a prompt nothing reads (2026-09-26)
+
+**Resolved (2026-09-29): the operator decided it under the user's delegation — D-341.**
 
 D-75's rule is that a config key this build does not serve is *made to work, refused with a pointer, or
 reported as not in effect*. The sweep behind D-75 covered `[permissions] mode`, `[retention]` and
@@ -11210,6 +11267,8 @@ then reads that no result follows instead of the turn dying on a rejected reques
 in the function's doc comment.
 
 ## D-61 The user's authority surface (2026-09-25)
+
+**Resolved (2026-09-29): the operator decided it under the user's delegation — D-341.**
 
 §5.1 makes the user the root of authority, and D-58/D-60 made the *model-visible tool surface* follow the
 grants. But no user could exercise that authority: `issue_grant`/`revoke_grant` had no caller outside tests
