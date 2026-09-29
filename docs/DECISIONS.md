@@ -20,6 +20,93 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-330 Task 30 is verified: A27's glob proved routing, and the operator's re-measurement made one number exact (2026-09-29)
+
+The product's entry is D-329. This entry is the operator's verification and the phase's measured numbers.
+
+**What the operator verified.** (1) The glob expands to exactly one test,
+`engine/tests/v2_supervisor.rs`'s `heterogeneous_instances_run_different_protocols_in_one_session`, read in
+full: its assertions are the two fake wires' bodies — the chat-completions server saw exactly one request
+carrying `"model":"ds-flash"` and messages, the responses server exactly one carrying `"model":"gpt-x"`, input
+and `"store":false` — and no delegation appears in the path. (2) The operator's own control, applied to the tree
+it received: the `task` wait condition's Satisfied arm in `core/src/v2/control.rs` (the block that reads the
+task's status) changed to Pending, the file's sha256 before the edit `0bfe2784…`; the glob's test passed (0.05 s
+— it has no delegation to break) and `spawned_worker_settles_and_the_leader_completes` **FAILED** after 21.26 s
+(`event goal_completed did not arrive within 20000ms`); the line was restored byte-identically (sha256
+`0bfe2784…`, `git diff` clean on that file) and the glob's test is green again (0.05 s).
+
+**The one correction the re-measurement forced.** D-329 and the A27 row said the body has 0 hits for
+`delegate`/`task`. Re-measured: delegation 0, but the word `task` appears **twice** — both are the fakes' own
+join handles at the end of the test, not a task record. The substantive claim (no delegation, no task record)
+holds, and both texts now say exactly what the grep returns instead of a rounder number.
+
+**Evidence** (2026-09-29; the tree is `ad2f4cc5` plus this uncommitted diff).
+
+| Command | Result |
+|---|---|
+| the glob sweep over the matrix | three glob citations in all: A13's and A20's (audited earlier) and A27's `v2_supervisor::heterogeneous_*` — the class is exhausted now |
+| reading the glob's one test in full | routing assertions only; delegation 0 hits; the two `task` hits are the fakes' join handles |
+| the operator's control (the task wait condition's Satisfied arm → Pending) | glob test **ok** (0.05 s); `spawned_worker_settles_and_the_leader_completes` **FAILED** (21.26 s) |
+| restoring the control byte-identically | sha256 `0bfe2784…`; `git diff` clean; the glob's test **ok** again (0.05 s) |
+| `python3 review/citations.py` | 891 citations, 0 unexplained (recomputed after the rewording) |
+| `python3 review/decision_citations.py` | refused this entry's own forward reference while it was unwritten — a citation with no heading fails the gate |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `make pty` | ok |
+
+**The audit's yield.** Eighteen cards have produced nineteen findings: eight coverage holes, ten claim holes and
+one product defect. Sixteen rows are audited; twenty remain.
+
+**The phase's measured numbers (this commit).** **Twenty-nine deliveries**, **415,038,489 tokens over 1,035
+model requests**, the suites at `core 115 / engine 288 / tui 36`, and an operator cost of thirty verification
+rounds and three resumes.
+
+**Next card**: twenty rows remain, and the glob class is exhausted (three globs, all three audited), so the
+preference moves to rows whose titles name two things, rows other rows lean on, and D-324's 155-name orphan
+sweep.
+
+**Ceiling**: the rewording leaves the *cooperation* half exactly where it was — on the dated live harness
+(`providers.py`, 2026-09-25/26/27, and the protocol families of D-151). The operator did not re-run that live
+harness; what this tree holds for A27 offline is the routing claim, now stated as such.
+
+## D-329 A27's `heterogeneous_*` glob proved routing, not the cooperation its row implied (2026-09-29)
+
+**The glob.** The matrix has exactly three glob citations; two belong to rows already audited (A13's
+`jobs_runner::cancel_*` and A20's `control::compression_*`), and the third was in an unaudited row: A27's
+`v2_supervisor::heterogeneous_*`. This is the class the card names — a glob hides which test a claim rests on.
+
+**What it expands to, and what that test asserts.** Exactly one test,
+`heterogeneous_instances_run_different_protocols_in_one_session`. Read in full: it brings up two fake wires (a
+chat-completions server and a responses server), gives the leader `{"model": "lead-model"}` on the deepseek
+protocol and a manually created worker `{"model": "worker-model"}` on the responses protocol, then drives **each
+instance with its own input** ("close your turn") and asserts the *routing*: the chat server saw exactly one body
+carrying `"model":"ds-flash"`, the responses server exactly one carrying `"model":"gpt-x"` and `"store":false`.
+**No delegation and no task record appear in it** (measured: the body has **0** hits for delegation, and its only
+two `task` hits are the fakes' own join handles at the end of the test, not a task record — the operator's
+re-measurement, D-330). So the fakes prove per-model protocol routing (R17); A27's title claims *cooperation*.
+
+**The change (the claim, not the code).** A27's evidence cell now names that test, states exactly what it asserts
+(the two bodies and their model names, each driven by its own input), and says that the *cooperation across two
+wires* is the live harness's half above — the `heterogeneous_*` glob hid that until D-329. No product or test code
+changed.
+
+**Evidence** (2026-09-29; the tree is `ad2f4cc5` plus this uncommitted diff).
+
+| Command | Result |
+|---|---|
+| the glob sweep over the matrix | three globs: A13's and A20's (both audited), A27's `v2_supervisor::heterogeneous_*` (unaudited) |
+| the reading measurement | the only test the glob matches contains no `delegate` and no `task` — it asserts routing only |
+| counter-control: the `task` wait condition's `Satisfied` arm → `Pending` (cooperation broken, routing untouched) | the **glob's** routing test **passed** (0.06 s — it has no delegation to break), while `v2_supervisor::spawned_worker_settles_and_the_leader_completes` **FAILED** (panicked in its wait after 21.25 s) — the measurement behind the reworded claim |
+| the control line restored byte-identically (`diff` clean) | **ok**; the routing test passes again (0.06 s) |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+
+**Ceiling.** The fakes' contrast (the two wires, each carrying its own model) is real and now stated; the
+*cooperation* across protocols is proven by the dated live harness (`providers.py`: 2026-09-25 and the two
+2026-09-26 re-runs) and by the classifier replay, not by the fakes. I did not add an offline cross-wire
+delegation test: the design's two halves are each already offline-tested (routing by this test, delegation by
+`spawned_worker_settles_and_the_leader_completes`), and their *composition* is a claim the live harness carries —
+writing it would be new coverage the row does not require, not a correction of a false statement. If the operator
+wants the offline composition too, that is a card of its own.
+
 ## D-328 Task 29 is verified: A06's "across a restart" half had no code-level test (2026-09-29)
 
 The product's entry is D-327. This entry is the operator's verification and the phase's measured numbers.
