@@ -294,15 +294,21 @@ implementation exists.
 |---|---|---|
 | D-203, the release | **publish v0.2.0** from this tree: the version bump and the rehearsal are done, so the remaining act is the tag; the caveat statements in both READMEs and `docs/INSTALL.md` then come out | the operator pushes the tag after `make release-rehearsal` on the frozen commit (rehearsal green on `c635dba3`), then a card updates the documents and recomputes `review/release_artifact.py`'s fact — **the push itself waits for the user's explicit go-ahead, D-342** |
 | D-267/D-280, a goal with no close lever | **add one**: a goal whose ceiling or deadline is spent can be closed, and the instance it parked can run again | a card: the control-plane verb, `teamagents goals cancel --id`, the protocol and events pages, and the goal-lifecycle rules of `V2Control` with their controls |
-| D-240, `max_retries` | **wire it**: the configured value is the one the transport retry loop uses | a card |
-| D-102, `instruction_files` | **implement it**: the named files' text enters every member's prompt at prompt-build time, user-config only and bounded | a card |
+| D-240, `max_retries` | **wire it** — measured before dispatching a card: **already delivered by D-247**, and re-measured here (`review/dogfood/max_retries.py`: asked-none one request, asked-three four attempts, omitted three, the default 2) | none |
+| D-102, `instruction_files` | **implement it** — measured before dispatching a card: **already delivered by D-246** (the user config's files are merged into the prompt at build time, the project file is not read until trust, and `doctor` reports the count) | none |
 | D-191, the artifact cadence | **no timer**: the boot sweep plus the on-demand `artifacts gc` verb is the policy, and the daemon sweeps once at startup too | a small card |
-| D-192, `archived_days` | **implement it** under the guards the model already states (a live reference and evaluation evidence are never evicted) | a card, carrying section 0 if the model's rules move |
+| D-192, `archived_days` | **keep it accepted-and-reported, not applied** — measuring first showed what the entry already says: one session per state root (A33) means there is no archived set to walk, so the key has nothing to delete; `doctor`, `docs/CONFIG.md` and `docs/USER-GUIDE.md` say so, and it becomes meaningful with multi-session | none (the earlier "implement it" was based on a premise the measurement corrected) |
 | D-143, the offered surface | **persist it, bounded**: per model request, the tool names offered and whether the dispatch was authorized | a card (the store's format stamp moves) |
 | D-255/D-257/D-265, the delegator's wait | **no automatic wake, and the condition kinds stay apart**: a `message` condition stays a message, a reported `BLOCKED` stays a report; the delegator's own cancel tool (D-265) and its timer are the mechanism | a card that writes the rule into DESIGN §5.3 and pins it |
 | D-61, the worker's shell | **no change**: no shell by default, and the Leader still cannot hand out its own shell authority — the boundary stays the design's | none, unless the refusal should name the grant command (a small card) |
 | D-259/D-264, Q16 | **run the experiment the measured mechanism points to** — a per-response output ceiling that takes the solo arm's batching away — pre-registered, and keep all three readings in the record instead of re-labelling the requirement | a card on the evaluation harness |
 | D-249, D-150, D-96 | already closed by their own entries: the stream report was implemented, `daemon --stop` shipped in D-248, and D-96 quotes the user's words | none |
+
+**Correction (2026-09-29, the same day).** Dispatching the first three rows showed two of them were already
+delivered by later entries that the flagged ones predate — `max_retries` by D-247 and `instruction_files` by
+D-246, both re-measured — and that `archived_days` has nothing to delete in a one-session-per-state-root
+build. Those three rows now say so, and the first card this entry produced was the goal-cancel lever
+(D-344), which was genuinely open.
 
 **Ceiling.** This entry decides; it implements nothing. Each "what implements it" row is a card the operator will
 dispatch through the same loop — one bounded task, the goal's own required check, and the operator's verification
