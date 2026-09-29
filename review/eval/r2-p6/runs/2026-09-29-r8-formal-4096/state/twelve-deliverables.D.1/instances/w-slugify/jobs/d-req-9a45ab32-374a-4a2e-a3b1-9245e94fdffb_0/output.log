@@ -1,0 +1,6 @@
+'Hello, World!' -> 'hello-world'
+'  --A@@B-- ' -> 'a-b'
+'***' -> 'untitled'
+'' -> 'untitled'
+'A1 B2' -> 'a1-b2'
+'Ünïcode!! Test' -> 'n-code-test'

@@ -77,6 +77,11 @@ def main() -> int:
     config_bytes = (HERE / manifest["config"]["path"]).read_bytes()
     (config_home / "teamagents" / "config.toml").write_bytes(config_bytes)
     env = dict(os.environ, XDG_CONFIG_HOME=str(config_home))
+    # round 8's treatment (D-341's row for D-259/D-264): the per-response output ceiling the manifest carries,
+    # applied to every arm equally. A batch whose manifest says nothing about it runs without one, as rounds
+    # 1-7 did; a batch that sets it records it in each trial's own surface.
+    if manifest.get("model", {}).get("max_tokens"):
+        env["TEAMAGENTS_EVAL_MAX_TOKENS"] = str(manifest["model"]["max_tokens"])
     header = {
         "phase": args.phase, "repeats": repeats, "groups": groups,
         "started": time.strftime("%Y-%m-%dT%H:%M:%S%z"),

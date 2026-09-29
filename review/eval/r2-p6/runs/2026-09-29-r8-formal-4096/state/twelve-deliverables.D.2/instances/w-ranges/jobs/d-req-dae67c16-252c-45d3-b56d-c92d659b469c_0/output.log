@@ -1,0 +1,10 @@
+/bin/bash: line 28: cd: units/ranges: No such file or directory
+ M engine/examples/eval_groups_abc.rs
+ M review/eval/r2-p6/freeze.py
+ M review/eval/r2-p6/run.py
+?? review/eval/r2-p6/design-r8.md
+?? review/eval/r2-p6/manifest-r8-4096.json
+?? review/eval/r2-p6/manifest-r8.json
+?? review/eval/r2-p6/runs/2026-09-29-r8-formal-4096/
+?? review/eval/r2-p6/runs/2026-09-29-r8-formal/
+?? review/eval/r2-p6/runs/2026-09-29-r8-pilot/

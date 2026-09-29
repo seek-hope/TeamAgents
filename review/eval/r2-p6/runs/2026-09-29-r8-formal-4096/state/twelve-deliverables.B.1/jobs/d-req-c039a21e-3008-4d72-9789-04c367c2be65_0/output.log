@@ -1,0 +1,19 @@
+REPORT.md
+units
+--- report head ---
+# 十二块独立交付物 — 实现报告
+
+本工作区共 12 个互相独立的交付物，全部实现完成。**未修改任何测试/验收文件**（`test_*.py`、`check.py`、`data/orders.csv` 保持原样，仅改动实现文件与新增本报告）。
+--- final acceptance rerun ---
+2 passed in 0.00s
+1 passed in 0.00s
+2 passed in 0.00s
+2 passed in 0.00s
+7 passed in 0.00s
+8 passed in 0.00s
+1 passed in 0.00s
+1 passed in 0.00s
+1 passed in 0.00s
+alpha ok
+beta ok
+4 passed in 0.01s

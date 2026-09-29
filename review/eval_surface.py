@@ -44,7 +44,8 @@ RUNS = EVAL / "runs"
 HARNESS = "engine/examples/eval_groups_abc.rs"
 REFERENCE = "engine/src/reference.rs"
 MANIFESTS = ["manifest.json", "manifest-r2.json", "manifest-r3.json", "manifest-r4.json",
-             "manifest-r5-recon.json", "manifest-r5-calib12.json", "manifest-r6.json", "manifest-r7.json"]  # D-257..D-264
+             "manifest-r5-recon.json", "manifest-r5-calib12.json", "manifest-r6.json", "manifest-r7.json",
+             "manifest-r8.json", "manifest-r8-4096.json"]  # D-257..D-264, D-353
 # The anchors the two templates are found by. The text itself carries the platform line that dates it.
 AGENT_ANCHOR = "You are a careful coding agent"
 TEAM_ANCHOR = "You may build a team"

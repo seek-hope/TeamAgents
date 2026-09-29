@@ -1,0 +1,26 @@
+===== units/csvfix/impl.py =====
+def parse(line):
+    """BUG: 不处理引号、不裁剪空白、不校验列数。"""
+    return line.split(",")
+
+def total(rows):
+    """BUG: 空字段当作 0 但不报错，且把第三列当成金额。"""
+    return sum(int(r[2]) for r in rows if len(r) > 2 and r[2])
+===== units/rules/engine.py =====
+def evaluate(rules, facts):
+    """STUB: 必须实现 all/any 两种规则。"""
+    return False
+===== units/ledger/ledger.py =====
+"""一个只关心单个账户的小账本。"""
+
+
+class Ledger:
+    def apply(self, rows, op):
+        """rows 是 [(kind, account, cents), ...]，返回**该账户**的行（保持原顺序）。
+        kind 只有 "deposit" 与 "withdraw"；金额为负时抛 ValueError。"""
+        raise NotImplementedError
+
+
+def balance(rows, account):
+    """返回该账户的净额：deposit 相加、withdraw 相减；没有该账户的行时返回 0。"""
+    raise NotImplementedError

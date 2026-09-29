@@ -1,0 +1,1 @@
+{"message":{"role":"assistant","reasoning_content":"Now read ranges.py.","content":"","tool_calls":[{"id":"call_00_hWfrvVXlomWUtzW6RqXH8474","type":"function","function":{"name":"read_file","arguments":"{\"path\": \"units/ranges/ranges.py\"}"}}]},"usage":{"prompt":2078,"completion":48,"total":2126},"native":{"protocol":"chat_completions","base":"https://api.deepseek.com/v1"}}

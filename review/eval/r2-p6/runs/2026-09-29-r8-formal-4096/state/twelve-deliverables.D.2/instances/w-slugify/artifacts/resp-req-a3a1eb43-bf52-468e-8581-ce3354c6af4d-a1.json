@@ -1,0 +1,1 @@
+{"message":{"role":"assistant","reasoning_content":"Let me look at the directory contents.","content":"","tool_calls":[{"id":"call_00_15kTjSE1ck27Fd2TRkRr5065","type":"function","function":{"name":"ls","arguments":"{\"path\": \"units/slugify\"}"}}]},"usage":{"prompt":2089,"completion":48,"total":2137},"native":{"protocol":"chat_completions","base":"https://api.deepseek.com/v1"}}

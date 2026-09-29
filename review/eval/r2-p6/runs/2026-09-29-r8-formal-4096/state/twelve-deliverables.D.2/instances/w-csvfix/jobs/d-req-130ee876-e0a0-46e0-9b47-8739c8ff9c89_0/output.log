@@ -1,0 +1,5 @@
+trim+valid: ['a', '2', 'x']
+wrong count: None
+quoted: ['a,b', '2', '3']
+total test-case: 2
+total blanks/short rows: 12

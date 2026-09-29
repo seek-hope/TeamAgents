@@ -1,0 +1,12 @@
+csv quoted: ['a,b', '2', 'x']
+csv 2col: None
+total blank: 2
+rules both: True False
+ledger nonmatch empty: []
+slots empty: [] touch not overlap: False
+intervals gap: [(1, 5)] sub full: [] len: 5
+flags dash: {'values': {}, 'flags': {}, 'positional': ['--x', 'y']}
+flags eq empty: {'values': {'k': ['']}, 'flags': {'a': True, 'b': True}, 'positional': []}
+measure mm: 2.0 cm int: 3
+slug: a-b untitled
+ranges nested: [(0, 10), (20, 21)]

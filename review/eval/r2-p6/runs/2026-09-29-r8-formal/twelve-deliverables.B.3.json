@@ -1,0 +1,37 @@
+{
+  "status": "timeout",
+  "steps": 6,
+  "prompt_tokens": 35278,
+  "completion_tokens": 3310,
+  "total_tokens": 38588,
+  "events": 94,
+  "group": "B",
+  "task_id": "twelve-deliverables",
+  "model_key": "leader_main",
+  "model": "deepseek-flash",
+  "context_window": 1000000,
+  "permissions": "full_auto",
+  "web": false,
+  "wall_ms": 900311,
+  "surface": {
+    "instructions_kind": "agent",
+    "instructions_template_sha256": "8acbda452914ec6135a4a68ccc52d930c6c7f54ff6e81c1c5cf1cd0d31bce046",
+    "tools": [
+      "ls",
+      "read_file",
+      "write_file",
+      "edit_file",
+      "delete",
+      "glob",
+      "grep",
+      "shell"
+    ],
+    "request_options": {
+      "reasoning_effort": "high",
+      "max_tokens": 2048
+    },
+    "timeout_s": 900,
+    "max_steps": 25,
+    "max_retries": 2
+  }
+}

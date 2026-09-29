@@ -1,0 +1,88 @@
+### tracked files (excluding __pycache__):
+./REPORT.md
+./units/alpha/alpha.py
+./units/alpha/check.py
+./units/beta/beta.py
+./units/beta/check.py
+./units/chain/data/orders.csv
+./units/chain/.pytest_cache/CACHEDIR.TAG
+./units/chain/.pytest_cache/.gitignore
+./units/chain/.pytest_cache/README.md
+./units/chain/.pytest_cache/v/cache/nodeids
+./units/chain/stage1.py
+./units/chain/stage2.py
+./units/chain/stage3.py
+./units/chain/stage4.py
+./units/chain/tests/test_stage1.py
+./units/chain/tests/test_stage2.py
+./units/chain/tests/test_stage3.py
+./units/chain/tests/test_stage4.py
+./units/csvfix/impl.py
+./units/csvfix/.pytest_cache/CACHEDIR.TAG
+./units/csvfix/.pytest_cache/.gitignore
+./units/csvfix/.pytest_cache/README.md
+./units/csvfix/.pytest_cache/v/cache/lastfailed
+./units/csvfix/.pytest_cache/v/cache/nodeids
+./units/csvfix/test_csvfix.py
+./units/flags/flags.py
+./units/flags/.pytest_cache/CACHEDIR.TAG
+./units/flags/.pytest_cache/.gitignore
+./units/flags/.pytest_cache/README.md
+./units/flags/.pytest_cache/v/cache/nodeids
+./units/flags/test_flags.py
+./units/intervals/intervals.py
+./units/intervals/.pytest_cache/CACHEDIR.TAG
+./units/intervals/.pytest_cache/.gitignore
+./units/intervals/.pytest_cache/README.md
+./units/intervals/.pytest_cache/v/cache/nodeids
+./units/intervals/test_intervals.py
+./units/ledger/ledger.py
+./units/ledger/.pytest_cache/CACHEDIR.TAG
+./units/ledger/.pytest_cache/.gitignore
+./units/ledger/.pytest_cache/README.md
+./units/ledger/.pytest_cache/v/cache/nodeids
+./units/ledger/test_ledger.py
+./units/measure/measure.py
+./units/measure/.pytest_cache/CACHEDIR.TAG
+./units/measure/.pytest_cache/.gitignore
+./units/measure/.pytest_cache/README.md
+./units/measure/.pytest_cache/v/cache/nodeids
+./units/measure/test_measure.py
+./units/ranges/.pytest_cache/CACHEDIR.TAG
+./units/ranges/.pytest_cache/.gitignore
+./units/ranges/.pytest_cache/README.md
+./units/ranges/.pytest_cache/v/cache/nodeids
+./units/ranges/ranges.py
+./units/ranges/test_ranges.py
+./units/rules/engine.py
+./units/rules/.pytest_cache/CACHEDIR.TAG
+./units/rules/.pytest_cache/.gitignore
+./units/rules/.pytest_cache/README.md
+./units/rules/.pytest_cache/v/cache/nodeids
+./units/rules/test_rules.py
+./units/schedule/.pytest_cache/CACHEDIR.TAG
+./units/schedule/.pytest_cache/.gitignore
+./units/schedule/.pytest_cache/README.md
+./units/schedule/.pytest_cache/v/cache/nodeids
+./units/schedule/schedule.py
+./units/schedule/test_schedule.py
+./units/slugify/.pytest_cache/CACHEDIR.TAG
+./units/slugify/.pytest_cache/.gitignore
+./units/slugify/.pytest_cache/README.md
+./units/slugify/.pytest_cache/v/cache/nodeids
+./units/slugify/slugify.py
+./units/slugify/test_slugify.py
+
+### final acceptance sweep:
+csvfix: 2 passed in 0.00s
+rules: 1 passed in 0.00s
+ledger: 2 passed in 0.00s
+schedule: 2 passed in 0.00s
+intervals: 7 passed in 0.00s
+flags: 8 passed in 0.01s
+measure: 1 passed in 0.00s
+slugify: 1 passed in 0.00s
+ranges: 1 passed in 0.00s
+alpha: alpha ok
+beta: beta ok
+chain: 4 passed in 0.01s

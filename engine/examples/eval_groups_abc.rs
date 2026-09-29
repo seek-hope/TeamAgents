@@ -122,8 +122,20 @@ fn instructions_template(style: Style) -> String {
 }
 
 /// The request options every group runs with (the manifest's `model.reasoning_effort` pins the same value).
+///
+/// Round 8's treatment adds a **per-response output ceiling** from `TEAMAGENTS_EVAL_MAX_TOKENS`: the manifest
+/// carries it, `run.py` exports it, every group gets it, and the trial records it with its own surface. It
+/// removes what round 5 measured as the solo arm's mechanism — several units answered inside one response —
+/// and it is applied to *both* arms, so it is a treatment, not a handicap. The audit that holds the
+/// model-visible surface to one pin reads the `reasoning_effort` value it has always read.
 fn request_options() -> Json {
-    json!({"reasoning_effort": "high"})
+    let mut options = json!({"reasoning_effort": "high"});
+    if let Ok(ceiling) = std::env::var("TEAMAGENTS_EVAL_MAX_TOKENS") {
+        if let Ok(tokens) = ceiling.parse::<u64>() {
+            options["max_tokens"] = json!(tokens);
+        }
+    }
+    options
 }
 
 /// Retries inside one turn, for every group.

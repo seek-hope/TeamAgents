@@ -150,6 +150,21 @@ and the **success** form of H2 stays at a zero paired difference because both ar
 real but specific — *a team greens a twelve-unit job earlier than a single instance does* — and both the metric
 and the rule were pre-registered before their data (metric in round 6's registration, rule in round 7's).
 
+## Round 8 (2026-09-29, D-353): the ceiling experiment — not confirmed, and the instrument is the finding
+
+Round 5's verdict said a *separating* criterion has to cap what one response can carry. Round 8 pre-registered
+that cap as the treatment, in both arms (`design-r8.md`, frozen before its data): H11, the team arm strictly
+earlier in at least 2 of 3 fresh pairs on `twelve-deliverables`, and H12, the instrument.
+**H11 is not confirmed**: one pair is readable and in the team arm's favour (all twelve units green at 43.8 s
+against 55.6 s) while two hit the 900 s bound with **nothing written**, and the pre-registration counts an
+unreadable timeline against. H12 is confirmed (every trial records `max_tokens: 4096`). The pilot had caught the
+first ceiling value truncating the team arm's tool arguments (2048: a spawned member's grant call arrives empty
+and `issue_grant` refuses it), which is the one adjustment the registration allowed; at 4096 both arms *can*
+finish, one trial each greening all twelve. Round 7's paired reading stays the last confirmed one on this
+question, the end-to-end gate stays as round 5 left it, and the durable result here is the instrument plus the
+stall shape — half of this batch wrote nothing at all within the bound, which nothing before the ceiling
+produced and which this round cannot attribute.
+
 ## Cost (real tokens, DeepSeek billing)
 
 | Batch | A | B | C |

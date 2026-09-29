@@ -1,0 +1,14 @@
+ M ../../../../../../../engine/examples/eval_groups_abc.rs
+ M ../../../../freeze.py
+ M ../../../../run.py
+?? ../../../../design-r8.md
+?? ../../../../manifest-r8-4096.json
+?? ../../../../manifest-r8.json
+?? ../../
+?? ../../../2026-09-29-r8-formal/
+?? ../../../2026-09-29-r8-pilot/
+---
+ engine/examples/eval_groups_abc.rs | 14 +++++++++++++-
+ review/eval/r2-p6/freeze.py        |  7 +++++++
+ review/eval/r2-p6/run.py           |  5 +++++
+ 3 files changed, 25 insertions(+), 1 deletion(-)

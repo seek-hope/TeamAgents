@@ -1,0 +1,76 @@
+Python 3.13.15
+9.0.3
+=== csvfix ===
+
+test_csvfix.py:4: AssertionError
+=========================== short test summary info ============================
+FAILED test_csvfix.py::test_parse_trims_and_validates - AssertionError: asser...
+1 failed, 1 passed in 0.01s
+=== rules ===
+
+test_rules.py:5: AssertionError
+=========================== short test summary info ============================
+FAILED test_rules.py::test_all_and_any - AssertionError: assert False is True
+1 failed in 0.01s
+=== ledger ===
+ledger.py:8: NotImplementedError
+=========================== short test summary info ============================
+FAILED test_ledger.py::test_apply_and_balance - NotImplementedError
+FAILED test_ledger.py::test_apply_rejects_negative - NotImplementedError
+2 failed in 0.01s
+=== schedule ===
+schedule.py:12: NotImplementedError
+=========================== short test summary info ============================
+FAILED test_schedule.py::test_slots_merges_and_splits - NotImplementedError
+FAILED test_schedule.py::test_overlaps - NotImplementedError
+2 failed in 0.01s
+=== intervals ===
+FAILED test_intervals.py::test_subtract_splits_inside - NotImplementedError
+FAILED test_intervals.py::test_subtract_covers_and_touches - NotImplementedError
+FAILED test_intervals.py::test_subtract_normalizes_its_input_first - NotImple...
+FAILED test_intervals.py::test_total_length_counts_each_integer_once - NotImp...
+7 failed in 0.03s
+=== flags ===
+FAILED test_flags.py::test_repeated_switch_stays_true - NotImplementedError
+FAILED test_flags.py::test_positional_and_dash_terminator - NotImplementedError
+FAILED test_flags.py::test_values_may_look_like_switches - NotImplementedError
+FAILED test_flags.py::test_empty_input - NotImplementedError
+8 failed in 0.02s
+=== measure ===
+
+measure.py:3: NotImplementedError
+=========================== short test summary info ============================
+FAILED test_measure.py::test_cm - NotImplementedError
+1 failed in 0.01s
+=== slugify ===
+
+slugify.py:3: NotImplementedError
+=========================== short test summary info ============================
+FAILED test_slugify.py::test_slug - NotImplementedError
+1 failed in 0.01s
+=== ranges ===
+
+ranges.py:3: NotImplementedError
+=========================== short test summary info ============================
+FAILED test_ranges.py::test_merge - NotImplementedError
+1 failed in 0.01s
+=== alpha ===
+Traceback (most recent call last):
+  File "/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-29-r8-formal-4096/work/twelve-deliverables.B.1/units/alpha/check.py", line 2, in <module>
+    assert alpha.add(2, 3) == 5, alpha.add(2, 3)
+           ^^^^^^^^^^^^^^^^^^^^
+AssertionError: -1
+exit=1
+=== beta ===
+Traceback (most recent call last):
+  File "/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-29-r8-formal-4096/work/twelve-deliverables.B.1/units/beta/check.py", line 2, in <module>
+    assert beta.mul(3, 4) == 12, beta.mul(3, 4)
+           ^^^^^^^^^^^^^^^^^^^^
+AssertionError: 7
+exit=1
+=== chain ===
+FAILED tests/test_stage1.py::test_parse - NotImplementedError
+FAILED tests/test_stage2.py::test_filter - NotImplementedError
+FAILED tests/test_stage3.py::test_totals - NotImplementedError
+FAILED tests/test_stage4.py::test_report - NotImplementedError
+4 failed in 0.02s

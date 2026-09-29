@@ -1,0 +1,260 @@
+=== csvfix ===
+--- units/csvfix/impl.py ---
+def parse(line):
+    """BUG: 不处理引号、不裁剪空白、不校验列数。"""
+    return line.split(",")
+
+def total(rows):
+    """BUG: 空字段当作 0 但不报错，且把第三列当成金额。"""
+    return sum(int(r[2]) for r in rows if len(r) > 2 and r[2])
+--- units/csvfix/test_csvfix.py ---
+import impl
+
+def test_parse_trims_and_validates():
+    assert impl.parse(' a , 2 , x ') == ["a", "2", "x"]
+    assert impl.parse('a,2') is None  # 列数不是 3 时返回 None
+
+def test_total_skips_blank_and_reports_bad():
+    rows = [["a", "1", "2"], ["b", "2", ""]]
+    assert impl.total(rows) == 2
+=== rules ===
+--- units/rules/engine.py ---
+def evaluate(rules, facts):
+    """STUB: 必须实现 all/any 两种规则。"""
+    return False
+--- units/rules/test_rules.py ---
+import engine
+
+def test_all_and_any():
+    facts = {"a": True, "b": False}
+    assert engine.evaluate({"all": ["a"]}, facts) is True
+    assert engine.evaluate({"all": ["a", "b"]}, facts) is False
+    assert engine.evaluate({"any": ["b", "a"]}, facts) is True
+    assert engine.evaluate({"any": ["b"]}, facts) is False
+=== ledger ===
+--- units/ledger/ledger.py ---
+"""一个只关心单个账户的小账本。"""
+
+
+class Ledger:
+    def apply(self, rows, op):
+        """rows 是 [(kind, account, cents), ...]，返回**该账户**的行（保持原顺序）。
+        kind 只有 "deposit" 与 "withdraw"；金额为负时抛 ValueError。"""
+        raise NotImplementedError
+
+
+def balance(rows, account):
+    """返回该账户的净额：deposit 相加、withdraw 相减；没有该账户的行时返回 0。"""
+    raise NotImplementedError
+--- units/ledger/test_ledger.py ---
+from ledger import Ledger, balance
+def test_apply_and_balance():
+    L = Ledger()
+    rows = L.apply([("deposit","a",100),("withdraw","a",30),("deposit","b",5)], "a")
+    assert rows == [("deposit","a",100),("withdraw","a",30)], rows
+    assert balance(rows, "a") == 70
+    assert balance(rows, "b") == 0
+def test_apply_rejects_negative():
+    L = Ledger()
+    try:
+        L.apply([("deposit","a",-1)], "a")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("negative accepted")
+=== schedule ===
+--- units/schedule/schedule.py ---
+"""闭区间的时间段工具。"""
+
+
+def slots(ranges, minutes):
+    """合并闭区间：两段之间的空隙（next_lo - prev_hi）小于 minutes 视为同一段。
+    返回按起点升序的合并结果；空输入返回 []。"""
+    raise NotImplementedError
+
+
+def overlaps(a, b):
+    """两个闭区间是否有交叠；端点正好相接（如 (0,10) 与 (10,20)）不算交叠。"""
+    raise NotImplementedError
+--- units/schedule/test_schedule.py ---
+from schedule import slots, overlaps
+def test_slots_merges_and_splits():
+    assert slots([(0,60),(30,90),(120,150)], 30) == [(0,90),(120,150)]
+    assert slots([(0,10)], 5) == [(0,10)]
+def test_overlaps():
+    assert overlaps((0,10),(5,20)) is True
+    assert overlaps((0,10),(10,20)) is False
+=== intervals ===
+--- units/intervals/intervals.py ---
+"""闭区间工具（整数端点，lo <= hi）。"""
+
+
+class Impl:
+    def merge(self, ranges, gap=0):
+        """合并闭区间：按 lo 升序排序后，若相邻两段之间**缺失的整数个数**
+        （next.lo - prev.hi - 1）小于等于 gap 就合并。返回 [(lo, hi), ...] 升序；空输入返回 []。"""
+        raise NotImplementedError
+
+    def subtract(self, ranges, hole):
+        """从 ranges 中挖去闭区间 hole：返回剩下的闭区间（升序）。与 hole 不相交的段原样保留，
+        被完全覆盖的段消失，横跨 hole 的段分裂成两段。"""
+        raise NotImplementedError
+
+    def total_length(self, ranges):
+        """ranges 覆盖的整数个数之和（闭区间含端点；重叠只算一次）。"""
+        raise NotImplementedError
+--- units/intervals/test_intervals.py ---
+from intervals import Impl
+
+I = Impl()
+
+def test_merge_orders_joins_and_keeps_real_gaps():
+    # (-1,0) 与 (1,3) 之间没有缺失整数（相邻），(3,5) 与 (5,7) 之间缺 1 个
+    assert I.merge([[5, 7], [1, 3], [-1, 0]]) == [(-1, 3), (5, 7)]
+    assert I.merge([]) == []
+    assert I.merge([[1, 1]]) == [(1, 1)]
+
+def test_merge_gap_counts_missing_integers():
+    assert I.merge([[1, 2], [4, 5]]) == [(1, 2), (4, 5)]
+    assert I.merge([[1, 2], [4, 5]], 1) == [(1, 5)]
+    assert I.merge([[1, 2], [3, 4]]) == [(1, 4)]
+    assert I.merge([[10, 12], [0, 1], [5, 6]], 3) == [(0, 12)]
+
+def test_merge_ignores_nested_and_backwards():
+    assert I.merge([[0, 10], [2, 3]]) == [(0, 10)]
+    assert I.merge([[7, 9], [0, 1]]) == [(0, 1), (7, 9)]
+
+def test_subtract_splits_inside():
+    assert I.subtract([[0, 10]], (4, 6)) == [(0, 3), (7, 10)]
+
+def test_subtract_covers_and_touches():
+    assert I.subtract([[0, 10]], (0, 10)) == []
+    assert I.subtract([[0, 4]], (4, 9)) == [(0, 3)]
+    assert I.subtract([[0, 4], [8, 9]], (5, 7)) == [(0, 4), (8, 9)]
+
+def test_subtract_normalizes_its_input_first():
+    assert I.subtract([[5, 7], [1, 3]], (2, 6)) == [(1, 1), (7, 7)]
+
+def test_total_length_counts_each_integer_once():
+    assert I.total_length([[0, 2], [2, 4]]) == 5
+    assert I.total_length([]) == 0
+    assert I.total_length([[3, 3]]) == 1
+=== flags ===
+--- units/flags/flags.py ---
+"""命令行风格的参数解析。"""
+
+
+class Impl:
+    def parse(self, argv):
+        """返回 {"values": {...}, "flags": {...}, "positional": [...]}：
+        - 不以 "-" 开头、或正好是 "-" 的项，按出现顺序进 positional。
+        - `--` 之后的所有项都是位置参数（`--` 自己不出现在结果里）。
+        - `--key=value` 与 `--key value` 都是键值对，键是 key。
+        - `--key` 后面没有可用值（到结尾，或后面紧跟另一个 "--" 开头的项）时它是开关。
+        - `-abc` 是三个开关 a、b、c。
+        - values 的每个值是**列表**，重复的键按出现顺序累积；开关重复出现仍是 True。"""
+        raise NotImplementedError
+--- units/flags/test_flags.py ---
+from flags import Impl
+
+I = Impl()
+
+def test_equals_and_space_forms_agree():
+    assert I.parse(["--mode=fast", "-v"]) == {"values": {"mode": ["fast"]}, "flags": {"v": True}, "positional": []}
+    assert I.parse(["--mode", "fast", "-v"]) == {"values": {"mode": ["fast"]}, "flags": {"v": True}, "positional": []}
+
+def test_switch_when_no_value_follows():
+    assert I.parse(["--mode", "--other"]) == {"values": {}, "flags": {"mode": True, "other": True}, "positional": []}
+    assert I.parse(["--mode"]) == {"values": {}, "flags": {"mode": True}, "positional": []}
+
+def test_bundled_short_switches():
+    assert I.parse(["-abc"]) == {"values": {}, "flags": {"a": True, "b": True, "c": True}, "positional": []}
+
+def test_repeated_key_accumulates_in_order():
+    assert I.parse(["--k", "1", "--k", "2"])["values"] == {"k": ["1", "2"]}
+
+def test_repeated_switch_stays_true():
+    assert I.parse(["--x", "y", "--x"]) == {"values": {"x": ["y"]}, "flags": {"x": True}, "positional": []}
+
+def test_positional_and_dash_terminator():
+    assert I.parse(["a", "-", "b"])["positional"] == ["a", "-", "b"]
+    assert I.parse(["--", "--not-a-flag", "x"])["positional"] == ["--not-a-flag", "x"]
+    assert I.parse(["--", "--not-a-flag", "x"])["flags"] == {}
+
+def test_values_may_look_like_switches():
+    assert I.parse(["--k", "-5"])["values"] == {"k": ["-5"]}
+    assert I.parse(["--k=--v"])["values"] == {"k": ["--v"]}
+
+def test_empty_input():
+    assert I.parse([]) == {"values": {}, "flags": {}, "positional": []}
+=== measure ===
+--- units/measure/measure.py ---
+class Impl:
+    def to_cm(self, *args, **kwargs):
+        raise NotImplementedError
+--- units/measure/test_measure.py ---
+from measure import Impl
+I = Impl()
+def test_cm():
+    assert I.to_cm(1.5, "m") == 150
+    assert I.to_cm(3, "cm") == 3
+    assert I.to_cm(20, "mm") == 2
+    try:
+        I.to_cm(1, "ft")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("bad unit accepted")
+=== slugify ===
+--- units/slugify/slugify.py ---
+class Impl:
+    def slugify(self, *args, **kwargs):
+        raise NotImplementedError
+--- units/slugify/test_slugify.py ---
+from slugify import Impl
+I = Impl()
+def test_slug():
+    assert I.slugify("Hello, World!") == "hello-world"
+    assert I.slugify("  --A@@B-- ") == "a-b"
+    assert I.slugify("***") == "untitled"
+=== ranges ===
+--- units/ranges/ranges.py ---
+class Impl:
+    def merge(self, *args, **kwargs):
+        raise NotImplementedError
+--- units/ranges/test_ranges.py ---
+from ranges import Impl
+I = Impl()
+def test_merge():
+    assert I.merge([[5,7],[1,3],[2,4]]) == [(1,4),(5,7)]
+    assert I.merge([]) == []
+    assert I.merge([[1,1]]) == [(1,1)]
+=== alpha ===
+--- units/alpha/alpha.py ---
+def add(a, b):
+    return a - b
+--- units/alpha/check.py ---
+import alpha
+assert alpha.add(2, 3) == 5, alpha.add(2, 3)
+print("alpha ok")
+=== beta ===
+--- units/beta/beta.py ---
+def mul(a, b):
+    return a + b
+--- units/beta/check.py ---
+import beta
+assert beta.mul(3, 4) == 12, beta.mul(3, 4)
+print("beta ok")
+=== chain ===
+--- units/chain/stage1.py ---
+def parse_orders(*args, **kwargs):
+    raise NotImplementedError
+--- units/chain/stage2.py ---
+def filter_orders(*args, **kwargs):
+    raise NotImplementedError
+--- units/chain/stage3.py ---
+def total_by_price(*args, **kwargs):
+    raise NotImplementedError
+--- units/chain/stage4.py ---
+def report(*args, **kwargs):
+    raise NotImplementedError

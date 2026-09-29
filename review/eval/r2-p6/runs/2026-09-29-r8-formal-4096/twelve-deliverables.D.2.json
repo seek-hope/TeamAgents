@@ -1,0 +1,37 @@
+{
+  "status": "succeeded",
+  "steps": 10,
+  "prompt_tokens": 403134,
+  "completion_tokens": 30828,
+  "total_tokens": 433962,
+  "events": 725,
+  "group": "D",
+  "task_id": "twelve-deliverables",
+  "model_key": "leader_main",
+  "model": "deepseek-flash",
+  "context_window": 1000000,
+  "permissions": "full_auto",
+  "web": false,
+  "wall_ms": 72876,
+  "surface": {
+    "instructions_kind": "team-directive",
+    "instructions_template_sha256": "0557386389953ac42eae4f33acebbe857c514b357e7c695e0596cdbea08031a8",
+    "tools": [
+      "ls",
+      "read_file",
+      "write_file",
+      "edit_file",
+      "delete",
+      "glob",
+      "grep",
+      "shell"
+    ],
+    "request_options": {
+      "reasoning_effort": "high",
+      "max_tokens": 4096
+    },
+    "timeout_s": 900,
+    "max_steps": 25,
+    "max_retries": 2
+  }
+}

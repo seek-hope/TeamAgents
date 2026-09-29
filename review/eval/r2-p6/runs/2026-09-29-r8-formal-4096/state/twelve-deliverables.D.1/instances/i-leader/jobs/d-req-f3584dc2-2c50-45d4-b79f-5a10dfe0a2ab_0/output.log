@@ -1,0 +1,56 @@
+total 20
+drwxr-xr-x  3 rimuru rimuru 4096 Sep 30 02:23 .
+drwxr-xr-x  6 rimuru rimuru 4096 Sep 30 02:22 ..
+-rw-r--r--  1 rimuru rimuru 6610 Sep 30 02:23 REPORT.md
+drwxr-xr-x 14 rimuru rimuru 4096 Sep 28 04:52 units
+--- test/acceptance file mtimes (unchanged by workers) ---
+-rw-r--r-- 1 rimuru rimuru   76 Sep 24 15:15 units/alpha/check.py
+-rw-r--r-- 1 rimuru rimuru   73 Sep 24 15:15 units/beta/check.py
+-rw-r--r-- 1 rimuru rimuru   38 Sep 24 16:07 units/chain/data/orders.csv
+-rw-r--r-- 1 rimuru rimuru 1582 Sep 30 02:22 units/chain/tests/__pycache__/test_stage1.cpython-313-pytest-9.0.3.pyc
+-rw-r--r-- 1 rimuru rimuru 1673 Sep 30 02:22 units/chain/tests/__pycache__/test_stage2.cpython-313-pytest-9.0.3.pyc
+-rw-r--r-- 1 rimuru rimuru 1699 Sep 30 02:22 units/chain/tests/__pycache__/test_stage3.cpython-313-pytest-9.0.3.pyc
+-rw-r--r-- 1 rimuru rimuru 1478 Sep 30 02:22 units/chain/tests/__pycache__/test_stage4.cpython-313-pytest-9.0.3.pyc
+-rw-r--r-- 1 rimuru rimuru  229 Sep 24 16:07 units/chain/tests/test_stage1.py
+-rw-r--r-- 1 rimuru rimuru  184 Sep 24 16:07 units/chain/tests/test_stage2.py
+-rw-r--r-- 1 rimuru rimuru  195 Sep 24 16:07 units/chain/tests/test_stage3.py
+-rw-r--r-- 1 rimuru rimuru   93 Sep 24 16:07 units/chain/tests/test_stage4.py
+-rw-r--r-- 1 rimuru rimuru  302 Sep 24 15:32 units/csvfix/test_csvfix.py
+-rw-r--r-- 1 rimuru rimuru 1504 Sep 28 03:44 units/flags/test_flags.py
+-rw-r--r-- 1 rimuru rimuru 1346 Sep 28 03:44 units/intervals/test_intervals.py
+-rw-r--r-- 1 rimuru rimuru  505 Sep 28 03:44 units/ledger/test_ledger.py
+-rw-r--r-- 1 rimuru rimuru  284 Sep 28 03:46 units/measure/test_measure.py
+-rw-r--r-- 1 rimuru rimuru  178 Sep 28 03:46 units/ranges/test_ranges.py
+-rw-r--r-- 1 rimuru rimuru  319 Sep 24 15:32 units/rules/test_rules.py
+-rw-r--r-- 1 rimuru rimuru  295 Sep 28 03:44 units/schedule/test_schedule.py
+-rw-r--r-- 1 rimuru rimuru  195 Sep 28 03:46 units/slugify/test_slugify.py
+
+units/chain/tests/__pycache__:
+total 24
+drwxr-xr-x 2 rimuru rimuru 4096 Sep 30 02:22 .
+drwxr-xr-x 3 rimuru rimuru 4096 Sep 30 02:22 ..
+-rw-r--r-- 1 rimuru rimuru 1582 Sep 30 02:22 test_stage1.cpython-313-pytest-9.0.3.pyc
+-rw-r--r-- 1 rimuru rimuru 1673 Sep 30 02:22 test_stage2.cpython-313-pytest-9.0.3.pyc
+-rw-r--r-- 1 rimuru rimuru 1699 Sep 30 02:22 test_stage3.cpython-313-pytest-9.0.3.pyc
+-rw-r--r-- 1 rimuru rimuru 1478 Sep 30 02:22 test_stage4.cpython-313-pytest-9.0.3.pyc
+--- REPORT.md head ---
+# 12 独立交付物 —— 实现报告
+
+本报告覆盖 `units/` 下的 12 个互相独立的交付物。每块由一个独立 worker 实现，随后由集成者（leader）在同一工作区用各块规定的验收命令**重新真实运行**确认。
+
+- 约定：未修改任何测试/验收文件（`test_*.py`、`check.py`、`units/chain/tests/`、`units/chain/data/`）。
+- 环境：Python 3.13.15，pytest 9.0.3，Linux。
+- 集成复跑时间：2026-09-29（会话日期），结果如下。
+
+## 总览（集成者实际运行结果）
+
+| # | 单元 | 验收命令 | 结果 |
+|---|------|----------|------|
+| 1 | csvfix | `cd units/csvfix && python3 -m pytest -q` | `2 passed in 0.00s` (exit 0) |
+| 2 | rules | `cd units/rules && python3 -m pytest -q` | `1 passed in 0.00s` (exit 0) |
+| 3 | ledger | `cd units/ledger && python3 -m pytest -q` | `2 passed in 0.00s` (exit 0) |
+| 4 | schedule | `cd units/schedule && python3 -m pytest -q` | `2 passed in 0.00s` (exit 0) |
+| 5 | intervals | `cd units/intervals && python3 -m pytest -q` | `7 passed in 0.00s` (exit 0) |
+| 6 | flags | `cd units/flags && python3 -m pytest -q` | `8 passed in 0.00s` (exit 0) |
+| 7 | measure | `cd units/measure && python3 -m pytest -q` | `1 passed in 0.00s` (exit 0) |
+| 8 | slugify | `cd units/slugify && python3 -m pytest -q` | `1 passed in 0.00s` (exit 0) |

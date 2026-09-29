@@ -20,6 +20,125 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-354 Task 41 is verified: the readings reproduce, the treatment is in the record, and the operator's re-measurement added a batch (2026-09-30)
+
+The product's entry is D-353. This entry is the operator's verification and the phase's measured numbers.
+
+**What the operator verified.** (1) The readings, re-derived from the recorded batch instead of read off the
+entry: `python3 review/eval/r2-p6/anatomy.py --runs review/eval/r2-p6/runs/2026-09-29-r8-formal-4096 --units
+--unit-names …` prints exactly the entry's table — B.1 written 12/12, greened 12/12 last at **55.6 s**; B.2 and
+B.3 `written 0/12`; D.1 greened at **43.8 s** and D.2 at **42.0 s** (both written and settled 12/12); D.3
+`written 0/12`. One pair of three is readable, so the pre-registered "at least 2 of 3" rule fails and **H11 is
+not confirmed** — the verdict follows from the rule, not from a choice about which numbers to quote. (2) The
+instrument (H12): the instances of a 4096 trial carry `options: {"max_tokens": 4096, "reasoning_effort": "high"}`
+in their persisted profile (`state/twelve-deliverables.D.1/session.sqlite`), so the treatment was in force; the
+same database also carries D-350's `offered_tools` and `surface_authorized` columns, a cross-check of that card
+inside a real eval batch. (3) The registration's timing, from the files themselves: `manifest-r8.json` written
+00:16, the pilot started 00:23; `manifest-r8-4096.json` written 01:50, the 4096 batch started 01:50.
+
+**The one thing the operator's re-measurement added.** The entry's narration said the adjustment came "in the
+pilot and before the formal round". The record contains a **formal** batch at 2048 — `runs/2026-09-29-r8-formal`,
+phase `formal`, started 01:03, three repeats — whose six trials all failed (the solo arm on three 900 s timeouts,
+the team arm on three `harness_error` failures from the same truncation the pilot had found), and the ceiling
+moved to 4096 at 01:50, *after* it. That is a deviation from §3's own wording ("in the pilot and before any
+formal trial"), and D-353 and the registration's pilot section now both say so, with the batch left in the
+record. The verdict does not move — that batch has no readable pair either — but the reading of the round does.
+
+**Evidence** (2026-09-30; the tree is `810df2a8` plus this card's uncommitted diff).
+
+| Command | Result |
+|---|---|
+| `anatomy.py --units` on the 4096 batch, run by the operator | B.1 greened 12/12 (55.6 s), B.2/B.3 0/12, D.1 43.8 s, D.2 42.0 s, D.3 0/12 — the entry's table, reproduced |
+| a 4096 trial's persisted instance profile | `{"max_tokens": 4096, "reasoning_effort": "high"}` — H12 in the record |
+| `runs/2026-09-29-r8-formal/run-header.json` | phase `formal`, started 2026-09-30T01:03:19+0800, the 2048 manifest — the batch the entry's narration had left out |
+| the batch's own real tokens | solo 445,053 / team 867,200 (`results.jsonl`) |
+| `python3 review/test_counts.py` | `core 118 / engine 292 / tui 36` (no product test changed) |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `make pty` | ok |
+
+**The phase's measured numbers (this commit).** **555,366,619 tokens over 1,506 model requests**, the suites
+above, three operator resumes. Q16's state after this round, in one place: H1 passed and not in doubt; H2's
+success form unconfirmed (zero paired difference); round 7's paired reading the last confirmed one; and now H11
+not confirmed with its mechanism-attempt recorded — the cap is not a handicap (both arms finished under it in one
+trial each) and it did not reproduce the batching story the round was built to remove.
+
+**Next card**: the acceptance matrix's claims audit resumes — twenty-one rows audited, fifteen remaining — with
+the phase's newest evidence available to it (the per-request surface record, the goal-cancel lever, the daemon
+startup sweep).
+
+**Ceiling**: the operator re-derived the readings, the treatment and the timing, and corrected the narration; it
+did not re-run the round (the batch is the round's evidence, and re-running real-model trials to check a
+reproducible file would be measuring the machine, not the claim). The two arms' *unreadable* trials remain
+unattributed, as D-353 says — this round does not claim to know why they stalled.
+
+## D-353 Round 8's ceiling experiment: H11 not confirmed, the instrument is the finding (2026-09-29)
+
+**What the round was.** D-341's row for D-259/D-264: test the mechanism round 5 named. Its verdict said a
+*separating* criterion "has to cap what one response can carry (a per-response output ceiling) or use units so
+large that a single response cannot hold several"; round 7 had confirmed only the paired form of the *time to
+green* metric. Round 8 pre-registered the cap itself, in both arms, before any of its own trials
+(`review/eval/r2-p6/design-r8.md`, frozen 2026-09-29): H11 — the team arm strictly earlier in at least 2 of 3
+fresh pairs on `twelve-deliverables` — and H12, the instrument.
+
+**How the treatment was carried.** A new optional manifest field, `model.max_tokens`, which `run.py` exports as
+`TEAMAGENTS_EVAL_MAX_TOKENS` and the harness puts into every group's request options next to the
+`reasoning_effort` it always set; a trial records it in its own surface, so H12 is checkable from the records
+(`freeze.py --max-tokens`, `eval_groups_abc`'s `request_options()`, `run.py`'s child env). The surface audit
+reads the `reasoning_effort` value it has always read, so the pinned surface does not move and rounds 1–7's
+records stay valid.
+
+**The pilot, and the one adjustment the registration allowed.** The pilot ran the ceiling at **2048** and caught
+the instrument truncating an arm: the team arm died in seconds with
+`Error: "issue_grant: subject/action/resource_scope must not be empty"` — with reasoning and the visible tool
+call sharing one small budget, a spawned member's grant arguments arrived empty and the product's guard refused
+them. The same trial by hand **without** the ceiling ran normally (27 steps, 1.34M tokens, 125 s), which is what
+isolates the cap as the cause; the solo arm at 2048 ran the full 900 s bound without finishing. The registration
+allowed exactly one adjustment, and it recorded that one: the ceiling moved to **4096**, still far below what
+several units' files need in one response. **Every batch stays in the record, including one this narration has
+to state rather than smooth over**: `manifest-r8.json` (2048) carries the pilot *and* a **formal** batch that ran
+at it — `runs/2026-09-29-r8-formal`, started 01:03, three repeats — which produced **no readable trial at all**
+(the solo arm on three 900 s timeouts, the team arm on three `harness_error` failures from the same truncation
+the pilot had found), and the ceiling moved to 4096 at 01:50, *after* that formal batch, where §3's own wording
+said the adjustment would come "in the pilot and before any formal trial". The deviation leaves the verdict
+below unchanged (that batch has no readable pair either) and matters for how the round reads; the operator's
+entry records it (D-354). `manifest-r8-4096.json` is the manifest the verdict's batch ran under.
+
+**The formal round, and its verdict.** Six fresh trials, all accepted, each recording
+`request_options = {"reasoning_effort": "high", "max_tokens": 4096}` (H12 confirmed). Reading each arm's own
+evidence that every unit is green (`anatomy.py --units`, the fixture's twelve units):
+
+| repeat | solo arm | team arm |
+|---|---|---|
+| 1 | 55.6 s | **43.8 s** |
+| 2 | unreadable — 900 s bound, 0/12 written | **42.0 s** |
+| 3 | unreadable — 900 s bound, 0/12 written | unreadable — 900 s bound, 0/12 written |
+
+`analyze.py` reads the same batch as `B 1/3 ok, D 2/3 ok -> too few samples, not confirmed`.
+**H11 is not confirmed**: one of three pairs is readable and in the team arm's favour; the other two are
+unreadable, and the pre-registration counts an unreadable timeline against H11. The round says so instead of
+reaching for a form the data does not carry.
+
+**What the round did show.** The cap is not a handicap: in one trial per arm all twelve units were written and
+greened (solo 55.6 s, team 42.0 s and 43.8 s), so both arms can finish under it — which the 2048 pilot could not
+establish. The solo arm's batching, as round 5 measured it, is not what the cap removed here: its *successful*
+trial greened its last unit at 55.6 s, against round 7's 86.7–131.9 s, and two of its three trials **stalled at
+the bound with nothing written at all** — a shape no pre-treatment round produced, which nothing in this round
+attributes to the cap rather than to host or model variance. **Round 7's paired reading stays the last confirmed
+one on this question**, H2's success form is untouched, and the end-to-end gate stays as round 5 left it.
+
+**The record.** `design-r8.md` carries the pre-registration, the pilot with its single adjustment, and the
+result; `review/eval/r2-p6/REPORT.md` gains a round-8 section; ACCEPTANCE's Q16 row and the known-gaps bullet
+carry the reading without re-labelling anything; the two manifests and both batch directories stay as they ran.
+
+**Numbers** (measured): citations **1005** / 81 relative links / **638** `make` / **1016** § refs, 0 unexplained
+(`review/citations.py`); suites unchanged (no product test changed: `review/test_counts.py` still reads core 118
+/ engine 292 / tui 36); real tokens spent this round: solo 445,053, team 867,200 (the batch's own results, as
+`analyze.py` totals them), against round 7's 6-trial batch. No `verification/tla`, `verification/kani` or
+`core/src/kernel/types.rs` was touched, so section 0 does not apply.
+
+**Uncommitted, for the operator.** `review/eval/r2-p6/{design-r8.md,manifest-r8.json,manifest-r8-4096.json,REPORT.md,runs/2026-09-29-r8-pilot,runs/2026-09-29-r8-formal,runs/2026-09-29-r8-formal-4096,run.py,freeze.py}`,
+`engine/examples/eval_groups_abc.rs`, `docs/ACCEPTANCE.md`, `docs/DECISIONS.md`, `review/citations.py`.
+
 ## D-352 Task 40 is verified: the sweep rides the supervisor's own writer, and the operator's control breaks it (2026-09-29)
 
 The product's entry is D-351. This entry is the operator's verification and the phase's measured numbers.
@@ -122,7 +241,7 @@ implementation) instead of calling it the user's; ACCEPTANCE's A30 row tail and 
 carried the cadence question say the same and name the pin.
 
 **Numbers** (measured): suites `review/test_counts.py` -> **core 118 / engine 292 / tui 36** (engine +1 for the
-new daemon test); citations **1005** / 81 relative links / **637** `make` / **1012** § refs, 0 unexplained
+new daemon test); citations **1005** / 81 relative links / **638** `make` / **1012** § refs, 0 unexplained
 (`review/citations.py`, docstring updated); decisions 310 live entries, newest-first, all unique with this one; no `verification/tla`,
 `verification/kani` or `core/src/kernel/types.rs` touched, so section 0 does not apply — the sweep is a
 recording/deletion policy the model already covers (`V2Artifact`'s `GcClaim`/`GcDelete`), and D-191 re-ran that

@@ -100,6 +100,8 @@ def main() -> int:
     parser.add_argument("--task-timeout", action="append", default=[], metavar="ID=SECONDS",
                         help="a per-task wall-clock bound (round 5: the race tasks carry their own)")
     parser.add_argument("--frozen-on", default="2026-09-24")
+    parser.add_argument("--max-tokens", type=int, default=0,
+                        help="round 8: the per-response output ceiling the manifest carries, applied to every arm")
     args = parser.parse_args()
 
     only = [name for name in args.tasks.split(",") if name] or None
@@ -152,6 +154,11 @@ def main() -> int:
             "context_source": "D-36: user-confirmed DeepSeek Flash native 1M (2026-09-17)",
             "reasoning_effort": "high",
             "effort_note": "catalog default max (~240s per simple turn); the pilot phase sets high explicitly to bound cost and duration",
+            **({"max_tokens": args.max_tokens,
+                "max_tokens_note": "round 8's treatment: a per-response output ceiling, both arms, from "
+                                   "TEAMAGENTS_EVAL_MAX_TOKENS; it removes the solo arm's batching, which is "
+                                   "what round 5 measured"}
+               if args.max_tokens else {}),
         },
         "limits": json.loads(args.limits),
         "repeats": json.loads(args.repeats),
