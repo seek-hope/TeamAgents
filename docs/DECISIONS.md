@@ -20,6 +20,86 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-334 Task 32 is verified: the glob's one test is not the boot failure, and the operator's control says the new citation bears the claim (2026-09-29)
+
+The product's entry is D-333. This entry is the operator's verification and the phase's measured numbers.
+
+**What the operator verified.** (1) `v2_spawn_failure::*` really is one test: `engine/tests/v2_spawn_failure.rs`
+holds `runner_spawn_failure_fails_the_op_and_the_driver_survives` and nothing else (its second `fn` is the
+`wait_event` helper), and that test drives a *job command's* binary, not the driver's boot — so the row's offline
+citation was a neighbouring failure, exactly as D-333 says. (2) The test D-333 names,
+`engine/tests/cli.rs`'s `the_instances_list_says_why_an_instance_is_parked`, exists and asserts what the row now
+claims: it polls until the leader is `PARKED`, then requires `instances` to print the parked leader **and** the
+named reason. (3) The operator's own control: `engine/src/bound.rs`'s reason (sha256 of the file before the edit
+`7d2187ce…`) changed from the form that carries the service's name to one that does not; the named test
+**FAILED** (0.16 s) with `the row says why: … i-leader PARKED / READY · test — a required tool service is
+unavailable: MCP workspace initialization failed: MCP server exited` — the park still happens and only the *named
+reason* is gone, which is precisely the half the citation has to bear; the line restored byte-identically (sha256
+`7d2187ce…`, `git diff` clean) puts the test back to **ok** (0.17 s).
+
+**Evidence** (2026-09-29; the tree is `55743484` plus this uncommitted diff).
+
+| Command | Result |
+|---|---|
+| reading `engine/tests/v2_spawn_failure.rs` | one test, a job command's binary — nothing about a driver's boot or a park |
+| reading `engine/tests/cli.rs`'s named test | polls to `PARKED`, then asserts the parked leader and the named reason are printed |
+| the operator's control (the reason's name field dropped) | the named test **FAILED** (0.16 s): park intact, reason unnamed |
+| restoring the control byte-identically | sha256 `7d2187ce…`; `git diff` clean; the test **ok** again (0.17 s) |
+| `python3 review/citations.py` | 900 citations, 81 relative links, 597 `make` commands, 997 `§`-references, 0 unexplained (the docstring was moved with the row) |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `make pty` | ok |
+
+**The audit's yield.** Twenty cards have produced twenty-one findings: nine coverage holes, eleven claim holes and
+one product defect. Eighteen rows are audited; eighteen remain.
+
+**The phase's measured numbers (this commit).** **Thirty-one deliveries**, **427,389,374 tokens over 1,077 model
+requests**, the suites at `core 115 / engine 288 / tui 36`, and an operator cost of thirty-two verification rounds
+and three resumes.
+
+**Next card**: eighteen rows remain. Both glob classes are audited now (the matrix's three glob citations, and
+A07's file glob whose single test proved a neighbouring failure), so the preference is rows whose titles name two
+things, rows other rows lean on, and D-324's orphan sweep — A07's own lesson, a test no row named, is that class.
+
+**Ceiling**: the operator did not re-run the live probe (`review/dogfood/mcp_http.py`, D-104); its dated numbers
+stand as recorded. A07's turn-storm halves (D-65's prose-reply rule and D-71's runtime tail) and their refuted
+controls are untouched, and no product or test code changed.
+
+## D-333 A07's file glob proved a different failure; its own claim now names the test that drives it (2026-09-29)
+
+**What the row claims and what its evidence was.** A07 ("Permanent start failure") claims the driver's boot
+failure: an instance whose required tool service cannot start is *parked* and the reason names the missing
+service. Its live half says so (`python3 review/dogfood/mcp_http.py`, D-104). Its offline citation was
+`fail_request_closes_and_parks_without_losing_input` — correct, but the *control-plane* refusal, not the driver —
+plus the file glob `v2_spawn_failure::*`.
+
+**What that glob actually asserts.** `engine/tests/v2_spawn_failure.rs` holds exactly one test,
+`runner_spawn_failure_fails_the_op_and_the_driver_survives` ("a binary that exits instantly: the runner never
+persists READY") — a *job command's* binary, not the driver's boot. Neither the park nor the named reason is in it.
+
+**The test that does drive the claim, which no row or document named.** `engine/tests/cli.rs`'s
+`the_instances_list_says_why_an_instance_is_parked` starts a daemon whose leader's required MCP service has a
+command that does not exist, polls `checkpoint` until the instance is `PARKED`, and then asserts what a user
+reads: the `instances` list prints the parked leader *and* `required tool service "broken" is unavailable`, and
+the JSON form carries the same reason. It is the offline twin of the live probe.
+
+**The change.** A07's row names that test and what it asserts, and says what `v2_spawn_failure::*` really is (the
+*command* half: one test, not the driver's boot). No product or test code changed — the claim itself was true; the
+citation was.
+
+**Evidence** (2026-09-29; the tree is `55743484` plus this uncommitted diff).
+
+| Command | Result |
+|---|---|
+| reading `engine/tests/v2_spawn_failure.rs` | one test, `runner_spawn_failure_fails_the_op_and_the_driver_survives`: a job command's binary, nothing about a driver's boot or a park |
+| counter-control: `engine/src/bound.rs`'s reason changed from `format!("required tool service {name:?} is unavailable: {e}")` to a form without `{name:?}` | `cargo test --offline --manifest-path engine/Cargo.toml --test cli the_instances_list_says_why_an_instance_is_parked -- --exact` **FAILED**: `the row says why: session s-main: 1 instance(s) / i-leader PARKED / READY — a required tool service is unavailable: MCP workspace initialization failed: MCP server exited`; the line was restored byte-identically (`diff` clean) |
+| the same test after the restore, and the whole suite | pass |
+| `python3 review/citations.py` after the row edit | 900 citations / 81 links / 596 `make` / 997 `§`, 0 unexplained; the docstring updated to match (899→900) |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+
+**Ceiling.** No behaviour change and no defect: the park and the named reason are implemented and now have a named
+offline test. I did not re-run the live probe; its dated numbers stand as recorded. A07's turn-storm halves
+(D-65's prose-reply rule, D-71's runtime tail) and their two refuted controls are unchanged.
+
 ## D-332 Task 31 is verified: the control's rule is NoEffectBeforeAccept, and the operator's own TLC run says so (2026-09-29)
 
 The product's entry is D-331. This entry is the operator's verification and the phase's measured numbers.
