@@ -5,7 +5,16 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
-## 0. Gate status (re-run 2026-09-30 at `a1fa0bc3`)
+## 0. Gate status (re-run 2026-09-30 at `b8e27c0f`)
+
+* **D-367 added the automation schedule and re-ran all three targets on this tree (2026-09-30).**
+  `make verify-model-all`: all **27** configurations `No error has been found` (rc 0) — the newest is
+  `MC_schedule.cfg`, exhaustive in seconds (304,069 states generated / 71,064 distinct).
+  `make verify-model-counterexamples`: all **86** negative controls are refuted (rc 0) — the four new ones are
+  `MC_schedule_duplicate.cfg` (`NoDuplicateRun`), `MC_schedule_overlap.cfg` (`AtMostOneRunPerAutomation`),
+  `MC_schedule_disabled.cfg` (`DisabledNeverRuns`) and `MC_schedule_early.cfg` (`OnlyDueSlotsRun`).
+  `make verify-kani` reports `Complete - 3 successfully verified harnesses, 0 failures, 3 total` (rc 0). The
+  round changed `verification/tla/V2Schedule.tla` and its five configurations and nothing else in the material.
 
 * **D-364 added the named-session registry and re-ran all three targets on this tree (2026-09-30).**
   `make verify-model-all`: all **26** configurations `No error has been found` (rc 0) — the newest is
@@ -214,7 +223,7 @@ in [README.md](README.md); the fix ledger is in
 
 **What can be claimed**:
 
-- The safety properties of twenty-three surfaces (control plane, artifacts/GC, waits/wakeups,
+- The safety properties of twenty-four surfaces (control plane, artifacts/GC, waits/wakeups,
   tasks/delegation/goal settlement, compression, the daemon protocol, the required checks, the authority,
   the member's workspace (§5.1's merge and retirement rules, D-252),
   layer, the user's authority surface, session-store identity, and — added 2026-09-27, D-225 — the approval

@@ -510,6 +510,10 @@ teamagents sessions fork --id refactor --name branch   # branch its conversation
 teamagents --session refactor           # attach the TUI to it (`exec --session refactor "…"` for one turn)
 teamagents sessions archive --id refactor       # move it aside (refused while a daemon runs it)
 teamagents sessions delete --id refactor --yes  # remove its directory and history
+teamagents automations add --every 60 --prompt "summarize the changelog"   # a schedule the daemon runs (D-367)
+teamagents automations                  # id, state, next run, last goal
+teamagents automations pause|resume --id ID    # stop it, or re-arm it one period out
+teamagents automations remove --id ID --yes    # delete it
 teamagents tasks                        # id, status, assignee, goal
 teamagents tasks cancel --id t-prose    # releases a delegator waiting on a task that can only wait
 teamagents goals                        # the goals this session carries, and what is attached to them
@@ -554,6 +558,11 @@ teamagents goals cancel --id g-spent    # close a goal nothing can spend (its ce
   and the leader is left `ACTIVE`/`READY`. A live source is refused, so the snapshot never races a writer;
   `rename` and restore-from-archive are still missing — an archived directory is at `<base>/archive/<id>/` and
   can be moved back by hand.
+- **Automations (D-367)**: `teamagents automations add --every 60 --prompt "…"` stores a schedule the daemon
+  runs on its own — each due run opens a goal attached to the Leader and submits the prompt, carrying the
+  session's own `[limits]`/`[[checks]]`. `automations` lists id, state, next run and last goal; `pause`/`resume`
+  stop or re-arm one (resuming re-arms one period out); `remove --id ID --yes` deletes it. A run never overlaps
+  the previous one, and a slot missed while the session was down is coalesced into a single run, not backfilled.
 - **What a pause looks like while it takes effect**: `instances` and the TUI's instances panel print the
   lifecycle beside the execution position, which tells "pause requested" from "stopped at a safe boundary" —
   `PAUSED / TOOLS_PENDING` is an in-flight call that will stop at the boundary, `PAUSED / READY` is parked

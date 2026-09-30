@@ -120,6 +120,13 @@ where
     }
     let shutdown = Arc::new(AtomicBool::new(false));
     let stopped = Arc::new(tokio::sync::Notify::new());
+    // D-367: automations tick for the lifetime of the session, independent of any client.
+    {
+        let supervisor = supervisor.clone();
+        let facts = facts.clone();
+        let shutdown = shutdown.clone();
+        tokio::spawn(async move { run_scheduler(supervisor, facts, shutdown).await });
+    }
     let task = {
         let shutdown = shutdown.clone();
         let stopped = stopped.clone();
@@ -180,6 +187,62 @@ async fn accept_loop(
                 eprintln!("daemon client: {error}");
             }
         });
+    }
+}
+
+async fn run_scheduler(supervisor: Arc<SupervisorHandle>, facts: Arc<SessionFacts>, shutdown: Arc<AtomicBool>) {
+    // The bootstrap's leader id is fixed (`cli::daemon_boot`); an automation always addresses the Leader.
+    const LEADER: &str = "i-leader";
+    loop {
+        tokio::time::sleep(crate::v2::automations::tick()).await;
+        if shutdown.load(Ordering::SeqCst) {
+            return;
+        }
+        let home = PathBuf::from(&facts.state_root);
+        let mut schedule = match crate::v2::automations::Automations::load(&home) {
+            Ok(schedule) => schedule,
+            Err(error) => {
+                eprintln!("automations: {error}");
+                continue;
+            }
+        };
+        let now = teamagents_core::models::now();
+        for automation in schedule.due(now) {
+            // the previous run must not still be in flight (V2Schedule's `AtMostOneRunPerAutomation`)
+            if let Some(goal) = automation.last_goal.clone() {
+                match supervisor.goal_status(&goal).await {
+                    Ok(Some(status))
+                        if !matches!(status.as_str(), "SUCCEEDED" | "FAILED" | "BLOCKED" | "CANCELLED") =>
+                    {
+                        continue
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        eprintln!("automations: {error}");
+                        continue;
+                    }
+                }
+            }
+            let goal_id = format!("goal-auto-{}", automation.id);
+            let mut params = json!({"id": goal_id, "instance_id": LEADER});
+            apply_session_goal_limits(&mut params, &facts.goal_limits);
+            let command = Command {
+                command_id: format!("auto-goal-{}-{}", automation.id, uuid::Uuid::new_v4()),
+                method: "create_goal".into(),
+                params,
+            };
+            if let Err(error) = supervisor.submit_user(command).await {
+                eprintln!("automations: could not open a goal for {}: {error}", automation.id);
+                continue;
+            }
+            if let Err(error) = supervisor.input(LEADER, &automation.prompt).await {
+                eprintln!("automations: could not submit the prompt for {}: {error}", automation.id);
+                continue;
+            }
+            if let Err(error) = schedule.mark_run(&automation.id, now, &goal_id) {
+                eprintln!("automations: {error}");
+            }
+        }
     }
 }
 

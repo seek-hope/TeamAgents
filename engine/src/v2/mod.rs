@@ -6,6 +6,7 @@
 pub mod approvals;
 pub mod artifacts;
 pub mod authority;
+pub mod automations;
 pub mod daemon;
 pub mod driver;
 pub mod exec;

@@ -28,6 +28,10 @@ usage: teamagents [--cwd DIR] [--state-root PATH] [--session ID] [--model KEY] [
   teamagents sessions fork --id ID [--name NAME] branch a session's conversation into a new one (D-365)\n\
   teamagents sessions archive --id ID           move a named session aside (refused while a daemon runs it)\n\
   teamagents sessions delete --id ID --yes      remove a named session's directory and history\n\
+  teamagents automations [list] [--json]        schedules that start a goal on their own (D-367)\n\
+  teamagents automations add --every MIN --prompt TEXT [--name NAME]   create one\n\
+  teamagents automations pause|resume --id ID   stop it, or re-arm it one period out\n\
+  teamagents automations remove --id ID --yes   delete it\n\
   teamagents tasks [list] [--json]              the session's tasks\n\
   teamagents tasks cancel --id ID               cancel one; a delegator waiting on it is released\n\
   teamagents artifacts [list] [--json]          what this state root holds on disk (bytes, owner, presence)\n\
@@ -130,6 +134,9 @@ pub struct Args {
     pub attach: Option<String>,
     /// D-364: `sessions new --name NAME`.
     pub session_name: Option<String>,
+    /// D-367: `automations add --every MINUTES --prompt TEXT`.
+    pub every_minutes: Option<u64>,
+    pub prompt: Option<String>,
     /// D-267: `goals open --deadline MINUTES` — a deadline for the new goal, measured from now (§8).
     pub deadline_minutes: Option<u64>,
 }
@@ -172,6 +179,8 @@ fn parse_args() -> Args {
         service_stop: false,
         attach: None,
         session_name: None,
+        every_minutes: None,
+        prompt: None,
         deadline_minutes: None,
     };
     let mut i = 0;
@@ -285,8 +294,8 @@ fn parse_args() -> Args {
                 args.command = Some(argv[i].clone());
                 i += 1;
             }
-            "serve" | "init" | "doctor" | "validate" | "sessions" | "version" | "exec" | "authority" | "approvals"
-            | "instances" | "tasks" | "runners" | "artifacts" | "goals" | "surface" => {
+            "serve" | "init" | "doctor" | "validate" | "sessions" | "automations" | "version" | "exec"
+            | "authority" | "approvals" | "instances" | "tasks" | "runners" | "artifacts" | "goals" | "surface" => {
                 if args.command.is_some() {
                     reject("two entry points were given: pick one (teamagents --help lists them)");
                 }
@@ -319,6 +328,7 @@ fn parse_args() -> Args {
                             | "goals"
                             | "surface"
                             | "sessions"
+                            | "automations"
                     )
                 ) =>
             {
@@ -343,7 +353,12 @@ fn parse_args() -> Args {
                 args.stream_json = true;
                 i += 1;
             }
-            "--yes" if matches!(args.command.as_deref(), Some("instances" | "tasks" | "runners" | "sessions")) => {
+            "--yes"
+                if matches!(
+                    args.command.as_deref(),
+                    Some("instances" | "tasks" | "runners" | "sessions" | "automations")
+                ) =>
+            {
                 if args.confirmed {
                     given_twice("--yes");
                 }
@@ -363,7 +378,16 @@ fn parse_args() -> Args {
             "--id"
                 if matches!(
                     args.command.as_deref(),
-                    Some("approvals" | "instances" | "tasks" | "runners" | "goals" | "surface" | "sessions")
+                    Some(
+                        "approvals"
+                            | "instances"
+                            | "tasks"
+                            | "runners"
+                            | "goals"
+                            | "surface"
+                            | "sessions"
+                            | "automations"
+                    )
                 ) =>
             {
                 if args.approval_id.is_some() {
@@ -377,7 +401,7 @@ fn parse_args() -> Args {
                 );
                 i += 2;
             }
-            "--name" if args.command.as_deref() == Some("sessions") => {
+            "--name" if matches!(args.command.as_deref(), Some("sessions" | "automations")) => {
                 if args.session_name.is_some() {
                     given_twice("--name");
                 }
@@ -386,6 +410,24 @@ fn parse_args() -> Args {
                         .cloned()
                         .filter(|v| !v.is_empty() && !v.starts_with('-'))
                         .unwrap_or_else(|| needs_a_value("--name")),
+                );
+                i += 2;
+            }
+            "--every" if args.command.as_deref() == Some("automations") => {
+                if args.every_minutes.is_some() {
+                    given_twice("--every");
+                }
+                args.every_minutes = Some(
+                    argv.get(i + 1).and_then(|v| v.parse::<u64>().ok()).unwrap_or_else(|| needs_a_value("--every")),
+                );
+                i += 2;
+            }
+            "--prompt" if args.command.as_deref() == Some("automations") => {
+                if args.prompt.is_some() {
+                    given_twice("--prompt");
+                }
+                args.prompt = Some(
+                    argv.get(i + 1).cloned().filter(|v| !v.is_empty()).unwrap_or_else(|| needs_a_value("--prompt")),
                 );
                 i += 2;
             }
@@ -851,6 +893,128 @@ fn resolve_session(args: &mut Args) -> Result<(), String> {
     let dir = registry.resolve(&id)?;
     args.state_root = Some(dir.to_string_lossy().into_owned());
     Ok(())
+}
+
+/// `teamagents automations`: the user's schedule surface (D-367). Filesystem management over the state root's
+/// `automations.json`; the daemon does the ticking, opening a goal and submitting the prompt for each due one.
+fn run_automations(args: &Args) -> i32 {
+    use teamagents_engine::v2::automations::Automations;
+    let home = args.state_root.clone().map(PathBuf::from).unwrap_or_else(teamagents_engine::v2_root);
+    let mut schedule = match Automations::load(&home) {
+        Ok(schedule) => schedule,
+        Err(error) => {
+            eprintln!("automations: {error}");
+            return 1;
+        }
+    };
+    let now = teamagents_core::models::now();
+    let verb = args.positional.as_deref().unwrap_or("list");
+    match verb {
+        "list" | "ls" => {
+            let rows = schedule.rows();
+            if args.exec_json {
+                let report = serde_json::json!({"state_root": home.to_string_lossy(), "now": now, "automations": rows});
+                println!("{}", serde_json::to_string(&report).unwrap_or_else(|_| "{}".into()));
+            } else if rows.is_empty() {
+                println!("no automations for {}", home.display());
+            } else {
+                println!("{} automation(s) in {}", rows.len(), home.display());
+                for row in &rows {
+                    let every = row["every_secs"].as_u64().unwrap_or(0);
+                    println!(
+                        "  {}  {:<7}  every {}m  next in {}s  {}",
+                        row["id"].as_str().unwrap_or(""),
+                        if row["enabled"].as_bool().unwrap_or(false) { "enabled" } else { "paused" },
+                        every / 60,
+                        (row["next_at"].as_f64().unwrap_or(0.0) - now).max(0.0) as u64,
+                        row["name"].as_str().unwrap_or("")
+                    );
+                }
+            }
+            0
+        }
+        "add" => {
+            let Some(minutes) = args.every_minutes else {
+                eprintln!("automations add needs --every MINUTES");
+                return 2;
+            };
+            let Some(prompt) = args.prompt.as_deref() else {
+                eprintln!("automations add needs --prompt TEXT");
+                return 2;
+            };
+            if minutes == 0 {
+                eprintln!("automations add: --every must be at least one minute");
+                return 2;
+            }
+            match schedule.add(args.session_name.as_deref().unwrap_or(""), prompt, minutes * 60, now) {
+                Ok(entry) => {
+                    if args.exec_json {
+                        let report = serde_json::json!({"state_root": home.to_string_lossy(), "id": entry.id,
+                                                        "name": entry.name, "every_secs": entry.every_secs, "next_at": entry.next_at});
+                        println!("{}", serde_json::to_string(&report).unwrap_or_else(|_| "{}".into()));
+                    } else {
+                        println!(
+                            "created automation {} (every {}m; first run in {}s)",
+                            entry.id, minutes, entry.every_secs
+                        );
+                    }
+                    0
+                }
+                Err(error) => {
+                    eprintln!("automations add: {error}");
+                    1
+                }
+            }
+        }
+        "remove" => match args.approval_id.as_deref() {
+            Some(id) if args.confirmed => match schedule.remove(id) {
+                Ok(entry) => {
+                    println!("removed automation {} ({})", entry.id, entry.name);
+                    0
+                }
+                Err(error) => {
+                    eprintln!("automations remove: {error}");
+                    1
+                }
+            },
+            Some(id) => {
+                eprintln!("removing automation {id} is deliberate: add --yes");
+                2
+            }
+            None => {
+                eprintln!("automations remove needs --id ID");
+                2
+            }
+        },
+        "pause" | "resume" => match args.approval_id.as_deref() {
+            Some(id) => match schedule.set_enabled(id, verb == "resume", now) {
+                Ok(entry) => {
+                    println!(
+                        "automation {} {}",
+                        entry.id,
+                        if entry.enabled { "enabled (next run one period out)" } else { "paused" }
+                    );
+                    0
+                }
+                Err(error) => {
+                    eprintln!("automations {verb}: {error}");
+                    1
+                }
+            },
+            None => {
+                eprintln!("automations {verb} needs --id ID");
+                2
+            }
+        },
+        other => {
+            eprintln!(
+                "automations: unknown command {other:?}; use `teamagents automations [list]`, \
+                 `automations add --every MINUTES --prompt TEXT [--name NAME]`, `automations pause|resume --id ID`, \
+                 `automations remove --id ID --yes`"
+            );
+            2
+        }
+    }
 }
 
 /// `teamagents sessions`: the picker and lifetime of named sessions (D-364).
@@ -1383,6 +1547,7 @@ fn main() {
         Some("goals") => run_goals(&args),
         Some("instances") => run_instances(&args),
         Some("sessions") => run_sessions(&args),
+        Some("automations") => run_automations(&args),
         Some("tasks") => run_tasks(&args),
         Some("runners") => run_runners(&args),
         Some("surface") => run_surface(&args),

@@ -20,6 +20,57 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-367 Automations: user-defined schedules that start a goal on their own (2026-09-30)
+
+**The gap.** Codex has no unattended runs, Pi keeps them in a separate project, and Hermes ships a cron
+scheduler; this product ran only when asked. The user's mandate for this batch is to close that gap.
+
+**The design.** An automation is a prompt plus a period, created by the user with
+`teamagents automations add --every MINUTES --prompt TEXT [--name NAME]` and stored under
+`<state root>/automations.json` (`engine/src/v2/automations.rs`): a version-stamped, atomically written file,
+validated in full on load — an unknown version, a duplicate id, a zero period or an empty prompt is refused
+rather than partially applied. It is configuration, not session execution state, so it stays a file (the same
+shape D-364 chose for the session registry), and `automations list` reads only that file, never a database.
+`pause`/`resume`/`remove` finish the surface; resuming re-arms the next run one period out so a long pause does
+not fire a stale schedule immediately.
+
+**The scheduler.** The daemon owns the ticking (`daemon.rs::run_scheduler`, one tokio task for the session's
+lifetime, independent of clients). At each tick it asks which automations are due — enabled and past `next_at` —
+and for each one whose previous run's goal has **settled** (`SupervisorHandle::goal_status`), it opens a goal
+attached to the Leader with the session's own `[limits]`/`[[checks]]` and submits the prompt as an ordinary
+input. A tunable tick (`TEAMAGENTS_AUTOMATION_TICK_MS`, for tests) makes this measurable. Nothing here widens
+the session's authority: the prompt is ordinary user input, the goal carries the ceilings every other goal
+carries, and the scheduler never issues a grant.
+
+**Rules that matter.** A slot is never run twice (`mark_run` advances `next_at` and persists in one atomic
+write), two runs of one automation never overlap (the last goal's status gates the next start), a paused
+automation never runs (`due` requires `enabled`), and a run starts only when due. A slot missed while the
+process was down is **coalesced**, not backfilled: the next run happens now and the following one a period
+later.
+
+**Formal.** `verification/tla/V2Schedule.tla` states those four rules (`NoDuplicateRun`,
+`AtMostOneRunPerAutomation`, `DisabledNeverRuns`, `OnlyDueSlotsRun`) over the schedule's own state, with one
+negative control per rule (`MC_schedule_duplicate.cfg`, `MC_schedule_overlap.cfg`,
+`MC_schedule_disabled.cfg`, `MC_schedule_early.cfg`), each refuted. Measured 2026-09-30: `make verify-model-all`
+27/27, `make verify-model-counterexamples` 86/86, `make verify-kani` 3/3, the positive schedule configuration
+exhaustive in seconds (304,069 states generated / 71,064 distinct). The model abstracts the period into "the
+slot advances by one"; the coalescing and the goal a run opens are the code's, pinned by the tests below.
+Writing the first draft hit the `x' = a \/ b` precedence trap the `V2Prompt` entry records — the monitor
+assignments needed parentheses around the whole right-hand side, and three controls reported
+"Successor state is not completely specified" until they had them.
+
+**Evidence.** `automations.rs`'s three unit tests (a round trip with disabled never due and enabling re-arming;
+a missed backlog coalescing to one run with the overlap check seeing an open goal as running; a malformed file
+refused) and `cli::a_due_automation_opens_one_goal_and_does_not_overlap_itself` (a real daemon with a 100 ms
+tick: the due automation fires once, `next_at` advances, and several more ticks leave exactly one
+`goal-auto-a1` row while the goal stays open).
+
+**Ceilings.** The schedule is a fixed interval, not a cron expression; an automation always addresses the
+Leader and always runs in the session's workspace with the session's ceilings (no per-automation budget); a
+leader parked by a permanent failure leaves the automation's goal open, so the next run waits (visible in
+`automations list` as an unadvanced `last_goal`) rather than piling up; and there is no external delivery — a
+run's result is read in the session like any other.
+
 ## D-366 The TUI shows the model's live output: a transient, non-authoritative preview (2026-09-30)
 
 **The gap.** The providers already stream (`ProviderEvent::TextDelta`, `engine/src/providers/mod.rs`), and §9

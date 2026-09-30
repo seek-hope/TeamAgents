@@ -170,6 +170,22 @@ impl SupervisorHandle {
         &self.session_id
     }
 
+    /// The status of one goal, or `None` when no such goal exists (D-367: the automation scheduler uses it to
+    /// tell whether an automation's previous run is still in flight).
+    pub async fn goal_status(&self, goal_id: &str) -> Result<Option<String>, String> {
+        let goal = goal_id.to_string();
+        self.storage
+            .call(move |control| -> Result<Option<String>, String> {
+                use rusqlite::OptionalExtension;
+                control
+                    .connection()
+                    .query_row("SELECT status FROM goals WHERE id = ?1", [&goal], |row| row.get(0))
+                    .optional()
+                    .map_err(|e| format!("goal status {goal}: {e}"))
+            })
+            .await?
+    }
+
     /// The text each instance is streaming right now (§9): a transient, non-authoritative preview a client may
     /// render and drop. An instance with no attempt in flight carries none, and nothing here is persisted.
     pub fn previews(&self) -> Json {

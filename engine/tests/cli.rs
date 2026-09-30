@@ -3325,3 +3325,84 @@ fn sessions_fork_snapshots_a_session_and_refuses_a_live_source() {
     assert!(out.contains("forked session"), "{out}");
     let _ = std::fs::remove_dir_all(&home);
 }
+
+/// D-367: a due automation makes the daemon open one goal and submit its prompt, and it does not overlap itself
+/// while that goal is still open.
+#[test]
+fn a_due_automation_opens_one_goal_and_does_not_overlap_itself() {
+    let home = Scratch::new("automations");
+    let state = home.join("state/teamagents/v2");
+    let config_home = home.join("config");
+    std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
+    std::fs::write(
+        config_home.join("teamagents/config.toml"),
+        "[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\n\
+         api_key_env = \"TA_AUTO_KEY\"\nbase_url = \"http://127.0.0.1:1/v1\"\ntimeout = 2\nmax_retries = 0\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(&state).unwrap();
+    std::fs::write(
+        state.join("automations.json"),
+        r#"{"version":1,"automations":[{"id":"a1","name":"tick","prompt":"do it","every_secs":3600,"enabled":true,"next_at":0.0}]}"#,
+    )
+    .unwrap();
+    let env = |command: &mut Command| {
+        command
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_STATE_HOME", home.join("state"))
+            .env("TA_AUTO_KEY", "test-value")
+            .env("TEAMAGENTS_AUTOMATION_TICK_MS", "100");
+    };
+    let mut daemon = Command::new(env!("CARGO_BIN_EXE_teamagents"));
+    env(&mut daemon);
+    let daemon = daemon
+        .args(["daemon", "--state-root"])
+        .arg(&state)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("start the daemon");
+    let mut daemon_guard = Daemon(daemon);
+    let socket = state.join("daemon.sock");
+    for _ in 0..200 {
+        if socket.exists() && std::os::unix::net::UnixStream::connect(&socket).is_ok() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(socket.exists(), "the daemon must listen");
+    // wait for the automation to fire (the schedule records the goal it opened)
+    let mut fired = None;
+    for _ in 0..200 {
+        let schedule: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(state.join("automations.json")).unwrap()).unwrap();
+        if let Some(goal) = schedule["automations"][0]["last_goal"].as_str() {
+            fired = Some((goal.to_string(), schedule["automations"][0]["next_at"].as_f64().unwrap_or(0.0)));
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let (goal_id, next_at) = fired.expect("the due automation must fire");
+    assert_eq!(goal_id, "goal-auto-a1");
+    assert!(next_at > 0.0, "the slot advanced past the missed one");
+    // give the scheduler several more ticks: the goal it opened is still open, so no second run opens
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    let (code, out, err) = {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_teamagents"));
+        env(&mut command);
+        let output = command.args(["daemon", "--stop", "--state-root"]).arg(&state).output().expect("stop");
+        (
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    };
+    assert_eq!(code, Some(0), "{out}{err}");
+    let _ = daemon_guard.0.wait();
+    let control = teamagents_core::v2::store::open_read_only(&state.join("session.sqlite")).expect("open the store");
+    let goals: i64 = control
+        .query_row("SELECT COUNT(*) FROM goals WHERE id = 'goal-auto-a1'", [], |row| row.get(0))
+        .expect("count goals");
+    assert_eq!(goals, 1, "exactly one goal for the automation's run");
+    let _ = std::fs::remove_dir_all(&home);
+}

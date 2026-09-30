@@ -163,6 +163,7 @@ nobody uses, and several are what the probes depend on.
 |---|---|---|
 | `TEAMAGENTS_LOG_SURFACE=1` | an operator diagnosing a member's offer, and `review/dogfood/authority.py` | the driver writes one line per prepared request into stderr (the daemon's log): `driver: surface <instance> shell=yes\|no tools=…` — the witness that separates "the tool was never offered" from "the model ignored it" (D-143) |
 | `TEAMAGENTS_JOB_IDLE_TICK_MS` | tests | how often an *idle* job runner re-checks (default 30 s): a test cannot wait 30 s for a rule about waiting (D-153) |
+| `TEAMAGENTS_AUTOMATION_TICK_MS` | tests | how often the daemon's automation scheduler ticks (default 30 s): a test cannot wait a period to see a schedule fire (D-367) |
 | `TEAMAGENTS_JOB_TEST_HOOKS` | the runner's own tests | compiles-in fault injection for the job runner, disabled unless the parent opts in; never read from a job file or a model (A31) |
 | `TEAMAGENTS_RUNNER_BIN` | integration tests | the runner image, so the test binary can serve as the runner (production uses the same `teamagents` binary) |
 | `TEAMAGENTS_TUI` | the CLI, when the TUI is not a sibling of it | where `teamagents` finds `teamagents-tui`; its own error message names this variable (`engine/src/main.rs`) |
@@ -180,7 +181,7 @@ the [verification guide](../verification/README.md).
 ```bash
 make verify-tools       # download and verify the pinned tla2tools.jar (TLC v1.7.1, fixed SHA-256)
 make verify-model       # small control-plane configuration
-make verify-model-all   # small configurations for all twenty-three modules (~1 minute here)
+make verify-model-all   # small configurations for all twenty-four modules (~1 minute here)
 make verify-model-counterexamples  # every negative control: each must be *refuted*
 make verify-model-wide  # wide control-plane configuration (hundreds of millions of states, slow)
 make verify-kani        # Kani proofs for the paging arithmetic (needs the Kani toolchain)
