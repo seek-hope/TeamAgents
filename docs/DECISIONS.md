@@ -20,6 +20,35 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-377 Terminal-Bench with TeamAgents: the harbor adapter and the first measured batch (2026-09-30)
+
+**Why.** D-375 established the comparable baseline and the protocol; the repository had no way to produce its
+own row. `review/benchmark/teamagents_agent.py` is a harbor **installed-agent** adapter: it copies the static
+`teamagents` binary (`x86_64-unknown-linux-musl`) and a frozen config into the task container and runs one
+headless turn (`teamagents exec --json --cwd /app --full-auto`) against the task instruction. The model is
+paratera `DeepSeek-V4.1-Flash`, native **1,000,000**-token window (D-36), `reasoning_effort = "high"`.
+
+**The credential never enters the command.** Harbor echoes a failed command into its own error message, so the
+first version (which inlined `PARATERA_API_KEY=…`) leaked the key into the job log. The key now travels in
+`exec(env=…)`, which harbor redacts; the first batch's job directory is therefore not committed and was deleted.
+
+**First batch (measured 2026-09-30, 6 tasks × 1 attempt, 28 m 53 s).** `cobol-modernization`, `fix-git`,
+`prove-plus-comm` and `sqlite-db-truncate` = **1.0**; `adaptive-rejection-sampler` = 0.0 (the turn failed with
+`permanent model error: model stream: error decoding response body`); `cancel-async-tasks` = 0.0 (the turn hit
+its own 840 s deadline). **4/6 = 0.667 on this sample** — a sample, not a score.
+
+**Divergences from the official protocol, recorded rather than hidden:** harbor's task baseline is **public
+network** by default (the official TB 2.1 is evaluated without network) and its `no-network` mode needs an
+egress-control sidecar whose compose project failed to initialise here; the product has no `max_steps = 500`
+counterpart, so a turn is bounded by wall clock instead; `reasoning_effort` is `high`, not the card's maximum;
+and the batch used N = 1 where the card's scaffold table uses N = 3. The adapter and the tables it produces live
+in `review/benchmark/`, whose `README.md` states all of this beside the run command.
+
+**Formal.** None: this is the benchmark harness, not product behaviour.
+
+**Ceiling.** The sample is six of 89 tasks with one attempt each, so it cannot be compared with the official
+percentages; the network divergence has to be removed before any row is called comparable.
+
 ## D-376 Codemode completed: the veto, structured results, the tool helpers and a persistent store (2026-09-30)
 
 **The gap.** D-374 shipped codemode's core (one tool, a QuickJS sandbox, only the script's own output in the
