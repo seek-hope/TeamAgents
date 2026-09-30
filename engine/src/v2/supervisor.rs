@@ -116,9 +116,18 @@ impl SupervisorHandle {
     /// target instance wakes immediately (interactive priority, §7).
     pub async fn submit_user(&self, cmd: Command) -> Result<Json, String> {
         let instance = cmd.params["instance_id"].as_str().map(str::to_string);
+        let interrupt = cmd.method == "interrupt_instance";
         let result = self.submit(cmd, Identity::User).await?;
         if let Some(instance) = instance {
             if let Some(driver) = self.drivers.lock().unwrap().get(&instance) {
+                if interrupt {
+                    // D-363: the control command already cancelled the request. Aborting the provider stream makes
+                    // the turn end now instead of at the provider's own pace; the driver's `Interrupted` path
+                    // records the attempt and settles nothing, exactly like its own cancel_turn.
+                    if let Some(cancel) = driver.shared.cancel_attempt.lock().unwrap().as_ref() {
+                        cancel.cancel();
+                    }
+                }
                 driver.shared.wake.notify_one();
             }
         }

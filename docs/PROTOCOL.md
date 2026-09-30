@@ -87,20 +87,21 @@ the handler re-checks who may do this rather than trusting the request.
 | `approve` | `approval_id`, `expires_at` | yes | `core/src/v2/control.rs:152` |
 | `deny` | `approval_id` | yes | `core/src/v2/control.rs:153` |
 | `fail_request` | `park`, `reason`, `request_id` | no | `core/src/v2/control.rs:154` |
-| `cancel_request` | `reason`, `request_id` | no | `core/src/v2/control.rs:155` |
-| `complete_goal` | `goal_id`, `instance_id` | yes | `core/src/v2/control.rs:156` |
-| `register_check_runs` | `checks`, `goal_id`, `instance_id`, `round` | yes | `core/src/v2/control.rs:157` |
-| `repair_completion` | `failures`, `goal_id`, `instance_id`, `round` | yes | `core/src/v2/control.rs:158` |
-| `block_goal` | `goal_id`, `instance_id`, `reason` | yes | `core/src/v2/control.rs:159` |
-| `cancel_goal` | `goal_id` | yes | `core/src/v2/control.rs:160` |
-| `close_completion` | `instance_id` | no | `core/src/v2/control.rs:161` |
-| `artifact_abandon` | `id` | yes | `core/src/v2/control.rs:162` |
-| `set_lifecycle` | `instance_id`, `lifecycle`, `reason` | yes | `core/src/v2/control.rs:163` |
-| `artifact_stage` | `digest`, `id`, `kind`, `owner_ref`, `owner_scope`, `size`, `storage_ref` | no | `core/src/v2/control.rs:164` |
-| `artifact_publish` | `id` | no | `core/src/v2/control.rs:165` |
-| `artifact_gc_claim` | `limit` | no | `core/src/v2/control.rs:166` |
-| `artifact_collect` | `id` | no | `core/src/v2/control.rs:167` |
-| `prune_history` | `days`, `evidence`, `now` | no | `core/src/v2/control.rs:168` |
+| `cancel_request` | `reason`, `request_id` | yes | `core/src/v2/control.rs:155` |
+| `interrupt_instance` | `instance_id`, `reason` | yes | `core/src/v2/control.rs:156` |
+| `complete_goal` | `goal_id`, `instance_id` | yes | `core/src/v2/control.rs:157` |
+| `register_check_runs` | `checks`, `goal_id`, `instance_id`, `round` | yes | `core/src/v2/control.rs:158` |
+| `repair_completion` | `failures`, `goal_id`, `instance_id`, `round` | yes | `core/src/v2/control.rs:159` |
+| `block_goal` | `goal_id`, `instance_id`, `reason` | yes | `core/src/v2/control.rs:160` |
+| `cancel_goal` | `goal_id` | yes | `core/src/v2/control.rs:161` |
+| `close_completion` | `instance_id` | no | `core/src/v2/control.rs:162` |
+| `artifact_abandon` | `id` | yes | `core/src/v2/control.rs:163` |
+| `set_lifecycle` | `instance_id`, `lifecycle`, `reason` | yes | `core/src/v2/control.rs:164` |
+| `artifact_stage` | `digest`, `id`, `kind`, `owner_ref`, `owner_scope`, `size`, `storage_ref` | no | `core/src/v2/control.rs:165` |
+| `artifact_publish` | `id` | no | `core/src/v2/control.rs:166` |
+| `artifact_gc_claim` | `limit` | no | `core/src/v2/control.rs:167` |
+| `artifact_collect` | `id` | no | `core/src/v2/control.rs:168` |
+| `prune_history` | `days`, `evidence`, `now` | no | `core/src/v2/control.rs:169` |
 
 ### Every field the protocol carries in one object, and where it is built
 

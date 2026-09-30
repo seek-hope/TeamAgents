@@ -691,6 +691,11 @@ async fn the_intervention_cli_cancels_a_task_and_pauses_and_resumes_an_instance(
     let (code, out, _) = cli(vec!["instances".into()], state_root.clone()).await;
     assert_eq!(code, 0);
     assert!(out.contains("i-worker") && out.contains("ACTIVE"), "{out}");
+    // D-363: interrupting an idle instance is honest about there being no turn to cancel
+    let (code, out, err) =
+        cli(vec!["instances".into(), "interrupt".into(), "--id".into(), "i-worker".into()], state_root.clone()).await;
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("no model request was in flight"), "{out}");
     // termination is deliberate: it needs --yes
     let (code, _, err) =
         cli(vec!["instances".into(), "terminate".into(), "--id".into(), "i-worker".into()], state_root.clone()).await;

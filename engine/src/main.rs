@@ -20,6 +20,7 @@ usage: teamagents [--cwd DIR] [--state-root PATH] [--model KEY] [--full-auto]\n\
   teamagents approvals deny --id ID             deny it; the operation fails closed\n\
   teamagents instances [list] [--json]          the session's instances\n\
   teamagents instances resume|pause --id ID     let a parked instance run again, or stop one\n\
+  teamagents instances interrupt --id ID        cancel the running turn so a queued instruction takes over\n\
   teamagents instances terminate --id ID --yes  retire it (workspace and open work handled)\n\
   teamagents instances merge --id ID            bring a git_worktree member's branch into the session tree\n\
   teamagents tasks [list] [--json]              the session's tasks\n\
@@ -807,21 +808,22 @@ fn run_instances(args: &Args) -> i32 {
         ("list", None) => InterventionCommand::ListInstances,
         ("pause", Some(id)) => InterventionCommand::Pause { id },
         ("resume", Some(id)) => InterventionCommand::Resume { id },
+        ("interrupt", Some(id)) => InterventionCommand::Interrupt { id },
         ("terminate", Some(id)) => InterventionCommand::Terminate { id },
         // D-252: the worktree member's branch, brought into the session's own tree
         ("merge", Some(id)) => InterventionCommand::Merge { id },
         ("list", Some(_)) => {
-            eprintln!("instances list takes no --id; use `instances pause|resume|terminate|merge --id ID`");
+            eprintln!("instances list takes no --id; use `instances pause|resume|interrupt|terminate|merge --id ID`");
             return 2;
         }
-        (verb @ ("pause" | "resume" | "terminate" | "merge"), None) => {
+        (verb @ ("pause" | "resume" | "interrupt" | "terminate" | "merge"), None) => {
             eprintln!("instances {verb} needs --id ID (see `teamagents instances` for the ids)");
             return 2;
         }
         (other, _) => {
             eprintln!(
                 "instances: unknown command {other:?}; use `teamagents instances [list]`, \
-                 `instances pause|resume|terminate --id ID [--yes]`"
+                 `instances pause|resume|interrupt|terminate --id ID [--yes]`"
             );
             return 2;
         }

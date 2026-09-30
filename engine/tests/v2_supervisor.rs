@@ -34,7 +34,7 @@ impl Provider for ScriptedProvider {
     async fn complete(
         &self,
         request: &ModelRequest,
-        _cancel: &Cancel,
+        cancel: &Cancel,
         _on_event: &mut (dyn FnMut(ProviderEvent) + Send),
     ) -> Result<AttemptOutcome, ProviderError> {
         self.seen.lock().unwrap().entry(self.instance.clone()).or_default().push(
@@ -46,7 +46,12 @@ impl Provider for ScriptedProvider {
             Step::Slow(ms, message) => (message, ms),
         };
         if delay > 0 {
-            tokio::time::sleep(Duration::from_millis(delay)).await;
+            // A held request honours the turn's cancel token (D-363): the interrupt test needs the turn to end
+            // now, not at the provider's own pace.
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_millis(delay)) => {}
+                _ = cancel.cancelled() => return Err(ProviderError::interrupted("interrupted by the test")),
+            }
         }
         match Step::Message(message) {
             Step::Message(message) => Ok(AttemptOutcome {
@@ -800,6 +805,79 @@ async fn an_input_arriving_during_a_turn_enters_at_the_next_boundary() {
     assert!(
         input_index > reply_index,
         "the input entered behind the reply it was not part of (input {input_index}, reply {reply_index})"
+    );
+}
+
+/// D-363: the user's interrupt cancels the running turn, and the instruction queued behind it then gets a turn
+/// of its own. The cancelled turn's answer never reaches the context — the provider is cancelled mid-flight
+/// and the late reply is not imported (`V2Control`'s `CancelRequest`, A13).
+#[tokio::test]
+async fn interrupting_a_turn_cancels_it_and_the_queued_input_takes_over() {
+    let leader = vec![
+        Step::Slow(30_000, reply("held answer that must not be applied")),
+        Step::Message(reply("redirected answer")),
+    ];
+    let seen: Seen = Arc::new(Mutex::new(HashMap::new()));
+    let root = root("interrupt-turn");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let handle =
+        start(config(&root, factory_with_log(HashMap::from([("i-leader".to_string(), leader)]), seen.clone())))
+            .await
+            .expect("start");
+    handle.input("i-leader", "first question").await.expect("input");
+    for _ in 0..400 {
+        if seen.lock().unwrap().get("i-leader").map(Vec::len).unwrap_or(0) >= 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(seen.lock().unwrap().get("i-leader").map(Vec::len), Some(1), "the turn is in flight");
+    // the new instruction is queued behind the running turn
+    let queued = handle
+        .submit_user(cmd(
+            "redirect-input",
+            "submit_input",
+            json!({"instance_id": "i-leader", "envelope_id": "env-redirect", "text": "redirected question"}),
+        ))
+        .await
+        .expect("input");
+    assert_eq!(queued["queued"], json!(true), "{queued}");
+    // the user interrupts the running turn
+    let interrupted = handle
+        .submit_user(cmd("interrupt-1", "interrupt_instance", json!({"instance_id": "i-leader"})))
+        .await
+        .expect("interrupt");
+    assert_eq!(interrupted["interrupted"], json!(true), "{interrupted}");
+    // the queued input opens the next turn
+    for _ in 0..600 {
+        if seen.lock().unwrap().get("i-leader").map(Vec::len).unwrap_or(0) >= 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(
+        seen.lock().unwrap().get("i-leader").map(Vec::len),
+        Some(2),
+        "the queued input must open a turn of its own"
+    );
+    handle.shutdown().await.expect("shutdown");
+    // the cancelled answer never entered the conversation
+    let control = second_control(&root);
+    let messages: Vec<String> = control
+        .connection()
+        .prepare("SELECT message_json FROM context_entries WHERE instance_id = 'i-leader' ORDER BY idx")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(|row| row.unwrap())
+        .collect();
+    assert!(
+        messages.iter().any(|message| message.contains("redirected answer")),
+        "the redirect's answer is missing: {messages:?}"
+    );
+    assert!(
+        !messages.iter().any(|message| message.contains("held answer")),
+        "the cancelled turn's answer was applied: {messages:?}"
     );
 }
 

@@ -153,6 +153,7 @@ fn dispatch(
         "deny" => deny(tx, session_id, params, identity),
         "fail_request" => fail_request(tx, session_id, params),
         "cancel_request" => cancel_request(tx, session_id, params),
+        "interrupt_instance" => interrupt_instance(tx, session_id, params, identity),
         "complete_goal" => complete_goal(tx, session_id, params),
         "register_check_runs" => register_check_runs(tx, session_id, params, identity),
         "repair_completion" => repair_completion(tx, session_id, params, identity),
@@ -3108,6 +3109,75 @@ fn cancel_request(tx: &Connection, session_id: &str, params: &Json) -> Result<Js
     .map_err(|e| format!("cancel instance: {e}"))?;
     event(tx, session_id, "request_cancelled", &instance, &json!({"request_id": request_id, "reason": reason}))?;
     Ok(json!({"request_id": request_id, "status": "CANCELLED"}))
+}
+
+/// Interrupt one running turn (the user's own answer to D-63: explicit interrupt-and-redirect, D-363).
+///
+/// It is `cancel_request`'s transition with the *instance* in place of a request id and the user gate the
+/// `cancel_request` command never had: the in-flight model request is cancelled, its reservation released and
+/// the instance left `READY`, so a queued input enters at the boundary and gets a turn of its own
+/// (`V2Control`'s `CancelRequest`, A13). It never settles a goal or a task, and it does not touch an open tool
+/// operation: a running command keeps running, because stopping it is the process-group lever of
+/// `set_lifecycle` TERMINATED (D-88). Only the user may interrupt; an instance never gets this.
+fn interrupt_instance(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
+    require_user(identity)?;
+    let instance_id = params["instance_id"].as_str().ok_or("interrupt_instance.instance_id required")?;
+    let reason = params["reason"].as_str().unwrap_or("interrupted by the user");
+    let (session, _epoch, lifecycle, phase, _revision) = load_instance(tx, instance_id)?;
+    if session != session_id {
+        return Err(format!("instance {instance_id} does not belong to this session"));
+    }
+    if lifecycle == "TERMINATED" {
+        return Err(format!(
+            "instance {instance_id} is TERMINATED: termination is final, so there is no turn to interrupt"
+        ));
+    }
+    // A request is fixed from MODEL_PENDING on. In any other phase there is no model call to abandon; a tool
+    // that is running is deliberately not interrupted here (that is `set_lifecycle` TERMINATED, D-88).
+    if phase != "MODEL_PENDING" {
+        return Ok(json!({"instance_id": instance_id, "interrupted": false, "phase": phase,
+                         "reason": "no model request is in flight"}));
+    }
+    let request: Option<String> = tx
+        .query_row("SELECT active_request_id FROM instances WHERE id = ?1", [instance_id], |row| row.get(0))
+        .optional()
+        .map_err(|e| format!("interrupt {instance_id}: {e}"))?
+        .flatten();
+    let Some(request) = request else {
+        // The phase says MODEL_PENDING but no request is recorded: normalize rather than claim an interrupt
+        // that did not happen.
+        tx.execute("UPDATE instances SET phase = 'READY', revision = revision + 1 WHERE id = ?1", [instance_id])
+            .map_err(|e| format!("interrupt normalize: {e}"))?;
+        return Ok(json!({"instance_id": instance_id, "interrupted": false, "phase": "READY",
+                         "reason": "no model request is in flight"}));
+    };
+    let status: String = tx
+        .query_row("SELECT status FROM model_requests WHERE request_id = ?1", [&request], |row| row.get(0))
+        .map_err(|e| format!("interrupt request {request}: {e}"))?;
+    if status != "PENDING" {
+        return Ok(json!({"instance_id": instance_id, "interrupted": false, "phase": phase,
+                         "request_id": request, "reason": format!("request is {status}")}));
+    }
+    release_reservation(tx, &request)?;
+    tx.execute("UPDATE model_requests SET status = 'CANCELLED' WHERE request_id = ?1", [&request])
+        .map_err(|e| format!("interrupt cancel: {e}"))?;
+    let changed = tx
+        .execute(
+            "UPDATE instances SET phase = 'READY', active_request_id = NULL, revision = revision + 1 \
+             WHERE id = ?1 AND phase = 'MODEL_PENDING'",
+            [instance_id],
+        )
+        .map_err(|e| format!("interrupt reset: {e}"))?;
+    event(tx, session_id, "request_cancelled", instance_id, &json!({"request_id": request, "reason": reason}))?;
+    event(
+        tx,
+        session_id,
+        "instance_interrupted",
+        instance_id,
+        &json!({"request_id": request, "phase": phase, "reason": reason}),
+    )?;
+    Ok(json!({"instance_id": instance_id, "interrupted": changed == 1, "phase": "READY",
+              "request_id": request}))
 }
 
 /// Shape check for goal-level required checks (§8): each check is a shell
@@ -7109,6 +7179,59 @@ mod tests {
             ctl.submit(cmd("c2", "cancel_request", json!({"request_id": "r1"})), Identity::User).expect("recancel");
         assert_eq!(again["already_closed"], json!(true));
         assert_eq!(phase_of(&ctl, "i1"), "READY");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn interrupt_instance_cancels_the_running_request_and_leaves_the_instance_ready() {
+        let (mut ctl, path) = control("interrupt");
+        create_instance(&mut ctl, "i1");
+        create_instance(&mut ctl, "i2");
+        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1", "instance_id": "i1"})), Identity::User).expect("goal");
+        ctl.connection().execute("UPDATE instances SET active_goal_id = 'g1' WHERE id = 'i1'", []).unwrap();
+        ctl.submit(
+            cmd("b1", "begin_request", json!({"instance_id": "i1", "request_id": "r1", "revision": 1})),
+            Identity::Instance("i1".into()),
+        )
+        .expect("begin");
+        // only the user may interrupt; another instance is refused
+        let err = ctl
+            .submit(cmd("x0", "interrupt_instance", json!({"instance_id": "i1"})), Identity::Instance("i2".into()))
+            .unwrap_err();
+        assert!(err.contains("trusted user"), "{err}");
+        // the user's interrupt cancels the request and returns the instance to READY
+        let out = ctl
+            .submit(cmd("x1", "interrupt_instance", json!({"instance_id": "i1"})), Identity::User)
+            .expect("interrupt");
+        assert_eq!(out["interrupted"], json!(true));
+        assert_eq!(out["phase"], json!("READY"));
+        assert_eq!(phase_of(&ctl, "i1"), "READY");
+        let status: String = ctl
+            .connection()
+            .query_row("SELECT status FROM model_requests WHERE request_id = 'r1'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(status, "CANCELLED");
+        // a late attempt on the cancelled request is refused, and a second interrupt is honest about it
+        let err = ctl
+            .submit(
+                cmd("a2", "record_attempt", json!({"attempt_id": "at2", "request_id": "r1", "status": "COMPLETE"})),
+                Identity::System,
+            )
+            .unwrap_err();
+        assert!(err.contains("closed requests"), "{err}");
+        let again =
+            ctl.submit(cmd("x2", "interrupt_instance", json!({"instance_id": "i1"})), Identity::User).expect("again");
+        assert_eq!(again["interrupted"], json!(false));
+        // an interrupt is not a settlement: the goal stays open
+        let goal: String =
+            ctl.connection().query_row("SELECT status FROM goals WHERE id = 'g1'", [], |row| row.get(0)).unwrap();
+        assert_eq!(goal, "ACTIVE");
+        // a terminated instance has no turn left to interrupt
+        ctl.submit(cmd("t1", "set_lifecycle", json!({"instance_id": "i1", "lifecycle": "TERMINATED"})), Identity::User)
+            .expect("terminate");
+        let err =
+            ctl.submit(cmd("x3", "interrupt_instance", json!({"instance_id": "i1"})), Identity::User).unwrap_err();
+        assert!(err.contains("TERMINATED"), "{err}");
         cleanup(&path);
     }
 

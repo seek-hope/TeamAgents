@@ -125,7 +125,7 @@ row, which the TUI's panel and `instances` print when a member is not running (D
 | `approvals list` | `approvals` |
 | `approvals approve` / `deny` | `approval_id`, `decision`, `approval`, `result` |
 | `instances list` | `instances` |
-| `instances pause` / `resume` / `terminate` | `instance_id`, `lifecycle`, `instance`, `result` |
+| `instances pause` / `resume` / `interrupt` / `terminate` | `instance_id`, `lifecycle`, `instance`, `result` |
 | `instances merge` | `instance_id`, `phase`, `lifecycle`, `branch`, `project`, `merged`, `output` |
 | `tasks list` | `tasks` |
 | `tasks cancel` | `task_id`, `task`, `result` |
@@ -499,6 +499,7 @@ work without a terminal UI:
 teamagents instances                    # id, lifecycle, phase — the same rows the TUI panel shows
 teamagents instances resume --id i-leader      # a parked instance runs again (budget, an unusable model, …)
 teamagents instances pause  --id i-worker-1    # stop driving it at the next safe boundary
+teamagents instances interrupt --id i-leader   # cancel its running turn; a queued instruction enters next
 teamagents instances terminate --id i-worker-1 --yes   # deliberate: retires it and its workspace
 teamagents tasks                        # id, status, assignee, goal
 teamagents tasks cancel --id t-prose    # releases a delegator waiting on a task that can only wait
@@ -525,6 +526,12 @@ teamagents goals cancel --id g-spent    # close a goal nothing can spend (its ce
   resume — a headless run against it waits out its own deadline and says so (§4.2, D-98).
   If a run does hit its deadline on a stopped instance, the report names the lifecycle instead of claiming the
   instance is still running.
+- **Interrupting one turn (D-363)**: `instances interrupt --id` cancels the instance's running *model request*
+  and leaves it `READY`, so an instruction that was queued behind that turn enters at the boundary and gets a
+  turn of its own — the interrupt-and-redirect D-63 left open. It settles nothing (the goal and any task stay
+  as they were) and it does **not** stop a running tool: a shell command keeps going, and the process-group
+  lever for that stays `instances terminate --id … --yes`. Interrupting an instance with no model request in
+  flight is reported honestly (`no model request was in flight`), never as a cancellation that did not happen.
 - **What a pause looks like while it takes effect**: `instances` and the TUI's instances panel print the
   lifecycle beside the execution position, which tells "pause requested" from "stopped at a safe boundary" —
   `PAUSED / TOOLS_PENDING` is an in-flight call that will stop at the boundary, `PAUSED / READY` is parked
@@ -634,7 +641,7 @@ teamagents goals cancel --id g-spent    # close a goal nothing can spend (its ce
 | The model returns 401/402 | Check the environment variable named by the profile's `api_key_env`; `doctor` lists the credential resolution result per profile |
 | A task stays `RUNNING` while its assignee is idle | The assignee's model ended its turn without settling it (D-65): cancel the task — `c` in the tasks panel or `teamagents tasks cancel --id` — which releases the delegator's wait |
 | A worktree member finished and I want its work in my tree | `teamagents instances merge --id <member>` (D-252). It refuses while the member has a turn in flight or its checkout has uncommitted changes, and reports a conflicting merge with git's message, leaving the merge in progress |
-| A member is stuck in a long or endless command and cancelling its task changed nothing | `tasks cancel` is delegation-level and does not touch the assignee's operation (D-88). Stop the work with `teamagents instances terminate --id … --yes` (the process group dies within seconds, and the receipt says `class: cancelled`) or wait for the command's own tool timeout |
+| A member is stuck in a long or endless command and cancelling its task changed nothing | `tasks cancel` is delegation-level and does not touch the assignee's operation (D-88). Stop the work with `teamagents instances terminate --id … --yes` (the process group dies within seconds, and the receipt says `class: cancelled`) or wait for the command's own tool timeout. If it is the *thinking* you want to stop rather than a running command, `teamagents instances interrupt --id …` cancels just the current turn (D-363) |
 | An instance is parked | `teamagents instances` shows which **and why** (the reason rides on the row, D-165); resume it with `instances resume --id` (or `r` in the TUI) once that cause is gone |
 | A command under `approved_scope` waits for approval | Decide it with `teamagents approvals` (§4.1) or in the TUI approvals panel; `--full-auto` (host execution, D-41) skips the gate |
 | A command left a service running (`dev-server &`) | By design the session does not manage it (D-41/D-112): it survives the client, the daemon and the member. Stop it yourself with the pid the command printed (`sleep 300 & echo $!`, then `kill <pid>`), or start such work in a command that exits when you are done. `instances terminate` stops an *operation that is still running*, not a service left behind by one that finished |

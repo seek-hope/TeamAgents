@@ -523,7 +523,9 @@ alone**, and conversely formal coverage does not excuse an item from sample or r
    and log lengths, `MaxOps` and so on). Unbounded counters (budget, usage, event sequence) appear in the
    model only as bounded placeholders.
 4. **Code outside the model**: provider adapters and retry classification, MCP, Skills, TUI rendering and
-   hit-testing, shell and bubblewrap isolation, job/process lifetimes and real provider behaviour. These are
+   hit-testing, shell and bubblewrap isolation, job/process lifetimes and real provider behaviour, and the
+   `require_user` identity gate (a user-only command's refusal of an instance identity is tested per command at
+   the control boundary, not modelled). These are
    covered by sample tests and real-environment acceptance only.
 5. ~~A modeled rule without an implementation (D-192)~~ — **implemented in D-245**: `control::prune_history`
    drops ordinary history at a session's boot under the four guards this model pins, and its test

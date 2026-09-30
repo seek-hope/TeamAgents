@@ -30,6 +30,9 @@ pub enum InterventionCommand {
     Pause { id: String },
     /// Let a parked or paused instance run again.
     Resume { id: String },
+    /// Interrupt the running turn: cancel its in-flight model request so a queued instruction enters at the
+    /// boundary and gets its own turn (D-63's interrupt-and-redirect, answered by D-363).
+    Interrupt { id: String },
     /// Retire an instance: its open tasks and derived grants are dealt with
     /// explicitly and its workspace is retired (§5.4) — hence `--yes`.
     Terminate { id: String },
@@ -140,6 +143,23 @@ pub fn execute(options: &InterventionOptions) -> Result<Json, (i32, String)> {
             Ok(json!({
                 "session_id": session["session_id"], "state_root": session["state_root"],
                 "instance_id": resolved, "lifecycle": lifecycle, "instance": row, "result": result,
+            }))
+        }
+        InterventionCommand::Interrupt { id } => {
+            let rows = instances(&mut client)?;
+            let row = resolve_prefix(&rows, "id", id, "instance", "teamagents instances")?;
+            let resolved = row["id"].as_str().unwrap_or_default().to_string();
+            // A fresh id per invocation, like pause/resume (D-277): a second interrupt must really interrupt.
+            let result = client
+                .command(
+                    &format!("interrupt-{resolved}-{}", uuid::Uuid::new_v4()),
+                    "interrupt_instance",
+                    json!({"instance_id": resolved, "reason": "interrupted by the user (teamagents instances)"}),
+                )
+                .map_err(|error| (1, format!("intervene: the session refused it: {error}")))?;
+            Ok(json!({
+                "session_id": session["session_id"], "state_root": session["state_root"],
+                "instance_id": resolved, "lifecycle": row["lifecycle"], "instance": row, "result": result,
             }))
         }
         InterventionCommand::CancelTask { id } => {
@@ -375,6 +395,18 @@ fn print_report(options: &InterventionOptions, report: &Json) {
                 );
             }
         }
+        InterventionCommand::Interrupt { .. } => println!(
+            "interrupted {}: {}",
+            report["instance_id"].as_str().unwrap_or(""),
+            report["result"]["interrupted"]
+                .as_bool()
+                .map(|done| if done {
+                    "cancelled the running turn; a queued instruction enters at the boundary"
+                } else {
+                    "no model request was in flight"
+                })
+                .unwrap_or("asked the session to cancel its turn")
+        ),
         InterventionCommand::CancelTask { .. } => println!(
             "cancelled {} (was {}): a delegator waiting on it is released",
             report["task_id"].as_str().unwrap_or(""),

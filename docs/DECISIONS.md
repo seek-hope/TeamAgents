@@ -20,6 +20,48 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-363 D-63 is answered: the user may interrupt one running turn, and the instruction queued behind it takes over (2026-09-30)
+
+**The decision.** D-63's open question was "should the runtime interrupt a running turn instead of holding the
+input to the boundary?", and it stayed open because the answer changes a user-facing surface. The user's
+mandate for this batch (Batch 1 of the self-update order) settles it: interruption is **explicit and
+user-initiated**, never automatic. The boundary rule itself is unchanged — an ordinary input arriving during a
+turn still queues and enters at the boundary (D-63) — so the verified `InputLandsAtTheBoundary` /
+`QueuedInputEntersTheContext` rules keep holding. What is new is a lever the user pulls to end the turn now.
+
+**The surface.** `core/src/v2/control.rs` gained `interrupt_instance` (dispatched beside `cancel_request`):
+user-only (`require_user`), it refuses a `TERMINATED` instance, and in `MODEL_PENDING` with a `PENDING` request
+it releases the reservation, closes the request `CANCELLED`, resets the instance to `READY` and emits
+`request_cancelled` plus `instance_interrupted`. In any other phase it reports `interrupted: false` with the
+phase and `no model request is in flight` — an honest no-op, not a fake cancellation. The supervisor's
+`submit_user` notices an `interrupt_instance` and fires the driver's `cancel_attempt` token, so the provider
+stream aborts now; the driver's own `Interrupted` path then records the failed attempt and settles nothing.
+`teamagents instances interrupt --id ID` is the headless lever (`engine/src/v2/intervene.rs`), printing the row
+and the result in the same shape `pause`/`resume` do.
+
+**What it is not.** It does **not** stop a running tool: a shell command keeps going, because stopping the
+process group is the `set_lifecycle` TERMINATED lever (D-88), and this command deliberately leaves open
+operations alone. It never settles a goal or a task. When the provider's answer lands just before the interrupt,
+the command reports `interrupted: false` (the request already closed) instead of claiming a cancellation that
+did not happen. The TUI key is not wired in this commit — the headless lever is the substance and the TUI is a
+thin client; a key is the next small step.
+
+**Formal.** The interrupt adds no new protocol *transition*: it is `V2Control.CancelRequest` ("user cancel:
+request closes, reservation released, instance READY", A13) reached through the user gate, and the queued input
+that follows is still `QueuedInputEntersTheContext`. So no new TLA+ claim is stated — a duplicate would be the
+entailed-claim shape D-219 forbids. The D-362 surface gate did its job on the new method immediately:
+`interrupt_instance` is a row in `verification/README.md`'s control-plane table, mapped to `V2Control.tla`. The
+`require_user` identity gate is code-level and per-command tested; it is now named in `verification/REPORT.md`'s
+unproven list (item 4) so a reader does not have to guess where it lives.
+
+**Evidence.** `core/src/v2/control.rs`'s
+`interrupt_instance_cancels_the_running_request_and_leaves_the_instance_ready` (the identity refusal, the
+cancellation, the `READY` reset, the late-attempt refusal, `ACTIVE` goal unchanged, `TERMINATED` refusal);
+`engine/tests/v2_supervisor.rs`'s `interrupting_a_turn_cancels_it_and_the_queued_input_takes_over` (a scripted
+provider held open honours the cancel token; the queued instruction runs its own turn; the cancelled turn's
+answer never enters the context); and the existing intervention-CLI test in `engine/tests/v2_daemon.rs` now also
+asserts the idle-instance answer. `make check` and the formal targets are re-run before the commit.
+
 ## D-362 The formal-verification mandate becomes gates: CI runs TLA+/Kani, D-362 models the private-history rule, and the control-plane surface is inventoried (2026-09-30)
 
 **The operator's mandate.** The user set the standing rule that during TeamAgents development every design that
