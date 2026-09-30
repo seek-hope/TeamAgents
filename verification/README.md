@@ -23,7 +23,7 @@ shape D-206 was committed in.
 
 ```bash
 make verify-model           # small control-plane configuration (seconds)
-make verify-model-all       # small configurations for all twenty-one modules (control plane, artifacts, waits,
+make verify-model-all       # small configurations for all twenty-two modules (control plane, artifacts, waits,
                             # tasks, compression, daemon (its protocol and the D-248 stop lever), required
                             # checks, authority, the user's surface,
                             # session-store identity, retention, the job handshake, the inbox, the write-failure
@@ -65,6 +65,7 @@ repository and never enters `make check`. Java is required (this machine uses Op
 | `tla/MC_wide.cfg` | wide control-plane configuration (2 instances / 2 operations with one requiring approval / 3 request slots / 2 attempt slots) |
 | `tla/V2Artifact.tla` + `tla/MC_artifact.cfg` | artifacts and GC: write bytes → STAGING row → reference and LIVE in one transaction → GC claim → the caller deletes the bytes → the row is collected (`artifact_collect`), with abandon for a STAGING orphan; the runtime's half runs at a driver's boot (D-191). `tla/MC_artifact_gc_ignores_references.cfg` is its counterfactual control (D-220): the collector never reads the reference table, so an artifact messages still point at is claimed, and `GcClaimsOnlyUnreferencedLive` is refuted |
 | `tla/V2Retention.tla` + `tla/MC_retention.cfg` | retention as DESIGN states it, *before* an implementation (D-75 recorded the keys as accepted-but-unapplied, D-192 models the rule): a fact may leave the database only when retention is switched on (`history_days` = 0 keeps the full history), it is at least that old, no live reference protects it and it is not evaluation evidence — with the interleavings that make the rule worth checking (a reference attaching, detaching, evidence being marked while days pass). Its claims are named: `EvictionOnlyUnderTheGuards` (the guards evaluated at the step that evicts), `NoReferenceToEvictedFact` (no live reference outlives the fact it points at), `EvidenceIsNeverEvicted` (evidence is never evicted, however old) and `OnlyOldFactsAreEvicted` (the state half: a fact that is gone was old and retention was on). The negative controls `tla/MC_retention_evicts_live.cfg`, `tla/MC_retention_evicts_evidence.cfg`, `tla/MC_retention_evicts_young.cfg` and `tla/MC_retention_runs_disabled.cfg` each forget one guard and must be refuted by `make verify-model-counterexamples`; it is safety only, because the design does not promise a cleanup ever runs |
+| `tla/V2History.tla` + `tla/MC_history.cfg` | private history and who may read it (§5.1/§5.4, A05, Q8): a read records its actor and its target, and the rule is checked over every interleaving — an instance may read only its own history (`InstancesReadOnlyTheirOwn`) and the runtime never reads one (`SystemNeverReads`), while the user's "may read any" is the absence of a restriction and so has no state half to break. Its two negative controls `tla/MC_history_leaks.cfg` (an instance allowed to read a stranger's history) and `tla/MC_history_system_reads.cfg` (the runtime reading a member's) each refute exactly the claim they name, measured 2026-09-30: the positive configuration is exhaustive in under a second (81 states generated / 16 distinct). Safety only — a read need not happen (no liveness), and the command's refusal of a target from another session is `V2Store`'s identity, not modelled here |
 | `tla/V2Jobs.tla` + `tla/MC_jobs.cfg` | the job handshake and the recovery verdict (§6.2/§6.3, A10/A11; D-91/D-112/D-153): the journal's phases (READY, START_ACCEPTED, RUNNING, CANCEL_REQUESTED, terminal), the acceptance persisted *before* the spawn (`NoEffectBeforeAccept`, `EffectImpliesAcceptedStart`), a duplicate GO as a no-op (`AtMostOneExecutor`, reading the journal's own `starts` counter), CANCEL before the start as final (`LateGoIsRejected`), and the recovery read — one atomic snapshot of the journal and the effect — that says "did not run" only for a READY journal and records `unknown` for the START_ACCEPTED/RUNNING/CANCEL_REQUESTED band (`UnverifiableStartIsNeverGuessedNotRun`, `NotRunMeansNoEffect`, whose counterexample is the accept-after-spawn shape); `SettledRunnerLeaves` (under weak fairness of the shutdown step) is D-153's rule that a settled job's runner goes away rather than idling forever, and — added by D-250/D-251 — `NothingInFlightWasRetired`, `OnlyTheJobsOwnGroupIsSignalled` and `NoLiveCommandWasSignalled` are the `runners` lever's rules: a retire goes through the runner's own gate, so a job whose *start was accepted* (the band the recovery read treats as unverifiable) is never taken away. The five negative controls `tla/MC_jobs_guess_notrun.cfg`, `tla/MC_jobs_double_go.cfg`, `tla/MC_jobs_late_go.cfg`, `tla/MC_jobs_spawn_first.cfg`, `tla/MC_jobs_retires_a_running_command.cfg` and D-251's two — `tla/MC_jobs_service_signals_a_stranger.cfg` (the service stop signalling a group the kernel gave the same id to, whose members were born after the job ended → `OnlyTheJobsOwnGroupIsSignalled`) and `tla/MC_jobs_service_signals_a_live_command.cfg` (the service stop signalling a command that is still running → `NoLiveCommandWasSignalled`); both rules are the lever's own, because nothing is left to ask — the `recycled` state models the kernel handing the id out again, and a group identifier is verified by *when its members were born* rather than by the id alone (`jobs::stop_leftover_group`, measured against a forged journal by `jobs::tests::a_group_whose_members_are_newer_than_the_job_is_never_signalled` and live by `review/dogfood/runners.py`). each forget one rule — a missing pid read as "did not run", a duplicate GO starting a second command, a late GO after CANCELLED_BEFORE_START starting it anyway, a command spawned before its acceptance was persisted (which is what makes a run invisible to recovery), and a retire asked of a runner whose command is in flight (which is what a lever that bypassed the runner's gate would do) — and must each be refuted by `make verify-model-counterexamples`. The model abstracts pid, start_ticks and boot_id into one "the recorded identity verifies" variable and assumes authenticated control requests; the deadline, the TERM→KILL escalation and the identity refusal are the runner's own tests and the live probes (`review/dogfood/job_identity.py`, `crash.py`, `unknown_outcome.py`, `cancel.py`) |
 | `tla/V2Inbox.tla` + `tla/MC_inbox.cfg` | the inbox and the application of an envelope (§5.3, A06, A24; D-63/D-72): an envelope is persisted as accepted, the recipient applies the lowest pending envelope of the current epoch **once** — the append carries the envelope id as its dedup key, so a replay appends nothing (`AtMostOncePerEnvelope`) — in sequence order (`LogIsIncreasing`), a stale-epoch envelope seals instead of leaking into the new epoch (`NoStaleApplication`), nothing accepted is ever silently dropped (`NoSilentLoss`), no send is accepted into a full inbox (`BoundedInbox`, the bound `queue_envelope` checks; a lost marker may legitimately leave more rows pending than the cap), and only the user or the instance itself drains (`DrainIsOwned`). Its five negative controls `tla/MC_inbox_no_dedup.cfg`, `tla/MC_inbox_drop_when_full.cfg`, `tla/MC_inbox_unbounded.cfg`, `tla/MC_inbox_stale_applied.cfg` and `tla/MC_inbox_foreign_drain.cfg` each forget one rule and must be refuted. The model is safety only (no fairness: whether a drain runs is the client's business) |
 | `tla/V2DiskFull.tla` + `tla/MC_diskfull.cfg` | the write-failure latch (§4.4, A31): a step whose submit fails with `StorageFull` latches, the driver stops running steps — the failed step is never retried and new side effects stay stopped (`NoStepRunsWhileLatched`) — success is never faked (`NoFakedSuccess`), the park is retried at poll pace and its reason names the in-flight persistence loss (`LossIsReported`), the latch clears only because that park landed — which needs a write to land (`LatchClearsOnlyWhenWritable`) — and the user resumes once space is freed (`ParkEventuallyLands`, under strong fairness of the park: the retry is live *while writability recurs*, because a single writable moment proves nothing). Its four negative controls `tla/MC_diskfull_keep_driving.cfg`, `tla/MC_diskfull_fake_success.cfg`, `tla/MC_diskfull_park_silently.cfg` and `tla/MC_diskfull_clear_anyway.cfg` each forget one rule and must be refuted |
@@ -116,6 +117,19 @@ the model; that is exactly what is enumerated.
 | `TerminalOpStable` (temporal) | a terminal operation is never rewritten | the "already terminal" refusal in `complete_operation` | A13 |
 | `TerminalGoalStatusStable` (temporal) | a terminal goal is never rewritten | the `already_closed` branch of `complete_goal`/`block_goal` | §8 |
 | `NoReceiptAcrossEpochs` (temporal) | a receipt never lands across epochs | `reset_instance` closes the old epoch and cancels in-flight operations | A24 |
+
+### Private history (A05, Q8, §5.1/§5.4)
+
+| Property (spec) | Meaning | Code anchor | Acceptance |
+|---|---|---|---|
+| `TypeOK` | a recorded read names a session actor (the user, an instance, or the runtime) and an instance of the session | the identity/target validation in `read_history` | §4.1 |
+| `InstancesReadOnlyTheirOwn` | an instance may read only its own history; every foreign read is refused | the `Identity::Instance(actor)` arm of `read_history` | A05 |
+| `SystemNeverReads` | the runtime itself never reads a member's private history | the `Identity::System` refusal in `read_history` | §5.1/A05 |
+
+The user's half — "the user may read any instance's history" — is deliberately not a claim: it is the absence
+of a restriction, so no reachable state can break it. The code-level correspondence is
+`control::read_history_is_user_or_self_only`, which drives the user, self, foreign-instance and system arms
+against the real control entry.
 
 ### Authority (A02/A03/A04, §5.1/§6.1, D-58/D-59/D-60)
 
@@ -192,6 +206,62 @@ questions that only exist once the user can. Each claim is paired with the contr
 
 The task module asserts safety only: whether a task advances depends on the environment (member turns), and the
 design does not require the system to settle tasks on the user's behalf, so no liveness property is written.
+
+## Control-plane surface coverage
+
+`core/src/v2/control.rs`'s `dispatch` is the set of methods `Control::submit` accepts — the protocol surface the
+runtime and every client reach. This table names, for each method, the spec under which its protocol rule is
+checked. `review/verification_catalogue.py` compares the two directions: a method the code adds without a row
+fails the audit, and a row whose method the dispatcher no longer accepts fails it too, so a rename cannot leave
+stale coverage behind. A method that is not modelled says `unproven` here **and** is named in
+[REPORT.md](REPORT.md)'s unproven list — an exemption declared where a reader looks (D-362). The spec names the
+module the method's rule is checked in; the property-by-property anchors above say which claim.
+
+| Method | Spec |
+|---|---|
+| `create_instance` | `V2Control.tla` (instance creation and its bootstrap grant) |
+| `spawn_instance` | `V2Control.tla` (creation) with `V2Task.tla` (the task and return path it registers) |
+| `issue_grant` | `V2Grants.tla` |
+| `revoke_grant` | `V2Grants.tla` (the cascade) with `V2Authority.tla` (the id a revoke names) |
+| `reauthorize_operation` | `V2Authority.tla` (the dispatch re-check) |
+| `reset_instance` | `V2Control.tla` (the epoch reset) |
+| `create_goal` | `V2Task.tla` |
+| `send_message` | `V2Inbox.tla` |
+| `drain_inbox` | `V2Inbox.tla` |
+| `delegate_task` | `V2Task.tla` |
+| `start_task` | `V2Task.tla` |
+| `complete_task` | `V2Task.tla` |
+| `cancel_task` | `V2Task.tla` |
+| `read_history` | `V2History.tla` |
+| `fire_timer` | `V2Wait.tla` |
+| `blocked_report` | `V2Wait.tla` |
+| `submit_input` | `V2Control.tla` (the inbound boundary) |
+| `begin_request` | `V2Control.tla` |
+| `record_attempt` | `V2Control.tla` |
+| `begin_compression` | `V2Compress.tla` |
+| `compress_context` | `V2Compress.tla` |
+| `fail_compression` | `V2Compress.tla` |
+| `import_response` | `V2Control.tla` |
+| `dispatch_operation` | `V2Control.tla` and `V2Approval.tla` |
+| `complete_operation` | `V2Control.tla` |
+| `cancel_operation` | `V2Control.tla` |
+| `approve` | `V2Approval.tla` |
+| `deny` | `V2Approval.tla` |
+| `fail_request` | `V2Control.tla` |
+| `cancel_request` | `V2Control.tla` |
+| `complete_goal` | `V2Task.tla` |
+| `register_check_runs` | `V2Checks.tla` |
+| `repair_completion` | `V2Checks.tla` |
+| `block_goal` | `V2Checks.tla` |
+| `cancel_goal` | `V2Control.tla` |
+| `close_completion` | `V2Checks.tla` |
+| `artifact_abandon` | `V2Artifact.tla` |
+| `set_lifecycle` | `V2Control.tla` (termination) with `V2Task.tla` (the task cascade) |
+| `artifact_stage` | `V2Artifact.tla` |
+| `artifact_publish` | `V2Artifact.tla` |
+| `artifact_gc_claim` | `V2Artifact.tla` |
+| `artifact_collect` | `V2Artifact.tla` |
+| `prune_history` | `V2Retention.tla` |
 
 ## Three findings from the modelling work
 

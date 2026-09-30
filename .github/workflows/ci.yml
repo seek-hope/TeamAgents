@@ -42,3 +42,37 @@ jobs:
       # `git diff --check` is always empty on a clean checkout; it checks the commit itself
       - name: Check patch whitespace
         run: git log --check --format= -1
+
+  # The formal-verification gate. TLA+ and Kani need Java and a download the Cargo job does not, and they are
+  # far slower than the fast suite, so they run as their own jobs. A green run here means every protocol model
+  # passed and every negative control was refuted — the two halves `make verify-model-*` enforces; a control
+  # that verifies is a claim that says nothing and fails the target.
+  formal-tla:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Every TLA+ configuration verifies
+        run: make verify-model-all
+      - name: Every negative control is refuted
+        run: make verify-model-counterexamples
+
+  # The pure-function layer: `make verify-kani` proves the paging arithmetic for every `usize`. The toolchain
+  # is installed outside the repository so `rust-toolchain.toml` does not decide how kani-verifier is built;
+  # the version is pinned to the one the report's Kani section was measured with.
+  formal-kani:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the Kani toolchain
+        run: |
+          cd "$RUNNER_TEMP"
+          cargo install --locked kani-verifier --version 0.68.0
+          cargo kani setup
+      - name: Kani proofs (paging arithmetic)
+        run: make verify-kani

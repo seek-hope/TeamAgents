@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The formal-verification material, against the targets that drive it and the report that counts it (D-185).
 
-`verification/tla/` holds twenty-one TLA+ modules and one-hundred-and-two configurations — and **these numbers are
+`verification/tla/` holds twenty-two TLA+ modules and one-hundred-and-five configurations — and **these numbers are
 checked against the directory by this script's own rule**, because the sentence that said "forty" was the
 kind of count nothing looked at (the module count in this line and the two the report states are all
 compared with what the tree holds); `verification/REPORT.md`
@@ -88,6 +88,7 @@ import sys
 REPO = pathlib.Path(__file__).resolve().parents[1]
 TLA = "verification/tla"
 KANI_SRC = "verification/kani/src"
+CONTROL = "core/src/v2/control.rs"
 MATERIAL = ("verification/tla", "verification/kani")
 # (D-224) the version the Makefile pins and the documents that state it: a reader of either trusts the number
 TLA_VERSION = re.compile(r"^TLA_VERSION\s*:=\s*(\S+)", re.M)
@@ -367,6 +368,50 @@ def main(argv) -> int:
         if unnamed:
             findings.append(f"{tla}/{spec} marks {', '.join(unnamed)}, which {args.mapping} never names: the "
                             "mapping is what the report sends a reader to for what a module proves (D-222)")
+    # (D-362) Every control-plane method is modelled, or declared unproven with a reason. `Control::submit`'s
+    # dispatcher is the protocol surface the runtime reaches; a method that lands without a row in the mapping's
+    # surface table would be a surface nothing models and nothing lists. The inventory is checked in both
+    # directions, so a renamed method cannot leave a stale row claiming coverage the code no longer has. The
+    # rule is the executable half of the user's mandate that a formally verifiable design is verified: a new
+    # command must either name the spec that models it or say `unproven`, and an `unproven` row must also be
+    # named in the report's unproven list, where a reader looks.
+    control = (REPO / CONTROL).read_text(encoding="utf-8")
+    body = control[control.index("fn dispatch("):]
+    boundary = body.find("\nfn ")
+    body = body if boundary < 0 else body[:boundary]
+    methods = set(re.findall(r'"([a-z_]+)"\s*=>', body))
+    surface = re.search(r"^## Control-plane surface coverage\s*\n(.*?)(?=^## |\Z)", mapping_text, re.S | re.M)
+    if surface is None:
+        findings.append(f"{args.mapping} has no `## Control-plane surface coverage` section, so this audit "
+                        "cannot hold the dispatcher's methods to a spec (D-362)")
+    else:
+        table = {method: cell.strip() for method, cell in
+                 re.findall(r"^\|\s*`([a-z_]+)`\s*\|([^|\n]*)\|\s*$", surface.group(1), re.M)}
+        missing = sorted(methods - set(table))
+        if missing:
+            findings.append(f"{CONTROL}'s dispatcher accepts {', '.join(missing)}, which {args.mapping}'s "
+                            "surface table does not list: a protocol surface must name the spec that models it, "
+                            "or say `unproven` with a reason (D-362)")
+        stale = sorted(set(table) - methods)
+        if stale:
+            findings.append(f"{args.mapping}'s surface table lists {', '.join(stale)}, which {CONTROL}'s "
+                            "dispatcher no longer accepts: a stale row claims coverage the code does not have "
+                            "(D-362)")
+        for method, cell in sorted(table.items()):
+            spec = re.search(r"`(V2[A-Za-z0-9_]*\.tla)`", cell)
+            if spec:
+                if not (REPO / tla / spec.group(1)).exists():
+                    findings.append(f"{args.mapping}'s surface table maps {method} to {spec.group(1)}, which "
+                                    f"{tla} does not hold")
+            elif "unproven" not in cell.lower():
+                findings.append(f"{args.mapping}'s surface table row for {method} names no spec and does not "
+                                "say `unproven`: an empty cell is a surface nobody classified (D-362)")
+            else:
+                unproven = report.split("## 5. Unproven list", 1)[-1]
+                if f"`{method}`" not in unproven:
+                    findings.append(f"{args.mapping} declares {method} unproven, but {args.report}'s unproven "
+                                    "list never names it: an exemption has to be declared where a reader looks "
+                                    "(D-362)")
     # (D-219) A variable no action ever changes is a constant of the model: every claim over it is either
     # trivially true or trivially false, so nothing checks it. The class was found by the survey that wrote
     # this rule (measured 2026-09-27): six variables across three modules had no writer at all — V2Compress'

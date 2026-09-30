@@ -20,6 +20,119 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-362 The formal-verification mandate becomes gates: CI runs TLA+/Kani, D-362 models the private-history rule, and the control-plane surface is inventoried (2026-09-30)
+
+**The operator's mandate.** The user set the standing rule that during TeamAgents development every design that
+*can* be formally verified must be formally verified, and approved this batch: install Kani, put the formal suite
+in CI, and add a gate that forces a new protocol surface to be classified. The self-update runs against the
+provider the user gave (`https://llmapi.paratera.com/v1`, chat-completions, model `DeepSeek-V4.1-Flash`) in an
+isolated profile under `~/.config/teamagents-selfupdate`, whose `[[checks]]` make `make check` *and*
+`make verify-model-all && make verify-model-counterexamples` completion contracts, so no self-update goal settles
+while a formal gate is red. Baseline measured before the batch: `make check` green (core 118 / engine 292 / tui
+36), `make verify-model-all` 24/24, `make verify-model-counterexamples` 77/77, `make verify-kani` 3/3.
+
+**CI now runs the formal suite.** `.github/workflows/ci.yml` gained a `formal-tla` job (temurin Java 21;
+`make verify-model-all` then `make verify-model-counterexamples`) and a `formal-kani` job that installs
+`kani-verifier` **pinned to 0.68.0** — the version this machine's `make verify-kani` passed with, installed from
+outside the repository so `rust-toolchain.toml` does not decide how the verifier is built — and runs
+`make verify-kani`. Before this, CI ran only `make check`; the formal targets were local, hand-run commands, so a
+model or a control could regress without any gate noticing.
+
+**The surface gate, and what it found.** `review/verification_catalogue.py` now reads the methods
+`core/src/v2/control.rs`'s `dispatch` accepts and requires each to appear in a new
+`## Control-plane surface coverage` table in `verification/README.md` naming the spec that models it (or saying
+`unproven`, in which case the method must also be named in the report's unproven list). The check runs both
+directions, so a renamed method cannot leave a stale row; both halves were driven on a copy of the mapping (a
+removed `read_history` row reports `the dispatcher accepts read_history, which … does not list`, and a ghost row
+reports `lists ghost_method, which … no longer accepts`). Applying it to the current dispatcher surfaced exactly
+one method with no model at all: `read_history`. Its rule (A05/Q8, "the user may read any instance's history;
+that grants no equivalent permission to other agents", §5.1/§5.4) is a protocol safety property, so the mandate
+says to model it rather than declare it unproven.
+
+**`V2History.tla`, its configurations and the two independent claims.** `verification/tla/V2History.tla` records
+each successful read as an `[reader, target]` record and states two claims that are deliberately *not* nested:
+`InstancesReadOnlyTheirOwn` (an instance may read only its own history) and `SystemNeverReads` (the runtime never
+reads one). The user's "may read any" half is the absence of a restriction and so has no state that could break
+it; this is stated in the module and the mapping rather than faked as a third claim. The first draft stated the
+rule as one `OnlyUserOrSelfReads` invariant, and the system control refuted *that* one first — an entailed claim,
+the D-219 shape — so the two claims were made independent and each control now refutes exactly the claim it
+names. `verification/tla/MC_history.cfg` is the positive configuration (exhaustive in under a second: 81 states
+generated / 16 distinct); `MC_history_leaks.cfg` (an instance allowed to read a stranger's history) refutes
+`InstancesReadOnlyTheirOwn` and `MC_history_system_reads.cfg` (the runtime reading a member's) refutes
+`SystemNeverReads`. The first draft also modelled the reads as an unbounded sequence and TLC never terminated;
+the set form is finite without a length bound. The code anchors are `read_history` (the three-branch identity
+match) and the control-plane test `read_history_is_user_or_self_only`.
+
+**Counts, updated where the audits read them.** After the change: `make verify-model-all` 25/25 configurations,
+`make verify-model-counterexamples` 79/79 controls, `make verify-kani` 3/3 harnesses; the catalogue reports 105
+configurations / 22 modules on disk. The report's §0 gained the D-362 bullet and its prose count moved from
+twenty-one to twenty-two surfaces; `docs/DEVELOPMENT.md`, `verification/README.md` and the catalogue's own
+docstring carry the same module count, and `review/citations.py` plus `review/README.md` carry the recomputed
+citation/link/`make`/`§` counts. `docs/ACCEPTANCE.md`'s A05 row now cites the model and both controls beside the
+in-process test it already named.
+
+**What stays open.** The re-run heading in `verification/REPORT.md` names the material commit in the follow-up
+commit (D-202's ordering), so the formal suite is re-run and the heading updated whenever this material changes.
+The Kani version is pinned only in the CI job; nothing holds `docs/DEVELOPMENT.md` to it yet (the catalogue's
+version rule covers TLC, not Kani). And the surface gate classifies *coverage*, not completeness: a method whose
+module models part of its rule still needs its own claim and anchor in the mapping, which the existing D-212/D-222
+rules enforce per module. The next self-update items (interrupt-and-redirect, then multi-session) are tracked
+after this batch.
+
+## D-361 A29's workspace policy was driven by two uncited tests, and two of my own "named nowhere" sentences were wrong (2026-09-29)
+
+**Part 1 — the new standing rule, applied to my own rows first.** The operator's D-360 corrected one word of
+D-359: `the_bin_dir_knob_decides_where_the_installer_puts_the_binaries` *was* named — in D-182's entry, which
+A36's row did not cite. The rule this card carries is to search **every tracked file** before writing that a name
+was named by no row, decision or document, and to say "named by no *row*" unless that search really is empty. I
+applied it first to the two rows my last cards wrote, with a scan that maps each cited name to the `docs/DECISIONS.md`
+headings carrying it plus a `git grep` over every `*.md` and the whole tree:
+
+| name | whole-tree result | what the row said |
+|---|---|---|
+| `a_waiting_leader_wakes_when_the_peers_message_is_applied` | its own file only; no markdown before D-355 | correct |
+| `pending_wait_wakes_in_the_same_transaction_as_the_fact` | **D-319 and D-320** name it | **wrong**: A02's row said "both tests" were named nowhere |
+| `local_install_and_legacy_config_preservation`, `corrupt_or_incomplete_download_never_changes_installed_pair`, `authenticated_download_resolves_latest_and_installs`, `public_download_works_without_github_login_and_rejects_unsupported_os` | their own file only; no markdown | correct |
+| `the_bin_dir_knob_decides_where_the_installer_puts_the_binaries` | **D-181** names it | **wrong** (D-360's own correction) |
+| `failed_second_replacement_restores_both_old_programs` | **D-190** names it | **wrong**: A36's row said "also named by no row, decision or document" |
+
+Both sentences are now written to what the search measures: A02's row says the supervisor-level test was named
+nowhere before D-355 while its control-plane sibling was named earlier and cited by no row, and A36's row names
+the two that earlier decisions carry and says of the other four only what the whole-tree search supports.
+
+**Part 2 — A29, the row this card audits.** A29 ("Session isolation and a shared project") is short: it cites
+`control::begin_request_rejects_instances_of_other_sessions` (the session half) and
+`cli::cwd_reaches_a_started_daemon_and_is_reported_against_a_live_one` (the `--cwd` the instances and tools work
+in). Its title's other two nouns — one project *shared*, a member *isolated* from it — are decided in
+`workspace::prepare`'s policy branch and driven by two tests the orphan sweep surfaced and no row, decision or
+document named: `workspace::tests::shared_and_isolated_roots` (`Shared` hands the member the project directory
+itself with no note; `Isolated` gives it `members/<id>/work` with an `INPUTS.md` and a note that says so) and
+`workspace::tests::worktree_lifecycle_and_guards` (`GitWorktree` creates a real worktree on a
+`teamagents/<id>-…` branch, and reopening reuses it rather than failing). The row now names both, with what each
+drives, beside the two it already cited.
+
+**Pre-fix control.** In `engine/src/workspace.rs` the `Isolated` arm of `prepare` was made to hand over the
+shared project (`let path = project_cwd.to_path_buf();`). The named test then **FAILED** —
+`panicked at src/workspace.rs:446: assertion left == right failed, left: "/tmp/ta-ws-policy-…/project",
+right: "/tmp/ta-ws-policy-…/sessions/s1/members/iso/work"` — which is the isolation half of A29's title failing,
+i.e. the test carries the claim. The file was restored **byte-identically** (sha256 prefix `d0a8b7bd3f3b6f7c`
+before and after; `git diff --stat engine/src/workspace.rs` empty).
+
+**Numbers** (measured): citations **1034** / 81 relative links / **643** `make` / **1018** § refs, 0 unexplained
+(1029/643/1018 before this entry's own text was counted, and it moves them)
+(`review/citations.py`, docstring updated); suites unchanged (`review/test_counts.py`: core 118 / engine 292 /
+tui 36); the orphan sweep re-run: 414 tests, 146 named by no markdown file — with the two this card names now
+cited once. No `verification/tla`, `verification/kani` or `core/src/kernel/types.rs` was touched, so section 0
+does not apply.
+
+**Uncommitted, for the operator.** `docs/ACCEPTANCE.md` (A29's row, A02's and A36's corrected sentences),
+`docs/DECISIONS.md` (this entry), `review/citations.py` (its docstring counts).
+
+**Left unproven.** The three rows' other cited evidence was read, not re-run (the live probes' dated numbers
+stand as recorded), and `worktree_lifecycle_and_guards` was read, not exercised through a control — only
+`shared_and_isolated_roots` was. The rows still unaudited: A05, A08, A09, A10, A12, A17, A21, A24, A26, A32,
+A34.
+
 ## D-360 Task 44 is verified: the installer suite really pins those rules, and one control taught something (2026-09-29)
 
 The product's entry is D-359. This entry is the operator's verification and the phase's measured numbers.
