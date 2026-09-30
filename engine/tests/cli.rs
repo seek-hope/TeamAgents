@@ -3352,12 +3352,16 @@ fn sessions_fork_snapshots_a_session_and_refuses_a_live_source() {
     let id = report["id"].as_str().expect("an id").to_string();
     assert_eq!(report["forked_from"], serde_json::json!("default"));
     assert!(base.join("sessions").join(&id).join("session.sqlite").exists(), "the snapshot is a database");
-    let (code, out, err) = run(&["--state-root", &root, "--session", &id, "doctor"]);
-    assert_eq!(code, Some(0), "the fork must open: {out}{err}");
-    assert!(
-        out.contains(&base.join("sessions").join(&id).display().to_string()),
-        "doctor resolves the fork root: {out}"
-    );
+    // The fork opens as its own session: doctor's v2-state-root row is OK for the fork root. The overall exit
+    // code is host-capability-dependent (a machine without bwrap fails the isolation row, D-113/CI), so the
+    // check is the row this test is about, not the exit code (D-371).
+    let (_code, out, err) = run(&["--state-root", &root, "--session", &id, "doctor"]);
+    let fork_root = base.join("sessions").join(&id).display().to_string();
+    let row = out
+        .lines()
+        .find(|line| line.contains(&fork_root))
+        .unwrap_or_else(|| panic!("doctor resolves the fork root: {out}{err}"));
+    assert!(row.contains("[ok  ]"), "the fork must open as its own session: {row}");
     // and a fork can itself be forked
     let (code, out, err) = run(&["--state-root", &root, "sessions", "fork", "--id", &id]);
     assert_eq!(code, Some(0), "{out}{err}");

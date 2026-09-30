@@ -20,6 +20,23 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-371 A test asserts the capability it is about, not the host's (2026-09-30)
+
+**The gap.** D-364's `sessions_fork_snapshots_a_session_and_refuses_a_live_source` opened the fork with
+`doctor` and asserted exit 0. `doctor`'s exit code includes the isolation row, so the test passed on a dev
+machine with bubblewrap and failed on the CI runner, where bubblewrap is deliberately absent (D-113). The
+condition is what `make check-nobwrap` reproduces; the D-362…D-370 batch reached `origin/main` in one push, so
+CI met D-364's test for the first time.
+
+**The rule.** A test that verifies one capability must not require every other capability the host may lack.
+The fork test now finds doctor's `v2 state root` row for the fork root and asserts it is `[ok  ]` — the row it
+is about — and leaves the process exit code to the isolation tests that own it (D-371). A positive-half test
+whose resource is genuinely optional (the Docker image) may skip, as the bubblewrap positive tests already do
+(D-113); the fail-closed half runs everywhere.
+
+**Evidence.** `make check-nobwrap` is green on the fixed tree (44/44 engine `cli`, the whole gate), and
+`make check` stays green with bubblewrap.
+
 ## D-370 TUI slash commands: a `/command` in the composer is client-side (2026-09-30)
 
 **The gap.** Pi ships slash commands; here the composer sent everything to the Leader, so there was no way to
