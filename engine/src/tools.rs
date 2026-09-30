@@ -2606,16 +2606,44 @@ pub fn iso8601(seconds: i64) -> String {
 /// member's bound web and MCP services, every call producing a ToolReceipt.
 type V2Executor = Box<dyn Fn(&str, &Json, &TurnControl, ShellMode) -> Result<Json, String> + Send + Sync>;
 
+/// Load codemode's persisted `store`/`load` map (D-376). A missing or unreadable file is an empty store; a
+/// malformed one is reported on stderr rather than failing a boot, because the store is a convenience, not an
+/// authority.
+fn load_codemode_store(path: Option<&Path>) -> std::collections::BTreeMap<String, Json> {
+    let Some(path) = path else { return std::collections::BTreeMap::new() };
+    let Ok(text) = std::fs::read_to_string(path) else { return std::collections::BTreeMap::new() };
+    match serde_json::from_str::<std::collections::BTreeMap<String, Json>>(&text) {
+        Ok(values) => values,
+        Err(error) => {
+            eprintln!("codemode store: {} is not readable JSON ({error}); starting empty", path.display());
+            std::collections::BTreeMap::new()
+        }
+    }
+}
+
 pub(crate) struct V2Toolkit {
     executor: V2Executor,
     // D-374: an `Arc` so a codemode script's host closure can hold it in a `'static` callback; the members of
     // the toolkit only ever call `&self` methods, so sharing it is sound.
     bound: Arc<crate::bound::BoundTools>,
-    // D-374: codemode's `store`/`load` values, kept for the life of this toolkit (one instance boot).
+    // D-374: codemode's `store`/`load` values. D-376 persists them under the instance's state root, so a
+    // daemon restart does not lose them.
     codemode_store: Arc<std::sync::Mutex<std::collections::BTreeMap<String, Json>>>,
+    wiring: ToolWiring,
     root: PathBuf,
     artifacts: Option<PathBuf>,
     shell_state: Option<PathBuf>,
+}
+
+/// What the driver wires into a toolkit beyond the catalog: the user's hooks (so a codemode nested call obeys
+/// the same `pre_tool` veto a model call does, D-376), the identity a hook payload names, and where codemode's
+/// `store`/`load` values live between restarts.
+#[derive(Default)]
+pub(crate) struct ToolWiring {
+    pub hooks: Option<Arc<crate::hooks::Hooks>>,
+    pub session_id: String,
+    pub instance_id: String,
+    pub codemode_store: Option<PathBuf>,
 }
 
 impl V2Toolkit {
@@ -2625,6 +2653,7 @@ impl V2Toolkit {
         bindings: Vec<String>,
         artifacts: Option<PathBuf>,
         shell_state: Option<PathBuf>,
+        wiring: ToolWiring,
     ) -> Result<V2Toolkit, String> {
         // Bound MCP services load at driver boot: a required service that is
         // unavailable fails the boot honestly, an optional one only drops its
@@ -2637,14 +2666,32 @@ impl V2Toolkit {
             ArtifactPaths::own(artifacts.clone()),
             shell_state.clone(),
         );
-        Ok(V2Toolkit {
-            executor: Box::new(executor),
-            bound,
-            codemode_store: Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new())),
-            root,
-            artifacts,
-            shell_state,
-        })
+        let codemode_store = Arc::new(std::sync::Mutex::new(load_codemode_store(wiring.codemode_store.as_deref())));
+        Ok(V2Toolkit { executor: Box::new(executor), bound, codemode_store, wiring, root, artifacts, shell_state })
+    }
+
+    /// Persist codemode's `store`/`load` map (D-376). A failure to write is reported on stderr, not turned into
+    /// a tool failure: the script's work already happened, and the store is a convenience, not a fact.
+    fn save_codemode_store(&self) {
+        let Some(path) = self.wiring.codemode_store.as_ref() else { return };
+        let values = self.codemode_store.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+        let body = match serde_json::to_string_pretty(&values) {
+            Ok(body) => body,
+            Err(error) => {
+                eprintln!("codemode store: cannot serialize: {error}");
+                return;
+            }
+        };
+        if let Some(parent) = path.parent() {
+            if let Err(error) = std::fs::create_dir_all(parent) {
+                eprintln!("codemode store: cannot create {}: {error}", parent.display());
+                return;
+            }
+        }
+        let temporary = path.with_extension("json.tmp");
+        if let Err(error) = std::fs::write(&temporary, body).and_then(|()| std::fs::rename(&temporary, path)) {
+            eprintln!("codemode store: cannot write {}: {error}", path.display());
+        }
     }
 
     /// Wire-format schemas the driver merges into the kernel profile ahead of each model request (§5.2).
@@ -2742,28 +2789,63 @@ impl V2Toolkit {
             }
             return receipt;
         }
-        // D-374: the one tool that runs a model-written script over the bound MCP tools. Only the script's own
-        // output reaches the context; the nested tool payloads stay in the sandbox. The nested calls still go
-        // through `BoundTools::call`, so binding-is-authorization and the receipt contract are unchanged.
+        // D-374/D-376: the one tool that runs a model-written script over the bound MCP tools. Only the
+        // script's own output reaches the context; the nested tool payloads stay in the sandbox. A nested call
+        // goes through `BoundTools::call` (binding-is-authorization, the receipt contract) *and* the user's
+        // `pre_tool` veto, so a script is not a way around the hook.
         if intent.name == crate::codemode::TOOL_NAME {
             let code = intent.args.get("code").and_then(|value| value.as_str()).unwrap_or("");
-            let result = crate::codemode::run(
+            let veto: Option<crate::codemode::Veto> =
+                self.wiring.hooks.as_ref().filter(|hooks| hooks.has_pre_tool()).map(|hooks| {
+                    let hooks = hooks.clone();
+                    let session = self.wiring.session_id.clone();
+                    let instance = self.wiring.instance_id.clone();
+                    Arc::new(move |name: &str, args: &Json| {
+                        hooks.deny_reason(&json!({"session_id": session, "instance_id": instance,
+                                                  "tool": name, "arguments": args}))
+                    }) as crate::codemode::Veto
+                });
+            let outcome = crate::codemode::run(
                 code,
-                self.bound.clone(),
-                self.codemode_store.clone(),
-                crate::codemode::DEFAULT_TIMEOUT_MS,
+                crate::codemode::Codemode {
+                    tools: self.bound.clone(),
+                    store: self.codemode_store.clone(),
+                    veto,
+                    timeout_ms: crate::codemode::DEFAULT_TIMEOUT_MS,
+                    aborted: control.check().is_err(),
+                },
             );
+            self.save_codemode_store();
             receipt.duration_ms = started_at.elapsed().as_millis() as u64;
-            match result {
-                Ok(text) => {
-                    receipt.ok = true;
-                    receipt.content = json!({"output": text}).to_string();
-                }
-                Err(text) => {
-                    receipt.ok = false;
-                    receipt.content = json!({"error": text}).to_string();
-                    receipt.error = Some(ReceiptError { class: receipt_error_class(&text).to_string(), reason: text });
-                }
+            let calls: Vec<Json> = outcome
+                .calls
+                .iter()
+                .map(|call| match &call.error {
+                    Some(error) => json!({"name": call.name, "status": call.status, "error": error}),
+                    None => json!({"name": call.name, "status": call.status}),
+                })
+                .collect();
+            if let Some(error) = outcome.error {
+                receipt.ok = false;
+                let class = match outcome.kind {
+                    crate::codemode::Kind::Timeout => "codemode_timeout",
+                    crate::codemode::Kind::Aborted => "cancelled",
+                    _ => receipt_error_class(&error),
+                };
+                let class = class.to_string();
+                receipt.content = if calls.is_empty() {
+                    json!({"error": error}).to_string()
+                } else {
+                    json!({"error": error, "calls": calls}).to_string()
+                };
+                receipt.error = Some(ReceiptError { class, reason: error });
+            } else {
+                receipt.ok = true;
+                receipt.content = if calls.is_empty() {
+                    json!({"output": outcome.output}).to_string()
+                } else {
+                    json!({"output": outcome.output, "calls": calls}).to_string()
+                };
             }
             return receipt;
         }

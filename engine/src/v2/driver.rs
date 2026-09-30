@@ -581,14 +581,20 @@ pub(crate) fn spawn_driver<P: Provider + 'static>(
     });
     // Bound MCP services load at boot: a required service that is unavailable
     // fails the boot honestly, an optional one only drops its capability (§7).
+    let hooks = Hooks::from_config(&config.catalog, &config.session_id);
     let toolkit = Arc::new(V2Toolkit::new(
         config.workspace.clone(),
         config.catalog.clone(),
         config.bindings.clone(),
         Some(config.state_root.join("artifacts")),
         Some(config.state_root.join("shell")),
+        crate::tools::ToolWiring {
+            hooks: hooks.clone(),
+            session_id: config.session_id.clone(),
+            instance_id: config.instance_id.clone(),
+            codemode_store: Some(config.state_root.join("codemode-store.json")),
+        },
     )?);
-    let hooks = Hooks::from_config(&config.catalog, &config.session_id);
     let driver = Driver {
         shell_state: config.state_root.join("shell"),
         config,

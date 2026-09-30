@@ -189,7 +189,7 @@ verify-model-counterexamples: verify-tools
 		MC_schedule_duplicate.cfg:V2Schedule.tla MC_schedule_overlap.cfg:V2Schedule.tla \
 		MC_schedule_disabled.cfg:V2Schedule.tla MC_schedule_early.cfg:V2Schedule.tla \
 		MC_isolation_fallback.cfg:V2Isolation.tla MC_isolation_unavailable.cfg:V2Isolation.tla \
-		MC_codemode_leak.cfg:V2Codemode.tla \
+		MC_codemode_leak.cfg:V2Codemode.tla MC_codemode_veto.cfg:V2Codemode.tla \
 		MC_jobs_guess_notrun.cfg:V2Jobs.tla MC_jobs_double_go.cfg:V2Jobs.tla \
 		MC_jobs_late_go.cfg:V2Jobs.tla MC_jobs_spawn_first.cfg:V2Jobs.tla \
 		MC_jobs_retires_a_running_command.cfg:V2Jobs.tla \

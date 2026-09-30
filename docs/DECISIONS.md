@@ -20,6 +20,49 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-376 Codemode completed: the veto, structured results, the tool helpers and a persistent store (2026-09-30)
+
+**The gap.** D-374 shipped codemode's core (one tool, a QuickJS sandbox, only the script's own output in the
+context) with four ceilings: a nested call bypassed the user's `pre_tool` hook, an MCP tool's
+`structuredContent` was flattened to text, `searchTools`/`describeTool`/`describeNamespace` did not exist,
+`store`/`load` lived only for one toolkit and `max_output_tokens` was parsed but not enforced.
+
+**The design.**
+
+* **A nested call obeys `pre_tool`.** `V2Toolkit` now carries a `ToolWiring` (the driver's hooks plus the
+  identity a hook payload names); `codemode::run` asks the same `Hooks::deny_reason` before `BoundTools::call`,
+  so a script is not a way around a tool the user denied. Modelled as `V2Codemode`'s `VetoedNeverCalled`,
+  refuted by `tla/MC_codemode_veto.cfg`.
+* **Structured results.** `McpClient::call_tool_result` keeps the raw result; `BoundTools::call` (through
+  `render_result`) returns a tool's `structuredContent` when it declares an `outputSchema` and its joined text
+  otherwise, and turns an MCP `isError` result into a rejection carrying its text. `BoundTool` gained
+  `namespace` and `output_schema`.
+* **The tool helpers.** `ALL_TOOLS`, `searchTools(query, {limit, namespace})` (a scored match over name and
+  description), `describeTool(name)` and `describeNamespace(service)` are implemented in the prelude over a
+  catalogue the Rust side builds, so the description budget does not have to carry every tool.
+* **`image()`** accepts a base64 `data:` URL or an MCP image block and refuses a remote URL (pi's rule).
+  Ceiling: this build has no image flow into the model context (`load_image_reference` has no caller and the
+  providers say where the placeholder lives), so an image becomes a short marker rather than a multimodal
+  block; the upgrade path is that flow, not a change here.
+* **Budgets and the store.** `max_output_tokens` (default 10,000, four characters per token) truncates the
+  collected output; `store`/`load` enforce pi's per-value 256 Ki and total 1 Mi character limits and persist to
+  `<state root>/codemode-store.json` through an atomic write, so a daemon restart keeps them.
+* **Reporting.** `run` returns the output plus a compact `calls` log and a classified kind
+  (`Completed`/`Script`/`Timeout`/`Aborted`); the receipt carries `calls` whenever a nested call happened and
+  names a timeout as `codemode_timeout`.
+
+**Formal.** `verification/tla/V2Codemode.tla` extended with `VetoedNeverCalled` and its refuted control
+`tla/MC_codemode_veto.cfg`; the positive configuration stays exhaustive in under a second (34 states / 9).
+
+**Evidence.** Ten unit tests in `engine/src/codemode.rs` (emit-and-return, an unbound rejection with its call
+log, the veto, no host globals, store limits and `exit`, search/describe/namespace, the options line and both
+budgets, `image`, the schema, the identifier rule) and four `engine/tests/v2_mcp.rs` tests (the information
+flow, a structured result, the nested veto, the round trip), beside `make verify-model-all` and
+`make verify-model-counterexamples`.
+
+**Ceiling.** No image flow into the context (above); the store is one JSON file per instance rather than a
+session table; QuickJS is an interpreter, so glue and filtering are the intended use.
+
 ## D-375 The comparable Terminal-Bench baseline for the next evaluation (2026-09-30)
 
 **Why.** D-373 measured the product on this repository's own 16 tasks (16/16 with `DeepSeek-V4.1-Flash`), which is

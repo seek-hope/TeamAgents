@@ -17,6 +17,12 @@ pub struct BoundTool {
     pub name: String,
     pub description: String,
     pub parameters: Json,
+    /// The binding the tool came from (its MCP service name). Codemode groups tools by it
+    /// (`describeNamespace`); it is not part of the model-visible tool name.
+    pub namespace: String,
+    /// The MCP tool's declared `outputSchema`, when it has one. Codemode returns `structuredContent`
+    /// for such a tool instead of its text (D-376, pi's adapter rule).
+    pub output_schema: Option<Json>,
     /// (client, remote tool name) for MCP tools; None for the native web tools.
     pub remote: Option<(Arc<McpClient>, String)>,
 }
@@ -116,10 +122,14 @@ impl BoundTools {
     }
 
     /// Some(_) when this name is a bound MCP tool (binding = authorization).
+    ///
+    /// D-376: the value is the tool's `structuredContent` when it declared an `outputSchema`, else its
+    /// joined text — exactly what a codemode script should receive. An MCP tool that reports failure
+    /// (`isError`) is an `Err` carrying its text, so `await tools.x()` rejects in the script.
     pub fn call(&self, name: &str, args: &Json) -> Option<Result<Json, String>> {
         let tool = self.tools.iter().find(|t| t.name == name)?;
         let (client, remote) = tool.remote.as_ref()?;
-        Some(client.call_tool(remote, args))
+        Some(render_result(client.call_tool_result(remote, args), tool.output_schema.as_ref(), &tool.name))
     }
 
     /// Ready-to-advertise function schemas for the member's model call.
@@ -230,10 +240,30 @@ fn load_service(name: &str, binding: &ToolBinding, root: &Path) -> Result<(Arc<M
             name: prefixed,
             description: tool.get("description").and_then(|v| v.as_str()).unwrap_or(&remote_name).to_string(),
             parameters: tool.get("inputSchema").cloned().unwrap_or(json!({"type": "object"})),
+            namespace: service.clone(),
+            output_schema: tool.get("outputSchema").cloned(),
             remote: Some((client.clone(), remote_name)),
         });
     }
     Ok((client, out))
+}
+
+/// Turn one `tools/call` result into the value codemode exposes (D-376): `structuredContent` when the
+/// tool declared an `outputSchema` (pi's adapter rule), else its joined text. `Err` is the transport
+/// failure or an MCP `isError` result, so the script's `await` rejects rather than receiving a
+/// failure-shaped value it might use by mistake.
+fn render_result(result: Result<Json, String>, output_schema: Option<&Json>, name: &str) -> Result<Json, String> {
+    let result = result?;
+    let text = McpClient::result_text(&result);
+    if result.get("isError").and_then(|v| v.as_bool()).unwrap_or(false) {
+        return Err(if text.is_empty() { format!("MCP tool {name} failed") } else { text });
+    }
+    if output_schema.is_some() {
+        if let Some(structured) = result.get("structuredContent").filter(|v| !v.is_null()) {
+            return Ok(structured.clone());
+        }
+    }
+    Ok(if text.is_empty() { result } else { Json::String(text) })
 }
 
 #[cfg(test)]

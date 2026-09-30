@@ -344,19 +344,25 @@ impl McpClient {
     }
 
     /// tools/call → the text content of the result (or an error string).
-    pub fn call_tool(&self, name: &str, args: &Json) -> Result<Json, String> {
-        let reply = self.call("tools/call", json!({"name": name, "arguments": args}), self.tool_ms)?;
-        let text = reply
+    /// The **raw** `tools/call` result (D-376). The old direct path flattened it to text, which lost the parts
+    /// codemode needs: an `outputSchema` tool's `structuredContent`, and `isError` as a field rather than a
+    /// joined string.
+    ///
+    /// `Err` is a protocol or transport failure (no answer, a non-2xx, a timeout); an MCP tool that
+    /// reports failure still answers, with `isError = true` inside the `Ok`.
+    pub fn call_tool_result(&self, name: &str, args: &Json) -> Result<Json, String> {
+        self.call("tools/call", json!({"name": name, "arguments": args}), self.tool_ms)
+    }
+
+    /// The text blocks of one `tools/call` result, joined as the old path did.
+    pub fn result_text(result: &Json) -> String {
+        result
             .get("content")
             .and_then(|v| v.as_array())
             .map(|items| {
                 items.iter().filter_map(|item| item.get("text").and_then(|v| v.as_str())).collect::<Vec<_>>().join("\n")
             })
-            .unwrap_or_default();
-        if reply.get("isError").and_then(|v| v.as_bool()).unwrap_or(false) {
-            return Err(if text.is_empty() { "MCP tool error".into() } else { text });
-        }
-        Ok(if text.is_empty() { reply } else { Json::String(text) })
+            .unwrap_or_default()
     }
 
     pub fn close(&self) {

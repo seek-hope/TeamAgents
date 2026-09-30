@@ -66,6 +66,7 @@ pub async fn run_reference<P: Provider>(
         config.bindings.clone(),
         config.artifacts.clone(),
         config.shell_state.clone(),
+        crate::tools::ToolWiring::default(),
     )?);
     let kernel = KernelInstance::new("reference", 0, config.profile.clone());
     let mut trace = Trace::create(&config.trace_dir, &config.run_id)?;

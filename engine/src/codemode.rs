@@ -1,5 +1,5 @@
 //! Codemode: one tool that runs a model-written JavaScript program whose only capabilities are the bound MCP
-//! tools (D-374, learned from pi's `codemode`).
+//! tools (D-374, learned from pi's `codemode`; completed by D-376).
 //!
 //! The point is the information-flow shape, not the scripting: a script may call many MCP tools, loop, filter
 //! and chain them, and **only the script's own `text()` output and return value enter the model's context**.
@@ -9,16 +9,25 @@
 //! The engine is QuickJS (through `rquickjs`), the same one pi's codemode uses. Its only imports are the host
 //! functions this module registers, so a script cannot fetch, read files, spawn processes or time out on its
 //! own. A nested MCP call is synchronous on the host side, so `await tools.x(args)` resolves without an async
-//! runtime; `tools.x` returns the tool's JSON value directly and rejects with an `Error` carrying the tool's
-//! error text.
+//! runtime; `tools.x` returns the tool's `structuredContent` when it declares an output schema and its text
+//! otherwise, and rejects with an `Error` carrying the tool's error text (D-376).
 //!
-//! `store`/`load` keep JSON values across calls **within one toolkit** (an instance's boot); they are not
-//! persisted, which is the v1 ceiling.
+//! Two rules go beyond the sandbox and are the reason this file is not just a parser:
+//!
+//! * **A nested call obeys the user's `pre_tool` veto** (D-376). The direct path asks the hook before a tool
+//!   runs; a script must not be a way around it, so the host bridge asks the same hook for every nested call.
+//! * **The payload still does not enter the context.** `V2Codemode.tla` states that rule and its negative
+//!   control refutes a build that pushed nested payloads.
+//!
+//! Ceiling (D-376): `image()` validates and accounts for an image item, but this build has no image flow into
+//! the model context (`engine/src/providers/*` says so where the placeholder lives), so an image is reported
+//! to the model as a short marker rather than a multimodal block. Remote image URLs are refused, as in pi.
 
 use crate::bound::BoundTools;
 use rquickjs::{Context, Function, Promise, Runtime, Value};
 use serde_json::{json, Value as Json};
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -29,14 +38,63 @@ pub const TOOL_NAME: &str = "codemode";
 /// script when this is crossed (pi's codemode uses the same 256 MiB).
 const MEMORY_LIMIT_BYTES: usize = 256 * 1024 * 1024;
 /// The script's own output is what reaches the context, so it is capped even when the script prints more.
-const MAX_OUTPUT_CHARS: usize = 200_000;
+/// pi's default is 10,000 tokens; a token is estimated at four characters here.
+const DEFAULT_MAX_OUTPUT_TOKENS: usize = 10_000;
+const CHARS_PER_TOKEN: usize = 4;
+/// pi's store limits: one value may be 256 Ki characters of JSON and all values together 1 Mi.
+const MAX_STORE_VALUE_CHARS: usize = 256 * 1024;
+const MAX_STORE_TOTAL_CHARS: usize = 1024 * 1024;
 /// Default hard deadline for one script; a `// @options:` line may override it per call.
 pub(crate) const DEFAULT_TIMEOUT_MS: u64 = 120_000;
+
+/// The user's `pre_tool` veto, as the driver supplies it: `Some(reason)` denies the call.
+pub type Veto = Arc<dyn Fn(&str, &Json) -> Option<String> + Send + Sync>;
 
 /// A `// @options: {"timeout_ms": …}` first line, as pi's codemode source grammar allows.
 #[derive(Debug, Default, PartialEq)]
 struct Options {
     timeout_ms: Option<u64>,
+    max_output_tokens: Option<usize>,
+}
+
+/// One nested call, as `result.calls` reports it (D-376).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CallRecord {
+    pub name: String,
+    pub status: &'static str,
+    pub error: Option<String>,
+}
+
+/// Why a script ended. `Completed` is success.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Completed,
+    Script,
+    Timeout,
+    Aborted,
+    Sandbox,
+}
+
+/// Everything one `run` produced.
+#[derive(Debug)]
+pub struct Outcome {
+    /// What the model sees: the script's `text()`/`console` output, its return value and any image markers.
+    pub output: String,
+    pub calls: Vec<CallRecord>,
+    /// The model-visible error when the script failed.
+    pub error: Option<String>,
+    pub kind: Kind,
+}
+
+/// What the toolkit hands to `run`.
+pub struct Codemode {
+    pub tools: Arc<BoundTools>,
+    pub store: Arc<Mutex<BTreeMap<String, Json>>>,
+    /// The user's `pre_tool` veto, asked once per nested call (D-376).
+    pub veto: Option<Veto>,
+    pub timeout_ms: u64,
+    /// True when the turn was already interrupted before the script started.
+    pub aborted: bool,
 }
 
 /// `my-tool` -> `my_tool`, the identifier the model calls it by (pi's `toCodemodeIdentifier` rule).
@@ -70,7 +128,7 @@ fn ts_type(schema: &Json, depth: usize) -> String {
         Some("number") | Some("integer") => "number".into(),
         Some("boolean") => "boolean".into(),
         Some("array") => {
-            format!("{}[]", schema.get("items").map(|i| ts_type(i, depth + 1)).unwrap_or("unknown".into()))
+            format!("{}[]", schema.get("items").map(|i| ts_type(i, depth + 1)).unwrap_or_else(|| "unknown".into()))
         }
         Some("object") | None => {
             let Some(properties) = schema.get("properties").and_then(|p| p.as_object()) else {
@@ -94,30 +152,57 @@ fn ts_type(schema: &Json, depth: usize) -> String {
     }
 }
 
+/// One tool as the script sees it: the normalized identifier, the real name, its description, its declaration
+/// and the namespace (MCP service) it came from.
+struct Meta {
+    ident: String,
+    real: String,
+    description: String,
+    declaration: String,
+    namespace: String,
+}
+
+fn metas(tools: &BoundTools) -> Vec<Meta> {
+    tools
+        .tools
+        .iter()
+        .map(|tool| Meta {
+            ident: identifier(&tool.name),
+            real: tool.name.clone(),
+            description: tool.description.clone(),
+            declaration: format!(
+                "{}(args: {}): Promise<unknown>",
+                identifier(&tool.name),
+                ts_type(&tool.parameters, 0)
+            ),
+            namespace: tool.namespace.clone(),
+        })
+        .collect()
+}
+
 /// The model-facing tool schema: the intro text plus a declaration of every bound MCP tool. Only called when at
 /// least one tool is bound (the toolkit gates it), so the description never advertises an empty `tools`.
 pub fn schema(tools: &BoundTools) -> Json {
+    let meta = metas(tools);
     let mut declarations = String::new();
-    for tool in &tools.tools {
-        let ident = identifier(&tool.name);
-        let alias = if ident == tool.name { String::new() } else { format!(" (bound as `{}`)", tool.name) };
+    for tool in &meta {
+        let alias = if tool.ident == tool.real { String::new() } else { format!(" (bound as `{}`)", tool.real) };
         declarations.push_str(&format!(
-            "\n  /** {}{} */\n  {}(args: {}): Promise<unknown>;",
+            "\n  /** {}{} */\n  {};",
             tool.description.replace("*/", "* /").replace('\n', " "),
             alias,
-            ident,
-            ts_type(&tool.parameters, 0)
+            tool.declaration
         ));
     }
     let description = format!(
         "Run JavaScript that calls MCP tools as `await tools.<name>(args)`.\n\
          - The code is evaluated in a fresh QuickJS sandbox as the body of an async function: top-level `await` and `return` work.\n\
-         - Tool names are normalized to JavaScript identifiers (`my-tool` is `tools.my_tool`); `ALL_TOOLS` lists `{{name, description}}`.\n\
-         - A nested call that fails rejects with an `Error` carrying the tool's error text. Calls are real and have side effects; earlier calls are not undone when a later one fails.\n\
+         - Tool names are normalized to JavaScript identifiers (`my-tool` is `tools.my_tool`); `ALL_TOOLS` lists every tool, `searchTools(query)` finds one by name or description, `describeTool(name)` returns its declaration and `describeNamespace(service)` lists one service's tools.\n\
+         - A nested call that fails, is vetoed by the user's `pre_tool` hook, or gets invalid arguments rejects with an `Error` carrying the reason. Calls are real and have side effects; earlier calls are not undone when a later one fails.\n\
          - Only what the script emits with `text(...)`/`console.log(...)` and what it returns reaches you — nested tool output does NOT. Filter and aggregate in the script instead of returning raw payloads.\n\
          - No Node, no file system, no network, no timers; a 256 MB heap and a hard deadline apply.\n\
-         - `store(key, value)`/`load(key)` persist JSON values across codemode calls in this session. `exit()` ends the script successfully.\n\
-         - The first line may be `// @options: {{\"timeout_ms\": 60000}}`.\n\n\
+         - `store(key, value)`/`load(key)` persist JSON values across codemode calls in this session. `exit()` ends the script successfully. `image(...)` accepts a base64 `data:` URL.\n\
+         - The first line may be `// @options: {{\"timeout_ms\": 60000, \"max_output_tokens\": 2000}}`.\n\n\
          Available tools:\ndeclare const tools: {{{declarations}\n}};"
     );
     json!({
@@ -153,18 +238,29 @@ fn parse_source(source: &str) -> Result<(String, Options), String> {
             }
         }
         options.timeout_ms = object.get("timeout_ms").and_then(|v| v.as_u64());
+        options.max_output_tokens = object.get("max_output_tokens").and_then(|v| v.as_u64()).map(|v| v as usize);
         return Ok((tail.to_string(), options));
     }
     Ok((source.to_string(), options))
 }
 
-/// The JS prelude. It is the only thing a script can reach besides its own code: everything here is either a
-/// value, a wrapper over the host functions below, or a pure JavaScript helper.
-fn prelude(names: &BTreeMap<String, String>, all_tools: &Json) -> String {
+/// The JS prelude. Everything a script can reach besides its own code is either a value here, a wrapper over
+/// the host functions below, or a pure JavaScript helper.
+fn prelude(meta: &[Meta]) -> String {
+    let names: BTreeMap<&str, &str> = meta.iter().map(|tool| (tool.ident.as_str(), tool.real.as_str())).collect();
+    let catalogue: Json = Json::Array(
+        meta.iter()
+            .map(|tool| {
+                json!({"name": tool.ident, "description": tool.description,
+                       "declaration": tool.declaration, "namespace": tool.namespace})
+            })
+            .collect(),
+    );
     format!(
         r#"
 globalThis.__names = {names};
-globalThis.ALL_TOOLS = {all};
+globalThis.__catalogue = {catalogue};
+globalThis.ALL_TOOLS = __catalogue.map((entry) => ({{ name: entry.name, description: entry.description }}));
 globalThis.tools = new Proxy({{}}, {{
   get: (_target, property) => {{
     const key = String(property);
@@ -182,77 +278,208 @@ globalThis.console = {{}};
 for (const method of ["log", "info", "warn", "error", "debug"]) {{
   globalThis.console[method] = (...args) => __text(args.map(globalThis.__stringify).join(" "));
 }}
-globalThis.store = (key, value) => __store(String(key), value === undefined ? null : JSON.stringify(value));
+globalThis.store = (key, value) => {{
+  const problem = __store(String(key), value === undefined ? null : JSON.stringify(value));
+  if (problem) {{ throw new Error(problem); }}
+}};
 globalThis.load = (key) => {{ const raw = __load(String(key)); return raw === null || raw === undefined ? undefined : JSON.parse(raw); }};
 globalThis.exit = () => {{ throw {{ __codemode_exit: true }}; }};
+globalThis.image = (item) => {{
+  const problem = __image(JSON.stringify(item));
+  if (problem) {{ throw new Error(problem); }}
+}};
+globalThis.__score = (query, entry) => {{
+  const words = String(query).toLowerCase().split(/\s+/).filter((word) => word.length > 0);
+  if (words.length === 0) {{ return 0; }}
+  const name = entry.name.toLowerCase();
+  const description = String(entry.description || "").toLowerCase();
+  let score = 0;
+  for (const word of words) {{
+    if (name.includes(word)) {{ score += 3; }}
+    if (description.includes(word)) {{ score += 1; }}
+  }}
+  return score;
+}};
+globalThis.searchTools = async (query, options) => {{
+  const limit = options && Number.isFinite(options.limit) ? options.limit : 8;
+  const namespace = options && options.namespace;
+  return __catalogue
+    .filter((entry) => !namespace || entry.namespace === namespace)
+    .map((entry) => ({{ entry, score: __score(query, entry) }}))
+    .filter((candidate) => candidate.score > 0)
+    .sort((a, b) => b.score - a.score || a.entry.name.localeCompare(b.entry.name))
+    .slice(0, limit)
+    .map((candidate) => ({{ name: candidate.entry.name, description: candidate.entry.description }}));
+}};
+globalThis.describeTool = async (name) => {{
+  const entry = __catalogue.find((candidate) => candidate.name === name);
+  return entry ? {{ name: entry.name, description: entry.description, declaration: entry.declaration }} : undefined;
+}};
+globalThis.describeNamespace = async (name) => {{
+  const members = __catalogue.filter((entry) => entry.namespace === name);
+  return members.length === 0 ? undefined : {{ name, tools: members.map((entry) => ({{ name: entry.name, description: entry.description }})) }};
+}};
 "#,
-        names = serde_json::to_string(names).unwrap_or_else(|_| "{}".into()),
-        all = serde_json::to_string(all_tools).unwrap_or_else(|_| "[]".into()),
+        names = serde_json::to_string(&names).unwrap_or_else(|_| "{}".into()),
+        catalogue = serde_json::to_string(&catalogue).unwrap_or_else(|_| "[]".into()),
     )
 }
 
-/// Run one script. `tools` supplies the only capabilities; `store` is the cross-call JSON store.
-///
-/// Returns the text the script produced (its `text()`/`console` output and its top-level return value), or the
-/// script's error. A nested call's payload never appears in the returned text unless the script chose to emit it.
-pub fn run(
-    source: &str,
-    tools: Arc<BoundTools>,
-    store: Arc<Mutex<BTreeMap<String, Json>>>,
-    timeout_ms: u64,
-) -> Result<String, String> {
-    if tools.tools.is_empty() {
-        return Err("codemode is not available: no MCP tool is bound to this member".into());
+/// Format an already-caught exception. `Ctx::catch` consumes the pending exception, so the exit marker and the
+/// error text must be read from the same value.
+fn exception_of(value: Value<'_>) -> String {
+    if let Some(exception) = value.as_exception() {
+        let message = exception.message().unwrap_or_default();
+        return match exception.stack() {
+            Some(stack) => format!("{message}\n{}", stack.lines().take(2).collect::<Vec<_>>().join("\n")),
+            None => message,
+        };
     }
-    let (body, options) = parse_source(source)?;
+    format!("script failed: {value:?}")
+}
+
+/// `exit()` throws a marker object, which is a successful end, not an error.
+fn is_exit(value: &Value<'_>) -> bool {
+    value
+        .as_object()
+        .and_then(|object| object.get::<_, Option<bool>>("__codemode_exit").ok().flatten())
+        .unwrap_or(false)
+}
+
+/// Validate an `image()` argument and return `(mime, approximate bytes)`. Remote URLs are refused (pi's rule):
+/// a script must not make the host fetch a URL.
+fn image_shape(item: &Json) -> Result<(String, usize), String> {
+    let data = match item {
+        Json::String(url) => url.as_str(),
+        Json::Object(object) => {
+            if let Some(url) = object.get("image_url").and_then(|v| v.as_str()) {
+                url
+            } else if object.get("type").and_then(|v| v.as_str()) == Some("image") {
+                let mime = object.get("mimeType").and_then(|v| v.as_str()).unwrap_or("image/png").to_string();
+                let data = object.get("data").and_then(|v| v.as_str()).unwrap_or("");
+                return Ok((mime, data.len() * 3 / 4));
+            } else {
+                return Err("codemode: image() wants a data: URL or an MCP image block".into());
+            }
+        }
+        _ => return Err("codemode: image() wants a data: URL or an MCP image block".into()),
+    };
+    let Some(rest) = data.strip_prefix("data:") else {
+        return Err("codemode: image() refuses a remote URL; pass a base64 data: URL".into());
+    };
+    let mime = rest.split(';').next().unwrap_or("image/png").to_string();
+    let bytes = rest.split(',').nth(1).map(|payload| payload.len() * 3 / 4).unwrap_or(0);
+    Ok((mime, bytes))
+}
+
+/// Run one script. `tools` supplies the only capabilities; `store` is the cross-call JSON store; `veto` is the
+/// user's `pre_tool` hook, asked once per nested call.
+pub fn run(source: &str, context: Codemode) -> Outcome {
+    let kind =
+        |kind: Kind, error: String| Outcome { output: String::new(), calls: Vec::new(), error: Some(error), kind };
+    if context.aborted {
+        return kind(Kind::Aborted, "codemode: the turn was interrupted before the script ran".into());
+    }
+    if context.tools.tools.is_empty() {
+        return kind(Kind::Script, "codemode is not available: no MCP tool is bound to this member".into());
+    }
+    let (body, options) = match parse_source(source) {
+        Ok(parsed) => parsed,
+        Err(error) => return kind(Kind::Script, error),
+    };
     if body.trim().is_empty() {
-        return Err("codemode: the script is empty".into());
+        return kind(Kind::Script, "codemode: the script is empty".into());
     }
-    let deadline = Instant::now() + Duration::from_millis(options.timeout_ms.unwrap_or(timeout_ms).max(1));
-    let runtime = Runtime::new().map_err(|error| format!("codemode: {error}"))?;
+    let deadline = Instant::now() + Duration::from_millis(options.timeout_ms.unwrap_or(context.timeout_ms).max(1));
+    let max_output_tokens = options.max_output_tokens.unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS);
+    let timed_out = Arc::new(AtomicBool::new(false));
+    let runtime = match Runtime::new() {
+        Ok(runtime) => runtime,
+        Err(error) => return kind(Kind::Sandbox, format!("codemode: {error}")),
+    };
     runtime.set_memory_limit(MEMORY_LIMIT_BYTES);
-    runtime.set_interrupt_handler(Some(Box::new(move || Instant::now() >= deadline)));
-    let context = Context::full(&runtime).map_err(|error| format!("codemode: {error}"))?;
-
-    let mut names = BTreeMap::new();
-    let mut all_tools = Vec::new();
-    for tool in &tools.tools {
-        names.insert(identifier(&tool.name), tool.name.clone());
-        all_tools.push(json!({"name": identifier(&tool.name), "description": tool.description}));
+    {
+        let timed_out = timed_out.clone();
+        runtime.set_interrupt_handler(Some(Box::new(move || {
+            if Instant::now() >= deadline {
+                timed_out.store(true, Ordering::SeqCst);
+                return true;
+            }
+            false
+        })));
     }
-    let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let context_js = match Context::full(&runtime) {
+        Ok(context) => context,
+        Err(error) => return kind(Kind::Sandbox, format!("codemode: {error}")),
+    };
 
-    let outcome: Result<(), String> = context.with(|ctx| {
+    let meta = metas(&context.tools);
+    let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let calls: Arc<Mutex<Vec<CallRecord>>> = Arc::new(Mutex::new(Vec::new()));
+
+    let outcome: Result<(), String> = context_js.with(|ctx| {
         let prepared: Result<(), String> = (|| {
-            let host = tools.clone();
+            let host = context.tools.clone();
+            let veto = context.veto.clone();
+            let call_log = calls.clone();
             let host_fn = Function::new(ctx.clone(), move |name: String, args: String| -> String {
                 let parsed: Json = serde_json::from_str(&args).unwrap_or(Json::Null);
-                match host.call(&name, &parsed) {
-                    Some(Ok(value)) => json!({"ok": true, "value": value}).to_string(),
-                    Some(Err(error)) => json!({"ok": false, "error": error}).to_string(),
-                    None => json!({"ok": false, "error": format!("unknown tool {name:?}")}).to_string(),
+                if let Some(reason) = veto.as_ref().and_then(|veto| veto(&name, &parsed)) {
+                    call_log
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .push(CallRecord { name, status: "denied", error: Some(reason.clone()) });
+                    return json!({"ok": false, "error": format!("denied by the user's pre_tool hook: {reason}")})
+                        .to_string();
+                }
+                let rendered = match host.call(&name, &parsed) {
+                    Some(Ok(value)) => Ok(value),
+                    Some(Err(error)) => Err(error),
+                    None => Err(format!("unknown tool {name:?}")),
+                };
+                let mut log = call_log.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                match &rendered {
+                    Ok(_) => log.push(CallRecord { name, status: "ok", error: None }),
+                    Err(error) => log.push(CallRecord { name, status: "error", error: Some(error.clone()) }),
+                }
+                drop(log);
+                match rendered {
+                    Ok(value) => json!({"ok": true, "value": value}).to_string(),
+                    Err(error) => json!({"ok": false, "error": error}).to_string(),
                 }
             })
             .map_err(|error| error.to_string())?;
             let setter = {
-                let store = store.clone();
-                Function::new(ctx.clone(), move |key: String, value: Option<String>| {
+                let store = context.store.clone();
+                Function::new(ctx.clone(), move |key: String, value: Option<String>| -> Option<String> {
                     let mut store = store.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                    match value {
+                    let parsed = match value {
                         None => {
                             store.remove(&key);
+                            return None;
                         }
-                        Some(raw) => {
-                            if let Ok(parsed) = serde_json::from_str::<Json>(&raw) {
-                                store.insert(key, parsed);
-                            }
-                        }
+                        Some(raw) => match serde_json::from_str::<Json>(&raw) {
+                            Ok(parsed) => parsed,
+                            Err(_) => Json::Null,
+                        },
+                    };
+                    let size = parsed.to_string().chars().count();
+                    if size > MAX_STORE_VALUE_CHARS {
+                        return Some(format!("codemode: store value for {key:?} is {size} characters; the limit is {MAX_STORE_VALUE_CHARS}"));
                     }
+                    let existing = store.get(&key).map(|value| value.to_string().chars().count()).unwrap_or(0);
+                    let total: usize =
+                        store.values().map(|value| value.to_string().chars().count()).sum::<usize>() - existing + size;
+                    if total > MAX_STORE_TOTAL_CHARS {
+                        return Some(format!("codemode: the store would hold {total} characters; the limit is {MAX_STORE_TOTAL_CHARS}"));
+                    }
+                    store.insert(key, parsed);
+                    None
                 })
                 .map_err(|error| error.to_string())?
             };
             let getter = {
-                let store = store.clone();
+                let store = context.store.clone();
                 Function::new(ctx.clone(), move |key: String| -> Option<String> {
                     let store = store.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                     store.get(&key).map(|value| value.to_string())
@@ -266,11 +493,32 @@ pub fn run(
                 })
                 .map_err(|error| error.to_string())?
             };
+            let imagist = {
+                let output = output.clone();
+                Function::new(ctx.clone(), move |item: String| -> Option<String> {
+                    let parsed: Json = serde_json::from_str(&item).unwrap_or(Json::Null);
+                    match image_shape(&parsed) {
+                        Ok((mime, bytes)) => {
+                            output
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                                .push(format!("[image: {mime}, ~{bytes} bytes — this build cannot put an image into the model's context]"));
+                            None
+                        }
+                        Err(error) => Some(error),
+                    }
+                })
+                .map_err(|error| error.to_string())?
+            };
             ctx.globals().set("__call", host_fn).map_err(|error| error.to_string())?;
             ctx.globals().set("__store", setter).map_err(|error| error.to_string())?;
             ctx.globals().set("__load", getter).map_err(|error| error.to_string())?;
             ctx.globals().set("__text", emitter).map_err(|error| error.to_string())?;
-            ctx.eval::<(), _>(prelude(&names, &Json::Array(all_tools))).map_err(|_| exception(&ctx))?;
+            ctx.globals().set("__image", imagist).map_err(|error| error.to_string())?;
+            ctx.eval::<(), _>(prelude(&meta)).map_err(|_| {
+                let value: Value = ctx.catch();
+                exception_of(value)
+            })?;
             Ok(())
         })();
         prepared?;
@@ -281,7 +529,6 @@ pub fn run(
             Ok(promise) => match promise.finish::<Value>() {
                 Ok(_) => Ok(()),
                 Err(_) => {
-                    // `ctx.catch()` consumes the pending exception, so it is read once and then classified
                     let value: Value = ctx.catch();
                     if is_exit(&value) {
                         Ok(())
@@ -290,50 +537,35 @@ pub fn run(
                     }
                 }
             },
-            Err(_) => Err(exception(&ctx)),
+            Err(_) => {
+                let value: Value = ctx.catch();
+                Err(exception_of(value))
+            }
         }
     });
 
+    let calls = calls.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
     match outcome {
         Ok(()) => {
-            let text = output.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).join("\n");
-            if text.chars().count() > MAX_OUTPUT_CHARS {
-                let head: String = text.chars().take(MAX_OUTPUT_CHARS).collect();
-                Ok(format!("{head}\n… (codemode output truncated)"))
-            } else if text.is_empty() {
-                Ok("(the script produced no output)".into())
+            let raw = output.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).join("\n");
+            let limit = max_output_tokens.saturating_mul(CHARS_PER_TOKEN);
+            let (text, truncated) = if raw.chars().count() > limit {
+                (raw.chars().take(limit).collect::<String>(), true)
             } else {
-                Ok(text)
+                (raw, false)
+            };
+            let mut text = if text.is_empty() { "(the script produced no output)".to_string() } else { text };
+            if truncated {
+                text.push_str("\n… (codemode output truncated at max_output_tokens)");
             }
+            Outcome { output: text, calls, error: None, kind: Kind::Completed }
         }
-        Err(error) => Err(error),
+        Err(error) => {
+            let kind = if timed_out.load(Ordering::SeqCst) { Kind::Timeout } else { Kind::Script };
+            let prefix = if kind == Kind::Timeout { "codemode: the script exceeded its deadline\n" } else { "" };
+            Outcome { output: String::new(), calls, error: Some(format!("{prefix}{error}")), kind }
+        }
     }
-}
-
-/// The pending exception as `Name: message` plus the first stack line, which is what the model needs to fix it.
-fn exception(ctx: &rquickjs::Ctx<'_>) -> String {
-    exception_of(ctx.catch())
-}
-
-/// Format an already-caught exception. Split out because `Ctx::catch` consumes it: the exit marker and the
-/// error text must be read from the same value.
-fn exception_of(value: Value<'_>) -> String {
-    if let Some(exception) = value.as_exception() {
-        let message = exception.message().unwrap_or_default();
-        return match exception.stack() {
-            Some(stack) => format!("codemode: {message}\n{}", stack.lines().take(2).collect::<Vec<_>>().join("\n")),
-            None => format!("codemode: {message}"),
-        };
-    }
-    format!("codemode: script failed: {value:?}")
-}
-
-/// `exit()` throws a marker object, which is a successful end, not an error.
-fn is_exit(value: &Value<'_>) -> bool {
-    value
-        .as_object()
-        .and_then(|object| object.get::<_, Option<bool>>("__codemode_exit").ok().flatten())
-        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -341,85 +573,160 @@ mod tests {
     use super::*;
     use crate::bound::BoundTool;
 
-    fn fake_tools() -> (Arc<BoundTools>, Arc<Mutex<BTreeMap<String, Json>>>) {
-        // Two tools stand in for an MCP service: one echoes, one returns a larger payload the script must filter.
-        let tools = Arc::new(BoundTools {
-            tools: vec![
-                BoundTool {
-                    name: "mcp_echo".into(),
-                    description: "Echo the argument back".into(),
-                    parameters: json!({"type": "object", "properties": {"value": {"type": "string"}}, "required": ["value"]}),
-                    remote: None,
-                },
-                BoundTool {
-                    name: "big-list".into(),
-                    description: "Return a list of records".into(),
-                    parameters: json!({"type": "object", "properties": {}}),
-                    remote: None,
-                },
-            ],
-        });
-        (tools, Arc::new(Mutex::new(BTreeMap::new())))
+    fn tool(name: &str, description: &str, parameters: Json) -> BoundTool {
+        BoundTool {
+            name: name.into(),
+            description: description.into(),
+            parameters,
+            namespace: "svc".into(),
+            output_schema: None,
+            remote: None,
+        }
     }
 
-    fn run_with(body: &str) -> Result<String, String> {
-        let (tools, store) = fake_tools();
-        run(body, tools, store, DEFAULT_TIMEOUT_MS)
+    fn fake_tools() -> Arc<BoundTools> {
+        Arc::new(BoundTools {
+            tools: vec![
+                tool(
+                    "echo",
+                    "Echo the argument back",
+                    json!({"type": "object", "properties": {"value": {"type": "string"}}, "required": ["value"]}),
+                ),
+                tool("big-list", "Return a list of records", json!({"type": "object", "properties": {}})),
+            ],
+        })
+    }
+
+    fn store() -> Arc<Mutex<BTreeMap<String, Json>>> {
+        Arc::new(Mutex::new(BTreeMap::new()))
+    }
+
+    fn run_source(body: &str) -> Outcome {
+        run(
+            body,
+            Codemode {
+                tools: fake_tools(),
+                store: store(),
+                veto: None,
+                timeout_ms: DEFAULT_TIMEOUT_MS,
+                aborted: false,
+            },
+        )
     }
 
     #[test]
     fn a_script_emits_its_text_and_its_return_value() {
-        let output = run_with(r#"text("hello " + (1 + 1)); return {ok: true};"#).expect("script runs");
-        assert!(output.contains("hello 2"), "{output}");
-        assert!(output.contains("\"ok\":true"), "the returned value is emitted like text(): {output}");
+        let outcome = run_source(r#"text("hello " + (1 + 1)); return {ok: true};"#);
+        assert_eq!(outcome.kind, Kind::Completed);
+        assert!(outcome.output.contains("hello 2"), "{}", outcome.output);
+        assert!(
+            outcome.output.contains("\"ok\":true"),
+            "the returned value is emitted like text(): {}",
+            outcome.output
+        );
     }
 
     #[test]
-    fn a_script_that_calls_an_unbound_tool_rejects_with_the_tools_error() {
-        let error = run_with("return await tools.mcp_echo({ value: 'x' });").unwrap_err();
-        assert!(
-            error.contains("unknown tool"),
-            "a host call to a tool the BoundTools do not carry is refused: {error}"
+    fn a_script_that_calls_an_unbound_tool_rejects_and_logs_the_call() {
+        let outcome = run_source("return await tools.echo({ value: 'x' });");
+        let error = outcome.error.expect("a script error");
+        assert!(error.contains("unknown tool"), "a host call to a tool with no remote is refused: {error}");
+        assert_eq!(outcome.calls.len(), 1);
+        assert_eq!(outcome.calls[0].status, "error");
+        assert!(outcome.calls[0].error.as_deref().unwrap_or_default().contains("unknown tool"), "{:?}", outcome.calls);
+    }
+
+    #[test]
+    fn a_nested_call_obeys_the_users_pre_tool_veto() {
+        let veto: Veto =
+            Arc::new(|name: &str, _args: &Json| if name == "echo" { Some("policy says no".into()) } else { None });
+        let outcome = run(
+            "return await tools.echo({ value: 'x' });",
+            Codemode {
+                tools: fake_tools(),
+                store: store(),
+                veto: Some(veto),
+                timeout_ms: DEFAULT_TIMEOUT_MS,
+                aborted: false,
+            },
         );
+        let error = outcome.error.expect("the veto rejects the script");
+        assert!(error.contains("pre_tool hook") && error.contains("policy says no"), "{error}");
+        assert_eq!(outcome.calls[0].status, "denied");
     }
 
     #[test]
     fn a_script_cannot_reach_the_host_beyond_the_registered_functions() {
         for body in ["return typeof fetch;", "return typeof process;", "return typeof require;"] {
-            let output = run_with(body).expect("the script still runs");
-            assert!(output.contains("undefined"), "no host capability is exposed ({body}): {output}");
+            let outcome = run_source(body);
+            assert!(outcome.output.contains("undefined"), "no host capability is exposed ({body}): {}", outcome.output);
         }
     }
 
     #[test]
-    fn store_and_load_survive_inside_one_store_and_exit_ends_successfully() {
-        let (tools, store) = fake_tools();
-        run("store('n', 41); text('stored');", tools.clone(), store.clone(), DEFAULT_TIMEOUT_MS).expect("first run");
-        let second =
-            run("text(String(load('n') + 1));", tools.clone(), store.clone(), DEFAULT_TIMEOUT_MS).expect("second run");
-        assert!(second.contains("42"), "{second}");
-        let exited =
-            run("text('before'); exit(); text('after');", tools, store, DEFAULT_TIMEOUT_MS).expect("exit is success");
-        assert!(exited.contains("before") && !exited.contains("after"), "{exited}");
+    fn store_and_load_survive_inside_one_store_exit_ends_cleanly_and_limits_are_enforced() {
+        let tools = fake_tools();
+        let store = store();
+        let run_one = |body: &str| {
+            run(
+                body,
+                Codemode {
+                    tools: tools.clone(),
+                    store: store.clone(),
+                    veto: None,
+                    timeout_ms: DEFAULT_TIMEOUT_MS,
+                    aborted: false,
+                },
+            )
+        };
+        run_one("store('n', 41); text('stored');");
+        assert!(run_one("text(String(load('n') + 1));").output.contains("42"));
+        let exited = run_one("text('before'); exit(); text('after');");
+        assert!(exited.output.contains("before") && !exited.output.contains("after"), "{}", exited.output);
+        let too_large = run_one("store('big', 'x'.repeat(300000));");
+        assert!(too_large.error.expect("over the limit").contains("limit"), "a value over the store limit is refused");
     }
 
     #[test]
-    fn the_options_line_sets_the_deadline_and_unknown_fields_are_refused() {
-        assert_eq!(parse_source("// @options: {\"timeout_ms\": 5000}\nreturn 1;").unwrap().1.timeout_ms, Some(5000));
+    fn search_describe_and_namespace_expose_the_catalogue_to_scripts() {
+        let found = run_source("const hits = await searchTools('records'); text(hits[0].name + ':' + hits.length);");
+        assert!(found.output.contains("big_list:1"), "{}", found.output);
+        let described =
+            run_source("const tool = await describeTool('big_list'); text(String(tool.declaration.length > 0));");
+        assert!(described.output.contains("true"), "{}", described.output);
+        let namespace = run_source("const svc = await describeNamespace('svc'); text(svc.tools.length + ':' + String(await describeNamespace('nope')));");
+        assert!(namespace.output.contains("2:undefined"), "{}", namespace.output);
+    }
+
+    #[test]
+    fn the_options_line_sets_the_deadline_and_the_output_budget_and_refuses_unknown_fields() {
+        assert_eq!(
+            parse_source("// @options: {\"timeout_ms\": 5000,\"max_output_tokens\": 10}\nreturn 1;").unwrap().1,
+            Options { timeout_ms: Some(5000), max_output_tokens: Some(10) }
+        );
         assert!(parse_source("// @options: {\"nope\": 1}\nreturn 1;").unwrap_err().contains("unknown @options"));
-        // an infinite loop is stopped by the interrupt handler, not left to hang the daemon
-        let error = run_with("// @options: {\"timeout_ms\": 200}\nwhile (true) {}").unwrap_err();
-        assert!(error.to_lowercase().contains("interrupt") || error.contains("codemode"), "{error}");
+        let long = run_source("// @options: {\"max_output_tokens\": 5}\ntext('x'.repeat(1000));");
+        assert!(long.output.contains("truncated at max_output_tokens"), "{}", long.output);
+        let timed = run_source("// @options: {\"timeout_ms\": 200}\nwhile (true) {}");
+        assert_eq!(timed.kind, Kind::Timeout, "{:?}", timed);
+    }
+
+    #[test]
+    fn image_accepts_a_data_url_and_refuses_a_remote_url() {
+        let good = run_source("image('data:image/png;base64,AAAA'); text('done');");
+        assert!(good.output.contains("[image: image/png"), "{}", good.output);
+        let remote = run_source("image('https://example.com/a.png');");
+        assert!(remote.error.expect("remote refused").contains("remote URL"), "a remote image URL is refused");
     }
 
     #[test]
     fn the_schema_declares_each_tool_with_its_identifier() {
-        let (tools, _) = fake_tools();
-        let schema = schema(&tools);
+        let schema = schema(&fake_tools());
         assert_eq!(schema["name"], json!(TOOL_NAME));
         let description = schema["description"].as_str().unwrap();
         assert!(description.contains("big_list"), "{description}");
         assert!(description.contains("bound as `big-list`"), "{description}");
+        assert!(description.contains("searchTools"), "the deferred-tool helpers are documented: {description}");
         assert_eq!(schema["parameters"]["required"], json!(["code"]));
     }
 

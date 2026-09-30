@@ -575,6 +575,102 @@ return "filtered";
     handle.shutdown().await.expect("shutdown");
 }
 
+/// D-376: an MCP tool that declares an `outputSchema` is exposed to the script as its
+/// `structuredContent`, not as the flattened text — the whole point of a structured tool.
+#[tokio::test]
+async fn codemode_returns_structured_content_for_a_tool_that_declares_an_output_schema() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("codemode-structured");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let server = r#"
+import json, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    if 'id' not in request: continue
+    method = request['method']
+    if method == 'initialize':
+        result = {'protocolVersion': '2025-06-18'}
+    elif method == 'tools/list':
+        result = {'tools': [{'name': 'summary', 'description': 'Return a record summary',
+                             'inputSchema': {'type': 'object', 'properties': {}},
+                             'outputSchema': {'type': 'object', 'properties': {'count': {'type': 'integer'}}}}]}
+    elif method == 'tools/call':
+        result = {'content': [{'type': 'text', 'text': 'a very verbose payload the script must not return'}],
+                  'structuredContent': {'count': 3}}
+    else:
+        result = {}
+    print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
+"#;
+    let mut catalog = UserConfig::default();
+    catalog.tools.insert(
+        "stats".into(),
+        serde_json::from_value::<ToolBinding>(json!({
+            "kind": "mcp", "mcp_server": "stats", "mcp_transport": "stdio", "mcp_execution": "host",
+            "command": "/usr/bin/python3", "args": ["-u", "-c", server], "tool_names": ["summary"],
+        }))
+        .unwrap(),
+    );
+    let script = r#"const summary = await tools.stats_summary({}); text('count=' + summary.count);"#;
+    let provider = ScriptedProvider::new(vec![
+        tool_call("c1", "codemode", json!({"code": script})),
+        finish_call("read the count"),
+    ]);
+    let mut config = root.config(provider);
+    config.catalog = catalog;
+    config.bindings = vec!["stats".into()];
+    let handle = start(config).await.expect("start");
+    handle.input("count the records").await.expect("input");
+    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    let results = tool_results(&root);
+    let reply = results.iter().find(|entry| entry.contains("count=3")).cloned().unwrap_or_default();
+    assert!(!reply.is_empty(), "the structured value is what the script saw: {results:?}");
+    assert!(
+        !reply.contains("a very verbose payload"),
+        "the flattened text of a structured tool is not what the script received: {reply}"
+    );
+    handle.shutdown().await.expect("shutdown");
+}
+
+/// D-376: a nested codemode call obeys the user's `pre_tool` veto exactly as a direct tool call does — a
+/// script must not be a way around the hook. The hook allows `codemode` itself and denies the MCP tool.
+#[tokio::test]
+async fn a_pre_tool_hook_vetoes_a_nested_mcp_call_inside_codemode() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("codemode-veto");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let hook = root.dir.join("deny-nested.py");
+    std::fs::write(
+        &hook,
+        r#"import json,sys
+payload = json.load(sys.stdin)
+tool = (payload.get("payload") or {}).get("tool")
+if tool == "echo_echo":
+    sys.stderr.write("nested MCP calls are not allowed\n")
+    sys.exit(2)
+sys.exit(0)
+"#,
+    )
+    .unwrap();
+    let script = r#"const reply = await tools.echo_echo({ text: 'ping', times: 2 }); text(reply);"#;
+    let provider = ScriptedProvider::new(vec![
+        tool_call("c1", "codemode", json!({"code": script})),
+        finish_call("the nested call was vetoed"),
+    ]);
+    let mut config = root.config(provider);
+    config.catalog = echo_catalog(env!("CARGO_BIN_EXE_fake-mcp-server"));
+    config.catalog.hooks.pre_tool = vec!["/usr/bin/python3".into(), hook.to_string_lossy().into_owned()];
+    config.bindings = vec!["echo_service".into()];
+    let handle = start(config).await.expect("start");
+    handle.input("try the mcp echo tool").await.expect("input");
+    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    let results = tool_results(&root);
+    let reply = results.iter().find(|entry| entry.contains("pre_tool hook")).cloned().unwrap_or_default();
+    assert!(!reply.is_empty(), "the nested veto reaches the script: {results:?}");
+    assert!(reply.contains("nested MCP calls are not allowed"), "with the hook's reason: {reply}");
+    assert!(!reply.contains("ping ping"), "the vetoed call never ran: {reply}");
+    handle.shutdown().await.expect("shutdown");
+}
+
 #[tokio::test]
 async fn required_mcp_service_failure_fails_driver_boot() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));

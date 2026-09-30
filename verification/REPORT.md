@@ -5,15 +5,16 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
-## 0. Gate status (re-run 2026-09-30 at `2df7618a`)
+## 0. Gate status (re-run 2026-09-30 at `ccc182ca`)
 
-* **D-374 added the codemode information-flow model and re-ran all three targets on this tree (2026-09-30).**
-  `make verify-model-all`: all **29** configurations `No error has been found` (rc 0) — the newest is
-  `MC_codemode.cfg`, exhaustive in under a second (66 states generated / 25 distinct).
-  `make verify-model-counterexamples`: all **89** negative controls are refuted (rc 0) — the new one is
-  `MC_codemode_leak.cfg` (`OnlyScriptOutputEnters`). `make verify-kani` reports `Complete - 3 successfully
-  verified harnesses, 0 failures, 3 total` (rc 0). The round changed `verification/tla/V2Codemode.tla` and its
-  two configurations and nothing else in the material.
+* **D-374 added the codemode information-flow model, and D-376 extended it with the veto rule; all three targets
+  were re-run on this tree (2026-09-30).** `make verify-model-all`: all **29** configurations
+  `No error has been found` (rc 0) — the newest is `MC_codemode.cfg`, exhaustive in under a second
+  (34 states generated / 9 distinct). `make verify-model-counterexamples`: all **90** negative controls are
+  refuted (rc 0) — the two new ones are `MC_codemode_leak.cfg` (`OnlyScriptOutputEnters`) and
+  `MC_codemode_veto.cfg` (`VetoedNeverCalled`). `make verify-kani` reports `Complete - 3 successfully verified
+  harnesses, 0 failures, 3 total` (rc 0). The round changed `verification/tla/V2Codemode.tla` and its three
+  configurations and nothing else in the material.
 
 * **D-369 added the sandbox-backend model and re-ran all three targets on this tree (2026-09-30).**
   `make verify-model-all`: all **28** configurations `No error has been found` (rc 0) — the newest is
