@@ -20,6 +20,111 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-360 Task 44 is verified: the installer suite really pins those rules, and one control taught something (2026-09-29)
+
+The product's entry is D-359. This entry is the operator's verification and the phase's measured numbers.
+
+**What the operator verified.** (1) The suite is the pin: A36's cell now names `engine/tests/install.rs` and what
+each of its six tests drives, and the orphan half holds for the names the operator checked — the
+corrupt/incomplete-download one and the public-path one appear in **no** markdown file. (2) **The positive control,
+re-run by the operator**: `install.sh`'s line 8 changed to the default alone
+(`bin_dir=${HOME:?HOME must be set}/.local/bin`, the file's sha256 `d0160eff…` before and after) makes
+`the_bin_dir_knob_decides_where_the_installer_puts_the_binaries` **FAIL** at `tests/install.rs:156` — the rule the
+row now cites — and restoring the line byte-identically (sha256 `d0160eff…`) puts it back. (3) **The negative
+control the entry claims, re-run by the operator**: `install.sh`'s `--bin-dir) bin_dir=$2 ;;` made parsed-and-
+ignored (`--bin-dir) : ;;`) leaves the same test **passing** (0.03 s), because it drives the documented
+`TEAMAGENTS_BIN_DIR` env knob rather than the flag. The card's account of a control that taught something is
+therefore true rather than a rationalisation, and the file was restored byte-identically after both runs.
+
+**The one word the re-measurement corrected.** D-359 said none of the six tests "was named by any row, decision or
+document". Re-measured on the tree it received: none was named by any **row** and five were named by nothing
+anywhere, but `install::the_bin_dir_knob_decides_where_the_installer_puts_the_binaries` **was** named once — in
+D-182's own entry, which A36's row does not cite. The sentence now says exactly that.
+
+**Evidence** (2026-09-29; the tree is `ff58468b` plus this card's uncommitted diff).
+
+| Command | Result |
+|---|---|
+| a repository-wide search over every `*.md` at the tree it received | the two names checked: no file; the env-knob name: D-182's entry — the correction |
+| the operator's positive control (line 8 to the default alone) | the named test **FAILED** at `tests/install.rs:156`; line restored byte-identically (`d0160eff…`) |
+| the operator's negative control (`--bin-dir` parsed and ignored) | the same test **passed** (0.03 s) — the flag is not what it drives |
+| `python3 review/test_counts.py` | `core 118 / engine 292 / tui 36` (nothing added or removed) |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `make pty` | ok |
+
+**The audit's yield.** **Twenty-seven findings from twenty-six audit cards** — eleven coverage holes, fifteen claim
+holes and one product defect. Twenty-four rows are audited; twelve remain.
+
+**The phase's measured numbers (this commit).** **578,622,664 tokens over 1,555 model requests**, the suites
+above, three operator resumes.
+
+**Next card**: the next unaudited row — twelve remain.
+
+**Ceiling**: the operator re-ran the positive control and one of the two negative ones; it did not re-run the
+other four install tests (the gate runs them) nor the row's hand-measured installer re-run, which stands as the
+dated evidence it was.
+
+## D-359 A36's installer half was measured by hand while six tests already drove it (2026-09-29)
+
+**The row, and why this one.** A36's title names five things ("Install / init / doctor / cleanup / reopen") and
+its evidence is a probe plus a shape: `cli::init_prepares_the_v2_root_and_doctor_verifies_it` for the runtime
+path, and for the *install* path a hand re-run of the published installer (2026-09-27), `make release-rehearsal`
+(D-217) and the honest open gap (`review/install_check.py` exits 1 because the newest release tag is an earlier
+implementation). The orphan sweep decided it: 414 test names, 146 named by no markdown file, and among them the
+**whole** `engine/tests/install.rs` suite — six tests that drive the real `install.sh` — while A36's row
+describes those very rules as things it measured by hand.
+
+**What the orphaned tests actually assert.** `engine/tests/install.rs` runs `install.sh` (the repo's own, at
+`../install.sh`) against a constructed release: a local install that preserves the legacy config
+(`local_install_and_legacy_config_preservation`); the `--bin-dir`/env knob deciding where the binaries land
+(`the_bin_dir_knob_decides_where_the_installer_puts_the_binaries`, which drives the *documented* `TEAMAGENTS_BIN_DIR`
+env knob of D-181 rather than the flag); a corrupt archive, an incomplete download **and** a duplicated checksum
+entry leaving both installed programs and the config untouched
+(`corrupt_or_incomplete_download_never_changes_installed_pair` — exactly the rule A36 describes from its hand
+run, including the `old engine`/`old tui` bytes); a failed second replacement restoring both old programs
+(`failed_second_replacement_restores_both_old_programs`, a rollback rule the row never mentioned); the
+authenticated download resolving the latest release (`authenticated_download_resolves_latest_and_installs`); and
+the public path working without a GitHub login while refusing unsupported platforms
+(`public_download_works_without_github_login_and_rejects_unsupported_os`). None of the six was named by any
+*row* — and five of them by nothing anywhere: the installer's rules were pinned offline and documented as if
+they were not. The exception the operator's re-measurement found is the `--bin-dir`/env-knob test, which
+D-182's own entry names once (and A36's row does not cite); the sentence says so now (D-360).
+
+**The change (the claim and the citations, not the code).** A36's row now names the suite and what each test
+drives, beside — not instead of — the hand re-run, `make release-rehearsal` and the open gap, which stand
+untouched. No product or test code changed.
+
+**Pre-fix control, and the two lines that were *not* the control.** The card's standard is one reverted line
+that makes a named test fail, and this row needed three attempts, all worth recording:
+1. `install.sh:129`'s `sha256sum -c … || fail "SHA-256 verification failed; installed binaries were left
+   untouched"` → `|| true`: **the test still passed**, because line 128 refuses a `SHA256SUMS` that does not list
+   the archive's name exactly once before the comparison ever runs, and the test's other failure cases (a
+   corrupt archive, an incomplete download) fail in `tar` first. The checksum comparison is defence in depth
+   here, not the pin.
+2. `install.sh:32`'s `--bin-dir) bin_dir=$2 ;;` → parsed and ignored: **the test still passed**, because
+   `the_bin_dir_knob_decides_where_the_installer_puts_the_binaries` deliberately drives the *documented env
+   knob* instead of the flag (D-181) — which is itself a detail the row's prose does not distinguish.
+3. `install.sh:8`'s `bin_dir=${TEAMAGENTS_BIN_DIR:-…}` → the default alone: the named test **FAILED**,
+   `panicked at tests/install.rs:156: Output { status: ExitStatus(unix_wait_status(256)), stdout:
+   "teamagents-9.8.7-…tar.gz: OK", stderr: "mktemp: failed to create directory via template
+   '/home/rimuru/.local/bin/.teamagents-install.XXXXXX': Read-only file system" }`.
+`install.sh` was restored **byte-identically** after each attempt and the final file's sha256 prefix is
+`d0160effba0fdb14` before and after; `git diff --stat install.sh` is empty.
+
+**Numbers** (measured): citations **1026** / 81 relative links / **643** `make` / **1018** § refs, 0 unexplained
+(`review/citations.py`, docstring updated); suites unchanged (`review/test_counts.py`: core 118 / engine 292 /
+tui 36 — nothing added or removed); the orphan sweep re-run: 414 tests, 146 named by no markdown file. No
+`verification/tla`, `verification/kani` or `core/src/kernel/types.rs` was touched, so section 0 does not apply.
+
+**Uncommitted, for the operator.** `docs/ACCEPTANCE.md` (A36's row), `docs/DECISIONS.md` (this entry),
+`review/citations.py` (its docstring counts) and `review/README.md` (the page's own make-citation count, D-234 —
+it read 640 and the audit recomputes 642).
+
+**Left unproven.** The published-install re-run's dated results and `review/install_check.py`'s exit-1 gap were
+not re-run — they stand as the row recorded them — and the six tests were read and one of them exercised through
+the control, not all six re-run. One consequence for a later card: the installer suite is now cited, so a row
+about releases or the install path can name it without re-deriving the list.
+
 ## D-358 Task 43 is verified: the lever really releases what the deadline parked, and the operator's control breaks it (2026-09-29)
 
 The product's entry is D-357. This entry is the operator's verification and the phase's measured numbers.
