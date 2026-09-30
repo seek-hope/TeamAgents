@@ -300,7 +300,7 @@ globalThis.__score = (query, entry) => {{
   }}
   return score;
 }};
-globalThis.searchTools = async (query, options) => {{
+globalThis.searchTools = (query, options) => {{
   const limit = options && Number.isFinite(options.limit) ? options.limit : 8;
   const namespace = options && options.namespace;
   return __catalogue
@@ -311,11 +311,11 @@ globalThis.searchTools = async (query, options) => {{
     .slice(0, limit)
     .map((candidate) => ({{ name: candidate.entry.name, description: candidate.entry.description }}));
 }};
-globalThis.describeTool = async (name) => {{
+globalThis.describeTool = (name) => {{
   const entry = __catalogue.find((candidate) => candidate.name === name);
   return entry ? {{ name: entry.name, description: entry.description, declaration: entry.declaration }} : undefined;
 }};
-globalThis.describeNamespace = async (name) => {{
+globalThis.describeNamespace = (name) => {{
   const members = __catalogue.filter((entry) => entry.namespace === name);
   return members.length === 0 ? undefined : {{ name, tools: members.map((entry) => ({{ name: entry.name, description: entry.description }})) }};
 }};
@@ -696,6 +696,10 @@ mod tests {
         assert!(described.output.contains("true"), "{}", described.output);
         let namespace = run_source("const svc = await describeNamespace('svc'); text(svc.tools.length + ':' + String(await describeNamespace('nope')));");
         assert!(namespace.output.contains("2:undefined"), "{}", namespace.output);
+        // the helpers are plain functions, so a script that forgets `await` still gets the value (a real-model
+        // run wasted a turn on `[object Promise]` before this; `await` keeps working on a non-promise)
+        let sync = run_source("const hits = searchTools('records'); const tool = describeTool('big_list'); text(hits[0].name + ':' + String(tool.declaration.length > 0));");
+        assert!(sync.output.contains("big_list:true"), "{}", sync.output);
     }
 
     #[test]
