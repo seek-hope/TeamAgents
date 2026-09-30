@@ -207,18 +207,18 @@ instead. Details, the full action vocabulary and the exit codes are in
 | `--state-root PATH` | use a specific state root (default `$XDG_STATE_HOME/teamagents/v2`); it is the *directory* holding `session.sqlite`, `daemon.sock` and the daemon's `daemon.log`, created when it does not exist yet — a path that is a file is refused with the flag named (`doctor`, `init`, `daemon`, `exec` and the session verbs), and one that cannot be created, or that holds a *directory* where `session.sqlite`, `daemon.sock` or `daemon.log` belongs, is refused with the flag and the fix (`init`, `daemon`, `exec`) |
 | `--model KEY` | pick a model catalog entry (default `leader_main`) |
 | `--full-auto` | user-only full-auto mode (out-of-scope work is approved instead of requested); it applies to the session this command starts — a session that is already running keeps the mode it booted with, and the client prints that mode instead of pretending |
-| `init` / `doctor` / `daemon` / `daemon --stop` / `exec` / `authority` / `approvals` / `instances` / `tasks` / `runners` / `artifacts` / `version` / `--help` | config and state root / self-check (config, credentials, state root, skills, goal limits, checks, hooks, bubblewrap) / run the daemon alone (its output goes to `<state root>/daemon.log`) / stop the session that owns this state root, addressed by its socket (no pid; `--cwd`/`--model`/`--full-auto` are refused) / headless input / list, grant and revoke capabilities / list and decide approvals / pause, resume, terminate, merge a worktree member's branch and list instances / list and cancel tasks / list the job runners a state root still carries and ask the settled ones to retire / list a state root's artifacts (bytes, owner, presence) and collect the ones nothing references (`runners stop --service --yes` instead signals the process group a settled command left behind) / version / usage |
+| `init` / `doctor` / `daemon` / `daemon --stop` / `exec` / `authority` / `approvals` / `instances` / `tasks` / `runners` / `artifacts` / `version` / `--help` | config and state root / self-check (config, credentials, state root, skills, goal limits, checks, hooks, bubblewrap) / run the daemon alone (its output goes to `<state root>/daemon.log`) / stop the session that owns this state root, addressed by its socket (no pid; `--cwd`/`--model`/`--full-auto` are refused) / headless input / list, grant and revoke capabilities / list and decide approvals / pause, resume, interrupt, terminate, merge a worktree member's branch and list instances / list and cancel tasks / list the job runners a state root still carries and ask the settled ones to retire / list a state root's artifacts (bytes, owner, presence) and collect the ones nothing references (`runners stop --service --yes` instead signals the process group a settled command left behind) / version / usage |
 
 TUI keys (they match the hint line at the bottom; deliberately no function keys, since some keyboards lack
 them): `Enter` send, `Ctrl+J` newline (and `Shift+Enter` where the terminal reports modifiers), `↑`/`↓` walk a
 multi-line draft and recall the prompts you sent (500 deep, the draft comes back when you walk past the
 newest), `Ctrl+W` deletes the word before the caret and `Ctrl+←`/`Ctrl+→` jump by word, `PageUp`/`PageDown`
 (and the mouse wheel) scroll the conversation, `Tab` switch the
-conversation target, `p`/`r`/`t` pause, resume or terminate the selected instance and `g` open the next
+conversation target, `p`/`r`/`i`/`t` pause, resume, interrupt or terminate the selected instance and `g` open the next
 goal attached to it, `Ctrl+N` cycle the
 views (conversation → instances → tasks → topology → back), `Ctrl+A` pending approvals, `Esc` back,
-`Ctrl+C`/`Ctrl+D` quit. In the instances panel `Enter` sets the conversation target, `p` pauses, `r` resumes
-and `t` terminates (with confirmation); in the tasks panel `c` cancels a task; in the approvals panel
+`Ctrl+C`/`Ctrl+D` quit. In the instances panel `Enter` sets the conversation target, `p` pauses, `r` resumes,
+`i` interrupts the running turn and `t` terminates (with confirmation); in the tasks panel `c` cancels a task; in the approvals panel
 `a` approves once and `d` denies.
 
 ## Configuration and team

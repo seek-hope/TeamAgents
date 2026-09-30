@@ -246,6 +246,18 @@ fn run_v2_effect(effect: V2Effect, client: &mut DaemonClient, app: &mut V2App) {
                 Err(e) => app.command_failed(&e),
             }
         }
+        V2Effect::Interrupt { instance } => {
+            let command_id = format!("ir-{}", uuid::Uuid::new_v4());
+            let result = client.command(
+                &command_id,
+                "interrupt_instance",
+                json!({"instance_id": instance, "reason": "interrupted from the TUI panel"}),
+            );
+            match result {
+                Ok(_) => v2_sync_checkpoint(client, app),
+                Err(e) => app.command_failed(&e),
+            }
+        }
         V2Effect::CancelTask { task_id } => {
             let command_id = format!("ct-{}", uuid::Uuid::new_v4());
             let result =

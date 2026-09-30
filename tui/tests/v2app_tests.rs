@@ -524,6 +524,9 @@ fn instances_panel_pauses_resumes_and_switches_the_conversation() {
     assert_eq!(effect, V2Effect::SetLifecycle { instance: "i-worker".into(), lifecycle: "PAUSED" });
     let effect = app.handle_key(key(KeyCode::Char('r'))).expect("resume effect");
     assert_eq!(effect, V2Effect::SetLifecycle { instance: "i-worker".into(), lifecycle: "ACTIVE" });
+    // D-363: the panel can interrupt one running turn (not destructive, so no confirmation)
+    let effect = app.handle_key(key(KeyCode::Char('i'))).expect("interrupt effect");
+    assert_eq!(effect, V2Effect::Interrupt { instance: "i-worker".into() });
     // Enter promotes the selection to the conversation target and returns
     let effect = app.handle_key(key(KeyCode::Enter));
     assert!(effect.is_none());
@@ -652,7 +655,10 @@ fn frame_shows_the_panels_and_panel_hit_testing() {
     assert!(all.contains("i-worker"), "{all}");
     // a team can span providers: the panel says which model each member runs on (D-69)
     assert!(all.contains("· k3-256k"), "{all}");
-    assert!(all.contains("t terminate"), "{all}");
+    // the panel advertises its levers; at 72 columns the hint's tail truncates, so the key set is asserted
+    // against the full hint while the frame above proves the panel itself renders (D-363 added `i interrupt`)
+    assert!(app.footer_hint().contains("i interrupt"), "{}", app.footer_hint());
+    assert!(app.footer_hint().contains("t terminate"), "{}", app.footer_hint());
     let geo = v2ui::geometry(&app, ratatui::layout::Rect::new(0, 0, 72, 18));
     assert_eq!(geo.approvals.height, 0); // panels hide the chat-only boxes
     assert_eq!(geo.composer.height, 0);

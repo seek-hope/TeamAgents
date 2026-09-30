@@ -149,6 +149,11 @@ pub enum V2Effect {
         instance: String,
         lifecycle: &'static str,
     },
+    /// Interrupt the selected instance's running turn (D-363): not destructive, so no confirmation. A
+    /// queued instruction enters at the boundary and gets its own turn.
+    Interrupt {
+        instance: String,
+    },
     /// Cancel a non-terminal task from the panel (§5.3).
     CancelTask {
         task_id: String,
@@ -691,6 +696,11 @@ impl V2App {
             }
             KeyCode::Char('p') => self.lifecycle_selected("PAUSED"),
             KeyCode::Char('r') => self.lifecycle_selected("ACTIVE"),
+            // D-363: interrupt the running turn; not destructive, so no confirmation
+            KeyCode::Char('i') => {
+                let instance = self.instances.get(self.instance_sel)?.id.clone();
+                Some(V2Effect::Interrupt { instance })
+            }
             // D-269: opening a goal is not destructive, so it needs no confirmation; it moves the instance's
             // goal pointer (D-266), which is exactly what makes later delegation charge to the new goal
             KeyCode::Char('g') => {
@@ -1012,7 +1022,7 @@ impl V2App {
                 if terminated {
                     "Enter set conversation target · up/down select · Ctrl+N next · Esc back".to_string()
                 } else {
-                    "Enter set conversation target · p pause · r resume · t terminate · g open the next goal · up/down select · Ctrl+N next · Esc back"
+                    "Enter set conversation target · p pause · r resume · i interrupt · t terminate · g open the next goal · up/down select · Ctrl+N next · Esc back"
                         .to_string()
                 }
             }

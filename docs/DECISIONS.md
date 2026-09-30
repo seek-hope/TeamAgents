@@ -43,8 +43,8 @@ and the result in the same shape `pause`/`resume` do.
 process group is the `set_lifecycle` TERMINATED lever (D-88), and this command deliberately leaves open
 operations alone. It never settles a goal or a task. When the provider's answer lands just before the interrupt,
 the command reports `interrupted: false` (the request already closed) instead of claiming a cancellation that
-did not happen. The TUI key is not wired in this commit — the headless lever is the substance and the TUI is a
-thin client; a key is the next small step.
+did not happen. The TUI key (`i` in the instances panel) is wired too: it sends the same command, and the
+footer hint advertises it beside `p`/`r`/`t`.
 
 **Formal.** The interrupt adds no new protocol *transition*: it is `V2Control.CancelRequest` ("user cancel:
 request closes, reservation released, instance READY", A13) reached through the user gate, and the queued input
