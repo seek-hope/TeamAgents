@@ -20,6 +20,45 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-375 The comparable Terminal-Bench baseline for the next evaluation (2026-09-30)
+
+**Why.** D-373 measured the product on this repository's own 16 tasks (16/16 with `DeepSeek-V4.1-Flash`), which is
+not comparable to any published number. The official `DeepSeek-V4.1-Flash` model card and technical report do
+publish Terminal-Bench 2.1/3.0/4.0, and a **scaffold** table that names Pi — so a comparable run has both a
+protocol and a baseline. The official X announcement is a thread from `@deepseek_ai`
+(`https://x.com/deepseek_ai/status/2097930608790167907`, 2026-09-10); its numbers are the model card's.
+
+**The official baseline (max reasoning effort; model card / technical report §5.3).**
+
+| Benchmark | Opus-5.0 | GPT-5.6 Sol | K3 | GLM-5.3 | DS-V4-Pro | DS-V4-Flash | **DS-V4.1-Flash** |
+|---|---|---|---|---|---|---|---|
+| Terminal-Bench 2.1 | 89.1 | 88.8 | 88.3 | 88.2 | 87.9 | 82.7 | **90.6** |
+| Terminal-Bench 3.0 | 43.3 | 34.4 | 17.7 | 28.3 | 11.8 | 7.6 | **30.0** |
+| Terminal-Bench 4.0 | 51.8 | 39.9 | 12.6 | 37.9 | 12.4 | 7.0 | **31.2** |
+
+**The same model across harnesses (technical report Table 4, TB 2.1 Pass@1, N=3).**
+
+| Claude Code | Codex | OpenCode | **Pi** | mini-SWE | DSH Minimal | DSH Standard | DSH PTC |
+|---|---|---|---|---|---|---|---|
+| 88.0 | 84.1 | 85.0 | **86.1** | 90.3 | **90.6** | 85.8 | 85.8 |
+
+Scaffold versions from the report: Claude Code v2.1.251 (four versions average 87.8), Codex v0.147.0
+(app-server), OpenCode v1.18.15, **Pi v0.84.2 (RPC mode)**, mini-SWE `mini_swe_v2`, DSH Minimal (single bash
+tool) / Standard / PTC. A third-party public harness, Antigma's "Ante" (`https://antigma.ai/eval`, TB 2.1, 89
+tasks × 5 trials, auditable Harbor runs), reports **83.9% ±1.75** for `DeepSeek-V4.1-Flash` and 82.7% for
+`V4-Flash 0731`, 69.1% for `V4-Pro`, 66.4% for `V4-Flash`; `LLM-as-a-Verifier` reports TB 2.1 best-of-5
+verification at 88.0% ±0.6% on `deepseek-v4-flash` trajectories.
+
+**The protocol a comparable TeamAgents run must match** (technical report Appendix B / Table 4 note): TB 2.1 is
+89 tasks, 5 trials per task (the report's own scaffold table uses N=3), Linux containers, `temperature=1.0`,
+`top_p=0.95`, a 1M-token context window, `max_steps=500` model-generation rounds, and **no network access**.
+
+**What this is not.** These are not the official `tbench.ai` leaderboard rows: DeepSeek submits none there, and
+the leaderboard's model pool is Codex/Claude Code/Terminus 2/Gemini CLI/mini-SWE-agent/Cursor CLI/Grok Build.
+The card's numbers are DeepSeek's own evaluation; the Antigma row is a third party's. Neither has run
+TeamAgents, so the number this repository still lacks is its own TB 2.1 row under the protocol above
+(needs a harbor/custom-agent adapter, not a design decision).
+
 ## D-374 Codemode: one tool runs a model-written script over the bound MCP tools (2026-09-30)
 
 **The gap.** A bound MCP tool was advertised as its own model tool, so every call's payload landed in the
