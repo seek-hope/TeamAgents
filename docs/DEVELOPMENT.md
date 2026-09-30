@@ -180,7 +180,7 @@ the [verification guide](../verification/README.md).
 ```bash
 make verify-tools       # download and verify the pinned tla2tools.jar (TLC v1.7.1, fixed SHA-256)
 make verify-model       # small control-plane configuration
-make verify-model-all   # small configurations for all twenty-two modules (~1 minute here)
+make verify-model-all   # small configurations for all twenty-three modules (~1 minute here)
 make verify-model-counterexamples  # every negative control: each must be *refuted*
 make verify-model-wide  # wide control-plane configuration (hundreds of millions of states, slow)
 make verify-kani        # Kani proofs for the paging arithmetic (needs the Kani toolchain)

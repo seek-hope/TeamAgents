@@ -12,6 +12,7 @@ pub mod exec;
 pub mod goals;
 pub mod intervene;
 pub mod runners;
+pub mod sessions;
 pub mod storage;
 pub mod supervisor;
 pub mod surfaces;

@@ -501,6 +501,11 @@ teamagents instances resume --id i-leader      # a parked instance runs again (b
 teamagents instances pause  --id i-worker-1    # stop driving it at the next safe boundary
 teamagents instances interrupt --id i-leader   # cancel its running turn; a queued instruction enters next
 teamagents instances terminate --id i-worker-1 --yes   # deliberate: retires it and its workspace
+teamagents sessions                     # id, state, name, path — the sessions this state root carries (D-364)
+teamagents sessions new --name refactor # create a named session beside the default one
+teamagents --session refactor           # attach the TUI to it (`exec --session refactor "…"` for one turn)
+teamagents sessions archive --id refactor       # move it aside (refused while a daemon runs it)
+teamagents sessions delete --id refactor --yes  # remove its directory and history
 teamagents tasks                        # id, status, assignee, goal
 teamagents tasks cancel --id t-prose    # releases a delegator waiting on a task that can only wait
 teamagents goals                        # the goals this session carries, and what is attached to them
@@ -532,6 +537,15 @@ teamagents goals cancel --id g-spent    # close a goal nothing can spend (its ce
   as they were) and it does **not** stop a running tool: a shell command keeps going, and the process-group
   lever for that stays `instances terminate --id … --yes`. Interrupting an instance with no model request in
   flight is reported honestly (`no model request was in flight`), never as a cancellation that did not happen.
+- **Named sessions (D-364)**: a state root is the *base* — the default session lives in it directly, and
+  `sessions new` creates named ones under `sessions/<id>/`. Each named session is its own state root with its
+  own daemon, so several run side by side; `--session ID` attaches the TUI, `exec`, `daemon`, `init` or `doctor`
+  to one. `sessions archive` moves a session's directory to `archive/<id>/`, and `sessions delete --yes` removes
+  it; both refuse while a daemon is serving it. `sessions list --json` prints `state_root` and `sessions` (each
+  row an `id`, `name`, `path`, `live`, `archived`, `database_bytes`), and `sessions new --json` prints
+  `state_root`, `id`, `name`, `path`; these two run before a session is attached, so they carry no `session_id`.
+  `fork` is not implemented yet — a forked session needs its execution state reset and a decision about member
+  workspaces — so a session is continued, not branched.
 - **What a pause looks like while it takes effect**: `instances` and the TUI's instances panel print the
   lifecycle beside the execution position, which tells "pause requested" from "stopped at a safe boundary" —
   `PAUSED / TOOLS_PENDING` is an in-flight call that will stop at the boundary, `PAUSED / READY` is parked

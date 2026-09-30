@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use teamagents_engine::{cli, tools};
 
 const HELP: &str = "TeamAgents: work with a Leader in your terminal\n\n\
-usage: teamagents [--cwd DIR] [--state-root PATH] [--model KEY] [--full-auto]\n\
+usage: teamagents [--cwd DIR] [--state-root PATH] [--session ID] [--model KEY] [--full-auto]\n\
   teamagents                          TUI attached to your daemon (starts one if needed)\n\
   teamagents exec [--json|--stream-json] [--timeout SEC] [--check CMD] \"…\"   one headless input\n\
   teamagents authority [list] [--json]          the session's grants, with the ids revoke needs\n\
@@ -23,6 +23,10 @@ usage: teamagents [--cwd DIR] [--state-root PATH] [--model KEY] [--full-auto]\n\
   teamagents instances interrupt --id ID        cancel the running turn so a queued instruction takes over\n\
   teamagents instances terminate --id ID --yes  retire it (workspace and open work handled)\n\
   teamagents instances merge --id ID            bring a git_worktree member's branch into the session tree\n\
+  teamagents sessions [list] [--json]           the sessions this state root carries (D-364)\n\
+  teamagents sessions new [--name NAME]         create a named session beside the default one\n\
+  teamagents sessions archive --id ID           move a named session aside (refused while a daemon runs it)\n\
+  teamagents sessions delete --id ID --yes      remove a named session's directory and history\n\
   teamagents tasks [list] [--json]              the session's tasks\n\
   teamagents tasks cancel --id ID               cancel one; a delegator waiting on it is released\n\
   teamagents artifacts [list] [--json]          what this state root holds on disk (bytes, owner, presence)\n\
@@ -47,6 +51,7 @@ teamagents or exec) and exit 0 done, 1 the session refused it, 2 usage. authorit
 spawned worker gets shell@workspace (§5.1) and how a capability is taken back; approvals\n\
 answers the decision that made exec exit 3; instances and tasks are the user-side\n\
 interventions of §5.4 (pause/resume/terminate, cancel a task) without starting the TUI.\n\
+sessions manages the named sessions under one state root; `--session ID` attaches the TUI, exec or daemon to\n\none of them (the default session is the state root itself). A named session is its own state root, so several\n\nrun side by side, and archive/delete refuse a session that still has a daemon.\n\
 runners works on a state root rather than a session — it asks each leftover jobs-runner\n\
 process to retire, which is what a state root carries after its session is gone; a runner\n\
 whose command is still running refuses, so this never takes work away.\n\
@@ -100,6 +105,8 @@ pub struct Args {
     pub command: Option<String>,
     pub positional: Option<String>,
     pub state_root: Option<String>,
+    /// D-364: `--session ID` — attach to a named session recorded in the state root's `sessions.json`.
+    pub session: Option<String>,
     pub model: Option<String>,
     pub timeout: Option<u64>,
     pub checks: Vec<String>,
@@ -120,6 +127,8 @@ pub struct Args {
     /// D-267: `goals open --attach INSTANCE` — attach the new goal to that instance, which is what makes a later
     /// delegation charge to it (D-266).
     pub attach: Option<String>,
+    /// D-364: `sessions new --name NAME`.
+    pub session_name: Option<String>,
     /// D-267: `goals open --deadline MINUTES` — a deadline for the new goal, measured from now (§8).
     pub deadline_minutes: Option<u64>,
 }
@@ -145,6 +154,7 @@ fn parse_args() -> Args {
         command: None,
         positional: None,
         state_root: None,
+        session: None,
         model: None,
         timeout: None,
         checks: Vec::new(),
@@ -160,6 +170,7 @@ fn parse_args() -> Args {
         stream_json: false,
         service_stop: false,
         attach: None,
+        session_name: None,
         deadline_minutes: None,
     };
     let mut i = 0;
@@ -231,6 +242,18 @@ fn parse_args() -> Args {
                 args.positional = argv.get(i + 1).cloned();
                 i += 2;
             }
+            "--session" => {
+                if args.session.is_some() {
+                    given_twice("--session");
+                }
+                let v = argv
+                    .get(i + 1)
+                    .cloned()
+                    .filter(|v| !v.is_empty() && !v.starts_with('-'))
+                    .unwrap_or_else(|| needs_a_value("--session"));
+                args.session = Some(v);
+                i += 2;
+            }
             "--state-root" => {
                 if args.state_root.is_some() {
                     given_twice("--state-root");
@@ -269,7 +292,7 @@ fn parse_args() -> Args {
                 // An entry point no release serves is refused *here*, as soon as the word is read, so the
                 // message names it instead of whatever flag followed it, and so no flag of a removed
                 // subcommand is left in the parser to be accepted and ignored (D-136; D-75's rule, for flags).
-                if matches!(argv[i].as_str(), "serve" | "validate" | "sessions") {
+                if matches!(argv[i].as_str(), "serve" | "validate") {
                     refuse(&format!(
                         "teamagents {}: this entry point is no longer supported; the Leader builds the team through spawn/delegate and the daemon owns the session.\nRun teamagents for the TUI, or teamagents exec \"…\" for one headless input.",
                         argv[i]
@@ -294,6 +317,7 @@ fn parse_args() -> Args {
                             | "artifacts"
                             | "goals"
                             | "surface"
+                            | "sessions"
                     )
                 ) =>
             {
@@ -318,7 +342,7 @@ fn parse_args() -> Args {
                 args.stream_json = true;
                 i += 1;
             }
-            "--yes" if matches!(args.command.as_deref(), Some("instances" | "tasks" | "runners")) => {
+            "--yes" if matches!(args.command.as_deref(), Some("instances" | "tasks" | "runners" | "sessions")) => {
                 if args.confirmed {
                     given_twice("--yes");
                 }
@@ -338,7 +362,7 @@ fn parse_args() -> Args {
             "--id"
                 if matches!(
                     args.command.as_deref(),
-                    Some("approvals" | "instances" | "tasks" | "runners" | "goals" | "surface")
+                    Some("approvals" | "instances" | "tasks" | "runners" | "goals" | "surface" | "sessions")
                 ) =>
             {
                 if args.approval_id.is_some() {
@@ -349,6 +373,18 @@ fn parse_args() -> Args {
                         .cloned()
                         .filter(|v| !v.is_empty() && !v.starts_with('-'))
                         .unwrap_or_else(|| needs_a_value("--id")),
+                );
+                i += 2;
+            }
+            "--name" if args.command.as_deref() == Some("sessions") => {
+                if args.session_name.is_some() {
+                    given_twice("--name");
+                }
+                args.session_name = Some(
+                    argv.get(i + 1)
+                        .cloned()
+                        .filter(|v| !v.is_empty() && !v.starts_with('-'))
+                        .unwrap_or_else(|| needs_a_value("--name")),
                 );
                 i += 2;
             }
@@ -801,6 +837,142 @@ fn run_goals(args: &Args) -> i32 {
     })
 }
 
+/// Resolve `--session ID` to the named session's directory, so every entry point that already takes
+/// `--state-root` works unchanged (D-364). The state root given on the command line is the *base* here: it is
+/// the directory holding `sessions.json`. `sessions` commands take `--id`, not `--session`.
+fn resolve_session(args: &mut Args) -> Result<(), String> {
+    let Some(id) = args.session.clone() else { return Ok(()) };
+    if args.command.as_deref() == Some("sessions") {
+        return Err("--session attaches to a session; `sessions` commands take --id".into());
+    }
+    let home = args.state_root.clone().map(PathBuf::from).unwrap_or_else(teamagents_engine::v2_root);
+    let registry = teamagents_engine::v2::sessions::Registry::load(&home)?;
+    let dir = registry.resolve(&id)?;
+    args.state_root = Some(dir.to_string_lossy().into_owned());
+    Ok(())
+}
+
+/// `teamagents sessions`: the picker and lifetime of named sessions (D-364).
+///
+/// It is filesystem management over the base directory — each named session is its own state root, so A33's
+/// one-coordinator-per-root rule is untouched and several sessions can run at once. `list` never opens another
+/// session's database (only: does its directory hold a `session.sqlite`, how big, is a daemon answering), and
+/// `archive`/`delete` refuse a session whose daemon is live (the socket is the address).
+fn run_sessions(args: &Args) -> i32 {
+    use teamagents_engine::v2::sessions::{facts, Registry, DEFAULT_ID};
+    let home = args.state_root.clone().map(PathBuf::from).unwrap_or_else(teamagents_engine::v2_root);
+    let mut registry = match Registry::load(&home) {
+        Ok(registry) => registry,
+        Err(error) => {
+            eprintln!("sessions: {error}");
+            return 1;
+        }
+    };
+    let verb = args.positional.as_deref().unwrap_or("list");
+    match verb {
+        "list" | "ls" => {
+            let rows: Vec<serde_json::Value> = registry
+                .rows()
+                .into_iter()
+                .map(|(entry, dir)| {
+                    let mut row = facts(&dir);
+                    row["id"] = serde_json::json!(entry.id);
+                    row["name"] = serde_json::json!(entry.name);
+                    row["path"] = serde_json::json!(dir.to_string_lossy());
+                    row["archived"] = serde_json::json!(entry.archived);
+                    row["default"] = serde_json::json!(entry.id == DEFAULT_ID);
+                    row
+                })
+                .collect();
+            if args.exec_json {
+                let report = serde_json::json!({"state_root": home.to_string_lossy(), "sessions": rows});
+                println!("{}", serde_json::to_string(&report).unwrap_or_else(|_| "{}".into()));
+            } else {
+                println!("state root {}: {} session(s)", home.display(), rows.len());
+                for row in &rows {
+                    let state = if row["archived"].as_bool().unwrap_or(false) {
+                        "archived".to_string()
+                    } else if row["live"].as_bool().unwrap_or(false) {
+                        "live".to_string()
+                    } else if row["has_database"].as_bool().unwrap_or(false) {
+                        "idle".to_string()
+                    } else {
+                        "empty".to_string()
+                    };
+                    println!(
+                        "  {}  {:<10}  {:<24}  {}",
+                        row["id"].as_str().unwrap_or(""),
+                        state,
+                        row["name"].as_str().unwrap_or(""),
+                        row["path"].as_str().unwrap_or("")
+                    );
+                }
+            }
+            0
+        }
+        "new" => match registry.new_session(args.session_name.as_deref().unwrap_or("")) {
+            Ok(entry) => {
+                if args.exec_json {
+                    let report = serde_json::json!({"state_root": home.to_string_lossy(), "id": entry.id,
+                                                    "name": entry.name, "path": home.join(&entry.path).to_string_lossy()});
+                    println!("{}", serde_json::to_string(&report).unwrap_or_else(|_| "{}".into()));
+                } else {
+                    println!("created session {} ({})", entry.id, home.join(&entry.path).display());
+                    println!("attach with `teamagents --state-root {} --session {}`", home.display(), entry.id);
+                }
+                0
+            }
+            Err(error) => {
+                eprintln!("sessions new: {error}");
+                1
+            }
+        },
+        "archive" => match args.approval_id.as_deref() {
+            Some(id) => match registry.archive(id) {
+                Ok(dir) => {
+                    println!("archived session {id} to {}", dir.display());
+                    0
+                }
+                Err(error) => {
+                    eprintln!("sessions archive: {error}");
+                    1
+                }
+            },
+            None => {
+                eprintln!("sessions archive needs --id ID (see `teamagents sessions`)");
+                2
+            }
+        },
+        "delete" => match args.approval_id.as_deref() {
+            Some(id) if args.confirmed => match registry.delete(id) {
+                Ok(dir) => {
+                    println!("deleted session {id} ({})", dir.display());
+                    0
+                }
+                Err(error) => {
+                    eprintln!("sessions delete: {error}");
+                    1
+                }
+            },
+            Some(id) => {
+                eprintln!("deleting session {id} removes its directory and history: add --yes to mean it");
+                2
+            }
+            None => {
+                eprintln!("sessions delete needs --id ID (see `teamagents sessions`)");
+                2
+            }
+        },
+        other => {
+            eprintln!(
+                "sessions: unknown command {other:?}; use `teamagents sessions [list]`, `sessions new [--name NAME]`, \
+                 `sessions archive --id ID`, `sessions delete --id ID --yes`"
+            );
+            2
+        }
+    }
+}
+
 fn run_instances(args: &Args) -> i32 {
     use teamagents_engine::v2::intervene::{InterventionCommand, InterventionOptions};
     let state_root = args.state_root.clone().map(PathBuf::from).unwrap_or_else(teamagents_engine::v2_root);
@@ -1138,7 +1310,11 @@ fn which_binary(name: &str) -> Option<PathBuf> {
 }
 
 fn main() {
-    let args = parse_args();
+    let mut args = parse_args();
+    if let Err(error) = resolve_session(&mut args) {
+        eprintln!("teamagents: {error}");
+        std::process::exit(2);
+    }
     let code = match args.command.as_deref() {
         Some("jobs-runner") => match &args.positional {
             Some(dir) => {
@@ -1181,6 +1357,7 @@ fn main() {
         Some("approvals") => run_approvals(&args),
         Some("goals") => run_goals(&args),
         Some("instances") => run_instances(&args),
+        Some("sessions") => run_sessions(&args),
         Some("tasks") => run_tasks(&args),
         Some("runners") => run_runners(&args),
         Some("surface") => run_surface(&args),

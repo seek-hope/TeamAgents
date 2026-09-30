@@ -473,7 +473,7 @@ fn a_bare_word_and_verbose_are_refused_without_starting_a_session() {
     // An entry point no release serves is refused *by name*, even when a flag of the removed subcommand
     // follows it: the word is the problem, and the flag must not be parsed into a field nothing reads
     // (D-136).
-    for word in ["sessions", "validate", "serve"] {
+    for word in ["validate", "serve"] {
         for args in [vec![word], vec![word, "--dry-run"], vec![word, "--history-days", "30"]] {
             let (code, stderr) = run(&args);
             assert_eq!(code, Some(2), "{args:?}: {stderr}");
@@ -3184,4 +3184,66 @@ fn daemon_stop_stops_the_session_by_its_socket() {
     assert_eq!(code, Some(0), "{out}");
     assert!(out.contains("no daemon is running"), "{out}");
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// D-364: named sessions under one base. `sessions new` creates a directory, `--session ID` resolves it for
+/// every entry point that already takes `--state-root`, and archive/delete move or remove it while refusing
+/// the default session. The registry is the only new file, and the base keeps working as the default session.
+#[test]
+fn named_sessions_are_created_resolved_and_retired() {
+    let home = Scratch::new("named-sessions");
+    let base = home.join("base");
+    let config_home = home.join("config");
+    std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
+    let root = base.to_string_lossy().into_owned();
+    let run = |args: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
+            .args(args)
+            .env("XDG_STATE_HOME", home.join("state"))
+            .env("XDG_CONFIG_HOME", &config_home)
+            .output()
+            .expect("run cli");
+        let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+        text.push_str(&String::from_utf8_lossy(&output.stderr));
+        (output.status.code(), text)
+    };
+
+    // `sessions new --json` creates the directory and reports the id
+    let (code, text) = run(&["--state-root", &root, "sessions", "new", "--name", "refactor", "--json"]);
+    assert_eq!(code, Some(0), "{text}");
+    let report: serde_json::Value = serde_json::from_str(text.trim()).expect("one json report");
+    let id = report["id"].as_str().expect("an id").to_string();
+    assert_eq!(report["name"], serde_json::json!("refactor"));
+    assert!(base.join("sessions").join(&id).is_dir(), "the session directory is created");
+
+    // the picker shows the default first, then the named session
+    let (code, text) = run(&["--state-root", &root, "sessions", "list", "--json"]);
+    assert_eq!(code, Some(0), "{text}");
+    let listed: serde_json::Value = serde_json::from_str(text.trim()).expect("one json report");
+    let sessions = listed["sessions"].as_array().expect("rows");
+    assert_eq!(sessions[0]["id"], serde_json::json!("default"), "{listed}");
+    assert!(sessions.iter().any(|row| row["id"] == serde_json::json!(id)), "{listed}");
+
+    // `--session ID` resolves for every entry point: `init` prepares the named directory
+    let (code, text) = run(&["--state-root", &root, "--session", &id, "init"]);
+    assert_eq!(code, Some(0), "{text}");
+    assert!(base.join("sessions").join(&id).join("session.sqlite").exists(), "the database is at the resolved path");
+    let (code, text) = run(&["--state-root", &root, "--session", "nope", "init"]);
+    assert_eq!(code, Some(2), "{text}");
+    assert!(text.contains("no session \"nope\""), "{text}");
+
+    // archive moves the directory aside, delete removes it, and the default is never a named session
+    let (code, text) = run(&["--state-root", &root, "sessions", "archive", "--id", &id]);
+    assert_eq!(code, Some(0), "{text}");
+    assert!(base.join("archive").join(&id).is_dir(), "{text}");
+    assert!(!base.join("sessions").join(&id).exists());
+    let (code, text) = run(&["--state-root", &root, "sessions", "delete", "--id", &id]);
+    assert_eq!(code, Some(2), "delete is deliberate: {text}");
+    assert!(text.contains("--yes"), "{text}");
+    let (code, text) = run(&["--state-root", &root, "sessions", "delete", "--id", &id, "--yes"]);
+    assert_eq!(code, Some(0), "{text}");
+    assert!(!base.join("archive").join(&id).exists(), "the directory is gone: {text}");
+    let (code, text) = run(&["--state-root", &root, "sessions", "archive", "--id", "default"]);
+    assert_eq!(code, Some(1), "{text}");
+    assert!(text.contains("default state root cannot be archived"), "{text}");
 }

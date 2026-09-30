@@ -20,6 +20,54 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-364 Named sessions under one base: a registry, `--session`, and archive/delete (2026-09-30)
+
+**The decision (Batch 2).** Codex has `resume`/`fork`/`archive`/`delete` and Pi has resumable sessions; this
+product had one session per state root and no picker (PRODUCT-COMPARISON §2 item 1). The user's mandate for this
+batch is to close that gap. The design keeps the axiom that makes recovery simple — **one session per state
+root, one coordinator per state root (A33)** — and adds sessions *beside* it: a base directory carries a
+registry (`sessions.json`) and one directory per named session under `sessions/<id>/`, so each named session is
+its own state root and several run side by side without sharing a lock. The **default session is the base
+directory itself** (`<base>/session.sqlite`), exactly where a session has always lived, so an existing state
+root keeps working and `teamagents` with no flags runs it. No data is moved or migrated.
+
+**The surface.** `engine/src/v2/sessions.rs` holds the registry (`Registry::load`/`save`, `new_session`,
+`archive`, `delete`, `resolve`, `refuse_if_live`, `facts`). `teamagents sessions [list|new|archive|delete]` is the
+picker and the lifetime surface; `--session ID` resolves a record for every entry point that already takes
+`--state-root` (the TUI, `exec`, `daemon`, `init`, `doctor`), so attaching to a session needed no second
+plumbing path. `list` reads only filesystem facts — does the directory hold a `session.sqlite`, how big is it,
+is a daemon answering — so managing sessions never opens another session's database. `archive` and `delete`
+refuse while a daemon holds the session (the socket is the address, the same rule `daemon --stop` uses), and
+`delete` needs `--yes`. The default session is never archived or deleted.
+
+**What it is not (honest ceilings).** There is **no `fork` yet**: forking a live session needs a durable
+snapshot plus a reset of the copied *execution* state (instances in a non-`READY` phase, open operations,
+pending approvals) and a decision about member workspaces (a copied git worktree cannot be duplicated safely),
+and that is a design of its own rather than a copy of a directory. There is no `rename` and no restore of an
+archived session; an archived directory is moved to `<base>/archive/<id>/` and its registry row is marked
+archived, so it is not attachable and the user can move it back by hand. Multiple *concurrent* sessions are
+supported by construction (different roots, different locks) but no surface starts two at once; the daemon still
+serves one root. These are recorded here so the gap is a decision, not an omission.
+
+**Formal.** `verification/tla/V2Sessions.tla` states the registry's rules: `RegistryIsInjective` (two ids never
+name one path — the multi-session form of A33), `NoCoordinatorForAnArchivedSession` (an archived session is not
+attachable, so nothing holds it), the step property `ArchiveOnlyWhenIdle` (the code's `refuse_if_live`) and
+`DefaultIsNeverArchived`. The per-path coordinator lock is **not** restated: it is `V2Coordinator`'s
+`AtMostOneCoordinator` for one root, and with injectivity two sessions have different roots, so their locks
+cannot be one — a first draft stated it as a separate claim and its control could not refute it (an entailed
+claim, the D-219 shape), so the claim was removed. Three negative controls forget one rule each
+(`MC_sessions_shared_path.cfg`, `MC_sessions_archive_held.cfg`, `MC_sessions_archive_default.cfg`) and each is
+refuted; measured 2026-09-30: `make verify-model-all` 26/26, `make verify-model-counterexamples` 82/82,
+`make verify-kani` 3/3, the positive sessions configuration exhaustive in under a second (253 states / 62
+distinct).
+
+**Evidence.** `sessions.rs`'s four unit tests (round-trip and injectivity, a shared or escaping path refused at
+load, an unknown registry version refused, archive/delete moving the directory and refusing the default) and
+`cli::named_sessions_are_created_resolved_and_retired` (the real binary: create, list, resolve with `--session`,
+refuse an unknown id, archive, the `--yes` gate, delete, the default refusal). The D-362 surface inventory is
+unaffected — `sessions` is filesystem management, not a `Control::submit` method — and the new `sessions` report
+shapes live in `main.rs`, outside `review/exec_report.py`'s `intervene.rs`/… scanner.
+
 ## D-363 D-63 is answered: the user may interrupt one running turn, and the instruction queued behind it takes over (2026-09-30)
 
 **The decision.** D-63's open question was "should the runtime interrupt a running turn instead of holding the
