@@ -102,6 +102,12 @@ def main() -> int:
     parser.add_argument("--frozen-on", default="2026-09-24")
     parser.add_argument("--max-tokens", type=int, default=0,
                         help="round 8: the per-response output ceiling the manifest carries, applied to every arm")
+    # round 9 (D-373): a batch can name the model profile it ran, so a manifest can describe a *different*
+    # configured model than the recorded rounds' `deepseek-flash` without hand-editing derived JSON.
+    parser.add_argument("--model-key", default="leader_main", help="the config profile the harness resolves")
+    parser.add_argument("--wire-model", default="deepseek-flash", help="the provider-side model name")
+    parser.add_argument("--context-window", type=int, default=1000000)
+    parser.add_argument("--context-source", default="D-36: user-confirmed DeepSeek Flash native 1M (2026-09-17)")
     args = parser.parse_args()
 
     only = [name for name in args.tasks.split(",") if name] or None
@@ -148,10 +154,10 @@ def main() -> int:
         "design": args.design,
         "groups": json.loads(args.groups),
         "model": {
-            "key": "leader_main",
-            "wire_model": "deepseek-flash",
-            "context_window": 1000000,
-            "context_source": "D-36: user-confirmed DeepSeek Flash native 1M (2026-09-17)",
+            "key": args.model_key,
+            "wire_model": args.wire_model,
+            "context_window": args.context_window,
+            "context_source": args.context_source,
             "reasoning_effort": "high",
             "effort_note": "catalog default max (~240s per simple turn); the pilot phase sets high explicitly to bound cost and duration",
             **({"max_tokens": args.max_tokens,

@@ -1,0 +1,31 @@
+csvfix: rc=0 | 2 passed in 0.00s
+rules: rc=0 | 1 passed in 0.00s
+ledger: rc=0 | 2 passed in 0.00s
+schedule: rc=0 | 2 passed in 0.00s
+intervals: rc=0 | 7 passed in 0.00s
+flags: rc=0 | 8 passed in 0.00s
+measure: rc=0 | 1 passed in 0.00s
+slugify: rc=0 | 1 passed in 0.00s
+ranges: rc=0 | 1 passed in 0.00s
+alpha: rc=0 | alpha ok
+beta: rc=0 | beta ok
+chain: rc=0 | 4 passed in 0.00s
+ALL_RC=0
+REPORT exists:
+-rw-r--r-- 1 rimuru rimuru 8718 Sep 30 21:37 REPORT.md
+test/check mtimes (should be old):
+2026-09-24 15:15:59.837229770 +0800 units/alpha/check.py
+2026-09-24 15:15:59.837299045 +0800 units/beta/check.py
+2026-09-24 16:07:45.816546820 +0800 units/chain/tests/test_stage1.py
+2026-09-24 16:07:45.816559588 +0800 units/chain/tests/test_stage2.py
+2026-09-24 16:07:45.816579228 +0800 units/chain/tests/test_stage3.py
+2026-09-24 16:07:45.816591365 +0800 units/chain/tests/test_stage4.py
+2026-09-24 15:32:41.081762483 +0800 units/csvfix/test_csvfix.py
+2026-09-28 03:44:22.890793876 +0800 units/flags/test_flags.py
+2026-09-28 03:44:22.890462355 +0800 units/intervals/test_intervals.py
+2026-09-28 03:44:19.424331343 +0800 units/ledger/test_ledger.py
+2026-09-28 03:46:11.587336281 +0800 units/measure/test_measure.py
+2026-09-28 03:46:11.587773918 +0800 units/ranges/test_ranges.py
+2026-09-24 15:32:41.083348545 +0800 units/rules/test_rules.py
+2026-09-28 03:44:19.424402602 +0800 units/schedule/test_schedule.py
+2026-09-28 03:46:11.587574776 +0800 units/slugify/test_slugify.py

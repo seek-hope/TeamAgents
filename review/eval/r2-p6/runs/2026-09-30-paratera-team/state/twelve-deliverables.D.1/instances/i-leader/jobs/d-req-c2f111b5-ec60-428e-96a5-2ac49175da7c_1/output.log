@@ -1,0 +1,148 @@
+== files (excluding pycache) ==
+./units/alpha/alpha.py
+./units/alpha/check.py
+./units/beta/beta.py
+./units/beta/check.py
+./units/chain/data/orders.csv
+./units/chain/.pytest_cache/CACHEDIR.TAG
+./units/chain/.pytest_cache/.gitignore
+./units/chain/.pytest_cache/README.md
+./units/chain/.pytest_cache/v/cache/nodeids
+./units/chain/stage1.py
+./units/chain/stage2.py
+./units/chain/stage3.py
+./units/chain/stage4.py
+./units/chain/tests/test_stage1.py
+./units/chain/tests/test_stage2.py
+./units/chain/tests/test_stage3.py
+./units/chain/tests/test_stage4.py
+./units/csvfix/impl.py
+./units/csvfix/.pytest_cache/CACHEDIR.TAG
+./units/csvfix/.pytest_cache/.gitignore
+./units/csvfix/.pytest_cache/README.md
+./units/csvfix/.pytest_cache/v/cache/lastfailed
+./units/csvfix/.pytest_cache/v/cache/nodeids
+./units/csvfix/test_csvfix.py
+./units/flags/flags.py
+./units/flags/.pytest_cache/CACHEDIR.TAG
+./units/flags/.pytest_cache/.gitignore
+./units/flags/.pytest_cache/README.md
+./units/flags/.pytest_cache/v/cache/nodeids
+./units/flags/test_flags.py
+./units/intervals/intervals.py
+./units/intervals/.pytest_cache/CACHEDIR.TAG
+./units/intervals/.pytest_cache/.gitignore
+./units/intervals/.pytest_cache/README.md
+./units/intervals/.pytest_cache/v/cache/nodeids
+./units/intervals/test_intervals.py
+./units/ledger/ledger.py
+./units/ledger/.pytest_cache/CACHEDIR.TAG
+./units/ledger/.pytest_cache/.gitignore
+./units/ledger/.pytest_cache/README.md
+./units/ledger/.pytest_cache/v/cache/nodeids
+./units/ledger/test_ledger.py
+./units/measure/measure.py
+./units/measure/.pytest_cache/CACHEDIR.TAG
+./units/measure/.pytest_cache/.gitignore
+./units/measure/.pytest_cache/README.md
+./units/measure/.pytest_cache/v/cache/nodeids
+./units/measure/test_measure.py
+./units/ranges/.pytest_cache/CACHEDIR.TAG
+./units/ranges/.pytest_cache/.gitignore
+./units/ranges/.pytest_cache/README.md
+./units/ranges/.pytest_cache/v/cache/lastfailed
+./units/ranges/.pytest_cache/v/cache/nodeids
+./units/ranges/ranges.py
+./units/ranges/test_ranges.py
+./units/rules/engine.py
+./units/rules/.pytest_cache/CACHEDIR.TAG
+./units/rules/.pytest_cache/.gitignore
+./units/rules/.pytest_cache/README.md
+./units/rules/.pytest_cache/v/cache/nodeids
+./units/rules/test_rules.py
+./units/schedule/.pytest_cache/CACHEDIR.TAG
+./units/schedule/.pytest_cache/.gitignore
+./units/schedule/.pytest_cache/README.md
+./units/schedule/.pytest_cache/v/cache/nodeids
+./units/schedule/schedule.py
+./units/schedule/test_schedule.py
+./units/slugify/.pytest_cache/CACHEDIR.TAG
+./units/slugify/.pytest_cache/.gitignore
+./units/slugify/.pytest_cache/README.md
+./units/slugify/.pytest_cache/v/cache/nodeids
+./units/slugify/slugify.py
+./units/slugify/test_slugify.py
+== mtimes ==
+2026-09-24 15:15 ./units/alpha/check.py
+2026-09-24 15:15 ./units/beta/check.py
+2026-09-24 15:32 ./units/csvfix/test_csvfix.py
+2026-09-24 15:32 ./units/rules/test_rules.py
+2026-09-24 16:07 ./units/chain/data/orders.csv
+2026-09-24 16:07 ./units/chain/tests/test_stage1.py
+2026-09-24 16:07 ./units/chain/tests/test_stage2.py
+2026-09-24 16:07 ./units/chain/tests/test_stage3.py
+2026-09-24 16:07 ./units/chain/tests/test_stage4.py
+2026-09-28 03:44 ./units/flags/test_flags.py
+2026-09-28 03:44 ./units/intervals/test_intervals.py
+2026-09-28 03:44 ./units/ledger/test_ledger.py
+2026-09-28 03:44 ./units/schedule/test_schedule.py
+2026-09-28 03:46 ./units/measure/test_measure.py
+2026-09-28 03:46 ./units/ranges/test_ranges.py
+2026-09-28 03:46 ./units/slugify/test_slugify.py
+2026-09-30 21:33 ./units/csvfix/.pytest_cache/CACHEDIR.TAG
+2026-09-30 21:33 ./units/csvfix/.pytest_cache/.gitignore
+2026-09-30 21:33 ./units/csvfix/.pytest_cache/README.md
+2026-09-30 21:34 ./units/alpha/alpha.py
+2026-09-30 21:34 ./units/beta/beta.py
+2026-09-30 21:34 ./units/chain/.pytest_cache/CACHEDIR.TAG
+2026-09-30 21:34 ./units/chain/.pytest_cache/.gitignore
+2026-09-30 21:34 ./units/chain/.pytest_cache/README.md
+2026-09-30 21:34 ./units/chain/stage1.py
+2026-09-30 21:34 ./units/chain/stage2.py
+2026-09-30 21:34 ./units/chain/stage3.py
+2026-09-30 21:34 ./units/chain/stage4.py
+2026-09-30 21:34 ./units/csvfix/impl.py
+2026-09-30 21:34 ./units/csvfix/.pytest_cache/v/cache/lastfailed
+2026-09-30 21:34 ./units/flags/flags.py
+2026-09-30 21:34 ./units/intervals/intervals.py
+2026-09-30 21:34 ./units/ledger/ledger.py
+2026-09-30 21:34 ./units/ledger/.pytest_cache/CACHEDIR.TAG
+2026-09-30 21:34 ./units/ledger/.pytest_cache/.gitignore
+2026-09-30 21:34 ./units/ledger/.pytest_cache/README.md
+2026-09-30 21:34 ./units/measure/measure.py
+2026-09-30 21:34 ./units/measure/.pytest_cache/CACHEDIR.TAG
+2026-09-30 21:34 ./units/measure/.pytest_cache/.gitignore
+2026-09-30 21:34 ./units/measure/.pytest_cache/README.md
+2026-09-30 21:34 ./units/ranges/.pytest_cache/CACHEDIR.TAG
+2026-09-30 21:34 ./units/ranges/.pytest_cache/.gitignore
+2026-09-30 21:34 ./units/ranges/.pytest_cache/README.md
+2026-09-30 21:34 ./units/rules/engine.py
+2026-09-30 21:34 ./units/rules/.pytest_cache/CACHEDIR.TAG
+2026-09-30 21:34 ./units/rules/.pytest_cache/.gitignore
+2026-09-30 21:34 ./units/rules/.pytest_cache/README.md
+2026-09-30 21:34 ./units/schedule/.pytest_cache/CACHEDIR.TAG
+2026-09-30 21:34 ./units/schedule/.pytest_cache/.gitignore
+2026-09-30 21:34 ./units/schedule/.pytest_cache/README.md
+2026-09-30 21:34 ./units/schedule/schedule.py
+2026-09-30 21:34 ./units/slugify/.pytest_cache/CACHEDIR.TAG
+2026-09-30 21:34 ./units/slugify/.pytest_cache/.gitignore
+2026-09-30 21:34 ./units/slugify/.pytest_cache/README.md
+2026-09-30 21:34 ./units/slugify/slugify.py
+2026-09-30 21:35 ./units/intervals/.pytest_cache/CACHEDIR.TAG
+2026-09-30 21:35 ./units/intervals/.pytest_cache/.gitignore
+2026-09-30 21:35 ./units/intervals/.pytest_cache/README.md
+2026-09-30 21:35 ./units/ranges/.pytest_cache/v/cache/lastfailed
+2026-09-30 21:35 ./units/ranges/ranges.py
+2026-09-30 21:36 ./units/chain/.pytest_cache/v/cache/nodeids
+2026-09-30 21:36 ./units/csvfix/.pytest_cache/v/cache/nodeids
+2026-09-30 21:36 ./units/flags/.pytest_cache/CACHEDIR.TAG
+2026-09-30 21:36 ./units/flags/.pytest_cache/.gitignore
+2026-09-30 21:36 ./units/flags/.pytest_cache/README.md
+2026-09-30 21:36 ./units/flags/.pytest_cache/v/cache/nodeids
+2026-09-30 21:36 ./units/intervals/.pytest_cache/v/cache/nodeids
+2026-09-30 21:36 ./units/ledger/.pytest_cache/v/cache/nodeids
+2026-09-30 21:36 ./units/measure/.pytest_cache/v/cache/nodeids
+2026-09-30 21:36 ./units/ranges/.pytest_cache/v/cache/nodeids
+2026-09-30 21:36 ./units/rules/.pytest_cache/v/cache/nodeids
+2026-09-30 21:36 ./units/schedule/.pytest_cache/v/cache/nodeids
+2026-09-30 21:36 ./units/slugify/.pytest_cache/v/cache/nodeids

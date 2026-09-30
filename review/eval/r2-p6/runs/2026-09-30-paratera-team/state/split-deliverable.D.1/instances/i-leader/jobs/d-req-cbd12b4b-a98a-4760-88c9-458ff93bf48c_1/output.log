@@ -1,0 +1,15 @@
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-30-paratera-team/work/split-deliverable.D.1
+total 12
+drwxr-xr-x 3 rimuru rimuru 4096 Sep 24 15:15 .
+drwxr-xr-x 3 rimuru rimuru 4096 Sep 30 21:32 ..
+drwxr-xr-x 2 rimuru rimuru 4096 Sep 24 15:15 data
+--- a.txt ---
+17
+-4
+23
+8
+4 data/a.txt
+--- b.txt ---
+pear apple pear plum Apple apple
+fig plum
+2 data/b.txt

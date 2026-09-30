@@ -1,0 +1,7 @@
+measure 1.55m -> 155
+measure bad unit -> ValueError: unsupported unit: 'ft'
+slugify 'A--B__C' -> a-b-c
+slugify '' -> untitled
+ranges touching [[1,4],[4,7]] -> [(1, 7)]
+ranges nested [[1,10],[2,3]] -> [(1, 10)]
+ranges unsorted-reversed [[7,5],[3,1]] -> [(1, 3), (5, 7)]

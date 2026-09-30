@@ -1,0 +1,9 @@
+=== cat data/a.txt ===
+17
+-4
+23
+8
+=== awk sum ===
+44
+=== cat out/sum.txt ===
+44

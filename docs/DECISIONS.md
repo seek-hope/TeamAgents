@@ -20,6 +20,32 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-373 A real-model capability pilot on the model the user actually configured (2026-09-30)
+
+**The gap.** D-372's refresh records that the Codex/Pi comparison is a surface comparison and that no
+comparator is benchmarked, so "is the product at their level" has no measured half. The recorded rounds (1–8)
+all measure *relative* questions with `deepseek-flash` (H1/H2/H11); none reports the product's absolute pass
+rate under the model the user configured for self-update (paratera `DeepSeek-V4.1-Flash`).
+
+**The design.** `review/eval/r2-p6/` round 9: a pre-registered capability pilot (`design-r9-paratera.md`)
+with a frozen manifest (`manifest-r9-paratera.json`: wire model `DeepSeek-V4.1-Flash`, paratera base URL,
+native 1,000,000 window per D-36, no per-response ceiling) and its own frozen experiment config
+(`eval-config-paratera.toml`). It runs group B (the single-agent path) on all 16 tasks and group D (the team
+path) on the two splittable tasks, one repeat, and reports pass rate with tokens and wall clock — no hypothesis
+and no threshold. `review/eval/r2-p6/freeze.py` gained `--model-key`/`--wire-model`/`--context-window`/
+`--context-source` so the manifest is derived like the others rather than hand-edited, and
+`review/eval_manifests.py`/`review/eval_surface.py` audit it.
+
+**Formal.** None: this measures the product under a model; it is not a protocol or a state machine.
+
+**Evidence.** `runs/2026-09-30-paratera-capability` — group B, 16/16 tasks green, 981,787 real tokens,
+1,088 s. `runs/2026-09-30-paratera-team` — group D, 2/2 green, 550,660 tokens, 318 s. Both batches' own
+`run-header.json` name `manifest-r9-paratera.json`; `design-r9-paratera.md` §5 records no deviation.
+
+**Ceiling.** One repeat per cell (a single flaky task moves the number), and the tasks are this repository's
+own, not a shared benchmark that Codex CLI or Pi was run on — so the number is a capability reading under this
+model, not a comparison. The report states both.
+
 ## D-372 The comparison is re-dated: Pi has MCP now, and the TeamAgents column caught up (2026-09-30)
 
 **The gap.** `docs/PRODUCT-COMPARISON.md` was the 2026-09-26/27 snapshot. Its two hand-run re-derivations

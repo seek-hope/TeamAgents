@@ -1,0 +1,14 @@
+=== out/sum.txt ===
+44
+=== out/words.txt ===
+Apple
+apple
+fig
+pear
+plum
+=== out/notes.txt ===
+sum of integers in data/a.txt = 44; unique words in data/b.txt = 5 (sorted case-sensitively: Apple,apple,fig,pear,plum)
+=== verify sum ===
+44
+=== verify unique count ===
+5

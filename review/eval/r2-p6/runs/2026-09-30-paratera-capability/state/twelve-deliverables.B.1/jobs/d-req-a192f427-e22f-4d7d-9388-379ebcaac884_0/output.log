@@ -1,0 +1,14 @@
+csvfix OK
+rules OK
+ledger OK
+schedule OK
+intervals OK
+flags OK
+measure OK
+slugify OK
+ranges OK
+chain OK
+alpha OK
+beta OK
+pytest units pass=10/10
+REPORT.md

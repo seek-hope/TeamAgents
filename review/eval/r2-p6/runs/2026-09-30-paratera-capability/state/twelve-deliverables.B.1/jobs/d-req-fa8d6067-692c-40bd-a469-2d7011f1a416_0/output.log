@@ -1,0 +1,14 @@
+csvfix quote: ['a,b', '2', 'x'] | short: None
+csvfix total product: 12 | bad raises: yes
+flags terminator: {'values': {}, 'flags': {}, 'positional': ['--x', 'y']}
+flags dash value: {'values': {'k': ['-5']}, 'flags': {}, 'positional': []} | eq: {'values': {'k': ['--v']}, 'flags': {}, 'positional': []}
+flags mixed: {'values': {'x': ['y']}, 'flags': {'x': True}, 'positional': []}
+intervals: [(0, 12)] [(1, 1), (7, 7)] 5
+schedule: [(0, 90), (120, 150)] False
+slugify: hello-world a-b untitled
+--- untouched acceptance files (git status if repo) ---
+ M review/eval/r2-p6/freeze.py
+?? review/eval/r2-p6/design-r9-paratera.md
+?? review/eval/r2-p6/eval-config-paratera.toml
+?? review/eval/r2-p6/manifest-r9-paratera.json
+?? review/eval/r2-p6/runs/2026-09-30-paratera-capability/

@@ -1,0 +1,13 @@
+./units/measure/test_measure.py
+./units/rules/test_rules.py
+./units/ranges/test_ranges.py
+./units/ledger/test_ledger.py
+./units/csvfix/test_csvfix.py
+./units/slugify/test_slugify.py
+./units/schedule/test_schedule.py
+./units/intervals/test_intervals.py
+./units/chain/tests/test_stage4.py
+./units/chain/tests/test_stage3.py
+./units/chain/tests/test_stage2.py
+./units/chain/tests/test_stage1.py
+./units/flags/test_flags.py

@@ -1,0 +1,8 @@
+......................                                                   [100%]
+22 passed in 0.02s
+---edge checks---
+quoted comma: ['a,b', '2', 'x']
+nested quotes: ['he said "hi"', '2', 'x']
+wrong cols: None
+blank total: 3
+bad amount -> bad amount: 'zz'

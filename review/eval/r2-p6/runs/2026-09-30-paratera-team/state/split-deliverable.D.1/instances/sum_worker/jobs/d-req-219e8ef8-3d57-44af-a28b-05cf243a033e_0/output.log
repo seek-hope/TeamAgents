@@ -1,0 +1,5 @@
+tokens: ['17', '-4', '23', '8']
+python sum: 44
+file content repr: '44\n'
+match: True
+exit=0

@@ -1,0 +1,19 @@
+
+test_csvfix.py:4: AssertionError
+=========================== short test summary info ============================
+FAILED test_csvfix.py::test_parse_trims_and_validates - AssertionError: asser...
+1 failed, 1 passed in 0.01s
+---alpha---
+Traceback (most recent call last):
+  File "/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-30-paratera-capability/work/twelve-deliverables.B.1/units/alpha/check.py", line 2, in <module>
+    assert alpha.add(2, 3) == 5, alpha.add(2, 3)
+           ^^^^^^^^^^^^^^^^^^^^
+AssertionError: -1
+exit=1
+---beta---
+Traceback (most recent call last):
+  File "/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-30-paratera-capability/work/twelve-deliverables.B.1/units/beta/check.py", line 2, in <module>
+    assert beta.mul(3, 4) == 12, beta.mul(3, 4)
+           ^^^^^^^^^^^^^^^^^^^^
+AssertionError: 7
+exit=1

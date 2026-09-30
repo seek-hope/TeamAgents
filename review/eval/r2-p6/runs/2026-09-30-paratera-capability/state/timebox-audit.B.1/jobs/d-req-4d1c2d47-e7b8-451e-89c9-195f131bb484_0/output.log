@@ -1,0 +1,8 @@
+keys: ['m01.py', 'm02.py', 'm03.py', 'm04.py', 'm05.py', 'm06.py', 'm07.py', 'm08.py', 'm09.py', 'm10.py', 'm11.py', 'm12.py']
+files: ['m01.py', 'm02.py', 'm03.py', 'm04.py', 'm05.py', 'm06.py', 'm07.py', 'm08.py', 'm09.py', 'm10.py', 'm11.py', 'm12.py']
+same set: True | count: 12
+all values in vocab: True
+distinct types: 12
+bad: []
+m04 catches BaseException subclass: True
+m04 bare except: source line =     except:

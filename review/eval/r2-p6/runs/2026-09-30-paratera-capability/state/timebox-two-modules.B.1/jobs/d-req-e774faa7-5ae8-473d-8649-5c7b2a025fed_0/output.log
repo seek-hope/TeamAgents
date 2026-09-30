@@ -1,0 +1,12 @@
+Traceback (most recent call last):
+  File "<string>", line 14, in <module>
+    assert slots([(50,60),(0,10),(10,40)], 5)==[(0,60)]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError
+EXIT=1
+--- git status ---
+ M review/eval/r2-p6/freeze.py
+?? review/eval/r2-p6/design-r9-paratera.md
+?? review/eval/r2-p6/eval-config-paratera.toml
+?? review/eval/r2-p6/manifest-r9-paratera.json
+?? review/eval/r2-p6/runs/2026-09-30-paratera-capability/

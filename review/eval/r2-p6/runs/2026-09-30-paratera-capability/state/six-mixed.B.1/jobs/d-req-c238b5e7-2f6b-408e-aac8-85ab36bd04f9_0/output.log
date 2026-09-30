@@ -1,0 +1,61 @@
+--- files ---
+./REPORT.md
+./units/alpha/alpha.py
+./units/alpha/check.py
+./units/alpha/__pycache__/alpha.cpython-313.pyc
+./units/beta/beta.py
+./units/beta/check.py
+./units/beta/__pycache__/beta.cpython-313.pyc
+./units/chain/data/orders.csv
+./units/chain/__pycache__/stage1.cpython-313.pyc
+./units/chain/__pycache__/stage2.cpython-313.pyc
+./units/chain/__pycache__/stage3.cpython-313.pyc
+./units/chain/__pycache__/stage4.cpython-313.pyc
+./units/chain/.pytest_cache/CACHEDIR.TAG
+./units/chain/.pytest_cache/.gitignore
+./units/chain/.pytest_cache/README.md
+./units/chain/.pytest_cache/v/cache/nodeids
+./units/chain/stage1.py
+./units/chain/stage2.py
+./units/chain/stage3.py
+./units/chain/stage4.py
+./units/chain/tests/__pycache__/test_stage1.cpython-313-pytest-9.0.3.pyc
+./units/chain/tests/__pycache__/test_stage2.cpython-313-pytest-9.0.3.pyc
+./units/chain/tests/__pycache__/test_stage3.cpython-313-pytest-9.0.3.pyc
+./units/chain/tests/__pycache__/test_stage4.cpython-313-pytest-9.0.3.pyc
+./units/chain/tests/test_stage1.py
+./units/chain/tests/test_stage2.py
+./units/chain/tests/test_stage3.py
+./units/chain/tests/test_stage4.py
+./units/measure/measure.py
+./units/measure/__pycache__/measure.cpython-313.pyc
+./units/measure/__pycache__/test_measure.cpython-313-pytest-9.0.3.pyc
+./units/measure/.pytest_cache/CACHEDIR.TAG
+./units/measure/.pytest_cache/.gitignore
+./units/measure/.pytest_cache/README.md
+./units/measure/.pytest_cache/v/cache/nodeids
+./units/measure/test_measure.py
+./units/ranges/__pycache__/ranges.cpython-313.pyc
+./units/ranges/__pycache__/test_ranges.cpython-313-pytest-9.0.3.pyc
+./units/ranges/.pytest_cache/CACHEDIR.TAG
+./units/ranges/.pytest_cache/.gitignore
+./units/ranges/.pytest_cache/README.md
+./units/ranges/.pytest_cache/v/cache/lastfailed
+./units/ranges/.pytest_cache/v/cache/nodeids
+./units/ranges/ranges.py
+./units/ranges/test_ranges.py
+./units/slugify/__pycache__/slugify.cpython-313.pyc
+./units/slugify/__pycache__/test_slugify.cpython-313-pytest-9.0.3.pyc
+./units/slugify/.pytest_cache/CACHEDIR.TAG
+./units/slugify/.pytest_cache/.gitignore
+./units/slugify/.pytest_cache/README.md
+./units/slugify/.pytest_cache/v/cache/nodeids
+./units/slugify/slugify.py
+./units/slugify/test_slugify.py
+
+--- REPORT.md head ---
+# REPORT.md
+
+Six independent deliverables, each verified by running its frozen acceptance command.
+No test/acceptance file was modified (`check.py`, `test_*.py`, `tests/`, `orders.csv` untouched).
+

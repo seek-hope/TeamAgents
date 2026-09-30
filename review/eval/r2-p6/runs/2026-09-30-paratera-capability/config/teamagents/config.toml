@@ -1,0 +1,18 @@
+# Round 9's experiment config (D-373): the user's configured paratera profile, frozen like round 4's.
+#
+# The model is the one the user configured for self-update (`DeepSeek-V4.1-Flash` on
+# https://llmapi.paratera.com/v1, key in PARATERA_API_KEY); the provider is declared `deepseek` because the
+# endpoint speaks the same protocol shape. Context window 1,000,000 is the user-confirmed native window and is
+# never shrunk (D-36).
+skills_paths = []
+
+[models.leader_main]
+provider = "deepseek"
+protocol = "deepseek"
+model = "DeepSeek-V4.1-Flash"
+base_url = "https://llmapi.paratera.com/v1"
+api_key_env = "PARATERA_API_KEY"
+context_window = 1000000
+timeout = 300
+max_retries = 2
+generation_options = { reasoning_effort = "high" }

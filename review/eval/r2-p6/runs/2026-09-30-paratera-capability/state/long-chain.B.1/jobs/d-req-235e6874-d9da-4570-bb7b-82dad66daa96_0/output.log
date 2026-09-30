@@ -1,0 +1,19 @@
+/home/rimuru/Projects/Code/for_fun/TeamAgents/review/eval/r2-p6/runs/2026-09-30-paratera-capability/work/long-chain.B.1
+total 32
+drwxr-xr-x 4 rimuru rimuru 4096 Sep 24 16:07 .
+drwxr-xr-x 5 rimuru rimuru 4096 Sep 30 21:15 ..
+drwxr-xr-x 2 rimuru rimuru 4096 Sep 24 16:07 data
+-rw-r--r-- 1 rimuru rimuru   65 Sep 24 16:07 stage1.py
+-rw-r--r-- 1 rimuru rimuru   66 Sep 24 16:07 stage2.py
+-rw-r--r-- 1 rimuru rimuru   67 Sep 24 16:07 stage3.py
+-rw-r--r-- 1 rimuru rimuru   59 Sep 24 16:07 stage4.py
+drwxr-xr-x 2 rimuru rimuru 4096 Sep 29 08:23 tests
+./stage3.py
+./stage4.py
+./tests/test_stage1.py
+./tests/test_stage2.py
+./tests/test_stage3.py
+./tests/test_stage4.py
+./stage1.py
+./stage2.py
+./data/orders.csv

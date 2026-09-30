@@ -1,0 +1,18 @@
+=== LC_ALL=C sort -u data/b.txt (line-based, as literally requested) ===
+fig plum
+pear apple pear plum Apple apple
+=== tokenized: tr -s '[:space:]' '\n' < data/b.txt | LC_ALL=C sort -u ===
+Apple
+apple
+fig
+pear
+plum
+=== diff (ours vs tokenized LC_ALL=C sort -u) ===
+DIFF: identical (exit 0)
+=== python independent check: words=sorted(set(content.split())) case-sensitive ===
+Apple
+apple
+fig
+pear
+plum
+count 5

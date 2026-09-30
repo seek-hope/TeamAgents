@@ -1,0 +1,8 @@
+recorded pid=837918
+    PID    PPID STAT CMD
+ 837918       1 Ss   python3 service.py
+--- curl ---
+http_code=200
+content_type=text/plain; charset=utf-8
+size_download=13
+curl_exit=0

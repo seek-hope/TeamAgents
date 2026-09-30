@@ -1,0 +1,244 @@
+{
+  "frozen": "2026-09-30",
+  "design": "review/eval/r2-p6/design-r9-paratera.md",
+  "groups": {
+    "B": "v2 persistent single instance (the product single-agent path)",
+    "D": "B plus the collaboration surface with the directive instruction shape (the team path)"
+  },
+  "model": {
+    "key": "leader_main",
+    "wire_model": "DeepSeek-V4.1-Flash",
+    "context_window": 1000000,
+    "context_source": "user-confirmed paratera DeepSeek-V4.1-Flash native 1M (2026-09-30)",
+    "reasoning_effort": "high",
+    "effort_note": "catalog default max (~240s per simple turn); the pilot phase sets high explicitly to bound cost and duration"
+  },
+  "limits": {
+    "trial_timeout_s": 900,
+    "reference_max_steps": 40,
+    "permissions": "full_auto",
+    "max_retries": 2
+  },
+  "repeats": {
+    "pilot": 1,
+    "formal": 3
+  },
+  "surface": {
+    "pinned": "2026-09-27",
+    "note": "the harness's half of the model-visible surface; recomputed from the tree by review/eval_surface.py",
+    "agent_instructions": "You are a careful coding agent working in the workspace directory {workspace}.\n- Use the file and shell tools to inspect, modify and verify. Verify claims with real commands before finishing.\n- Long tool outputs are masked with a read_history recipe; page them back instead of re-running blind.\n- Finish by calling `finish` exactly once with the honest status, a summary and evidence (files, commands).\nWork you did not deliver must not be reported as success; list unverified claims in `unverified`.\n- Today's date: 2026-09-24. Platform: linux.",
+    "agent_instructions_sha256": "8acbda452914ec6135a4a68ccc52d930c6c7f54ff6e81c1c5cf1cd0d31bce046",
+    "team_instructions": "You are a careful coding agent working in the workspace directory {workspace}.\n- Use the file and shell tools to inspect, modify and verify. Verify claims with real commands before finishing.\n- Long tool outputs are masked with a read_history recipe; page them back instead of re-running blind.\n- Finish by calling `finish` exactly once with the honest status, a summary and evidence (files, commands).\nWork you did not deliver must not be reported as success; list unverified claims in `unverified`.\n- Today's date: 2026-09-24. Platform: linux.\n- You may build a team: spawn worker instances, delegate bounded tasks, send messages and wait for results. Work directly on small or tightly coupled work; delegate only work that can progress independently, and keep every task description specific with acceptance criteria.",
+    "team_instructions_sha256": "68ced8fc85e5b01dac9cca952975c1e7caaed1d2e37df2b8c2b2a1a89ab96eff",
+    "team_directive_instructions": "You are a careful coding agent working in the workspace directory {workspace}.\n- Use the file and shell tools to inspect, modify and verify. Verify claims with real commands before finishing.\n- Long tool outputs are masked with a read_history recipe; page them back instead of re-running blind.\n- Finish by calling `finish` exactly once with the honest status, a summary and evidence (files, commands).\nWork you did not deliver must not be reported as success; list unverified claims in `unverified`.\n- Today's date: 2026-09-24. Platform: linux.\n- Build a team for this task. Split it into the independent parts the prompt describes and spawn one worker instance per part **before** doing any of the work yourself; delegate each part with its own acceptance check, then wait for the members and integrate their results. Work directly only on what cannot be split.",
+    "team_directive_instructions_sha256": "0557386389953ac42eae4f33acebbe857c514b357e7c695e0596cdbea08031a8",
+    "tools": [
+      "ls",
+      "read_file",
+      "write_file",
+      "edit_file",
+      "delete",
+      "glob",
+      "grep",
+      "shell"
+    ],
+    "reasoning_effort": "high"
+  },
+  "driver_changes": [
+    {
+      "decision": "D-182",
+      "what": "run-header.json also names the manifest the batch ran, and hashes it"
+    }
+  ],
+  "analysis": {
+    "metric": "checks_ok (all checks exit 0 in the trial workspace)",
+    "pairing": "same repeat index within a task",
+    "aggregate": "mean of per-task paired differences",
+    "interval": "95% bootstrap over tasks, 10000 resamples, seed 20260924",
+    "h1": "B vs A: no observed degradation; interval must not be significantly negative",
+    "h2": "C vs B: reproducible gain; per-task positive on >=2 tasks and interval lower bound > 0",
+    "insufficient": "interval contains 0 or too few samples -> report not confirmed",
+    "sha256": "07f85926a836d31dd67763a52b061ac4875c361b1f2fb406bf13bf9479cb7b2c"
+  },
+  "tasks": [
+    {
+      "id": "bulk-modules",
+      "prompt_sha256": "fe5f35a3c51e668083e7654123e5c671034c77f6181f4304b5fa3a1dbce02220",
+      "checks": [
+        "python3 -m pytest -q tests/test_measure.py",
+        "python3 -m pytest -q tests/test_slugify.py",
+        "python3 -m pytest -q tests/test_ranges.py",
+        "python3 -c \"import hashlib,pathlib; assert hashlib.sha256(pathlib.Path('tests/test_measure.py').read_bytes()).hexdigest()=='4d1ca7a8eb9de778485e1a098269aebae5763096bcf87f2b9a9480a5268d766d'; assert hashlib.sha256(pathlib.Path('tests/test_slugify.py').read_bytes()).hexdigest()=='fc56ef2fd6b0007cca58e323e841dc6b75be168d1a08ead13905ace1d134c9fd'; assert hashlib.sha256(pathlib.Path('tests/test_ranges.py').read_bytes()).hexdigest()=='4efde602ab3325b7e35c7c59b29a48739f705fa33a335c8eb4d2f11d82507a62'\""
+      ],
+      "fixture_sha256": "58bf7f2bc1f1e4b81583b34bb270c702cf7537e6e9be8841c6f7eb8a4a65169f"
+    },
+    {
+      "id": "edit-integrity",
+      "prompt_sha256": "72bab9d5ef6cc780418fa147dde0f0e63fc3c395ee2fa39444cdca363a2a4f27",
+      "checks": [
+        "python3 -c \"import configparser; c = configparser.ConfigParser(); assert c.read('app.ini'), 'app.ini missing'; assert c['staging']['retries'] == '5', c['staging']['retries']; assert c['dev']['retries'] == '3' and c['prod']['retries'] == '3', 'unrelated sections changed'\""
+      ],
+      "fixture_sha256": "eb6011401be15dcbf2a06ffddc27612942e29e0fb2cc87a0cc0407e867fa48d9"
+    },
+    {
+      "id": "long-chain",
+      "prompt_sha256": "46af951239df945c79d52193257deb2cd97a3e1575f0194ed3b7b2db649ca56d",
+      "checks": [
+        "python3 -m pytest -q tests/test_stage1.py",
+        "python3 -m pytest -q tests/test_stage2.py",
+        "python3 -m pytest -q tests/test_stage3.py",
+        "python3 -m pytest -q tests/test_stage4.py",
+        "python3 -c \"import hashlib,pathlib; assert hashlib.sha256(pathlib.Path('tests/test_stage1.py').read_bytes()).hexdigest()=='13aa797e9aef3c9aba1c20677f6fec223964e6c285658c224dae79e3efdc3670'; assert hashlib.sha256(pathlib.Path('tests/test_stage2.py').read_bytes()).hexdigest()=='b48a335be723c00645c2305619266096635a4c2de66703e2987af54a4ece56e5'; assert hashlib.sha256(pathlib.Path('tests/test_stage3.py').read_bytes()).hexdigest()=='ed5c68b1370162f168d99306dc6cd7feca0d8668757ed0acb7d97a57b130ad32'; assert hashlib.sha256(pathlib.Path('tests/test_stage4.py').read_bytes()).hexdigest()=='c3d2971eca0f4e523fd9a27a4d017ccc7797dbaf8b8abeffdd411c300fe8c453'\"",
+        "python3 -c \"r=open('REPORT.md').read(); assert len(r)>60, r\""
+      ],
+      "fixture_sha256": "ea0329637a842ecf049dc4ea7dcb07f8a4fa0a1aa9d30a505df9c30a6360122f"
+    },
+    {
+      "id": "long-horizon",
+      "prompt_sha256": "2e3e19ab5faf46fd9e2d61387a4527741cc457b8905d4645661f83cb1a9272d2",
+      "checks": [
+        "python3 tests/run_tests.py",
+        "python3 -c \"import hashlib,pathlib; h=hashlib.sha256(pathlib.Path('tests/run_tests.py').read_bytes()).hexdigest(); assert h=='194afab5e4814d4c24c58da62793aac6422de6403e6e6b841c5305af06b5e047', 'tests/run_tests.py was modified'\"",
+        "python3 -c \"r=open('REPORT.md').read(); assert len(r)>80, r\""
+      ],
+      "fixture_sha256": "9ee69af9328a56b38b27e3e92aef8f570777222bf3db9ffda498ba1676b7b12a"
+    },
+    {
+      "id": "long-output",
+      "prompt_sha256": "5b55f03c7121e026027ab2a647acaf42dc45c74dd55687d76ebdc6bf65e07976",
+      "checks": [
+        "python3 -c \"value = open('answer.txt').read().strip(); assert value == 'mid-9f3a1c', repr(value)\""
+      ],
+      "fixture_sha256": "50f297c587088300939deaf00572141a8eb55a7afeb51e51d7e0f3f1a1d61873"
+    },
+    {
+      "id": "multi-step",
+      "prompt_sha256": "83a2a28ced470991724b53ce7228f02869e60bfdad4b079a342d6f370f159515",
+      "checks": [
+        "cd alpha && python3 check.py",
+        "cd beta && python3 check.py"
+      ],
+      "fixture_sha256": "81e0c7d8bb92dadb704c9c5a9c8a3f9895b1525088690cf586cc3c8136a293f6"
+    },
+    {
+      "id": "parallel-deliverables",
+      "prompt_sha256": "f4e35cecace5572cf19f04864e99fe850d393805183ba618b4cc454dd7d6610a",
+      "checks": [
+        "cd csvfix && python3 -m pytest -q",
+        "cd rules && python3 -m pytest -q",
+        "python3 -c \"r=open('INDEX.md').read(); assert 'csvfix' in r and 'rules' in r and len(r)>80, r\"",
+        "python3 -c \"import hashlib,pathlib; assert hashlib.sha256(pathlib.Path('csvfix/test_csvfix.py').read_bytes()).hexdigest()=='588db2b78e9d1365dd8d7563abe70812bf958955665a95ad02b1e6a16c793724', 'csvfix tests modified'; assert hashlib.sha256(pathlib.Path('rules/test_rules.py').read_bytes()).hexdigest()=='4c425638c58c34872b0800f5fe19092c011785e123c15a1c69e2e99d762a5af8', 'rules tests modified'\""
+      ],
+      "fixture_sha256": "3aec5183f7e9c4c9f4e5dffa8bfc71777c425f7882ef968d1f4d04ae12549eb6"
+    },
+    {
+      "id": "rust-fix",
+      "prompt_sha256": "524be699750c3c1bf3e0b6ad6145144e327b535059449cac0de753bb3efeed96",
+      "checks": [
+        "cargo test --offline --quiet"
+      ],
+      "fixture_sha256": "d57cf06346a83c49aba4aff690b69549b61013935639ac03df372025207111f9"
+    },
+    {
+      "id": "service-check",
+      "prompt_sha256": "b372121a182b2165ad64475f582f47f6e0b2091d289414fc1c98db894244ee12",
+      "checks": [
+        "python3 -c \"body=open('service.txt').read().strip(); assert body=='p6-service-ok', repr(body)\"",
+        "python3 -c \"import socket; s=socket.socket(); s.settimeout(0.5); rc=s.connect_ex(('127.0.0.1',8765)); s.close(); assert rc!=0, 'service still listening'\""
+      ],
+      "fixture_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "id": "six-deliverables",
+      "prompt_sha256": "775c5b8a0b5fa6244a7123dd3e1f85121e866312435828940e2de81ae97040ac",
+      "checks": [
+        "cd units/csvfix && python3 -m pytest -q",
+        "cd units/rules && python3 -m pytest -q",
+        "cd units/ledger && python3 -m pytest -q",
+        "cd units/schedule && python3 -m pytest -q",
+        "cd units/intervals && python3 -m pytest -q",
+        "cd units/flags && python3 -m pytest -q",
+        "python3 -c \"import hashlib,pathlib; assert hashlib.sha256(pathlib.Path('units/csvfix/test_csvfix.py').read_bytes()).hexdigest()=='588db2b78e9d1365dd8d7563abe70812bf958955665a95ad02b1e6a16c793724', 'csvfix/test_csvfix.py was modified'; assert hashlib.sha256(pathlib.Path('units/rules/test_rules.py').read_bytes()).hexdigest()=='4c425638c58c34872b0800f5fe19092c011785e123c15a1c69e2e99d762a5af8', 'rules/test_rules.py was modified'; assert hashlib.sha256(pathlib.Path('units/ledger/test_ledger.py').read_bytes()).hexdigest()=='249141060049bcdd4c266e0448a139d5f8367d3969491c005ccdb5e4082747c8', 'ledger/test_ledger.py was modified'; assert hashlib.sha256(pathlib.Path('units/schedule/test_schedule.py').read_bytes()).hexdigest()=='d0eac968ccaa16dd71ca63f9a264f9aca424a03de2e94c6d77e607d7a5585b14', 'schedule/test_schedule.py was modified'; assert hashlib.sha256(pathlib.Path('units/intervals/test_intervals.py').read_bytes()).hexdigest()=='3c5fa1bb8a23b1d96acd8df686bce8cd73eb428e6ca6548279f8c3a1b96e0580', 'intervals/test_intervals.py was modified'; assert hashlib.sha256(pathlib.Path('units/flags/test_flags.py').read_bytes()).hexdigest()=='07edf2bc2445551aa24d467a4ed09baca7cff1b8e76aa0760453440b0e521960', 'flags/test_flags.py was modified'\"",
+        "python3 -c \"r=open('REPORT.md').read(); assert len(r)>120, len(r)\""
+      ],
+      "fixture_sha256": "00e62cc89677cff0e51f231c3d92de1db8cdf2863b836b60cc81a9259fad5182"
+    },
+    {
+      "id": "six-mixed",
+      "prompt_sha256": "9194e0efa52b6984124825d235b1414cf0ca1279c0eb13668ad26b0d21519c36",
+      "checks": [
+        "cd units/measure && python3 -m pytest -q",
+        "cd units/slugify && python3 -m pytest -q",
+        "cd units/ranges && python3 -m pytest -q",
+        "cd units/alpha && python3 check.py",
+        "cd units/beta && python3 check.py",
+        "cd units/chain && python3 -m pytest -q tests/",
+        "python3 -c \"import hashlib,pathlib; assert hashlib.sha256(pathlib.Path('units/measure/test_measure.py').read_bytes()).hexdigest()=='4d1ca7a8eb9de778485e1a098269aebae5763096bcf87f2b9a9480a5268d766d', 'units/measure/test_measure.py was modified'; assert hashlib.sha256(pathlib.Path('units/slugify/test_slugify.py').read_bytes()).hexdigest()=='fc56ef2fd6b0007cca58e323e841dc6b75be168d1a08ead13905ace1d134c9fd', 'units/slugify/test_slugify.py was modified'; assert hashlib.sha256(pathlib.Path('units/ranges/test_ranges.py').read_bytes()).hexdigest()=='4efde602ab3325b7e35c7c59b29a48739f705fa33a335c8eb4d2f11d82507a62', 'units/ranges/test_ranges.py was modified'; assert hashlib.sha256(pathlib.Path('units/alpha/check.py').read_bytes()).hexdigest()=='8f30e265cbfa6ae5fdcf42d313033cd960d83bd1d7cd7f8f7ba3ca09eb289dd4', 'units/alpha/check.py was modified'; assert hashlib.sha256(pathlib.Path('units/beta/check.py').read_bytes()).hexdigest()=='4e7ac3aa4b4ddcc08f0e4902f7e25de1af457b7cbcce051aad1394b80ca373e1', 'units/beta/check.py was modified'; assert hashlib.sha256(pathlib.Path('units/chain/tests/test_stage1.py').read_bytes()).hexdigest()=='13aa797e9aef3c9aba1c20677f6fec223964e6c285658c224dae79e3efdc3670', 'units/chain/tests/test_stage1.py was modified'; assert hashlib.sha256(pathlib.Path('units/chain/tests/test_stage2.py').read_bytes()).hexdigest()=='b48a335be723c00645c2305619266096635a4c2de66703e2987af54a4ece56e5', 'units/chain/tests/test_stage2.py was modified'; assert hashlib.sha256(pathlib.Path('units/chain/tests/test_stage3.py').read_bytes()).hexdigest()=='ed5c68b1370162f168d99306dc6cd7feca0d8668757ed0acb7d97a57b130ad32', 'units/chain/tests/test_stage3.py was modified'; assert hashlib.sha256(pathlib.Path('units/chain/tests/test_stage4.py').read_bytes()).hexdigest()=='c3d2971eca0f4e523fd9a27a4d017ccc7797dbaf8b8abeffdd411c300fe8c453', 'units/chain/tests/test_stage4.py was modified'\"",
+        "python3 -c \"r=open('REPORT.md').read(); assert len(r)>120, len(r)\""
+      ],
+      "fixture_sha256": "35ceb24fb0184bdc6332b6cc281c7cae0dbd419459d81f323970673bc7b0f0f8"
+    },
+    {
+      "id": "split-deliverable",
+      "prompt_sha256": "1a678ec86a31f9277f1fab602c0693ca6b29a0258ef8864a312a17f2bcb88848",
+      "checks": [
+        "python3 -c \"v=open('out/sum.txt').read().strip(); assert v=='44', repr(v)\"",
+        "python3 -c \"w=[l.strip() for l in open('out/words.txt') if l.strip()]; assert w==['Apple','apple','fig','pear','plum'], w\"",
+        "python3 -c \"n=open('out/notes.txt').read(); assert '44' in n and '5' in n, n\""
+      ],
+      "fixture_sha256": "c0d11579bcab1f4e634f3b130494c56a3e6203736cea3cf5ef3eb5c3e3055720"
+    },
+    {
+      "id": "timebox-audit",
+      "prompt_sha256": "17e9d47f1d6121bc42633cf17550edcd6e6248ad6e6cf0f7d5a795e6f147ca9d",
+      "checks": [
+        "python3 -c \"import json; want={'m01.py': 'off_by_one', 'm02.py': 'mutable_default', 'm03.py': 'shadowed_builtin', 'm04.py': 'wrong_except', 'm05.py': 'integer_division', 'm06.py': 'unclosed_resource', 'm07.py': 'silent_truncation', 'm08.py': 'mutable_shared_state', 'm09.py': 'missing_validation', 'm10.py': 'wrong_default', 'm11.py': 'sort_instability', 'm12.py': 'resource_leak'}; got=json.load(open('findings.json')); assert got==want, ('mismatch', {k: (got.get(k), v) for k, v in want.items() if got.get(k) != v})\""
+      ],
+      "fixture_sha256": "7cd6c7390418987b1e3f2b23e856dfa87bb63687c0c23c6ea5c70311e6a23cb3"
+    },
+    {
+      "id": "timebox-two-modules",
+      "prompt_sha256": "183cd39ab06a2ef33e9791a0033d0070991ed34bee8af42e18cd0763e5a26554",
+      "checks": [
+        "python3 -m pytest -q tests/",
+        "python3 -c \"import hashlib,pathlib; assert hashlib.sha256(pathlib.Path('tests/test_ledger.py').read_bytes()).hexdigest()=='249141060049bcdd4c266e0448a139d5f8367d3969491c005ccdb5e4082747c8'; assert hashlib.sha256(pathlib.Path('tests/test_schedule.py').read_bytes()).hexdigest()=='d0eac968ccaa16dd71ca63f9a264f9aca424a03de2e94c6d77e607d7a5585b14'\""
+      ],
+      "fixture_sha256": "619ef48a0d2342a6784318003b7131260afc34c84484dec909d753775703889f"
+    },
+    {
+      "id": "twelve-deliverables",
+      "prompt_sha256": "770b62f77569e62d542fce5c4960c6436342000d66330c60595dd174a6ebf9fd",
+      "checks": [
+        "cd units/csvfix && python3 -m pytest -q",
+        "cd units/rules && python3 -m pytest -q",
+        "cd units/ledger && python3 -m pytest -q",
+        "cd units/schedule && python3 -m pytest -q",
+        "cd units/intervals && python3 -m pytest -q",
+        "cd units/flags && python3 -m pytest -q",
+        "cd units/measure && python3 -m pytest -q",
+        "cd units/slugify && python3 -m pytest -q",
+        "cd units/ranges && python3 -m pytest -q",
+        "cd units/alpha && python3 check.py",
+        "cd units/beta && python3 check.py",
+        "cd units/chain && python3 -m pytest -q tests/",
+        "python3 -c \"import hashlib,pathlib; assert hashlib.sha256(pathlib.Path('units/csvfix/test_csvfix.py').read_bytes()).hexdigest()=='588db2b78e9d1365dd8d7563abe70812bf958955665a95ad02b1e6a16c793724', 'units/csvfix/test_csvfix.py was modified'; assert hashlib.sha256(pathlib.Path('units/rules/test_rules.py').read_bytes()).hexdigest()=='4c425638c58c34872b0800f5fe19092c011785e123c15a1c69e2e99d762a5af8', 'units/rules/test_rules.py was modified'; assert hashlib.sha256(pathlib.Path('units/ledger/test_ledger.py').read_bytes()).hexdigest()=='249141060049bcdd4c266e0448a139d5f8367d3969491c005ccdb5e4082747c8', 'units/ledger/test_ledger.py was modified'; assert hashlib.sha256(pathlib.Path('units/schedule/test_schedule.py').read_bytes()).hexdigest()=='d0eac968ccaa16dd71ca63f9a264f9aca424a03de2e94c6d77e607d7a5585b14', 'units/schedule/test_schedule.py was modified'; assert hashlib.sha256(pathlib.Path('units/intervals/test_intervals.py').read_bytes()).hexdigest()=='3c5fa1bb8a23b1d96acd8df686bce8cd73eb428e6ca6548279f8c3a1b96e0580', 'units/intervals/test_intervals.py was modified'; assert hashlib.sha256(pathlib.Path('units/flags/test_flags.py').read_bytes()).hexdigest()=='07edf2bc2445551aa24d467a4ed09baca7cff1b8e76aa0760453440b0e521960', 'units/flags/test_flags.py was modified'; assert hashlib.sha256(pathlib.Path('units/measure/test_measure.py').read_bytes()).hexdigest()=='4d1ca7a8eb9de778485e1a098269aebae5763096bcf87f2b9a9480a5268d766d', 'units/measure/test_measure.py was modified'; assert hashlib.sha256(pathlib.Path('units/slugify/test_slugify.py').read_bytes()).hexdigest()=='fc56ef2fd6b0007cca58e323e841dc6b75be168d1a08ead13905ace1d134c9fd', 'units/slugify/test_slugify.py was modified'; assert hashlib.sha256(pathlib.Path('units/ranges/test_ranges.py').read_bytes()).hexdigest()=='4efde602ab3325b7e35c7c59b29a48739f705fa33a335c8eb4d2f11d82507a62', 'units/ranges/test_ranges.py was modified'; assert hashlib.sha256(pathlib.Path('units/alpha/check.py').read_bytes()).hexdigest()=='8f30e265cbfa6ae5fdcf42d313033cd960d83bd1d7cd7f8f7ba3ca09eb289dd4', 'units/alpha/check.py was modified'; assert hashlib.sha256(pathlib.Path('units/beta/check.py').read_bytes()).hexdigest()=='4e7ac3aa4b4ddcc08f0e4902f7e25de1af457b7cbcce051aad1394b80ca373e1', 'units/beta/check.py was modified'; assert hashlib.sha256(pathlib.Path('units/chain/tests/test_stage1.py').read_bytes()).hexdigest()=='13aa797e9aef3c9aba1c20677f6fec223964e6c285658c224dae79e3efdc3670', 'units/chain/tests/test_stage1.py was modified'; assert hashlib.sha256(pathlib.Path('units/chain/tests/test_stage2.py').read_bytes()).hexdigest()=='b48a335be723c00645c2305619266096635a4c2de66703e2987af54a4ece56e5', 'units/chain/tests/test_stage2.py was modified'; assert hashlib.sha256(pathlib.Path('units/chain/tests/test_stage3.py').read_bytes()).hexdigest()=='ed5c68b1370162f168d99306dc6cd7feca0d8668757ed0acb7d97a57b130ad32', 'units/chain/tests/test_stage3.py was modified'; assert hashlib.sha256(pathlib.Path('units/chain/tests/test_stage4.py').read_bytes()).hexdigest()=='c3d2971eca0f4e523fd9a27a4d017ccc7797dbaf8b8abeffdd411c300fe8c453', 'units/chain/tests/test_stage4.py was modified'\"",
+        "python3 -c \"r=open('REPORT.md').read(); assert len(r)>120, len(r)\""
+      ],
+      "fixture_sha256": "b1d962a0b5af055b8f1e874d7414666d18eb41cbfad7621f8142b14a0c660ee8"
+    },
+    {
+      "id": "wide-audit",
+      "prompt_sha256": "aa7d0805caaf1913d079aa3497c831e4a4e11a85fad96dd1bfe878a55e823c8a",
+      "checks": [
+        "python3 -c \"import json; want={'alpha.py': 'off_by_one', 'beta.py': 'mutable_default', 'gamma.py': 'shadowed_builtin', 'delta.py': 'wrong_except', 'epsilon.py': 'integer_division', 'zeta.py': 'unclosed_resource'}; got=json.load(open('findings.json')); assert got==want, ('mismatch', got)\""
+      ],
+      "fixture_sha256": "b0279c6c6d9254e4eb350fbd647c1ff55ae34dbcd7c054b11fb7945441c562f3"
+    }
+  ],
+  "note": "Round 9 (D-373): the configured paratera model's absolute pass rate on the frozen tasks; a capability pilot, not a team-vs-solo hypothesis.",
+  "config": {
+    "path": "eval-config-paratera.toml",
+    "sha256": "a9a157e6500293f327bbf351372953c714487af97db8a1ea5b1bb9ccf614a699"
+  },
+  "git": "9a2019b344faa33e8b39ff79515e3198b441254a"
+}

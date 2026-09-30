@@ -1,0 +1,15 @@
+--- service.txt (xxd) ---
+00000000: 7036 2d73 6572 7669 6365 2d6f 6b         p6-service-ok
+--- exact content check ---
+b'p6-service-ok'
+EXACT_MATCH: True
+--- headers.txt ---
+HTTP/1.0 200 OK
+Server: p6-service/1.0 Python/3.13.15
+Date: Wed, 30 Sep 2026 13:19:54 GMT
+Content-Type: text/plain; charset=utf-8
+Content-Length: 13
+
+--- log ---
+listening on http://127.0.0.1:8765
+127.0.0.1 - "GET /health HTTP/1.1" 200 -

@@ -1,0 +1,21 @@
+total 20
+drwxr-xr-x 2 rimuru rimuru 4096 Sep 30 21:33 .
+drwxr-xr-x 4 rimuru rimuru 4096 Sep 30 21:32 ..
+-rw-r--r-- 1 rimuru rimuru  126 Sep 30 21:33 notes.txt
+-rw-r--r-- 1 rimuru rimuru    3 Sep 30 21:33 sum.txt
+-rw-r--r-- 1 rimuru rimuru   26 Sep 30 21:32 words.txt
+=== sum.txt ===
+44
+=== words.txt ===
+Apple
+apple
+fig
+pear
+plum
+=== notes.txt ===
+Sum of integers in data/a.txt = 44; unique case-sensitively sorted words from data/b.txt = 5 (Apple, apple, fig, pear, plum).
+=== notes line count ===
+1 out/notes.txt
+=== recompute ===
+sum 44 file_sum 44
+words 5 file_words ['Apple', 'apple', 'fig', 'pear', 'plum']

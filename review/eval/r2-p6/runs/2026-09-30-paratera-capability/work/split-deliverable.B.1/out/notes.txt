@@ -1,0 +1,1 @@
+data/a.txt 中所有整数之和为 44；data/b.txt 去重后按大小写敏感字典序排序共有 5 个单词（Apple, apple, fig, pear, plum）。

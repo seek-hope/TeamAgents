@@ -165,6 +165,23 @@ question, the end-to-end gate stays as round 5 left it, and the durable result h
 stall shape — half of this batch wrote nothing at all within the bound, which nothing before the ceiling
 produced and which this round cannot attribute.
 
+## Round 9 (2026-09-30, D-373): the configured model's capability pilot — 18/18 green
+
+The recorded rounds measured relative questions with `deepseek-flash`. D-372's refresh said the Codex/Pi
+comparison is a surface comparison with no comparator benchmarked, so this round measures the complementary
+number the repository can produce with the model the user actually configured: paratera
+`DeepSeek-V4.1-Flash` (native window 1,000,000, D-36), `reasoning_effort = high`, `full_auto`, 1 repeat, no
+per-response ceiling (`design-r9-paratera.md`, `manifest-r9-paratera.json`, frozen before the batch).
+
+**Group B (the product's single-agent path) on all 16 frozen tasks: 16/16 green**, 981,787 real tokens in
+1,088 s of trial wall clock (5–17 steps; the heaviest is `twelve-deliverables`, 281,313 tokens in 164 s).
+**Group D (the team path) on the two splittable tasks: 2/2 green** (`split-deliverable` 56,668 tokens/65 s,
+`twelve-deliverables` 493,992 tokens/252 s), a second batch under the same manifest.
+
+This is a *capability* reading, not a comparison: the tasks are this repository's own, no comparator was run,
+and with one repeat per cell a flaky task would move the headline (`design-r9-paratera.md` §4). It is also not
+a team-vs-solo claim — groups B and D here are not paired, and H11's question stays with round 8.
+
 ## Cost (real tokens, DeepSeek billing)
 
 | Batch | A | B | C |

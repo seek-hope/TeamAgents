@@ -1,0 +1,4 @@
+pid=837918
+listening on http://127.0.0.1:8765
+    PID    PPID STAT CMD
+ 837918  837915 Ss   python3 service.py

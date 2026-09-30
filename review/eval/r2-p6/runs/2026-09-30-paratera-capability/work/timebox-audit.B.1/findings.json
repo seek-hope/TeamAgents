@@ -1,0 +1,14 @@
+{
+  "m01.py": "off_by_one",
+  "m02.py": "mutable_default",
+  "m03.py": "shadowed_builtin",
+  "m04.py": "wrong_except",
+  "m05.py": "integer_division",
+  "m06.py": "unclosed_resource",
+  "m07.py": "silent_truncation",
+  "m08.py": "mutable_shared_state",
+  "m09.py": "missing_validation",
+  "m10.py": "wrong_default",
+  "m11.py": "sort_instability",
+  "m12.py": "resource_leak"
+}

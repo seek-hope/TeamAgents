@@ -1,0 +1,14 @@
+stopped ok (pid 837918 gone)
+--- curl after stop ---
+curl: (7) Failed to connect to 127.0.0.1:8765 after 0 ms: Could not connect to server
+http_code=000
+curl_exit=7 (7=connection refused expected)
+--- final files ---
+total 28
+drwxr-xr-x  2 rimuru rimuru 4096 Sep 30 21:19 .
+drwxr-xr-x 11 rimuru rimuru 4096 Sep 30 21:19 ..
+-rw-r--r--  1 rimuru rimuru  156 Sep 30 21:19 headers.txt
+-rw-r--r--  1 rimuru rimuru   76 Sep 30 21:19 service.log
+-rw-r--r--  1 rimuru rimuru    7 Sep 30 21:19 service.pid
+-rw-r--r--  1 rimuru rimuru 1510 Sep 30 21:19 service.py
+-rw-r--r--  1 rimuru rimuru   13 Sep 30 21:19 service.txt

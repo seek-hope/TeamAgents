@@ -1,0 +1,36 @@
+### 1 csvfix
+/bin/bash: line 29: cd: units/csvfix: No such file or directory
+exit=1
+### 2 rules
+/bin/bash: line 30: cd: units/rules: No such file or directory
+exit=1
+### 3 ledger
+/bin/bash: line 31: cd: units/ledger: No such file or directory
+exit=1
+### 4 schedule
+/bin/bash: line 32: cd: units/schedule: No such file or directory
+exit=1
+### 5 intervals
+/bin/bash: line 33: cd: units/intervals: No such file or directory
+exit=1
+### 6 flags
+/bin/bash: line 34: cd: units/flags: No such file or directory
+exit=1
+### 7 measure
+/bin/bash: line 35: cd: units/measure: No such file or directory
+exit=1
+### 8 slugify
+/bin/bash: line 36: cd: units/slugify: No such file or directory
+exit=1
+### 9 ranges
+/bin/bash: line 37: cd: units/ranges: No such file or directory
+exit=1
+### 10 alpha
+/bin/bash: line 38: cd: units/alpha: No such file or directory
+exit=1
+### 11 beta
+/bin/bash: line 39: cd: units/beta: No such file or directory
+exit=1
+### 12 chain
+/bin/bash: line 40: cd: units/chain: No such file or directory
+exit=1

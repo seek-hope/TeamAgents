@@ -1,0 +1,12 @@
+slots gap boundary: [(0, 10), (20, 30)]
+slots nested: [(0, 100)]
+overlaps contain: True
+overlaps single point: False
+merge nested: [(0, 10)]
+subtract hole no intersect: [(0, 4), (8, 9)]
+subtract normalize: [(1, 1), (7, 7)]
+total_length overlap: 5
+flags dash value: {'values': {'k': ['-5']}, 'flags': {}, 'positional': []}
+flags terminator: {'values': {}, 'flags': {}, 'positional': ['--x', 'y']}
+flags repeated: {'values': {'k': ['1', '2']}, 'flags': {}, 'positional': []}
+ledger other-acct negative still raises: yes

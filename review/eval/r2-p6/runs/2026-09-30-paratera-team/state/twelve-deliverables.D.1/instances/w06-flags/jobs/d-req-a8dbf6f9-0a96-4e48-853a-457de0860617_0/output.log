@@ -1,0 +1,5 @@
+total 16
+drwxr-xr-x  2 rimuru rimuru 4096 Sep 30 21:35 .
+drwxr-xr-x 14 rimuru rimuru 4096 Sep 28 04:52 ..
+-rw-r--r--  1 rimuru rimuru 1922 Sep 30 21:34 flags.py
+-rw-r--r--  1 rimuru rimuru 1504 Sep 28 03:44 test_flags.py

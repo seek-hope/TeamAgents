@@ -1,0 +1,11 @@
+--- sum ---
+44
+--- words ---
+Apple
+apple
+fig
+pear
+plum
+--- counts ---
+5 out/words.txt
+44

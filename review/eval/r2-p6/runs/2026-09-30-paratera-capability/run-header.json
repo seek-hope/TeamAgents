@@ -1,0 +1,15 @@
+{
+  "phase": "pilot",
+  "repeats": 1,
+  "groups": [
+    "B"
+  ],
+  "started": "2026-09-30T21:14:06+0800",
+  "config": "eval-config-paratera.toml",
+  "config_sha256": "a9a157e6500293f327bbf351372953c714487af97db8a1ea5b1bb9ccf614a699",
+  "manifest": "manifest-r9-paratera.json",
+  "manifest_sha256": "ffa6cb73f8a011f70354bf8ac1df59e2c391c90c1cb0b947f7309d549835bf8d",
+  "manifest_analysis_sha256": "07f85926a836d31dd67763a52b061ac4875c361b1f2fb406bf13bf9479cb7b2c",
+  "harness_sha256": "e1ab48ff261e1f155bdd938b5f296fe419df327c7098f392e5e577e95ca4270b",
+  "git": "9a2019b344faa33e8b39ff79515e3198b441254a"
+}

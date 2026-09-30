@@ -1,0 +1,21 @@
+===== src/m07.py =====
+     1	def head(xs, n):
+     2	    return xs[:n] if n > 3 else xs
+===== src/m08.py =====
+     1	CACHE = {}
+     2	def cached(k, v):
+     3	    CACHE[k] = v
+     4	    return CACHE
+===== src/m09.py =====
+     1	def withdraw(total, amount):
+     2	    return total - amount
+===== src/m10.py =====
+     1	def connect(host, port=5432, tls=False):
+     2	    return (host, tls)
+===== src/m11.py =====
+     1	def ranked(rows):
+     2	    return sorted(rows, key=lambda r: r[1])
+===== src/m12.py =====
+     1	def process(paths):
+     2	    handles = [open(p) for p in paths]
+     3	    return len(handles)

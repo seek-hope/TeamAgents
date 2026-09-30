@@ -1,0 +1,11 @@
+=== data/b.txt ===
+pear apple pear plum Apple apple
+fig plum
+=== cat out/words.txt ===
+Apple
+apple
+fig
+pear
+plum
+=== wc -l out/words.txt ===
+5 out/words.txt
