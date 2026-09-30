@@ -222,7 +222,8 @@ goal attached to it, `Ctrl+N` cycle the
 views (conversation → instances → tasks → topology → back), `Ctrl+A` pending approvals, `Esc` back,
 `Ctrl+C`/`Ctrl+D` quit. In the instances panel `Enter` sets the conversation target, `p` pauses, `r` resumes,
 `i` interrupts the running turn and `t` terminates (with confirmation); in the tasks panel `c` cancels a task; in the approvals panel
-`a` approves once and `d` denies.
+`a` approves once and `d` denies. A composer line starting with `/` is a client command, not an instruction to
+the Leader (`/help` lists them, D-370).
 
 ## Configuration and team
 

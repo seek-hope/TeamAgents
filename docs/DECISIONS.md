@@ -20,6 +20,30 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-370 TUI slash commands: a `/command` in the composer is client-side (2026-09-30)
+
+**The gap.** Pi ships slash commands; here the composer sent everything to the Leader, so there was no way to
+switch a view, read the status line or interrupt from the keyboard-adjacent input a user already has focus on.
+
+**The design.** A submitted line that starts with `/` is a client command handled in `tui/src/v2app.rs` before
+any effect leaves the UI: `/help`, `/status`, `/chat`, `/instances`, `/tasks`, `/topology`, `/approvals`,
+`/interrupt`, `/quit` (and `/exit`). View switches and notes happen in place; `/interrupt` returns the existing
+`V2Effect::Interrupt` (D-363), `/quit` sets the quit flag, and an unknown command is a *note* in the conversation
+— never a silent drop into the Leader. While a `/` draft is open the footer hint lists the set instead of the
+send hint. The commands belong to the chat composer; a panel keeps its own single-key grammar.
+
+**Formal.** No TLA+ claim: this is UI-only and adds no protocol or persisted-state transition. The rule that
+matters — a slash line never reaches the model — is the executable test below, which asserts the Enter returns
+no `SubmitInput` for a slash command.
+
+**Evidence.** `tui/tests/v2app_tests.rs`'s `slash_commands_are_client_side_and_unknown_ones_are_noted`
+(`/tasks` switches the view and sends nothing, `/interrupt` yields the interrupt effect for the active instance,
+an unknown command is noted, and the hint lists the set while a `/` draft is open). `make check` is re-run
+before the commit.
+
+**Ceiling.** No command takes an argument yet (there is no `/new`/`/session`, which would be a client-side
+filesystem action rather than a session command), and the slash set is only live in the composer.
+
 ## D-369 A configurable sandbox backend: bubblewrap or Docker, failing closed (2026-09-30)
 
 **The gap.** Isolation was bubblewrap only (`tools::bwrap_argv`), and PRODUCT-COMPARISON §2 item 4 listed

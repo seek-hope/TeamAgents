@@ -9,6 +9,10 @@ use serde_json::Value as Json;
 
 use crate::text::Composer;
 
+/// The slash commands the composer understands (D-370), shown while a `/` draft is open and by `/help`.
+const SLASH_HELP: &str =
+    "commands: /help · /status · /chat · /instances · /tasks · /topology · /approvals · /interrupt · /quit";
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Focus {
     Composer,
@@ -830,6 +834,60 @@ impl V2App {
         Some(V2Effect::Decide { approval_id: approval.id.clone(), decision })
     }
 
+    /// Handle a `/command` typed in the composer (D-370). View switches and notes happen in place; the few that
+    /// need the main loop return an effect. An unknown command is a note, never a silent drop into the Leader.
+    fn slash_command(&mut self, text: &str) -> Option<V2Effect> {
+        let command = text.split_whitespace().next().unwrap_or(text);
+        match command {
+            "/help" => {
+                self.note(SLASH_HELP);
+                None
+            }
+            "/quit" | "/exit" => {
+                self.quit = true;
+                None
+            }
+            "/chat" => {
+                self.view = View::Chat;
+                None
+            }
+            "/instances" => {
+                self.view = View::Instances;
+                self.instance_sel = self.active;
+                None
+            }
+            "/tasks" => {
+                self.view = View::Tasks;
+                None
+            }
+            "/topology" => {
+                self.view = View::Topology;
+                None
+            }
+            "/approvals" => {
+                self.view = View::Chat;
+                self.focus = Focus::Approvals;
+                None
+            }
+            "/status" => {
+                let status = self.status_line();
+                self.note(status);
+                None
+            }
+            "/interrupt" => match self.active_instance() {
+                Some(instance) => Some(V2Effect::Interrupt { instance: instance.id.clone() }),
+                None => {
+                    self.note("/interrupt: no instance is selected");
+                    None
+                }
+            },
+            _ => {
+                self.note(format!("unknown command {command:?}; /help lists them"));
+                None
+            }
+        }
+    }
+
     fn composer_key(&mut self, key: crossterm::event::KeyEvent) -> Option<V2Effect> {
         use crossterm::event::{KeyCode, KeyModifiers};
         match key.code {
@@ -852,6 +910,11 @@ impl V2App {
                 // history and the recall rules all along, and nothing ever recorded
                 // into it, so ↑ did nothing but scroll
                 self.composer.record_submission(&text);
+                // D-370: a leading `/` is a client command, not an instruction to the Leader (pi's slash-command
+                // shape). Handled here, before the active instance is required, so `/help` works with no instance.
+                if text.starts_with('/') {
+                    return self.slash_command(&text);
+                }
                 let instance = self.active_instance()?.id.clone();
                 let envelope = format!("env-{}", uuid::Uuid::new_v4());
                 Some(V2Effect::SubmitInput { instance, envelope, text })
@@ -1019,6 +1082,10 @@ impl V2App {
     pub fn footer_hint(&self) -> String {
         if self.confirm.is_some() {
             return "terminate this instance? y confirm / n cancel".to_string();
+        }
+        // a `/` draft is a client command (D-370): show what it may be instead of the send hint
+        if self.view == View::Chat && self.focus == Focus::Composer && self.composer.text().starts_with('/') {
+            return SLASH_HELP.to_string();
         }
         match self.view {
             View::Chat => match self.focus {

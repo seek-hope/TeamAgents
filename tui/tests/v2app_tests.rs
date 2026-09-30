@@ -536,6 +536,31 @@ fn a_streaming_preview_is_shown_for_the_active_instance_and_replaced() {
     assert_eq!(app.active_preview(), None);
 }
 
+/// D-370: a `/command` in the composer is a client command — it switches a view, notes status, interrupts, or
+/// quits — and never reaches the Leader; an unknown one is a note, and the hint lists the set while a `/` draft
+/// is open.
+#[test]
+fn slash_commands_are_client_side_and_unknown_ones_are_noted() {
+    let mut app = app();
+    app.composer.set_text("/tasks");
+    assert!(app.handle_key(key(KeyCode::Enter)).is_none(), "a slash command sends nothing to the Leader");
+    assert_eq!(app.view, View::Tasks);
+    // panels are left with Esc/Ctrl+N; the slash set belongs to the composer
+    app.view = View::Chat;
+    app.composer.set_text("/interrupt");
+    let effect = app.handle_key(key(KeyCode::Enter)).expect("interrupt effect");
+    assert_eq!(effect, V2Effect::Interrupt { instance: "i-leader".into() });
+    app.composer.set_text("/nonsense");
+    assert!(app.handle_key(key(KeyCode::Enter)).is_none());
+    assert!(
+        app.entries.iter().any(|entry| entry.text.contains("unknown command")),
+        "an unknown slash command is noted: {:?}",
+        app.entries.last()
+    );
+    app.composer.set_text("/");
+    assert!(app.footer_hint().contains("/interrupt"), "{}", app.footer_hint());
+}
+
 #[test]
 fn instances_panel_pauses_resumes_and_switches_the_conversation() {
     let mut app = app();
