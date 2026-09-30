@@ -5,7 +5,7 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
-## 0. Gate status (re-run 2026-09-30 at `ccc182ca`)
+## 0. Gate status (re-run 2026-09-30 at `2a1cb16f`)
 
 * **D-374 added the codemode information-flow model, and D-376 extended it with the veto rule; all three targets
   were re-run on this tree (2026-09-30).** `make verify-model-all`: all **29** configurations
