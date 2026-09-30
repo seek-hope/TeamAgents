@@ -20,6 +20,92 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-358 Task 43 is verified: the lever really releases what the deadline parked, and the operator's control breaks it (2026-09-29)
+
+The product's entry is D-357. This entry is the operator's verification and the phase's measured numbers.
+
+**What the operator verified.** (1) The row now says what the record says: A35 names the park *and* the lever —
+`teamagents goals cancel --id` settling the goal `CANCELLED` and the deadline-parked leader running again — with
+both tests in the cell (`control::cancel_goal_closes_a_spent_goal_and_releases_the_instance_it_parked` and the
+real-binary round trip `cli::goals_cancel_closes_a_spent_goal_and_the_parked_leader_works_again`) and D-357's
+pointer beside them. (2) The operator re-ran the card's own control: `cancel_goal`'s release wrote the lifecycle
+back as `'PARKED'` (`core/src/v2/control.rs`, the file's sha256 `2288a3bb005ebf58…` before and after), and the
+named test **FAILED** with `assertion left == right failed; left: "PARKED"`, `right: "ACTIVE"` at
+`src/v2/control.rs:7173` — the entry says 7174, which is the line the operator's own patch landed on, not a
+different claim — and the line restored byte-identically (sha256 `2288a3bb…`, `git diff` empty) puts both cancel
+tests back to **ok**. (3) The lever has also been exercised on a live session, not only in tests:
+`teamagents goals cancel --id goal-task38` answered `cancelled goal goal-task38; released i-leader` and the leader
+returned to `ACTIVE/READY`, which D-350 records as the lever's first real use.
+
+**Evidence** (2026-09-29; the tree is `77b62618` plus this card's uncommitted diff).
+
+| Command | Result |
+|---|---|
+| the A35 cell, read | the park, the lever and both tests, with D-357's pointer |
+| the operator's re-run of the control (the release writes `'PARKED'`) | the named test **FAILED**: `left: "PARKED"`, `right: "ACTIVE"` |
+| restoring the control byte-identically | sha256 `2288a3bb005ebf58…`, `git diff` empty; **both** cancel tests **ok** |
+| the lever's live use (same day, D-350) | `cancelled goal goal-task38; released i-leader` |
+| `python3 review/test_counts.py` | `core 118 / engine 292 / tui 36` (nothing added or removed) |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `make pty` | ok |
+
+**The audit's yield.** **Twenty-six findings from twenty-five audit cards** — eleven coverage holes, fourteen
+claim holes and one product defect. Twenty-three rows are audited; thirteen remain.
+
+**The phase's measured numbers (this commit).** **568,249,448 tokens over 1,534 model requests**, the suites
+above, three operator resumes.
+
+**Next card**: the next unaudited row — thirteen remain. A18's known gap and A35 now both name the lever, so a row
+that leans on the park can cite it without re-deriving the chain, which is the note this card passes on.
+
+**Ceiling**: the operator re-ran the control and read the row; the live probe (`review/dogfood/deadline.py`) was
+not re-run and the deadline's formal half was read rather than re-run, as D-357 says.
+
+## D-357 A35's deadline row ended at the parked leader and never named the lever that releases it (2026-09-29)
+
+**The row, and why this one.** A35 ("Goal deadline") claims the whole deadline story: the gate refuses a
+request past the deadline, the refusal is reachable by the user (D-64's `deadline_minutes`), the formals carry
+`V2Control::NoRequestAfterDeadline` with its refuted control (`MC_control_deadline.cfg`), and the live probe
+(`review/dogfood/deadline.py`, re-measured after D-153) shows the refusal and its consequences — "the leader
+`PARKED` with 'goal goal-s-main deadline passed'". The card's own pointer decided it: a row citing a probe that
+now has a *record* should prefer the record, and this row's last sentence is precisely where the record changed.
+D-344 (`teamagents goals cancel --id`) added the user's lever that releases exactly the instance a spent goal's
+refusal parked; A35 predates it, so the matrix's deadline row read as though the park were the end.
+
+**What the evidence asserts, and what the row left out.** Everything A35 cites is real and was already checked:
+`control::goal_deadline_refuses_new_requests_and_dispatches` drives the gate, `v2_driver::goal_deadline_parks_the_instance`
+drives the park, the probe's numbers stand (the refusal exits 1 in 0.0 s with `goal goal-s-main deadline passed
+before request … could start`, exactly one model request, `goal_deadline_refused` recorded, the leader `PARKED`).
+What no row said — before this entry — is that the parked leader has a way back, and the tests that pin it were
+cited nowhere in this row: `control::cancel_goal_closes_a_spent_goal_and_releases_the_instance_it_parked` (its
+sibling `cancel_goal_refuses_running_work_a_settled_goal_and_an_unknown_id` holds the refusals) and the real-binary
+round trip `cli::goals_cancel_closes_a_spent_goal_and_the_parked_leader_works_again`, both from D-344.
+
+**The change (the claim and the citations, not the code).** A35's row now ends where the record does: the park,
+**and** the lever that releases it — `teamagents goals cancel --id` settles the goal `CANCELLED` and the
+deadline-parked leader runs again — with the two product tests named and the probe's measured numbers untouched.
+
+**Pre-fix control.** In `core/src/v2/control.rs`, `cancel_goal`'s release was neutered by writing the lifecycle
+back as `'PARKED'` instead of `'ACTIVE'` in
+`UPDATE instances SET lifecycle = … WHERE id = ?1 AND lifecycle = 'PARKED'`. The named test then **FAILED**:
+`panicked at src/v2/control.rs:7174: assertion left == right failed, left: "PARKED", right: "ACTIVE"` — the
+instance the goal's refusal parked stayed parked, i.e. the lever did not release it, which is the evidence that
+the test carries the claim this row now cites. The line was restored **byte-identically**: the file's sha256
+prefix is `2288a3bb005ebf58` before and after, and `git diff --stat core/src/v2/control.rs` is empty.
+
+**Numbers** (measured): citations **1024** / 81 relative links / **640** `make` / **1018** § refs, 0 unexplained
+(1016/639/1018 before this entry's own text was counted, and it moves them)
+(`review/citations.py`, docstring updated); suites unchanged (`review/test_counts.py`: core 118 / engine 292 /
+tui 36 — nothing added or removed); the row's own probe numbers are the ones it already carried, not re-run. No
+`verification/tla`, `verification/kani` or `core/src/kernel/types.rs` was touched, so section 0 does not apply.
+
+**Uncommitted, for the operator.** `docs/ACCEPTANCE.md` (A35's row), `docs/DECISIONS.md` (this entry),
+`review/citations.py` (its docstring counts).
+
+**Left unproven.** The live probe (`deadline.py`) was not re-run — its dated numbers stand as recorded — and the
+deadline's formal half was read, not re-run. One consequence for a later card: A18's known gap and this row now
+both name the lever, so a third row that leans on the park can cite it without re-deriving the chain.
+
 ## D-356 Task 42 is verified: the wake test carries the ring's last hop, and the operator's re-measurement corrected one word (2026-09-29)
 
 The product's entry is D-355. This entry is the operator's verification and the phase's measured numbers.
@@ -101,7 +187,7 @@ not arrive within 20000ms` — the leader stayed parked, i.e. the ring's last ho
 evidence that the test really carries the claim. The line was restored **byte-identically**: the file's sha256
 prefix is `2288a3bb005ebf58` before and after, and `git diff --stat core/src/v2/control.rs` is empty.
 
-**Numbers** (measured): citations **1014** / 81 relative links / **639** `make` / **1018** § refs, 0 unexplained
+**Numbers** (measured): citations **1014** / 81 relative links / **640** `make` / **1018** § refs, 0 unexplained
 (1008/638/1016 before this entry's own text was counted, and it moves them)
 (`review/citations.py`, docstring updated); suites unchanged (`review/test_counts.py`: core 118 / engine 292 /
 tui 36 — no test was added or removed); the orphan sweep re-run: 407 test names, 149 named by no markdown file
@@ -226,7 +312,7 @@ one on this question**, H2's success form is untouched, and the end-to-end gate 
 result; `review/eval/r2-p6/REPORT.md` gains a round-8 section; ACCEPTANCE's Q16 row and the known-gaps bullet
 carry the reading without re-labelling anything; the two manifests and both batch directories stay as they ran.
 
-**Numbers** (measured): citations **1005** / 81 relative links / **639** `make` / **1016** § refs, 0 unexplained
+**Numbers** (measured): citations **1005** / 81 relative links / **640** `make` / **1016** § refs, 0 unexplained
 (`review/citations.py`); suites unchanged (no product test changed: `review/test_counts.py` still reads core 118
 / engine 292 / tui 36); real tokens spent this round: solo 445,053, team 867,200 (the batch's own results, as
 `analyze.py` totals them), against round 7's 6-trial batch. No `verification/tla`, `verification/kani` or
@@ -337,7 +423,7 @@ implementation) instead of calling it the user's; ACCEPTANCE's A30 row tail and 
 carried the cadence question say the same and name the pin.
 
 **Numbers** (measured): suites `review/test_counts.py` -> **core 118 / engine 292 / tui 36** (engine +1 for the
-new daemon test); citations **1005** / 81 relative links / **639** `make` / **1014** § refs, 0 unexplained
+new daemon test); citations **1005** / 81 relative links / **640** `make` / **1014** § refs, 0 unexplained
 (`review/citations.py`, docstring updated); decisions 310 live entries, newest-first, all unique with this one; no `verification/tla`,
 `verification/kani` or `core/src/kernel/types.rs` touched, so section 0 does not apply — the sweep is a
 recording/deletion policy the model already covers (`V2Artifact`'s `GcClaim`/`GcDelete`), and D-191 re-ran that
