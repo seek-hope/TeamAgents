@@ -20,6 +20,40 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-378 The comparable Terminal-Bench row: phase-scoped network, 37/60 on a fixed 20-task sample (2026-10-01)
+
+**The correction that made the protocol comparable.** The network policy has to be **phase-scoped**: the
+`environment` baseline is `no-network` (the official TB 2.1 condition), the **`agent`** phase is an `allowlist`
+holding only `llmapi.paratera.com` (the model API must stay reachable while the agent runs), and the
+**`verifier`** phase is `public`. A first no-network attempt set `no-network` on the environment baseline alone,
+which also cut the **verifier** off: every task's `tests/test.sh` does `apt-get install curl` and downloads
+pytest/uv, so all 59 trials that produced a result scored 0 for a reason that had nothing to do with the agent.
+That batch is **void** and is recorded as the reason `review/benchmark/patch_phases.py` exists and writes the
+three policies explicitly. Harbor's egress sidecar also needs **BuildKit** (its Dockerfile uses `COPY --chmod`),
+so the run needs `DOCKER_BUILDKIT=1` plus the `buildx` CLI plugin.
+
+**The measured row (2026-09-30/10-01): 20 tasks × 3 attempts, 60 trials, agent no-network — 37 passed,
+61.7 %, Wilson 95 % [0.490, 0.729].** The sample is every fifth of the 48 tasks whose own agent timeout is
+900 s (fixed and reproducible; the list is in `review/benchmark/README.md`). Ten tasks are 3/3, two 2/3, three
+1/3 and five 0/3. The verifiers really ran (no verifier stdout contains `Unable to locate package curl`).
+
+**Failure attribution (32 of 60 trials carried an exception).** 24 hit the turn's own deadline (`end: "timeout"`,
+exit 124 — the 840 s turn budget, not a crash); 3 were `permanent model error: model stream: error decoding
+response body` — a transport failure **after visible output**, which `providers::stream_failure_msg` makes
+permanent by design because a partially emitted turn is never replayed (AGENTS.md); 5 were other non-zero exits,
+each carrying its message in the trial's `result.json`.
+
+**What is still not like-for-like** (with the official numbers 90.6 DSH Minimal / 90.3 mini-SWE / 88.0 Claude
+Code / 86.1 Pi / 84.1 Codex, and a third party's 83.9): the card's runs use maximum reasoning effort and a
+`max_steps = 500` counter, while this row uses `reasoning_effort = "high"` and a wall-clock bound, because the
+product has no step counter. The sample is 20 of 89 tasks. The earlier 6-task public-network pilot (4/6) is
+superseded and kept only as history.
+
+**Formal.** None: this is the benchmark harness and its measurements, not product behaviour.
+
+**Ceiling.** The interval is wide (N = 3 per task, 20 tasks); the row is a fixed-sample estimate under one model
+and the recorded protocol, not a leaderboard submission.
+
 ## D-377 Terminal-Bench with TeamAgents: the harbor adapter and the first measured batch (2026-09-30)
 
 **Why.** D-375 established the comparable baseline and the protocol; the repository had no way to produce its
