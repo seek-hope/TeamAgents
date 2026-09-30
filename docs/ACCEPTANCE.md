@@ -7,7 +7,7 @@ model probe sets and the three formal gates).
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 121 / engine 304 / tui 37 test targets) and `make pty` passes — re-measured 2026-09-29: `pty v2 smoke: ok`, rc 0, 41 s, credential-free; both are
+`make check` is green (core 121 / engine 307 / tui 37 test targets) and `make pty` passes — re-measured 2026-09-29: `pty v2 smoke: ok`, rc 0, 41 s, credential-free; both are
 preconditions for every item below. `make check` includes `make language-check`, which fails on non-English
 characters outside the two documented exceptions (`README.zh-CN.md` and the frozen material under
 `review/eval`).
@@ -137,8 +137,8 @@ amended (D-49/D-50).
   grant to a removed subject is dropped, and the leader is left `ACTIVE`/`READY`. Evidence:
   `store::fork_database_snapshots_a_database_without_writing_the_source`,
   `control::fork_reset_keeps_the_conversation_and_drops_the_execution_state` and
-  `cli::sessions_fork_snapshots_a_session_and_refuses_a_live_source`. What remains: no `rename` and no
-  restore-from-archive (an archived directory is at `<base>/archive/<id>/`, movable by hand).
+  `cli::sessions_fork_snapshots_a_session_and_refuses_a_live_source`. D-368 then added `sessions rename` and
+  `sessions restore` (with cross-session `sessions search`), so no ceiling from this entry remains.
 
 - ~~**A goal whose budget is exhausted stays `ACTIVE` for ever, and the user has no lever to close it.**~~
   **Delivered since D-344** (the operator's decision, D-341). The gap, in the record's own words, was found by

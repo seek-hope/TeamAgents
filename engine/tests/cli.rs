@@ -3248,6 +3248,45 @@ fn named_sessions_are_created_resolved_and_retired() {
     assert!(text.contains("default state root cannot be archived"), "{text}");
 }
 
+/// D-368: rename, restore-from-archive and cross-session search are reachable from the CLI.
+#[test]
+fn sessions_rename_restore_and_search_wire_through_the_cli() {
+    let home = Scratch::new("sessions-more");
+    let base = home.join("base");
+    let config_home = home.join("config");
+    std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
+    let root = base.to_string_lossy().into_owned();
+    let run = |args: &[&str]| -> (Option<i32>, String) {
+        let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
+            .args(args)
+            .env("XDG_STATE_HOME", home.join("state"))
+            .env("XDG_CONFIG_HOME", &config_home)
+            .output()
+            .expect("run cli");
+        let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+        text.push_str(&String::from_utf8_lossy(&output.stderr));
+        (output.status.code(), text)
+    };
+    let (code, text) = run(&["--state-root", &root, "sessions", "new", "--name", "first", "--json"]);
+    assert_eq!(code, Some(0), "{text}");
+    let report: serde_json::Value = serde_json::from_str(text.trim()).expect("one json report");
+    let id = report["id"].as_str().expect("an id").to_string();
+    let (code, text) = run(&["--state-root", &root, "sessions", "rename", "--id", &id, "--name", "second"]);
+    assert_eq!(code, Some(0), "{text}");
+    assert_eq!(run(&["--state-root", &root, "sessions", "archive", "--id", &id]).0, Some(0));
+    let (code, text) = run(&["--state-root", &root, "sessions", "restore", "--id", &id]);
+    assert_eq!(code, Some(0), "{text}");
+    assert!(base.join("sessions").join(&id).is_dir(), "the session is back under the sessions directory");
+    let (code, text) = run(&["--state-root", &root, "sessions", "list", "--json"]);
+    assert_eq!(code, Some(0));
+    assert!(text.contains("second"), "the new name is listed: {text}");
+    // search over an empty store is honest, not an error
+    let (code, text) = run(&["--state-root", &root, "sessions", "search", "--query", "nothing"]);
+    assert_eq!(code, Some(0), "{text}");
+    assert!(text.contains("no match"), "{text}");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
 /// D-365: `sessions fork` snapshots a session while refusing a live source, registers the copy, and the copy
 /// opens as a session of its own (and can be forked again).
 #[test]

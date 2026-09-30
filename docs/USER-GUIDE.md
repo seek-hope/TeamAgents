@@ -507,6 +507,9 @@ teamagents instances terminate --id i-worker-1 --yes   # deliberate: retires it 
 teamagents sessions                     # id, state, name, path — the sessions this state root carries (D-364)
 teamagents sessions new --name refactor # create a named session beside the default one
 teamagents sessions fork --id refactor --name branch   # branch its conversation into a new session (D-365)
+teamagents sessions rename --id refactor --name new-name   # rename it
+teamagents sessions restore --id refactor       # bring an archived session back
+teamagents sessions search --query "tests failed"   # search every session's conversation (read-only, D-368)
 teamagents --session refactor           # attach the TUI to it (`exec --session refactor "…"` for one turn)
 teamagents sessions archive --id refactor       # move it aside (refused while a daemon runs it)
 teamagents sessions delete --id refactor --yes  # remove its directory and history
@@ -555,9 +558,11 @@ teamagents goals cancel --id g-spent    # close a goal nothing can spend (its ce
   `sessions fork --id ID [--name NAME]` snapshots the session's database (`VACUUM INTO`, read-only on the source),
   copies its artifacts and resets the copy's execution state in one transaction: the conversation and the goals
   survive, every request/operation/approval/wait/task/envelope and every grant to a removed subject is dropped,
-  and the leader is left `ACTIVE`/`READY`. A live source is refused, so the snapshot never races a writer;
-  `rename` and restore-from-archive are still missing — an archived directory is at `<base>/archive/<id>/` and
-  can be moved back by hand.
+  and the leader is left `ACTIVE`/`READY`. A live source is refused, so the snapshot never races a writer.
+  `sessions rename` gives a named session a new display name and `sessions restore` brings an archived one back
+  (both refuse the default and a directory a daemon still serves). `sessions search --query TEXT` reads every
+  session under the base — default, named and archived — read-only, returning matching conversation lines; a
+  database it cannot read is reported by name, never skipped in silence.
 - **Automations (D-367)**: `teamagents automations add --every 60 --prompt "…"` stores a schedule the daemon
   runs on its own — each due run opens a goal attached to the Leader and submits the prompt, carrying the
   session's own `[limits]`/`[[checks]]`. `automations` lists id, state, next run and last goal; `pause`/`resume`

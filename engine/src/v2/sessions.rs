@@ -261,6 +261,51 @@ impl Registry {
         Ok(entry)
     }
 
+    /// Give a named session a new display name. The default session has no record to rename.
+    pub fn rename(&mut self, id: &str, name: &str) -> Result<SessionEntry, String> {
+        if id == DEFAULT_ID {
+            return Err("the default session has no name of its own to rename; create a named session first".into());
+        }
+        let Some(index) = self.sessions.iter().position(|session| session.id == id) else {
+            return Err(format!("no named session {id:?}; `teamagents sessions` lists them"));
+        };
+        if name.trim().is_empty() {
+            return Err("a session name must not be empty".into());
+        }
+        self.sessions[index].name = name.trim().to_string();
+        let entry = self.sessions[index].clone();
+        self.save()?;
+        Ok(entry)
+    }
+
+    /// Bring an archived session back: move its directory from `archive/<id>` to `sessions/<id>` and re-register it.
+    pub fn restore(&mut self, id: &str) -> Result<SessionEntry, String> {
+        let Some(index) = self.sessions.iter().position(|session| session.id == id) else {
+            return Err(format!("no named session {id:?}; `teamagents sessions` lists them"));
+        };
+        if !self.sessions[index].archived {
+            return Err(format!("session {id} is not archived"));
+        }
+        let from = self.home.join("archive").join(id);
+        let to = self.home.join("sessions").join(id);
+        if !from.exists() {
+            return Err(format!("the archived directory {} is gone; nothing to restore", from.display()));
+        }
+        if to.exists() {
+            return Err(format!("{} already exists; move it aside before restoring {id}", to.display()));
+        }
+        refuse_if_live(&from, id)?;
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
+        }
+        std::fs::rename(&from, &to).map_err(|e| format!("restore {}: {e}", from.display()))?;
+        self.sessions[index].archived = false;
+        self.sessions[index].path = PathBuf::from("sessions").join(id);
+        let entry = self.sessions[index].clone();
+        self.save()?;
+        Ok(entry)
+    }
+
     /// Move a named session's directory aside. Refused while a daemon holds it, and for the default.
     pub fn archive(&mut self, id: &str) -> Result<PathBuf, String> {
         let Some(index) = self.sessions.iter().position(|session| session.id == id) else {
@@ -321,6 +366,89 @@ fn copy_dir(from: &Path, to: &Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// A short window of `text` around the first case-insensitive occurrence of `needle`. The text is the message's
+/// visible content where the stored JSON has one, so a hit is a sentence a user recognizes rather than a blob of
+/// role and tool-id fields.
+fn snippet(text: &str, needle: &str, width: usize) -> String {
+    let lower = text.to_lowercase();
+    let start = match lower.find(&needle.to_lowercase()) {
+        Some(byte) => text[..byte].char_indices().rev().take(width / 3).last().map(|(index, _)| index).unwrap_or(0),
+        None => 0,
+    };
+    let body: String = text[start..].chars().take(width).collect();
+    let prefix = if start > 0 { "…" } else { "" };
+    let suffix = if text[start..].chars().count() > width { "…" } else { "" };
+    format!("{prefix}{}{suffix}", body.replace('\n', " "))
+}
+
+/// The visible text of a stored message: its `content` string when it has one, else the raw JSON (a tool result
+/// or an envelope carries no `content`).
+fn message_text(message_json: &str) -> String {
+    serde_json::from_str::<Json>(message_json)
+        .ok()
+        .and_then(|message| match &message["content"] {
+            Json::String(content) => Some(content.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| message_json.to_string())
+}
+
+/// Search every session under `home` for a case-insensitive substring (D-368). Read-only: each database is opened
+/// with `open_read_only`, so a search never migrates or writes a session — not even the live one's. A database
+/// that cannot be read is reported by name instead of being skipped in silence.
+///
+/// Returns `(hits, skipped)`: `hits` are `{session_id, instance_id, idx, kind, snippet}`, newest session first.
+pub fn search(home: &Path, query: &str, limit: usize) -> Result<(Vec<Json>, Vec<Json>), String> {
+    if query.trim().is_empty() {
+        return Err("a search needs a query".into());
+    }
+    let registry = Registry::load(home)?;
+    let needle = query.trim().to_lowercase();
+    let mut hits = Vec::new();
+    let mut skipped = Vec::new();
+    for (entry, dir) in registry.rows() {
+        let db = dir.join("session.sqlite");
+        if !db.exists() {
+            continue;
+        }
+        let conn = match teamagents_core::v2::store::open_read_only(&db) {
+            Ok(conn) => conn,
+            Err(error) => {
+                skipped.push(json!({"session_id": entry.id, "reason": error}));
+                continue;
+            }
+        };
+        let mut stmt = conn
+            .prepare(
+                "SELECT instance_id, idx, kind, message_json FROM context_entries ORDER BY instance_id, epoch, idx",
+            )
+            .map_err(|e| format!("search {}: {e}", entry.id))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(|e| format!("search {}: {e}", entry.id))?;
+        for row in rows {
+            let (instance, idx, kind, message_json) = row.map_err(|e| format!("search {}: {e}", entry.id))?;
+            let text = message_text(&message_json);
+            if !text.to_lowercase().contains(&needle) {
+                continue;
+            }
+            hits.push(json!({"session_id": entry.id, "instance_id": instance, "idx": idx, "kind": kind,
+                             "snippet": snippet(&text, &needle, 160)}));
+            if hits.len() >= limit {
+                return Ok((hits, skipped));
+            }
+        }
+    }
+    Ok((hits, skipped))
 }
 
 /// Refuse a filesystem move or removal while a daemon is serving the session. The socket is the address (the
@@ -428,6 +556,53 @@ mod tests {
         std::fs::write(scratch.path().join(REGISTRY_FILE), r#"{"version":99,"sessions":[]}"#).unwrap();
         let error = Registry::load(scratch.path()).unwrap_err();
         assert!(error.contains("version 99"), "{error}");
+    }
+
+    #[test]
+    fn a_session_can_be_renamed_and_restored_from_the_archive() {
+        let scratch = Scratch::new("rename");
+        let mut registry = Registry::load(scratch.path()).unwrap();
+        let entry = registry.new_session("first").unwrap();
+        let renamed = registry.rename(&entry.id, "second").unwrap();
+        assert_eq!(renamed.name, "second");
+        assert!(registry.rename(DEFAULT_ID, "x").is_err(), "the default has no record to rename");
+        assert!(registry.rename(&entry.id, "   ").is_err(), "an empty name is refused");
+        registry.archive(&entry.id).unwrap();
+        let restored = registry.restore(&entry.id).unwrap();
+        assert_eq!(restored.name, "second");
+        assert!(!restored.archived);
+        assert!(scratch.path().join("sessions").join(&entry.id).is_dir());
+        assert!(registry.restore(&entry.id).is_err(), "restoring a session that is not archived is refused");
+    }
+
+    #[test]
+    fn search_finds_a_snippet_across_sessions_and_never_writes() {
+        use teamagents_core::v2::{Command, Control, Identity};
+        let scratch = Scratch::new("search");
+        std::fs::create_dir_all(scratch.path()).unwrap();
+        let mut control = Control::open(&scratch.path().join("session.sqlite"), "s-main", true).unwrap();
+        for (id, method, params) in [
+            ("s1", "create_instance", serde_json::json!({"id": "i-leader"})),
+            (
+                "s2",
+                "submit_input",
+                serde_json::json!({"instance_id": "i-leader", "envelope_id": "e1", "text": "the needle is here"}),
+            ),
+        ] {
+            control
+                .submit(Command { command_id: id.into(), method: method.into(), params }, Identity::User)
+                .unwrap_or_else(|error| panic!("{method}: {error}"));
+        }
+        drop(control);
+        let before = std::fs::read(scratch.path().join("session.sqlite")).unwrap();
+        let (hits, skipped) = search(scratch.path(), "needle", 10).unwrap();
+        assert!(skipped.is_empty(), "{skipped:?}");
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert_eq!(hits[0]["session_id"], json!("default"));
+        assert!(hits[0]["snippet"].as_str().unwrap().contains("needle"), "{hits:?}");
+        let (none, _) = search(scratch.path(), "absent-token", 10).unwrap();
+        assert!(none.is_empty());
+        assert_eq!(std::fs::read(scratch.path().join("session.sqlite")).unwrap(), before, "a search never writes");
     }
 
     #[test]

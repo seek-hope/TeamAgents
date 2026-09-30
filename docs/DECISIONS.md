@@ -20,6 +20,46 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-368 Session lifecycle completed (rename, restore) and cross-session search (2026-09-30)
+
+**The ceilings this closes.** D-364 and D-365 recorded two gaps: no `rename`, and no way back from
+`sessions archive` except moving a directory by hand. D-368 adds both, and with them the first piece of the
+memory surface Hermes has (session search).
+
+**Rename and restore.** `Registry::rename` refuses the default session (it has no record) and an empty name;
+`Registry::restore` moves `archive/<id>` back to `sessions/<id>`, re-registers it, refuses a destination that
+already exists and — the same rule archive uses — a directory a daemon is still serving (`refuse_if_live`). Both
+are file-and-registry operations over the base, so the `V2Sessions` rules that matter (an id names one path; an
+archived session is not attachable; the default is never moved) still hold, and no new protocol transition is
+introduced.
+
+**Cross-session search.** `teamagents sessions search --query TEXT [--limit N]` walks every session the base
+carries — the default, the named ones and the archived ones — and returns matching conversation entries as
+`{session_id, instance_id, idx, kind, snippet}`. Each database is opened with `store::open_read_only`, so a
+search never migrates or writes a session, *including a live one* (the read-only open is the same primitive
+`artifacts list` uses, D-253); a database that cannot be read is reported by name in a `skipped` list rather
+than dropped in silence. The snippet is taken around the first case-insensitive match of the message's visible
+`content`, so a hit is a sentence a user recognizes rather than a blob of role and tool-id fields. The unit
+test pins the strongest form of the read-only claim: the session database's bytes are identical before and after
+a search, including a miss.
+
+**Formal.** No new TLA+ claim. `rename` is a name field on the registry and `restore` is `archive`'s inverse,
+both already inside `V2Sessions`' rules (`RegistryIsInjective`, `NoCoordinatorForAnArchivedSession`, the
+`ArchiveOnlyWhenIdle` step rule); search is a read with no state transition at all. Restating either as a model
+would be a claim nothing could refute (the D-219 shape), so the reasoning is recorded here and the executable
+tests carry the rules. The D-362 surface inventory is unaffected: no `Control::submit` method was added.
+
+**Evidence.** `sessions.rs`'s `a_session_can_be_renamed_and_restored_from_the_archive` and
+`search_finds_a_snippet_across_sessions_and_never_writes`, and
+`cli::sessions_rename_restore_and_search_wire_through_the_cli` (the real binary: create, rename, archive,
+restore, the list showing the new name, and an honest `no match` on an empty store). `make check` and the formal
+targets are re-run before the commit.
+
+**Ceilings.** Search is substring matching, not semantic and not indexed: it reads each session's entries in
+order and stops at `--limit` (default 20). It searches conversation entries only, not artifacts or events, and
+it never injects a hit into a model's context — using a hit is still the user's or the Leader's ordinary
+action, which keeps §5.1's "may observe is not must inject" boundary intact.
+
 ## D-367 Automations: user-defined schedules that start a goal on their own (2026-09-30)
 
 **The gap.** Codex has no unattended runs, Pi keeps them in a separate project, and Hermes ships a cron

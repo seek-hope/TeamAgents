@@ -26,6 +26,9 @@ usage: teamagents [--cwd DIR] [--state-root PATH] [--session ID] [--model KEY] [
   teamagents sessions [list] [--json]           the sessions this state root carries (D-364)\n\
   teamagents sessions new [--name NAME]         create a named session beside the default one\n\
   teamagents sessions fork --id ID [--name NAME] branch a session's conversation into a new one (D-365)\n\
+  teamagents sessions rename --id ID --name NAME  give a named session a new display name\n\
+  teamagents sessions restore --id ID           bring an archived session back\n\
+  teamagents sessions search --query TEXT [--limit N]  search every session's conversation (read-only, D-368)\n\
   teamagents sessions archive --id ID           move a named session aside (refused while a daemon runs it)\n\
   teamagents sessions delete --id ID --yes      remove a named session's directory and history\n\
   teamagents automations [list] [--json]        schedules that start a goal on their own (D-367)\n\
@@ -137,6 +140,9 @@ pub struct Args {
     /// D-367: `automations add --every MINUTES --prompt TEXT`.
     pub every_minutes: Option<u64>,
     pub prompt: Option<String>,
+    /// D-368: `sessions search --query TEXT [--limit N]`.
+    pub query: Option<String>,
+    pub limit: Option<u64>,
     /// D-267: `goals open --deadline MINUTES` — a deadline for the new goal, measured from now (§8).
     pub deadline_minutes: Option<u64>,
 }
@@ -181,6 +187,8 @@ fn parse_args() -> Args {
         session_name: None,
         every_minutes: None,
         prompt: None,
+        query: None,
+        limit: None,
         deadline_minutes: None,
     };
     let mut i = 0;
@@ -428,6 +436,24 @@ fn parse_args() -> Args {
                 }
                 args.prompt = Some(
                     argv.get(i + 1).cloned().filter(|v| !v.is_empty()).unwrap_or_else(|| needs_a_value("--prompt")),
+                );
+                i += 2;
+            }
+            "--query" if args.command.as_deref() == Some("sessions") => {
+                if args.query.is_some() {
+                    given_twice("--query");
+                }
+                args.query = Some(
+                    argv.get(i + 1).cloned().filter(|v| !v.is_empty()).unwrap_or_else(|| needs_a_value("--query")),
+                );
+                i += 2;
+            }
+            "--limit" if args.command.as_deref() == Some("sessions") => {
+                if args.limit.is_some() {
+                    given_twice("--limit");
+                }
+                args.limit = Some(
+                    argv.get(i + 1).and_then(|v| v.parse::<u64>().ok()).unwrap_or_else(|| needs_a_value("--limit")),
                 );
                 i += 2;
             }
@@ -1132,6 +1158,82 @@ fn run_sessions(args: &Args) -> i32 {
                 2
             }
         },
+        "rename" => match (args.approval_id.as_deref(), args.session_name.as_deref()) {
+            (Some(id), Some(name)) => match registry.rename(id, name) {
+                Ok(entry) => {
+                    println!("renamed session {} to {}", entry.id, entry.name);
+                    0
+                }
+                Err(error) => {
+                    eprintln!("sessions rename: {error}");
+                    1
+                }
+            },
+            (None, _) => {
+                eprintln!("sessions rename needs --id ID (see `teamagents sessions`)");
+                2
+            }
+            (_, None) => {
+                eprintln!("sessions rename needs --name NAME");
+                2
+            }
+        },
+        "restore" => match args.approval_id.as_deref() {
+            Some(id) => match registry.restore(id) {
+                Ok(entry) => {
+                    println!("restored session {} ({})", entry.id, entry.name);
+                    0
+                }
+                Err(error) => {
+                    eprintln!("sessions restore: {error}");
+                    1
+                }
+            },
+            None => {
+                eprintln!("sessions restore needs --id ID (see `teamagents sessions`)");
+                2
+            }
+        },
+        "search" => {
+            let Some(query) = args.query.as_deref() else {
+                eprintln!("sessions search needs --query TEXT");
+                return 2;
+            };
+            let limit = args.limit.unwrap_or(20).max(1) as usize;
+            match teamagents_engine::v2::sessions::search(&home, query, limit) {
+                Ok((hits, skipped)) => {
+                    if args.exec_json {
+                        let report = serde_json::json!({"state_root": home.to_string_lossy(), "query": query,
+                                                        "hits": hits, "skipped": skipped});
+                        println!("{}", serde_json::to_string(&report).unwrap_or_else(|_| "{}".into()));
+                    } else if hits.is_empty() {
+                        println!("no match for {query:?} in {}", home.display());
+                    } else {
+                        for hit in &hits {
+                            println!(
+                                "  {} {}:{}  {}",
+                                hit["session_id"].as_str().unwrap_or(""),
+                                hit["instance_id"].as_str().unwrap_or(""),
+                                hit["idx"],
+                                hit["snippet"].as_str().unwrap_or("")
+                            );
+                        }
+                    }
+                    for skip in &skipped {
+                        eprintln!(
+                            "sessions search: {} skipped: {}",
+                            skip["session_id"].as_str().unwrap_or(""),
+                            skip["reason"].as_str().unwrap_or("")
+                        );
+                    }
+                    0
+                }
+                Err(error) => {
+                    eprintln!("sessions search: {error}");
+                    1
+                }
+            }
+        }
         "delete" => match args.approval_id.as_deref() {
             Some(id) if args.confirmed => match registry.delete(id) {
                 Ok(dir) => {
@@ -1155,7 +1257,8 @@ fn run_sessions(args: &Args) -> i32 {
         other => {
             eprintln!(
                 "sessions: unknown command {other:?}; use `teamagents sessions [list]`, `sessions new [--name NAME]`, \
-                 `sessions fork --id ID [--name NAME]`, `sessions archive --id ID`, `sessions delete --id ID --yes`"
+                 `sessions fork --id ID [--name NAME]`, `sessions rename --id ID --name NAME`, `sessions restore --id ID`, \
+                 `sessions search --query TEXT`, `sessions archive --id ID`, `sessions delete --id ID --yes`"
             );
             2
         }
