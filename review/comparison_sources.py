@@ -11,10 +11,11 @@ noticed, once. This script re-derives them:
     python3 review/comparison_sources.py                     # fetch and check
     python3 review/comparison_sources.py --tree PATH         # the control, on a saved tree
 
-It asserts, and nothing else: Pi's tree is not truncated and holds no `mcp` or `worktree` path; its docs index
-mentions MCP nowhere; the subagent example still says "max 8, 4 concurrent" and "a separate `pi` process"; the
-README still says the product "runs with the permissions of the user and process that launched it" and still
-links `pi-chat`; and Hermes' tools page still names the seven backends while its README still has interrupt,
+It asserts, and nothing else: Pi's tree is not truncated and **does** hold `mcp` paths (the row says Pi has
+MCP; that became true after the 2026-09-26 snapshot), while it still holds no `worktree` path; its docs index
+mentions MCP; the subagent example still says "max 8, 4 concurrent" and "a separate `pi` process"; the README
+still says the product "runs with the permissions of the user and process that launched it" and still links
+`pi-chat`; and Hermes' tools page still names the seven backends while its README still has interrupt,
 streaming, session search, trajectory export, hibernating/serverless persistence, the gateway, `hermes model`
 and agentskills. A count that has moved (the tree grows) is a *note*, not a finding — the row is a dated
 snapshot, and the note is what tells the reader to re-date it.
@@ -75,13 +76,17 @@ def main(argv) -> int:
                         "derived from it")
     # every entry, the way the strength table counts them (directories included): "N paths"
     paths = [entry["path"] for entry in tree.get("tree", [])]
-    for needle in ("mcp", "worktree"):
-        hits = [path for path in paths if needle in path.lower()]
-        if hits:
-            findings.append(f"Pi's tree now holds {len(hits)} path(s) containing {needle!r} "
-                            f"(e.g. {hits[0]}), so the comparison's negative claim is out of date")
-    if re.search(r"mcp", docs_text, re.I):
-        findings.append("Pi's docs index mentions MCP now, so the comparison's \"no MCP page\" claim is stale")
+    # Pi has MCP since after the 2026-09-26 snapshot (the row now says so), so *absence* is the finding here.
+    mcp = [path for path in paths if "mcp" in path.lower()]
+    if not mcp:
+        findings.append("Pi's tree no longer holds an 'mcp' path, so the row's MCP claim is out of date")
+    # ... and it still has no worktree isolation, which the Teams cell claims as a negative.
+    worktrees = [path for path in paths if "worktree" in path.lower()]
+    if worktrees:
+        findings.append(f"Pi's tree now holds {len(worktrees)} path(s) containing 'worktree' "
+                        f"(e.g. {worktrees[0]}), so the comparison's negative claim is out of date")
+    if not re.search(r"mcp", docs_text, re.I):
+        findings.append("Pi's docs index no longer mentions MCP, so the row's MCP claim is out of date")
     for needle, why in ((("max 8, 4 concurrent"), "the subagent example's parallel limit"),
                         (("separate `pi` process"), "one process per subagent"),
                         (("permissions of the user and process that launched it"), "the permission model"),
@@ -105,8 +110,9 @@ def main(argv) -> int:
         print("FAIL:", finding)
     if findings:
         return 1
-    print(f"the comparison's upstream halves re-derive: Pi's tree {len(paths)} paths, truncated:false, no mcp "
-          f"or worktree path; its docs index silent on MCP; Hermes' seven backends and README claims present")
+    print(f"the comparison's upstream halves re-derive: Pi's tree {len(paths)} paths, truncated:false, "
+          f"{len(mcp)} mcp path(s) and no worktree path; its docs index lists MCP; Hermes' seven backends and "
+          f"README claims present")
     return 0
 
 

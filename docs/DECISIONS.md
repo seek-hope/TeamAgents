@@ -20,6 +20,33 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-372 The comparison is re-dated: Pi has MCP now, and the TeamAgents column caught up (2026-09-30)
+
+**The gap.** `docs/PRODUCT-COMPARISON.md` was the 2026-09-26/27 snapshot. Its two hand-run re-derivations
+(§4 and the strength table) had not been re-run since, and `review/comparison_sources.py` reported two FAILs:
+Pi's upstream tree now holds **65** `mcp` paths and its docs index lists "Connect MCP Servers", so the Pi
+"**no MCP**" cells — the strongest negative claims in the document — were false. In the other direction, nine
+TeamAgents rows still described the pre-D-362 tree (no session registry, bubblewrap only, no automations, no
+TUI slash/interrupt/streaming, no `--stream-json`).
+
+**The design.** Re-derive Pi and Hermes on 2026-09-30 and rewrite the document from that: the Pi Extensions
+cell now says MCP over stdio + streamable HTTP (`pi mcp add`/`list`, in-session `/mcp`, OAuth, resources), the
+negative *worktree* claim is kept because it still re-derives, the nine TeamAgents rows are re-read against
+this tree (D-249, D-363…D-370), §2 is re-labelled from a pending decision to each item's actual status,
+and §4 records the correction. `review/comparison_sources.py` is updated in the same change so its invariant
+matches the new fact — it now *requires* the `mcp` paths and the MCP docs entry, making a future removal the
+finding instead.
+
+**Formal.** None: the comparison is prose about other projects, not a protocol or a state machine.
+
+**Evidence.** `python3 review/comparison_sources.py` prints the re-derivation (Pi's tree 2,376 paths,
+truncated:false, 65 `mcp` paths and no `worktree` path; its docs index lists MCP; Hermes' seven backends and
+README claims present) and exits 0. The Codex column was **not** re-derived (no `codex` binary on this
+machine), so it keeps the 2026-09-27 check and §4 says so. `make check` is re-run before the commit.
+
+**Ceiling.** This remains a surface comparison: no comparator is benchmarked here, and the document says so;
+a task-success evaluation is `review/eval/r2-p6/`, not this file.
+
 ## D-371 A test asserts the capability it is about, not the host's (2026-09-30)
 
 **The gap.** D-364's `sessions_fork_snapshots_a_session_and_refuses_a_live_source` opened the fork with
