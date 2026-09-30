@@ -46,7 +46,12 @@ host globals, `store`/`load`/`exit`, the options line and the interrupt deadline
 identifier rule) and `engine/tests/v2_mcp.rs::codemode_runs_mcp_tools_and_only_its_output_reaches_the_context`
 (the model is offered `codemode` and *not* `echo_echo`, the script's computed `9:14` is the receipt, and the
 nested `ping ping`/`pong pong` payloads are not in the conversation), beside the updated round-trip and
-recovery tests.
+recovery tests. **Live (2026-09-30)** with `DeepSeek-V4.1-Flash` on the configured paratera endpoint: a session
+bound to the test's stdio echo server, asked in one headless turn (`teamagents exec`) to call the MCP tool
+through codemode, produced the single call
+`codemode {"code": "const result = await tools.echo_echo({ text: 'codemode-live', times: 2 }); text(JSON.stringify(result)); return result;"}`
+and the receipt `{"output":"\"codemode-live codemode-live\"\ncodemode-live codemode-live"}` — the model chose
+codemode from the schema's description alone, with no example in the prompt.
 
 **Ceiling.** `image()`, `searchTools`, `describeTool` and `describeNamespace` are not implemented; `store`/`load`
 are kept per toolkit and do not survive a restart; QuickJS is an interpreter, so heavy computation in a script
