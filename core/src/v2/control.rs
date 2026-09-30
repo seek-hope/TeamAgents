@@ -167,6 +167,7 @@ fn dispatch(
         "artifact_gc_claim" => artifact_gc_claim(tx, session_id, params),
         "artifact_collect" => artifact_collect(tx, session_id, params),
         "prune_history" => prune_history(tx, session_id, params),
+        "fork_reset" => fork_reset(tx, session_id, params, identity),
         other => Err(format!("unknown v2 method {other:?}")),
     }
 }
@@ -3872,6 +3873,66 @@ fn artifact_gc_claim(tx: &Connection, session_id: &str, params: &Json) -> Result
 /// The sweep never runs on a timer: DESIGN §4.4 says collection is "scheduled separately", so the driver submits
 /// this once per boot, the shape D-191 gave artifact collection. It writes one `history_pruned` event, which is
 /// itself ordinary history and can be dropped by a later sweep.
+/// Fork reset (D-365): the copied session keeps the conversation and the goals but no execution state.
+///
+/// A fork is a branch of the *context*, not of the running team: the copied `instances/` directories and member
+/// workspaces are not carried (a git worktree cannot be duplicated safely), so this transaction leaves one
+/// instance — the conversation's owner — `ACTIVE`/`READY` and drops every request, attempt, decision, operation,
+/// approval, wait, task, envelope and grant to a removed subject. It is the control plane's own transaction, so
+/// the post-state satisfies the same invariants a normal session does; the engine's fork test drives
+/// `v2_invariants`' checker over a reset store. Artifact references are rewritten from the source root to the
+/// fork's root because the engine copies the artifact directory beside the database.
+fn fork_reset(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
+    require_user(identity)?;
+    let keep = params["keep_instance"].as_str().unwrap_or("i-leader");
+    let source_root = params["source_root"].as_str().unwrap_or("");
+    let target_root = params["target_root"].as_str().unwrap_or("");
+    let (session, _epoch, _lifecycle, _phase, _revision) = load_instance(tx, keep)?;
+    if session != session_id {
+        return Err(format!("instance {keep} does not belong to this session"));
+    }
+    // execution state: none of it can mean anything in the copy
+    for table in ["envelopes", "approvals", "tasks"] {
+        tx.execute(&format!("DELETE FROM {table} WHERE session_id = ?1"), [session_id])
+            .map_err(|e| format!("fork reset {table}: {e}"))?;
+    }
+    for table in ["waits", "operations", "decisions", "attempts", "model_requests"] {
+        tx.execute(&format!("DELETE FROM {table}"), []).map_err(|e| format!("fork reset {table}: {e}"))?;
+    }
+    let grants_revoked = tx
+        .execute("DELETE FROM grants WHERE session_id = ?1 AND subject != ?2", rusqlite::params![session_id, keep])
+        .map_err(|e| format!("fork reset grants: {e}"))?;
+    let instances_removed = tx
+        .execute("DELETE FROM instances WHERE session_id = ?1 AND id != ?2", rusqlite::params![session_id, keep])
+        .map_err(|e| format!("fork reset instances: {e}"))?;
+    tx.execute(
+        "UPDATE instances SET lifecycle = 'ACTIVE', phase = 'READY', active_request_id = NULL, revision = revision + 1 \
+         WHERE id = ?1",
+        [keep],
+    )
+    .map_err(|e| format!("fork reset instance: {e}"))?;
+    tx.execute("UPDATE goals SET reservations_json = '[]' WHERE session_id = ?1", [session_id])
+        .map_err(|e| format!("fork reset reservations: {e}"))?;
+    if !source_root.is_empty() && !target_root.is_empty() && source_root != target_root {
+        tx.execute(
+            "UPDATE artifacts SET storage_ref = replace(storage_ref, ?1, ?2) WHERE session_id = ?3",
+            rusqlite::params![source_root, target_root, session_id],
+        )
+        .map_err(|e| format!("fork reset artifacts: {e}"))?;
+    }
+    // the copy's event log starts here: the source's events describe work that did not come along
+    tx.execute("DELETE FROM events WHERE session_id = ?1", [session_id])
+        .map_err(|e| format!("fork reset events: {e}"))?;
+    event(
+        tx,
+        session_id,
+        "fork_reset",
+        keep,
+        &json!({"kept": keep, "instances_removed": instances_removed, "grants_revoked": grants_revoked}),
+    )?;
+    Ok(json!({"kept_instance": keep, "instances_removed": instances_removed, "grants_revoked": grants_revoked}))
+}
+
 fn prune_history(tx: &Connection, session_id: &str, params: &Json) -> Result<Json, String> {
     let days = params["days"].as_u64().ok_or("prune_history.days required")?;
     if days == 0 {
@@ -7232,6 +7293,104 @@ mod tests {
         let err =
             ctl.submit(cmd("x3", "interrupt_instance", json!({"instance_id": "i1"})), Identity::User).unwrap_err();
         assert!(err.contains("TERMINATED"), "{err}");
+        cleanup(&path);
+    }
+
+    /// D-365: a fork keeps the conversation and the goals but none of the execution state — the leader is left
+    /// idle and runnable, and the state a fork reset produces is one the control plane's own invariants admit
+    /// (the engine test drives the checker over a reset store).
+    #[test]
+    fn fork_reset_keeps_the_conversation_and_drops_the_execution_state() {
+        let (mut ctl, path) = control("fork-reset");
+        let session = ctl.session_id.clone();
+        create_instance(&mut ctl, "i-leader");
+        create_instance(&mut ctl, "i-worker");
+        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1", "instance_id": "i-leader"})), Identity::User)
+            .expect("goal");
+        ctl.connection().execute("UPDATE instances SET active_goal_id = 'g1' WHERE id = 'i-leader'", []).unwrap();
+        // the leader is mid-turn with two open operations, one decision and one recorded request
+        let revision: i64 = ctl
+            .connection()
+            .query_row("SELECT revision FROM instances WHERE id = 'i-leader'", [], |row| row.get(0))
+            .unwrap();
+        open_decision(&mut ctl, "fork", "i-leader", revision, 2);
+        // the worker has a delegated task, a queued envelope and a grant
+        ctl.connection()
+            .execute(
+                "INSERT INTO tasks (id, goal_id, session_id, requester, assignee, dependencies_json, \
+                 acceptance_refs_json, status, result_refs_json) VALUES ('t1','g1',?1,'i-leader','i-worker','[]','[]',\
+                 'RUNNING','[]')",
+                [&session],
+            )
+            .unwrap();
+        ctl.connection()
+            .execute(
+                "INSERT INTO envelopes (id, session_id, sender, recipient, epoch, kind, payload_json, sequence, \
+                 state) VALUES ('e1',?1,'i-leader','i-worker',0,'message','{}',1,'ACCEPTED')",
+                [&session],
+            )
+            .unwrap();
+        ctl.submit(
+            cmd("gr1", "issue_grant", json!({"subject": "i-worker", "action": "shell", "resource_scope": "workspace"})),
+            Identity::User,
+        )
+        .expect("grant");
+        let before: i64 = ctl
+            .connection()
+            .query_row("SELECT COUNT(*) FROM context_entries WHERE instance_id = 'i-leader'", [], |row| row.get(0))
+            .unwrap();
+        assert!(before >= 1, "the conversation has entries to keep: {before}");
+
+        let out = ctl
+            .submit(
+                cmd(
+                    "fr1",
+                    "fork_reset",
+                    json!({"keep_instance": "i-leader", "source_root": "/src", "target_root": "/dst"}),
+                ),
+                Identity::User,
+            )
+            .expect("fork reset");
+        assert_eq!(out["kept_instance"], json!("i-leader"));
+        assert_eq!(out["instances_removed"], json!(1));
+        for table in
+            ["model_requests", "attempts", "decisions", "operations", "approvals", "waits", "tasks", "envelopes"]
+        {
+            let rows: i64 =
+                ctl.connection().query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0)).unwrap();
+            assert_eq!(rows, 0, "{table} still holds rows after a fork reset");
+        }
+        let worker: i64 = ctl
+            .connection()
+            .query_row("SELECT COUNT(*) FROM instances WHERE id = 'i-worker'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(worker, 0);
+        let worker_grants: i64 = ctl
+            .connection()
+            .query_row("SELECT COUNT(*) FROM grants WHERE subject = 'i-worker'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(worker_grants, 0);
+        // the leader is idle and runnable; the conversation and the goal survive
+        let (lifecycle, phase, active): (String, String, Option<String>) = ctl
+            .connection()
+            .query_row("SELECT lifecycle, phase, active_request_id FROM instances WHERE id = 'i-leader'", [], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .unwrap();
+        assert_eq!((lifecycle.as_str(), phase.as_str(), active), ("ACTIVE", "READY", None));
+        let after: i64 = ctl
+            .connection()
+            .query_row("SELECT COUNT(*) FROM context_entries WHERE instance_id = 'i-leader'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(after, before, "the fork keeps the conversation");
+        let (status, reserved): (String, String) = ctl
+            .connection()
+            .query_row("SELECT status, reservations_json FROM goals WHERE id = 'g1'", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(status, "ACTIVE");
+        assert_eq!(reserved, "[]", "the fork carries no reservation for a request that did not come along");
         cleanup(&path);
     }
 

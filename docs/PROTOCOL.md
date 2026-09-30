@@ -101,7 +101,8 @@ the handler re-checks who may do this rather than trusting the request.
 | `artifact_publish` | `id` | no | `core/src/v2/control.rs:166` |
 | `artifact_gc_claim` | `limit` | no | `core/src/v2/control.rs:167` |
 | `artifact_collect` | `id` | no | `core/src/v2/control.rs:168` |
-| `prune_history` | `days`, `evidence`, `now` | no | `core/src/v2/control.rs:169` |
+| `prune_history` | `days`, `evidence`, `now` | yes | `core/src/v2/control.rs:169` |
+| `fork_reset` | `keep_instance`, `source_root`, `target_root` | yes | `core/src/v2/control.rs:170` |
 
 ### Every field the protocol carries in one object, and where it is built
 

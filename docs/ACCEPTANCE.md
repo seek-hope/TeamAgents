@@ -7,7 +7,7 @@ model probe sets and the three formal gates).
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 119 / engine 298 / tui 36 test targets) and `make pty` passes — re-measured 2026-09-29: `pty v2 smoke: ok`, rc 0, 41 s, credential-free; both are
+`make check` is green (core 121 / engine 299 / tui 36 test targets) and `make pty` passes — re-measured 2026-09-29: `pty v2 smoke: ok`, rc 0, 41 s, credential-free; both are
 preconditions for every item below. `make check` includes `make language-check`, which fails on non-English
 characters outside the two documented exceptions (`README.zh-CN.md` and the frozen material under
 `review/eval`).
@@ -130,12 +130,15 @@ amended (D-49/D-50).
 
 ## Known gaps (found while auditing the documented surface, 2026-09-25)
 
-- **There is no `fork` of a session.** D-364 delivered the picker (`sessions list`), creation (`sessions new`),
-  attachment (`--session ID`) and archive/delete; forking a session was deliberately left out because it needs a
-  durable snapshot *plus* a reset of the copied execution state (instances not in `READY`, open operations,
-  pending approvals) and a decision about member workspaces (a copied git worktree cannot be duplicated safely)
-  — a design of its own, not a directory copy. `rename` and restore-from-archive are missing too; an archived
-  directory is at `<base>/archive/<id>/` and can be moved back by hand.
+- ~~**There is no `fork` of a session.**~~ **Delivered since D-365.** `teamagents sessions fork --id ID
+  [--name NAME]` snapshots the session's database with `VACUUM INTO` (a read-only source, refused while a daemon
+  is live), copies its artifacts, and resets the copy's execution state in one control-plane transaction
+  (`fork_reset`): the conversation and goals survive, every request/operation/approval/wait/task/envelope and
+  grant to a removed subject is dropped, and the leader is left `ACTIVE`/`READY`. Evidence:
+  `store::fork_database_snapshots_a_database_without_writing_the_source`,
+  `control::fork_reset_keeps_the_conversation_and_drops_the_execution_state` and
+  `cli::sessions_fork_snapshots_a_session_and_refuses_a_live_source`. What remains: no `rename` and no
+  restore-from-archive (an archived directory is at `<base>/archive/<id>/`, movable by hand).
 
 - ~~**A goal whose budget is exhausted stays `ACTIVE` for ever, and the user has no lever to close it.**~~
   **Delivered since D-344** (the operator's decision, D-341). The gap, in the record's own words, was found by

@@ -3247,3 +3247,81 @@ fn named_sessions_are_created_resolved_and_retired() {
     assert_eq!(code, Some(1), "{text}");
     assert!(text.contains("default state root cannot be archived"), "{text}");
 }
+
+/// D-365: `sessions fork` snapshots a session while refusing a live source, registers the copy, and the copy
+/// opens as a session of its own (and can be forked again).
+#[test]
+fn sessions_fork_snapshots_a_session_and_refuses_a_live_source() {
+    let home = Scratch::new("sessions-fork");
+    let base = home.join("base");
+    let config_home = home.join("config");
+    std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
+    std::fs::write(
+        config_home.join("teamagents/config.toml"),
+        "[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\n\
+         api_key_env = \"TA_FORK_KEY\"\nbase_url = \"http://127.0.0.1:1/v1\"\ntimeout = 5\n",
+    )
+    .unwrap();
+    let env = |command: &mut Command| {
+        command
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_STATE_HOME", home.join("state"))
+            .env("TA_FORK_KEY", "test-value");
+    };
+    let root = base.to_string_lossy().into_owned();
+    let run = |args: &[&str]| -> (Option<i32>, String, String) {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_teamagents"));
+        env(&mut command);
+        let output = command.args(args).output().expect("run cli");
+        (
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    };
+    // a daemon on the default session gives the snapshot a leader to keep
+    let mut daemon = Command::new(env!("CARGO_BIN_EXE_teamagents"));
+    env(&mut daemon);
+    let daemon = daemon
+        .args(["daemon", "--state-root"])
+        .arg(&base)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("start the daemon");
+    let mut daemon_guard = Daemon(daemon);
+    let socket = base.join("daemon.sock");
+    for _ in 0..200 {
+        if socket.exists() && std::os::unix::net::UnixStream::connect(&socket).is_ok() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(socket.exists(), "the daemon must listen before the fork");
+    // a live source is refused: the snapshot must not race a writer
+    let (code, _, err) = run(&["--state-root", &root, "sessions", "fork", "--id", "default"]);
+    assert_eq!(code, Some(1), "{err}");
+    assert!(err.contains("still has a daemon"), "{err}");
+    // stop it and fork; the copy is a real database that opens as its own session
+    let (code, out, err) = run(&["--state-root", &root, "daemon", "--stop"]);
+    assert_eq!(code, Some(0), "{out}{err}");
+    let _ = daemon_guard.0.wait();
+    let (code, out, err) =
+        run(&["--state-root", &root, "sessions", "fork", "--id", "default", "--name", "branch", "--json"]);
+    assert_eq!(code, Some(0), "{out}{err}");
+    let report: serde_json::Value = serde_json::from_str(out.trim()).expect("one json report");
+    let id = report["id"].as_str().expect("an id").to_string();
+    assert_eq!(report["forked_from"], serde_json::json!("default"));
+    assert!(base.join("sessions").join(&id).join("session.sqlite").exists(), "the snapshot is a database");
+    let (code, out, err) = run(&["--state-root", &root, "--session", &id, "doctor"]);
+    assert_eq!(code, Some(0), "the fork must open: {out}{err}");
+    assert!(
+        out.contains(&base.join("sessions").join(&id).display().to_string()),
+        "doctor resolves the fork root: {out}"
+    );
+    // and a fork can itself be forked
+    let (code, out, err) = run(&["--state-root", &root, "sessions", "fork", "--id", &id]);
+    assert_eq!(code, Some(0), "{out}{err}");
+    assert!(out.contains("forked session"), "{out}");
+    let _ = std::fs::remove_dir_all(&home);
+}

@@ -345,6 +345,21 @@ pub fn open_read_only(path: &Path) -> Result<Connection, String> {
     }
 }
 
+/// Copy a session database to a new file as one consistent snapshot (`VACUUM INTO`, D-365).
+///
+/// The source is opened read-only and never written; the target must not exist yet. A fork refuses a live source
+/// before this is called, so no writer is mid-transaction; `VACUUM INTO` still captures the whole database
+/// (including committed pages that only lived in the write-ahead log) as a single file.
+pub fn fork_database(source: &Path, target: &Path) -> Result<(), String> {
+    if target.exists() {
+        return Err(format!("{} already exists", target.display()));
+    }
+    let conn = open_read_only(source)?;
+    conn.execute("VACUUM INTO ?1", [target.to_string_lossy().as_ref()])
+        .map_err(|e| format!("snapshot {}: {e}", source.display()))?;
+    Ok(())
+}
+
 /// The store's own durability settings. Applied only to a database this session
 /// owns: they are the settings a *write* needs, and switching a foreign file to
 /// WAL is a write (A34).
@@ -657,6 +672,32 @@ mod tests {
         assert_eq!(version, V2_SCHEMA_VERSION.to_string());
         drop(conn);
         cleanup(&p);
+    }
+
+    /// D-365: the fork snapshot is a complete, independent copy. `VACUUM INTO` reads the source read-only, so the
+    /// source is never written, and the copy carries everything the source had.
+    #[test]
+    fn fork_database_snapshots_a_database_without_writing_the_source() {
+        use super::{fork_database, open, open_read_only};
+        let dir = std::env::temp_dir().join(format!("ta-store-fork-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("source.sqlite");
+        {
+            let conn = open(&source, true).unwrap();
+            conn.execute("INSERT INTO meta (key, value) VALUES ('fork_probe', 'carried')", []).unwrap();
+        }
+        let before = std::fs::read(&source).unwrap();
+        let target = dir.join("target.sqlite");
+        fork_database(&source, &target).unwrap();
+        assert_eq!(std::fs::read(&source).unwrap(), before, "the snapshot never writes the source");
+        let copy = open_read_only(&target).unwrap();
+        let value: String =
+            copy.query_row("SELECT value FROM meta WHERE key = 'fork_probe'", [], |row| row.get(0)).unwrap();
+        assert_eq!(value, "carried");
+        drop(copy);
+        // a target that already exists is refused, so a fork never overwrites a session
+        assert!(fork_database(&source, &target).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

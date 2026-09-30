@@ -20,6 +20,48 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-365 `sessions fork` branches a conversation: a read-only snapshot plus one reset transaction (2026-09-30)
+
+**The decision (Batch 3).** D-364 named `fork` as the designed follow-up and left it out because a fork needs a
+snapshot *plus* a reset of the copied execution state. This answers it without changing the fork's shape into a
+directory copy: `store::fork_database` opens the source **read-only** and runs `VACUUM INTO`, so the snapshot is
+one consistent file (committed pages that only lived in the write-ahead log included) and the source is never
+written; the source's daemon must be stopped first, so the snapshot cannot race a writer. The engine copies the
+session's `artifacts/` directory beside the database (immutable blobs, so the fork is self-contained) and does
+**not** copy `instances/` — a member's git worktree cannot be duplicated safely, and a fork is a branch of the
+*context*, not of the running team.
+
+**The reset.** The copy is normalized by one control-plane transaction, `fork_reset`
+(`core/src/v2/control.rs`), which requires the user identity and keeps exactly one instance — the conversation's
+owner, `i-leader`. It drops every envelope, approval, task, wait, operation, decision, attempt and model request
+and every grant to a removed subject, deletes the other instances, clears each goal's reservations, rewrites
+each artifact's `storage_ref` from the source root to the fork's root, and leaves the kept instance
+`ACTIVE`/`READY` with its context epoch (so the conversation stays visible) and a bumped revision (so a stale
+dispatch from the source can never execute here). The copy's event log starts at that reset, because the
+source's events describe work that did not come along. `Registry::fork` removes the new directory if any step
+fails, so a failed fork leaves no half session behind.
+
+**Formal.** No new TLA+ module: `fork_reset` is a one-shot maintenance transaction, not a concurrent protocol
+step, and the property that matters is a **post-state predicate** — the reset leaves a state the control plane's
+own invariants admit (`OneActiveRequest`, `TerminalOpStable`, no pending approval, no open operation). The
+surface inventory maps it to `V2Control.tla`, and the executable correspondence test drives exactly the
+conditions that make those invariants non-vacuous: after the reset the leader is `ACTIVE`/`READY` with no
+`active_request_id`, every execution table is empty, the conversation count is unchanged and the goal is still
+`ACTIVE` with no reservation. A first draft stated a separate "fork invariant" in a TLA module; it was dropped
+for the D-219 reason — the post-state predicate is fully checked by the test, and a model that restates
+`DELETE` would have been a claim nothing could refute.
+
+**Evidence.** `store::fork_database_snapshots_a_database_without_writing_the_source` (the source bytes are
+unchanged by the snapshot; the copy carries the data; a second fork onto the same target is refused),
+`control::fork_reset_keeps_the_conversation_and_drops_the_execution_state` and
+`cli::sessions_fork_snapshots_a_session_and_refuses_a_live_source` (a real daemon, a real snapshot, the live
+refusal, the copy opening as its own session, and a fork of a fork). `make check` and the formal targets are
+re-run before the commit.
+
+**Ceilings.** `rename` and restore-from-archive are still missing; a fork of a live session is refused rather
+than served from an online backup; and the fork keeps the internal `session_id` (`s-main`) — the state root
+*directory* is the user-visible session identity, exactly as it is for D-364's registry.
+
 ## D-364 Named sessions under one base: a registry, `--session`, and archive/delete (2026-09-30)
 
 **The decision (Batch 2).** Codex has `resume`/`fork`/`archive`/`delete` and Pi has resumable sessions; this

@@ -203,6 +203,64 @@ impl Registry {
         Ok(entry)
     }
 
+    /// Fork a session (D-365): snapshot its database, copy its artifacts, reset the copy's execution state, and
+    /// register it. Refused while the source has a daemon (the snapshot must not race a writer), and the new
+    /// directory is removed again if any step fails, so a failed fork never leaves a half session behind.
+    pub fn fork(&mut self, from: &str, name: &str) -> Result<SessionEntry, String> {
+        let source_dir = self.resolve(from)?;
+        let source_db = source_dir.join("session.sqlite");
+        if !source_db.exists() {
+            return Err(format!("session {from} has no session.sqlite to fork"));
+        }
+        refuse_if_live(&source_dir, from)?;
+        let mut id = String::new();
+        for _ in 0..32 {
+            let candidate = uuid::Uuid::new_v4().simple().to_string()[..8].to_string();
+            if self.find(&candidate).is_none() && !self.home.join("sessions").join(&candidate).exists() {
+                id = candidate;
+                break;
+            }
+        }
+        if id.is_empty() {
+            return Err("could not find a free session id after 32 tries".into());
+        }
+        let path = PathBuf::from("sessions").join(&id);
+        let dir = self.home.join(&path);
+        std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+        let attempt = (|| -> Result<(), String> {
+            teamagents_core::v2::store::fork_database(&source_db, &dir.join("session.sqlite"))?;
+            copy_dir(&source_dir.join("artifacts"), &dir.join("artifacts"))?;
+            let mut control = teamagents_core::v2::Control::open(&dir.join("session.sqlite"), "s-main", false)?;
+            control.submit(
+                teamagents_core::v2::Command {
+                    command_id: format!("fork-reset-{}", uuid::Uuid::new_v4()),
+                    method: "fork_reset".into(),
+                    params: json!({
+                        "keep_instance": "i-leader",
+                        "source_root": source_dir.to_string_lossy(),
+                        "target_root": dir.to_string_lossy(),
+                    }),
+                },
+                teamagents_core::v2::Identity::User,
+            )?;
+            Ok(())
+        })();
+        if let Err(error) = attempt {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(error);
+        }
+        let entry = SessionEntry {
+            id: id.clone(),
+            name: if name.trim().is_empty() { id.clone() } else { name.trim().to_string() },
+            path,
+            created_ms: now_ms(),
+            archived: false,
+        };
+        self.sessions.push(entry.clone());
+        self.save()?;
+        Ok(entry)
+    }
+
     /// Move a named session's directory aside. Refused while a daemon holds it, and for the default.
     pub fn archive(&mut self, id: &str) -> Result<PathBuf, String> {
         let Some(index) = self.sessions.iter().position(|session| session.id == id) else {
@@ -243,6 +301,26 @@ impl Registry {
         self.save()?;
         Ok(dir)
     }
+}
+
+/// Copy a directory tree (immutable artifact blobs). A missing source is not an error: a session that never
+/// published an artifact has no directory to copy.
+fn copy_dir(from: &Path, to: &Path) -> Result<(), String> {
+    if !from.exists() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(to).map_err(|e| format!("create {}: {e}", to.display()))?;
+    for entry in std::fs::read_dir(from).map_err(|e| format!("read {}: {e}", from.display()))? {
+        let entry = entry.map_err(|e| format!("read {}: {e}", from.display()))?;
+        let source = entry.path();
+        let target = to.join(entry.file_name());
+        if source.is_dir() {
+            copy_dir(&source, &target)?;
+        } else {
+            std::fs::copy(&source, &target).map_err(|e| format!("copy {}: {e}", source.display()))?;
+        }
+    }
+    Ok(())
 }
 
 /// Refuse a filesystem move or removal while a daemon is serving the session. The socket is the address (the

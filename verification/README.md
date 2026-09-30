@@ -261,6 +261,7 @@ module the method's rule is checked in; the property-by-property anchors above s
 | `fail_request` | `V2Control.tla` |
 | `cancel_request` | `V2Control.tla` |
 | `interrupt_instance` | `V2Control.tla` (the user's cancel of one running request) |
+| `fork_reset` | `V2Control.tla` (the control-plane invariants its post-state must satisfy) |
 | `complete_goal` | `V2Task.tla` |
 | `register_check_runs` | `V2Checks.tla` |
 | `repair_completion` | `V2Checks.tla` |

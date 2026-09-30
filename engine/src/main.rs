@@ -25,6 +25,7 @@ usage: teamagents [--cwd DIR] [--state-root PATH] [--session ID] [--model KEY] [
   teamagents instances merge --id ID            bring a git_worktree member's branch into the session tree\n\
   teamagents sessions [list] [--json]           the sessions this state root carries (D-364)\n\
   teamagents sessions new [--name NAME]         create a named session beside the default one\n\
+  teamagents sessions fork --id ID [--name NAME] branch a session's conversation into a new one (D-365)\n\
   teamagents sessions archive --id ID           move a named session aside (refused while a daemon runs it)\n\
   teamagents sessions delete --id ID --yes      remove a named session's directory and history\n\
   teamagents tasks [list] [--json]              the session's tasks\n\
@@ -927,6 +928,30 @@ fn run_sessions(args: &Args) -> i32 {
                 1
             }
         },
+        "fork" => match args.approval_id.as_deref() {
+            Some(id) => match registry.fork(id, args.session_name.as_deref().unwrap_or("")) {
+                Ok(entry) => {
+                    if args.exec_json {
+                        let report = serde_json::json!({"state_root": home.to_string_lossy(), "id": entry.id,
+                                                        "name": entry.name, "path": home.join(&entry.path).to_string_lossy(),
+                                                        "forked_from": id});
+                        println!("{}", serde_json::to_string(&report).unwrap_or_else(|_| "{}".into()));
+                    } else {
+                        println!("forked session {id} into {} ({})", entry.id, home.join(&entry.path).display());
+                        println!("attach with `teamagents --state-root {} --session {}`", home.display(), entry.id);
+                    }
+                    0
+                }
+                Err(error) => {
+                    eprintln!("sessions fork: {error}");
+                    1
+                }
+            },
+            None => {
+                eprintln!("sessions fork needs --id ID (the source session; see `teamagents sessions`)");
+                2
+            }
+        },
         "archive" => match args.approval_id.as_deref() {
             Some(id) => match registry.archive(id) {
                 Ok(dir) => {
@@ -966,7 +991,7 @@ fn run_sessions(args: &Args) -> i32 {
         other => {
             eprintln!(
                 "sessions: unknown command {other:?}; use `teamagents sessions [list]`, `sessions new [--name NAME]`, \
-                 `sessions archive --id ID`, `sessions delete --id ID --yes`"
+                 `sessions fork --id ID [--name NAME]`, `sessions archive --id ID`, `sessions delete --id ID --yes`"
             );
             2
         }
