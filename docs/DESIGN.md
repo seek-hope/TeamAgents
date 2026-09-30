@@ -423,6 +423,10 @@ environment failure is never probed by creating another instance with the same c
 MCP executes through the same permission, approval, budget, cancellation and receipt entry points; a server's
 idempotence annotation is a hint and never authorizes an automatic replay
 ([MCP annotation trust boundary](https://modelcontextprotocol.io/specification/2025-06-18/server/tools)).
+MCP tools are composed from model-written code (D-374): the model is offered one `codemode` tool and calls the
+bound tools inside a QuickJS sandbox whose only capabilities they are, so a script's intermediate payloads stay
+out of the model's context and only the script's own output enters it; the sandbox has no filesystem, network or
+timers, and a script is bounded by a heap limit, an output cap and a deadline.
 Skills register under `~/.agents/skills` and their bodies are searched and read on demand; a skill's
 instructions can never widen execution permissions. A missing web-search credential or an unavailable tool is
 reported as a capability state, and no executable binding is invented.

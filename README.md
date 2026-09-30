@@ -80,7 +80,8 @@ you ──goal (natural language)──▶ Leader ──spawn / delegate──�
   `read_history`. Compaction calls count against the goal budget.
 - **Tools**: file read/write/search with exact-match edits, SHA-256 version checks and atomic writes (a
   process-wide write lock serializes mutations), a persistent in-session shell (`cd` and
-  `export` survive across commands), web search and fetch, MCP (stdio and streamable HTTP) and Skills
+  `export` survive across commands), web search and fetch, MCP (stdio and streamable HTTP, composed from
+  model-written code through the one `codemode` tool, D-374) and Skills
   (`~/.agents/skills`).
 - **User hooks (`[hooks]`)**: `notify` forwards events (`tool_call` / `team_action` / `run_*`) to your own
   program; `pre_tool` can veto any native tool call before it runs (exit 2 denies, stderr is the reason),

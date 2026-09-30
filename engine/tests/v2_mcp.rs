@@ -512,10 +512,10 @@ async fn mcp_tool_round_trips_through_the_same_receipt_contract() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
     let root = root("e2e");
     std::fs::create_dir_all(root.dir.join("ws")).unwrap();
-    let provider = ScriptedProvider::new(vec![
-        tool_call("c1", "echo_echo", json!({"text": "ping", "times": 2})),
-        finish_call("echoed"),
-    ]);
+    // D-374: the round trip goes through the one codemode tool now; the nested call and its receipt are the same
+    let script = r#"const reply = await tools.echo_echo({ text: "ping", times: 2 }); text(reply);"#;
+    let provider =
+        ScriptedProvider::new(vec![tool_call("c1", "codemode", json!({"code": script})), finish_call("echoed")]);
     let seen = provider.seen();
     let mut config = root.config(provider);
     config.catalog = echo_catalog(env!("CARGO_BIN_EXE_fake-mcp-server"));
@@ -525,10 +525,53 @@ async fn mcp_tool_round_trips_through_the_same_receipt_contract() {
     assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
     // advertised with the first model request already (§5.2)
     let advertised = seen.0.lock().unwrap().clone();
-    assert!(advertised[0].iter().any(|name| name == "echo_echo"), "advertised: {advertised:?}");
+    assert!(advertised[0].iter().any(|name| name == "codemode"), "advertised: {advertised:?}");
     // executed through the bound set; the receipt landed as a context entry
     let results = tool_results(&root);
     assert!(results.iter().any(|body| body.contains("ping ping")), "{results:?}");
+    handle.shutdown().await.expect("shutdown");
+}
+
+/// D-374: bound MCP tools are reached through the one `codemode` tool, and the script's own output — not the
+/// nested payloads — is what lands in the conversation. The model-visible surface is the evidence for the first
+/// half, the stored `tool_result` for the second.
+#[tokio::test]
+async fn codemode_runs_mcp_tools_and_only_its_output_reaches_the_context() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("codemode");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let script = r#"
+const a = await tools.echo_echo({ text: "ping", times: 2 });
+const b = await tools.echo_echo({ text: "pong", times: 3 });
+text(a.length + ":" + b.length);
+return "filtered";
+"#;
+    let provider = ScriptedProvider::new(vec![
+        tool_call("c1", "codemode", json!({"code": script})),
+        finish_call("ran the script"),
+    ]);
+    let seen = provider.seen();
+    let mut config = root.config(provider);
+    config.catalog = echo_catalog(env!("CARGO_BIN_EXE_fake-mcp-server"));
+    config.bindings = vec!["echo_service".into()];
+    let handle = start(config).await.expect("start");
+    handle.input("use the mcp echo tool").await.expect("input");
+    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    // the model sees one `codemode` tool, not the bound MCP tools individually
+    let advertised = seen.0.lock().unwrap().clone();
+    assert!(advertised[0].iter().any(|name| name == "codemode"), "advertised: {advertised:?}");
+    assert!(
+        !advertised[0].iter().any(|name| name == "echo_echo"),
+        "the MCP tool is reached through codemode, not advertised directly: {advertised:?}"
+    );
+    // the script's computed output is in the conversation; the nested payloads are not
+    let results = tool_results(&root);
+    let reply = results.iter().find(|entry| entry.contains("9:14")).cloned().unwrap_or_default();
+    assert!(!reply.is_empty(), "the script's output is the receipt: {results:?}");
+    assert!(
+        !reply.contains("ping ping") && !reply.contains("pong pong"),
+        "the nested MCP payloads stayed in the sandbox: {reply}"
+    );
     handle.shutdown().await.expect("shutdown");
 }
 

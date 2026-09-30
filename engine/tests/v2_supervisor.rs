@@ -741,8 +741,12 @@ for line in sys.stdin:
     let seen = seen.lock().unwrap().clone();
     let offered = seen.get("i-leader").and_then(|requests| requests.first()).cloned().unwrap_or_default();
     assert!(
-        offered.contains(&"probe_ping".to_string()),
-        "the declared service's tool is on the member's surface: {offered:?}"
+        offered.contains(&"codemode".to_string()),
+        "the declared MCP service is reachable through the codemode tool on the member's surface: {offered:?}"
+    );
+    assert!(
+        !offered.contains(&"probe_ping".to_string()),
+        "the MCP tool itself is not advertised individually (D-374): {offered:?}"
     );
     // the built-in surface is unchanged
     assert!(offered.contains(&"shell".to_string()) && offered.contains(&"finish".to_string()), "{offered:?}");

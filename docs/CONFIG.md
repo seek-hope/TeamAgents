@@ -66,7 +66,7 @@ default (D-239).
 | Key | Type | Absent | Read by | Meaning |
 |---|---|---|---|---|
 | `kind` | `String` | empty | `core/src/kernel/mod.rs`, `core/src/v2/control.rs` … (16 files) | — |
-| `required` | `bool` | false | `core/src/kernel/mod.rs`, `engine/src/bound.rs` … (3 files) | — |
+| `required` | `bool` | false | `core/src/kernel/mod.rs`, `engine/src/bound.rs` … (4 files) | — |
 | `provider` | `Option<String>` | unset (the reader applies its own) | `engine/src/providers/mod.rs`, `engine/src/tools.rs` … (3 files) | — |
 | `api_key_env` | `Option<String>` | unset (the reader applies its own) | `engine/src/providers/mod.rs`, `engine/src/tools.rs` | — |
 | `mcp_server` | `Option<String>` | unset (the reader applies its own) | `engine/src/bound.rs` | — |
@@ -74,7 +74,7 @@ default (D-239).
 | `mcp_execution` | `Option<String>` | unset (the reader applies its own) | `engine/src/bound.rs` | Local MCP execution boundary: workspace (default) or explicit host. |
 | `mcp_network` | `bool` | false | `engine/src/bound.rs` | Network access for workspace-sandboxed MCP processes. |
 | `command` | `Option<String>` | unset (the reader applies its own) | `core/src/v2/control.rs`, `engine/src/bound.rs` … (17 files) | The `kind = "mcp"` service's argv over stdio (the default transport) — required for that kind and transport, refused at load otherwise (D-232). |
-| `args` | `Vec<String>` | empty | `core/src/kernel/mod.rs`, `core/src/v2/control.rs` … (12 files) | — |
+| `args` | `Vec<String>` | empty | `core/src/kernel/mod.rs`, `core/src/v2/control.rs` … (13 files) | — |
 | `url` | `Option<String>` | unset (the reader applies its own) | `engine/src/bound.rs`, `engine/src/reference.rs` … (3 files) | The `kind = "mcp"` service's endpoint over the `http` transport — required there, and an absolute http(s) URL (D-232). |
 | `bearer_token_env_var` | `Option<String>` | unset (the reader applies its own) | `engine/src/bound.rs` | Bearer token for the http transport: names the environment variable the secret is read from — the token itself never lands in this file. |
 | `startup_timeout_s` | `Option<u64>` | unset (the reader applies its own) | `engine/src/bound.rs` | initialize/tools/list timeout in seconds (default 60). |
@@ -87,7 +87,7 @@ default (D-239).
 | Key | Type | Absent | Read by | Meaning |
 |---|---|---|---|---|
 | `models` | `HashMap<String, ModelProfile>` | empty | `engine/src/providers/mod.rs`, `engine/src/v2/driver.rs` | — |
-| `tools` | `HashMap<String, ToolBinding>` | empty | `core/src/kernel/instance.rs`, `core/src/kernel/mod.rs` … (11 files) | — |
+| `tools` | `HashMap<String, ToolBinding>` | empty | `core/src/kernel/instance.rs`, `core/src/kernel/mod.rs` … (12 files) | — |
 | `skills_paths` | `Vec<String>` | empty | `engine/src/tools.rs` | Directories the `skill` tool searches for `SKILL.md` entries. An entry must exist and be a directory; the default (`~/.agents/skills`) is used only when the key is unset (D-232). |
 | `instruction_files` | `Vec<String>` | empty | `engine/src/v2/driver.rs` | Files whose text is appended to **every** member's system prompt (the leader's and each child's), in this order, each under a heading naming the file: read per turn, so an edit lands on the next turn, and a file that cannot be read is named by `doctor` and on the daemon's log rather than skipped in silence (D-102 recorded the promise, D-246 delivers it). |
 | `retention` | `Retention` | the Retention default | `engine/src/v2/driver.rs`, `engine/src/v2/supervisor.rs` | — |

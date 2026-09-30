@@ -5,7 +5,15 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
-## 0. Gate status (re-run 2026-09-30 at `86611f02`)
+## 0. Gate status (re-run 2026-09-30 at `2df7618a`)
+
+* **D-374 added the codemode information-flow model and re-ran all three targets on this tree (2026-09-30).**
+  `make verify-model-all`: all **29** configurations `No error has been found` (rc 0) — the newest is
+  `MC_codemode.cfg`, exhaustive in under a second (66 states generated / 25 distinct).
+  `make verify-model-counterexamples`: all **89** negative controls are refuted (rc 0) — the new one is
+  `MC_codemode_leak.cfg` (`OnlyScriptOutputEnters`). `make verify-kani` reports `Complete - 3 successfully
+  verified harnesses, 0 failures, 3 total` (rc 0). The round changed `verification/tla/V2Codemode.tla` and its
+  two configurations and nothing else in the material.
 
 * **D-369 added the sandbox-backend model and re-ran all three targets on this tree (2026-09-30).**
   `make verify-model-all`: all **28** configurations `No error has been found` (rc 0) — the newest is
@@ -232,7 +240,7 @@ in [README.md](README.md); the fix ledger is in
 
 **What can be claimed**:
 
-- The safety properties of twenty-five surfaces (control plane, artifacts/GC, waits/wakeups,
+- The safety properties of twenty-six surfaces (control plane, artifacts/GC, waits/wakeups,
   tasks/delegation/goal settlement, compression, the daemon protocol, the required checks, the authority,
   the member's workspace (§5.1's merge and retirement rules, D-252),
   layer, the user's authority surface, session-store identity, and — added 2026-09-27, D-225 — the approval

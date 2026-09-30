@@ -14,7 +14,8 @@ The document is generated from those functions — name, model-facing descriptio
 ones marked) — so a renamed tool, a new parameter or a reworded description fails the check until `--write` runs.
 
 Limits: only the static schemas are listed. MCP service tools are discovered from the server at session start
-(`<service>_<tool>`, D-74) and cannot be known here; the *dispatch* side (which tool name reaches which executor)
+(`<service>_<tool>`, D-74) and the one `codemode` tool that reaches them (D-374) is built from the bound set at
+boot, so neither can be known here; the *dispatch* side (which tool name reaches which executor)
 is covered by the tools' own tests and `review/command_params.py`'s cousin checks, not by this document.
 """
 import json

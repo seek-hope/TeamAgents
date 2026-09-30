@@ -2608,7 +2608,11 @@ type V2Executor = Box<dyn Fn(&str, &Json, &TurnControl, ShellMode) -> Result<Jso
 
 pub(crate) struct V2Toolkit {
     executor: V2Executor,
-    bound: crate::bound::BoundTools,
+    // D-374: an `Arc` so a codemode script's host closure can hold it in a `'static` callback; the members of
+    // the toolkit only ever call `&self` methods, so sharing it is sound.
+    bound: Arc<crate::bound::BoundTools>,
+    // D-374: codemode's `store`/`load` values, kept for the life of this toolkit (one instance boot).
+    codemode_store: Arc<std::sync::Mutex<std::collections::BTreeMap<String, Json>>>,
     root: PathBuf,
     artifacts: Option<PathBuf>,
     shell_state: Option<PathBuf>,
@@ -2625,7 +2629,7 @@ impl V2Toolkit {
         // Bound MCP services load at driver boot: a required service that is
         // unavailable fails the boot honestly, an optional one only drops its
         // capability (same contract as the legacy member start, plan §7).
-        let bound = crate::bound::BoundTools::load_in(&catalog, &bindings, &root)?;
+        let bound = Arc::new(crate::bound::BoundTools::load_in(&catalog, &bindings, &root)?);
         let executor = member_executor_with_control(
             root.clone(),
             catalog,
@@ -2633,21 +2637,33 @@ impl V2Toolkit {
             ArtifactPaths::own(artifacts.clone()),
             shell_state.clone(),
         );
-        Ok(V2Toolkit { executor: Box::new(executor), bound, root, artifacts, shell_state })
+        Ok(V2Toolkit {
+            executor: Box::new(executor),
+            bound,
+            codemode_store: Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new())),
+            root,
+            artifacts,
+            shell_state,
+        })
     }
 
-    /// Wire-format schemas of the bound MCP tools; the driver merges them
-    /// into the kernel profile ahead of each model request (§5.2).
+    /// Wire-format schemas the driver merges into the kernel profile ahead of each model request (§5.2).
+    ///
+    /// D-374: bound MCP tools are **not** advertised individually any more. They are reached through the one
+    /// `codemode` tool, so a script can chain and filter them and only its own output enters the context. When
+    /// no MCP tool is bound the list is empty and `codemode` is not offered.
     pub(crate) fn mcp_schemas(&self) -> Vec<Json> {
-        self.bound.schemas().into_iter().map(|schema| json!({"type": "function", "function": schema})).collect()
+        if self.bound.tools.is_empty() {
+            return vec![];
+        }
+        vec![json!({"type": "function", "function": crate::codemode::schema(&self.bound)})]
     }
 
-    /// True when the name is served by a bound MCP service. Used at the
-    /// recovery boundary (A25): a crashed MCP call must not be re-issued
-    /// blindly, because server idempotence annotations never authorize a
-    /// replay of a remote effect.
+    /// True when the name can cause a remote effect and must not be replayed after an interruption. Used at the
+    /// recovery boundary (A25): MCP tools directly, and `codemode`, which may have run an MCP call before the
+    /// crash — server idempotence annotations never authorize a replay of a remote effect.
     pub(crate) fn is_mcp_tool(&self, name: &str) -> bool {
-        self.bound.names().contains(name)
+        name == crate::codemode::TOOL_NAME || self.bound.names().contains(name)
     }
 
     /// Reap bound MCP server processes on driver shutdown (§6.4); the
@@ -2722,6 +2738,31 @@ impl V2Toolkit {
                         outcome.failure.unwrap_or(ShellFailure { class: "tool_error".into(), reason: text.clone() });
                     receipt.content = json!({"error": failure.reason}).to_string();
                     receipt.error = Some(ReceiptError { class: failure.class, reason: failure.reason });
+                }
+            }
+            return receipt;
+        }
+        // D-374: the one tool that runs a model-written script over the bound MCP tools. Only the script's own
+        // output reaches the context; the nested tool payloads stay in the sandbox. The nested calls still go
+        // through `BoundTools::call`, so binding-is-authorization and the receipt contract are unchanged.
+        if intent.name == crate::codemode::TOOL_NAME {
+            let code = intent.args.get("code").and_then(|value| value.as_str()).unwrap_or("");
+            let result = crate::codemode::run(
+                code,
+                self.bound.clone(),
+                self.codemode_store.clone(),
+                crate::codemode::DEFAULT_TIMEOUT_MS,
+            );
+            receipt.duration_ms = started_at.elapsed().as_millis() as u64;
+            match result {
+                Ok(text) => {
+                    receipt.ok = true;
+                    receipt.content = json!({"output": text}).to_string();
+                }
+                Err(text) => {
+                    receipt.ok = false;
+                    receipt.content = json!({"error": text}).to_string();
+                    receipt.error = Some(ReceiptError { class: receipt_error_class(&text).to_string(), reason: text });
                 }
             }
             return receipt;

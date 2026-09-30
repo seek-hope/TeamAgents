@@ -637,6 +637,15 @@ teamagents goals cancel --id g-spent    # close a goal nothing can spend (its ce
   repository's config contributes, its `tools` need `[permissions] trust_project = true`. `required = true` means
   the session must not start without it; `doctor` lists each declared service and whether its command can run,
   so a typo shows up there instead of in `daemon.log`.
+- **MCP is called from code, not one tool per tool** (D-374, learned from pi's codemode). Bound MCP tools are
+  not advertised individually; the model is offered one `codemode` tool and calls them from a short JavaScript
+  program — `const hit = await tools.search({ q: "…" }); text(hit.items[0].id)` — so loops, batched calls and
+  filtering happen inside the sandbox and **only the script's own output enters the conversation**, never the
+  payloads it read. The script runs in a QuickJS VM whose only capabilities are your bound tools (no files, no
+  network, no timers), with a 256 MB heap, an output cap and a per-script deadline (default two minutes;
+  `// @options: {"timeout_ms": …}` overrides it); `store`/`load` keep JSON values between codemode calls in one
+  session. A failed nested call rejects with the tool's own error text, and an interrupted `codemode` dispatch is
+  `OUTCOME_UNKNOWN` and never replayed, exactly like a direct MCP call.
 - **Where a stdio server runs** is your choice, and the default is the safe one (D-106):
   `mcp_execution = "workspace"` starts the server inside bubblewrap, with the member's workspace as its working
   directory — it cannot read or write host paths outside that workspace, its `HOME` is a private directory, and

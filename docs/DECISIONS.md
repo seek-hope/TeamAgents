@@ -20,6 +20,38 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-374 Codemode: one tool runs a model-written script over the bound MCP tools (2026-09-30)
+
+**The gap.** A bound MCP tool was advertised as its own model tool, so every call's payload landed in the
+context whole: a model that needed three calls and one field paid for all three payloads. Pi's `codemode`
+(the upstream `packages/codemode` package) solves this by running a model-written JavaScript program in a
+QuickJS sandbox whose only capabilities are the tools, so only the script's own output enters the context.
+
+**The design.** A native tool `codemode` whose argument is JavaScript, run in QuickJS through `rquickjs` (the
+same engine pi uses) in `engine/src/codemode.rs`. The sandbox registers exactly four host functions — call,
+store, load, text — so a script cannot fetch, read files, spawn processes or keep a timer; `tools.<name>(args)`
+is a synchronous host call into `BoundTools::call` (so binding-is-authorization and the receipt contract are
+unchanged) and `await` still works because a non-promise resolves immediately. Bound MCP tools are **no longer
+advertised individually**: `V2Toolkit::mcp_schemas` offers one `codemode` tool whose description declares every
+bound tool, and `is_mcp_tool` now treats `codemode` as remote-effect-unsafe at the recovery boundary. The
+declared limits are a 256 MiB heap, a hard per-script deadline (default 120 s, overridable by a
+`// @options:` line), an output cap, and identifier normalization (`my-tool` -> `tools.my_tool`).
+
+**Formal.** `verification/tla/V2Codemode.tla`: `OnlyScriptOutputEnters` (a nested call's payload is never a
+context item) and its non-vacuity companion `ScriptsAlwaysEmit`, with `MC_codemode_leak.cfg` refuting the first
+and `MC_codemode.cfg` verifying both — exhaustive in under a second.
+
+**Evidence.** Seven unit tests in `engine/src/codemode.rs` (chain/filter/return, an unbound call rejects, no
+host globals, `store`/`load`/`exit`, the options line and the interrupt deadline, the declaration and the
+identifier rule) and `engine/tests/v2_mcp.rs::codemode_runs_mcp_tools_and_only_its_output_reaches_the_context`
+(the model is offered `codemode` and *not* `echo_echo`, the script's computed `9:14` is the receipt, and the
+nested `ping ping`/`pong pong` payloads are not in the conversation), beside the updated round-trip and
+recovery tests.
+
+**Ceiling.** `image()`, `searchTools`, `describeTool` and `describeNamespace` are not implemented; `store`/`load`
+are kept per toolkit and do not survive a restart; QuickJS is an interpreter, so heavy computation in a script
+is slow by design (glue and filtering are the intended use).
+
 ## D-373 A real-model capability pilot on the model the user actually configured (2026-09-30)
 
 **The gap.** D-372's refresh records that the Codex/Pi comparison is a surface comparison and that no
