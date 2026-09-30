@@ -20,6 +20,102 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-356 Task 42 is verified: the wake test carries the ring's last hop, and the operator's re-measurement corrected one word (2026-09-29)
+
+The product's entry is D-355. This entry is the operator's verification and the phase's measured numbers.
+
+**What the operator verified.** (1) The cited test really pins the *other* half: `core/src/v2/control.rs`'s ring
+test carries, at the point the message is queued, the comment "receiving never wakes a turn (§5.3)" — so A02's
+citation pointed at the no-wake rule, exactly as D-355 says. (2) The wake tests carry the hop: the operator re-ran
+the card's own control — `wake_satisfied_at`'s satisfaction forced off in `core/src/v2/control.rs`, the file's
+sha256 `2288a3bb005ebf58…` before and after — and
+`v2_supervisor::a_waiting_leader_wakes_when_the_peers_message_is_applied` **FAILED** with
+`panicked at tests/v2_supervisor.rs:186: event goal_completed did not arrive within 20000ms` (21.27 s), which is
+the ring's last hop never closing; the line restored byte-identically (`git diff` empty) puts the test back to
+**ok** (0.10 s). (3) The row's live half (`review/dogfood/team_ring.py`, 23.5 s and 14.2 s) is the dated evidence
+it was and was not re-run.
+
+**The one word the re-measurement corrected.** D-355 said *neither* wake test "was named by any row, decision or
+document". Re-measured on the tree it received: the supervisor-side name appears in **no** markdown file, but
+`control::pending_wait_wakes_in_the_same_transaction_as_the_fact` **was** named in `docs/DECISIONS.md` — twice,
+in D-255's own entry — which A02's row did not cite. The sentence now reads "neither was named by any *row*" and
+names where the sibling was named, so the orphan claim is exactly the one the sweep supports rather than a
+rounder one.
+
+**Evidence** (2026-09-29; the tree is `019c7006` plus this card's uncommitted diff).
+
+| Command | Result |
+|---|---|
+| reading `core/src/v2/control.rs`'s ring test | the no-wake sentence is in it; delivery is what it pins |
+| the operator's re-run of the card's control (the wake forced off) | the named test **FAILED**: `event goal_completed did not arrive within 20000ms` (21.27 s) |
+| restoring the control byte-identically | sha256 `2288a3bb005ebf58…`, `git diff` empty; the test **ok** (0.10 s) |
+| a repository-wide search over every `*.md` at the tree it received | the supervisor-side name: no file; the control-plane sibling: D-255's entry — the correction |
+| `python3 review/test_counts.py` | `core 118 / engine 292 / tui 36` (no test added or removed) |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `make pty` | ok |
+
+**The audit's yield.** **Twenty-five findings from twenty-four audit cards** — eleven coverage holes, thirteen
+claim holes and one product defect. Twenty-two rows are audited; fourteen remain.
+
+**The phase's measured numbers (this commit).** **563,216,618 tokens over 1,523 model requests**, the suites
+above, three operator resumes; the phase's implementation work from D-341's table is done, and the loop is back on
+the matrix.
+
+**Next card**: the next unaudited row — fourteen remain — with D-355's own note available to it: the two wake
+tests are now cited once each, so a row that leans on the wake can name them without re-deriving this.
+
+**Ceiling**: the operator re-ran the control and the greps; it did not re-run the live ring probe, and the ring's
+formal half (`V2Grants`/`V2Authority`) was read rather than re-run, as D-355 says.
+
+## D-355 A02's ring cited the half a wake must not follow, and the wake's own test was named nowhere (2026-09-29)
+
+**The row.** A02 ("A→B→C→A communication") claims the whole ring: the Leader hires workers, the user grants
+`message@session`, and one token travels A → B → C → A. Its offline evidence names the grant/authorization
+tests, the surface property (`V2Grants::OfferedToolsAreAuthorized`) and
+`control::messages_flow_across_an_authorized_ring`; its live half is `review/dogfood/team_ring.py`'s two dated
+runs (23.5 s and 14.2 s).
+
+**What the cited evidence actually asserts.** `messages_flow_across_an_authorized_ring` drives the control
+plane, and what it pins is *delivery*: a message is queued, not in any context; draining applies it once; the
+recipient's context carries `[message from i1] ping-b`; a second drain applies nothing. It says, in its own
+comment, "receiving never wakes a turn (§5.3)" — which is the opposite of the hop the ring's last leg needs. The
+hop that a real ring *does* need — a **parked** leader woken by the peer's message, with the message applied in
+the same transaction — is driven at the level the ring runs at by
+`v2_supervisor::a_waiting_leader_wakes_when_the_peers_message_is_applied` (a real daemon and driver: the peer
+exists, the leader parks on `{kind:'message', from:'i-peer'}`, the peer sends, `goal_completed` arrives
+`SUCCEEDED` only once the message is applied), with the control-plane sibling
+`control::pending_wait_wakes_in_the_same_transaction_as_the_fact`. **Neither was named by any *row*** (D-324's orphan sweep, re-run for this card: 407 test names, the same
+orphan set as when the sweep was calibrated): the supervisor-side test was named by nothing at all, while
+the control-plane sibling was named in D-255's own entry — which A02's row did not cite. The operator's
+re-measurement corrected this sentence (D-356). That is D-333's shape: a citation that hides which test the claim rests on, here pointing at
+the test that pins the *opposite* half.
+
+**The change (the claim and the citations, not the code).** A02's row now names both wake tests, states what
+each drives, and states what the cited ring test covers instead — delivery and the no-wake rule — so a reader can
+see which test carries which half of the ring. No product or test code changed.
+
+**Pre-fix control.** In `core/src/v2/control.rs`, `wake_satisfied_at`'s satisfaction was forced off
+(`let (satisfied, _) = (false, evaluate_wait(...)?.1);`) — the sweep that turns a pending wait `SATISFIED` when a
+fact lands. The named test then **FAILED** with `panicked at tests/v2_supervisor.rs:186: event goal_completed did
+not arrive within 20000ms` — the leader stayed parked, i.e. the ring's last hop never closed — which is the
+evidence that the test really carries the claim. The line was restored **byte-identically**: the file's sha256
+prefix is `2288a3bb005ebf58` before and after, and `git diff --stat core/src/v2/control.rs` is empty.
+
+**Numbers** (measured): citations **1014** / 81 relative links / **639** `make` / **1018** § refs, 0 unexplained
+(1008/638/1016 before this entry's own text was counted, and it moves them)
+(`review/citations.py`, docstring updated); suites unchanged (`review/test_counts.py`: core 118 / engine 292 /
+tui 36 — no test was added or removed); the orphan sweep re-run: 407 test names, 149 named by no markdown file
+(the same set as D-324's calibration, with the two this card names now cited). No `verification/tla`,
+`verification/kani` or `core/src/kernel/types.rs` was touched, so section 0 does not apply.
+
+**Uncommitted, for the operator.** `docs/ACCEPTANCE.md` (A02's row), `docs/DECISIONS.md` (this entry),
+`review/citations.py` (its docstring counts).
+
+**Left unproven.** The live probe's dated numbers (23.5 s / 14.2 s) were not re-run — they are the row's live
+half, unchanged — and the ring's formal half (`V2Grants`/`V2Authority`) was read, not re-run. One consequence of
+the entry's own finding is for a later card: the two wake tests are now cited once each, so a fourth row that
+leans on the wake (A22/A23's neighbours) can name them without re-deriving this.
+
 ## D-354 Task 41 is verified: the readings reproduce, the treatment is in the record, and the operator's re-measurement added a batch (2026-09-30)
 
 The product's entry is D-353. This entry is the operator's verification and the phase's measured numbers.
@@ -130,7 +226,7 @@ one on this question**, H2's success form is untouched, and the end-to-end gate 
 result; `review/eval/r2-p6/REPORT.md` gains a round-8 section; ACCEPTANCE's Q16 row and the known-gaps bullet
 carry the reading without re-labelling anything; the two manifests and both batch directories stay as they ran.
 
-**Numbers** (measured): citations **1005** / 81 relative links / **638** `make` / **1016** § refs, 0 unexplained
+**Numbers** (measured): citations **1005** / 81 relative links / **639** `make` / **1016** § refs, 0 unexplained
 (`review/citations.py`); suites unchanged (no product test changed: `review/test_counts.py` still reads core 118
 / engine 292 / tui 36); real tokens spent this round: solo 445,053, team 867,200 (the batch's own results, as
 `analyze.py` totals them), against round 7's 6-trial batch. No `verification/tla`, `verification/kani` or
@@ -241,7 +337,7 @@ implementation) instead of calling it the user's; ACCEPTANCE's A30 row tail and 
 carried the cadence question say the same and name the pin.
 
 **Numbers** (measured): suites `review/test_counts.py` -> **core 118 / engine 292 / tui 36** (engine +1 for the
-new daemon test); citations **1005** / 81 relative links / **638** `make` / **1012** § refs, 0 unexplained
+new daemon test); citations **1005** / 81 relative links / **639** `make` / **1014** § refs, 0 unexplained
 (`review/citations.py`, docstring updated); decisions 310 live entries, newest-first, all unique with this one; no `verification/tla`,
 `verification/kani` or `core/src/kernel/types.rs` touched, so section 0 does not apply — the sweep is a
 recording/deletion policy the model already covers (`V2Artifact`'s `GcClaim`/`GcDelete`), and D-191 re-ran that
