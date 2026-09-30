@@ -29,6 +29,8 @@ pub struct SupervisorConfig<P, F> {
     /// Coordinator lock lives here; per-instance state under instances/<id>.
     pub state_root: PathBuf,
     pub workspace: PathBuf,
+    /// The sandbox `approved_scope` runs commands in (D-369), from the user's own config.
+    pub sandbox: crate::tools::SandboxBackend,
     /// Trusted session permission mode ("approved_scope" | "full_auto"), D-41.
     pub permissions: String,
     pub catalog: teamagents_core::models::UserConfig,
@@ -432,6 +434,7 @@ where
                             instances_dir: instances_dir.clone(),
                             workspace,
                             permissions: self.config.permissions.clone(),
+                            sandbox: self.config.sandbox.clone(),
                             // the kernel gets the wire-effective profile while
                             // the factory still sees the catalog key (R17)
                             profile: crate::providers::resolve_profile(profile.clone(), &self.config.catalog),

@@ -980,8 +980,11 @@ fn project_permissions(user: &toml::Value) -> Result<(bool, String), String> {
     // the same rule as the top level: `mod = "full_auto"` (a typo of `mode`, a *safety* setting) used to leave
     // `doctor` green and the session in `approved_scope` (measured 2026-09-27, D-161)
     for key in table.keys() {
-        if key != "mode" && key != "trust_project" {
-            return Err(format!("{} ([permissions] takes mode and trust_project)", unknown_key(key)));
+        if key != "mode" && key != "trust_project" && key != "sandbox" && key != "sandbox_image" {
+            return Err(format!(
+                "{} ([permissions] takes mode, trust_project, sandbox and sandbox_image)",
+                unknown_key(key)
+            ));
         }
     }
     let trusted = match table.get("trust_project") {
@@ -1011,6 +1014,55 @@ pub fn permission_mode_from_config() -> Result<String, String> {
     }
     let user: toml::Value = text.parse().map_err(|e| format!("bad TOML: {e}"))?;
     Ok(project_permissions(&user)?.1)
+}
+
+/// The sandbox backend the user's own config selects (D-369), or bubblewrap. It is a *safety* setting, so a typo
+/// is refused rather than silently defaulting (the shape D-161 established for `mode`), and a Docker selection
+/// without an image is refused at load.
+///
+/// `mcp_execution = "workspace"` is refused under Docker: the MCP stdio path still builds bubblewrap's argv, and
+/// a config this build cannot serve must fail closed rather than run the server unsandboxed (D-102's rule).
+pub fn sandbox_from_config() -> Result<crate::tools::SandboxBackend, String> {
+    use crate::tools::{SandboxBackend, SandboxKind};
+    let text = std::fs::read_to_string(user_config_path()).unwrap_or_default();
+    if text.trim().is_empty() {
+        return Ok(SandboxBackend::bubblewrap());
+    }
+    let parsed: toml::Value = text.parse().map_err(|e| format!("bad TOML: {e}"))?;
+    let Some(table) = parsed.get("permissions").and_then(|value| value.as_table()) else {
+        return Ok(SandboxBackend::bubblewrap());
+    };
+    let kind = match table.get("sandbox") {
+        None => SandboxKind::Bubblewrap,
+        Some(value) => match value.as_str() {
+            Some("bubblewrap") => SandboxKind::Bubblewrap,
+            Some("docker") => SandboxKind::Docker,
+            other => {
+                return Err(format!(
+                    "invalid sandbox {other:?} in user config: this build serves bubblewrap and docker"
+                ))
+            }
+        },
+    };
+    let image = table.get("sandbox_image").and_then(|value| value.as_str()).unwrap_or("").to_string();
+    if kind == SandboxKind::Docker {
+        if image.trim().is_empty() {
+            return Err("[permissions] sandbox = \"docker\" needs sandbox_image = \"<image>\" (pull it first)".into());
+        }
+        if let Some(tools) = parsed.get("tools").and_then(|value| value.as_table()) {
+            for (name, tool) in tools {
+                let is_mcp = tool.get("kind").and_then(|value| value.as_str()) == Some("mcp");
+                let execution = tool.get("mcp_execution").and_then(|value| value.as_str()).unwrap_or("workspace");
+                if is_mcp && execution == "workspace" {
+                    return Err(format!(
+                        "[permissions] sandbox = \"docker\" does not serve workspace MCP execution yet: \
+                         tools.{name} needs mcp_execution = \"host\", or use sandbox = \"bubblewrap\""
+                    ));
+                }
+            }
+        }
+    }
+    Ok(SandboxBackend { kind, image })
 }
 
 /// The text a member's prompt gets from `instruction_files` (D-102 recorded the promise; D-246 delivers it).
@@ -1053,6 +1105,35 @@ mod project_config_tests {
     fn write(path: &Path, text: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, text).unwrap();
+    }
+
+    #[test]
+    fn the_sandbox_backend_is_read_and_refused_when_unusable() {
+        let _env = crate::env_lock();
+        let root = std::env::temp_dir().join(format!("ta-sandbox-config-{}", uuid::Uuid::new_v4()));
+        let home = root.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", home.join(".config"));
+        std::env::set_var("XDG_STATE_HOME", home.join(".state"));
+        // the default is bubblewrap
+        assert_eq!(sandbox_from_config().unwrap(), crate::tools::SandboxBackend::bubblewrap());
+        // docker needs an image
+        write(&user_config_path(), "[permissions]\nsandbox = \"docker\"\n");
+        assert!(sandbox_from_config().unwrap_err().contains("sandbox_image"));
+        // a typo is refused, not silently defaulted (D-161's rule, for this safety setting too)
+        write(&user_config_path(), "[permissions]\nsandbox = \"dokcer\"\n");
+        assert!(sandbox_from_config().unwrap_err().contains("invalid sandbox"));
+        // docker with an image is accepted...
+        write(&user_config_path(), "[permissions]\nsandbox = \"docker\"\nsandbox_image = \"debian:stable-slim\"\n");
+        assert_eq!(sandbox_from_config().unwrap().image, "debian:stable-slim");
+        // ... but a workspace MCP server is refused under it, because that path is still bubblewrap's
+        write(
+            &user_config_path(),
+            "[permissions]\nsandbox = \"docker\"\nsandbox_image = \"debian:stable-slim\"\n\n[tools.probe]\nkind = \"mcp\"\ncommand = \"/bin/true\"\n",
+        );
+        let error = sandbox_from_config().unwrap_err();
+        assert!(error.contains("workspace MCP") && error.contains("probe"), "{error}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

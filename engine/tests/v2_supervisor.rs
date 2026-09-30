@@ -152,6 +152,7 @@ where
         state_root: root.dir.join("state"),
         workspace: root.dir.join("ws"),
         permissions: "full_auto".into(),
+        sandbox: teamagents_engine::tools::SandboxBackend::bubblewrap(),
         catalog: UserConfig::default(),
         bindings: vec![],
         max_retries: 2,

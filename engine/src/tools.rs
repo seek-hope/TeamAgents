@@ -849,7 +849,7 @@ fn workspace_executor_with_control(
             }
             "glob" => {
                 let pattern = if arg("pattern").is_empty() { "*".to_string() } else { arg("pattern") };
-                if (mode == ShellMode::Host || bwrap_available()) && sandbox_rg_available() {
+                if (mode == ShellMode::Host || sandbox_ok(&mode)) && sandbox_rg_available() {
                     // A positive `rg --glob` overrides .gitignore. Filter the
                     // already-ignored file list instead.
                     let command = format!(
@@ -1278,18 +1278,87 @@ pub fn bwrap_available() -> bool {
 /// sandboxed process and its answer cannot change while this process lives, so it is cached.
 pub fn sandbox_state() -> Result<(), String> {
     static STATE: OnceLock<Result<(), String>> = OnceLock::new();
-    STATE
-        .get_or_init(|| {
-            if !bwrap_available() {
-                return Err("bwrap is not available: refusing to run commands without isolation".into());
+    STATE.get_or_init(probe_bubblewrap).clone()
+}
+
+fn probe_bubblewrap() -> Result<(), String> {
+    if !bwrap_available() {
+        return Err("bwrap is not available: refusing to run commands without isolation".into());
+    }
+    match shell_run("test -e /etc/hostname && test ! -e /home", &std::env::temp_dir(), 20, false, None) {
+        Ok(out) if !out.contains("(exit ") => Ok(()),
+        Ok(out) => Err(format!("the isolation probe exited non-zero: {out}")),
+        Err(reason) => Err(reason),
+    }
+}
+
+/// Why the *configured* backend is not usable here (D-369), or `Ok(())`. Bubblewrap is the probe above; Docker
+/// requires a reachable daemon and the configured image **already present** — an implicit pull would need network
+/// or hang, so it is refused with the `docker pull` line instead. Cached like the bubblewrap probe: the answer
+/// cannot change while this process lives.
+pub fn sandbox_state_for(backend: &SandboxBackend) -> Result<(), String> {
+    static STATE: OnceLock<Result<(), String>> = OnceLock::new();
+    STATE.get_or_init(|| probe_sandbox(backend)).clone()
+}
+
+fn probe_sandbox(backend: &SandboxBackend) -> Result<(), String> {
+    match backend.kind {
+        SandboxKind::Bubblewrap => probe_bubblewrap(),
+        SandboxKind::Docker => {
+            if which("docker").is_none() {
+                return Err("docker is not available: refusing to run commands without isolation".into());
             }
-            match shell_run("test -e /etc/hostname && test ! -e /home", &std::env::temp_dir(), 20, false, None) {
-                Ok(out) if !out.contains("(exit ") => Ok(()),
-                Ok(out) => Err(format!("the isolation probe exited non-zero: {out}")),
-                Err(reason) => Err(reason),
+            if backend.image.trim().is_empty() {
+                return Err("sandbox = \"docker\" needs [permissions] sandbox_image".into());
             }
-        })
-        .clone()
+            match std::process::Command::new("docker").arg("info").output() {
+                Ok(out) if out.status.success() => {}
+                Ok(out) => {
+                    let reason = String::from_utf8_lossy(&out.stderr);
+                    return Err(format!("the docker daemon is not usable: {}", reason.trim()));
+                }
+                Err(error) => return Err(format!("docker could not be run: {error}")),
+            }
+            match std::process::Command::new("docker").args(["image", "inspect", backend.image.as_str()]).output() {
+                Ok(out) if out.status.success() => Ok(()),
+                _ => Err(format!(
+                    "the sandbox image {:?} is not present locally; pull it first with `docker pull {}`",
+                    backend.image, backend.image
+                )),
+            }
+        }
+    }
+}
+
+/// A cheap "can this backend run here at all" check for the dispatch path. It must **not** run a sandboxed
+/// command: `probe_bubblewrap` does, through `shell_run`, and calling it from `shell_command_spec` would recurse
+/// (`probe_bubblewrap` → `shell_run` → `shell_command_spec`). `sandbox_state_for` is the full probe `doctor` and
+/// `glob` use; this is the fail-closed gate the command path needs.
+fn backend_available(backend: &SandboxBackend) -> Result<(), String> {
+    match backend.kind {
+        SandboxKind::Bubblewrap => {
+            if bwrap_available() {
+                Ok(())
+            } else {
+                Err("bwrap is not available: refusing to run commands without isolation".into())
+            }
+        }
+        SandboxKind::Docker => {
+            if which("docker").is_none() {
+                return Err("docker is not available: refusing to run commands without isolation".into());
+            }
+            if backend.image.trim().is_empty() {
+                return Err("sandbox = \"docker\" needs [permissions] sandbox_image".into());
+            }
+            match std::process::Command::new("docker").args(["image", "inspect", backend.image.as_str()]).output() {
+                Ok(out) if out.status.success() => Ok(()),
+                _ => Err(format!(
+                    "the sandbox image {:?} is not present locally; pull it first with `docker pull {}`",
+                    backend.image, backend.image
+                )),
+            }
+        }
+    }
 }
 
 /// `sandbox_state().is_ok()`: the verdict the tests branch on. `doctor` reports the *detail* (the reason a
@@ -1306,23 +1375,59 @@ pub fn which(name: &str) -> Option<PathBuf> {
 /// Where a member's shell state lives inside the sandbox (bound rw).
 const SHELL_STATE_SANDBOX: &str = "/tmp/.teamagents-shell";
 
-/// Selected only from trusted session state, never from model tool arguments.
+/// Which sandbox runs an `approved_scope` command (D-369). Selected from the user's own config, never from a
+/// model tool argument; `full_auto` bypasses it entirely (the host shell is the explicit opt-out, D-41).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SandboxKind {
+    Bubblewrap,
+    Docker,
+}
+
+/// The selected backend and, for Docker, the image it runs. `image` is empty for bubblewrap.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SandboxBackend {
+    pub kind: SandboxKind,
+    pub image: String,
+}
+
+impl SandboxBackend {
+    pub fn bubblewrap() -> Self {
+        SandboxBackend { kind: SandboxKind::Bubblewrap, image: String::new() }
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self.kind {
+            SandboxKind::Bubblewrap => "bubblewrap",
+            SandboxKind::Docker => "docker",
+        }
+    }
+}
+
+/// Selected only from trusted session state, never from model tool arguments.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ShellMode {
-    Sandbox,
+    Sandbox(SandboxBackend),
     Host,
 }
 
 impl ShellMode {
-    pub(crate) fn from_permissions(mode: Option<&str>) -> Result<Self, String> {
+    pub(crate) fn from_permissions(mode: Option<&str>, sandbox: SandboxBackend) -> Result<Self, String> {
         match mode {
-            Some("approved_scope") => Ok(Self::Sandbox),
+            Some("approved_scope") => Ok(Self::Sandbox(sandbox)),
             Some("full_auto") => Ok(Self::Host),
             _ => {
                 Err("ShellPermissionUnavailable: the session permission mode is unreadable, the command was not run"
                     .into())
             }
         }
+    }
+}
+
+/// Whether the selected sandbox is usable here (`glob`'s branch check).
+pub(crate) fn sandbox_ok(mode: &ShellMode) -> bool {
+    match mode {
+        ShellMode::Sandbox(backend) => sandbox_state_for(backend).is_ok(),
+        ShellMode::Host => true,
     }
 }
 
@@ -1390,6 +1495,64 @@ fn shell_state_cwd(state: &Path) -> Option<String> {
     let cwd = text.trim().to_string();
     (!cwd.is_empty()).then_some(cwd)
 }
+
+/// The Docker backend's argv (D-369): a fresh container per command, the workspace and the member's shell state
+/// bound in, the host user mapped so files written keep their owner, no network unless the call was approved.
+///
+/// Cancellation: the runner stops the process group, and `docker run` proxies SIGTERM to the container, so a
+/// well-behaved command stops with it. The `--name` is unique and printed in the job log, so a container that
+/// ignores SIGTERM can be removed by name (`docker rm -f teamagents-…`) — an explicit lever, never a silent
+/// host run. The image must already be present locally (`sandbox_state_for` refuses otherwise, so a command
+/// never hangs on an implicit pull).
+pub fn docker_argv(
+    workdir: &Path,
+    network: bool,
+    command: &str,
+    shell_state: Option<&Path>,
+    image: &str,
+) -> Vec<String> {
+    use std::os::unix::fs::MetadataExt;
+    let uid = std::fs::metadata("/proc/self").map(|meta| meta.uid()).unwrap_or(0);
+    let gid = std::fs::metadata("/proc/self").map(|meta| meta.gid()).unwrap_or(0);
+    let workdir = workdir.to_string_lossy().into_owned();
+    let name = format!("teamagents-{}", &uuid::Uuid::new_v4().simple().to_string()[..12]);
+    let mut argv: Vec<String> = vec![
+        "docker".into(),
+        "run".into(),
+        "--rm".into(),
+        "--init".into(),
+        "--name".into(),
+        name,
+        "--user".into(),
+        format!("{uid}:{gid}"),
+        "--workdir".into(),
+        workdir.clone(),
+        "--volume".into(),
+        format!("{workdir}:{workdir}"),
+        "--env".into(),
+        "HOME=/tmp".into(),
+        "--env".into(),
+        "TERM=dumb".into(),
+        "--env".into(),
+        "LANG=C.UTF-8".into(),
+    ];
+    if let Some(state) = shell_state {
+        argv.push("--volume".into());
+        argv.push(format!("{}:{DOCKER_SHELL_STATE}", state.to_string_lossy()));
+    }
+    if !network {
+        argv.push("--network".into());
+        argv.push("none".into());
+    }
+    argv.push(image.to_string());
+    argv.push("/bin/bash".into());
+    argv.push("-lc".into());
+    argv.push(command.to_string());
+    argv
+}
+
+/// Where a member's shell state is mounted inside a Docker container (outside `/tmp`'s tmpfs).
+const DOCKER_SHELL_STATE: &str = "/teamagents-shell";
 
 /// Read-only system mounts, sanitized env, private
 /// /tmp, no network unless the call was approved for it.
@@ -1659,7 +1822,7 @@ pub fn shell_run_stateful(
         OutputLocation { root: artifacts, prefix: ARTIFACTS_PREFIX },
         shell_state,
         control,
-        ShellMode::Sandbox,
+        ShellMode::Sandbox(SandboxBackend::bubblewrap()),
     )
 }
 
@@ -1757,10 +1920,10 @@ pub(crate) fn shell_command_spec(
     shell_state: Option<&Path>,
     mode: ShellMode,
 ) -> Result<ShellCommandSpec, SpecError> {
-    if mode == ShellMode::Sandbox && !bwrap_available() {
-        return Err(SpecError::isolation(
-            "IsolationUnavailable: bwrap is not available: refusing to run commands without isolation",
-        ));
+    if let ShellMode::Sandbox(backend) = &mode {
+        if let Err(reason) = backend_available(backend) {
+            return Err(SpecError::isolation(&format!("IsolationUnavailable: {reason}")));
+        }
     }
     // Separate snapshots prevent sandbox HOME/PATH/cwd leaking into host
     // commands (and vice versa) after a live permission-mode change.
@@ -1769,8 +1932,9 @@ pub(crate) fn shell_command_spec(
     if let Some(state) = shell_state {
         std::fs::create_dir_all(state).map_err(|e| SpecError::setup(crate::cli::derived_dir_uncreatable(state, &e)))?;
     }
-    let state_dir = match (mode, shell_state) {
+    let state_dir = match (&mode, shell_state) {
         (ShellMode::Host, Some(state)) => state.to_string_lossy().into_owned(),
+        (ShellMode::Sandbox(SandboxBackend { kind: SandboxKind::Docker, .. }), _) => DOCKER_SHELL_STATE.to_string(),
         _ => SHELL_STATE_SANDBOX.to_string(),
     };
     let wrapped = match shell_state {
@@ -1778,29 +1942,52 @@ pub(crate) fn shell_command_spec(
         None => command.to_string(),
     };
     let cwd = std::fs::canonicalize(workdir).unwrap_or_else(|_| workdir.to_path_buf());
-    let (program, args) = match mode {
-        ShellMode::Sandbox => {
+    let (program, args, docker_client) = match &mode {
+        ShellMode::Sandbox(SandboxBackend { kind: SandboxKind::Bubblewrap, .. }) => {
             let argv = bwrap_argv(&cwd, network, &wrapped, shell_state);
             let Some(executable) = which("bwrap") else {
                 return Err(SpecError::isolation("IsolationUnavailable: bwrap disappeared before execution"));
             };
-            (executable.to_string_lossy().into_owned(), argv[1..].to_vec())
+            (executable.to_string_lossy().into_owned(), argv[1..].to_vec(), false)
+        }
+        ShellMode::Sandbox(SandboxBackend { kind: SandboxKind::Docker, image }) => {
+            let argv = docker_argv(&cwd, network, &wrapped, shell_state, image);
+            let Some(executable) = which("docker") else {
+                return Err(SpecError::isolation("IsolationUnavailable: docker disappeared before execution"));
+            };
+            (executable.to_string_lossy().into_owned(), argv[1..].to_vec(), true)
         }
         // Do not source login files that might re-export provider keys.
         ShellMode::Host => {
-            ("/bin/bash".into(), vec!["--noprofile".into(), "--norc".into(), "-c".into(), wrapped.clone()])
+            ("/bin/bash".into(), vec!["--noprofile".into(), "--norc".into(), "-c".into(), wrapped.clone()], false)
         }
     };
-    // whitelist environment: no model keys, no credentials (§2)
-    let mut env: Vec<(String, String)> = vec![
-        ("PATH".into(), sandbox_path()),
-        ("HOME".into(), sandbox_home(shell_state.is_some()).into()),
-        ("LANG".into(), std::env::var("LANG").unwrap_or_else(|_| "C.UTF-8".into())),
-        ("TERM".into(), "dumb".into()),
-        ("TMPDIR".into(), "/tmp".into()),
-        ("PYTHONIOENCODING".into(), "utf-8".into()),
-    ];
-    env.extend(toolchain_env());
+    // whitelist environment: no model keys, no credentials (§2). The Docker *client* is a host tool, so it gets
+    // the host PATH/HOME (for `~/.docker/config.json`) and the `DOCKER_*` variables; the container's environment
+    // is the `--env` list `docker_argv` built, and the model's credentials never reach either.
+    let mut env: Vec<(String, String)> = if docker_client {
+        let mut env = vec![
+            ("PATH".into(), std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into())),
+            ("HOME".into(), std::env::var("HOME").unwrap_or_else(|_| "/".into())),
+        ];
+        for key in ["DOCKER_HOST", "DOCKER_CONFIG", "DOCKER_CONTEXT", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH"] {
+            if let Ok(value) = std::env::var(key) {
+                env.push((key.into(), value));
+            }
+        }
+        env
+    } else {
+        let mut env: Vec<(String, String)> = vec![
+            ("PATH".into(), sandbox_path()),
+            ("HOME".into(), sandbox_home(shell_state.is_some()).into()),
+            ("LANG".into(), std::env::var("LANG").unwrap_or_else(|_| "C.UTF-8".into())),
+            ("TERM".into(), "dumb".into()),
+            ("TMPDIR".into(), "/tmp".into()),
+            ("PYTHONIOENCODING".into(), "utf-8".into()),
+        ];
+        env.extend(toolchain_env());
+        env
+    };
     if mode == ShellMode::Host {
         env.retain(|(key, _)| key != "PATH" && key != "HOME");
         env.push(("PATH".into(), std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into())));
@@ -1825,22 +2012,22 @@ pub(crate) fn shell_outcome_at(
 ) -> ShellOutcome {
     let clock = Instant::now();
     let cwd_display = workdir.to_string_lossy().into_owned();
-    let not_started =
-        |class: &str, reason: String| ShellOutcome::not_started(mode, cwd_display.clone(), class, reason, clock);
+    let not_started = |class: &str, reason: String| {
+        ShellOutcome::not_started(mode.clone(), cwd_display.clone(), class, reason, clock)
+    };
     if let Err(error) = control.check() {
         return not_started("interrupted", error);
     }
-    if mode == ShellMode::Sandbox && !bwrap_available() {
-        return not_started(
-            "isolation",
-            "IsolationUnavailable: bwrap is not available: refusing to run commands without isolation".into(),
-        );
+    if let ShellMode::Sandbox(backend) = &mode {
+        if let Err(reason) = backend_available(backend) {
+            return not_started("isolation", format!("IsolationUnavailable: {reason}"));
+        }
     }
     let sink = match OutputSink::new(output) {
         Ok(sink) => Arc::new(Mutex::new(sink)),
         Err(e) => return not_started("capture", e),
     };
-    let spec = match shell_command_spec(command, workdir, network, shell_state, mode) {
+    let spec = match shell_command_spec(command, workdir, network, shell_state, mode.clone()) {
         Ok(spec) => spec,
         Err(error) => return not_started(error.class, error.reason),
     };
@@ -1982,7 +2169,7 @@ pub(crate) fn shell_outcome_at(
             }
         }
     };
-    if mode == ShellMode::Sandbox && !status.success() && text.starts_with("bwrap: ") {
+    if matches!(mode, ShellMode::Sandbox(_)) && !status.success() && text.starts_with("bwrap: ") {
         return ShellOutcome {
             started: false,
             mode,
@@ -2511,7 +2698,7 @@ impl V2Toolkit {
             );
             receipt.started = outcome.started;
             receipt.mode = Some(match outcome.mode {
-                ShellMode::Sandbox => "approved_scope".to_string(),
+                ShellMode::Sandbox(_) => "approved_scope".to_string(),
                 ShellMode::Host => "full_auto".to_string(),
             });
             receipt.cwd = Some(outcome.cwd.clone());
@@ -2639,7 +2826,9 @@ mod tests {
         artifacts: Option<PathBuf>,
     ) -> impl Fn(&str, &Json) -> Result<Json, String> + Send + Sync + 'static {
         let executor = member_executor_with_control(root, catalog, bindings, ArtifactPaths::own(artifacts), None);
-        move |tool, args| executor(tool, args, &TurnControl::default(), ShellMode::Sandbox)
+        move |tool, args| {
+            executor(tool, args, &TurnControl::default(), ShellMode::Sandbox(SandboxBackend::bubblewrap()))
+        }
     }
 
     fn workspace_executor(
@@ -2647,7 +2836,9 @@ mod tests {
         artifacts: Option<PathBuf>,
     ) -> impl Fn(&str, &Json) -> Result<Json, String> + Send + Sync + 'static {
         let executor = workspace_executor_with_control(root, ArtifactPaths::own(artifacts), None);
-        move |tool, args| executor(tool, args, &TurnControl::default(), ShellMode::Sandbox)
+        move |tool, args| {
+            executor(tool, args, &TurnControl::default(), ShellMode::Sandbox(SandboxBackend::bubblewrap()))
+        }
     }
 
     #[test]
@@ -3298,6 +3489,59 @@ mod tests {
             let out = shell_run("echo isolated-ok && id -u", &dir, 30, false, None).unwrap();
             assert!(out.contains("isolated-ok"), "{out}");
         }
+    }
+
+    #[test]
+    fn docker_argv_is_stable_and_runs_isolated() {
+        let dir = std::env::temp_dir();
+        let argv = docker_argv(&dir, false, "echo hi", None, "debian:stable-slim");
+        assert_eq!(&argv[..3], ["docker", "run", "--rm"]);
+        assert!(argv.windows(2).any(|w| w == ["--network", "none"]), "network off by default: {argv:?}");
+        assert!(!docker_argv(&dir, true, "x", None, "i").iter().any(|a| a == "--network"));
+        assert!(argv.windows(2).any(|w| w[0] == "--workdir" && w[1] == dir.to_string_lossy()));
+        assert!(argv.windows(2).any(|w| w[0] == "--volume" && w[1] == format!("{}:{}", dir.display(), dir.display())));
+        assert_eq!(&argv[argv.len() - 4..], ["debian:stable-slim", "/bin/bash", "-lc", "echo hi"]);
+        // the boundary really holds, on the machine's own docker and a present image
+        if which("docker").is_none() {
+            eprintln!("skipped: docker is not on PATH");
+            return;
+        }
+        let present = ["debian:stable-slim", "debian:trixie"].into_iter().find(|image| {
+            std::process::Command::new("docker")
+                .args(["image", "inspect", image])
+                .output()
+                .map(|out| out.status.success())
+                .unwrap_or(false)
+        });
+        let Some(image) = present else {
+            eprintln!("skipped: no local debian image to run (tried debian:stable-slim, debian:trixie)");
+            return;
+        };
+        let backend = SandboxBackend { kind: SandboxKind::Docker, image: image.to_string() };
+        assert!(probe_sandbox(&backend).is_ok(), "the probe accepts a present image: {:?}", probe_sandbox(&backend));
+        let probe = std::env::temp_dir().join(format!("ta-docker-{}-{}", std::process::id(), uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&probe).unwrap();
+        let argv = docker_argv(&probe, false, "echo docker-ok; touch wrote.txt", None, image);
+        let output = std::process::Command::new(&argv[0]).args(&argv[1..]).output().expect("run docker");
+        let text = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        assert!(text.contains("docker-ok"), "{text}");
+        // the file written in the container is owned by the host user, not root, so the workspace stays usable
+        use std::os::unix::fs::MetadataExt;
+        let owner = std::fs::metadata(probe.join("wrote.txt")).expect("the container wrote into the mount").uid();
+        let me = std::fs::metadata("/proc/self").map(|meta| meta.uid()).unwrap_or(0);
+        assert_eq!(owner, me, "the container ran as another user, so workspace files would change owner");
+        std::fs::remove_dir_all(&probe).unwrap();
+    }
+
+    #[test]
+    fn a_docker_backend_without_its_image_refuses_instead_of_running_on_the_host() {
+        if which("docker").is_none() {
+            eprintln!("skipped: docker is not on PATH");
+            return;
+        }
+        let backend = SandboxBackend { kind: SandboxKind::Docker, image: "teamagents-no-such-image:never".into() };
+        let reason = probe_sandbox(&backend).unwrap_err();
+        assert!(reason.contains("not present locally"), "a missing image is refused, not pulled: {reason}");
     }
 
     #[test]

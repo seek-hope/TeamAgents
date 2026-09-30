@@ -20,6 +20,8 @@ pub struct ReferenceConfig {
     pub shell_state: Option<PathBuf>,
     /// Trusted session permission mode, never model-controlled (D-41).
     pub permissions: String,
+    /// The sandbox `approved_scope` runs commands in (D-369).
+    pub sandbox: crate::tools::SandboxBackend,
     pub profile: KernelProfile,
     /// Web catalog + bindings; empty bindings expose no web tools.
     pub catalog: UserConfig,
@@ -57,7 +59,7 @@ pub async fn run_reference<P: Provider>(
     task: &str,
     mut preview: impl FnMut(ProviderEvent) + Send,
 ) -> Result<ReferenceOutcome, String> {
-    let mode = ShellMode::from_permissions(Some(&config.permissions))?;
+    let mode = ShellMode::from_permissions(Some(&config.permissions), config.sandbox.clone())?;
     let toolkit = std::sync::Arc::new(V2Toolkit::new(
         config.workspace.clone(),
         config.catalog.clone(),
@@ -215,6 +217,7 @@ pub async fn run_reference<P: Provider>(
                         let intent = intent.clone();
                         let operation_id = operation_id.clone();
                         let control = control.clone();
+                        let mode = mode.clone();
                         tokio::task::spawn_blocking(move || toolkit.call(&operation_id, &intent, &control, mode))
                             .await
                             .map_err(|e| format!("tool worker join: {e}"))?

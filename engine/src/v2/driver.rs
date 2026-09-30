@@ -97,6 +97,8 @@ pub struct DriverConfig<P> {
     pub workspace: PathBuf,
     /// Trusted session permission mode ("approved_scope" | "full_auto"), D-41.
     pub permissions: String,
+    /// The sandbox `approved_scope` runs commands in (D-369): bubblewrap or docker, from the user's own config.
+    pub sandbox: crate::tools::SandboxBackend,
     pub profile: KernelProfile,
     pub provider: P,
     pub catalog: teamagents_core::models::UserConfig,
@@ -1927,31 +1929,31 @@ that delegated it learns the outcome only from a settlement.";
             }
         }
         let job_dir = self.config.state_root.join("jobs").join(operation_id.replace(['/', ':'], "_"));
-        let mode = ShellMode::from_permissions(Some(&self.config.permissions))?;
+        let mode = ShellMode::from_permissions(Some(&self.config.permissions), self.config.sandbox.clone())?;
         let command_text = intent["args"]["command"].as_str().unwrap_or("");
         let timeout = intent["args"]["timeout"].as_u64().unwrap_or(120);
         let network = intent["args"]["network"].as_bool().unwrap_or(false);
-        let spec =
-            match shell_command_spec(command_text, &self.config.workspace, network, Some(&self.shell_state), mode) {
-                Ok(spec) => spec,
-                Err(error) => {
-                    // isolation/setup failure: the command never started (A14)
-                    let receipt =
-                        self.receipt_skeleton(operation_id, intent, false, json!({"error": error.reason}).to_string());
-                    let receipt = ToolReceipt {
-                        error: Some(ReceiptError { class: error.class.into(), reason: error.reason.clone() }),
-                        ..receipt
-                    };
-                    return self
-                        .complete_op(
-                            operation_id,
-                            "FAILED",
-                            &serde_json::to_value(receipt).unwrap_or(Json::Null),
-                            vec![],
-                        )
-                        .await;
-                }
-            };
+        let spec = match shell_command_spec(
+            command_text,
+            &self.config.workspace,
+            network,
+            Some(&self.shell_state),
+            mode.clone(),
+        ) {
+            Ok(spec) => spec,
+            Err(error) => {
+                // isolation/setup failure: the command never started (A14)
+                let receipt =
+                    self.receipt_skeleton(operation_id, intent, false, json!({"error": error.reason}).to_string());
+                let receipt = ToolReceipt {
+                    error: Some(ReceiptError { class: error.class.into(), reason: error.reason.clone() }),
+                    ..receipt
+                };
+                return self
+                    .complete_op(operation_id, "FAILED", &serde_json::to_value(receipt).unwrap_or(Json::Null), vec![])
+                    .await;
+            }
+        };
         let job = JobSpec {
             job_id: operation_id.to_string(),
             program: spec.program,
@@ -2052,7 +2054,7 @@ that delegated it learns the outcome only from a settlement.";
         let mut receipt = self.receipt_skeleton(operation_id, intent, journal.starts > 0, content);
         receipt.ok = ok;
         receipt.mode = Some(match mode {
-            ShellMode::Sandbox => "approved_scope".into(),
+            ShellMode::Sandbox(_) => "approved_scope".into(),
             ShellMode::Host => "full_auto".into(),
         });
         receipt.cwd = Some(job.cwd);
@@ -2341,7 +2343,7 @@ that delegated it learns the outcome only from a settlement.";
         }
         let toolkit = self.toolkit.clone();
         let op = operation_id.to_string();
-        let mode = ShellMode::from_permissions(Some(&self.config.permissions))?;
+        let mode = ShellMode::from_permissions(Some(&self.config.permissions), self.config.sandbox.clone())?;
         let receipt =
             tokio::task::spawn_blocking(move || toolkit.call(&op, &typed, &crate::tools::TurnControl::default(), mode))
                 .await

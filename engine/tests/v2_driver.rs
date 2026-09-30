@@ -127,6 +127,7 @@ impl Root {
             instances_dir: self.dir.join("state").join("instances"),
             workspace: self.dir.join("ws"),
             permissions: "full_auto".into(),
+            sandbox: teamagents_engine::tools::SandboxBackend::bubblewrap(),
             profile: KernelProfile {
                 model: "scripted".into(),
                 instructions: "test agent".into(),

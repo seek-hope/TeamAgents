@@ -231,7 +231,9 @@ views (conversation → instances → tasks → topology → back), `Ctrl+A` pen
   opt in with `[permissions] trust_project = true` in your own config; then its models, tools, skills paths and
   instruction files merge in (your definitions of a name always win), while `[permissions]`, hooks, checks,
   retention and limits stay yours. `doctor`'s `project config` row reports what the merge did (see
-  `docs/ACCEPTANCE.md` for the two limits).
+  `docs/ACCEPTANCE.md` for the two limits). `[permissions] sandbox` picks the isolation backend for
+  `approved_scope` (`bubblewrap`, the default, or `docker` with `sandbox_image`); an unavailable backend refuses
+  the command instead of running it on the host (D-369).
 - A model profile selects its wire format with `protocol = "responses" | "anthropic" | "openai" |
   "deepseek"`; `base_url` plus `model` decide the actual service, and credentials are only referenced by
   environment-variable name.
@@ -245,7 +247,8 @@ views (conversation → instances → tasks → topology → back), `Ctrl+A` pen
 
 ## Status and limits
 
-- Linux only; instance shell isolation needs `bubblewrap` and fails loudly when it is missing.
+- Linux only; instance shell isolation uses `bubblewrap` (the default) or Docker (`[permissions] sandbox` +
+  `sandbox_image`) and fails loudly when the selected backend is missing or unusable.
 - Releases are x86_64 (musl) only; no Windows/macOS, distributed execution, remote instance protocol or
   browser automation.
 - The four protocol families of DESIGN §7 (Chat Completions — the `openai` and `chat/completions` names —

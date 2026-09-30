@@ -20,6 +20,56 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-369 A configurable sandbox backend: bubblewrap or Docker, failing closed (2026-09-30)
+
+**The gap.** Isolation was bubblewrap only (`tools::bwrap_argv`), and PRODUCT-COMPARISON §2 item 4 listed
+sandbox backends (Pi: micro-VM/Docker; Hermes: seven) as the remaining execution-boundary gap. Docker is the
+second backend a Linux user expects, and this machine has a working daemon and local images, so the backend is
+verifiable here rather than only configurable.
+
+**The design.** `[permissions] sandbox = "bubblewrap" | "docker"` (default bubblewrap) and `sandbox_image`
+(required for Docker) in the user's own config; `config::sandbox_from_config` validates both — a typo is refused
+(the shape D-161 established for `mode`), a Docker selection without an image is refused at load, and a
+`mcp_execution = "workspace"` server is refused under Docker because the MCP stdio path still builds bubblewrap's
+argv (a documented ceiling, below). The backend is threaded as `ShellMode::Sandbox(SandboxBackend { kind, image })`
+from `SupervisorConfig`/`DriverConfig`/`ReferenceConfig`; `shell_command_spec` builds either `bwrap_argv` or
+`docker_argv`, and the one availability probe is `sandbox_state_for(&backend)`.
+
+**Docker.** `docker run --rm --init --name teamagents-<id> --user <uid>:<gid> --workdir <ws> --volume <ws>:<ws>
+--env HOME=/tmp [--volume <shell-state>:/teamagents-shell] [--network none] <image> /bin/bash -lc <cmd>`. The
+host user is mapped so files written into the workspace keep their owner (measured: a `debian:stable-slim`
+container wrote a host-owned file and could not see the host user's home); the workspace and the member's shell
+state are the only binds; the model's credentials reach neither the client nor the container. The Docker *client*
+is a host tool, so it gets the host PATH/HOME (for `~/.docker/config.json`) and the `DOCKER_*` variables; the
+container environment is only the `--env` list. The image must already be present locally — an implicit pull
+would need network or hang, so a missing image is refused with the `docker pull` line.
+
+**Fail closed (A14 generalised).** A missing `docker`, an unreachable daemon or an absent image produces an
+`IsolationUnavailable` refusal before the command runs — never a host run. `doctor` reports the *selected*
+backend (`bubblewrap isolation` or `docker isolation`) through the same probe the shell tool uses, and a config
+it cannot serve is a FAIL row of its own. `full_auto` still bypasses the sandbox entirely (D-41).
+
+**Cancellation.** The runner stops the process group and `docker run` proxies SIGTERM to the container, so a
+well-behaved command stops with it; the unique `--name` is the explicit lever if a container ignores SIGTERM
+(`docker rm -f teamagents-…`).
+
+**Formal.** `verification/tla/V2Isolation.tla` states the two independent rules — `RunsOnlyUnderTheConfiguredBackend`
+(no silent fallback; the fallback that would make `sandbox = "docker"` quietly a host shell) and
+`UnavailableBackendNeverRuns` — each with a refuted control (`MC_isolation_fallback.cfg`,
+`MC_isolation_unavailable.cfg`). Measured 2026-09-30: `make verify-model-all` 28/28,
+`make verify-model-counterexamples` 88/88, `make verify-kani` 3/3.
+
+**Evidence.** `tools::tests::docker_argv_is_stable_and_runs_isolated` (the argv shape, and a real container on
+the machine's docker and a present image: `docker-ok` and a host-owned workspace file),
+`tools::tests::a_docker_backend_without_its_image_refuses_instead_of_running_on_the_host`, and
+`config::project_config_tests::the_sandbox_backend_is_read_and_refused_when_unusable` (default, missing image,
+typo, docker MCP refusal). The existing A14 refusal tests keep their meaning because the default is unchanged.
+
+**Ceilings.** No micro-VM, remote or per-command backend; one image for the whole session; the workspace is bound
+at its host path and a path containing a colon or space is out of reach of `-v` syntax; a container that
+ignores SIGTERM and then outlives `docker rm -f` is a manual problem; and workspace MCP under Docker is refused
+rather than implemented. Nothing here weakens the bubblewrap default.
+
 ## D-368 Session lifecycle completed (rename, restore) and cross-session search (2026-09-30)
 
 **The ceilings this closes.** D-364 and D-365 recorded two gaps: no `rename`, and no way back from

@@ -455,7 +455,14 @@ sessions you start:
 ```toml
 [permissions]
 mode = "full_auto"            # or "approved_scope" (the default); the flag still wins
+# sandbox = "bubblewrap"      # or "docker" (D-369); the isolation backend for approved_scope
+# sandbox_image = "debian:stable-slim"   # required for docker; the image must be present locally
 ```
+
+`sandbox` picks the backend `approved_scope` runs commands in: `bubblewrap` (the default) or `docker`, which
+also needs `sandbox_image` naming a locally present image. A missing or unusable backend refuses the command
+(`IsolationUnavailable`) — it never runs on the host, and `doctor` reports the selected backend. Workspace MCP
+servers are not served under `docker` yet (`mcp_execution = "host"` or bubblewrap).
 
 A project file can never set the mode (only your user config is read for it), and nothing a model says changes
 it. A client that

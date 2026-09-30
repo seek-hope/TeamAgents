@@ -342,27 +342,36 @@ pub fn doctor(state_root: Option<PathBuf>) -> i32 {
     if let Some(hint) = legacy_layout_hint() {
         optional_check(&mut results, "legacy v1 layout", false, hint);
     }
-    let bwrap = bwrap_available();
-    // not just "is it installed": `sandbox_state` runs a probe so a broken userns/kernel setup is caught here
-    // instead of at the first shell call, and it carries the reason (the same answer the tests branch on, D-114)
-    let sandbox = crate::tools::sandbox_state();
-    check(
-        &mut results,
-        "bubblewrap isolation",
-        sandbox.is_ok(),
-        match &sandbox {
-            Ok(()) => "isolation probe passed: system files visible, home directory hidden".into(),
-            Err(reason) if bwrap => {
-                // a row is one line, so the machine's own words (bwrap's last line) are what a user needs; the
-                // generic sentence above them ("the sandbox failed to start …") only says what they already see
-                let own = reason.lines().rfind(|line| !line.trim().is_empty()).unwrap_or(reason);
-                format!("bwrap is installed but the isolation probe failed: {own}; check that the system allows unprivileged user namespaces")
-            }
-            Err(_) => {
-                "bwrap not found, shell commands cannot run; Debian/Ubuntu: sudo apt install bubblewrap; Fedora: sudo dnf install bubblewrap; Arch: sudo pacman -S bubblewrap".into()
-            }
-        },
-    );
+    // D-369: the row reports the *selected* backend, not bubblewrap always. A config this build cannot serve is a
+    // FAIL row of its own; the probe is the same one the shell tool uses, so doctor and the first command agree.
+    match crate::config::sandbox_from_config() {
+        Err(reason) => check(&mut results, "sandbox", false, reason),
+        Ok(backend) => {
+            let sandbox = crate::tools::sandbox_state_for(&backend);
+            let bwrap = bwrap_available();
+            let bubblewrap = backend.kind == crate::tools::SandboxKind::Bubblewrap;
+            check(
+                &mut results,
+                &format!("{} isolation", backend.name()),
+                sandbox.is_ok(),
+                match &sandbox {
+                    Ok(()) if bubblewrap => {
+                        "isolation probe passed: system files visible, home directory hidden".into()
+                    }
+                    Ok(()) => format!("docker isolation probe passed (image {})", backend.image),
+                    Err(reason) if bubblewrap && bwrap => {
+                        // a row is one line, so the machine's own words (bwrap's last line) are what a user needs
+                        let own = reason.lines().rfind(|line| !line.trim().is_empty()).unwrap_or(reason);
+                        format!("bwrap is installed but the isolation probe failed: {own}; check that the system allows unprivileged user namespaces")
+                    }
+                    Err(_) if bubblewrap => {
+                        "bwrap not found, shell commands cannot run; Debian/Ubuntu: sudo apt install bubblewrap; Fedora: sudo dnf install bubblewrap; Arch: sudo pacman -S bubblewrap".into()
+                    }
+                    Err(reason) => reason.clone(),
+                },
+            );
+        }
+    }
     // hooks are easy to break silently: a wrong path only shows up as a stderr
     // line at event time, so doctor checks the programs exist and are executable
     if let Ok((catalog, _)) = &catalog {
@@ -1017,6 +1026,7 @@ fn daemon_boot(
             // config key was parsed, validated and then ignored, so a user who wrote
             // `mode = "full_auto"` silently ran in approved_scope.
             permissions: if full_auto { "full_auto".into() } else { crate::config::permission_mode_from_config()? },
+            sandbox: crate::config::sandbox_from_config()?,
             catalog,
             bindings: default_bindings(),
             // the fallback for an instance whose profile the catalog cannot resolve; each instance's own

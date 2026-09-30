@@ -140,6 +140,7 @@ fn main() {
         instances_dir: state.clone().join("instances"),
         workspace: workspace.clone(),
         permissions: if full_auto { "full_auto".into() } else { "approved_scope".into() },
+        sandbox: teamagents_engine::tools::SandboxBackend::bubblewrap(),
         profile: KernelProfile {
             model: model.clone(),
             instructions,

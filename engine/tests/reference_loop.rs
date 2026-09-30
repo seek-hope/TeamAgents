@@ -64,6 +64,7 @@ fn config(workspace: &Path, trace_dir: &Path) -> ReferenceConfig {
         artifacts: None,
         shell_state: None,
         permissions: "full_auto".into(),
+        sandbox: teamagents_engine::tools::SandboxBackend::bubblewrap(),
         profile: KernelProfile {
             model: "scripted".into(),
             instructions: "test agent".into(),

@@ -61,7 +61,7 @@ PLUMBING = {"core/src/models.rs", "engine/src/config.rs", "engine/src/cli.rs", "
 # Keys of the hand-read `[permissions]` table (`engine/src/config.rs::project_permissions` reads them itself and
 # refuses every other name, D-161). They are config keys a user may write, so the examples and the documents may
 # name them; when that table grows, this set grows with it.
-HAND_READ = {"permissions", "mode", "trust_project"}
+HAND_READ = {"permissions", "mode", "trust_project", "sandbox", "sandbox_image"}
 
 # Keys the loader *refuses*: naming one in an example or a user-facing document sends a user into an error, so
 # that is a finding even though the key is declared (D-75's `codex_profile` is the shape).
