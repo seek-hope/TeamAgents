@@ -212,6 +212,8 @@ pub struct V2App {
     pub quit: bool,
     /// Total wrapped chat lines at the last render (scroll clamping).
     pub last_chat_lines: usize,
+    /// §9: the transient text each instance is streaming, newest read only. Never an authoritative fact.
+    pub previews: Vec<(String, String)>,
     /// Visible chat height at the last render (page scrolling).
     pub last_chat_height: usize,
 }
@@ -240,12 +242,33 @@ impl V2App {
             watermark: 0,
             quit: false,
             last_chat_lines: 0,
+            previews: vec![],
             last_chat_height: 1,
         }
     }
 
     pub fn active_instance(&self) -> Option<&InstanceInfo> {
         self.instances.get(self.active)
+    }
+
+    /// Replace the transient streaming previews from the daemon's `previews` read (§9). Empty text is not stored,
+    /// so a finished turn leaves no preview behind.
+    pub fn apply_previews(&mut self, rows: &Json) {
+        let mut previews = Vec::new();
+        for row in rows.as_array().cloned().unwrap_or_default() {
+            let id = row["instance_id"].as_str().unwrap_or("").to_string();
+            let text = row["text"].as_str().unwrap_or("").to_string();
+            if !id.is_empty() && !text.is_empty() {
+                previews.push((id, text));
+            }
+        }
+        self.previews = previews;
+    }
+
+    /// The active instance's streaming text, if it has an attempt in flight.
+    pub fn active_preview(&self) -> Option<&str> {
+        let id = &self.active_instance()?.id;
+        self.previews.iter().find(|(instance, _)| instance == id).map(|(_, text)| text.as_str())
     }
 
     fn note(&mut self, text: impl Into<String>) {

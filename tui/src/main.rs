@@ -397,6 +397,14 @@ fn run_v2(
         }
         if last_event_poll.elapsed() >= Duration::from_millis(150) {
             last_event_poll = Instant::now();
+            // §9: the model's streaming preview is a transient read, not an event. Repaint only when it changes.
+            let before = app.active_preview().map(str::to_string);
+            if let Ok(result) = client.call("previews", serde_json::json!({})) {
+                app.apply_previews(&result["previews"]);
+                if app.active_preview() != before.as_deref() {
+                    dirty = true;
+                }
+            }
             match client.poll_events() {
                 Ok(events) => {
                     app.mark_connected();

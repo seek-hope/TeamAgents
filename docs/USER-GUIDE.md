@@ -15,6 +15,9 @@ teamagents                           # open the TUI (starts the per-user daemon 
 - **One daemon per user**: `teamagents` probes `$XDG_STATE_HOME/teamagents/v2/daemon.sock` and, when it is
   missing or refuses the connection, starts `teamagents daemon` detached and hands the socket to the TUI.
   Quitting the TUI does not stop the session.
+- **Live output (D-366)**: while a member's turn is running, the TUI shows the text the model is streaming as a
+  transient dimmed line under the conversation (only for the target you are looking at). It is not an
+  authoritative fact — it is replaced as more arrives and removed the moment the complete reply lands.
 - **Stopping that session** (D-248): `teamagents daemon --stop` stops the session that owns this state root —
   the socket *is* the address, so there is no pid to look up and no other session to hit by mistake (add
   `--state-root PATH` for a non-default root). It asks the running daemon, waits for its socket to go and says

@@ -281,6 +281,25 @@ fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
             lines.push(head);
         }
     }
+    if let Some(preview) = app.active_preview() {
+        // §9: a preview is never an authoritative fact — it renders as a transient dimmed line and disappears the
+        // moment the complete response lands. Only the tail is shown, so a long stream stays bounded.
+        let tail: String = preview.chars().rev().take(400).collect::<String>().chars().rev().collect();
+        let mut first = true;
+        for text_line in tail.lines() {
+            let line = if first {
+                first = false;
+                Line::from(vec![
+                    Span::styled("…", Style::default().fg(GREY).add_modifier(Modifier::BOLD)),
+                    Span::raw(" "),
+                    Span::styled(text_line.to_string(), Style::default().fg(NOTICE)),
+                ])
+            } else {
+                Line::from(Span::styled(format!("  {text_line}"), Style::default().fg(NOTICE)))
+            };
+            lines.extend(wrap_lines(vec![line], width));
+        }
+    }
     let total = lines.len();
     let height = area.height as usize;
     app.last_chat_lines = total;

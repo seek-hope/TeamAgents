@@ -513,6 +513,29 @@ fn view_switching_cycles_with_ctrl_n_and_esc_returns() {
     assert!(app.footer_hint().contains("Ctrl+N"), "{}", app.footer_hint());
 }
 
+/// D-366: the streaming preview is a transient line under the conversation, shown only for the active target,
+/// and it disappears when the daemon reports none.
+#[test]
+fn a_streaming_preview_is_shown_for_the_active_instance_and_replaced() {
+    use serde_json::json;
+    let mut app = app();
+    assert_eq!(app.active_instance().map(|instance| instance.id.as_str()), Some("i-leader"));
+    app.apply_previews(&json!([{"instance_id": "i-leader", "text": "thinking hard"}]));
+    assert_eq!(app.active_preview(), Some("thinking hard"));
+    // another instance's preview never shows for the active target
+    app.apply_previews(&json!([{"instance_id": "i-worker", "text": "other"}]));
+    assert_eq!(app.active_preview(), None);
+    // it renders under the conversation
+    app.apply_previews(&json!([{"instance_id": "i-leader", "text": "rendered preview"}]));
+    let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+    terminal.draw(|frame| v2ui::render(frame, &mut app)).unwrap();
+    let all = frame_lines(&terminal).join("\n");
+    assert!(all.contains("rendered preview"), "{all}");
+    // and it is gone the moment the attempt ends
+    app.apply_previews(&json!([]));
+    assert_eq!(app.active_preview(), None);
+}
+
 #[test]
 fn instances_panel_pauses_resumes_and_switches_the_conversation() {
     let mut app = app();

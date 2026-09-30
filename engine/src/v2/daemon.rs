@@ -236,8 +236,12 @@ async fn handle(request: &Json, supervisor: &SupervisorHandle, session_db: &Path
     let method = request.get("method").and_then(|v| v.as_str()).unwrap_or("");
     let params = request.get("params").cloned().unwrap_or(json!({}));
     match method {
-        "checkpoint" | "events" | "history" | "tasks" | "grants" | "approvals" | "goals" | "surfaces" => {
-            match read_only(session_db, session_id, |conn| read_method(method, &params, conn)) {
+        "checkpoint" | "events" | "history" | "tasks" | "grants" | "approvals" | "goals" | "surfaces" | "previews" => {
+            // §9: previews are the supervisor's in-memory streaming text, not a table; every other read comes from
+            // the database. Passing the payload keeps previews inside `read_method`'s dispatch, which is what
+            // `docs/PROTOCOL.md` is generated from.
+            let previews = if method == "previews" { supervisor.previews() } else { Json::Null };
+            match read_only(session_db, session_id, |conn| read_method(method, &params, conn, &previews)) {
                 Ok(result) => reply(true, result),
                 Err(error) => reply(false, json!(error)),
             }
@@ -404,8 +408,14 @@ fn apply_session_goal_limits(params: &mut Json, session_limits: &Json) {
     }
 }
 
-fn read_method(method: &str, params: &Json, conn: &rusqlite::Connection) -> Result<Json, String> {
+fn read_method(method: &str, params: &Json, conn: &rusqlite::Connection, previews: &Json) -> Result<Json, String> {
     match method {
+        // §9: the text each instance is streaming right now. It is a transient read the supervisor answers from
+        // memory (D-366), dropped by the caller the moment the complete response lands; nothing here is persisted.
+        "previews" => {
+            let payload = previews["previews"].clone();
+            Ok(json!({"previews": payload}))
+        }
         // snapshot and watermark in one read transaction (§9 reconnect):
         // the client learns exactly which point its snapshot is consistent with
         "checkpoint" => {

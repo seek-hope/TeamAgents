@@ -126,6 +126,10 @@ pub(crate) struct Shared {
     pub(crate) wake: tokio::sync::Notify,
     pub(crate) shutdown: AtomicBool,
     pub(crate) cancel_attempt: Mutex<Option<Cancel>>,
+    /// The text streamed so far by the in-flight attempt (§9: a preview is never an authoritative fact —
+    /// clients may drop it and re-read; only the complete response becomes a context entry). Cleared at the
+    /// start and end of every attempt, so a stale preview can never be mistaken for current output.
+    pub(crate) preview: Mutex<String>,
 }
 
 /// Client handle: user operations go through the same serialized storage
@@ -571,6 +575,7 @@ pub(crate) fn spawn_driver<P: Provider + 'static>(
         wake: tokio::sync::Notify::new(),
         shutdown: AtomicBool::new(false),
         cancel_attempt: Mutex::new(None),
+        preview: Mutex::new(String::new()),
     });
     // Bound MCP services load at boot: a required service that is unavailable
     // fails the boot honestly, an optional one only drops its capability (§7).
@@ -1499,13 +1504,19 @@ that delegated it learns the outcome only from a settlement.";
         let cancel = Cancel::new();
         *self.shared.cancel_attempt.lock().unwrap() = Some(cancel.clone());
         let started = std::time::Instant::now();
+        self.shared.preview.lock().unwrap().clear();
         let outcome = {
             let provider = &self.config.provider;
             let request_ref = &request;
             let cancel_ref = &cancel;
-            let mut preview = |_: ProviderEvent| {};
+            let preview_buf = self.shared.clone();
+            let mut preview = move |event: ProviderEvent| {
+                let ProviderEvent::TextDelta(text) = event;
+                preview_buf.preview.lock().unwrap().push_str(&text);
+            };
             provider.complete(request_ref, cancel_ref, &mut preview).await
         };
+        self.shared.preview.lock().unwrap().clear();
         self.shared.cancel_attempt.lock().unwrap().take();
         match outcome {
             Ok(outcome) => {

@@ -17,6 +17,9 @@ enum Step {
     /// Reply after a delay, so a test can act *while* the request is in flight
     /// (the harness logs the request before the delay).
     Slow(u64, Json),
+    /// Stream text deltas (a transient preview) and then hold the request open for `u64` ms before replying,
+    /// so a test can observe the preview while the turn runs (D-366).
+    Deltas(Vec<String>, u64, Json),
 }
 
 type Seen = Arc<Mutex<HashMap<String, Vec<Vec<String>>>>>;
@@ -35,7 +38,7 @@ impl Provider for ScriptedProvider {
         &self,
         request: &ModelRequest,
         cancel: &Cancel,
-        _on_event: &mut (dyn FnMut(ProviderEvent) + Send),
+        on_event: &mut (dyn FnMut(ProviderEvent) + Send),
     ) -> Result<AttemptOutcome, ProviderError> {
         self.seen.lock().unwrap().entry(self.instance.clone()).or_default().push(
             request.tools.iter().filter_map(|tool| tool["function"]["name"].as_str().map(str::to_string)).collect(),
@@ -44,6 +47,12 @@ impl Provider for ScriptedProvider {
         let (message, delay) = match next {
             Step::Message(message) => (message, 0),
             Step::Slow(ms, message) => (message, ms),
+            Step::Deltas(deltas, ms, message) => {
+                for delta in deltas {
+                    on_event(ProviderEvent::TextDelta(delta));
+                }
+                (message, ms)
+            }
         };
         if delay > 0 {
             // A held request honours the turn's cancel token (D-363): the interrupt test needs the turn to end
@@ -64,6 +73,7 @@ impl Provider for ScriptedProvider {
                 elapsed_ms: 1,
             }),
             Step::Slow(..) => unreachable!("the delay was already applied"),
+            Step::Deltas(..) => unreachable!("the deltas were already emitted and the delay applied"),
         }
     }
 }
@@ -879,6 +889,45 @@ async fn interrupting_a_turn_cancels_it_and_the_queued_input_takes_over() {
         !messages.iter().any(|message| message.contains("held answer")),
         "the cancelled turn's answer was applied: {messages:?}"
     );
+}
+
+/// D-366: the text an attempt streams is exposed as a transient, non-authoritative preview while the turn runs
+/// and is gone once the complete response lands (§9). Nothing about it is persisted, and a client that never
+/// reads it loses nothing.
+#[tokio::test]
+async fn a_running_turn_exposes_a_transient_preview_and_clears_it() {
+    let leader = vec![Step::Deltas(vec!["Hel".into(), "lo".into()], 600, reply("Hello"))];
+    let root = root("preview");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let handle = start(config(&root, factory(HashMap::from([("i-leader".to_string(), leader)])))).await.expect("start");
+    handle.input("i-leader", "hi").await.expect("input");
+    // while the attempt is held open the preview carries exactly the deltas streamed so far
+    let mut observed = None;
+    for _ in 0..200 {
+        let previews = handle.previews();
+        if let Some(text) =
+            previews["previews"].as_array().and_then(|rows| rows.first()).and_then(|row| row["text"].as_str())
+        {
+            if text == "Hello" {
+                observed = Some(text.to_string());
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(observed.as_deref(), Some("Hello"), "the streamed text is exposed while the turn runs");
+    // once the complete response lands the preview is cleared — it never becomes a fact
+    for _ in 0..400 {
+        if handle.previews()["previews"].as_array().map(Vec::is_empty).unwrap_or(false) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        handle.previews()["previews"].as_array().map(Vec::is_empty).unwrap_or(false),
+        "the preview clears when the turn ends"
+    );
+    handle.shutdown().await.expect("shutdown");
 }
 
 /// The other direction of D-60's check: a grant the *user* issues reaches the

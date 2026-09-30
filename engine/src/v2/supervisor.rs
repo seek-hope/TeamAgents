@@ -170,6 +170,21 @@ impl SupervisorHandle {
         &self.session_id
     }
 
+    /// The text each instance is streaming right now (§9): a transient, non-authoritative preview a client may
+    /// render and drop. An instance with no attempt in flight carries none, and nothing here is persisted.
+    pub fn previews(&self) -> Json {
+        let drivers = self.drivers.lock().unwrap();
+        let mut rows: Vec<Json> = drivers
+            .iter()
+            .filter_map(|(id, driver)| {
+                let text = driver.shared.preview.lock().unwrap().clone();
+                (!text.is_empty()).then(|| json!({"instance_id": id, "text": text}))
+            })
+            .collect();
+        rows.sort_by(|a, b| a["instance_id"].as_str().cmp(&b["instance_id"].as_str()));
+        json!({"previews": rows})
+    }
+
     /// Session snapshot for status views (read from the same worker).
     pub async fn snapshot(&self) -> Result<Json, String> {
         self.storage

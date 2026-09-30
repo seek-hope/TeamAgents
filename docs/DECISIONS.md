@@ -20,6 +20,40 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-366 The TUI shows the model's live output: a transient, non-authoritative preview (2026-09-30)
+
+**The gap.** The providers already stream (`ProviderEvent::TextDelta`, `engine/src/providers/mod.rs`), and §9
+says "a streaming preview is not an authoritative fact: a slow client may drop previews and re-read", but the
+driver dropped every event (`let mut preview = |_: ProviderEvent| {}`), so the TUI showed nothing between
+sending a message and the complete reply appearing — the most visible remaining gap against Pi and Codex.
+
+**The design.** The driver appends each `TextDelta` to a per-instance `Shared.preview`, cleared at the start and
+end of every attempt so a stale preview can never be mistaken for current output. `SupervisorHandle::previews()`
+collects the non-empty ones, and the daemon answers a **read method** `previews` from that in-memory payload —
+the one read that is not a table, routed through `read_method` so `docs/PROTOCOL.md` still generates it. The TUI
+polls it on its existing 150 ms tick and renders the active target's text as a dimmed transient line under the
+conversation, replacing it in place and removing it the moment the complete response lands. Nothing is written
+to the database and no event is emitted: the preview is exactly the "may drop" object §9 describes.
+
+**Formal.** No new TLA+ claim. The only rule here is "a preview never becomes an authoritative fact", and it is
+structural rather than temporal: the preview lives in memory, is never inserted into `context_entries`, and is
+cleared at both ends of the attempt. The test that matters is the executable one — the preview is present while
+the attempt is held open and absent once it ends — plus the design's own statement that a client may drop it. A
+model would have to encode a `DELETE`-like step whose only claim is the absence of a write, which is the D-219
+shape (a claim nothing can refute); the reasoning is recorded here instead.
+
+**Evidence.** `engine/tests/v2_supervisor.rs`'s
+`a_running_turn_exposes_a_transient_preview_and_clears_it` (a scripted provider streams two deltas and holds the
+attempt; the supervisor reports "Hello" while it runs and reports none once it ends),
+`tui/tests/v2app_tests.rs`'s `a_streaming_preview_is_shown_for_the_active_instance_and_replaced` (only the
+active target's preview shows, it renders on screen, and it goes when the daemon reports none), and the
+regenerated `docs/PROTOCOL.md` (9 read methods). `make check` and the formal targets are re-run before the
+commit.
+
+**Ceiling.** The preview is polled at 150 ms and only the active conversation target's is rendered; provider
+reasoning content is not previewed (DeepSeek's `reasoning_content` stays in the message per §7), and a client
+that never calls `previews` loses nothing — which is the point.
+
 ## D-365 `sessions fork` branches a conversation: a read-only snapshot plus one reset transaction (2026-09-30)
 
 **The decision (Batch 3).** D-364 named `fork` as the designed follow-up and left it out because a fork needs a
