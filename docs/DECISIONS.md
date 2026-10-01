@@ -20,6 +20,24 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-384 `leak_guard` counts only this user's processes, and never crashes on a signal it may not send (2026-10-02)
+
+Running the benchmark while `make check` ran made the gate fail, and the cause was in the guard, not in the
+change under test: a benchmark container's `teamagents daemon` runs as **root**, its command line is visible in
+`/proc`, so `daemon_pids` counted it as leaked, and `stop`'s `os.kill` raised `PermissionError` (uncaught — only
+`ProcessLookupError` was) and took the whole gate down with a traceback. Two fixes, both the same rule the guard
+already follows for patterns (D-144: a predicate, never a guess):
+
+- `_pids` skips a process whose `/proc/<pid>` owner is not this euid. A process this user could not have
+  started is not this suite's leak — the guard is responsible for what it could reap, and nothing else.
+- `stop` and `kill` treat `PermissionError` like `ProcessLookupError`: *this guard is not entitled to that
+  process* is a supported outcome, not a crash. A guard that dies on a shared machine reports nothing.
+
+**Measured.** With a benchmark running, `make check` exits 2 with a traceback from `leak_guard.py:163`; with
+both fixes it is green while the benchmark keeps running (and the guard still sees all 8 of this user's daemons).
+
+**Formal.** None.
+
 ## D-383 Product-side capability analysis of the failing trials, and three proposals (2026-10-02)
 
 The failures that survive the harness fix (D-382) are analysed in `review/benchmark/CAPABILITY.md`. The shape is

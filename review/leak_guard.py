@@ -88,6 +88,14 @@ def _pids(subcommand: str, root: pathlib.Path | None = None) -> list[tuple[int, 
         parts = line.split(None, 3)
         if len(parts) != 4 or not is_running(parts[1]) or parts[2] != "teamagents":
             continue
+        # Only this user's processes can be this suite's leak. A `teamagents daemon` started by root inside a
+        # benchmark container is visible in `/proc` and cannot be signalled; counting it made `make check` exit 2
+        # while a benchmark ran (measured 2026-10-02, D-384). Ownership, not a pattern, is the rule (D-144).
+        try:
+            if os.stat(f"/proc/{parts[0]}").st_uid != os.geteuid():
+                continue
+        except OSError:
+            continue
         if parts[3].split()[1:2] != [subcommand]:
             continue
         if root is None or str(root) in parts[3]:
@@ -163,6 +171,11 @@ def stop(pids: list[int], finder=daemon_pids, grace: float = 5.0, kill_grace: fl
             os.kill(pid, signal.SIGTERM)
         except ProcessLookupError:
             continue
+        except PermissionError:
+            # Another user's process: this guard is not entitled to stop it, and a guard that crashes on a
+            # machine it shares is worse than one that reports. Measured 2026-10-02: a concurrent benchmark
+            # made `make check` exit 2 here instead of reporting a result (D-384).
+            continue
     deadline = time.time() + grace
     while time.time() < deadline and _alive(pids, finder):
         time.sleep(0.25)
@@ -170,6 +183,8 @@ def stop(pids: list[int], finder=daemon_pids, grace: float = 5.0, kill_grace: fl
         try:
             os.kill(pid, signal.SIGKILL)
         except ProcessLookupError:
+            pass
+        except PermissionError:
             pass
     deadline = time.time() + kill_grace
     while time.time() < deadline and _alive(pids, finder):
@@ -189,6 +204,8 @@ def kill(pids: list[int], finder=daemon_pids, grace: float = 10.0) -> list[int]:
             os.kill(pid, signal.SIGKILL)
         except ProcessLookupError:
             continue
+        except PermissionError:
+            continue  # another user's process; see `stop`
     deadline = time.time() + grace
     while time.time() < deadline and _alive(pids, finder):
         time.sleep(0.25)
