@@ -36,9 +36,12 @@ CONFIG_DIR = "/opt/teamagents/config"
 STATE_DIR = "/opt/teamagents/state"
 WORKDIR = os.environ.get("TEAMAGENTS_WORKDIR", "/app")
 TURN_TIMEOUT_SEC = int(os.environ.get("TEAMAGENTS_TURN_TIMEOUT_SEC", "3000"))
+# The DeepSeek card's Terminal-Bench numbers are at maximum reasoning effort; `high` is the repository's own
+# evaluation setting. The effort is a knob here so one fixed sample can be run both ways.
+REASONING_EFFORT = os.environ.get("TEAMAGENTS_REASONING_EFFORT", "high")
 
 # The experiment's config, frozen like the repo's eval config: paratera DeepSeek-V4.1-Flash, native 1M window
-# (D-36), no ceiling. `reasoning_effort = "high"` matches the repository's own evaluation.
+# (D-36), no ceiling.
 CONFIG_TEMPLATE = """\
 skills_paths = []
 
@@ -51,7 +54,7 @@ api_key_env = "PARATERA_API_KEY"
 context_window = 1000000
 timeout = 300
 max_retries = 3
-generation_options = {{ reasoning_effort = "high" }}
+generation_options = {{ reasoning_effort = "{effort}" }}
 """
 
 
@@ -74,7 +77,7 @@ class TeamAgentsAgent(BaseInstalledAgent):
         await environment.upload_file(BINARY, "/usr/local/bin/teamagents")
         await environment.exec(command="chmod +x /usr/local/bin/teamagents")
         with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as handle:
-            handle.write(CONFIG_TEMPLATE.format(model=model))
+            handle.write(CONFIG_TEMPLATE.format(model=model, effort=REASONING_EFFORT))
             local_config = handle.name
         try:
             await environment.upload_file(local_config, f"{CONFIG_DIR}/teamagents/config.toml")

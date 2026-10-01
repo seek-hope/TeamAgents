@@ -55,39 +55,65 @@ Remaining divergences from the DeepSeek card's protocol, recorded rather than hi
 `high` where the card uses maximum effort; the product has no `max_steps = 500` counterpart, so a turn is bounded
 by `TEAMAGENTS_TURN_TIMEOUT_SEC` (840 s here, under harbor's 900 s agent timeout) and by the goal's budget.
 
-## Measured results (2026-09-30/10-01)
+## Measured results (2026-10-01)
 
-**Fixed 20-task sample × 3 attempts, no-network, 60 trials: 37 passed (61.7 %), Wilson 95 % [0.490, 0.729].**
-The task list is every fifth of the 48 tasks whose own agent timeout is 900 s, so the sample is fixed and
-reproducible: `adaptive-rejection-sampler`, `build-pmars`, `chess-best-move`, `configure-git-webserver`,
-`db-wal-recovery`, `fix-code-vulnerability`, `gcode-to-text`, `git-multibranch`, `headless-terminal`,
-`kv-store-grpc`, `log-summary-date-ranges`, `merge-diff-arc-agi-task`, `multi-source-data-merger`,
-`openssl-selfsigned-cert`, `polyglot-c-py`, `prove-plus-comm`, `pytorch-model-cli`, `qemu-alpine-ssh`,
-`query-optimize`, `regex-log`.
+Three runs, all on the phase-scoped protocol above and all under harbor's own per-task agent timeout (900 s for
+every task these runs touched). Intervals are Wilson 95 % over trials; they overlap, so the differences are not
+significant on these samples.
 
-| Result | Tasks |
-|---|---|
-| 3/3 | `fix-code-vulnerability`, `git-multibranch`, `headless-terminal`, `log-summary-date-ranges`, `merge-diff-arc-agi-task`, `multi-source-data-merger`, `openssl-selfsigned-cert`, `polyglot-c-py`, `prove-plus-comm`, `regex-log` |
-| 2/3 | `chess-best-move`, `db-wal-recovery` |
-| 1/3 | `configure-git-webserver`, `pytorch-model-cli`, `query-optimize` |
-| 0/3 | `adaptive-rejection-sampler`, `build-pmars`, `gcode-to-text`, `kv-store-grpc`, `qemu-alpine-ssh` |
+| Run | Tasks × attempts | `reasoning_effort` | Turn budget | Trials | Passed | Wilson 95 % |
+|---|---|---|---|---|---|---|
+| fixed sample | 20 × 3 | `high` | 840 s | 60 | 37 (61.7 %) | [0.490, 0.729] |
+| fixed sample | 20 × 3 | `max` | 890 s | 60 | 35 (58.3 %) | [0.457, 0.699] |
+| **full set** | **89 × 1** | **`high`** | **890 s** | **89** | **48 (53.9 %)** | **[0.436, 0.639]** |
 
-Agent-side failures (32 of 60 trials carried an exception), attributed:
+**The effort tier is not the bottleneck; the wall clock is.** Raising `reasoning_effort` from `high` to `max` did
+not help on the fixed sample (37 → 35 passes): max effort emits longer turns, so more of them hit the deadline.
+Over the full set, 36 of the 52 agent-side exceptions are `end: "timeout"` (exit 124).
 
-| Cause | Trials | What it is |
+### The fixed 20-task sample (3 attempts each)
+
+Every fifth of the 48 tasks whose own agent timeout is 900 s, fixed and reproducible:
+`adaptive-rejection-sampler`, `build-pmars`, `chess-best-move`, `configure-git-webserver`, `db-wal-recovery`,
+`fix-code-vulnerability`, `gcode-to-text`, `git-multibranch`, `headless-terminal`, `kv-store-grpc`,
+`log-summary-date-ranges`, `merge-diff-arc-agi-task`, `multi-source-data-merger`, `openssl-selfsigned-cert`,
+`polyglot-c-py`, `prove-plus-comm`, `pytorch-model-cli`, `qemu-alpine-ssh`, `query-optimize`, `regex-log`.
+
+At `high` effort: 3/3 — `fix-code-vulnerability`, `git-multibranch`, `headless-terminal`,
+`log-summary-date-ranges`, `merge-diff-arc-agi-task`, `multi-source-data-merger`, `openssl-selfsigned-cert`,
+`polyglot-c-py`, `prove-plus-comm`, `regex-log`; 2/3 — `chess-best-move`, `db-wal-recovery`; 1/3 —
+`configure-git-webserver`, `pytorch-model-cli`, `query-optimize`; 0/3 — `adaptive-rejection-sampler`,
+`build-pmars`, `gcode-to-text`, `kv-store-grpc`, `qemu-alpine-ssh`.
+
+### The full set (89 tasks, 1 attempt each)
+
+48 of 89 passed. The tasks that did **not** pass are dominated by the wall-clock bound and by heavy environments:
+`adaptive-rejection-sampler`, `build-cython-ext`, `build-pmars`, `build-pov-ray`, `caffe-cifar-10`,
+`code-from-image`, `compile-compcert`, `configure-git-webserver`, `count-dataset-tokens`, `dna-assembly`,
+`dna-insert`, `extract-moves-from-video`, `filter-js-from-html`, `financial-document-processor`, `gcode-to-text`,
+`gpt2-codegolf`, `hf-model-inference`, `install-windows-3.11`, `kv-store-grpc`, `largest-eigenval`,
+`llm-inference-batching-scheduler`, `make-doom-for-mips`, `mcmc-sampling-stan`, `mteb-retrieve`,
+`nginx-request-logging`, `protein-assembly`, `pytorch-model-cli`, `pytorch-model-recovery`, `qemu-alpine-ssh`,
+`raman-fitting`, `rstan-to-pystan`, `sam-cell-seg`, `sqlite-with-gcov`, `torch-tensor-parallelism`,
+`train-fasttext`, `tune-mjcf`, `video-processing`, `winning-avg-corewars`. Four failed with **no** agent
+exception (`extract-elf`, `mteb-leaderboard`, `qemu-startup`, `pytorch-model-recovery`) — the turn completed and
+the task's own tests did not pass.
+
+### Agent-side failures, attributed
+
+| Cause | Full set (of 89) | What it is |
 |---|---|---|
-| turn hit its own deadline | 24 | `end: "timeout"`, exit 124 — the turn budget (840 s), not a crash |
-| model stream decode error | 3 | `permanent model error: model stream: error decoding response body` — a transport failure **after** visible output, which `providers::stream_failure_msg` makes permanent by design (no replay of a partially emitted turn) |
-| other non-zero exits | 5 | boot/transport failures; each trial's `result.json` carries the message |
+| turn hit its own deadline | 36 | `end: "timeout"`, exit 124 — the turn budget, not a crash |
+| model stream decode error | 4 | `permanent model error: model stream: error decoding response body` — a transport failure **after** visible output, which `providers::stream_failure_msg` makes permanent by design (no replay of a partially emitted turn) |
+| other non-zero exits | 12 | boot/transport failures; each trial's `result.json` carries the message |
+
+37 of 89 trials finished with no agent-side exception at all.
 
 For scale only, not as a like-for-like comparison: the same model's official Terminal-Bench 2.1 numbers are
 **90.6** (DeepSeek Harness Minimal), 90.3 (mini-SWE), 88.0 (Claude Code), 86.1 (Pi, v0.84.2), 84.1 (Codex), and a
-third party's public harness reports 83.9. Differences that matter beyond the sample: their runs use maximum
-reasoning effort and `max_steps = 500`, this one `high` effort and a wall-clock bound.
-
-An earlier 6-task pilot (four easy 900 s tasks plus `adaptive-rejection-sampler` and `cancel-async-tasks`) scored
-4/6 = 0.667 with the harness default (public) network; it is a pilot, not a row, and is superseded by the table
-above.
+third party's public harness reports 83.9. Beyond the sample size, their runs allow `max_steps = 500` and give
+the agent the whole agent timeout; the product has no step counter, and here the turn budget (890 s) is what
+bounds it — which the attribution above says is the binding constraint.
 
 Raw job output: `harbor view <jobs dir>`; per-trial `result.json` carries the exception, the verifier reward and
 the agent command.

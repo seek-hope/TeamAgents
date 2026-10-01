@@ -20,6 +20,37 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-379 Terminal-Bench: maximum effort does not help, the wall clock is the binding constraint (2026-10-01)
+
+**Two more measured runs**, on the phase-scoped protocol D-378 established:
+
+| Run | Tasks × attempts | `reasoning_effort` | Turn budget | Trials | Passed | Wilson 95 % |
+|---|---|---|---|---|---|---|
+| fixed sample (D-378) | 20 × 3 | `high` | 840 s | 60 | 37 (61.7 %) | [0.490, 0.729] |
+| fixed sample | 20 × 3 | `max` | 890 s | 60 | 35 (58.3 %) | [0.457, 0.699] |
+| **full set** | **89 × 1** | **`high`** | **890 s** | **89** | **48 (53.9 %)** | **[0.436, 0.639]** |
+
+**The effort tier is not the bottleneck.** Raising `reasoning_effort` from `high` to `max` (the card's setting)
+did not help — 37 → 35 passes on the same fixed sample, with overlapping intervals — because a maximum-effort
+turn emits more and takes longer, so more turns hit the deadline. Across the full set, **36 of the 52 agent-side
+exceptions are `end: "timeout"` (exit 124)**; 4 are model-stream decode errors made permanent by
+`providers::stream_failure_msg` after visible output (by design), and 12 are other non-zero exits. The lever that
+would move the number is the product's turn model (wall clock), not the model's reasoning budget.
+
+**The full set is 48/89.** Four failures had no agent exception at all (`extract-elf`, `mteb-leaderboard`,
+`qemu-startup`, `pytorch-model-recovery`) — the turn completed and the task's own tests did not pass.
+
+**A harness footgun, recorded:** `harbor run -d …` resolves the dataset from harbor's **cache**, which is the
+unpatched copy; the phase-scoped network policy only applies when the run is pointed at a patched local tree
+(`-p`, after `review/benchmark/patch_phases.py`). The first attempt at the full set used `-d` and was stopped
+once that was noticed.
+
+**Formal.** None.
+
+**Ceiling.** One attempt per task in the full set, so its interval is wide and a per-task rate would need N = 3
+on all 89; the numbers are a fixed-sample estimate under one model and the recorded protocol, not a leaderboard
+submission.
+
 ## D-378 The comparable Terminal-Bench row: phase-scoped network, 37/60 on a fixed 20-task sample (2026-10-01)
 
 **The correction that made the protocol comparable.** The network policy has to be **phase-scoped**: the
