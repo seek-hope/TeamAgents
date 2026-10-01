@@ -61,15 +61,26 @@ Three runs, all on the phase-scoped protocol above and all under harbor's own pe
 every task these runs touched). Intervals are Wilson 95 % over trials; they overlap, so the differences are not
 significant on these samples.
 
-| Run | Tasks × attempts | `reasoning_effort` | Turn budget | Trials | Passed | Wilson 95 % |
-|---|---|---|---|---|---|---|
-| fixed sample | 20 × 3 | `high` | 840 s | 60 | 37 (61.7 %) | [0.490, 0.729] |
-| fixed sample | 20 × 3 | `max` | 890 s | 60 | 35 (58.3 %) | [0.457, 0.699] |
-| **full set** | **89 × 1** | **`high`** | **890 s** | **89** | **48 (53.9 %)** | **[0.436, 0.639]** |
+| Run | Model route | Tasks × attempts | `reasoning_effort` | Turn budget | Trials | Passed | Wilson 95 % |
+|---|---|---|---|---|---|---|---|
+| fixed sample | paratera | 20 × 3 | `high` | 840 s | 60 | 37 (61.7 %) | [0.490, 0.729] |
+| fixed sample | paratera | 20 × 3 | `max` | 890 s | 60 | 35 (58.3 %) | [0.457, 0.699] |
+| fixed sample | **official** | 20 × 3 | **`low`** | 890 s | 60 | **38 (63.3 %)** | **[0.507, 0.744]** |
+| **full set** | paratera | **89 × 1** | **`high`** | **890 s** | **89** | **48 (53.9 %)** | **[0.436, 0.639]** |
 
-**The effort tier is not the bottleneck; the wall clock is.** Raising `reasoning_effort` from `high` to `max` did
-not help on the fixed sample (37 → 35 passes): max effort emits longer turns, so more of them hit the deadline.
-Over the full set, 36 of the 52 agent-side exceptions are `end: "timeout"` (exit 124).
+**Throughput, not reasoning depth, is the binding constraint — and lower effort is better here.** Raising
+`reasoning_effort` from `high` to `max` (the card's setting) *lowered* the result (37 → 35), and lowering it to
+`low` raised it (37 → 38) while cutting agent-side exceptions from ~30 to **13**. All intervals overlap, so none
+of the three differences is significant on 60 trials; what is not marginal is the mechanism: a turn that hits
+its deadline is `lifecycle: ACTIVE` — still working — and **all 36 timed-out trials in the full set are ACTIVE**,
+with watermarks from 118 to 4,721 committed events. The agent is not stuck; it runs out of the 900 s task
+window. Maximum effort makes each step slower, so fewer steps fit; `low` fits more.
+
+The runs before the `low` row used the paratera relay (`llmapi.paratera.com`, model `DeepSeek-V4.1-Flash`); it
+began answering `403 team_model_access_denied` for every request while this was being measured, so the adapter
+now defaults to the **official** `https://api.deepseek.com` route (`deepseek-flash`), which is also the route the
+model card's own numbers come from. The model route, key variable and effort are all knobs
+(`TEAMAGENTS_MODEL`, `TEAMAGENTS_BASE_URL`, `TEAMAGENTS_API_KEY_ENV`, `TEAMAGENTS_REASONING_EFFORT`).
 
 ### The fixed 20-task sample (3 attempts each)
 

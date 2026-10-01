@@ -36,12 +36,15 @@ CONFIG_DIR = "/opt/teamagents/config"
 STATE_DIR = "/opt/teamagents/state"
 WORKDIR = os.environ.get("TEAMAGENTS_WORKDIR", "/app")
 TURN_TIMEOUT_SEC = int(os.environ.get("TEAMAGENTS_TURN_TIMEOUT_SEC", "3000"))
-# The DeepSeek card's Terminal-Bench numbers are at maximum reasoning effort; `high` is the repository's own
-# evaluation setting. The effort is a knob here so one fixed sample can be run both ways.
+# The model card's Terminal-Bench numbers come from the **official** DeepSeek endpoint, so that is the default;
+# every part of the model route is overridable so another provider can be measured the same way. `high` is the
+# repository's own evaluation setting, `low`/`medium`/`max` are the other tiers the endpoint accepts.
+MODEL = os.environ.get("TEAMAGENTS_MODEL", "deepseek-flash")
+BASE_URL = os.environ.get("TEAMAGENTS_BASE_URL", "https://api.deepseek.com")
+API_KEY_ENV = os.environ.get("TEAMAGENTS_API_KEY_ENV", "DEEPSEEK_API_KEY")
 REASONING_EFFORT = os.environ.get("TEAMAGENTS_REASONING_EFFORT", "high")
 
-# The experiment's config, frozen like the repo's eval config: paratera DeepSeek-V4.1-Flash, native 1M window
-# (D-36), no ceiling.
+# The experiment's config, frozen like the repo's eval config: native 1M window (D-36), no ceiling.
 CONFIG_TEMPLATE = """\
 skills_paths = []
 
@@ -49,8 +52,8 @@ skills_paths = []
 provider = "deepseek"
 protocol = "deepseek"
 model = "{model}"
-base_url = "https://llmapi.paratera.com/v1"
-api_key_env = "PARATERA_API_KEY"
+base_url = "{base_url}"
+api_key_env = "{key_env}"
 context_window = 1000000
 timeout = 300
 max_retries = 3
@@ -72,12 +75,16 @@ class TeamAgentsAgent(BaseInstalledAgent):
         return "0.2.0"
 
     async def install(self, environment: BaseEnvironment) -> None:
-        model = self.model_name or "DeepSeek-V4.1-Flash"
+        model = self.model_name or MODEL
         await environment.exec(command=f"mkdir -p {CONFIG_DIR}/teamagents {STATE_DIR} {WORKDIR} /logs/agent")
         await environment.upload_file(BINARY, "/usr/local/bin/teamagents")
         await environment.exec(command="chmod +x /usr/local/bin/teamagents")
         with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as handle:
-            handle.write(CONFIG_TEMPLATE.format(model=model, effort=REASONING_EFFORT))
+            handle.write(
+                CONFIG_TEMPLATE.format(
+                    model=model, base_url=BASE_URL, key_env=API_KEY_ENV, effort=REASONING_EFFORT
+                )
+            )
             local_config = handle.name
         try:
             await environment.upload_file(local_config, f"{CONFIG_DIR}/teamagents/config.toml")
@@ -91,14 +98,14 @@ class TeamAgentsAgent(BaseInstalledAgent):
         environment: BaseEnvironment,
         context: AgentContext,
     ) -> None:
-        key = os.environ.get("PARATERA_API_KEY", "")
+        key = os.environ.get(API_KEY_ENV, "")
         # The key travels in the environment, never in the command string: harbor echoes a failed command into its
         # own error message, and a credential must not end up in a log. `_exec` redacts sensitive env values.
         env = {
             "HOME": "/root",
             "XDG_CONFIG_HOME": CONFIG_DIR,
             "XDG_STATE_HOME": STATE_DIR,
-            "PARATERA_API_KEY": key,
+            API_KEY_ENV: key,
         }
         command = " ".join(
             [

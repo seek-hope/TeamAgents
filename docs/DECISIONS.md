@@ -20,6 +20,42 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-380 Terminal-Bench: the timeouts are throughput, not stuckness, and lower effort scores better (2026-10-01)
+
+**The diagnosis.** Every one of the full set's 36 turn-deadline failures is `lifecycle: "ACTIVE"` at the moment
+it is cut off — still working — with watermarks from 118 to 4,721 committed events, and every one used the full
+~900 s task window. The agent is not hung and not waiting on a lock; it needs more model time than the window
+allows. That is a throughput question, not a defect the harness can patch.
+
+**The consequence, measured.** On the fixed 20-task sample (3 attempts each, official
+`https://api.deepseek.com` route):
+
+| `reasoning_effort` | Passed | Wilson 95 % | Agent-side exceptions |
+|---|---|---|---|
+| `high` | 37/60 (61.7 %) | [0.490, 0.729] | ~30 |
+| `max` | 35/60 (58.3 %) | [0.457, 0.699] | ~28 |
+| **`low`** | **38/60 (63.3 %)** | **[0.507, 0.744]** | **13** |
+
+The ordering is consistent with the diagnosis — a maximum-effort step is slower, so fewer fit in the window —
+but the intervals overlap, so this is a direction, not a significant difference on 60 trials.
+
+**The model route changed under the measurement.** The paratera relay the earlier runs used began answering
+`403 team_model_access_denied` for every request mid-session, so `review/benchmark/teamagents_agent.py` now
+defaults to the **official** `deepseek-flash` route (also the route the card's numbers come from) and exposes
+`TEAMAGENTS_MODEL`, `TEAMAGENTS_BASE_URL`, `TEAMAGENTS_API_KEY_ENV` and `TEAMAGENTS_REASONING_EFFORT` as knobs;
+`patch_phases.py` allows both hosts so a task tree serves either route.
+
+**What the product lever is, stated but not taken.** The measured ceiling is the turn model: one goal, bounded by
+wall clock. Options are to let an `exec` turn keep running on a settled goal with the time left (the session
+already supports a following goal, D-267/D-268) or to give long tasks several shorter turns. Both change
+product behaviour rather than the harness, so they are recorded as the next design question, not implemented
+here.
+
+**Formal.** None.
+
+**Ceiling.** 60 trials; the three arms overlap, and a per-task rate at N = 3 on all 89 tasks remains the way to
+tighten any of these numbers.
+
 ## D-379 Terminal-Bench: maximum effort does not help, the wall clock is the binding constraint (2026-10-01)
 
 **Two more measured runs**, on the phase-scoped protocol D-378 established:
