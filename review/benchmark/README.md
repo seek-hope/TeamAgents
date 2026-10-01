@@ -66,8 +66,17 @@ significant on these samples.
 | fixed sample | paratera | 20 × 3 | `high` | 840 s | 60 | 37 (61.7 %) | [0.490, 0.729] |
 | fixed sample | paratera | 20 × 3 | `max` | 890 s | 60 | 35 (58.3 %) | [0.457, 0.699] |
 | fixed sample | official | 20 × 3 | `low` | 890 s | 60 | 38 (63.3 %) | [0.507, 0.744] |
+| fixed sample **(corrected harness, D-382)** | official | 20 × 3 | `low` | 890 s | 60 | **46 (76.7 %)** | **[0.646, 0.856]** |
 | fixed sample | official | 20 × 3 | `low` | **12 h** | 59 | 38 (64.4 %) | [0.517, 0.754] |
 | **full set** | paratera | **89 × 1** | **`high`** | **890 s** | **89** | **48 (53.9 %)** | **[0.436, 0.639]** |
+
+**The first and third rows used a harness that was understating the score.** Two defects (D-382) produced false
+zeros: the adapter never installed `curl`/`ca-certificates`, so a verifier on an image without a CA bundle could
+not `apt-get` or `uvx` and pytest never ran (5 of 59 trials); and the phase-scoped network had set the
+*environment* baseline to `no-network`, which also governs setup, while every task declares
+`allow_internet = true` (harbor's `PUBLIC`). With both fixed and the tasks used as authored, the same sample at
+the same settings is **46/60 (76.7 %)**. Product-side reading of what still fails, and three proposals:
+[CAPABILITY.md](CAPABILITY.md).
 
 **A 12-hour budget does not raise the score: the failures are capability, not the clock.** Raising the agent
 budget from 890 s to 12 h (and harbor's per-task timeout with it) left the fixed sample where it was — 38/60 at

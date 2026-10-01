@@ -20,6 +20,61 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-383 Product-side capability analysis of the failing trials, and three proposals (2026-10-02)
+
+The failures that survive the harness fix (D-382) are analysed in `review/benchmark/CAPABILITY.md`. The shape is
+consistent: **the deliverable exists, is well-formed, and is semantically wrong** — `sol.sql` is fast, small,
+one statement and does not touch the database, but its rows differ from the golden query (`query-optimize`); the
+CLI, weights and prediction files all exist, but the predicted digit is wrong (`pytorch-model-cli`). In each
+case the agent could have checked its own claim cheaply with what was in the container, and did not: the turn has
+no "prove it before you say done" step, `exec` reports `verification: []`, and the goal carries no criteria.
+That is a product capability gap. Two failure modes are separated: `gcode-to-text` runs out of time and still
+fails at a 12-hour budget (D-381), while one `adaptive-rejection-sampler` trial commits 31 events in 16 minutes
+where its siblings commit 161 and 429 — an early stall, not a thinking turn.
+
+Three improvement proposals, each with a falsifiable claim, a measurement on this same harness and a formal plan
+(acceptance checks that gate goal completion; an independent verifier teammate; a stall detector), are recorded
+in that document. **Nothing is implemented**: these change product behaviour, and per the repository's rule they
+wait for the user's decision.
+
+**Also ruled out as a TeamAgents result:** `qemu-alpine-ssh` — its `debian:bullseye` apt sources 404 today, so
+the verifier can never install pytest. That is mirror rot and must be excluded from any comparison.
+
+**Formal.** None until a proposal is accepted; each carries its own plan.
+
+## D-382 Terminal-Bench harness defects that were understating the score: missing CA install and the wrong network baseline (2026-10-02)
+
+Two defects in `review/benchmark/` produced **false zeros**, found while analysing the failures (the second one
+only after ruling out the first, since a verifier that never ran and a solution that was wrong both read as 0):
+
+1. **The adapter never installed its system dependencies.** Every built-in harbor agent calls
+   `ensure_system_dependencies(environment, (...))` in `install()`, and `ca_certificates` is the entry that is
+   `always_install` for exactly this reason: an image without a CA bundle cannot verify TLS, so the *verifier's*
+   own `apt-get install curl` / `uvx` fails, pytest never runs, and the trial is scored 0. Measured: **5 of 59**
+   trials in the 12 h sample had a verifier that never ran. `teamagents_agent.py` now calls it (best-effort, so
+   an image whose own sources have rotted does not become an install error).
+2. **The phase-scoped network was stricter than the tasks.** `patch_phases.py` set the *environment* baseline to
+   `no-network`; that baseline also governs agent setup. Every task in the dataset instead declares
+   `allow_internet = true`, which harbor maps to `PUBLIC`. The comparable configuration is therefore the task as
+   authored — the pristine trees — not the patched ones. `patch_phases.py` keeps the phase-scoped policy as an
+   option (`TEAMAGENTS_MODEL_HOSTS`, `TEAMAGENTS_AGENT_TIMEOUT_SEC`) but is no longer applied for the
+   leaderboard-comparable run.
+
+**The correction, same sample and settings (20 × 3, `low`, 890 s, official endpoint):**
+
+| Configuration | Trials | Passed | Wilson 95 % |
+|---|---|---|---|
+| before (allowlist baseline, no CA install) | 60 | 38 (63.3 %) | [0.507, 0.744] |
+| **after (task-authored network, CA install)** | **60** | **46 (76.7 %)** | **[0.646, 0.856]** |
+
+Eleven trials flipped to a pass, including `build-pmars` 0/3 → 3/3, `kv-store-grpc` 0/3 → 3/3,
+`configure-git-webserver` 1/3 → 3/3 and `adaptive-rejection-sampler` 0/3 → 2/3. D-378's phase-scoped policy and
+D-379/D-381's numbers were measured under the stricter configuration and are **understated**; the corrected row
+is the one to compare with the leaderboard. A full-set run at N = 1 under the corrected configuration is in
+flight; its number belongs in `review/benchmark/README.md` when it lands.
+
+**Formal.** None.
+
 ## D-381 A 12-hour agent budget does not raise the score: the failures are capability, not the clock (2026-10-01)
 
 **The request.** Raise the timeout to 12 hours. Done as a **test-time-compute point**, not the leaderboard

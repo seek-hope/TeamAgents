@@ -75,6 +75,16 @@ class TeamAgentsAgent(BaseInstalledAgent):
         return "0.2.0"
 
     async def install(self, environment: BaseEnvironment) -> None:
+        # Every built-in harbor agent installs its system dependencies here, and `ca_certificates` is the one that
+        # is `always_install`: an image without a CA bundle cannot verify TLS, so a later `apt-get`/`curl` in the
+        # *verifier* fails and the trial is scored 0 for the wrong reason. Omitting this call understates the
+        # score (measured: 5 of 59 trials in one sample had a verifier that never ran; with the call, one of them
+        # passed). Best-effort: a task image whose own apt sources have rotted (`debian:bullseye` 404s) must not
+        # turn into an agent-install error.
+        try:
+            await self.ensure_system_dependencies(environment, ("curl", "ca_certificates"))
+        except Exception as exc:  # noqa: BLE001 - the dependency is optional, the trial is not
+            self.logger.warning("could not install curl/ca-certificates: %s", exc)
         model = self.model_name or MODEL
         await environment.exec(command=f"mkdir -p {CONFIG_DIR}/teamagents {STATE_DIR} {WORKDIR} /logs/agent")
         await environment.upload_file(BINARY, "/usr/local/bin/teamagents")
