@@ -20,6 +20,36 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-381 A 12-hour agent budget does not raise the score: the failures are capability, not the clock (2026-10-01)
+
+**The request.** Raise the timeout to 12 hours. Done as a **test-time-compute point**, not the leaderboard
+protocol: `patch_phases.py` gained `TEAMAGENTS_AGENT_TIMEOUT_SEC`, which rewrites each task's own `[agent]
+timeout_sec` (the official protocol keeps each task's 900 s–12,000 s), and the adapter's turn budget moved with
+it (`TEAMAGENTS_TURN_TIMEOUT_SEC=43200`).
+
+**A targeted re-run first (the six tasks that were 0/3 at 890 s).** One recovered — `kv-store-grpc`, 1.0 in
+612 s. The other five finished **with no agent-side exception** in 422–1,877 s and still failed their own tests.
+That already says the deadline was not what stood between them and a pass.
+
+**The controlled comparison (same 20-task sample, same `low` effort, same official route, only the budget
+changes):**
+
+| Agent budget | Trials | Passed | Wilson 95 % | Trials over 900 s | Median wall | Agent exceptions |
+|---|---|---|---|---|---|---|
+| 890 s | 60 | 38 (63.3 %) | [0.507, 0.744] | 0 (by construction) | — | 13 |
+| **12 h** | **59** | **38 (64.4 %)** | **[0.517, 0.754]** | **7** | **275 s** | 10 |
+
+The budget is flat: 38 passes either way, overlapping intervals, and only 7 of 59 trials ever used more than
+900 s (longest 2,317 s). **This corrects D-380's framing.** The full set's 36 `lifecycle: "ACTIVE"` deadline
+failures were the *visible* symptom, not the cause; given the time, those turns finish and still fail. The rows
+in `review/benchmark/README.md` are therefore a **capability** measure of this model inside this product on
+these tasks, not an artifact of the harness's clock.
+
+**Formal.** None.
+
+**Ceiling.** 59 trials, one model route, one fixed sample; the 12 h point bounds cost and wall clock but does not
+change the estimate. A per-task rate at N = 3 over all 89 tasks is still the way to tighten the number.
+
 ## D-380 Terminal-Bench: the timeouts are throughput, not stuckness, and lower effort scores better (2026-10-01)
 
 **The diagnosis.** Every one of the full set's 36 turn-deadline failures is `lifecycle: "ACTIVE"` at the moment

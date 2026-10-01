@@ -61,26 +61,33 @@ Three runs, all on the phase-scoped protocol above and all under harbor's own pe
 every task these runs touched). Intervals are Wilson 95 % over trials; they overlap, so the differences are not
 significant on these samples.
 
-| Run | Model route | Tasks × attempts | `reasoning_effort` | Turn budget | Trials | Passed | Wilson 95 % |
+| Run | Model route | Tasks × attempts | `reasoning_effort` | Agent budget | Trials | Passed | Wilson 95 % |
 |---|---|---|---|---|---|---|---|
 | fixed sample | paratera | 20 × 3 | `high` | 840 s | 60 | 37 (61.7 %) | [0.490, 0.729] |
 | fixed sample | paratera | 20 × 3 | `max` | 890 s | 60 | 35 (58.3 %) | [0.457, 0.699] |
-| fixed sample | **official** | 20 × 3 | **`low`** | 890 s | 60 | **38 (63.3 %)** | **[0.507, 0.744]** |
+| fixed sample | official | 20 × 3 | `low` | 890 s | 60 | 38 (63.3 %) | [0.507, 0.744] |
+| fixed sample | official | 20 × 3 | `low` | **12 h** | 59 | 38 (64.4 %) | [0.517, 0.754] |
 | **full set** | paratera | **89 × 1** | **`high`** | **890 s** | **89** | **48 (53.9 %)** | **[0.436, 0.639]** |
 
-**Throughput, not reasoning depth, is the binding constraint — and lower effort is better here.** Raising
-`reasoning_effort` from `high` to `max` (the card's setting) *lowered* the result (37 → 35), and lowering it to
-`low` raised it (37 → 38) while cutting agent-side exceptions from ~30 to **13**. All intervals overlap, so none
-of the three differences is significant on 60 trials; what is not marginal is the mechanism: a turn that hits
-its deadline is `lifecycle: ACTIVE` — still working — and **all 36 timed-out trials in the full set are ACTIVE**,
-with watermarks from 118 to 4,721 committed events. The agent is not stuck; it runs out of the 900 s task
-window. Maximum effort makes each step slower, so fewer steps fit; `low` fits more.
+**A 12-hour budget does not raise the score: the failures are capability, not the clock.** Raising the agent
+budget from 890 s to 12 h (and harbor's per-task timeout with it) left the fixed sample where it was — 38/60 at
+890 s, 38/59 at 12 h, intervals overlapping — and only **7 of 59** trials used more than 900 s at all (median
+wall 275 s, longest 2,317 s). The 890 s run's 36 `lifecycle: "ACTIVE"` deadline failures were the *visible*
+symptom, not the cause: a targeted re-run of the six tasks that were 0/3 under the budget finished five of them
+in 422–1,877 s with **no agent-side exception**, and every one still failed its own tests; only `kv-store-grpc`
+recovered (1/3 at 12 h). So the honest reading of these rows is a **capability** measure of this model in this
+product on these tasks, not a harness artifact. (The earlier wording here called the constraint "throughput";
+that was wrong, and this paragraph replaces it.)
+
+The 12 h row is a **test-time-compute point**, not the leaderboard protocol: the official protocol keeps each
+task's own timeout (900 s–12,000 s here). `patch_phases.py` writes that cap with `TEAMAGENTS_AGENT_TIMEOUT_SEC`.
 
 The runs before the `low` row used the paratera relay (`llmapi.paratera.com`, model `DeepSeek-V4.1-Flash`); it
 began answering `403 team_model_access_denied` for every request while this was being measured, so the adapter
 now defaults to the **official** `https://api.deepseek.com` route (`deepseek-flash`), which is also the route the
-model card's own numbers come from. The model route, key variable and effort are all knobs
-(`TEAMAGENTS_MODEL`, `TEAMAGENTS_BASE_URL`, `TEAMAGENTS_API_KEY_ENV`, `TEAMAGENTS_REASONING_EFFORT`).
+model card's own numbers come from. The model route, key variable, effort and budget are all knobs
+(`TEAMAGENTS_MODEL`, `TEAMAGENTS_BASE_URL`, `TEAMAGENTS_API_KEY_ENV`, `TEAMAGENTS_REASONING_EFFORT`,
+`TEAMAGENTS_AGENT_TIMEOUT_SEC`).
 
 ### The fixed 20-task sample (3 attempts each)
 
