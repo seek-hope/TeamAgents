@@ -138,7 +138,86 @@ criterion asked for and what the CLI could not express before. Whether it raises
 is the real criterion depends on the model's ability to repair — which, on this evidence, is the binding
 constraint again (D-381).
 
-## 6. What is already ruled out
+## 6. The nine tasks that never passed at N = 3, each diagnosed
+
+D-389 left nine tasks at 0/3. They are not one phenomenon, and three of them were not the agent's fault at all.
+Each was re-measured where a measurement could separate "needs more time" from "cannot do it": the class-1
+experiments below ran the same tasks with **four times their declared agent budget**
+(`--agent-timeout-multiplier 4`), because the declared budget is what the official protocol gives them.
+
+### 6.1 Time vs capability (class 1)
+
+| Task | 0/3 at the declared budget | At 4× the budget | Reading |
+|---|---|---|---|
+| `gcode-to-text` | no `/app/out.txt` | **finished**, wrote `TEXT SHOWN BY text.gcode` | **capability** — it stopped trying to decode and wrote a description of the task instead. (D-381's 12-hour run reached the same place at 1877 s) |
+| `make-doom-for-mips` | no frame | **finished, 2 of 3 tests pass**: `frame.bmp` exists and matches the reference; only `test_vm_execution` fails on one missing stdout line | **nearly solved** — the hard part (a matching frame) is done; the remainder is narrow and not about time |
+| `extract-moves-from-video` | no `/app/solution.txt` | still no `/app/solution.txt` | **structurally out of reach** (below), not a time problem |
+| `train-fasttext` | no usable model (`model.bin cannot be opened`) | **ran the full 4 h**, produced a model of the **right size** (`test_model_size` passes) at **accuracy 0.582 against a 0.62 threshold** | **time-adjacent near-miss** — four times the budget buys a valid model 4 points short, and the trial still ended on the deadline |
+
+So the four split cleanly: one **capability** (`gcode-to-text`), one **nearly solved** (`make-doom-for-mips`), one **structurally blocked by a missing product capability** (`extract-moves-from-video`), and one **time-adjacent near-miss** (`train-fasttext`). None of them is "the model cannot do it" in the flat sense the raw 0/3 rows suggested.
+
+`gcode-to-text` is the cleanest single result in this document: with four times the budget the agent **finished
+and answered wrongly**, on a task whose answer is a single line. More time does not reach it.
+
+`extract-moves-from-video` deserves its own sentence, because it is a **product** gap rather than a model one:
+the task is to transcribe the moves out of a **video** of a Zork session, and this product has **no path that
+carries an image to the model** — the codemode `image()` helper accepts `data:` URLs but v2 has no image context
+flow at all (the ceiling recorded in D-376, and the reason the helper refuses remote URLs). Every attempt
+therefore has to OCR frames locally; none produced a file in 7,200 s.
+
+### 6.2 Well-formed artifact, wrong semantics (class 2)
+
+Both failures here are **deterministic** — the three N = 3 trials produced byte-identical wrong output — so they
+are defects of the agent's pipeline, not sampling.
+
+**`mteb-retrieve`.** The instruction: embed `/app/data.txt` with `BAAI/bge-small-zh-v1.5` at a pinned revision
+via the installed `mteb`, take the **5th highest** cosine similarity to the query `"terminal-bench"`, write that
+line. The delivered `/app/result.txt` (collected as an artifact) held
+
+```
+HumanEval: Benchmarking Python code generation via functional examples
+```
+
+while the expected line is `MTEB: Massive Text Embedding Benchmark`. The task's own reference solution shows what
+is easy to miss: this model needs the **`task_name="SciFact"` and `prompt_type=query|passage` arguments** to
+`encode()`, the ranking is `torch.topk(..., k=5).indices[0][4]`, and the reference even asserts that the
+similarities are unique before trusting a 5th-place rank. The agent produced a line from the right corpus with
+the wrong method.
+
+**`pytorch-model-cli`.** The verifier runs the delivered CLI over the first 50 MNIST test images and compares to
+a reference list. The agent's `cli_tool` passes the single provided image (`test_cli_tool_executable` expects
+`2`) and fails `test_cli_tool_output` with **exactly the same 11 of 50** mismatches in all three trials
+(`image 0 is 7, expected 2`; `image 18 is 1, expected 8`; …). Artifact collection shows why. The agent's own
+`cli_tool.cpp` says, in a comment it wrote:
+
+```
+// nearest-neighbour resize, scaled to [0,1] and normalized with
+// mean 0.1307 / std 0.3081.
+```
+
+and its `preprocess()` computes `(v/255 - 0.1307) / 0.3081`. The task's reference solution does **no
+standardisation at all**: `load_image` takes the red channel of a 28×28 RGBA decode and stores `r / 255.0`.
+The verifier's images are written from raw `ToTensor` values × 255, so the reference's convention is the one the
+hardcoded expected classes were produced with, and the agent's extra standardisation changes 11 predictions.
+
+**The instructive part is that the agent did verify — and measured the wrong thing.** It wrote
+`eval_mnist.py`, which downloads the real MNIST test set, generates its own PNGs, and evaluates three
+preprocessing variants (`v/255`, the standardised one, and raw) against the reference `model.py`, plus a
+200-image cross-check of the compiled tool against the labels. That check passes for the standardised variant
+too, because **accuracy cannot separate the two conventions** — the model is right on ~78 % of images either
+way. It then confirmed the provided image still predicts `2`. Every check it ran was self-consistent with the
+assumption under test, so none could falsify it. This is the sharpest instance yet of the point D-383 made in
+the abstract: **a self-check authored from the same assumption is not verification**, and the only check that
+would have caught it — predicting the same labels as the reference on the *verifier's* kind of image, not on
+its own — is exactly the independent-observer role P2 proposed.
+
+### 6.3 Excluded, not measured (class 3)
+
+`qemu-alpine-ssh` and `qemu-startup` are scored 0 by their images' mirror rot, in every run:
+`python3 review/benchmark/verifier_health.py <jobs dir>` reports both, 3 of 3 trials each, and exits 1 so the
+fact cannot be ignored. They are excluded from the denominator (see the README's exclusion convention).
+
+## 7. What is already ruled out
 
 - **Effort tier**: `max` is worse than `low` on the fixed sample (D-380).
 - **Wall clock**: a 12-hour budget leaves the score flat and lets the previously-zero tasks finish and fail

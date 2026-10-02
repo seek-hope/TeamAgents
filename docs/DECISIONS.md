@@ -20,6 +20,39 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-391 The nine never-passing tasks, diagnosed: there was no single cause (2026-10-02)
+
+D-389 left nine tasks at 0/3. Each was diagnosed rather than assumed — a four-times-budget re-run for the four
+that produced no artifact, artifact collection for the two that produced a wrong one, and a re-runnable health
+check for the two that were never evaluated. Full evidence in `review/benchmark/CAPABILITY.md` section 6.
+
+| Task | 0/3 at the declared budget | Diagnosis |
+|---|---|---|
+| `gcode-to-text` | no `out.txt` | **capability**: at 4× it finishes and writes `TEXT SHOWN BY text.gcode` — a description of the task in place of the decoded flag |
+| `make-doom-for-mips` | no frame | **nearly solved**: at 4× it finishes with `frame.bmp` matching the reference (2 of 3 tests); only one expected stdout line is missing |
+| `train-fasttext` | no usable model | **time-adjacent**: at 4× (the full 4 h) it produces a correctly sized model at accuracy 0.582 against a 0.62 threshold |
+| `extract-moves-from-video` | no `solution.txt` | **structurally unreachable**: the task is to read moves out of a *video*, and this product has no path that carries an image to the model (D-376's codemode `image()` accepts `data:` URLs only, and v2 has no image context flow) |
+| `mteb-retrieve` | wrong line | **deterministic method error**: the delivered line came from the right corpus with the wrong ranking; the task's own reference shows the subtlety (this model needs `task_name`/`prompt_type` to `encode()`, and the 5th rank needs `topk(k=5).indices[0][4]`) |
+| `pytorch-model-cli` | 11 of 50 predictions wrong | **deterministic preprocessing error**: the agent standardised with MNIST mean/std; the reference solution only divides by 255, and the verifier's images are raw `ToTensor × 255` |
+| `pytorch-model-recovery` | exit 2 before the model | **the CLI, not the model** (D-390: a prompt starting with `-`) — fixed, re-measured 3/3 |
+| `qemu-alpine-ssh`, `qemu-startup` | verifier never ran | **mirror rot**, excluded by `review/benchmark/verifier_health.py` |
+
+**The sharpest lesson is in `pytorch-model-cli`.** The agent *did* verify: it wrote `eval_mnist.py`, which
+downloads real MNIST, generates its own PNGs, evaluates three preprocessing variants against the reference
+`model.py`, and cross-checks the compiled tool on 200 images. Every one of those checks is **self-consistent
+with the assumption under test** — accuracy cannot separate `v/255` from `(v/255 − 0.1307)/0.3081`, because the
+model reaches ~78 % either way — so none of them could falsify it. The only check that would have caught it
+(predicting the reference's labels on the verifier's kind of image, not the agent's own) is exactly the
+independent-observer role D-383's P2 proposed. This is now measured, not argued.
+
+**Two product observations, stated but not decided.** (1) `extract-moves-from-video` cannot be attempted at all
+without an image path to the model; that is a real capability gap rather than a benchmark artefact. (2)
+`make-doom-for-mips` and `train-fasttext` are within reach of a larger budget, so the declared per-task budget
+is the binding constraint for them — the opposite of D-381's single-sample conclusion, and the reason the
+full-set protocol must keep using each task's own value.
+
+**Formal.** None.
+
 ## D-390 A prompt that starts with a dash was refused as an unknown flag: `exec` now takes `--` (2026-10-02)
 
 Found while analysing the nine tasks that never passed at N = 3 (D-389). `pytorch-model-recovery`'s instruction

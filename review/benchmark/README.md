@@ -55,6 +55,28 @@ Remaining divergences from the DeepSeek card's protocol, recorded rather than hi
 `high` where the card uses maximum effort; the product has no `max_steps = 500` counterpart, so a turn is bounded
 by `TEAMAGENTS_TURN_TIMEOUT_SEC` (840 s here, under harbor's 900 s agent timeout) and by the goal's budget.
 
+## Verifier health: the trials that must be excluded
+
+A scored 0 is only about the agent when the verifier actually ran. On two task images it cannot: `test.sh`
+installs its own tooling and the image's `apt` sources 404 today, so `pytest` never starts. Those trials are
+0 for a reason the agent cannot influence, and they have to be named rather than counted.
+
+`python3 review/benchmark/verifier_health.py JOBS_DIR [...]` reads every trial's verifier stdout and reports
+which tasks were never evaluated (it exits 1 when any were, so a comparison cannot ignore the fact). On the
+three full-set runs to date it reports the same two tasks, every time:
+
+```
+/tmp/ta-harbor/jobs_full_n3: 267 trial(s), 6 whose verifier never ran, 89 task(s)
+  EXCLUDE qemu-alpine-ssh: 3 of 3 trial(s) never evaluated
+  EXCLUDE qemu-startup: 3 of 3 trial(s) never evaluated
+```
+
+**Exclusion convention from here on:** `qemu-alpine-ssh` and `qemu-startup` are scored 0 by their images'
+mirror rot, not by TeamAgents, so they are **excluded from the denominator** of any headline figure and listed
+as such beside it. The N = 3 figure is therefore **207/264 = 78.4 % [73.1, 82.9]** on the tasks whose verifier
+ran (or **210/264 = 79.5 % [74.3, 84.0]** with the D-390 parser correction); the two tasks stay pending until
+their images are refreshed.
+
 ## Measured results (2026-10-01)
 
 Three runs, all on the phase-scoped protocol above and all under harbor's own per-task agent timeout (900 s for
