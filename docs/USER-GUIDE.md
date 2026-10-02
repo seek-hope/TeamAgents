@@ -31,7 +31,7 @@ teamagents                           # open the TUI (starts the per-user daemon 
   removes its socket; DESIGN §9), so `kill <pid>` — or Ctrl-C where you started the daemon by hand — still
   works when the lever is not reachable (`ps -eo pid,args | grep "[t]eamagents daemon"`, D-150). The session
   database stays where it is and the next `teamagents`/`exec` on that state root starts a fresh daemon.
-- **Headless use**: `teamagents exec [--json] [--timeout SEC] [--check CMD] "prompt"` goes through the same
+- **Headless use**: `teamagents exec [--json] [--timeout SEC] [--check CMD] [--accept ID=CMD] "prompt"` goes through the same
   daemon and reports the goal's terminal state, the assistant reply or a timeout; the prompt may come from
   stdin (`-`). The full contract is in §1.1.
 - **Authority** (D-61): `teamagents authority` lists the session's instances and grants, `teamagents authority
@@ -92,6 +92,14 @@ happened. Diagnostics go to stderr, the outcome to stdout (`--json` prints one J
   runtime's `[[checks]]` (§2.1) decide whether the goal may be reported done, your `--check` commands decide
   the exit code of a finished turn. So a run can exit `1` with the goal `SUCCEEDED` (your check failed) or
   with the goal `BLOCKED` while your check passed (measured: `python3 review/dogfood/two_gates.py`, D-101).
+- **`--accept ID=COMMAND`** (repeatable, D-385): the *goal-level* half of the same idea. It is attached to the
+  active goal **before** the input lands, so the runtime runs it at the completion boundary and a failing check
+  sends the turn back to work (a bounded repair round) instead of only colouring the exit code; after the budget
+  the goal is settled `BLOCKED`, never upgraded. Use it when "do not stop until this passes" is the point (`exec
+  --accept tests="pytest -q" "Fix the failing tests"`); `--check` remains the right tool when you only want a
+  verdict on a finished turn. The checks are the user's own: the attach is refused for a model identity, is
+  unioned by id with the goal's existing contract, and is refused once the goal has registered a check round
+(cancel it and open the next goal to change the contract).
 - **An input sent while a turn is running waits for that turn** (D-63): a model request is fixed once it is
   registered, so the input enters the conversation at the next boundary — after that turn's own answer — and
   gets a turn of its own. A headless run reports `input_queued` (and prints
@@ -124,7 +132,7 @@ row, which the TUI's panel and `instances` print when a member is not running (D
 | Verb | Fields it adds |
 |---|---|
 | every report | `session_id`, `state_root` |
-| `exec` | `permissions`, `session_workspace`, `instance_id`, `instance_lifecycle`, `end`, `goal_status`, `reply`, `failure`, `approval`, `input_queued`, `workspace`, `verification`, `verification_path`, `watermark` |
+| `exec` | `permissions`, `session_workspace`, `instance_id`, `instance_lifecycle`, `end`, `goal_status`, `reply`, `failure`, `approval`, `input_queued`, `workspace`, `verification`, `verification_path`, `acceptance`, `acceptance_goal`, `watermark` |
 | `authority list` | `revision`, `instances`, `grants` |
 | `authority grant` | `grant_id`, `revision`, `subject`, `action`, `resource_scope`, `parent_grant_id` |
 | `authority revoke` | `grant_id`, `grant`, `revoked`, `revision` |
@@ -147,6 +155,8 @@ What the field names do not carry:
 - `runners` rows are the verb's own census of the state root's job directories (not a daemon view): `job_id`, `instance` (the owning member, `null` when a driver's state root *is* the session root), `state` (the journal's own word: `READY`, `RUNNING`, `SUCCEEDED`, `CANCELLED`, `OUTCOME_UNKNOWN`, …), `terminal`, `runner` (`live`, `gone` or `unreachable`), `child_pid`, `service` (how many processes are still in the group the command created, or `null` when the journal cannot anchor it — a job from another boot, or one that never started), `finished_ms`, `exit_code`, and `outcome` — what `stop` did: `retired`, `service stopped: N process(es)`, `no runner`, `no service left`, or `refused: …` with the reason (a runner whose command is running refuses; so does a service stop on a job that is not settled), `null` when listing.
 - `verification` is the list of `--check` verdicts, each carrying the command, its ok flag, its exit code and
   its output; `verification_path` is the ledger written next to the session database (`null` when no check ran).
+- `acceptance` is what the run attached to the goal with `--accept` (each entry an `id` and a `command`), and
+  `acceptance_goal` names the goal it went to (`null` when no `--accept` was given).
 - `watermark` is the event cursor the report was built at, which is what a client resumes from after a
   reconnect (A28).
 - `result` is the daemon's own reply to a command, and `instance`/`task`/`approval`/`grant` is the affected row

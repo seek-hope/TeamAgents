@@ -164,6 +164,7 @@ teamagents exec "What is 1+1? Answer directly."                  # one input, pr
 teamagents exec --json --timeout 180 "Make /tmp/proj tests pass"  # machine-readable summary
 teamagents exec --stream-json "Get the tests green" | jq -c '.event.kind'  # the events while it runs
 teamagents exec --check "cargo test --offline" "Get the tests green"  # plus your own acceptance check
+teamagents exec --accept tests="pytest -q" "Fix the failing tests"    # the goal cannot settle until it passes
 git diff | teamagents exec -                                      # the prompt comes from stdin
 ```
 
@@ -177,7 +178,10 @@ answer it, so it reports instead of waiting), `124` the `--timeout` deadline pas
 infrastructure (no daemon, no model profile). Each `--check COMMAND` runs after the turn ends, in order, in
 the isolated shell inside your workspace (`--cwd` or the current directory); the first failure stops the list
 and makes the run fail. The verdicts are printed, written to `<state root>/verification.json` and included in
-the `--json` report as `verification`.
+the `--json` report as `verification`. Each `--accept ID=COMMAND`, by contrast, is attached to the *goal*
+before the input lands (`teamagents goals open --check ID=COMMAND` does the same for a goal you open yourself),
+so the runtime runs it at the completion boundary and sends a failing turn back to work before the goal can
+settle — the same machinery `[[checks]]` feeds (D-385).
 
 **Your session, your ceilings.** `[limits]` in the config bounds every goal — `max_total_tokens` refuses a
 request that would pass the usage ceiling and `deadline_minutes` refuses one past the deadline; without them a

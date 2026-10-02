@@ -215,7 +215,8 @@ verify-model-counterexamples: verify-tools
 		MC_daemon_keeps_serving_after_receipt.cfg:V2Daemon.tla \
 		MC_daemon_skips_an_event.cfg:V2Daemon.tla \
 		MC_daemon_delivers_twice.cfg:V2Daemon.tla \
-		MC_checks_rewinds_rounds.cfg:V2Checks.tla MC_approval_drops_the_expiry.cfg:V2Approval.tla \
+		MC_checks_rewinds_rounds.cfg:V2Checks.tla MC_checks_late_require.cfg:V2Checks.tla \
+		MC_approval_drops_the_expiry.cfg:V2Approval.tla \
 		MC_approval_rewrites_a_decision.cfg:V2Approval.tla \
 		MC_approval_keeps_pending_on_close.cfg:V2Approval.tla \
 		MC_approval_parks_without_a_row.cfg:V2Approval.tla \

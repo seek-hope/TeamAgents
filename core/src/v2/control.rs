@@ -130,6 +130,7 @@ fn dispatch(
         "reauthorize_operation" => reauthorize_operation(tx, session_id, params),
         "reset_instance" => reset_instance(tx, session_id, params, identity),
         "create_goal" => create_goal(tx, session_id, params, identity),
+        "require_checks" => require_checks(tx, session_id, params, identity),
         "send_message" => send_message(tx, session_id, params, identity),
         "drain_inbox" => drain_inbox(tx, session_id, params, identity),
         "delegate_task" => delegate_task(tx, session_id, params, identity),
@@ -1362,6 +1363,83 @@ fn create_goal(tx: &Connection, session_id: &str, params: &Json, identity: &Iden
     }
     event(tx, session_id, "goal_created", id, &json!({"goal_id": id}))?;
     Ok(json!({"goal_id": id, "status": "ACTIVE"}))
+}
+
+/// User-side ingress for required checks (§8/D-268): the headless `exec` can attach the acceptance commands it
+/// wants a goal judged by **before** the work starts, which is what makes the driver's repair round reachable
+/// without a hand-written `[[checks]]` config. The gate is `create_goal`'s: only the user or the project
+/// bootstrap predefines required checks, so a model can never install its own acceptance test. Checks are
+/// unioned by id and a second definition of an id is refused (an id names one contract).
+///
+/// A goal that has already registered a check round is refused: the contract a round was computed over stays
+/// fixed, because the driver decides a round from its own stored receipts and a check added afterwards would
+/// never be verified (the upgrade path is a checks revision recorded on the round — see `V2Checks.tla`).
+fn require_checks(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
+    if !matches!(identity, Identity::User | Identity::System) {
+        return Err("require_checks: only the user or the project bootstrap predefines required checks".into());
+    }
+    let goal_id = params["goal_id"].as_str().ok_or("require_checks.goal_id required")?;
+    let incoming = params["checks"].clone();
+    let list = incoming.as_array().ok_or("require_checks.checks must be an array")?;
+    if list.is_empty() {
+        return Err("require_checks.checks must not be empty".into());
+    }
+    validate_required_checks(&incoming)?;
+    let stored: Option<(String, String)> = tx
+        .query_row(
+            "SELECT status, limits_json FROM goals WHERE id = ?1 AND session_id = ?2",
+            rusqlite::params![goal_id, session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|e| format!("require_checks goal {goal_id}: {e}"))?;
+    let (status, limits_json) = stored.ok_or_else(|| format!("goal {goal_id} is not in this session"))?;
+    if status != "ACTIVE" {
+        return Err(format!("goal {goal_id} is {status}, not ACTIVE: a settled goal cannot take new checks"));
+    }
+    let rounds: i64 = tx
+        .query_row(
+            "SELECT COUNT(*) FROM model_requests WHERE goal_id = ?1 AND request_ref = 'required_check'",
+            [goal_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("require_checks rounds {goal_id}: {e}"))?;
+    if rounds > 0 {
+        return Err(format!(
+            "goal {goal_id} has already registered a check round: its acceptance contract is fixed \
+             (cancel the goal and open the next one with the checks you want)"
+        ));
+    }
+    let mut limits: Json = serde_json::from_str(&limits_json).unwrap_or_else(|_| json!({}));
+    let mut merged = limits.get("required_checks").and_then(Json::as_array).cloned().unwrap_or_default();
+    for check in list {
+        let id = check["id"].as_str().unwrap_or("");
+        match merged.iter().position(|existing| existing["id"].as_str() == Some(id)) {
+            Some(position) => {
+                if merged[position] != *check {
+                    return Err(format!(
+                        "required check {id:?} is already attached to goal {goal_id} with a different definition"
+                    ));
+                }
+            }
+            None => merged.push(check.clone()),
+        }
+    }
+    limits["required_checks"] = Json::Array(merged.clone());
+    tx.execute(
+        "UPDATE goals SET limits_json = ?1 WHERE id = ?2 AND session_id = ?3",
+        rusqlite::params![limits.to_string(), goal_id, session_id],
+    )
+    .map_err(|e| format!("require_checks update {goal_id}: {e}"))?;
+    let ids: Vec<&str> = merged.iter().filter_map(|check| check["id"].as_str()).collect();
+    event(
+        tx,
+        session_id,
+        "goal_checks_required",
+        goal_id,
+        &json!({"goal_id": goal_id, "checks": ids, "added": list.len()}),
+    )?;
+    Ok(json!({"goal_id": goal_id, "required_checks": merged}))
 }
 
 /// Accept boundary for input (§4.2, §5.4): context append + apply dedup +
@@ -7579,6 +7657,132 @@ mod tests {
         let limits: Json = serde_json::from_str(&limits).unwrap();
         assert_eq!(limits["required_checks"][0]["command"], json!("cargo test"));
         assert_eq!(limits["max_check_rounds"], json!(2));
+        cleanup(&path);
+    }
+
+    #[test]
+    fn require_checks_attaches_the_users_acceptance_before_the_round_then_freezes_it() {
+        let (mut ctl, path) = control("require-checks");
+        create_instance(&mut ctl, "i1");
+        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1", "instance_id": "i1"})), Identity::User).expect("goal");
+        // the gate is create_goal's: conditions a model distills cannot masquerade as user-confirmed checks
+        let err = ctl
+            .submit(
+                cmd(
+                    "rc-model",
+                    "require_checks",
+                    json!({"goal_id": "g1", "checks": [{"id": "c1", "command": "true"}]}),
+                ),
+                Identity::Instance("i1".into()),
+            )
+            .unwrap_err();
+        assert!(err.contains("only the user"), "{err}");
+        // malformed shapes and unknown goals fail closed
+        for checks in [
+            json!([]),
+            json!("not-an-array"),
+            json!([{"id": "c1"}]),
+            json!([{"id": "c1", "command": "true", "inputs": ["../escape"]}]),
+        ] {
+            assert!(ctl
+                .submit(cmd("rc-bad", "require_checks", json!({"goal_id": "g1", "checks": checks})), Identity::User)
+                .is_err());
+        }
+        assert!(ctl
+            .submit(
+                cmd(
+                    "rc-none",
+                    "require_checks",
+                    json!({"goal_id": "nope", "checks": [{"id": "c1", "command": "true"}]})
+                ),
+                Identity::User,
+            )
+            .is_err());
+        // the user's own attach, recorded as an event
+        let attached = ctl
+            .submit(
+                cmd(
+                    "rc-1",
+                    "require_checks",
+                    json!({"goal_id": "g1", "checks": [{"id": "c1", "command": "make check"}]}),
+                ),
+                Identity::User,
+            )
+            .expect("attach");
+        assert_eq!(attached["required_checks"][0]["command"], json!("make check"));
+        let recorded: i64 = ctl
+            .connection()
+            .query_row("SELECT COUNT(*) FROM events WHERE kind = 'goal_checks_required'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(recorded, 1, "attaching checks is auditable");
+        // the same id with the same definition is idempotent; a different one is refused (an id names one contract)
+        ctl.submit(
+            cmd("rc-2", "require_checks", json!({"goal_id": "g1", "checks": [{"id": "c1", "command": "make check"}]})),
+            Identity::User,
+        )
+        .expect("idempotent");
+        let err = ctl
+            .submit(
+                cmd("rc-3", "require_checks", json!({"goal_id": "g1", "checks": [{"id": "c1", "command": "true"}]})),
+                Identity::User,
+            )
+            .unwrap_err();
+        assert!(err.contains("different definition"), "{err}");
+        // checks create_goal already stored are unioned, never replaced
+        ctl.submit(
+            cmd(
+                "g2",
+                "create_goal",
+                json!({"id": "g2", "instance_id": "i1",
+                       "limits": {"required_checks": [{"id": "u1", "command": "cargo test"}]}}),
+            ),
+            Identity::User,
+        )
+        .expect("goal 2");
+        let merged = ctl
+            .submit(
+                cmd(
+                    "rc-4",
+                    "require_checks",
+                    json!({"goal_id": "g2", "checks": [{"id": "u2", "command": "cargo fmt --check"}]}),
+                ),
+                Identity::User,
+            )
+            .expect("union");
+        let ids: Vec<&str> =
+            merged["required_checks"].as_array().unwrap().iter().filter_map(|check| check["id"].as_str()).collect();
+        assert_eq!(ids, vec!["u1", "u2"]);
+        // once a round is registered the contract a round verified is fixed
+        let revision: i64 =
+            ctl.connection().query_row("SELECT revision FROM instances WHERE id = 'i1'", [], |row| row.get(0)).unwrap();
+        finish_import(&mut ctl, "fin", "i1", revision, "success");
+        ctl.submit(
+            cmd(
+                "rc-round",
+                "register_check_runs",
+                json!({"goal_id": "g2", "instance_id": "i1", "round": 1,
+                       "checks": [{"id": "u1", "command": "cargo test"}, {"id": "u2", "command": "cargo fmt --check"}]}),
+            ),
+            Identity::System,
+        )
+        .expect("round");
+        let err = ctl
+            .submit(
+                cmd("rc-5", "require_checks", json!({"goal_id": "g2", "checks": [{"id": "u3", "command": "true"}]})),
+                Identity::User,
+            )
+            .unwrap_err();
+        assert!(err.contains("check round"), "{err}");
+        // and a settled goal takes nothing new
+        ctl.submit(cmd("g3", "create_goal", json!({"id": "g3", "instance_id": "i1"})), Identity::User).expect("goal 3");
+        ctl.submit(cmd("cancel-g3", "cancel_goal", json!({"goal_id": "g3"})), Identity::User).expect("cancel");
+        let err = ctl
+            .submit(
+                cmd("rc-6", "require_checks", json!({"goal_id": "g3", "checks": [{"id": "c1", "command": "true"}]})),
+                Identity::User,
+            )
+            .unwrap_err();
+        assert!(err.contains("not ACTIVE"), "{err}");
         cleanup(&path);
     }
 

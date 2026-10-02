@@ -20,6 +20,47 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-385 The headless entry point can gate a goal on the user's checks, not only report them (2026-10-02)
+
+**The gap the failure analysis found (D-383).** The runtime already has the strong half: a goal's
+`limits.required_checks` are run at the completion boundary, a failure buys a bounded repair round, and an
+exhausted budget parks the goal BLOCKED (`step_completion_checks`; fed by the user config's `[[checks]]` and by
+`goals open --check ID=COMMAND`). But the entry point a CI job or a benchmark actually runs — `teamagents exec`
+— could only express the *weak* half: `--check COMMAND` runs after the turn in the client's workspace and
+colours the exit code. A failing check was reported to nobody and the turn had already stopped, which is exactly
+the "deliverable well-formed, semantics wrong, nobody checked" shape the failing trials show.
+
+**What was added.** `exec --accept ID=COMMAND` (repeatable). The client attaches the checks to the ACTIVE goal
+attached to the leader **before** submitting the input, through a new user-gated control command
+`require_checks {goal_id, checks}`:
+
+- identity: user or project bootstrap only, the same rule `create_goal` uses for `required_checks` — a model can
+  never install its own acceptance test (the design comment: "conditions a model distills from natural language
+  carry provenance and can never masquerade as user-confirmed required checks").
+- checks are **unioned by id** with whatever the goal already carries (D-268's rule: a client may add a check,
+  never drop one); a second definition of an id is refused, and so is a malformed shape.
+- the goal must be ACTIVE and must not have registered a check round. A round decides from its own stored
+  receipts, so a check added after registration would never run — allowing it would silently accept the goal on
+  a smaller contract. Changing a contract after that point is `goals cancel` plus a new goal.
+- the attach is an event (`goal_checks_required`), so who required what, and when, is auditable.
+
+**Formal.** `verification/tla/V2Checks.tla` now models the ingress: `required` and `roundChecks` are variables,
+`RequireCheck` grows the contract only while `candidate = "none"`, and the new claim
+`EveryRequiredCheckWasVerified` says a SUCCEEDED goal's *required* set is exactly what the round it closed on ran
+and passed (with `ChecksOnlyJoinBeforeAClaim` as the rule that makes it hold). The negative control
+`MC_checks_late_require.cfg` lets a check join after the claim and is **refuted** — which is why the refusal
+exists. `make verify-model-all` 29/29 verified, `verify-model-counterexamples` 91/91 refuted, `verify-kani` 3/3.
+
+**Tests.** `control::require_checks_attaches_the_users_acceptance_before_the_round_then_freezes_it` (the
+identity gate, malformed shapes, the union, the id-collision refusal, the round refusal, the terminal-goal
+refusal, the audit event) and `v2_daemon::exec_accept_makes_a_failing_check_repair_the_turn_then_block_the_goal`
+/ `exec_accept_lets_a_passing_check_settle_the_goal` (the real socket: three claims, three failed rounds and a
+BLOCKED goal with a non-zero exit; a passing check settling SUCCEEDED with exit 0).
+
+**Ceiling.** `require_checks` is refused once a round is registered (the upgrade path is a checks revision
+recorded on the round, which `EveryRequiredCheckWasVerified` is already shaped to verify). `--check` keeps its
+client-side contract unchanged; `--accept` is the goal-level one.
+
 ## D-384 `leak_guard` counts only this user's processes, and never crashes on a signal it may not send (2026-10-02)
 
 Running the benchmark while `make check` ran made the gate fail, and the cause was in the guard, not in the

@@ -132,6 +132,13 @@ pub struct ExecOptions {
     /// (`--check`). They run in the client's workspace after the turn ends and
     /// gate the exit code; an empty list means no client-side verification.
     pub checks: Vec<String>,
+    /// D-385: goal-level acceptance (`--accept ID=COMMAND`) — the user's own required checks, attached to the
+    /// goal this run's work is charged to *before* the input lands, so the driver's §8 repair round runs them at
+    /// the completion boundary: a failing check sends the turn back to work instead of only colouring the exit
+    /// code. Empty means the goal is judged by whatever `[[checks]]`/`create_goal` already put on it.
+    pub accept: Vec<Json>,
+    /// The id of the goal `accept` was attached to, for the report (`None` when `accept` is empty).
+    pub accept_goal: Option<String>,
     /// The workspace the acceptance commands run in (the client's `--cwd` or
     /// its current directory).
     pub workspace: PathBuf,
@@ -312,6 +319,20 @@ fn unchargeable_goal_advisory(goals: &Json, instance: &str) -> Option<String> {
     ))
 }
 
+/// The goal this run's work will be charged to: the ACTIVE goal **attached** to the leader instance — the same
+/// predicate the pre-submit advisory uses (§5.3, D-270), and the goal `exec --accept` attaches its checks to
+/// (`require_checks`, D-385).
+fn chargeable_goal<'a>(goals: &'a Json, instance: &str) -> Option<&'a str> {
+    goals["goals"].as_array()?.iter().find_map(|goal| {
+        (goal["status"] == json!("ACTIVE")
+            && goal["attached_instances"]
+                .as_array()
+                .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some(instance))))
+        .then(|| goal["id"].as_str())
+        .flatten()
+    })
+}
+
 /// The status of one *named* goal, read off the session's goal list (`goals` read method) — the same list the
 /// advisory above reads, and for the same reason: the checkpoint's single goal cannot answer a question about a
 /// named goal once a session carries more than one (D-266/D-275).
@@ -410,6 +431,32 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
     if let Some(advisory) = unchargeable_goal_advisory(&goals, &instance) {
         eprintln!("{advisory}");
     }
+    // D-385: `--accept` is the *goal-level* half of acceptance. It is attached here, before the input is
+    // submitted, because a check can only join a goal that has not started verifying yet (`require_checks`
+    // refuses once a round is registered) — and because the driver reads the goal's checks at the completion
+    // boundary, so attaching late would be a race with the model's own `finish`.
+    let accept_goal = if options.accept.is_empty() {
+        None
+    } else {
+        let goal = chargeable_goal(&goals, &instance).map(str::to_string).ok_or_else(|| {
+            (
+                2,
+                format!(
+                    "exec --accept: no active goal is attached to {instance}, so the acceptance commands have nothing \
+                 to gate; open one with `teamagents goals open --id ID --attach {instance} --check ID=COMMAND` \
+                 and run this input again"
+                ),
+            )
+        })?;
+        client
+            .command(
+                &format!("require-checks-{}", uuid::Uuid::new_v4().simple()),
+                "require_checks",
+                json!({"goal_id": goal, "checks": options.accept}),
+            )
+            .map_err(|error| (2, format!("exec --accept: {error}")))?;
+        Some(goal)
+    };
     // A parked or paused leader will not run the input: saying so beats
     // submitting work that sits in a queue nobody is draining until the caller's
     // own deadline expires (the user resumes it in the TUI, §5.4). A *terminated*
@@ -653,6 +700,9 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
         "workspace": options.workspace.to_string_lossy(),
         "verification": verification,
         "verification_path": verification_path,
+        // D-385: what the goal itself was judged by, as opposed to the client-side `verification` above
+        "acceptance": options.accept,
+        "acceptance_goal": accept_goal,
         "watermark": client.watermark,
     });
     Ok(ExecRun { report, end, checks_ok })

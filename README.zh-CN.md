@@ -134,6 +134,7 @@ teamagents exec "1+1 等于几？直接回答"                           # 提�
 teamagents exec --json --timeout 180 "把 /tmp/proj 的测试修绿"    # 机器可读摘要
 teamagents exec --stream-json "改到测试全绿" | jq -c '.event.kind' # 运行期间实时看事件
 teamagents exec --check "cargo test --offline" "改到测试全绿"     # 追加你自己的验收命令
+teamagents exec --accept tests="pytest -q" "修好失败的测试"    # 该检查通过前 goal 不能结算
 git diff | teamagents exec -                                    # 提示词从 stdin 读
 ```
 
@@ -146,7 +147,7 @@ git diff | teamagents exec -                                    # 提示词从 s
 `124` 超过 `--timeout`，`2` 用法或环境错误（没有 daemon、没有模型 profile）。每个 `--check COMMAND`
 在回合结束后按顺序在隔离 shell 里、在你的工作目录（`--cwd` 或当前目录）执行；第一条失败即停止，整个运行
 判为失败。判定结果会打印出来、写入 `<state root>/verification.json`，并作为 `verification` 出现在
-`--json` 报告里。
+`--json` 报告里。而 `--accept ID=COMMAND` 则在输入落地之**前**挂到 *goal* 上（`teamagents goals open --check ID=COMMAND` 对你自己打开的 goal 做同一件事），因此运行时会在完成边界执行它，并在 goal 结算前把失败的回合送回去继续工作——这正是 `[[checks]]` 所喂的同一套机制（D-385）。
 
 **会话的上限由你定。** 配置里的 `[limits]` 给每个 goal 设上限：`max_total_tokens` 会在用量到达上限前拒绝
 新请求，`deadline_minutes` 会在超过截止时间后拒绝新请求；两者都不配置时，会话会一直跑到你手动停止为止（`doctor`

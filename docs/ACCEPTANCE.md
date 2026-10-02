@@ -7,7 +7,7 @@ model probe sets and the three formal gates).
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 121 / engine 323 / tui 38 test targets) and `make pty` passes — re-measured 2026-09-29: `pty v2 smoke: ok`, rc 0, 41 s, credential-free; both are
+`make check` is green (core 122 / engine 325 / tui 38 test targets) and `make pty` passes — re-measured 2026-09-29: `pty v2 smoke: ok`, rc 0, 41 s, credential-free; both are
 preconditions for every item below. `make check` includes `make language-check`, which fails on non-English
 characters outside the two documented exceptions (`README.zh-CN.md` and the frozen material under
 `review/eval`).
@@ -106,7 +106,13 @@ A-matrix (which describes runtime scenarios):
 `--check` is a **client-side** acceptance command: it decides `exec`'s exit code after the turn. The goal's
 runtime `required_checks` are the stronger contract and come from the user config's `[[checks]]` (D-50,
 `docs/USER-GUIDE.md` §2.1); a project file may not define them, and a running session's goal limits cannot be
-amended (D-49/D-50).
+amended (D-49/D-50). **Since D-385 they are also reachable from `exec` itself**: `--accept ID=COMMAND` attaches
+the user's own checks to the active goal *before* the input lands (`require_checks`, the same ingress
+`goals open --check` uses), so the driver's repair round runs them and a failing check sends the turn back to
+work instead of only colouring the exit code. The two are complementary and both are the user's: `--check`
+reports, `--accept` gates. The attachment refuses a goal that has already registered a check round (a round
+decides from its own stored receipts, so a check added later would never run — `V2Checks.tla`,
+`EveryRequiredCheckWasVerified`, with the refuted control `MC_checks_late_require.cfg`).
 
 ## Upgrade notes (differences from earlier releases)
 

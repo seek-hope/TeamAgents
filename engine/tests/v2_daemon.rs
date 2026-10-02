@@ -815,6 +815,8 @@ fn exec_options(socket: &Path, workspace: &Path, prompt: &str, checks: Vec<Strin
         json_out: true,
         stream_events: false,
         checks,
+        accept: Vec::new(),
+        accept_goal: None,
         workspace: workspace.to_path_buf(),
     }
 }
@@ -850,6 +852,64 @@ async fn headless_runs_report_their_own_outcome_not_an_earlier_settlement() {
     assert_eq!(second.end, End::Reply, "{}", second.report);
     assert_eq!(second.report["reply"], json!("a plain answer"));
     assert_eq!(second.end.exit_code(second.checks_ok), 0);
+    handle.shutdown().await.expect("shutdown");
+}
+
+/// D-385: `exec --accept ID=COMMAND` attaches the user's own acceptance commands to the goal this run's work is
+/// charged to **before** the input lands, so the driver's §8 repair round runs them at the completion boundary.
+/// A failing check is not a coloured exit code: it sends the turn back to work, and after the bounded rounds the
+/// goal is settled BLOCKED — never SUCCEEDED. This is the same mechanism `[[checks]]` feeds, reachable from the
+/// entry point a CI job actually runs.
+#[tokio::test]
+async fn exec_accept_makes_a_failing_check_repair_the_turn_then_block_the_goal() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let scripts = HashMap::from([(
+        "i-leader".to_string(),
+        vec![
+            finish_call("claiming success"),
+            finish_call("claiming success again"),
+            // the default repair budget is three rounds (`DEFAULT_MAX_CHECK_ROUNDS`), so the third claim is the
+            // one that finds the budget spent and parks the goal
+            finish_call("claiming success a third time"),
+        ],
+    )]);
+    let (root, handle) = boot("exec-accept-fail", scripts).await;
+    let (socket, workspace) = (root.dir.join("state/daemon.sock"), root.dir.join("ws"));
+    let options = ExecOptions {
+        timeout_s: 60,
+        accept: vec![json!({"id": "never", "command": "test -f /tmp/teamagents-never-there"})],
+        ..exec_options(&socket, &workspace, "claim it", Vec::new())
+    };
+    let run = headless(options).await;
+    assert_eq!(run.report["acceptance"][0]["id"], json!("never"), "{}", run.report);
+    assert_eq!(run.report["acceptance_goal"], json!("goal-s-test"), "{}", run.report);
+    assert_eq!(
+        run.report["goal_status"],
+        json!("BLOCKED"),
+        "a failing acceptance check never upgrades the candidate: {}",
+        run.report
+    );
+    assert_ne!(run.end.exit_code(run.checks_ok), 0, "{}", run.report);
+    handle.shutdown().await.expect("shutdown");
+}
+
+/// The same attachment with a check that passes: the goal settles SUCCEEDED, so the feature gates without
+/// obstructing. The two runs also pin the attachment point — the check is on the goal *before* the input, which
+/// is why a later `exec --accept` cannot retro-fit a goal that already registered a round.
+#[tokio::test]
+async fn exec_accept_lets_a_passing_check_settle_the_goal() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let scripts = HashMap::from([("i-leader".to_string(), vec![finish_call("done, and it was checked")])]);
+    let (root, handle) = boot("exec-accept-pass", scripts).await;
+    let (socket, workspace) = (root.dir.join("state/daemon.sock"), root.dir.join("ws"));
+    let options = ExecOptions {
+        timeout_s: 60,
+        accept: vec![json!({"id": "always", "command": "true"})],
+        ..exec_options(&socket, &workspace, "claim it", Vec::new())
+    };
+    let run = headless(options).await;
+    assert_eq!(run.report["goal_status"], json!("SUCCEEDED"), "{}", run.report);
+    assert_eq!(run.end.exit_code(run.checks_ok), 0, "{}", run.report);
     handle.shutdown().await.expect("shutdown");
 }
 

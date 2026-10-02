@@ -7,7 +7,7 @@ use teamagents_engine::{cli, tools};
 const HELP: &str = "TeamAgents: work with a Leader in your terminal\n\n\
 usage: teamagents [--cwd DIR] [--state-root PATH] [--session ID] [--model KEY] [--full-auto]\n\
   teamagents                          TUI attached to your daemon (starts one if needed)\n\
-  teamagents exec [--json|--stream-json] [--timeout SEC] [--check CMD] \"…\"   one headless input\n\
+  teamagents exec [--json|--stream-json] [--timeout SEC] [--check CMD] [--accept ID=CMD] \"…\"   one headless input\n\
   teamagents authority [list] [--json]          the session's grants, with the ids revoke needs\n\
   teamagents authority grant --subject ID --action A --scope S [--parent G]\n\
   teamagents authority revoke --grant ID        revoke that grant and everything derived from it\n\
@@ -50,7 +50,9 @@ usage: teamagents [--cwd DIR] [--state-root PATH] [--session ID] [--model KEY] [
   teamagents version | --version      print the version\n\
   teamagents --help                   print this help\n\n\
 exec reads the prompt from stdin when it is \"-\", runs each --check acceptance command\n\
-in the workspace after the turn ends, and exits 0 completed, 1 failed or unfinished,\n\
+in the workspace after the turn ends (a verdict on the exit code), and attaches each\n\
+--accept ID=COMMAND to the goal before the input lands (a gate the runtime repairs\n\
+against at the completion boundary), and exits 0 completed, 1 failed or unfinished,\n\
 3 approval required, 124 timeout, 2 usage. --json prints one report object; --stream-json\n\
 prints the session's events (one {\"type\":\"event\",…} line each, in order, then the same\n\
 report as {\"type\":\"report\",…}) while the run waits, flushed line by line.\n\
@@ -118,6 +120,8 @@ pub struct Args {
     pub model: Option<String>,
     pub timeout: Option<u64>,
     pub checks: Vec<String>,
+    /// D-385: `exec --accept ID=COMMAND` — goal-level required checks attached to the goal before the input lands.
+    pub accept: Vec<String>,
     pub exec_json: bool,
     /// D-249: `exec --stream-json` — the session's events as NDJSON while the run waits, then the report.
     pub stream_json: bool,
@@ -172,6 +176,7 @@ fn parse_args() -> Args {
         model: None,
         timeout: None,
         checks: Vec::new(),
+        accept: Vec::new(),
         exec_json: false,
         subject: None,
         action: None,
@@ -568,6 +573,15 @@ fn parse_args() -> Args {
                 );
                 i += 2;
             }
+            "--accept" if matches!(args.command.as_deref(), Some("exec")) => {
+                args.accept.push(
+                    argv.get(i + 1)
+                        .cloned()
+                        .filter(|v| !v.is_empty() && !v.starts_with('-'))
+                        .unwrap_or_else(|| needs_a_value("--accept")),
+                );
+                i += 2;
+            }
             other if !other.starts_with('-') || other == "-" => {
                 if args.positional.is_some() {
                     reject("this entry point takes one positional argument; quote a multi-word prompt as one");
@@ -729,8 +743,31 @@ fn run_exec(args: &Args) -> i32 {
         json_out: args.exec_json,
         stream_events: args.stream_json,
         checks: args.checks.clone(),
+        accept: match parse_accept(&args.accept) {
+            Ok(checks) => checks,
+            Err(code) => return code,
+        },
+        accept_goal: None,
         workspace,
     })
+}
+
+/// `exec --accept ID=COMMAND` → the checks `require_checks` receives (D-385). A spec without `=` is a usage
+/// error, not a guess: an id that is not the user's is not an acceptance check the runtime can report back.
+fn parse_accept(specs: &[String]) -> Result<Vec<serde_json::Value>, i32> {
+    let mut checks = Vec::new();
+    for spec in specs {
+        let Some((id, command)) = spec.split_once('=') else {
+            eprintln!("exec --accept wants ID=COMMAND, got {spec:?}");
+            return Err(2);
+        };
+        if id.is_empty() || command.trim().is_empty() {
+            eprintln!("exec --accept wants a non-empty id and command, got {spec:?}");
+            return Err(2);
+        }
+        checks.push(serde_json::json!({"id": id, "command": command}));
+    }
+    Ok(checks)
 }
 
 /// `teamagents authority`: the user's authority surface (§5.1, D-61). It talks

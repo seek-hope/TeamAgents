@@ -69,6 +69,13 @@ significant on these samples.
 | fixed sample **(corrected harness, D-382)** | official | 20 × 3 | `low` | 890 s | 60 | **46 (76.7 %)** | **[0.646, 0.856]** |
 | fixed sample | official | 20 × 3 | `low` | **12 h** | 59 | 38 (64.4 %) | [0.517, 0.754] |
 | **full set** | paratera | **89 × 1** | **`high`** | **890 s** | **89** | **48 (53.9 %)** | **[0.436, 0.639]** |
+| **full set (corrected harness, D-382)** | official | **89 × 1** | **`low`** | **890 s** | **89** | **67 (75.3 %)** | **[0.654, 0.831]** |
+
+The two full-set rows are **not** a controlled comparison: the corrected one differs in the harness fixes, the
+model route (official instead of the paratera relay) and the effort tier at the same time. The controlled
+comparison is the fixed sample above (harness only: 38 → 46 of 60). Two of the 89 trials in the corrected row
+(`qemu-alpine-ssh`, `qemu-startup`) had a verifier that never ran — their images' `apt` sources 404 today — so
+that number is a floor by up to two tasks.
 
 **The first and third rows used a harness that was understating the score.** Two defects (D-382) produced false
 zeros: the adapter never installed `curl`/`ca-certificates`, so a verifier on an image without a CA bundle could

@@ -5,6 +5,21 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
+## 0. Gate status (re-run 2026-10-02 at `MATERIAL-COMMIT`)
+
+* **D-385 added the required-check *ingress* to the check model and re-ran all three targets on this tree
+  (2026-10-02).** `require_checks` lets a user attach acceptance commands to a goal before it starts verifying,
+  so `V2Checks.tla` now carries `required` and `roundChecks` as variables and two new claims:
+  `EveryRequiredCheckWasVerified` (a SUCCEEDED goal's required contract is exactly what the round it closed on
+  ran and passed) and `ChecksOnlyJoinBeforeAClaim` (the rule that makes it hold, monitored by `lateJoin`).
+  `make verify-model-all`: all **29** configurations `No error has been found` (rc 0) — the extended
+  `MC_checks.cfg` is exhaustive in under a second (718 states generated / 297 distinct / depth 14).
+  `make verify-model-counterexamples`: all **91** negative controls are refuted (rc 0) — the new one is
+  `MC_checks_late_require.cfg`, which lets a check join *after* the claim so the registered round never runs it
+  and `EveryRequiredCheckWasVerified` is violated. `make verify-kani` reports `Complete - 3 successfully
+  verified harnesses, 0 failures, 3 total` (rc 0). The round changed `verification/tla/V2Checks.tla`, added
+  `MC_checks_late_require.cfg` and registered it in the counterexample target; nothing else in the material.
+
 ## 0. Gate status (re-run 2026-09-30 at `2a1cb16f`)
 
 * **D-374 added the codemode information-flow model, and D-376 extended it with the veto rule; all three targets
@@ -323,7 +338,7 @@ Evidence that the checks are neither vacuous nor insensitive ("passing" is not b
   a decided approval / a command replay / a dispatch refused after revocation".
 - Non-vacuity on the model side: splitting the `V2Daemon` `checkpoint` into two steps made
   `SnapshotNeverLeadsCursor` fail immediately, and relaxing `V2Checks`' `Accept` (accepting as soon as one
-  check passes) made `SuccessRequiresAllChecksPassed` fail immediately.
+  check passes) made `EveryRequiredCheckWasVerified` fail immediately.
 - The coverage assertion for wire-protocol pairing once caught a **no-op**: the first version located indexes
   by substring, so the pairing check never actually ran.
 
