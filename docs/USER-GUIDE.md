@@ -100,6 +100,10 @@ happened. Diagnostics go to stderr, the outcome to stdout (`--json` prints one J
   verdict on a finished turn. The checks are the user's own: the attach is refused for a model identity, is
   unioned by id with the goal's existing contract, and is refused once the goal has registered a check round
 (cancel it and open the next goal to change the contract).
+- **`--` ends the option list** (D-390): `teamagents exec -- "- a prompt that starts with a dash"`. Without
+  it a prompt whose first character is `-` (a bullet list, a diff, a negative number) is read as an unknown
+  flag and refused with the usage text before anything runs. `-` alone still means "read the prompt from
+  stdin".
 - **An input sent while a turn is running waits for that turn** (D-63): a model request is fixed once it is
   registered, so the input enters the conversation at the next boundary — after that turn's own answer — and
   gets a turn of its own. A headless run reports `input_queued` (and prints

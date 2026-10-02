@@ -139,6 +139,10 @@ class TeamAgentsAgent(BaseInstalledAgent):
                 # always derived from the task's own *instruction* (never from its hidden tests), so an A/B
                 # measures what a user who knows their acceptance criterion gets from the feature.
                 *[f"--accept {shlex.quote(check['id'] + '=' + check['command'])}" for check in ACCEPT],
+                # D-390: `--` ends option parsing. A benchmark instruction that begins with "- " (a bullet list)
+                # was otherwise read as an unknown flag and refused with exit 2 before the model was reached —
+                # measured on `pytorch-model-recovery`, whose instruction starts exactly that way.
+                "--",
                 shlex.quote(instruction),
             ]
         )

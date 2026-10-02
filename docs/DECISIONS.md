@@ -20,6 +20,29 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-390 A prompt that starts with a dash was refused as an unknown flag: `exec` now takes `--` (2026-10-02)
+
+Found while analysing the nine tasks that never passed at N = 3 (D-389). `pytorch-model-recovery`'s instruction
+begins with `"- "` (a bullet list), and the adapter hands the instruction to `exec` as a positional argument. The
+argv parser has no end-of-options marker: any argument that starts with `-` and is not a known flag goes to the
+usage refusal. So all three of that task's trials died at the parser with **exit 2 before the model was ever
+reached** — a 0/3 row that measured the CLI, not the model.
+
+**The fix is the standard one**: `--` ends option parsing, and everything after it is a positional argument.
+`teamagents exec -- "- a bullet prompt"` now works; `-` alone still means "read the prompt from stdin". The
+harness adapter passes `--` before the instruction for the same reason.
+
+**Evidence.** `engine/tests/cli.rs::a_prompt_that_starts_with_a_dash_needs_the_end_of_flags_marker` pins all
+three behaviours against the real binary (refused without the marker, accepted with it — the next failure is the
+unconfigured scratch home's missing model profile — and the one-positional rule still holds after it). Measured
+by hand first: without `--` the binary prints `- a bullet prompt: no entry point this build serves accepts that
+argument here`, with it the run proceeds to the daemon.
+
+**Follow-up measurement.** A 3-attempt re-run of `pytorch-model-recovery` under the fixed adapter and binary is
+recorded in `review/benchmark/README.md`; the row is only meaningful next to the 0/3 it replaces.
+
+**Formal.** None — an argument parser rule, pinned by a test that drives the shipped binary.
+
 ## D-389 Terminal-Bench 2.1, N = 3, per-task budgets: 207/267 = 77.5 % [72.2, 82.1] (2026-10-02)
 
 The official protocol's shape finally measured: **N = 3 on all 89 tasks**, each task run with **its own declared

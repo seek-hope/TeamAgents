@@ -7,7 +7,7 @@ use teamagents_engine::{cli, tools};
 const HELP: &str = "TeamAgents: work with a Leader in your terminal\n\n\
 usage: teamagents [--cwd DIR] [--state-root PATH] [--session ID] [--model KEY] [--full-auto]\n\
   teamagents                          TUI attached to your daemon (starts one if needed)\n\
-  teamagents exec [--json|--stream-json] [--timeout SEC] [--check CMD] [--accept ID=CMD] \"…\"   one headless input\n\
+  teamagents exec [--json|--stream-json] [--timeout SEC] [--check CMD] [--accept ID=CMD] [--] \"…\"   one headless input\n\
   teamagents authority [list] [--json]          the session's grants, with the ids revoke needs\n\
   teamagents authority grant --subject ID --action A --scope S [--parent G]\n\
   teamagents authority revoke --grant ID        revoke that grant and everything derived from it\n\
@@ -122,6 +122,8 @@ pub struct Args {
     pub checks: Vec<String>,
     /// D-385: `exec --accept ID=COMMAND` — goal-level required checks attached to the goal before the input lands.
     pub accept: Vec<String>,
+    /// D-390: `--` was seen — everything after it is a positional argument, never a flag.
+    pub after_double_dash: bool,
     pub exec_json: bool,
     /// D-249: `exec --stream-json` — the session's events as NDJSON while the run waits, then the report.
     pub stream_json: bool,
@@ -177,6 +179,7 @@ fn parse_args() -> Args {
         timeout: None,
         checks: Vec::new(),
         accept: Vec::new(),
+        after_double_dash: false,
         exec_json: false,
         subject: None,
         action: None,
@@ -582,7 +585,16 @@ fn parse_args() -> Args {
                 );
                 i += 2;
             }
-            other if !other.starts_with('-') || other == "-" => {
+            // D-390: `--` ends option parsing, so a prompt that *starts* with a dash (a bullet list, a diff, a
+            // negative number) is an argument rather than an unknown flag. Without it the only way to submit
+            // such a prompt was stdin, and `teamagents exec "- a bullet"` was refused with the usage text —
+            // measured on a benchmark task whose instruction begins with "- ", where every attempt died at the
+            // parser (exit 2) before the model was reached.
+            "--" => {
+                args.after_double_dash = true;
+                i += 1;
+            }
+            other if args.after_double_dash || !other.starts_with('-') || other == "-" => {
                 if args.positional.is_some() {
                     reject("this entry point takes one positional argument; quote a multi-word prompt as one");
                 }
@@ -1479,7 +1491,7 @@ fn note_session_settings(socket: &Path, full_auto: bool, cwd: Option<&str>, star
 /// stdin when that argument is `-` (so scripts can feed a long instruction).
 fn resolve_prompt(positional: Option<String>, mut stdin: impl std::io::Read) -> Result<String, String> {
     let Some(prompt) = positional else {
-        return Err("exec needs a prompt: teamagents exec [--json] [--timeout SEC] [--check CMD] \"…\" (or - to read it from stdin)".into());
+        return Err("exec needs a prompt: teamagents exec [--json] [--timeout SEC] [--check CMD] [--] \"…\" (or - to read it from stdin; use -- before a prompt that starts with a dash)".into());
     };
     let text = if prompt == "-" {
         let mut buffer = String::new();

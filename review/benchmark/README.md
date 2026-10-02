@@ -72,13 +72,22 @@ significant on these samples.
 | **full set (corrected harness, D-382)** | official | **89 × 1** | **`low`** | **890 s** | **89** | **67 (75.3 %)** | **[0.654, 0.831]** |
 | **full set (per-task budgets, D-387)** | official | **89 × 1** | **`low`** | **task's own** | **89** | **68 (76.4 %)** | **[0.666, 0.840]** |
 | **full set (per-task budgets, D-387)** | official | **89 × 3** | **`low`** | **task's own** | **267** | **207 (77.5 %)** | **[0.722, 0.821]** |
+| full set **(after the D-390 parser fix** for one task) | official | 89 × 3 | `low` | task's own | 267 | **210 (78.7 %)** | **[0.733, 0.831]** |
 
 The two full-set rows are **not** a controlled comparison: the corrected one differs in the harness fixes, the
 model route (official instead of the paratera relay) and the effort tier at the same time.
 
 **A single full-set row is a point estimate with a ±5-task band (D-388).**
 
-**The N = 3 run is the headline row (D-389).** 207 of 267 trials passed, and because every task ran three
+**The N = 3 run is the headline row (D-389).**
+
+**One row was measuring the CLI, not the model (D-390).** `pytorch-model-recovery`'s instruction begins with
+`"- "`, and without an end-of-options marker the parser read it as an unknown flag: all three trials exited 2
+**before the model was reached**. `exec` takes `--` now; a re-run of that task alone under the fixed binary
+scored **3/3**, so the corrected figure is **210/267 = 78.7 % [73.3, 83.1]** — computed by replacing that task's
+0/3 with its re-measured 3/3, which is sound because it is the only instruction in the dataset that starts
+with a dash.
+ 207 of 267 trials passed, and because every task ran three
 times the per-task mean agrees with the trial mean exactly: **77.5 % [72.2 %, 82.1 %]**. Per task: **55 tasks
 3/3, 17 tasks 2/3, 8 tasks 1/3, 9 tasks 0/3**; 40 trials (15 %) ended in an exception (33 `AgentTimeoutError`,
 7 non-zero exits), and 6 trials (`qemu-alpine-ssh` ×3, `qemu-startup` ×3) had a verifier that never ran

@@ -238,6 +238,37 @@ fn a_rejected_argument_says_which_one_and_why() {
     assert!(!home.join("session.sqlite").exists(), "an empty --state-root must not initialize the cwd");
 }
 
+/// D-390: a prompt that starts with a dash is an argument, not a flag, once `--` ends the option list. Without
+/// the marker the parser refuses it as an unknown flag — found by a benchmark task whose instruction begins
+/// with `"- "`, where every attempt died at the parser (exit 2) before the model was reached.
+#[test]
+fn a_prompt_that_starts_with_a_dash_needs_the_end_of_flags_marker() {
+    let home = Scratch::new("double-dash");
+    let run = |args: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
+            .args(args)
+            .env("XDG_STATE_HOME", home.join("state"))
+            .env("XDG_CONFIG_HOME", home.join("config"))
+            .output()
+            .expect("run cli");
+        (output.status.code(), String::from_utf8_lossy(&output.stderr).into_owned())
+    };
+    // without the marker the prompt is read as a flag and the run never starts
+    let (code, stderr) = run(&["exec", "- a bullet prompt"]);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(stderr.contains("no entry point this build serves accepts that argument"), "{stderr}");
+    // with it the prompt reaches the client, which fails on the missing model profile (the same code, a
+    // different reason: that is what "the parser accepted it" looks like in an unconfigured scratch home)
+    let (code, stderr) = run(&["exec", "--", "- a bullet prompt"]);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(!stderr.contains("no entry point this build serves accepts that argument"), "{stderr}");
+    assert!(stderr.contains("no model profile is configured"), "{stderr}");
+    // the one-positional rule still holds after the marker
+    let (code, stderr) = run(&["exec", "--", "one", "two"]);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(stderr.contains("this entry point takes one positional argument"), "{stderr}");
+}
+
 /// D-227: a state root deep enough that `daemon.sock` crosses Linux's `sun_path` limit cannot hold a session.
 /// Measured 2026-09-27: `init` printed the socket path as if it were usable and `doctor` reported the state root
 /// `[ok]`, so the first run was where the user met it — as the daemon's raw `bind …: path must be shorter than
