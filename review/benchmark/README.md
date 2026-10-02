@@ -82,8 +82,9 @@ zeros: the adapter never installed `curl`/`ca-certificates`, so a verifier on an
 not `apt-get` or `uvx` and pytest never ran (5 of 59 trials); and the phase-scoped network had set the
 *environment* baseline to `no-network`, which also governs setup, while every task declares
 `allow_internet = true` (harbor's `PUBLIC`). With both fixed and the tasks used as authored, the same sample at
-the same settings is **46/60 (76.7 %)**. Product-side reading of what still fails, and three proposals:
-[CAPABILITY.md](CAPABILITY.md).
+the same settings is **46/60 (76.7 %)**. Product-side reading of what still fails, the three proposals, and the A/B of the acceptance gate that
+was implemented (D-385/D-386: its checks are observable and it does **not** raise the pass rate from 2/9 to more
+than 1/9 — it converts a silent wrong "done" into a named, bounded failure): [CAPABILITY.md](CAPABILITY.md).
 
 **A 12-hour budget does not raise the score: the failures are capability, not the clock.** Raising the agent
 budget from 890 s to 12 h (and harbor's per-task timeout with it) left the fixed sample where it was — 38/60 at

@@ -20,6 +20,40 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-386 The goal-level acceptance A/B: the gate works, the pass rate does not move (2026-10-02)
+
+D-385's feature was measured, not assumed. Same tasks, same model, same budget (890 s, `low`, official route,
+pristine tasks, concurrency 3), checks derived **only from each task's instruction** (never from its hidden tests),
+3 attempts per arm:
+
+| Task | bare | `--accept` | What the check could see |
+|---|---|---|---|
+| `query-optimize` | 2/3 | 1/3 | the instruction's real criterion: the rewritten query must return the same rows |
+| `gcode-to-text` | 0/3 | 0/3 | only "/app/out.txt is non-empty" |
+| `pytorch-model-cli` | 0/3 | 0/3 | interface + self-consistency only |
+| **total** | **2/9** | **1/9** | |
+
+**The mechanism did exactly what it says.** In the `query-optimize` arm two runs attached the check, failed it,
+spent the bounded repair rounds and settled the goal BLOCKED with the failing check named (`end: failed`,
+`goal_status: BLOCKED`) instead of reporting a wrong solution as finished. The third passed. So the ingress, the
+repair loop and the settlement are observable in a real container, not only in tests.
+
+**It did not raise the score, and the honest reading is a negative one.** On the one task whose instruction carries
+a machine-checkable criterion the model could not *repair* inside the budget, and on the other two the instruction
+carries none, so the checks were weak and caught nothing (in `gcode-to-text` every run timed out before claiming
+success, and a check only verifies a claimed success, §8). 1/9 versus 2/9 on 9 trials per arm separates nothing.
+
+**What the feature is worth, stated without spin.** It does not raise this model's Terminal-Bench number. It turns
+a silent wrong "done" into an explicit, named, bounded failure — the contract a user who already knows their
+acceptance criterion was asking for, and one the headless entry point could not express before (its `--check`
+runs after the turn and reports to nobody). The further lever remains the model's ability to converge, which
+D-381 already showed is not a matter of wall clock.
+
+**Formal.** D-385's `V2Checks.tla` extension (29/29 verified, the late-addition control refuted).
+
+**Ceiling.** 9 trials per arm on three tasks, one model, one budget; the effect on a user whose check *is* the
+criterion is not measured here.
+
 ## D-385 The headless entry point can gate a goal on the user's checks, not only report them (2026-10-02)
 
 **The gap the failure analysis found (D-383).** The runtime already has the strong half: a goal's

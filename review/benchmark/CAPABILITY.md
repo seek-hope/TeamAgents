@@ -106,7 +106,39 @@ is stalled. Detect it, abort the provider stream, and retry the request once bef
 - **Formal.** `V2Codemode`/`V2Schedule` style: a watcher that may abort only when the watermark is unchanged
   across a window, with a control that aborts a progressing turn (refuted).
 
-## 5. What is already ruled out
+## 5. The A/B for P1's real mechanism (D-385/D-386): the gate works, the score does not move
+
+P1 was investigated and turned out to be **already implemented** — `limits.required_checks`, the driver's repair
+round and the BLOCKED settlement (A16/§8, `V2Checks.tla`) — with one thing missing: the headless entry point a CI
+job or a benchmark runs could not attach checks to a goal (its `--check` runs *after* the turn). D-385 added that
+ingress (`exec --accept ID=COMMAND`, control command `require_checks`). The A/B below measures what it buys.
+
+Same tasks, same model, same budget (890 s, `low`, official route, pristine tasks, concurrency 3), checks derived
+**only from each task's instruction**, 3 attempts per arm:
+
+| Task | bare | `--accept` | What the check could see |
+|---|---|---|---|
+| `query-optimize` | 2/3 | 1/3 | the instruction's real criterion (the rewritten query must return the same rows) |
+| `gcode-to-text` | 0/3 | 0/3 | only "`/app/out.txt` is non-empty" |
+| `pytorch-model-cli` | 0/3 | 0/3 | interface + self-consistency only (the digit's correctness is not in the instruction) |
+| **total** | **2/9** | **1/9** | |
+
+**The mechanism is observable and correct; the pass rate is flat.** In the `query-optimize` arm the gate did
+exactly its job — two of the three runs attached the check, failed it, spent the bounded repair rounds and settled
+the goal **BLOCKED** (`end: failed`, `goal_status: BLOCKED`, the failing check named) where the bare arm could have
+reported a wrong solution as finished. It just did not *converge*: the model could not repair the query inside the
+remaining budget. On the other two tasks the instruction does not carry a machine-checkable criterion, so the
+checks were weak and caught nothing (and in `gcode-to-text` all three runs timed out before claiming success, so
+the check — which only ever verifies a *claimed success*, §8 — never ran at all). 9 trials per arm is far too
+small to separate 1/9 from 2/9.
+
+**What the feature is worth, honestly stated.** It does not raise this model's Terminal-Bench score. It converts a
+silent wrong "done" into an explicit, named, bounded failure, which is what a user who *knows* their acceptance
+criterion asked for and what the CLI could not express before. Whether it raises the score for a user whose check
+is the real criterion depends on the model's ability to repair — which, on this evidence, is the binding
+constraint again (D-381).
+
+## 6. What is already ruled out
 
 - **Effort tier**: `max` is worse than `low` on the fixed sample (D-380).
 - **Wall clock**: a 12-hour budget leaves the score flat and lets the previously-zero tasks finish and fail

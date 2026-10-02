@@ -16,6 +16,7 @@ Nothing here changes the product: it is the benchmark harness's half of the run.
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import tempfile
@@ -43,6 +44,8 @@ MODEL = os.environ.get("TEAMAGENTS_MODEL", "deepseek-flash")
 BASE_URL = os.environ.get("TEAMAGENTS_BASE_URL", "https://api.deepseek.com")
 API_KEY_ENV = os.environ.get("TEAMAGENTS_API_KEY_ENV", "DEEPSEEK_API_KEY")
 REASONING_EFFORT = os.environ.get("TEAMAGENTS_REASONING_EFFORT", "high")
+# D-385 `--accept` checks for the A/B (see `run`); empty keeps every trial a bare goal.
+ACCEPT = json.loads(os.environ.get("TEAMAGENTS_ACCEPT", "[]"))
 
 # The experiment's config, frozen like the repo's eval config: native 1M window (D-36), no ceiling.
 CONFIG_TEMPLATE = """\
@@ -126,6 +129,10 @@ class TeamAgentsAgent(BaseInstalledAgent):
                 "exec",
                 "--json",
                 f"--timeout {TURN_TIMEOUT_SEC}",
+                # `TEAMAGENTS_ACCEPT` = JSON `[{"id": …, "command": …}]`: the goal-level acceptance of D-385,
+                # always derived from the task's own *instruction* (never from its hidden tests), so an A/B
+                # measures what a user who knows their acceptance criterion gets from the feature.
+                *[f"--accept {shlex.quote(check['id'] + '=' + check['command'])}" for check in ACCEPT],
                 shlex.quote(instruction),
             ]
         )
