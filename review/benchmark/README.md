@@ -71,11 +71,22 @@ significant on these samples.
 | **full set** | paratera | **89 × 1** | **`high`** | **890 s** | **89** | **48 (53.9 %)** | **[0.436, 0.639]** |
 | **full set (corrected harness, D-382)** | official | **89 × 1** | **`low`** | **890 s** | **89** | **67 (75.3 %)** | **[0.654, 0.831]** |
 | **full set (per-task budgets, D-387)** | official | **89 × 1** | **`low`** | **task's own** | **89** | **68 (76.4 %)** | **[0.666, 0.840]** |
+| **full set (per-task budgets, D-387)** | official | **89 × 3** | **`low`** | **task's own** | **267** | **207 (77.5 %)** | **[0.722, 0.821]** |
 
 The two full-set rows are **not** a controlled comparison: the corrected one differs in the harness fixes, the
 model route (official instead of the paratera relay) and the effort tier at the same time.
 
-**A single full-set row is a point estimate with a ±5-task band (D-388).** The flat-890 s and per-task-budget
+**A single full-set row is a point estimate with a ±5-task band (D-388).**
+
+**The N = 3 run is the headline row (D-389).** 207 of 267 trials passed, and because every task ran three
+times the per-task mean agrees with the trial mean exactly: **77.5 % [72.2 %, 82.1 %]**. Per task: **55 tasks
+3/3, 17 tasks 2/3, 8 tasks 1/3, 9 tasks 0/3**; 40 trials (15 %) ended in an exception (33 `AgentTimeoutError`,
+7 non-zero exits), and 6 trials (`qemu-alpine-ssh` ×3, `qemu-startup` ×3) had a verifier that never ran
+because those images' `apt` sources 404 today — so that number is a floor by up to two tasks. The nine tasks
+that never passed in three attempts are `extract-moves-from-video`, `gcode-to-text`, `make-doom-for-mips`,
+`mteb-retrieve`, `pytorch-model-cli`, `pytorch-model-recovery`, `qemu-alpine-ssh`, `qemu-startup` and
+`train-fasttext`.
+ The flat-890 s and per-task-budget
 runs above used the same model, effort and route and moved **9 gains against 8 losses** for a net +1; split by
 whether the budget really changed, the 50 tasks whose budget stayed ≤ 900 s went 39 → 34 (a swing with no
 treatment difference, so it is the noise floor) while the 39 tasks whose budget was raised went 28 → 34. The

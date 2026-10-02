@@ -20,6 +20,45 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-389 Terminal-Bench 2.1, N = 3, per-task budgets: 207/267 = 77.5 % [72.2, 82.1] (2026-10-02)
+
+The official protocol's shape finally measured: **N = 3 on all 89 tasks**, each task run with **its own declared
+agent budget** (D-387), `deepseek-flash` at `reasoning_effort = low` on the official route, pristine task trees,
+concurrency 8.
+
+| | value |
+|---|---|
+| trials | 267 |
+| passed | **207 (77.5 %)** |
+| Wilson 95 % | **[0.722, 0.821]** |
+| per-task mean | 0.7753 (identical, three trials per task) |
+| per-task | 55 tasks 3/3, 17 tasks 2/3, 8 tasks 1/3, 9 tasks 0/3 |
+| exceptions | 40 trials (15 %): 33 `AgentTimeoutError`, 7 non-zero exits |
+| verifier never ran | 6 trials, all `qemu-alpine-ssh` ×3 and `qemu-startup` ×3 (their images' `apt` sources 404) |
+
+Nine tasks never passed in three attempts: `extract-moves-from-video`, `gcode-to-text`, `make-doom-for-mips`,
+`mteb-retrieve`, `pytorch-model-cli`, `pytorch-model-recovery`, `qemu-alpine-ssh`, `qemu-startup`,
+`train-fasttext`. Two of them are the mirror-rot trials above, so the honest range is 77.5 % with a floor that
+could be two tasks higher.
+
+**How much of the remaining gap is the clock.** 33 of 267 trials (12 %) ended on the task's own deadline with
+the agent still working, and the exceptions are concentrated in the same tasks that make up the 0/3 and 1/3
+rows — the same shape D-381 found and could not convert with a larger budget on a fixed sample. This run does
+not separate "needs more time" from "cannot solve it"; the nine never-passing tasks are the place to look
+individually, and D-383's capability analysis already showed the pattern (well-formed artifact, wrong
+semantics) for the non-timeout ones.
+
+**Where this sits against the published rows** (D-375): DeepSeek's own scaffold table for the same model on
+TB 2.1 lists DSH Minimal 90.6, mini-SWE-agent 90.3, Claude Code 88.0, Pi 86.1, DSH Standard 85.8, OpenCode
+85.0 and Codex 84.1. TeamAgents at 77.5 % is below all of them and far closer than the 53.9 % this repository
+first measured, which the harness defects of D-382 and the flat budget of D-387 were suppressing.
+
+**Reproduce.** The tree is `all89-pristine`, the adapter `review/benchmark/teamagents_agent.py` with the default
+`TEAMAGENTS_TURN_TIMEOUT_SEC` (above every task budget) and `TEAMAGENTS_REASONING_EFFORT=low`, run under harbor
+with `-k 3`.
+
+**Formal.** None.
+
 ## D-388 The full-set number carries a $\pm$5-task run-to-run band: the per-task budget effect is +6/−5 stratified (2026-10-02)
 
 D-387 made the harness honour each task's own agent budget. The full set was then run twice at N = 1 with the
