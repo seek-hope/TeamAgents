@@ -61,6 +61,16 @@ Send a message to another instance. Delivery is queued and applied at the recipi
 | `recipient` | `string` | yes | Target instance id. |
 | `text` | `string` | yes | — |
 
+### `verify_goal`
+
+*Offered by `kernel::collaboration_tool_schemas(actions)` (per grant).*
+
+Verify another instance's claim: run the target goal's user-pre-authorized acceptance checks yourself and record the result under your own instance. Use it when you are asked to check someone else's work. A goal that requires independent verification cannot settle on its producer's own round, so this is the only way such a goal can settle — report the verdict you get back, including its failures.
+
+| Parameter | Type | Required | Meaning |
+|---|---|---|---|
+| `goal_id` | `string` | yes | The goal whose checks you are running. |
+
 ### `delegate`
 
 *Offered by `kernel::collaboration_tool_schemas(actions)` (per grant).*

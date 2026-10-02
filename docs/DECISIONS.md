@@ -20,6 +20,56 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-393 Independent verification: a claim that requires it cannot be settled by its own producer (2026-10-03)
+
+**Why.** Twice this week the producer's own check was the thing that could not fail. `pytorch-model-cli` wrote a
+verifier (`eval_mnist.py`) that evaluated three preprocessing conventions and cross-checked 200 images — and passed,
+because accuracy cannot separate the two conventions (D-391). And on the image path a *live run* found what every
+unit test had missed: the tool was never advertised, and the result envelope did not match the shape the expansion
+read (D-392). In both cases the artifact and its check shared an assumption, and nothing in the design said whose
+evidence a settlement rests on.
+
+**The rule.** A goal may declare `limits.independent_verification = true` (the user's or the project bootstrap's
+statement alone, like the checks themselves). With it set and the goal carrying required checks, the goal settles
+only on a round **another instance registered** — a *round* being the thing that can be attributed, since a goal
+with no required checks has nothing an independent pass could run and is exempt. The producer's own passing round
+is not enough, and saying so is what the runtime does:
+
+- the driver's check path turns "the checks passed, but this instance produced the claim" into a synthetic failure
+  (`class: not_independent`) naming the tool that resolves it, so it rides the existing bounded repair and parks
+  BLOCKED if the producer never obtains a verifier — never a false pass, never a hang;
+- `complete_goal` reads the same question off the record (`model_requests.instance_id <> claimant`), so the
+  backstop does not depend on the driver's own verdict;
+- the limit is refused from a model identity and refused when it is not a boolean, at `create_goal`.
+
+**How a verifier acts.** `verify_goal` is a tool an instance holding `delegate` may call (a verifier is given work
+by someone else, so the same grant covers it — running the *user's* pre-authorized checks is not a new capability).
+It fetches the named goal's checks, registers a round through the new `register_verification` command — the same
+machinery as `register_check_runs` minus the completion-boundary requirement, because this is a member acting
+mid-turn on a goal it does not own — runs the check operations, and answers the model with the verdict. The round
+carries the verifier's instance id, which is what the settlement rule reads. Running the checks is not a new
+authority: they are the commands the user attached to the goal, and the provenance is what changes.
+
+**Formal.** `verification/tla/V2Checks.tla` gained `registrar` (who registered the current round), an action
+`RegisterVerifierRound`, and `IndependenceIsNotSelfVerified`: a settlement on a round for a goal that requires
+independent verification implies the registrar is not the producer. `MC_checks_independent.cfg` verifies it and
+`MC_checks_self_verified.cfg` is the **refuted** control that accepts the producer's own round — the model caught a
+real semantic hole while being written, because the first version of the invariant also fired for a goal with no
+checks at all, which is not a state the rule may trap (the code was fixed to match: the backstop now applies only
+when the goal really carries checks).
+
+**Tests.** `control::independent_verification_refuses_the_producers_own_round_and_accepts_another_instances` drives
+the whole rule at the control plane: the flag is refused from a model identity and mis-typed, the producer's own
+completed round leaves `complete_goal` refusing with "requires independent verification", and the same call
+succeeds once a *second* instance has registered a round.
+
+**Ceiling.** The verifier is asked by the leader (or the user) through the ordinary `delegate`/`spawn` surface — the
+runtime enforces whose evidence counts, it does not pick the verifier. The round's *greenness* is read from the
+verifier's own receipts, and a verifier that runs the wrong commands is exactly as wrong as a producer would be;
+what the rule removes is the case where both are the same actor. An end-to-end member-to-member run (leader
+spawns a verifier, delegates the check, verifier calls `verify_goal`, goal settles) is the next test, not yet
+written.
+
 ## D-392 An image path to the model: `view_image` becomes a real image part, gated by a declared capability (2026-10-02)
 
 **The gap.** The product could not put a picture in front of a model. `view_image` existed, validated the file and

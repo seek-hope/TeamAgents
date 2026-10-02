@@ -29,56 +29,56 @@ the log is still a supported way to observe it (and the probes that do assert on
 
 | Event | Scope | Payload | Emitted at | Read by (outside core/src) |
 |---|---|---|---|---|
-| `approval_denied` | `approval_id` | `operation_id` | `core/src/v2/control.rs:3007` | `tui/src/v2app.rs` |
-| `approval_granted` | `approval_id` | `approval_id` | `core/src/v2/control.rs:2979` | `tui/src/v2app.rs` |
-| `approval_requested` | `operation_id` | `approval_id` | `core/src/v2/control.rs:2901` | `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `engine/tests/v2_daemon.rs`, `engine/tests/v2_driver.rs` |
-| `artifact_abandoned` | `id` | `artifact_id` | `core/src/v2/control.rs:3835` | observability only |
-| `artifact_collected` | `id` | `artifact_id` | `core/src/v2/control.rs:4113` | observability only |
-| `artifacts_gc_claimed` | `""` | `claimed` | `core/src/v2/control.rs:3920` | observability only |
-| `attempt_recorded` | `request_id` | `attempt_id`, `selected`, `status` | `core/src/v2/control.rs:1867` | `engine/tests/v2_daemon.rs`, `engine/tests/v2_driver.rs` |
-| `budget_refused` | `instance_id` | `est`, `goal_id`, `known`, `max`, `request_id`, `reserved` | `core/src/v2/control.rs:1769` | `engine/src/v2/driver.rs`, `engine/src/v2/exec.rs`, `engine/tests/v2_driver.rs`, `review/dogfood/budget.py` |
-| `check_round_registered` | `goal_id` | `checks`, `goal_id`, `round` | `core/src/v2/control.rs:3435` | `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `engine/tests/v2_driver.rs`, `review/dogfood/checks.py`, `review/dogfood/stale_check.py` |
-| `completion_closed` | `instance_id` | `instance_id` | `core/src/v2/control.rs:3625` | `tui/src/v2app.rs`, `engine/tests/v2_driver.rs` |
-| `completion_repair` | `instance_id` | `failures`, `goal_id`, `round` | `core/src/v2/control.rs:3513` | `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `engine/tests/v2_driver.rs`, `review/dogfood/checks.py`, `review/dogfood/stale_check.py`, `review/dogfood/two_gates.py` |
-| `compression_began` | `instance_id` | `est_prompt_tokens`, `goal_id`, `request_id` | `core/src/v2/control.rs:1922` | `engine/tests/v2_driver.rs` |
-| `compression_failed` | `&instance_id` | `reason`, `request_id` | `core/src/v2/control.rs:2043` | `engine/tests/v2_driver.rs` |
-| `context_compressed` | `instance_id` | `covered`, `covers_to`, `kept`, `request_id`, `summary_id` | `core/src/v2/control.rs:2007` | `engine/tests/v2_driver.rs` |
-| `decision_consumed` | `&instance` | `decision_id` | `core/src/v2/control.rs:2818` | `tui/src/v2app.rs` |
-| `envelopes_sealed` | `instance_id` | `envelope_ids`, `epoch`, `instance_id`, `reason` | `core/src/v2/control.rs:559` | `engine/src/v2/exec.rs` |
-| `fork_reset` | `keep` | `grants_revoked`, `instances_removed`, `kept` | `core/src/v2/control.rs:4004` | `engine/src/v2/sessions.rs` |
-| `goal_blocked` | `goal_id` | `detached`, `goal_id`, `reason`, `status` | `core/src/v2/control.rs:3585` | `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `engine/tests/v2_driver.rs`, `review/dogfood/two_gates.py` |
-| `goal_cancelled` | `goal_id` | `goal_id`, `released` | `core/src/v2/control.rs:3722` | observability only |
-| `goal_checks_required` | `goal_id` | `added`, `checks`, `goal_id` | `core/src/v2/control.rs:1435` | observability only |
-| `goal_completed` | `goal_id` | `blocked_by`, `completion`, `detached`, `goal_id`, `reason`, `status` | `core/src/v2/control.rs:3577`, `core/src/v2/control.rs:3805` | `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `engine/tests/v2_daemon.rs`, `engine/tests/v2_driver.rs`, `engine/tests/v2_mcp.rs`, `engine/tests/v2_spawn_failure.rs`, `engine/tests/v2_supervisor.rs`, `review/dogfood/checks.py`, `review/dogfood/stale_check.py`, `review/dogfood/two_gates.py`, `review/dogfood/unknown_outcome.py` |
-| `goal_created` | `id` | `goal_id` | `core/src/v2/control.rs:1364` | observability only |
-| `goal_deadline_refused` | `instance_id` | `goal_id`, `kind`, `request_id` | `core/src/v2/control.rs:1645`, `core/src/v2/control.rs:1897` | `engine/src/v2/exec.rs`, `engine/tests/v2_driver.rs`, `review/dogfood/deadline.py` |
-| `grant_issued` | `subject` | `action`, `grant_id`, `parent_grant_id`, `resource_scope`, `revision`, `subject` | `core/src/v2/control.rs:359` | `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs` |
-| `grant_revoked` | `id` | `cascade`, `grant_id`, `revision` | `core/src/v2/control.rs:391` | `tui/src/v2app.rs` |
-| `history_pruned` | `""` | `days`, `deliveries`, `events` | `core/src/v2/control.rs:4074` | observability only |
-| `inbox_drained` | `instance_id` | `applied`, `sealed` | `core/src/v2/control.rs:926` | observability only |
-| `input` | `instance_id` | `applied`, `envelope_id` | `core/src/v2/control.rs:1537` | `tui/scripts/pty_v2_smoke.py`, `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `engine/src/providers/anthropic.rs`, `engine/src/providers/responses.rs`, `engine/tests/providers_fake.rs`, `engine/tests/v2_driver.rs`, `engine/tests/v2_mcp.rs`, `engine/tests/v2_spawn_failure.rs`, `engine/tests/v2_supervisor.rs` |
-| `input_queued` | `instance_id` | `envelope_id`, `phase` | `core/src/v2/control.rs:1490` | `engine/src/v2/exec.rs`, `engine/tests/v2_daemon.rs`, `review/dogfood/crash.py`, `review/dogfood/queued_input.py` |
-| `instance_created` | `id` | `instance_id` | `core/src/v2/control.rs:683` | `tui/src/v2app.rs`, `review/eval/r2-p6/anatomy.py` |
-| `instance_interrupted` | `instance_id` | `phase`, `reason`, `request_id` | `core/src/v2/control.rs:3251` | observability only |
-| `instance_lifecycle` | `instance` / `instance_id` | `lifecycle`, `reason` | `core/src/v2/control.rs:3096`, `core/src/v2/control.rs:3712` | `tui/scripts/pty_v2_smoke.py`, `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `engine/src/v2/daemon.rs`, `engine/src/v2/exec.rs`, `engine/tests/cli.rs`, `engine/tests/v2_driver.rs`, `engine/tests/v2_supervisor.rs`, `review/dogfood/budget.py`, `review/dogfood/deadline.py`, `review/dogfood/lifecycle_run.py`, `review/dogfood/mcp_http.py` |
-| `instance_reset` | `instance_id` | `closed`, `new_epoch`, `old_epoch`, `reason` | `core/src/v2/control.rs:600` | `engine/src/v2/exec.rs`, `review/dogfood/lifecycle_run.py` |
-| `instance_spawned` | `instance_id` | `spawner`, `task` | `core/src/v2/control.rs:738` | `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `engine/tests/v2_driver.rs` |
-| `instance_terminated` | `instance_id` | `closed`, `grants_revoked`, `tasks_cancelled` | `core/src/v2/control.rs:3149` | observability only |
-| `message_sent` | `recipient` | `correlation_id`, `envelope_id`, `sender` | `core/src/v2/control.rs:833` | `review/dogfood/team_ring.py` |
-| `operation_cancel_requested` | `operation_id` | `reason` | `core/src/v2/control.rs:2954` | observability only |
-| `operation_cancelled` | `operation_id` | `reason` | `core/src/v2/control.rs:2949` | observability only |
-| `operation_completed` | `operation_id` | `status` | `core/src/v2/control.rs:2714` | `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `engine/tests/v2_driver.rs`, `engine/tests/v2_mcp.rs`, `engine/tests/v2_spawn_failure.rs` |
-| `operation_dispatched` | `operation_id` | `operation_id` | `core/src/v2/control.rs:2919` | `engine/tests/v2_driver.rs`, `engine/tests/v2_mcp.rs` |
-| `operation_unauthorized` | `operation_id` | `reason` | `core/src/v2/control.rs:647` | observability only |
-| `request_began` | `instance_id` | `request_id` | `core/src/v2/control.rs:1676` | `engine/tests/v2_driver.rs`, `engine/tests/v2_supervisor.rs` |
-| `request_cancelled` | `&instance` / `instance_id` | `reason`, `request_id` | `core/src/v2/control.rs:3189`, `core/src/v2/control.rs:3250` | observability only |
-| `request_failed` | `&instance` | `parked`, `reason`, `request_id` | `core/src/v2/control.rs:3045` | `engine/src/v2/exec.rs`, `engine/tests/v2_driver.rs` |
-| `response_imported` | `&request_instance` | `decision_id`, `intents`, `phase`, `request_id` | `core/src/v2/control.rs:2662` | `tui/src/v2app.rs`, `engine/tests/v2_driver.rs` |
-| `task_blocked` | `&task` | `operation_id`, `reason`, `task_id` | `core/src/v2/control.rs:2750` | `tui/src/v2app.rs`, `review/dogfood/unknown_outcome.py` |
-| `task_cancelled` | `&assignee` | `reason`, `task_id` | `core/src/v2/control.rs:1277` | `tui/scripts/pty_v2_smoke.py`, `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `engine/tests/v2_supervisor.rs` |
-| `task_completed` | `&requester` | `assignee`, `delivered`, `status`, `task_id` | `core/src/v2/control.rs:1210` | `tui/src/v2app.rs`, `engine/tests/v2_driver.rs`, `engine/tests/v2_supervisor.rs`, `review/dogfood/providers.py`, `review/eval/r2-p6/anatomy.py` |
-| `task_delegated` | `assignee` | `envelope_id`, `goal_id`, `requester`, `task_id` | `core/src/v2/control.rs:1049` | `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `review/dogfood/providers.py` |
-| `task_started` | `&assignee` | `task_id` | `core/src/v2/control.rs:1082` | `tui/src/v2app.rs`, `review/dogfood/providers.py` |
-| `wait_satisfied` | `&instance_id` | `wait_id` | `core/src/v2/control.rs:2433` | `engine/tests/v2_driver.rs` |
+| `approval_denied` | `approval_id` | `operation_id` | `core/src/v2/control.rs:3020` | `tui/src/v2app.rs` |
+| `approval_granted` | `approval_id` | `approval_id` | `core/src/v2/control.rs:2992` | `tui/src/v2app.rs` |
+| `approval_requested` | `operation_id` | `approval_id` | `core/src/v2/control.rs:2914` | `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `engine/tests/v2_daemon.rs`, `engine/tests/v2_driver.rs` |
+| `artifact_abandoned` | `id` | `artifact_id` | `core/src/v2/control.rs:3899` | observability only |
+| `artifact_collected` | `id` | `artifact_id` | `core/src/v2/control.rs:4177` | observability only |
+| `artifacts_gc_claimed` | `""` | `claimed` | `core/src/v2/control.rs:3984` | observability only |
+| `attempt_recorded` | `request_id` | `attempt_id`, `selected`, `status` | `core/src/v2/control.rs:1880` | `engine/tests/v2_daemon.rs`, `engine/tests/v2_driver.rs` |
+| `budget_refused` | `instance_id` | `est`, `goal_id`, `known`, `max`, `request_id`, `reserved` | `core/src/v2/control.rs:1782` | `engine/src/v2/driver.rs`, `engine/src/v2/exec.rs`, `engine/tests/v2_driver.rs`, `review/dogfood/budget.py` |
+| `check_round_registered` | `goal_id` | `checks`, `goal_id`, `round` | `core/src/v2/control.rs:3472` | `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `engine/tests/v2_driver.rs`, `review/dogfood/checks.py`, `review/dogfood/stale_check.py` |
+| `completion_closed` | `instance_id` | `instance_id` | `core/src/v2/control.rs:3662` | `tui/src/v2app.rs`, `engine/tests/v2_driver.rs` |
+| `completion_repair` | `instance_id` | `failures`, `goal_id`, `round` | `core/src/v2/control.rs:3550` | `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `engine/tests/v2_driver.rs`, `review/dogfood/checks.py`, `review/dogfood/stale_check.py`, `review/dogfood/two_gates.py` |
+| `compression_began` | `instance_id` | `est_prompt_tokens`, `goal_id`, `request_id` | `core/src/v2/control.rs:1935` | `engine/tests/v2_driver.rs` |
+| `compression_failed` | `&instance_id` | `reason`, `request_id` | `core/src/v2/control.rs:2056` | `engine/tests/v2_driver.rs` |
+| `context_compressed` | `instance_id` | `covered`, `covers_to`, `kept`, `request_id`, `summary_id` | `core/src/v2/control.rs:2020` | `engine/tests/v2_driver.rs` |
+| `decision_consumed` | `&instance` | `decision_id` | `core/src/v2/control.rs:2831` | `tui/src/v2app.rs` |
+| `envelopes_sealed` | `instance_id` | `envelope_ids`, `epoch`, `instance_id`, `reason` | `core/src/v2/control.rs:560` | `engine/src/v2/exec.rs` |
+| `fork_reset` | `keep` | `grants_revoked`, `instances_removed`, `kept` | `core/src/v2/control.rs:4068` | `engine/src/v2/sessions.rs` |
+| `goal_blocked` | `goal_id` | `detached`, `goal_id`, `reason`, `status` | `core/src/v2/control.rs:3622` | `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `engine/tests/v2_driver.rs`, `review/dogfood/two_gates.py` |
+| `goal_cancelled` | `goal_id` | `goal_id`, `released` | `core/src/v2/control.rs:3759` | observability only |
+| `goal_checks_required` | `goal_id` | `added`, `checks`, `goal_id` | `core/src/v2/control.rs:1448` | observability only |
+| `goal_completed` | `goal_id` | `blocked_by`, `completion`, `detached`, `goal_id`, `reason`, `status` | `core/src/v2/control.rs:3614`, `core/src/v2/control.rs:3869` | `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `engine/tests/v2_daemon.rs`, `engine/tests/v2_driver.rs`, `engine/tests/v2_mcp.rs`, `engine/tests/v2_spawn_failure.rs`, `engine/tests/v2_supervisor.rs`, `review/dogfood/checks.py`, `review/dogfood/stale_check.py`, `review/dogfood/two_gates.py`, `review/dogfood/unknown_outcome.py` |
+| `goal_created` | `id` | `goal_id` | `core/src/v2/control.rs:1377` | observability only |
+| `goal_deadline_refused` | `instance_id` | `goal_id`, `kind`, `request_id` | `core/src/v2/control.rs:1658`, `core/src/v2/control.rs:1910` | `engine/src/v2/exec.rs`, `engine/tests/v2_driver.rs`, `review/dogfood/deadline.py` |
+| `grant_issued` | `subject` | `action`, `grant_id`, `parent_grant_id`, `resource_scope`, `revision`, `subject` | `core/src/v2/control.rs:360` | `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs` |
+| `grant_revoked` | `id` | `cascade`, `grant_id`, `revision` | `core/src/v2/control.rs:392` | `tui/src/v2app.rs` |
+| `history_pruned` | `""` | `days`, `deliveries`, `events` | `core/src/v2/control.rs:4138` | observability only |
+| `inbox_drained` | `instance_id` | `applied`, `sealed` | `core/src/v2/control.rs:927` | observability only |
+| `input` | `instance_id` | `applied`, `envelope_id` | `core/src/v2/control.rs:1550` | `tui/scripts/pty_v2_smoke.py`, `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `engine/src/providers/anthropic.rs`, `engine/src/providers/responses.rs`, `engine/tests/providers_fake.rs`, `engine/tests/v2_driver.rs`, `engine/tests/v2_mcp.rs`, `engine/tests/v2_spawn_failure.rs`, `engine/tests/v2_supervisor.rs` |
+| `input_queued` | `instance_id` | `envelope_id`, `phase` | `core/src/v2/control.rs:1503` | `engine/src/v2/exec.rs`, `engine/tests/v2_daemon.rs`, `review/dogfood/crash.py`, `review/dogfood/queued_input.py` |
+| `instance_created` | `id` | `instance_id` | `core/src/v2/control.rs:684` | `tui/src/v2app.rs`, `review/eval/r2-p6/anatomy.py` |
+| `instance_interrupted` | `instance_id` | `phase`, `reason`, `request_id` | `core/src/v2/control.rs:3264` | observability only |
+| `instance_lifecycle` | `instance` / `instance_id` | `lifecycle`, `reason` | `core/src/v2/control.rs:3109`, `core/src/v2/control.rs:3749` | `tui/scripts/pty_v2_smoke.py`, `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `engine/src/v2/daemon.rs`, `engine/src/v2/exec.rs`, `engine/tests/cli.rs`, `engine/tests/v2_driver.rs`, `engine/tests/v2_supervisor.rs`, `review/dogfood/budget.py`, `review/dogfood/deadline.py`, `review/dogfood/lifecycle_run.py`, `review/dogfood/mcp_http.py` |
+| `instance_reset` | `instance_id` | `closed`, `new_epoch`, `old_epoch`, `reason` | `core/src/v2/control.rs:601` | `engine/src/v2/exec.rs`, `review/dogfood/lifecycle_run.py` |
+| `instance_spawned` | `instance_id` | `spawner`, `task` | `core/src/v2/control.rs:739` | `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `engine/tests/v2_driver.rs` |
+| `instance_terminated` | `instance_id` | `closed`, `grants_revoked`, `tasks_cancelled` | `core/src/v2/control.rs:3162` | observability only |
+| `message_sent` | `recipient` | `correlation_id`, `envelope_id`, `sender` | `core/src/v2/control.rs:834` | `review/dogfood/team_ring.py` |
+| `operation_cancel_requested` | `operation_id` | `reason` | `core/src/v2/control.rs:2967` | observability only |
+| `operation_cancelled` | `operation_id` | `reason` | `core/src/v2/control.rs:2962` | observability only |
+| `operation_completed` | `operation_id` | `status` | `core/src/v2/control.rs:2727` | `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `engine/tests/v2_driver.rs`, `engine/tests/v2_mcp.rs`, `engine/tests/v2_spawn_failure.rs` |
+| `operation_dispatched` | `operation_id` | `operation_id` | `core/src/v2/control.rs:2932` | `engine/tests/v2_driver.rs`, `engine/tests/v2_mcp.rs` |
+| `operation_unauthorized` | `operation_id` | `reason` | `core/src/v2/control.rs:648` | observability only |
+| `request_began` | `instance_id` | `request_id` | `core/src/v2/control.rs:1689` | `engine/tests/v2_driver.rs`, `engine/tests/v2_supervisor.rs` |
+| `request_cancelled` | `&instance` / `instance_id` | `reason`, `request_id` | `core/src/v2/control.rs:3202`, `core/src/v2/control.rs:3263` | observability only |
+| `request_failed` | `&instance` | `parked`, `reason`, `request_id` | `core/src/v2/control.rs:3058` | `engine/src/v2/exec.rs`, `engine/tests/v2_driver.rs` |
+| `response_imported` | `&request_instance` | `decision_id`, `intents`, `phase`, `request_id` | `core/src/v2/control.rs:2675` | `tui/src/v2app.rs`, `engine/tests/v2_driver.rs` |
+| `task_blocked` | `&task` | `operation_id`, `reason`, `task_id` | `core/src/v2/control.rs:2763` | `tui/src/v2app.rs`, `review/dogfood/unknown_outcome.py` |
+| `task_cancelled` | `&assignee` | `reason`, `task_id` | `core/src/v2/control.rs:1278` | `tui/scripts/pty_v2_smoke.py`, `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `engine/tests/v2_supervisor.rs` |
+| `task_completed` | `&requester` | `assignee`, `delivered`, `status`, `task_id` | `core/src/v2/control.rs:1211` | `tui/src/v2app.rs`, `engine/tests/v2_driver.rs`, `engine/tests/v2_supervisor.rs`, `review/dogfood/providers.py`, `review/eval/r2-p6/anatomy.py` |
+| `task_delegated` | `assignee` | `envelope_id`, `goal_id`, `requester`, `task_id` | `core/src/v2/control.rs:1050` | `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `review/dogfood/providers.py` |
+| `task_started` | `&assignee` | `task_id` | `core/src/v2/control.rs:1083` | `tui/src/v2app.rs`, `review/dogfood/providers.py` |
+| `wait_satisfied` | `&instance_id` | `wait_id` | `core/src/v2/control.rs:2446` | `engine/tests/v2_driver.rs` |
 
 <!-- generated: end -->

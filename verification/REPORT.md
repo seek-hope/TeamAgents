@@ -5,6 +5,19 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
+## 0. Gate status (re-run 2026-10-03 at `MATERIAL-COMMIT`)
+
+* **D-393 added the independent-verification provenance rule and re-ran all three targets on this tree
+  (2026-10-03).** `V2Checks.tla` gained `registrar`, the `RegisterVerifierRound` action and
+  `IndependenceIsNotSelfVerified`: a settlement on a round for a goal that requires independent verification must
+  be registered by an instance other than the producer, and a goal with no required checks has nothing to verify
+  and is exempt. `make verify-model-all`: all **32** configurations `No error has been found` (rc 0); the new one
+  is `MC_checks_independent.cfg`, exhaustive in under a second. `make verify-model-counterexamples`: all **93** negative controls are refuted (rc 0); the new one is
+  `MC_checks_self_verified.cfg`, which accepts the producing
+  instance's own round. `make verify-kani` reports `Complete - 3 successfully verified harnesses, 0 failures,
+  3 total` (rc 0). The round changed `verification/tla/V2Checks.tla`, added two configurations and registered
+  them in both targets.
+
 ## 0. Gate status (re-run 2026-10-03 at `162b985b`)
 
 * **D-392 added the image-flow model and re-ran all three targets on this tree (2026-10-03).** `V2Images.tla`

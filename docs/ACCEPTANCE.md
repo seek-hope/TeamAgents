@@ -7,7 +7,7 @@ model probe sets and the three formal gates).
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 123 / engine 330 / tui 38 test targets) and `make pty` passes — re-measured 2026-09-29: `pty v2 smoke: ok`, rc 0, 41 s, credential-free; both are
+`make check` is green (core 124 / engine 330 / tui 38 test targets) and `make pty` passes — re-measured 2026-09-29: `pty v2 smoke: ok`, rc 0, 41 s, credential-free; both are
 preconditions for every item below. `make check` includes `make language-check`, which fails on non-English
 characters outside the two documented exceptions (`README.zh-CN.md` and the frozen material under
 `review/eval`).
@@ -33,7 +33,7 @@ checks that every requirement has a row and every row names a requirement that e
 | Q9 | Instances are reused and retained within a session, can be terminated or reset, and sessions are isolated | A21, A29 (session isolation and a shared project); `review/dogfood/lifecycle_run.py` (D-98); the cancel lever of D-88 |
 | Q10 | Work continues by default with an optional goal budget, and failures are bounded | A18 (multi-instance usage budget), A19 (truncated stream and connection loss), A35 (goal deadline); D-97 (a refused request is not a slow one) |
 | Q11 | Required checks must pass; other claims carry evidence; independent review is on demand | A16 (a required check fails), A17 (artifacts change after a check) with `review/dogfood/stale_check.py` (D-90); D-50 |
-| Q12 | The first release ships basic tools, MCP and Skills, and needs no external Codex adaptation | A01 (basic tools), A25 (MCP over both transports), A26 (skills permissions); `docs/TOOLS.md` (the generated catalogue of the nineteen tools); D-74, D-66 |
+| Q12 | The first release ships basic tools, MCP and Skills, and needs no external Codex adaptation | A01 (basic tools), A25 (MCP over both transports), A26 (skills permissions); `docs/TOOLS.md` (the generated catalogue of the twenty tools); D-74, D-66 |
 | Q13 | Multiple providers and mixed models inside one team; DeepSeek is the main baseline | A27 (heterogeneous providers) with `review/dogfood/providers.py` (D-129), A19; D-36 (native window recorded), D-69 (each member's model written down) |
 | Q14 | The project workspace is shared by default, with isolated directories or Git worktrees on demand | A29; D-46 (workspace policies wired into `spawn`); `review/dogfood/workspace.py` (D-76) |
 | Q15 | Authorized work resumes after a restart; an unknown outcome is verified first and parked if it stays unknown | A06 (a message applied across a restart), A08 (crash after a tool succeeded), A09 (unknown external outcome) with `review/dogfood/unknown_outcome.py` (D-119), A11 (daemon and runner crash separately); D-112 |

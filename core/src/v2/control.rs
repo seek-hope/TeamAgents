@@ -157,6 +157,7 @@ fn dispatch(
         "interrupt_instance" => interrupt_instance(tx, session_id, params, identity),
         "complete_goal" => complete_goal(tx, session_id, params),
         "register_check_runs" => register_check_runs(tx, session_id, params, identity),
+        "register_verification" => register_verification(tx, session_id, params, identity),
         "repair_completion" => repair_completion(tx, session_id, params, identity),
         "block_goal" => block_goal(tx, session_id, params, identity),
         "cancel_goal" => cancel_goal(tx, session_id, params, identity),
@@ -1334,6 +1335,18 @@ fn create_goal(tx: &Connection, session_id: &str, params: &Json, identity: &Iden
             );
         }
         validate_required_checks(checks)?;
+    }
+    if let Some(flag) = limits.get("independent_verification") {
+        // D-393: the same provenance gate as the checks themselves — a *user* statement about who may settle the
+        // goal, never something a model distills from its own turn.
+        if !matches!(identity, Identity::User | Identity::System) {
+            return Err(
+                "create_goal limits.independent_verification: only the user or the project bootstrap sets it".into()
+            );
+        }
+        if flag.as_bool().is_none() {
+            return Err("create_goal limits.independent_verification must be true/false".into());
+        }
     }
     tx.execute(
         "INSERT INTO goals
@@ -3313,8 +3326,32 @@ pub fn validate_required_checks(checks: &Json) -> Result<(), String> {
 /// pinned to 0 like the driver's own registrations; the live capability
 /// re-check at dispatch remains the real gate.
 fn register_check_runs(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
+    register_check_round(tx, session_id, params, identity, "register_check_runs", true)
+}
+
+/// D-393: the independent-verification half of the same machinery. An instance that is *not* the goal's producer
+/// runs the goal's user-pre-authorized checks in its own turn and records the round under its own instance id.
+/// The completion-boundary requirement is deliberately absent — this is a member acting mid-turn, on a goal it
+/// does not own — and the provenance (whose instance registered the round) is what `complete_goal` reads.
+fn register_verification(
+    tx: &Connection,
+    session_id: &str,
+    params: &Json,
+    identity: &Identity,
+) -> Result<Json, String> {
+    register_check_round(tx, session_id, params, identity, "register_verification", false)
+}
+
+fn register_check_round(
+    tx: &Connection,
+    session_id: &str,
+    params: &Json,
+    identity: &Identity,
+    caller: &str,
+    at_completion_boundary: bool,
+) -> Result<Json, String> {
     if !matches!(identity, Identity::System) {
-        return Err("register_check_runs is driver-internal (system identity required)".into());
+        return Err(format!("{caller} is driver-internal (system identity required)"));
     }
     let goal_id = params["goal_id"].as_str().ok_or("register_check_runs.goal_id required")?;
     let instance_id = params["instance_id"].as_str().ok_or("register_check_runs.instance_id required")?;
@@ -3340,7 +3377,7 @@ fn register_check_runs(tx: &Connection, session_id: &str, params: &Json, identit
     if session != session_id {
         return Err(format!("instance {instance_id} does not belong to this session"));
     }
-    if phase != "COMPLETION_PENDING" {
+    if at_completion_boundary && phase != "COMPLETION_PENDING" {
         return Err(format!("instance {instance_id} is {phase}; checks register only at the completion boundary"));
     }
     let request_id = format!("check:{goal_id}:{round}");
@@ -3754,6 +3791,33 @@ fn complete_goal(tx: &Connection, session_id: &str, params: &Json) -> Result<Jso
         .map_err(|e| format!("goal open ops: {e}"))?;
     if open > 0 {
         return Err(format!("goal {goal_id} has {open} open operations; cannot complete"));
+    }
+    // D-393: a goal that requires independent verification does not settle on its producer's own round. This is
+    // the backstop behind the driver's rule — the driver decides the verdict, and this asks the question the
+    // *record* can answer: did an instance other than the claimant register a check round for this goal?
+    let limits: String = tx
+        .query_row("SELECT limits_json FROM goals WHERE id = ?1", [goal_id], |row| row.get(0))
+        .map_err(|e| format!("goal limits: {e}"))?;
+    let limits: Json = serde_json::from_str(&limits).unwrap_or(json!({}));
+    let has_checks = limits["required_checks"].as_array().is_some_and(|checks| !checks.is_empty());
+    if limits["independent_verification"] == json!(true) && has_checks {
+        let independent: Option<String> = tx
+            .query_row(
+                "SELECT r.instance_id FROM model_requests r
+                 WHERE r.goal_id = ?1 AND r.request_ref = 'required_check' AND r.instance_id <> ?2
+                 ORDER BY r.rowid DESC LIMIT 1",
+                rusqlite::params![goal_id, instance_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| format!("independent verification read: {e}"))?;
+        let Some(verifier) = independent else {
+            return Err(format!(
+                "goal {goal_id} requires independent verification and {instance_id} cannot verify its own \
+                 claim: have another instance run its checks (`verify_goal`) before settling"
+            ));
+        };
+        let _ = verifier;
     }
     let completion: Option<String> = tx
         .query_row(
@@ -7596,6 +7660,33 @@ mod tests {
 
     /// Finish import helper: lands the instance in COMPLETION_PENDING with a
     /// stored candidate of the given outcome.
+    /// Drive one registered check round's operations to SUCCEEDED, the way the driver's `execute_check_ops`
+    /// does, so a goal's open-operation guard is not what the test is measuring.
+    fn complete_round(ctl: &mut Control, goal: &str, round: i64) {
+        let decision = format!("check:{goal}:{round}");
+        let ops: Vec<String> = ctl
+            .connection()
+            .prepare("SELECT operation_id FROM operations WHERE decision_id = ?1 ORDER BY tool_index")
+            .unwrap()
+            .query_map([&decision], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert!(!ops.is_empty(), "round {decision} registered no operations");
+        for op in ops {
+            ctl.submit(
+                cmd(
+                    &format!("done-{op}"),
+                    "complete_operation",
+                    json!({"operation_id": op, "status": "SUCCEEDED",
+                           "receipt": {"ok": true, "exit_code": 0}}),
+                ),
+                Identity::System,
+            )
+            .expect("complete check operation");
+        }
+    }
+
     fn finish_import(ctl: &mut Control, tag: &str, instance: &str, revision: i64, outcome: &str) {
         let request = begin_and_complete(ctl, tag, instance, revision);
         ctl.submit(
@@ -7783,6 +7874,86 @@ mod tests {
             )
             .unwrap_err();
         assert!(err.contains("not ACTIVE"), "{err}");
+        cleanup(&path);
+    }
+
+    /// D-393: a goal that requires independent verification does not settle on its producer's own round, and it
+    /// does settle once another instance has registered one.
+    #[test]
+    fn independent_verification_refuses_the_producers_own_round_and_accepts_another_instances() {
+        let (mut ctl, path) = control("independent-verification");
+        create_instance(&mut ctl, "i-leader");
+        create_instance(&mut ctl, "i-verifier");
+        ctl.submit(
+            cmd(
+                "g1",
+                "create_goal",
+                json!({"id": "g1", "instance_id": "i-leader",
+                       "limits": {"required_checks": [{"id": "c1", "command": "true"}],
+                                  "independent_verification": true}}),
+            ),
+            Identity::User,
+        )
+        .expect("goal");
+        // the flag is the user's statement, and only theirs
+        let err = ctl
+            .submit(
+                cmd("g-bad", "create_goal", json!({"id": "g-bad", "limits": {"independent_verification": true}})),
+                Identity::Instance("i-leader".into()),
+            )
+            .unwrap_err();
+        assert!(err.contains("independent_verification"), "{err}");
+        assert!(ctl
+            .submit(
+                cmd("g-bad2", "create_goal", json!({"id": "g-bad2", "limits": {"independent_verification": "yes"}})),
+                Identity::User,
+            )
+            .is_err());
+
+        // the producer claims success and its own check round exists
+        let revision: i64 = ctl
+            .connection()
+            .query_row("SELECT revision FROM instances WHERE id = 'i-leader'", [], |row| row.get(0))
+            .unwrap();
+        finish_import(&mut ctl, "claim", "i-leader", revision, "success");
+        ctl.submit(
+            cmd(
+                "own-round",
+                "register_check_runs",
+                json!({"goal_id": "g1", "instance_id": "i-leader", "round": 1,
+                       "checks": [{"id": "c1", "command": "true"}]}),
+            ),
+            Identity::System,
+        )
+        .expect("the producer's own round is allowed to exist");
+        complete_round(&mut ctl, "g1", 1);
+        let err = ctl
+            .submit(
+                cmd("close-own", "complete_goal", json!({"goal_id": "g1", "instance_id": "i-leader"})),
+                Identity::System,
+            )
+            .unwrap_err();
+        assert!(err.contains("independent verification"), "the producer's own round must not settle it: {err}");
+
+        // another instance verifies: its round is what the goal settles on
+        ctl.submit(
+            cmd(
+                "verifier-round",
+                "register_verification",
+                json!({"goal_id": "g1", "instance_id": "i-verifier", "round": 2,
+                       "checks": [{"id": "c1", "command": "true"}]}),
+            ),
+            Identity::System,
+        )
+        .expect("a verifier registers a round mid-turn");
+        complete_round(&mut ctl, "g1", 2);
+        let closed = ctl
+            .submit(
+                cmd("close-verified", "complete_goal", json!({"goal_id": "g1", "instance_id": "i-leader"})),
+                Identity::System,
+            )
+            .expect("a verified claim settles");
+        assert_eq!(closed["status"], json!("SUCCEEDED"));
         cleanup(&path);
     }
 

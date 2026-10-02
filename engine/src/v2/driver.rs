@@ -1172,6 +1172,10 @@ impl<P: Provider> Driver<P> {
                 }
                 if holds("delegate")? {
                     actions.push(teamagents_core::kernel::DELEGATE_TOOL);
+                    // D-393: a verifier is given work by someone else, so the same grant that lets an instance be
+                    // delegated to also lets it verify — running the *user's* pre-authorized checks is not a new
+                    // capability, and the round records whose instance ran it.
+                    actions.push(teamagents_core::kernel::VERIFY_TOOL);
                     // D-265: the requester's own exit from a task it delegated — the same gate, because the
                     // control plane lets only the requester (or the user) close it
                     actions.push(teamagents_core::kernel::CANCEL_TOOL);
@@ -1922,6 +1926,7 @@ that delegated it learns the outcome only from a settlement.";
                 teamagents_core::kernel::SEND_TOOL
                 | teamagents_core::kernel::DELEGATE_TOOL
                 | teamagents_core::kernel::SPAWN_TOOL
+                | teamagents_core::kernel::VERIFY_TOOL
                 | teamagents_core::kernel::CANCEL_TOOL => self.execute_collaboration(&operation_id, &intent).await?,
                 _ if recovered && self.toolkit.is_mcp_tool(name) => {
                     // A25/§6.3: the call crossed the process boundary before the
@@ -2242,6 +2247,65 @@ that delegated it learns the outcome only from a settlement.";
                     params["reason"] = reason.clone();
                 }
                 ("cancel_task", params)
+            }
+            teamagents_core::kernel::VERIFY_TOOL => {
+                // D-393: run the target goal's user-pre-authorized checks as *this* instance and answer the model
+                // with the verdict. The round is registered under this instance id, which is exactly what a goal
+                // requiring independent verification settles on — the producer's own round cannot.
+                let target = args["goal_id"]
+                    .as_str()
+                    .filter(|id| !id.is_empty())
+                    .ok_or("verify_goal.goal_id required")?
+                    .to_string();
+                let (checks, _max_rounds) = self.required_checks(&target).await?;
+                if checks.is_empty() {
+                    return Err(format!("goal {target} carries no required checks: there is nothing to verify"));
+                }
+                let observed = self.observe_check_inputs(&checks);
+                let me = self.config.instance_id.clone();
+                let round = {
+                    let goal = target.clone();
+                    self.storage
+                        .call(move |control| {
+                            control
+                                .connection()
+                                .query_row(
+                                    "SELECT COUNT(*) FROM model_requests WHERE goal_id = ?1 AND request_ref = 'required_check'",
+                                    [&goal],
+                                    |row| row.get::<_, i64>(0),
+                                )
+                                .map_err(|e| format!("verification rounds: {e}"))
+                        })
+                        .await??
+                        + 1
+                };
+                self.submit(
+                    self.command(
+                        format!("verify-{operation_id}"),
+                        "register_verification",
+                        json!({"goal_id": target, "instance_id": me, "round": round, "checks": observed}),
+                    ),
+                    Identity::System,
+                )
+                .await?;
+                let (_, current) = self.check_round_state(&target, 0).await?;
+                let Some(round_state) = current else {
+                    return Err(format!("verification round for {target} did not register"));
+                };
+                self.execute_check_ops(&round_state.open).await?;
+                let (_, done) = self.check_round_state(&target, 0).await?;
+                let failures = done.as_ref().map(|round| self.check_verdict(&round.terminal)).unwrap_or_default();
+                let value = json!({"goal_id": target, "ok": failures.is_empty(), "failures": failures});
+                let receipt = self.receipt_skeleton(operation_id, intent, true, value.to_string());
+                let receipt = teamagents_core::kernel::ToolReceipt { ok: true, ..receipt };
+                self.complete_op(
+                    operation_id,
+                    "SUCCEEDED",
+                    &serde_json::to_value(receipt).unwrap_or(Json::Null),
+                    vec![],
+                )
+                .await?;
+                return Ok(());
             }
             teamagents_core::kernel::DELEGATE_TOOL => {
                 let task_id =
@@ -2602,6 +2666,70 @@ that delegated it learns the outcome only from a settlement.";
     /// Goal-level required checks from the stored limits (§8): predefined by
     /// the user or project bootstrap at create_goal; an empty list settles
     /// completion on the candidate alone. Returns (checks, max_rounds).
+    /// D-393: does this goal require a round that another instance registered?
+    async fn requires_independent(&self, goal: &str) -> Result<bool, String> {
+        let goal = goal.to_string();
+        let stored: Option<String> = self
+            .storage
+            .call(move |control| {
+                control
+                    .connection()
+                    .query_row("SELECT limits_json FROM goals WHERE id = ?1", [&goal], |row| row.get(0))
+                    .optional()
+                    .map_err(|e| format!("goal limits: {e}"))
+            })
+            .await??;
+        let limits: Json = stored.as_deref().and_then(|l| serde_json::from_str(l).ok()).unwrap_or(json!({}));
+        Ok(limits["independent_verification"] == json!(true))
+    }
+
+    /// D-393: is there a **green** check round for this goal registered by an instance other than this one? The
+    /// verdict is read from that round's own operations, never from a claim about them: every terminal receipt
+    /// must be a success, and an open operation means the round is still in flight.
+    async fn verifier_round_is_green(&self, goal: &str) -> Result<bool, String> {
+        let goal = goal.to_string();
+        let mine = self.config.instance_id.clone();
+        self.storage
+            .call(move |control| {
+                let conn = control.connection();
+                let request: Option<String> = conn
+                    .query_row(
+                        "SELECT r.request_id FROM model_requests r
+                         WHERE r.goal_id = ?1 AND r.request_ref = 'required_check' AND r.instance_id <> ?2
+                         ORDER BY r.rowid DESC LIMIT 1",
+                        rusqlite::params![goal, mine],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(|e| format!("verifier round read: {e}"))?;
+                let Some(request) = request else { return Ok(false) };
+                let mut stmt = conn
+                    .prepare("SELECT status, receipt_json FROM operations WHERE decision_id = ?1")
+                    .map_err(|e| format!("verifier ops: {e}"))?;
+                let rows = stmt
+                    .query_map([&request], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)))
+                    .map_err(|e| format!("verifier ops read: {e}"))?;
+                let mut seen = 0usize;
+                for row in rows {
+                    let (status, receipt) = row.map_err(|e| format!("verifier op row: {e}"))?;
+                    if !matches!(status.as_str(), "SUCCEEDED" | "FAILED" | "CANCEL_REQUESTED") {
+                        return Ok(false); // still in flight: not evidence yet
+                    }
+                    let receipt: Json =
+                        receipt.as_deref().and_then(|r| serde_json::from_str(r).ok()).unwrap_or(Json::Null);
+                    if status != "SUCCEEDED" || receipt["ok"] != json!(true) {
+                        return Ok(false);
+                    }
+                    seen += 1;
+                }
+                Ok(seen > 0)
+            })
+            .await?
+    }
+
+    /// Goal-level required checks from the stored limits (§8): predefined by
+    /// the user or project bootstrap at create_goal; an empty list settles
+    /// completion on the candidate alone. Returns (checks, max_rounds).
     async fn required_checks(&self, goal: &str) -> Result<(Vec<Json>, i64), String> {
         let goal = goal.to_string();
         let stored: Option<String> = self
@@ -2700,7 +2828,21 @@ that delegated it learns the outcome only from a settlement.";
             if !round.open.is_empty() {
                 return self.execute_check_ops(&round.open).await;
             }
-            let failures = self.check_verdict(&round.terminal);
+            let mut failures = self.check_verdict(&round.terminal);
+            // D-393: the checks may pass and the goal still not be settleable — when it *requires* independent
+            // verification and the round that passed is this instance's own. The synthetic failure rides the
+            // ordinary bounded repair path, so the model is told exactly what is missing and what resolves it
+            // (another instance calling `verify_goal`), and an unwilling or unable producer parks BLOCKED.
+            if failures.is_empty()
+                && self.requires_independent(goal).await?
+                && !self.verifier_round_is_green(goal).await?
+            {
+                failures.push(json!({
+                    "check_id": "independent-verification",
+                    "class": "not_independent",
+                    "reason": format!("goal {goal} requires independent verification and {} produced this claim;                                        have another instance run `verify_goal {goal}`", self.config.instance_id),
+                }));
+            }
             if failures.is_empty() {
                 self.submit(
                     self.command(

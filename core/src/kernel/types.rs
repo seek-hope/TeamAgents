@@ -19,6 +19,9 @@ pub const SPAWN_TOOL: &str = "spawn";
 /// D-265: the requester's own exit from a task it delegated (§5.3 says "the requester or the user closes
 /// it"); the control plane re-checks that the caller *is* the requester at dispatch.
 pub const CANCEL_TOOL: &str = "cancel_task";
+/// D-393: the independent-verification tool. An instance runs *another* goal's user-pre-authorized checks and the
+/// round is recorded under its own instance, which is what a goal requiring independent verification settles on.
+pub const VERIFY_TOOL: &str = "verify_goal";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryKind {
@@ -302,6 +305,20 @@ pub fn collaboration_tool_schemas(actions: &[&str]) -> Vec<Json> {
                             "text": {"type": "string"}
                         },
                         "required": ["recipient", "text"]
+                    }
+                }
+            }),
+            VERIFY_TOOL => json!({
+                "type": "function",
+                "function": {
+                    "name": VERIFY_TOOL,
+                    "description": "Verify another instance's claim: run the target goal's user-pre-authorized acceptance checks yourself and record the result under your own instance. Use it when you are asked to check someone else's work. A goal that requires independent verification cannot settle on its producer's own round, so this is the only way such a goal can settle — report the verdict you get back, including its failures.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "goal_id": {"type": "string", "description": "The goal whose checks you are running."}
+                        },
+                        "required": ["goal_id"]
                     }
                 }
             }),

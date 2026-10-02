@@ -92,19 +92,20 @@ the handler re-checks who may do this rather than trusting the request.
 | `cancel_request` | `reason`, `request_id` | yes | `core/src/v2/control.rs:156` |
 | `interrupt_instance` | `instance_id`, `reason` | yes | `core/src/v2/control.rs:157` |
 | `complete_goal` | `goal_id`, `instance_id` | yes | `core/src/v2/control.rs:158` |
-| `register_check_runs` | `checks`, `goal_id`, `instance_id`, `round` | yes | `core/src/v2/control.rs:159` |
-| `repair_completion` | `failures`, `goal_id`, `instance_id`, `round` | yes | `core/src/v2/control.rs:160` |
-| `block_goal` | `goal_id`, `instance_id`, `reason` | yes | `core/src/v2/control.rs:161` |
-| `cancel_goal` | `goal_id` | yes | `core/src/v2/control.rs:162` |
-| `close_completion` | `instance_id` | no | `core/src/v2/control.rs:163` |
-| `artifact_abandon` | `id` | yes | `core/src/v2/control.rs:164` |
-| `set_lifecycle` | `instance_id`, `lifecycle`, `reason` | yes | `core/src/v2/control.rs:165` |
-| `artifact_stage` | `digest`, `id`, `kind`, `owner_ref`, `owner_scope`, `size`, `storage_ref` | no | `core/src/v2/control.rs:166` |
-| `artifact_publish` | `id` | no | `core/src/v2/control.rs:167` |
-| `artifact_gc_claim` | `limit` | no | `core/src/v2/control.rs:168` |
-| `artifact_collect` | `id` | no | `core/src/v2/control.rs:169` |
-| `prune_history` | `days`, `evidence`, `now` | yes | `core/src/v2/control.rs:170` |
-| `fork_reset` | `keep_instance`, `source_root`, `target_root` | yes | `core/src/v2/control.rs:171` |
+| `register_check_runs` | — | yes | `core/src/v2/control.rs:159` |
+| `register_verification` | — | yes | `core/src/v2/control.rs:160` |
+| `repair_completion` | `failures`, `goal_id`, `instance_id`, `round` | yes | `core/src/v2/control.rs:161` |
+| `block_goal` | `goal_id`, `instance_id`, `reason` | yes | `core/src/v2/control.rs:162` |
+| `cancel_goal` | `goal_id` | yes | `core/src/v2/control.rs:163` |
+| `close_completion` | `instance_id` | no | `core/src/v2/control.rs:164` |
+| `artifact_abandon` | `id` | yes | `core/src/v2/control.rs:165` |
+| `set_lifecycle` | `instance_id`, `lifecycle`, `reason` | yes | `core/src/v2/control.rs:166` |
+| `artifact_stage` | `digest`, `id`, `kind`, `owner_ref`, `owner_scope`, `size`, `storage_ref` | no | `core/src/v2/control.rs:167` |
+| `artifact_publish` | `id` | no | `core/src/v2/control.rs:168` |
+| `artifact_gc_claim` | `limit` | no | `core/src/v2/control.rs:169` |
+| `artifact_collect` | `id` | no | `core/src/v2/control.rs:170` |
+| `prune_history` | `days`, `evidence`, `now` | yes | `core/src/v2/control.rs:171` |
+| `fork_reset` | `keep_instance`, `source_root`, `target_root` | yes | `core/src/v2/control.rs:172` |
 
 ### Every field the protocol carries in one object, and where it is built
 

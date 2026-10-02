@@ -27,12 +27,17 @@
 EXTENDS Naturals, FiniteSets
 
 CONSTANTS AllChecks,   \* every check a client could require, e.g. {"k1","k2"}
+          Independent, \* D-393: do the goal's limits require a round another instance registered?
+          SelfVerified, \* counterfactual (D-393): accept a round the producing instance registered itself
           MaxRounds,   \* repair-round budget, e.g. 2
           RewindRounds, \* counterfactual (D-219): opening a round resets the counter instead of advancing it
           LateRequire  \* counterfactual (D-385): a check may join after a claim, so no round covers it
 
 ASSUME AllChecks # {} /\ MaxRounds > 0
 
+Registrar == {"producer", "verifier"}
+Producer == "producer"
+Verifier == "verifier"
 Outcomes == {"none", "success", "failed", "blocked"}
 GoalStatus == {"ACTIVE", "SUCCEEDED", "BLOCKED", "FAILED"}
 CheckResult == {"none", "pass", "fail", "stale"}
@@ -46,6 +51,7 @@ VARIABLES
   openOps,     \* open check operations of the current round
   result,      \* check -> this round's result
   roundChecks, \* the checks the registered round was computed over
+  registrar,   \* who registered the current round (D-393): the producing instance or a verifier
   lastVerdict, \* the verdict of the last completed round
   roundOpen,   \* is a round registered but not yet verdicted
   upgrades,    \* monitor: goals that succeeded without a passing verdict
@@ -54,7 +60,7 @@ VARIABLES
   lateJoin, \* monitor: a check joined the contract after a claim
   nonSuccessSuccess \* monitor: a failed/blocked candidate ended SUCCEEDED
 
-vars == <<candidate, goalStatus, required, round, openOps, result, roundChecks, lastVerdict, roundOpen>>
+vars == <<candidate, goalStatus, required, round, openOps, result, roundChecks, registrar, lastVerdict, roundOpen>>
 monVars == <<vars, upgrades, lateRound, rewound, lateJoin, nonSuccessSuccess>>
 
 \* ------------------------------------------------------------------- actions --
@@ -72,7 +78,7 @@ RequireCheck(c) ==
   /\ rewound' = rewound
   /\ nonSuccessSuccess' = nonSuccessSuccess
   /\ lateJoin' = (lateJoin \/ (candidate # "none"))
-  /\ UNCHANGED <<candidate, goalStatus, round, openOps, result, roundChecks, lastVerdict, roundOpen>>
+  /\ UNCHANGED <<candidate, goalStatus, round, openOps, result, roundChecks, lastVerdict, roundOpen, registrar>>
 
 \* The finish import stores the model's candidate; it never moves the goal.
 StoreCandidate(outcome) ==
@@ -84,7 +90,7 @@ StoreCandidate(outcome) ==
   /\ rewound' = rewound
   /\ lateJoin' = lateJoin
   /\ nonSuccessSuccess' = nonSuccessSuccess
-  /\ UNCHANGED <<goalStatus, required, round, openOps, result, roundChecks, lastVerdict, roundOpen>>
+  /\ UNCHANGED <<goalStatus, required, round, openOps, result, roundChecks, lastVerdict, roundOpen, registrar>>
 
 \* A candidate that does not claim success is settled as itself — no check runs
 \* for it (the driver verifies only a claimed success, §8).
@@ -97,7 +103,7 @@ SettleWithoutChecks ==
   /\ rewound' = rewound
   /\ lateJoin' = lateJoin
   /\ nonSuccessSuccess' = nonSuccessSuccess
-  /\ UNCHANGED <<candidate, required, round, openOps, result, roundChecks, lastVerdict, roundOpen>>
+  /\ UNCHANGED <<candidate, required, round, openOps, result, roundChecks, lastVerdict, roundOpen, registrar>>
 
 \* A claimed success with an empty contract settles on the candidate alone
 \* (`step_completion`: no checks configured ⇒ `complete_goal`).
@@ -111,7 +117,7 @@ SettleSuccessWithoutChecks ==
   /\ rewound' = rewound
   /\ lateJoin' = lateJoin
   /\ nonSuccessSuccess' = nonSuccessSuccess
-  /\ UNCHANGED <<candidate, required, round, openOps, result, roundChecks, lastVerdict, roundOpen>>
+  /\ UNCHANGED <<candidate, required, round, openOps, result, roundChecks, lastVerdict, roundOpen, registrar>>
 
 \* register_check_runs: a fresh round opens for the claimed success over the
 \* contract *as it stands now*, with newly observed inputs for every check
@@ -126,6 +132,7 @@ RegisterRound ==
   /\ roundOpen' = TRUE
   /\ openOps' = 1
   /\ roundChecks' = required
+  /\ registrar' = Producer
   /\ result' = [ k \in AllChecks |-> "none" ]
   /\ upgrades' = upgrades
   /\ rewound' = IF RewindRounds /\ round > 0 THEN TRUE ELSE rewound
@@ -133,6 +140,23 @@ RegisterRound ==
   /\ lateRound' = IF candidate = "success" THEN lateRound ELSE TRUE
   /\ lateJoin' = lateJoin
   /\ UNCHANGED <<candidate, goalStatus, required, lastVerdict>>
+
+\* D-393: another instance runs the same contract and registers the round. This is what the
+\* `verify_goal` tool does mid-turn (`register_verification`), and the only round an independent goal
+\* may settle on.
+RegisterVerifierRound ==
+  /\ candidate = "success"
+  /\ goalStatus = "ACTIVE"
+  /\ required # {}
+  /\ roundOpen
+  /\ registrar = Producer
+  /\ registrar' = Verifier
+  /\ upgrades' = upgrades
+  /\ lateRound' = lateRound
+  /\ rewound' = rewound
+  /\ lateJoin' = lateJoin
+  /\ nonSuccessSuccess' = nonSuccessSuccess
+  /\ UNCHANGED <<candidate, goalStatus, required, round, openOps, result, roundChecks, lastVerdict, roundOpen>>
 
 \* ... this version runs one check operation per step (execute_check_ops); each
 \* terminal receipt lands as a result — and only for a check the round runs.
@@ -147,7 +171,7 @@ LandResult(k, r) ==
   /\ rewound' = rewound
   /\ lateJoin' = lateJoin
   /\ nonSuccessSuccess' = nonSuccessSuccess
-  /\ UNCHANGED <<candidate, goalStatus, required, round, openOps, roundChecks, lastVerdict, roundOpen>>
+  /\ UNCHANGED <<candidate, goalStatus, required, round, openOps, roundChecks, lastVerdict, roundOpen, registrar>>
 
 NextCheck ==
   /\ roundOpen
@@ -158,7 +182,7 @@ NextCheck ==
   /\ rewound' = rewound
   /\ lateJoin' = lateJoin
   /\ nonSuccessSuccess' = nonSuccessSuccess
-  /\ UNCHANGED <<candidate, goalStatus, required, round, result, roundChecks, lastVerdict, roundOpen>>
+  /\ UNCHANGED <<candidate, goalStatus, required, round, result, roundChecks, lastVerdict, roundOpen, registrar>>
 
 \* The verdict of a completed round: all pass ⇒ pass; an unavailable
 \* verification path (dispatch refused / runner never started) or a stale
@@ -177,7 +201,7 @@ ComputeVerdict ==
      /\ rewound' = rewound
      /\ lateJoin' = lateJoin
      /\ nonSuccessSuccess' = nonSuccessSuccess
-     /\ UNCHANGED <<candidate, goalStatus, required, round, openOps, result, roundChecks>>
+     /\ UNCHANGED <<candidate, goalStatus, required, round, openOps, result, roundChecks, registrar>>
 
 \* Infrastructure failures are not model-repairable: they block at once.
 BlockForInfra ==
@@ -195,7 +219,7 @@ BlockForInfra ==
   /\ rewound' = rewound
   /\ lateJoin' = lateJoin
   /\ nonSuccessSuccess' = nonSuccessSuccess
-  /\ UNCHANGED <<candidate, required, round, openOps, result, roundChecks>>
+  /\ UNCHANGED <<candidate, required, round, openOps, result, roundChecks, registrar>>
 
 \* A passing verdict closes the goal with the *stored* candidate — over the round's
 \* own checks, which is the code's shape and the reason `LateRequire` refutes
@@ -204,6 +228,8 @@ Accept ==
   /\ roundOpen
   /\ openOps = 0
   /\ \A k \in roundChecks : result[k] = "pass"
+  \* D-393: an independent goal settles only on a round a *different* instance registered.
+  /\ (~Independent \/ registrar = Verifier \/ SelfVerified)
   /\ goalStatus = "ACTIVE"
   /\ goalStatus' = "SUCCEEDED"
   /\ lastVerdict' = "pass"
@@ -213,7 +239,7 @@ Accept ==
   /\ rewound' = rewound
   /\ lateJoin' = lateJoin
   /\ nonSuccessSuccess' = IF candidate = "success" THEN nonSuccessSuccess ELSE TRUE
-  /\ UNCHANGED <<candidate, required, round, openOps, result, roundChecks>>
+  /\ UNCHANGED <<candidate, required, round, openOps, result, roundChecks, registrar>>
 
 \* A failing round below the budget buys another repair turn: the goal stays
 \* ACTIVE, the round is cleared so the driver can register the next one.
@@ -231,7 +257,7 @@ Repair ==
   /\ lateJoin' = lateJoin
   /\ nonSuccessSuccess' = nonSuccessSuccess
   /\ lateRound' = lateRound
-  /\ UNCHANGED <<candidate, goalStatus, required, round, openOps, result, roundChecks>>
+  /\ UNCHANGED <<candidate, goalStatus, required, round, openOps, result, roundChecks, registrar>>
 
 \* Exhausted budget: the goal is settled BLOCKED, never upgraded
 \* (complete_goal is never reached with a failing verdict).
@@ -246,7 +272,7 @@ BlockWhenExhausted ==
   /\ rewound' = rewound
   /\ lateJoin' = lateJoin
   /\ nonSuccessSuccess' = nonSuccessSuccess
-  /\ UNCHANGED <<candidate, required, round, openOps, result, roundChecks, lastVerdict>>
+  /\ UNCHANGED <<candidate, required, round, openOps, result, roundChecks, lastVerdict, registrar>>
 
 Stutter == UNCHANGED monVars
 
@@ -256,6 +282,7 @@ Next ==
   \/ SettleWithoutChecks
   \/ SettleSuccessWithoutChecks
   \/ RegisterRound
+  \/ RegisterVerifierRound
   \/ \E k \in AllChecks : \E r \in {"pass", "fail", "stale"} : LandResult(k, r)
   \/ NextCheck
   \/ ComputeVerdict
@@ -273,6 +300,7 @@ Init ==
   /\ openOps = 0
   /\ result = [ k \in AllChecks |-> "none" ]
   /\ roundChecks = {}
+  /\ registrar = Producer
   /\ lastVerdict = "none"
   /\ roundOpen = FALSE
   /\ upgrades = FALSE
@@ -289,6 +317,7 @@ TypeOK ==
   /\ goalStatus \in GoalStatus
   /\ required \subseteq AllChecks
   /\ roundChecks \subseteq AllChecks
+  /\ registrar \in Registrar
   /\ round \in 0..MaxRounds
   /\ openOps \in 0..1
   /\ \A k \in AllChecks : result[k] \in CheckResult
@@ -302,6 +331,12 @@ TypeOK ==
 \* must not accept. `LateRequire` is the control that breaks the second half.
 EveryRequiredCheckWasVerified ==
   goalStatus = "SUCCEEDED" => (\A k \in required : k \in roundChecks /\ result[k] = "pass")
+
+\* D-393: a goal that requires independent verification never settles on the producing instance's own round.
+\* The rule is about a settlement *on a round*: a goal with no required checks has nothing an independent pass
+\* could run, so it settles on its candidate alone (`round = 0`) and the flag never applies to it.
+IndependenceIsNotSelfVerified ==
+  (goalStatus = "SUCCEEDED" /\ round > 0) => (~Independent \/ registrar = Verifier)
 
 \* §8: the runtime never upgrades the model's candidate — a candidate that
 \* admits undelivered work cannot end SUCCEEDED (monitored too)
