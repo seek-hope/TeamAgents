@@ -36,7 +36,13 @@ BINARY = Path(
 CONFIG_DIR = "/opt/teamagents/config"
 STATE_DIR = "/opt/teamagents/state"
 WORKDIR = os.environ.get("TEAMAGENTS_WORKDIR", "/app")
-TURN_TIMEOUT_SEC = int(os.environ.get("TEAMAGENTS_TURN_TIMEOUT_SEC", "3000"))
+# D-387: the *official* protocol gives each task its own `[agent] timeout_sec` (900 s–12,000 s in this dataset), and
+# harbor already enforces it (`_agent_timeout_sec = task.config.agent.timeout_sec`) while still running the verifier
+# after an `AgentTimeoutError`. A single client-side value therefore has to be **larger** than every task budget —
+# otherwise `exec` gives up first and the trial is measured against a budget the task never declared (measured:
+# seven of thirteen timeouts had 1,800–3,600 s declared and were cut at 890 s). `TEAMAGENTS_TURN_TIMEOUT_SEC` stays
+# a knob for a deliberate test-time-compute point (D-381's 12-hour run).
+TURN_TIMEOUT_SEC = int(os.environ.get("TEAMAGENTS_TURN_TIMEOUT_SEC", "20000"))
 # The model card's Terminal-Bench numbers come from the **official** DeepSeek endpoint, so that is the default;
 # every part of the model route is overridable so another provider can be measured the same way. `high` is the
 # repository's own evaluation setting, `low`/`medium`/`max` are the other tiers the endpoint accepts.
