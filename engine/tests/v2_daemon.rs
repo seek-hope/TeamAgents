@@ -109,7 +109,7 @@ fn config(
     root: &Root,
     scripts: HashMap<String, Vec<Json>>,
 ) -> DaemonConfig<ScriptedProvider, impl Fn(&str, &KernelProfile) -> ScriptedProvider> {
-    config_recording(root, scripts, UserConfig::default(), vec![], &Arc::new(Mutex::new(Vec::new())))
+    config_recording(root, scripts, UserConfig::default(), vec![], json!({}), &Arc::new(Mutex::new(Vec::new())))
 }
 
 /// `config` plus the recorder, and a catalog the caller chooses (D-392's image capability is declared there).
@@ -118,6 +118,7 @@ fn config_recording(
     scripts: HashMap<String, Vec<Json>>,
     catalog: UserConfig,
     bindings: Vec<String>,
+    goal_limits: Json,
     seen: &SeenRequests,
 ) -> DaemonConfig<ScriptedProvider, impl Fn(&str, &KernelProfile) -> ScriptedProvider> {
     let scripts = Mutex::new(scripts);
@@ -151,7 +152,7 @@ fn config_recording(
             max_retries: 2,
             storage_queue: 64,
             poll: Duration::from_millis(15),
-            goal_limits: json!({}),
+            goal_limits,
             require_shell_approval: false,
             provider_factory: factory,
         },
@@ -250,7 +251,7 @@ async fn view_image_reaches_the_wire_as_a_part_only_for_a_model_that_declares_im
         }))
         .expect("catalog");
         let seen: SeenRequests = Arc::new(Mutex::new(Vec::new()));
-        let cfg = config_recording(&root, scripts, catalog, vec!["files".into()], &seen);
+        let cfg = config_recording(&root, scripts, catalog, vec!["files".into()], json!({}), &seen);
         let handle = serve(cfg).await.expect("daemon");
         let workspace = root.dir.join("ws");
         let socket = root.dir.join("state/daemon.sock");
@@ -1127,6 +1128,52 @@ async fn a_second_resume_is_a_new_operation_not_the_first_ones_recorded_reply() 
     handle.shutdown().await.expect("shutdown");
 }
 
+/// D-393 end to end through the real driver: a goal that requires independent verification does **not** settle on
+/// its producer's own passing round. The checks here pass, the producer claims success three times (the driver's
+/// default repair budget) and the goal parks BLOCKED — with the repair reason naming the tool another instance
+/// would have to call. That reason is the driver's own (the control plane's backstop would answer differently), so
+/// this is what proves the rule is live and not only a record check.
+#[tokio::test]
+async fn an_independent_goal_does_not_settle_on_its_producers_own_passing_round() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let scripts = HashMap::from([(
+        "i-leader".to_string(),
+        vec![finish_call("done once"), finish_call("done twice"), finish_call("done thrice")],
+    )]);
+    let root = root("independent-verification");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let seen: SeenRequests = Arc::new(Mutex::new(Vec::new()));
+    let cfg = config_recording(
+        &root,
+        scripts,
+        UserConfig::default(),
+        vec![],
+        json!({"required_checks": [{"id": "always", "command": "true", "timeout": 30}],
+               "independent_verification": true}),
+        &seen,
+    );
+    let handle = serve(cfg).await.expect("daemon");
+    let (socket, workspace) = (root.dir.join("state/daemon.sock"), root.dir.join("ws"));
+    let run = headless(exec_options(&socket, &workspace, "finish it", Vec::new())).await;
+    assert_eq!(run.report["goal_status"], json!("BLOCKED"), "{}", run.report);
+    assert_eq!(run.end.exit_code(run.checks_ok), 1);
+    // the reason is the driver's, and it names what resolves it
+    let mut client = Client::connect(&socket).await;
+    let events = client.call("events", json!({"since": 0})).await;
+    let reasons: Vec<String> = events["result"]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|event| event["kind"] == json!("completion_repair"))
+        .filter_map(|event| event["payload"]["failures"][0]["reason"].as_str().map(str::to_string))
+        .collect();
+    assert!(
+        reasons.iter().any(|reason| reason.contains("verify_goal")),
+        "the producer must be told how another instance can verify it: {reasons:?}"
+    );
+    handle.shutdown().await.expect("shutdown");
+}
+
 /// A goal the *runtime* blocks (its required checks never pass) is not a success
 /// either: `exec` must report it and exit non-zero. The runtime's own block note is
 /// what the instance stops on — an assistant-shaped one was exactly what a naive
@@ -1138,6 +1185,7 @@ async fn a_runtime_blocked_goal_is_not_reported_as_a_reply() {
     // three finishes: each one runs the check round, the round never passes, the
     // third exhausts the driver's default repair budget and the runtime blocks the
     // goal (a fourth step would mean the runtime asked again — the storm, not this)
+
     let scripts = HashMap::from([(
         "i-leader".to_string(),
         vec![finish_call("done once"), finish_call("done twice"), finish_call("done thrice")],

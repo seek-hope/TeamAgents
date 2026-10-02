@@ -61,14 +61,20 @@ when the goal really carries checks).
 **Tests.** `control::independent_verification_refuses_the_producers_own_round_and_accepts_another_instances` drives
 the whole rule at the control plane: the flag is refused from a model identity and mis-typed, the producer's own
 completed round leaves `complete_goal` refusing with "requires independent verification", and the same call
-succeeds once a *second* instance has registered a round.
+succeeds once a *second* instance has registered a round. And
+`v2_daemon::an_independent_goal_does_not_settle_on_its_producers_own_passing_round` drives it **through the real
+driver in a live session**: with the checks *passing* (`true`) and three successful claims — the driver's whole
+repair budget — the goal parks BLOCKED, and the `completion_repair` event's reason names `verify_goal`, which only
+the driver's own rule produces (the control plane's backstop answers differently). That is what makes the rule a
+live behaviour rather than a record check.
 
 **Ceiling.** The verifier is asked by the leader (or the user) through the ordinary `delegate`/`spawn` surface — the
 runtime enforces whose evidence counts, it does not pick the verifier. The round's *greenness* is read from the
 verifier's own receipts, and a verifier that runs the wrong commands is exactly as wrong as a producer would be;
-what the rule removes is the case where both are the same actor. An end-to-end member-to-member run (leader
-spawns a verifier, delegates the check, verifier calls `verify_goal`, goal settles) is the next test, not yet
-written.
+what the rule removes is the case where both are the same actor. A full member-to-member run (leader
+spawns a verifier, delegates the check, the verifier's `verify_goal` call registers the round, the goal settles) is
+still not scripted end to end: the round's *registration* is covered by the control test and the tool's *routing*
+by the collaboration dispatch, but one test that walks the whole two-instance path would close it.
 
 ## D-392 An image path to the model: `view_image` becomes a real image part, gated by a declared capability (2026-10-02)
 
