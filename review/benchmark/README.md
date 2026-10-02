@@ -70,9 +70,18 @@ significant on these samples.
 | fixed sample | official | 20 × 3 | `low` | **12 h** | 59 | 38 (64.4 %) | [0.517, 0.754] |
 | **full set** | paratera | **89 × 1** | **`high`** | **890 s** | **89** | **48 (53.9 %)** | **[0.436, 0.639]** |
 | **full set (corrected harness, D-382)** | official | **89 × 1** | **`low`** | **890 s** | **89** | **67 (75.3 %)** | **[0.654, 0.831]** |
+| **full set (per-task budgets, D-387)** | official | **89 × 1** | **`low`** | **task's own** | **89** | **68 (76.4 %)** | **[0.666, 0.840]** |
 
 The two full-set rows are **not** a controlled comparison: the corrected one differs in the harness fixes, the
-model route (official instead of the paratera relay) and the effort tier at the same time. The controlled
+model route (official instead of the paratera relay) and the effort tier at the same time.
+
+**A single full-set row is a point estimate with a ±5-task band (D-388).** The flat-890 s and per-task-budget
+runs above used the same model, effort and route and moved **9 gains against 8 losses** for a net +1; split by
+whether the budget really changed, the 50 tasks whose budget stayed ≤ 900 s went 39 → 34 (a swing with no
+treatment difference, so it is the noise floor) while the 39 tasks whose budget was raised went 28 → 34. The
+Wilson intervals above measure the sample, not that run-to-run band, which is why the official protocol's N = 3
+is the shape a headline number needs — an N = 3 full set under the per-task budgets is in flight.
+ The controlled
 comparison is the fixed sample above (harness only: 38 → 46 of 60). Two of the 89 trials in the corrected row
 (`qemu-alpine-ssh`, `qemu-startup`) had a verifier that never ran — their images' `apt` sources 404 today — so
 that number is a floor by up to two tasks.

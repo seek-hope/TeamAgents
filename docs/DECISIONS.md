@@ -20,6 +20,72 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-388 The full-set number carries a $\pm$5-task run-to-run band: the per-task budget effect is +6/−5 stratified (2026-10-02)
+
+D-387 made the harness honour each task's own agent budget. The full set was then run twice at N = 1 with the
+same model, effort and route — once with the flat 890 s client timeout, once with per-task budgets — and the two
+runs do **not** differ by the budget alone: they also differ by the model's own sampling, and the second run
+measures that noise directly.
+
+| Arm | Passed | Wilson 95 % | Exceptions |
+|---|---|---|---|
+| flat 890 s (`TEAMAGENTS_TURN_TIMEOUT_SEC=890`) | 67/89 (75.3 %) | [0.654, 0.831] | 18 non-zero exits |
+| **per-task budgets** (D-387) | **68/89 (76.4 %)** | **[0.666, 0.840]** | 3 non-zero exits, 7 `AgentTimeoutError` |
+
+The net +1 hides the actual movement: **9 tasks gained and 8 lost**. Stratified by whether the budget really
+changed:
+
+| Group | n | flat 890 s | per-task budgets | delta |
+|---|---|---|---|---|
+| budget unchanged (≤ 900 s) | 50 | 39 (78 %) | 34 (68 %) | **−5** |
+| budget raised (> 900 s) | 39 | 28 (72 %) | 34 (87 %) | **+6** |
+
+**The −5 is the measurement's noise floor.** For a 900 s task the two arms give the agent 890 s and 900 s — the
+same treatment — so its 39 → 34 swing can only be run-to-run variance. A single full-set run therefore carries a
+band of roughly **±5 tasks (±6 percentage points)**, which is *wider* than the binomial Wilson interval above:
+those tasks are not independent Bernoulli trials at a fixed pass probability, they are one sample of a
+sampling-temperature model. The +6 in the raised group is inside one noise unit, so at N = 1 the direction is
+suggestive, not established.
+
+The 9 gains are exactly the under-budgeted tasks (`caffe-cifar-10`, `compile-compcert`, `dna-assembly`,
+`install-windows-3.11`, `large-scale-text-editing`, `protein-assembly`, `regex-chess`,
+`torch-pipeline-parallelism`, `video-processing` — every one with a declared budget above 890 s), which is the
+right shape; the 8 losses are mostly 900 s tasks (`cancel-async-tasks`, `db-wal-recovery`, `prove-plus-comm`,
+`raman-fitting`, `sanitize-git-repo`, `tune-mjcf`) alongside `mcmc-sampling-stan` and `sam-cell-seg`.
+
+A separate targeted run over the 13 tasks that timed out at 890 s showed the budget doing its job — 4 of them
+passed (`caffe-cifar-10`, `compile-compcert`, `install-windows-3.11`, `protein-assembly`) — and five others
+turning from a deadline into an **early transport failure** (`transient retries exhausted: chat API: error
+sending request for url` and `model stream: error decoding response body`) at watermarks of 49–116, i.e. the
+provider, not the budget. Those did not appear in the 89-trial run that followed, so they are intermittent.
+
+**Consequence for every headline number in `review/benchmark/README.md`:** a single-run 89-task figure is a point
+estimate with a ±5-task band, and the official protocol's N = 3 is not decoration. An N = 3 full set under the
+per-task budgets is running; until it lands, the rows are labelled with their N.
+
+**Formal.** None.
+
+## D-387 The benchmark must honour each task's own agent budget, and Pi 1.0/pi-durable were read as a design reference (2026-10-02)
+
+**The harness fix.** The dataset's tasks declare their own `[agent] timeout_sec` — 48 at 900 s, 17 at 1,800 s,
+13 at 3,600 s, and single tasks at 2,400/7,200/12,000 s — and harbor enforces exactly that value while still
+running the verifier after an `AgentTimeoutError` (measured in `harbor/trial/single_step.py`: `_run_agent`
+catches `AgentTimeoutError`/`NonZeroAgentExitCodeError` and the flow continues to `_run_verifier`). The adapter
+had been passing a single client-side `--timeout 890`, so `exec` gave up first and **7 of the 13 timeout trials
+were measured against a budget the task never declared**. `review/benchmark/teamagents_agent.py` now defaults
+`TEAMAGENTS_TURN_TIMEOUT_SEC` above every task budget and lets harbor apply the task's own; the knob stays for a
+deliberate test-time-compute point (D-381's 12-hour run).
+
+**The reference reading.** Pi shipped 1.0.0 and `@earendil-works/pi-durable` 1.0.0 on 2026-10-01. They are
+different products: the CLI does not depend on `pi-durable`, whose own README marks it experimental and whose
+specification calls it "Pico5, a durable, extensible agent harness". It is recorded as a **design reference
+only** (`review/pi-durable-reference-2026-10-02.md`) — commit-before-publish durability, a task state machine
+with `waiting`/`completing`/`orphaned`, a per-tool `replay: "never" | "safe"` policy, compaction as a task
+with a stale-summary rule, and codemode's token/recovery discipline in the CLI. No product change follows from
+it without a separate decision.
+
+**Formal.** None.
+
 ## D-386 The goal-level acceptance A/B: the gate works, the pass rate does not move (2026-10-02)
 
 D-385's feature was measured, not assumed. Same tasks, same model, same budget (890 s, `low`, official route,
