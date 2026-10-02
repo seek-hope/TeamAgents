@@ -291,3 +291,32 @@ impl Provider for ChatCompletions {
         })
     }
 }
+
+#[cfg(test)]
+mod image_wire_tests {
+    use super::*;
+    use teamagents_core::kernel::ModelRequest;
+
+    /// D-392: the chat-completions body carries an image part **verbatim**. This boundary is what the design's
+    /// `ponytail:` note used to mark unreachable, so the test is the evidence that it is reachable now.
+    #[test]
+    fn the_body_carries_an_image_part_verbatim() {
+        let provider =
+            ChatCompletions::new("https://example.invalid/v1", "k", std::time::Duration::from_secs(5)).unwrap();
+        let request = ModelRequest {
+            request_id: "r".into(),
+            model: "sees".into(),
+            messages: vec![json!({"role": "tool", "tool_call_id": "c1", "content": [
+                {"type": "text", "text": "image shot.png (image/png, 11 bytes)"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}},
+            ]})],
+            tools: vec![],
+            options: json!({}),
+            est_prompt_tokens: 10,
+        };
+        let body = provider.body(&request);
+        let parts = body["messages"][0]["content"].as_array().expect("parts survive to the wire");
+        assert_eq!(parts.len(), 2, "{parts:?}");
+        assert_eq!(parts[1]["image_url"]["url"], json!("data:image/png;base64,iVBORw0KGgo="));
+    }
+}

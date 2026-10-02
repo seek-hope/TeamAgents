@@ -125,6 +125,7 @@ async fn main() -> Fallible<()> {
         session_id: "s-accept".into(),
         leader_id: "i-leader".into(),
         leader_profile: KernelProfile {
+            images: false,
             model: lead.clone(),
             instructions: teamagents_engine::v2::daemon::LEADER_INSTRUCTIONS.into(),
             tools: {

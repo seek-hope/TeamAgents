@@ -26,6 +26,9 @@ libc = "0.2"
 # Codemode (D-374): the model-written script sandbox. QuickJS, the same engine pi's codemode uses,
 # with only the bound MCP tools as capabilities — the script cannot reach the host any other way.
 rquickjs = "0.14"
+# Base64 for the image flow (D-392): a `view_image` result is a reference at rest and a `data:` URL on the
+# wire. Already in the tree (transitively, via the HTTP stack), so this adds no download.
+base64 = "0.22"
 
 [dev-dependencies]
 

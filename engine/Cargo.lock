@@ -1177,6 +1177,7 @@ dependencies = [
 name = "teamagents-engine"
 version = "0.2.0"
 dependencies = [
+ "base64",
  "futures-util",
  "libc",
  "reqwest",

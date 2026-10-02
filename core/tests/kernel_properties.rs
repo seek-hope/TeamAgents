@@ -21,6 +21,7 @@ fn kernel() -> KernelInstance {
         "inst-1",
         0,
         KernelProfile {
+            images: false,
             model: "deepseek-v4.1-flash".into(),
             instructions: "You are a worker.".into(),
             tools: vec![json!({"type":"function","function":{"name":"shell","parameters":{"type":"object"}}})],

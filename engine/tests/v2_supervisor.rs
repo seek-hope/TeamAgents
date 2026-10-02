@@ -140,6 +140,7 @@ where
         session_id: "s-test".into(),
         leader_id: "i-leader".into(),
         leader_profile: KernelProfile {
+            images: false,
             model: "scripted".into(),
             instructions: "team leader".into(),
             tools: vec![json!({"type": "function", "function": {
@@ -463,6 +464,7 @@ async fn heterogeneous_instances_run_different_protocols_in_one_session() {
     catalog.models.insert(
         "lead-model".into(),
         ModelProfile {
+            images: false,
             provider: "deepseek".into(),
             protocol: "deepseek".into(),
             model: "ds-flash".into(),
@@ -478,6 +480,7 @@ async fn heterogeneous_instances_run_different_protocols_in_one_session() {
     catalog.models.insert(
         "worker-model".into(),
         ModelProfile {
+            images: false,
             provider: "openai".into(),
             protocol: "responses".into(),
             model: "gpt-x".into(),

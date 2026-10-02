@@ -361,6 +361,9 @@ pub fn resolve_profile(profile: KernelProfile, catalog: &UserConfig) -> KernelPr
         tools: profile.tools.clone(),
         options: serde_json::to_value(options).unwrap_or_else(|_| serde_json::json!({})),
         context_window: entry.context_window.or(profile.context_window),
+        // D-392: the catalog entry is authoritative for the capability, and the fallback keeps whatever the
+        // caller resolved (an unknown model keeps fail-closed `false`).
+        images: entry.images || profile.images,
     }
 }
 

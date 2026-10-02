@@ -287,12 +287,10 @@ impl Provider for Anthropic {
 }
 
 /// Chat-completions history → Anthropic `system` + `messages`.
-/// ponytail: v2 has no image flow yet, so no image block ever reaches this boundary — the `view_image`
-/// tool returns a reference in its receipt and nothing loads it into a request (the request-build-time
-/// loader `tools::load_image_reference` has no caller). When the flow lands, path: catalog entries declare
-/// input modalities, and here a non-vision model gets every image block replaced by one placeholder text
-/// ("(image omitted: model does not support images)"; consecutive image blocks collapse into a single
-/// placeholder) instead of erroring out.
+/// Ceiling (D-392): the image flow lands for the chat-completions/deepseek wire, where the provider body carries a
+/// `content` parts array verbatim. This transform still only reads string content, so a part reaching it would be
+/// dropped; the driver substitutes the placeholder before building a request whenever the model did not declare
+/// `images = true`. Wiring parts here is the next step if this protocol ever needs vision.
 fn to_anthropic_messages(history: &[Json]) -> (String, Vec<Json>) {
     let mut system = String::new();
     let mut out: Vec<Json> = vec![];

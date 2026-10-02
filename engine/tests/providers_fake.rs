@@ -267,6 +267,7 @@ fn effort_normalizes_at_the_config_boundary() {
     }))
     .unwrap();
     let kernel = |model: &str, options: Json| KernelProfile {
+        images: false,
         model: model.into(),
         instructions: String::new(),
         tools: vec![],

@@ -811,6 +811,23 @@ impl<P: Provider> Driver<P> {
         self.read_entries(snapshot, true).await
     }
 
+    /// D-392: turn every `view_image` reference in this request's view into a real image part — or the
+    /// placeholder, when the model has not declared image support. Storage keeps the reference and only the
+    /// request carries bytes, so the context, the checkpoints and the database stay free of base64.
+    fn expand_images(&self, entries: &mut [ContextEntry]) {
+        let artifacts = self.config.state_root.join("artifacts");
+        for entry in entries {
+            if matches!(entry.kind, EntryKind::ToolResult) {
+                crate::tools::expand_image_reference(
+                    &self.config.workspace,
+                    Some(&artifacts),
+                    &mut entry.message,
+                    self.config.profile.images,
+                );
+            }
+        }
+    }
+
     /// The whole epoch, covered entries included: readback must still reach
     /// originals after a summary hid them (A20).
     async fn stored_entries(&self, snapshot: &Snapshot) -> Result<Vec<ContextEntry>, String> {
@@ -1388,6 +1405,7 @@ that delegated it learns the outcome only from a settlement.";
             .await?;
         let revision = drained["revision"].as_i64().unwrap_or(snapshot.revision);
         let mut entries = self.context_entries(snapshot).await?;
+        self.expand_images(&mut entries);
         // A turn opens for *unaddressed* work only: content that arrived since the
         // last request (the drain above applied it) or a task this instance has not
         // started yet. A task it already addressed is not a reason to ask again —
@@ -1431,6 +1449,7 @@ that delegated it learns the outcome only from a settlement.";
         let last_prompt = self.last_prompt_tokens().await?;
         if self.over_threshold(&request, last_prompt) && self.compact(&entries).await? {
             entries = self.context_entries(snapshot).await?;
+            self.expand_images(&mut entries);
             request = kernel.prepare_request(&entries, &request_id);
         }
         let begun = self
@@ -2262,6 +2281,7 @@ that delegated it learns the outcome only from a settlement.";
                         tools: profile.tools.clone(),
                         options: json!({}),
                         context_window: None,
+                        images: false, // the catalog entry resolves it (D-392)
                     };
                     // the child gets the entry's wire-effective profile: its model
                     // name, merged generation options and native window

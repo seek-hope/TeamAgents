@@ -8508,6 +8508,7 @@ mod tests {
             "i1",
             0,
             KernelProfile {
+                images: false,
                 model: "test".into(),
                 instructions: "i".into(),
                 tools: vec![],

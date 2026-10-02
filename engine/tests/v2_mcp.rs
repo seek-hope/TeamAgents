@@ -97,6 +97,7 @@ impl Root {
             permissions: "full_auto".into(),
             sandbox: teamagents_engine::tools::SandboxBackend::bubblewrap(),
             profile: KernelProfile {
+                images: false,
                 model: "scripted".into(),
                 instructions: "test agent".into(),
                 tools: vec![],

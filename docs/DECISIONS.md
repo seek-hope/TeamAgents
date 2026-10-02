@@ -20,6 +20,51 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-392 An image path to the model: `view_image` becomes a real image part, gated by a declared capability (2026-10-02)
+
+**The gap.** The product could not put a picture in front of a model. `view_image` existed, validated the file and
+returned a *reference* (`{"image": …, "media_type": …, "bytes": n}`); `tools::load_image_reference` existed with
+no caller; and both the Anthropic and the responses message transforms carried a `ponytail:` note saying the block
+would be emitted "when the flow lands". A benchmark task that is only reachable through a video
+(`extract-moves-from-video`, D-391) is the measured consequence: no artifact after four times its budget.
+
+**What was added.** The request builder now expands a `view_image` reference into the model-facing content
+(`tools::expand_image_reference`): an OpenAI-shaped parts array, one short text line naming the picture and then
+the `image_url` `data:` URL. Four rules make it safe:
+
+- **The capability is declared and fail-closed.** `[models.<key>] images = true` is the only way a part reaches
+the wire; the default is `false`, so a model nobody checked is never handed a block its provider would reject or
+silently drop. It rides `ModelProfile` → `KernelProfile` (`resolve_profile` takes the catalog entry as
+authoritative) and is documented in `docs/CONFIG.md`.
+- **A model without the capability still learns a picture was looked at.** It receives the placeholder
+  `(image omitted: model does not support images)` — never a silent omission, which would read as "the tool
+  returned nothing".
+- **Every failure is text in the same place.** A reference whose bytes are gone, too large or no longer of the
+  recorded type becomes `[image <label> could not be loaded: …]`; one unreadable picture never fails a turn.
+- **Bytes never rest in the database.** Expansion happens on the in-memory view before every `prepare_request`
+  (including the rebuild after a compaction), so the context entry keeps the reference and only the request
+  carries base64. `estimated_tokens` prices an image by an allowance (1,100 tokens) rather than by its base64
+  length, which the text rule would put at roughly 1.7 million tokens for a 5 MiB picture and refuse at the gate.
+
+**Formal.** `verification/tla/V2Images.tla` states the two claims the wire depends on —
+`NoImagesWithoutSupport` (a part only ever reaches a model that declared the capability) and
+`PartsOnlyFromLoadedBytes` (a part exists only for bytes that were really read), plus `UnreadableIsReported` and
+two monitors. `MC_images.cfg` (a vision model) and `MC_images_blind_model.cfg` (a blind one) verify;
+`MC_images_blind_parts.cfg` refutes the control that expands without consulting the capability. The model caught
+one of its own mistakes while being written: its first version let a reference be stored after the request was
+sent, so the sent message could change underneath the invariant.
+
+**Tests.** `tools::view_image_reference_becomes_a_part_for_a_vision_model_and_a_placeholder_otherwise` (the parts
+array and the verbatim base64, the placeholder with no bytes leak, both failure texts, and a non-image tool result
+left alone), `kernel::types::image_accounting_tests` (a 1 MiB payload and a 4-byte one cost the same;
+a no-image request keeps its old price exactly) and `config::the_image_capability_is_declared_per_model_and_defaults_to_false`.
+
+**Ceiling.** Only the chat-completions/deepseek wire carries parts today; a vision model behind the Anthropic or
+responses protocol would still get the placeholder, which is the next step if either is ever used with one. The
+1,100-token allowance is an approximation, not a provider's tile arithmetic. And **no real vision model has been
+driven yet**: `deepseek-flash` is text-only in every run in this tree, so the flow is verified at the wire and the
+accounting, not against a live multimodal provider.
+
 ## D-391 The nine never-passing tasks, diagnosed: there was no single cause (2026-10-02)
 
 D-389 left nine tasks at 0/3. Each was diagnosed rather than assumed — a four-times-budget re-run for the four

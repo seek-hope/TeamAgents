@@ -142,6 +142,7 @@ fn main() {
         permissions: if full_auto { "full_auto".into() } else { "approved_scope".into() },
         sandbox: teamagents_engine::tools::SandboxBackend::bubblewrap(),
         profile: KernelProfile {
+            images: false,
             model: model.clone(),
             instructions,
             tools: basic_tool_schemas(web, false),

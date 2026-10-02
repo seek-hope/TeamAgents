@@ -45,6 +45,12 @@ pub struct ModelProfile {
     pub max_retries: i64,
     #[serde(default)]
     pub generation_options: HashMap<String, Json>,
+    /// Does this model accept images (D-392)? **Fail-closed by default**: only a profile that says
+    /// `images = true` may carry an image part to the wire, so a model that was never checked for vision is
+    /// sent the placeholder text instead of a block its provider would reject or silently ignore. The declared
+    /// capability is the gate; no runtime probe guesses it.
+    #[serde(default)]
+    pub images: bool,
     /// Model context window in tokens (drives the /status remaining-context
     /// column; None = unknown, shown as "not configured").
     #[serde(default)]

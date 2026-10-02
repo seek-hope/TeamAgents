@@ -792,6 +792,48 @@ model = "gpt"
         assert!(parse_user_config(bad).is_err());
     }
 
+    /// D-392: the image capability is declared per model and is **fail-closed** — an entry that says nothing
+    /// carries images nowhere, so a model that was never checked for vision gets the placeholder instead of a
+    /// block its provider would reject or silently drop.
+    #[test]
+    fn the_image_capability_is_declared_per_model_and_defaults_to_false() {
+        let cfg = parse_user_config(
+            r#"
+[models.sees]
+provider = "openai"
+model = "gpt"
+images = true
+
+[models.blind]
+provider = "openai"
+model = "gpt"
+"#,
+        )
+        .unwrap();
+        assert!(cfg.models["sees"].images, "a declared model sees images");
+        assert!(!cfg.models["blind"].images, "an undeclared model is fail-closed");
+        // and the declaration survives into the resolved kernel profile the provider boundary reads
+        let mut catalog = cfg.clone();
+        catalog.models.insert(
+            "sees".into(),
+            teamagents_core::models::ModelProfile { images: true, ..cfg.models["sees"].clone() },
+        );
+        let resolved = crate::providers::resolve_profile(
+            teamagents_core::kernel::KernelProfile {
+                model: "sees".into(),
+                instructions: String::new(),
+                tools: vec![],
+                options: serde_json::json!({}),
+                context_window: None,
+                images: false,
+            },
+            &catalog,
+        );
+        assert!(resolved.images, "the catalog entry is authoritative for the capability");
+        let bad = "[models.a]\nprovider = \"o\"\nmodel = \"m\"\nimages = \"yes\"\n";
+        assert!(parse_user_config(bad).is_err(), "a non-boolean is refused, never guessed");
+    }
+
     #[test]
     fn parses_models_and_validates_the_permissions_section() {
         let cfg = parse_user_config(

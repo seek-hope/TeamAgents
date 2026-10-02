@@ -289,6 +289,7 @@ impl SupervisorHandle {
 /// the leader's (same model/window family, D-36 window still required).
 fn stored_profile(json: &Json, fallback: &KernelProfile) -> KernelProfile {
     KernelProfile {
+        images: json.get("images").and_then(Json::as_bool).unwrap_or(fallback.images),
         model: json["model"].as_str().unwrap_or(&fallback.model).to_string(),
         instructions: json["instructions"].as_str().unwrap_or("").to_string(),
         tools: json["tools"].as_array().cloned().unwrap_or_default(),

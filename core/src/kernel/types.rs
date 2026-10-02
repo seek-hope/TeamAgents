@@ -191,10 +191,38 @@ pub fn args_hash(args: &Json) -> String {
 
 /// ponytail: conservative text estimate, not a tokenizer; provider usage wins
 /// when larger (ported from the legacy chat loop, same contract).
+/// Approximate prompt tokens for one request body.
+///
+/// Text keeps the long-standing rule (ASCII bytes/4 plus one per non-ASCII character). An **image is not priced
+/// by its length**: base64 inflates a 5 MiB picture to about 6.7 MiB of text, which the rule above would price
+/// at roughly 1.7 million tokens and refuse at the budget gate. Each `data:` image counts a flat allowance
+/// instead — the same order as one high-detail tile — which is the deliberate approximation (D-392).
+pub const IMAGE_TOKEN_ALLOWANCE: u64 = 1_100;
+
+/// `value` with every `data:image/` payload replaced by a short marker, and the number of images seen (D-392).
+/// The prefix, not a length, decides: a one-pixel PNG is as much an image as a photograph, and the length rule is
+/// exactly what the allowance replaces. Cloning is fine here: the estimate is already O(size) over a body that is
+/// about to be serialized anyway, and masking keeps every existing number identical when there is no image.
+fn mask_image_payloads(value: &Json, images: &mut u64) -> Json {
+    match value {
+        Json::String(text) if text.starts_with("data:image/") => {
+            *images += 1;
+            Json::String("[image]".into())
+        }
+        Json::Array(items) => Json::Array(items.iter().map(|item| mask_image_payloads(item, images)).collect()),
+        Json::Object(map) => {
+            Json::Object(map.iter().map(|(key, item)| (key.clone(), mask_image_payloads(item, images))).collect())
+        }
+        other => other.clone(),
+    }
+}
+
 pub fn estimated_tokens(value: &Json) -> u64 {
-    let text = value.to_string();
+    let mut images = 0;
+    let masked = mask_image_payloads(value, &mut images);
+    let text = masked.to_string();
     let ascii = text.bytes().filter(u8::is_ascii).count();
-    (ascii.div_ceil(4) + text.chars().filter(|c| !c.is_ascii()).count()) as u64
+    (ascii.div_ceil(4) + text.chars().filter(|c| !c.is_ascii()).count()) as u64 + images * IMAGE_TOKEN_ALLOWANCE
 }
 
 /// Per-call model-facing output cap (same policy as the legacy loop).
@@ -422,4 +450,44 @@ pub struct ToolReceipt {
 pub struct ReceiptError {
     pub class: String,
     pub reason: String,
+}
+
+#[cfg(test)]
+mod image_accounting_tests {
+    use super::*;
+
+    /// D-392: an image is priced by an allowance, never by its base64 length. A 1 MiB payload would otherwise be
+    /// priced at roughly 350k tokens by the text rule and refuse every request that carries a picture.
+    #[test]
+    fn an_image_is_priced_by_an_allowance_not_by_its_base64_length() {
+        let big_payload = format!("data:image/png;base64,{}", "A".repeat(1024 * 1024));
+        let small_payload = "data:image/png;base64,AAAA".to_string();
+        let parts = |url: String| {
+            json!({"messages": [{"role": "tool", "content": [
+                {"type": "text", "text": "image shot.png"},
+                {"type": "image_url", "image_url": {"url": url}},
+            ]}]})
+        };
+        let big = estimated_tokens(&parts(big_payload));
+        assert_eq!(big, estimated_tokens(&parts(small_payload)), "payload length must not change the price");
+        let text_only = json!({"messages": [{"role": "tool", "content": [
+            {"type": "text", "text": "image shot.png"},
+            {"type": "image_url", "image_url": {"url": "(image omitted)"}},
+        ]}]});
+        // the marker text differs, so compare on the allowance's scale rather than to the token
+        let delta = big - estimated_tokens(&text_only);
+        assert!(
+            (IMAGE_TOKEN_ALLOWANCE - 16..=IMAGE_TOKEN_ALLOWANCE + 16).contains(&delta),
+            "the image costs its allowance, not its length: delta {delta}"
+        );
+        assert!(big < 5_000, "one image must not price as hundreds of thousands of tokens: {big}");
+        // a request without an image keeps the old rule exactly
+        let plain = json!({"messages": [{"role": "user", "content": "hello"}]});
+        let rendered = plain.to_string();
+        assert_eq!(
+            estimated_tokens(&plain),
+            (rendered.bytes().filter(u8::is_ascii).count().div_ceil(4)
+                + rendered.chars().filter(|c| !c.is_ascii()).count()) as u64
+        );
+    }
 }

@@ -21,6 +21,9 @@ pub struct KernelProfile {
     /// Native context window; None is invalid for real runs (D-36), the
     /// driver must resolve a reliable value before constructing requests.
     pub context_window: Option<u64>,
+    /// May a request from this instance carry an image part (D-392)? Mirrors the model profile's `images`,
+    /// resolved once per request; the request builder substitutes a placeholder when it is false.
+    pub images: bool,
 }
 
 #[derive(Debug, Clone)]

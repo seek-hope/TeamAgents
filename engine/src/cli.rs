@@ -1011,6 +1011,7 @@ fn daemon_boot(
             session_id: "s-main".into(),
             leader_id: "i-leader".into(),
             leader_profile: KernelProfile {
+                images: false,
                 model: model_key,
                 instructions: crate::v2::daemon::LEADER_INSTRUCTIONS.into(),
                 tools: member_tools,

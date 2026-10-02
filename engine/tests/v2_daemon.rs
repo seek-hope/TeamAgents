@@ -112,6 +112,7 @@ fn config(
             session_id: "s-test".into(),
             leader_id: "i-leader".into(),
             leader_profile: KernelProfile {
+                images: false,
                 model: "scripted".into(),
                 instructions: "team leader".into(),
                 tools: vec![],
@@ -740,6 +741,7 @@ async fn the_snapshot_reports_each_members_model() {
     // the session boots on a catalog entry: the key is "leader_main", the wire model
     // is "deepseek-flash", and the row must carry the latter
     cfg.supervisor.leader_profile = KernelProfile {
+        images: false,
         model: "leader_main".into(),
         instructions: "team leader".into(),
         tools: vec![],

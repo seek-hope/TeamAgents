@@ -5,6 +5,18 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
+## 0. Gate status (re-run 2026-10-03 at `MATERIAL-COMMIT`)
+
+* **D-392 added the image-flow model and re-ran all three targets on this tree (2026-10-03).** `V2Images.tla`
+  states the two claims the wire depends on — `NoImagesWithoutSupport` (an image part only for a model that
+  declared `images = true`) and `PartsOnlyFromLoadedBytes` (a part only from bytes that were really read) — plus
+  `UnreadableIsReported` and the `NoLeakedImages`/`NoUnbackedParts` monitors.
+  `make verify-model-all`: all **31** configurations `No error has been found` (rc 0); the two new ones are `MC_images.cfg` and `MC_images_blind_model.cfg`, the vision and non-vision arms, exhaustive in under a second.
+  `make verify-model-counterexamples` refutes all **92** negative controls (rc 0); the new one is
+  `MC_images_blind_parts.cfg`, which expands an image reference without consulting the capability.
+  `make verify-kani` reports `Complete - 3 successfully verified harnesses, 0 failures, 3 total` (rc 0). The round
+  changed `verification/tla/V2Images.tla`, added its three configurations and registered them in both targets.
+
 ## 0. Gate status (re-run 2026-10-02 at `a9091290`)
 
 * **D-385 added the required-check *ingress* to the check model and re-ran all three targets on this tree

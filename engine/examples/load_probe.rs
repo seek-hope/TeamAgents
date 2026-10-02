@@ -241,6 +241,7 @@ fn main() -> Fallible<()> {
         "i-main",
         0,
         KernelProfile {
+            images: false,
             model: "synthetic".into(),
             instructions: "load probe".into(),
             tools: vec![json!({"type": "function", "function": {"name": "shell",

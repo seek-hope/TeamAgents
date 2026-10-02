@@ -602,6 +602,41 @@ pub fn load_image_reference(
     load_member_image_reference(root, &ArtifactPaths::own(artifacts.map(Path::to_path_buf)), reference, media_type)
 }
 
+/// The placeholder a non-vision model gets where an image part would be (D-392).
+pub const IMAGE_PLACEHOLDER: &str = "(image omitted: model does not support images)";
+
+/// Turn a `view_image` result into the model-facing content of its tool message, in place (D-392).
+///
+/// `view_image` answers with a *reference* — `{"image": <path or artifact key>, "media_type": …, "bytes": n}` — and
+/// the bytes stay on disk until a request is built, so the context, the checkpoints and the database never carry
+/// base64. This is the build step that loads them: the message's content becomes an OpenAI-shaped parts array,
+/// one short text line naming the picture and then the `image_url` data URL.
+///
+/// A model that has not declared `images = true` gets [`IMAGE_PLACEHOLDER`] instead of a block — never a part its
+/// provider would reject or drop, and never a silent omission, so the model still learns a picture was looked at.
+/// Any failure (the file is gone, too large, or the bytes no longer match the recorded type) becomes a text line
+/// in the same place: one unreadable picture must not fail a turn, and the model should learn why it cannot look.
+pub fn expand_image_reference(root: &Path, artifacts: Option<&Path>, message: &mut Json, images: bool) {
+    let Some(label) = message["content"]["image"].as_str() else { return };
+    let media_type = message["content"]["media_type"].as_str().unwrap_or("image/png");
+    if !images {
+        message["content"] = json!(IMAGE_PLACEHOLDER);
+        return;
+    }
+    match load_image_reference(root, artifacts, label, media_type) {
+        Ok(bytes) => {
+            let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+            message["content"] = json!([
+                {"type": "text", "text": format!("image {label} ({media_type}, {} bytes)", bytes.len())},
+                {"type": "image_url", "image_url": {"url": format!("data:{media_type};base64,{encoded}")}},
+            ]);
+        }
+        Err(reason) => {
+            message["content"] = json!(format!("[image {label} could not be loaded: {reason}]"));
+        }
+    }
+}
+
 pub(crate) fn load_member_image_reference(
     root: &Path,
     artifacts: &ArtifactPaths,
@@ -3122,6 +3157,59 @@ mod tests {
         let text = dir.join("notes.txt");
         std::fs::write(&text, "hello").unwrap();
         assert!(read_image(std::fs::File::open(&text).unwrap(), "notes.txt").is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// D-392: the request-build step that turns a `view_image` reference into the model-facing message.
+    #[test]
+    fn view_image_reference_becomes_a_part_for_a_vision_model_and_a_placeholder_otherwise() {
+        let dir = std::env::temp_dir().join(format!("ta-image-flow-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // a minimal 1x1 PNG: magic bytes are what the type check reads
+        let png: Vec<u8> = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3];
+        std::fs::write(dir.join("shot.png"), &png).unwrap();
+        let reference = json!({"image": "shot.png", "media_type": "image/png", "bytes": png.len()});
+
+        // a model that declared images gets a parts array: a text line and the data URL
+        let mut message = json!({"role": "tool", "tool_call_id": "c1", "content": reference.clone()});
+        expand_image_reference(&dir, None, &mut message, true);
+        let parts = message["content"].as_array().expect("parts array").clone();
+        assert_eq!(parts.len(), 2, "{parts:?}");
+        assert_eq!(parts[0]["type"], json!("text"));
+        assert!(parts[0]["text"].as_str().unwrap().contains("shot.png"));
+        assert_eq!(parts[1]["type"], json!("image_url"));
+        let url = parts[1]["image_url"]["url"].as_str().unwrap();
+        assert!(url.starts_with("data:image/png;base64,"), "{url}");
+        assert_eq!(
+            url,
+            format!(
+                "data:image/png;base64,{}",
+                base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &png)
+            ),
+            "the bytes travel verbatim"
+        );
+
+        // a model that did not is told a picture was looked at, and gets no block at all
+        let mut blind = json!({"role": "tool", "tool_call_id": "c1", "content": reference.clone()});
+        expand_image_reference(&dir, None, &mut blind, false);
+        assert_eq!(blind["content"], json!(IMAGE_PLACEHOLDER));
+        assert!(!blind["content"].to_string().contains("base64"), "no bytes leak to a model that cannot read them");
+
+        // an unreadable picture is a text line, never a failed turn
+        let mut gone = json!({"role": "tool", "content": {"image": "gone.png", "media_type": "image/png"}});
+        expand_image_reference(&dir, None, &mut gone, true);
+        let text = gone["content"].as_str().expect("text fallback");
+        assert!(text.starts_with("[image gone.png could not be loaded:"), "{text}");
+
+        // a recorded type that no longer matches is refused the same way
+        let mut lie = json!({"role": "tool", "content": {"image": "shot.png", "media_type": "image/jpeg"}});
+        expand_image_reference(&dir, None, &mut lie, true);
+        assert!(lie["content"].as_str().unwrap().contains("recorded as image/jpeg"), "{lie}");
+
+        // a tool message that is not an image reference is left exactly as it was
+        let mut other = json!({"role": "tool", "content": "plain output"});
+        expand_image_reference(&dir, None, &mut other, true);
+        assert_eq!(other["content"], json!("plain output"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

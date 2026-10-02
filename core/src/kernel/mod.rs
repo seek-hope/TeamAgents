@@ -22,6 +22,7 @@ mod tests {
             "inst-1",
             0,
             KernelProfile {
+                images: false,
                 model: "deepseek-v4.1-flash".into(),
                 instructions: "You are a worker.".into(),
                 tools: vec![
@@ -216,6 +217,7 @@ mod tests {
             "inst-1",
             0,
             KernelProfile {
+                images: false,
                 model: "m".into(),
                 instructions: "i".into(),
                 tools: vec![],
