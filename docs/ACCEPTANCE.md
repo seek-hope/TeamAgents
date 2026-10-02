@@ -7,7 +7,7 @@ model probe sets and the three formal gates).
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 123 / engine 329 / tui 38 test targets) and `make pty` passes — re-measured 2026-09-29: `pty v2 smoke: ok`, rc 0, 41 s, credential-free; both are
+`make check` is green (core 123 / engine 330 / tui 38 test targets) and `make pty` passes — re-measured 2026-09-29: `pty v2 smoke: ok`, rc 0, 41 s, credential-free; both are
 preconditions for every item below. `make check` includes `make language-check`, which fails on non-English
 characters outside the two documented exceptions (`README.zh-CN.md` and the frozen material under
 `review/eval`).
@@ -33,7 +33,7 @@ checks that every requirement has a row and every row names a requirement that e
 | Q9 | Instances are reused and retained within a session, can be terminated or reset, and sessions are isolated | A21, A29 (session isolation and a shared project); `review/dogfood/lifecycle_run.py` (D-98); the cancel lever of D-88 |
 | Q10 | Work continues by default with an optional goal budget, and failures are bounded | A18 (multi-instance usage budget), A19 (truncated stream and connection loss), A35 (goal deadline); D-97 (a refused request is not a slow one) |
 | Q11 | Required checks must pass; other claims carry evidence; independent review is on demand | A16 (a required check fails), A17 (artifacts change after a check) with `review/dogfood/stale_check.py` (D-90); D-50 |
-| Q12 | The first release ships basic tools, MCP and Skills, and needs no external Codex adaptation | A01 (basic tools), A25 (MCP over both transports), A26 (skills permissions); `docs/TOOLS.md` (the generated catalogue of the eighteen tools); D-74, D-66 |
+| Q12 | The first release ships basic tools, MCP and Skills, and needs no external Codex adaptation | A01 (basic tools), A25 (MCP over both transports), A26 (skills permissions); `docs/TOOLS.md` (the generated catalogue of the nineteen tools); D-74, D-66 |
 | Q13 | Multiple providers and mixed models inside one team; DeepSeek is the main baseline | A27 (heterogeneous providers) with `review/dogfood/providers.py` (D-129), A19; D-36 (native window recorded), D-69 (each member's model written down) |
 | Q14 | The project workspace is shared by default, with isolated directories or Git worktrees on demand | A29; D-46 (workspace policies wired into `spawn`); `review/dogfood/workspace.py` (D-76) |
 | Q15 | Authorized work resumes after a restart; an unknown outcome is verified first and parked if it stays unknown | A06 (a message applied across a restart), A08 (crash after a tool succeeded), A09 (unknown external outcome) with `review/dogfood/unknown_outcome.py` (D-119), A11 (daemon and runner crash separately); D-112 |
@@ -225,15 +225,17 @@ decides from its own stored receipts, so a check added later would never run —
 
 - ~~**A worktree member's branch has no merge surface.**~~ **Delivered since D-252.** `teamagents instances merge --id ID` brings a `git_worktree` member's branch into the session's own working tree. The branch name is read from the member's own record (`<state root>/instances/<id>/workspace.json`, written when the instance was prepared, D-76) instead of being guessed or asked of git, and the merge is a *local* git operation on the session's tree — not a session-state transition — so it runs in the client and the daemon is only read (for the member's live phase). Three refusals, each naming what it found: the member is in the middle of a turn (a running member is writing the very files the merge would bring in — wait for it, pause it, or cancel its task); the member's checkout still holds uncommitted changes (the merge carries the *branch*, so that work would be left behind — the workspace module's "nothing in a member's directory is dropped silently" rule, the same one retirement applies to deletion); and the instance has no branch at all (a shared/isolated member, or the session's leader, which works in the session's own tree). A merge that ends in conflicts is reported with git's own message and left **in progress** to resolve or abort; the member's branch is untouched. Evidence: the real binary against a real daemon and a real repository — `v2_daemon::the_instances_merge_lever_brings_a_worktree_members_branch_into_the_session_tree` measures the mid-turn refusal, the merge itself (the member's committed file landing in the session tree, under a `merged by the user` commit), the dirty-checkout refusal and the leader refusal — and the live half is `review/dogfood/workspace.py`, which since D-252 merges through the product's own lever instead of the by-hand `git merge` it used to run (measured 2026-09-28 with DeepSeek: exit 0, the branch named, the member's `report.md` in the session tree, and the worktree retired by the running supervisor). Formally `tla/V2Workspace.tla` pins `UncommittedWorkIsNeverMerged`, `NoMergeWhileATurnRuns` and `RetirementNeverBuriesWork`, each refuted by its own control. What stays open next to it: nothing merges *back* into a member, and a conflict is still the user's to resolve (the design lets a Leader do the same work through `shell@workspace`).
 
-- **`view_image`'s request-build half is parked, so an image never reaches a model.** The tool returns a
-  reference in its receipt (`{"image": …, "media_type": …, "bytes": …}`), but the half that loads those bytes
-  into a request, `tools::load_image_reference`, has no caller: v2 has no image flow, and no tool catalogue
-  advertises `view_image` (`docs/TOOLS.md` catalogues the eighteen tools the product offers and it is not one
-  of them). The loader is parked with a `ponytail:` note naming the upgrade path — the providers' message
-  transforms carry the same note (catalog entries declare input modalities, and a non-vision model gets a
-  placeholder instead of an error). Wiring it is new product surface and needs the user's word; until then
-  `review/dead_code.py` keeps the parked entry visible in its allowlist instead of letting a test's call make
-  it look live (D-130).
+- ~~**`view_image`'s request-build half is parked, so an image never reaches a model.**~~ **Delivered since
+  D-392.** The tool is advertised now (the schema was the missing half: it was dispatched but never offered, so
+  the model could not call it), `tools::expand_image_reference` is the caller `load_image_reference` was parked
+  for, and a model whose profile declares `images = true` receives the picture as an OpenAI-shaped part. A model
+  that does not declare it receives the placeholder, and every failure (missing file, oversized, type changed)
+  becomes a text line rather than a failed turn. Measured live on 2026-10-03: `deepseek-flash` accepts an
+  `image_url` data URL and reads an image correctly (`prompt_tokens` 228 with the picture against 44 without, so
+  a 16x16 image costs about 184 tokens; 256x256 about 177 and 1024x1024 about 645), and the end-to-end product
+  run answers the picture's colour through `view_image` (see D-392 and the A-item below). Formally
+  `V2Images.tla` states `NoImagesWithoutSupport` and `PartsOnlyFromLoadedBytes`, with the late/ignoring control
+  refuted.
 
 - ~~**`instruction_files` is accepted but nothing reads it into a prompt.**~~ **Delivered since D-246.** The
   loader validates each path, the driver composes the files' text into every instance's system prompt at prompt

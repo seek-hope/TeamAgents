@@ -70,8 +70,6 @@ KNOWN_TEST_ONLY = {
                         "(`the_two_loaders_agree_on_a_user_only_config`): the product loads through "
                         "`load_user_config_for` since D-244, so only tests call this one",
     "merge_branch": "D-76: the member-branch merge surface is an open item; only a test drives it",
-    "load_image_reference": "the request-build half of the image flow, which v2 does not have yet; parked with "
-                            "a ponytail note (the providers carry the same note)",
 }
 
 # name -> why only a doc comment mentions it

@@ -7,18 +7,26 @@
 use serde_json::{json, Value as Json};
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
 use teamagents_core::kernel::{KernelProfile, ModelRequest, ModelResponse, Usage};
 use teamagents_core::models::UserConfig;
+
 use teamagents_engine::providers::{AttemptOutcome, Cancel, Provider, ProviderError, ProviderEvent};
 use teamagents_engine::v2::daemon::{serve, DaemonConfig, DaemonHandle, PROTOCOL_VERSION};
 use teamagents_engine::v2::exec::{execute, End, ExecOptions, ExecRun};
 use teamagents_engine::v2::supervisor::SupervisorConfig;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
+/// Every request body the scripted provider saw, in order (D-392's wire witness).
+type SeenRequests = Arc<Mutex<Vec<Vec<Json>>>>;
+
 struct ScriptedProvider {
     script: Mutex<VecDeque<Json>>,
+    /// D-392: every request the driver built, in order, so a test can assert what really went to the wire
+    /// (nothing else records the body: the request is fixed in memory and never persisted).
+    seen: SeenRequests,
 }
 
 impl Provider for ScriptedProvider {
@@ -27,10 +35,11 @@ impl Provider for ScriptedProvider {
     }
     async fn complete(
         &self,
-        _request: &ModelRequest,
+        request: &ModelRequest,
         _cancel: &Cancel,
         _on_event: &mut (dyn FnMut(ProviderEvent) + Send),
     ) -> Result<AttemptOutcome, ProviderError> {
+        self.seen.lock().unwrap().push(request.messages.clone());
         let message = self.script.lock().unwrap().pop_front().unwrap_or_else(|| reply("script exhausted"));
         // {"__slow_ms__": N, …} answers after a delay so a test can act *while*
         // the request is in flight (the same trick the supervisor harness uses)
@@ -100,10 +109,24 @@ fn config(
     root: &Root,
     scripts: HashMap<String, Vec<Json>>,
 ) -> DaemonConfig<ScriptedProvider, impl Fn(&str, &KernelProfile) -> ScriptedProvider> {
+    config_recording(root, scripts, UserConfig::default(), vec![], &Arc::new(Mutex::new(Vec::new())))
+}
+
+/// `config` plus the recorder, and a catalog the caller chooses (D-392's image capability is declared there).
+fn config_recording(
+    root: &Root,
+    scripts: HashMap<String, Vec<Json>>,
+    catalog: UserConfig,
+    bindings: Vec<String>,
+    seen: &SeenRequests,
+) -> DaemonConfig<ScriptedProvider, impl Fn(&str, &KernelProfile) -> ScriptedProvider> {
     let scripts = Mutex::new(scripts);
-    let factory = move |id: &str, _profile: &KernelProfile| {
-        let script = scripts.lock().unwrap().remove(id).unwrap_or_default();
-        ScriptedProvider { script: Mutex::new(script.into()) }
+    let factory = {
+        let seen = Arc::clone(seen);
+        move |id: &str, _profile: &KernelProfile| {
+            let script = scripts.lock().unwrap().remove(id).unwrap_or_default();
+            ScriptedProvider { script: Mutex::new(script.into()), seen: Arc::clone(&seen) }
+        }
     };
     DaemonConfig {
         supervisor: SupervisorConfig {
@@ -123,8 +146,8 @@ fn config(
             workspace: root.dir.join("ws"),
             permissions: "full_auto".into(),
             sandbox: teamagents_engine::tools::SandboxBackend::bubblewrap(),
-            catalog: UserConfig::default(),
-            bindings: vec![],
+            catalog,
+            bindings,
             max_retries: 2,
             storage_queue: 64,
             poll: Duration::from_millis(15),
@@ -198,6 +221,65 @@ async fn boot(tag: &str, scripts: HashMap<String, Vec<Json>>) -> (Root, DaemonHa
     std::fs::create_dir_all(root.dir.join("ws")).unwrap();
     let handle = serve(config(&root, scripts)).await.expect("daemon");
     (root, handle)
+}
+
+/// D-392, end to end through the real driver: the request the product builds carries the picture as an
+/// OpenAI-shaped part for a model that declares `images = true`, and the placeholder for one that does not.
+/// This is the only place the wire content can be asserted — the request is fixed in memory and never persisted —
+/// so the recorder on the scripted provider is what makes "the image reached the model" a fact.
+#[tokio::test]
+async fn view_image_reaches_the_wire_as_a_part_only_for_a_model_that_declares_images() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    for images in [true, false] {
+        let root = root(if images { "image-vision" } else { "image-blind" });
+        std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+        // a minimal but real PNG: the magic bytes are what the tool and the loader check
+        let png: Vec<u8> = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3, 4];
+        std::fs::write(root.dir.join("ws/shot.png"), &png).unwrap();
+        let scripts = HashMap::from([(
+            "i-leader".to_string(),
+            vec![
+                json!({"role": "assistant", "content": "",
+                       "tool_calls": [{"id": "img-1", "type": "function",
+                                       "function": {"name": "view_image", "arguments": json!({"path": "shot.png"}).to_string()}}]}),
+                finish_call("looked at the picture"),
+            ],
+        )]);
+        let catalog: UserConfig = serde_json::from_value(json!({
+            "models": {"scripted": {"provider": "compatible", "model": "scripted", "images": images, "context_window": 128000}}
+        }))
+        .expect("catalog");
+        let seen: SeenRequests = Arc::new(Mutex::new(Vec::new()));
+        let cfg = config_recording(&root, scripts, catalog, vec!["files".into()], &seen);
+        let handle = serve(cfg).await.expect("daemon");
+        let workspace = root.dir.join("ws");
+        let socket = root.dir.join("state/daemon.sock");
+        let run = headless_result(exec_options(&socket, &workspace, "look at shot.png", Vec::new())).await;
+        assert!(run.is_ok(), "{images}: the run failed: {:?}", run.err());
+
+        let requests = seen.lock().unwrap().clone();
+        assert!(requests.len() >= 2, "{images}: the tool result must be followed by another request");
+        let after = requests
+            .iter()
+            .find(|messages| messages.iter().any(|m| m["role"] == "tool"))
+            .unwrap_or_else(|| panic!("{images}: no request carried the tool result"));
+        let tool = after.iter().find(|m| m["role"] == "tool").unwrap();
+        let rendered = tool["content"].to_string();
+        if images {
+            let parts = tool["content"]
+                .as_array()
+                .unwrap_or_else(|| panic!("a vision model gets a parts array, got {rendered}"));
+            assert_eq!(parts[0]["type"], json!("text"), "{parts:?}");
+            assert_eq!(parts[1]["type"], json!("image_url"), "{parts:?}");
+            let url = parts[1]["image_url"]["url"].as_str().unwrap_or_default();
+            assert!(url.starts_with("data:image/png;base64,"), "the picture itself is on the wire: {url}");
+        } else {
+            assert!(tool["content"].is_string(), "a blind model gets text, not a block: {rendered}");
+            assert!(rendered.contains("image omitted"), "{rendered}");
+            assert!(!rendered.contains("base64"), "no bytes leak to a model that cannot read them: {rendered}");
+        }
+        handle.shutdown().await.expect("shutdown");
+    }
 }
 
 /// D-349 (the decision D-341 made for D-143): per model request the session records what the request was

@@ -239,4 +239,14 @@ Discover and load agent skills. action='search' with query keywords lists matchi
 | `query` | `string` | no | — |
 | `name` | `string` | no | — |
 
+### `view_image`
+
+*Offered by `reference::session_tool_schemas` (the profile's tools; the web half only for the kinds the config declares — §5.2/D-79/D-168).*
+
+Look at an image: loads a workspace image (png/jpeg/gif/webp, at most 5 MiB) so you can see it. The runtime turns the returned reference into the picture itself when the model accepts images; otherwise the call reports that the image was omitted, which is not an error. Read pixels only when the picture is still needed after that.
+
+| Parameter | Type | Required | Meaning |
+|---|---|---|---|
+| `path` | `string` | yes | — |
+
 <!-- generated: end -->

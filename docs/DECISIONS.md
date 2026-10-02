@@ -59,11 +59,35 @@ array and the verbatim base64, the placeholder with no bytes leak, both failure 
 left alone), `kernel::types::image_accounting_tests` (a 1 MiB payload and a 4-byte one cost the same;
 a no-image request keeps its old price exactly) and `config::the_image_capability_is_declared_per_model_and_defaults_to_false`.
 
+**The schema was the other half, and only a live run found it.** `view_image` was dispatched but **never
+advertised**: `basic_tool_schemas` had no entry for it, so the model could not call it and no image block could
+ever reach the wire. The first live run proved it — the model answered the right colour and said *"no `view_image`
+tool is available in this environment, so I verified the pixels directly"*. Adding the schema (and removing
+`load_image_reference` from `review/dead_code.py`'s parked list, which it no longer is) closed the path.
+
+**The envelope was a third defect, and the integration test found it.** A tool result's model-facing content is the
+*stringified* envelope the executor writes (`{"output": <tool json>}`), not the bare reference; the expansion
+checked `message["content"]["image"]`, which matched in the unit test's hand-made message and did nothing in a real
+turn. `expand_image_reference` parses the envelope now, and the unit test uses the envelope shape so it cannot
+drift again.
+
+**Measured live on 2026-10-03 (`deepseek-flash`, official endpoint).** An `image_url` data URL is accepted and
+read: asked about a red square it answers "red", and the same request costs **228 prompt tokens with the picture
+against 44 without** — about **184** for a 16×16 image, **177** at 256×256 and **645** at 1024×1024, so the
+1,100-token allowance is a conservative constant rather than a guess. End to end through the product, a workspace
+file whose name says nothing about its content (`shape-7.png`, a blue square) produced the answer "Blue"; and
+because that model can also decode a PNG with the shell, the causal measurement is the **token accounting**:
+two runs of the same prompt, one declaring `images = true` and one not, have an identical first request (3,081
+prompt tokens) and differ by **+160** on the request carrying the `view_image` result (3,332 against 3,172) —
+the vision arm's run called *only* `view_image`, so the difference is the picture. The in-tree proof is
+`v2_daemon::view_image_reaches_the_wire_as_a_part_only_for_a_model_that_declares_images`, which asserts the
+recorded request body itself in both arms.
+
 **Ceiling.** Only the chat-completions/deepseek wire carries parts today; a vision model behind the Anthropic or
 responses protocol would still get the placeholder, which is the next step if either is ever used with one. The
-1,100-token allowance is an approximation, not a provider's tile arithmetic. And **no real vision model has been
-driven yet**: `deepseek-flash` is text-only in every run in this tree, so the flow is verified at the wire and the
-accounting, not against a live multimodal provider.
+1,100-token allowance is a conservative constant measured against the three sizes above, not a provider's tile
+arithmetic; a very large picture can still be under-priced, and the context-window trigger and the provider's own
+limit are the backstops.
 
 ## D-391 The nine never-passing tasks, diagnosed: there was no single cause (2026-10-02)
 

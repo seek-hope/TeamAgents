@@ -617,8 +617,21 @@ pub const IMAGE_PLACEHOLDER: &str = "(image omitted: model does not support imag
 /// Any failure (the file is gone, too large, or the bytes no longer match the recorded type) becomes a text line
 /// in the same place: one unreadable picture must not fail a turn, and the model should learn why it cannot look.
 pub fn expand_image_reference(root: &Path, artifacts: Option<&Path>, message: &mut Json, images: bool) {
-    let Some(label) = message["content"]["image"].as_str() else { return };
-    let media_type = message["content"]["media_type"].as_str().unwrap_or("image/png");
+    // The model-facing content of a tool result is the *stringified* envelope the executor writes
+    // (`tools.rs`: `json!({"output": value}).to_string()`), so the reference is reached through `output` and the
+    // content is parsed first. The integration test caught exactly this: a bare-object check passed the unit test
+    // and did nothing in a real turn.
+    let content = message["content"].clone();
+    let envelope = match &content {
+        Json::String(text) => match serde_json::from_str::<Json>(text) {
+            Ok(parsed) => parsed,
+            Err(_) => return,
+        },
+        other => other.clone(),
+    };
+    let reference = envelope.get("output").unwrap_or(&envelope).clone();
+    let Some(label) = reference["image"].as_str() else { return };
+    let media_type = reference["media_type"].as_str().unwrap_or("image/png");
     if !images {
         message["content"] = json!(IMAGE_PLACEHOLDER);
         return;
@@ -3168,10 +3181,11 @@ mod tests {
         // a minimal 1x1 PNG: magic bytes are what the type check reads
         let png: Vec<u8> = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3];
         std::fs::write(dir.join("shot.png"), &png).unwrap();
-        let reference = json!({"image": "shot.png", "media_type": "image/png", "bytes": png.len()});
 
         // a model that declared images gets a parts array: a text line and the data URL
-        let mut message = json!({"role": "tool", "tool_call_id": "c1", "content": reference.clone()});
+        let envelope = |r: &Json| json!({"output": r}).to_string();
+        let reference = json!({"image": "shot.png", "media_type": "image/png", "bytes": png.len()});
+        let mut message = json!({"role": "tool", "tool_call_id": "c1", "content": envelope(&reference)});
         expand_image_reference(&dir, None, &mut message, true);
         let parts = message["content"].as_array().expect("parts array").clone();
         assert_eq!(parts.len(), 2, "{parts:?}");
@@ -3190,19 +3204,21 @@ mod tests {
         );
 
         // a model that did not is told a picture was looked at, and gets no block at all
-        let mut blind = json!({"role": "tool", "tool_call_id": "c1", "content": reference.clone()});
+        let mut blind = json!({"role": "tool", "tool_call_id": "c1", "content": envelope(&reference)});
         expand_image_reference(&dir, None, &mut blind, false);
         assert_eq!(blind["content"], json!(IMAGE_PLACEHOLDER));
         assert!(!blind["content"].to_string().contains("base64"), "no bytes leak to a model that cannot read them");
 
         // an unreadable picture is a text line, never a failed turn
-        let mut gone = json!({"role": "tool", "content": {"image": "gone.png", "media_type": "image/png"}});
+        let mut gone =
+            json!({"role": "tool", "content": envelope(&json!({"image": "gone.png", "media_type": "image/png"}))});
         expand_image_reference(&dir, None, &mut gone, true);
         let text = gone["content"].as_str().expect("text fallback");
         assert!(text.starts_with("[image gone.png could not be loaded:"), "{text}");
 
         // a recorded type that no longer matches is refused the same way
-        let mut lie = json!({"role": "tool", "content": {"image": "shot.png", "media_type": "image/jpeg"}});
+        let mut lie =
+            json!({"role": "tool", "content": envelope(&json!({"image": "shot.png", "media_type": "image/jpeg"}))});
         expand_image_reference(&dir, None, &mut lie, true);
         assert!(lie["content"].as_str().unwrap().contains("recorded as image/jpeg"), "{lie}");
 

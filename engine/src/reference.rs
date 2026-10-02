@@ -298,6 +298,18 @@ impl WireBytes for ModelRequest {
 /// kernel built-ins and must not be repeated here). `skills` adds the skill
 /// discovery tool; it executes only when the member's bindings include
 /// "skills" (tools.rs member_executor_with_control).
+/// The one tool offered **only** to a model whose profile declares image support (D-392).
+///
+/// It is deliberately outside `basic_tool_schemas`: that function is the pinned evaluation surface (D-182), and a
+/// tool a profile without `images = true` never sees must not enter the pin. A model that cannot receive a picture
+/// has nothing to do with this tool — its call could only ever come back with the placeholder — so the surface
+/// follows the declared capability instead of the build.
+pub fn view_image_schema() -> Json {
+    let wrap = |name: &str, description: &str, parameters: Json| json!({"type": "function", "function": {"name": name, "description": description, "parameters": parameters}});
+    wrap("view_image", "Look at an image: loads a workspace image (png/jpeg/gif/webp, at most 5 MiB) so you can see it. The runtime turns the returned reference into the picture itself when the model accepts images; otherwise the call reports that the image was omitted, which is not an error. Read pixels only when the picture is still needed after that.",
+        json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}))
+}
+
 pub fn basic_tool_schemas(web: bool, skills: bool) -> Vec<Json> {
     let wrap = |name: &str, description: &str, parameters: Json| json!({"type": "function", "function": {"name": name, "description": description, "parameters": parameters}});
     let mut schemas = vec![

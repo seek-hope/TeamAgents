@@ -1195,6 +1195,12 @@ impl<P: Provider> Driver<P> {
             profile.tools.retain(|tool| tool["function"]["name"] != json!("shell"));
         }
         profile.tools.extend(teamagents_core::kernel::collaboration_tool_schemas(&actions));
+        // D-392: the image tool follows the declared capability, not the build. A model without it would only ever
+        // receive the placeholder, and leaving it out of the always-offered set is also what keeps the pinned
+        // evaluation surface (D-182) unchanged for a profile that declares no image support.
+        if profile.images {
+            profile.tools.push(crate::reference::view_image_schema());
+        }
         // Bound MCP tools advertise per request (§5.2). They merge here rather
         // than into the stored profile so a spawned child never inherits the
         // parent's bound services; the child's own driver merges its own.

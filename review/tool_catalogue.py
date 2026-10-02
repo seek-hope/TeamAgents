@@ -85,6 +85,10 @@ def tools():
     start = reference.index("pub fn basic_tool_schemas(")
     end = reference.index("\n}\n", start)
     body = reference[start:end]
+    # D-392: `view_image` is offered only to a model whose profile declares image support, so it sits in its own
+    # function. It is still a tool the model may be offered, which is what this catalogue exists to document.
+    conditional = reference.index("pub fn view_image_schema(")
+    body += reference[conditional : reference.index("\n}\n", conditional)]
     for match in re.finditer(r'wrap\("([a-z_]+)",\s*"((?:[^"\\]|\\.)*)",\s*json!\(', body):
         block = brace_block(body, body.find("{", match.end()))
         parameters = parse_schema(block, {})
