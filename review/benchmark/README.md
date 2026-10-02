@@ -55,6 +55,17 @@ Remaining divergences from the DeepSeek card's protocol, recorded rather than hi
 `high` where the card uses maximum effort; the product has no `max_steps = 500` counterpart, so a turn is bounded
 by `TEAMAGENTS_TURN_TIMEOUT_SEC` (840 s here, under harbor's 900 s agent timeout) and by the goal's budget.
 
+## The image path on the task that motivated it (D-392/D-394)
+
+`TEAMAGENTS_IMAGES=1` declares image support for the run's model, which offers `view_image` and lets a picture reach
+the wire. Measured on `extract-moves-from-video` — the task D-391 called structurally unreachable because it needs
+the moves transcribed from a *video* — at the task's own 1800-second budget, three attempts: **0/3, all on the
+deadline, still no `/app/solution.txt`**. An instrumented fourth attempt collected its workspace and session
+database: the agent **called `view_image` five times**, ran 28 shell calls (extracting frames, trying OCR) and made
+34 requests for 442k prompt tokens before the deadline. So the capability is used in a real task and does not
+convert this one — the structural barrier is gone and a capability gap remains. The pre-D-392 baseline is in
+`CAPABILITY.md` section 6.
+
 ## Verifier health: the trials that must be excluded
 
 A scored 0 is only about the agent when the verifier actually ran. On two task images it cannot: `test.sh`

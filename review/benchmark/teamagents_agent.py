@@ -50,6 +50,10 @@ MODEL = os.environ.get("TEAMAGENTS_MODEL", "deepseek-flash")
 BASE_URL = os.environ.get("TEAMAGENTS_BASE_URL", "https://api.deepseek.com")
 API_KEY_ENV = os.environ.get("TEAMAGENTS_API_KEY_ENV", "DEEPSEEK_API_KEY")
 REASONING_EFFORT = os.environ.get("TEAMAGENTS_REASONING_EFFORT", "high")
+# D-392/D-394: `TEAMAGENTS_IMAGES=1` declares image support for the run's model, which is what offers the
+# `view_image` tool and lets a picture reach the wire. Off by default: the declaration is a claim about the
+# model, not a guess the harness may make.
+IMAGES = os.environ.get("TEAMAGENTS_IMAGES") == "1"
 # D-385 `--accept` checks for the A/B (see `run`); empty keeps every trial a bare goal.
 ACCEPT = json.loads(os.environ.get("TEAMAGENTS_ACCEPT", "[]"))
 
@@ -67,7 +71,7 @@ context_window = 1000000
 timeout = 300
 max_retries = 3
 generation_options = {{ reasoning_effort = "{effort}" }}
-"""
+{images}"""
 
 
 class TeamAgentsAgent(BaseInstalledAgent):
@@ -101,7 +105,11 @@ class TeamAgentsAgent(BaseInstalledAgent):
         with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as handle:
             handle.write(
                 CONFIG_TEMPLATE.format(
-                    model=model, base_url=BASE_URL, key_env=API_KEY_ENV, effort=REASONING_EFFORT
+                    model=model,
+                    base_url=BASE_URL,
+                    key_env=API_KEY_ENV,
+                    effort=REASONING_EFFORT,
+                    images="images = true\n" if IMAGES else "",
                 )
             )
             local_config = handle.name

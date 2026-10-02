@@ -20,6 +20,32 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-394 The image path is used in a real task and does not convert it: measurement, not hope (2026-10-03)
+
+D-391 called `extract-moves-from-video` **structurally unreachable** — the task is to transcribe the moves out of a
+*video* of a Zork session, and the product had no way to put a picture in front of the model. D-392 built that way,
+so the claim had to be re-measured rather than left standing.
+
+**Run.** Three attempts at the task's own 1800-second budget, `deepseek-flash`, `reasoning_effort = low`, official
+route, with the run's model declared `images = true` (the new `TEAMAGENTS_IMAGES=1` knob in the adapter). Result:
+**0/3, all three on the deadline, and still no `/app/solution.txt`** — the same outcome the pre-D-392 runs had.
+
+**What the artifacts show.** A fourth attempt collected its workspace and session database, so this is read rather
+than inferred: the agent **called `view_image` five times**, ran 28 shell calls (extracting frames into
+`/app/frames`, `/app/frames3`, `/app/frames10`), wrote three files, tried OCR (an `ocr`/`ocr10` pair), and made 34
+model requests for 442k prompt tokens before the deadline. The capability was not merely available: it was used, in
+the task that motivated it.
+
+**The honest reading.** The structural barrier is gone — the tool is offered, the picture reaches the wire, the
+model reads it (D-392's live verification). What remains is a capability gap: reading enough frames of a Zork
+session to transcribe its move list within thirty minutes is beyond this model in this product. The two are
+different claims and only the first was ever a product defect. D-391's wording is corrected to say so.
+
+**Formal.** None (a measurement).
+
+**Ceiling.** One task, three attempts plus one instrumented run, one model, the declared budget. It says nothing
+about tasks whose vision need is smaller — and the tool is offered exactly for those.
+
 ## D-393 Independent verification: a claim that requires it cannot be settled by its own producer (2026-10-03)
 
 **Why.** Twice this week the producer's own check was the thing that could not fail. `pytorch-model-cli` wrote a

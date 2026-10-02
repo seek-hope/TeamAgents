@@ -151,7 +151,7 @@ experiments below ran the same tasks with **four times their declared agent budg
 |---|---|---|---|
 | `gcode-to-text` | no `/app/out.txt` | **finished**, wrote `TEXT SHOWN BY text.gcode` | **capability** — it stopped trying to decode and wrote a description of the task instead. (D-381's 12-hour run reached the same place at 1877 s) |
 | `make-doom-for-mips` | no frame | **finished, 2 of 3 tests pass**: `frame.bmp` exists and matches the reference; only `test_vm_execution` fails on one missing stdout line | **nearly solved** — the hard part (a matching frame) is done; the remainder is narrow and not about time |
-| `extract-moves-from-video` | no `/app/solution.txt` | still no `/app/solution.txt` | **structurally out of reach** (below), not a time problem |
+| `extract-moves-from-video` | no `/app/solution.txt` | still no `/app/solution.txt` | **structurally out of reach then** — D-392 built the missing image path and D-394 re-measured: the model *uses* `view_image` (5 calls in one instrumented attempt) and still does not finish, so the barrier that was structural is gone and a capability gap remains |
 | `train-fasttext` | no usable model (`model.bin cannot be opened`) | **ran the full 4 h**, produced a model of the **right size** (`test_model_size` passes) at **accuracy 0.582 against a 0.62 threshold** | **time-adjacent near-miss** — four times the budget buys a valid model 4 points short, and the trial still ended on the deadline |
 
 So the four split cleanly: one **capability** (`gcode-to-text`), one **nearly solved** (`make-doom-for-mips`), one **structurally blocked by a missing product capability** (`extract-moves-from-video`), and one **time-adjacent near-miss** (`train-fasttext`). None of them is "the model cannot do it" in the flat sense the raw 0/3 rows suggested.
@@ -159,7 +159,7 @@ So the four split cleanly: one **capability** (`gcode-to-text`), one **nearly so
 `gcode-to-text` is the cleanest single result in this document: with four times the budget the agent **finished
 and answered wrongly**, on a task whose answer is a single line. More time does not reach it.
 
-`extract-moves-from-video` deserves its own sentence, because it is a **product** gap rather than a model one:
+`extract-moves-from-video` deserved its own sentence, because it was a **product** gap rather than a model one — and after D-392/D-394 it is neither: the image path exists, the model reads pictures through it, and the task still exceeds it:
 the task is to transcribe the moves out of a **video** of a Zork session, and this product has **no path that
 carries an image to the model** — the codemode `image()` helper accepts `data:` URLs but v2 has no image context
 flow at all (the ceiling recorded in D-376, and the reason the helper refuses remote URLs). Every attempt
