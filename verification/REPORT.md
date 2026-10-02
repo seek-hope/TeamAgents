@@ -5,7 +5,7 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
-## 0. Gate status (re-run 2026-10-03 at `MATERIAL-COMMIT`)
+## 0. Gate status (re-run 2026-10-03 at `162b985b`)
 
 * **D-392 added the image-flow model and re-ran all three targets on this tree (2026-10-03).** `V2Images.tla`
   states the two claims the wire depends on — `NoImagesWithoutSupport` (an image part only for a model that
