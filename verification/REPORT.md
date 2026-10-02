@@ -5,7 +5,7 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
-## 0. Gate status (re-run 2026-10-03 at `MATERIAL-COMMIT`)
+## 0. Gate status (re-run 2026-10-03 at `dee68840`)
 
 * **D-393 added the independent-verification provenance rule and re-ran all three targets on this tree
   (2026-10-03).** `V2Checks.tla` gained `registrar`, the `RegisterVerifierRound` action and
