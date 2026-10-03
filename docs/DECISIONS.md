@@ -20,7 +20,49 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
-## D-399 `teamagents mcp list`: the surface that vanished when MCP moved behind codemode (2026-10-03)
+## D-400 The acceptance gate cannot stop a turn that never claims to be done — measured, with the mechanism (2026-10-03)
+
+D-397 found 10 of the N = 3 run's 33 deadline trials had **already passed**, and read them as "the agent finished
+and kept working". Item 1 of the plan was therefore to test the lever the runtime owns: an instruction-derived
+acceptance check (`--accept`) that should let the goal settle the moment the work is done. Five tasks, three
+attempts, both arms, the check taken from each instruction's own named deliverable.
+
+| task | check | bare | with the check |
+|---|---|---|---|
+| `gpt2-codegolf` | `/app/gpt2.c`, < 5000 bytes | 1/3, 3 deadline, median 969 s | 0/3, 3 deadline, 939 s |
+| `winning-avg-corewars` | `my_warrior.red` exists | **3/3, 0 deadline, 966 s** | **1/3, 2 deadline, 3649 s** |
+| `adaptive-rejection-sampler` | `ars.R` + the two sample files | 1/3, 3 deadline, 956 s | 2/3, 3 deadline, 947 s |
+| `largest-eigenval` | `eigen.py` defines the function | 3/3, 1 deadline, 578 s | 2/3, 0 deadline, 635 s |
+| `make-mips-interpreter` | `vm.js` exists | 3/3, 0 deadline, 959 s | 3/3, 0 deadline, **631 s** |
+| **totals** | | **11/15** | **8/15** |
+
+**The mechanism says why the wall clocks barely moved.** The required-check gate runs at the *completion
+boundary*: `step_completion_checks` is reached when the model calls `finish` and claims success. An agent that
+never claims to be done never reaches that boundary, so **no acceptance criterion can make it stop working**. The
+10 trials D-397 found were exactly that class, and the lever was aimed at the wrong half of the problem: the gate
+decides *whether a claim may settle*, not *whether the agent should stop making claims*.
+
+**And a wrong check is worse than none.** `winning-avg-corewars`'s check named a file at a path the agent did not
+use, so it never passed: the goal could not settle, the repair loop ran, and a task that was **3/3 in 966 s** became
+**1/3 in 3649 s** — it spent the whole 3600-second budget repairing against a criterion that could not be met. The
+one place the check helped is the one where it matched the instruction's deliverable exactly
+(`make-mips-interpreter`, 959 s → 631 s at the same 3/3), which is the general condition: a settlement lever only
+does anything when the criterion is *right*, and writing a right criterion for an arbitrary task is the user's
+knowledge, not the runtime's.
+
+**What this leaves.** D-385's mechanism is unchanged and still correct for what it is (a user's criterion gates a
+settlement, and a wrong one is refused loudly enough to be seen). What is now measured is that it is **not** the
+tool for "the agent keeps working after it is finished", and that a benchmark harness guessing criteria can
+*degrade* a run — which is why every benchmark run in this tree keeps the harness's checks out of the headline and
+why D-395's "read the check's receipt" rule matters.
+
+**Formal.** None (a measurement over five tasks, both arms).
+
+**Ceiling.** N = 3 per cell, one model, five tasks chosen because D-397's deadline trials passed there; the
+per-cell differences are inside D-388's ±5-task band and only the mechanism and the `winning-avg-corewars` swing
+are large enough to read.
+
+
 
 The comparison's Pi column has `pi mcp add/list/remove/login` and an in-session `/mcp`; this product answered with
 the config file and `doctor`. That was already thin, and D-376 made it thinner: once the bound MCP tools stopped
