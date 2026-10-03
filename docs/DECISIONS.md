@@ -65,7 +65,17 @@ what makes "refuse at the cap" a checked rule. `make verify-model-all` 33/33, `v
 (the binding gate refuses an unbound member, a note written by one session is recalled by another, and the store
 file is the state root's).
 
-**A correction made while verifying it live.** The first version hung the store off the session's own state root
+**Verified live, twice, and the first attempt failed.** A default-session run asked the agent to remember the
+project's check commands; a *named* session (a different state root) was then asked what they were, and it answered
+`make check` plus the two formal gates, quoting the note's origin (`session s-main, instance i-leader, tags …`) —
+with six `memory` calls in its own record. The first attempt put the store at
+`<session root>/instances/<id>/memory.json`: the driver's own `state_root` is the **instance** directory (the
+supervisor passes `instances/<id>`), so deriving the location from the toolkit's own paths landed it per instance.
+The base now arrives explicitly in `ToolWiring::memory_root`, resolved by the driver from `instances_dir`'s parent
+plus `sessions::base_of` — which is also the fix that makes "cross-session" true across named sessions rather than
+only across the runs of one.
+
+**The correction that followed.** The first version hung the store off the session's own state root
 and described it as cross-session; reading D-364's layout — "a named session is its own state root" — showed that
 would have been per named session. The store moved to the base, `sessions::base_of` resolves it (with its own test
 for both the named and the default case), and the claim is now the one that holds.

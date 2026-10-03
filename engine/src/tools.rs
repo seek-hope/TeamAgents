@@ -2739,6 +2739,10 @@ pub(crate) struct ToolWiring {
     pub session_id: String,
     pub instance_id: String,
     pub codemode_store: Option<PathBuf>,
+    /// D-405: the directory durable memory lives in — the *base* a session root belongs to
+    /// (`sessions::base_of`), resolved by the driver, which alone knows where the session root is. The driver's
+    /// own `state_root` is the *instance* directory, so it cannot be derived from the toolkit's paths.
+    pub memory_root: Option<PathBuf>,
 }
 
 impl V2Toolkit {
@@ -2754,12 +2758,11 @@ impl V2Toolkit {
         // unavailable fails the boot honestly, an optional one only drops its
         // capability (same contract as the legacy member start, plan §7).
         let bound = Arc::new(crate::bound::BoundTools::load_in(&catalog, &bindings, &root)?);
-        // D-405: the memory store is `<state root>/memory.json`, so it outlives this session; the session and
-        // instance names are the note's provenance.
-        // D-405: the base directory, not the session's own root, so every named session under this state root
-        // shares one memory (`sessions::base_of`).
-        let memory = artifacts.as_ref().and_then(|path| path.parent()).map(|session_root| MemoryScope {
-            state_root: crate::v2::sessions::base_of(session_root),
+        // D-405: durable memory hangs off the *base* directory (the one holding `sessions.json`), so every named
+        // session under it shares one store. Only the driver knows where that is — its own `state_root` is the
+        // instance directory — so the base arrives in the wiring.
+        let memory = wiring.memory_root.clone().map(|state_root| MemoryScope {
+            state_root,
             session: wiring.session_id.clone(),
             instance: wiring.instance_id.clone(),
         });

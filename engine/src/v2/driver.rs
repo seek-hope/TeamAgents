@@ -644,6 +644,11 @@ pub(crate) fn spawn_driver<P: Provider + 'static>(
             session_id: config.session_id.clone(),
             instance_id: config.instance_id.clone(),
             codemode_store: Some(config.state_root.join("codemode-store.json")),
+            // D-405: durable memory belongs to the *base* directory, and the session root is `instances_dir`'s
+            // parent — this driver's own `state_root` is the instance directory.
+            memory_root: Some(crate::v2::sessions::base_of(
+                config.instances_dir.parent().unwrap_or(&config.state_root),
+            )),
         },
     )?);
     let driver = Driver {
