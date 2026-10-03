@@ -20,6 +20,26 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-399 `teamagents mcp list`: the surface that vanished when MCP moved behind codemode (2026-10-03)
+
+The comparison's Pi column has `pi mcp add/list/remove/login` and an in-session `/mcp`; this product answered with
+the config file and `doctor`. That was already thin, and D-376 made it thinner: once the bound MCP tools stopped
+being advertised individually and became reachable only through one `codemode` tool, a user could no longer see
+*what* a configured service offers without asking a model to look.
+
+`teamagents mcp list` closes that: it connects to every `[tools.<name>]` binding with `kind = "mcp"` — reusing the
+same `load_service` path the session uses, so what it reports is what a session would bind — and prints each
+tool's model-visible name and the server's own one-line description. A service that cannot start is named with its
+reason instead of failing the list, and the verb **exits 1 when any service failed**, so a CI job or a user can
+tell a healthy configuration from a broken one. `doctor` keeps its rule (it reports configuration and runs
+nothing); this is the verb that actually asks.
+
+**Tests.** `cli::mcp_list_names_the_services_and_their_tools` drives the real binary against a fake stdio MCP
+server and a deliberately broken one, asserting the tool line, the failure line and the exit code.
+
+**Ceiling.** `add`/`remove`/`login` and an in-session `/mcp` are still the config file's job; OAuth-signing a
+service is what the Pi column does that this does not (D-372's MCP-hardening list).
+
 ## D-398 Provenance is not independence: the verifier runs the same checks, so P2 added no verification strength (2026-10-03)
 
 Item 2 of the post-D-394 plan was to build the *initiation* of an independent verification (the runtime asking a

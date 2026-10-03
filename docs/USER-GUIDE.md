@@ -100,6 +100,11 @@ happened. Diagnostics go to stderr, the outcome to stdout (`--json` prints one J
   verdict on a finished turn. The checks are the user's own: the attach is refused for a model identity, is
   unioned by id with the goal's existing contract, and is refused once the goal has registered a check round
 (cancel it and open the next goal to change the contract).
+- **What the configured MCP services offer**: `teamagents mcp list` connects to each `[tools.<name>]`
+  binding with `kind = "mcp"` and prints its tools (the model-visible name and the server's one-line
+  description); a service that cannot start is named with its reason, and the verb exits `1` when any of
+  them failed so a CI job can catch a broken one. This is the surface `doctor` deliberately does not have —
+  `doctor` reports the configuration and runs nothing (D-399).
 - **`--` ends the option list** (D-390): `teamagents exec -- "- a prompt that starts with a dash"`. Without
   it a prompt whose first character is `-` (a bullet list, a diff, a negative number) is read as an unknown
   flag and refused with the usage text before anything runs. `-` alone still means "read the prompt from

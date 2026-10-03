@@ -38,6 +38,7 @@ usage: teamagents [--cwd DIR] [--state-root PATH] [--session ID] [--model KEY] [
   teamagents tasks [list] [--json]              the session's tasks\n\
   teamagents tasks cancel --id ID               cancel one; a delegator waiting on it is released\n\
   teamagents artifacts [list] [--json]          what this state root holds on disk (bytes, owner, presence)\n\
+  teamagents mcp list                           the tools each configured MCP service offers (D-399)\n\
   teamagents artifacts gc [--json]              collect the artifacts nothing references (needs no session)\n\
   teamagents runners [list] [--json]            the job runners this state root still carries\n\
   teamagents surface [--id INSTANCE] [--json]   what each model request was offered: tool names, authorized\n\
@@ -311,7 +312,8 @@ fn parse_args() -> Args {
                 i += 1;
             }
             "serve" | "init" | "doctor" | "validate" | "sessions" | "automations" | "version" | "exec"
-            | "authority" | "approvals" | "instances" | "tasks" | "runners" | "artifacts" | "goals" | "surface" => {
+            | "authority" | "approvals" | "instances" | "tasks" | "runners" | "artifacts" | "goals" | "surface"
+            | "mcp" => {
                 if args.command.is_some() {
                     reject("two entry points were given: pick one (teamagents --help lists them)");
                 }
@@ -893,6 +895,58 @@ fn run_approvals(args: &Args) -> i32 {
 }
 
 /// `teamagents instances`: the §5.4 instance levers, headless (D-68).
+/// `teamagents mcp list`: what the configured MCP services actually offer (D-399).
+///
+/// The comparison's Pi column has `pi mcp list`; here the surface was the config file plus `doctor`, and since
+/// D-376 the tools are reachable only through codemode — so a user had no way to see them without asking a model.
+/// This connects to each configured service and prints its tools, exiting 1 when any service failed (so a CI job
+/// can catch a broken one) while still listing the healthy ones.
+fn run_mcp(args: &Args) -> i32 {
+    if args.positional.as_deref().is_some_and(|verb| verb != "list") {
+        eprintln!("mcp takes no sub-verb other than `list`: teamagents mcp list [--cwd DIR]");
+        return 2;
+    }
+    let workspace = args
+        .cwd
+        .clone()
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."));
+    let (catalog, _project) = match teamagents_engine::config::load_user_config_for(&workspace) {
+        Ok(loaded) => loaded,
+        Err(error) => {
+            eprintln!("mcp: {error}");
+            return 2;
+        }
+    };
+    let services = teamagents_engine::bound::list_services(&catalog, &workspace);
+    if services.is_empty() {
+        println!("no MCP services are configured: bind one in the user config as [tools.<name>] with kind = \"mcp\"");
+        return 0;
+    }
+    let mut failed = 0;
+    for (label, listed) in services {
+        match listed {
+            Ok(tools) => {
+                println!("{label}: {} tool(s)", tools.len());
+                for (name, description) in tools {
+                    println!("  {name} — {description}");
+                }
+            }
+            Err(error) => {
+                failed += 1;
+                println!("{label}: unavailable — {error}");
+            }
+        }
+    }
+    if failed > 0 {
+        eprintln!("{failed} MCP service(s) could not be listed");
+        1
+    } else {
+        0
+    }
+}
+
 /// `teamagents goals`: the user's goal surface (D-267) — which goals the session carries, and how to open the
 /// next one. A settled goal cannot be reopened, so this is the lever a session longer than one goal needs.
 fn run_goals(args: &Args) -> i32 {
@@ -1697,6 +1751,7 @@ fn main() {
         Some("authority") => run_authority(&args),
         Some("approvals") => run_approvals(&args),
         Some("goals") => run_goals(&args),
+        Some("mcp") => run_mcp(&args),
         Some("instances") => run_instances(&args),
         Some("sessions") => run_sessions(&args),
         Some("automations") => run_automations(&args),

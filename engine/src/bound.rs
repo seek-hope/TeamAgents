@@ -159,6 +159,39 @@ impl BoundTools {
     }
 }
 
+/// One line of `mcp list`: the service's label and either its `(tool name, description)` pairs or why it could
+/// not be asked (D-399).
+pub type ServiceListing = (String, Result<Vec<(String, String)>, String>);
+
+/// The configured MCP services and the tools each one offers — the CLI's `mcp list` surface (D-399).
+///
+/// `doctor` reports the *configured* bindings and runs nothing; this is the verb a user runs to see what a server
+/// actually offers. It connects (for a stdio binding that means starting the server) and closes again, and a
+/// server that cannot start is reported as its own error instead of failing the whole list: the answer a user
+/// wants includes what is unreachable.
+pub fn list_services(catalog: &UserConfig, root: &Path) -> Vec<ServiceListing> {
+    let mut names: Vec<&String> = catalog.tools.keys().collect();
+    names.sort();
+    let mut out = Vec::new();
+    for name in names {
+        let binding = &catalog.tools[name];
+        if binding.kind != "mcp" {
+            continue;
+        }
+        let label = binding.mcp_server.clone().unwrap_or_else(|| name.clone());
+        let listed = match load_service(name, binding, root) {
+            Ok((client, tools)) => {
+                let rows = tools.iter().map(|tool| (tool.name.clone(), tool.description.clone())).collect();
+                client.close();
+                Ok(rows)
+            }
+            Err(error) => Err(error),
+        };
+        out.push((label, listed));
+    }
+    out
+}
+
 fn load_service(name: &str, binding: &ToolBinding, root: &Path) -> Result<(Arc<McpClient>, Vec<BoundTool>), String> {
     let transport = binding.mcp_transport.clone().unwrap_or_else(|| "stdio".into());
     let client = match transport.as_str() {

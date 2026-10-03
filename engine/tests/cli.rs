@@ -238,6 +238,60 @@ fn a_rejected_argument_says_which_one_and_why() {
     assert!(!home.join("session.sqlite").exists(), "an empty --state-root must not initialize the cwd");
 }
 
+/// D-399: `mcp list` answers what the configured services actually offer — which is the surface a user lost when
+/// MCP became reachable only through codemode (D-376). A healthy server is listed with its tools, a broken one is
+/// named with its reason, and the verb exits 1 so a CI job can catch it.
+#[test]
+fn mcp_list_names_the_services_and_their_tools() {
+    let home = Scratch::new("mcp-list");
+    std::fs::create_dir_all(home.join("config/teamagents")).unwrap();
+    std::fs::create_dir_all(home.join("ws")).unwrap();
+    let server = home.join("fake_mcp.py");
+    std::fs::write(
+        &server,
+        r#"
+import json, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    if 'id' not in request:
+        continue
+    if request['method'] == 'initialize':
+        result = {'protocolVersion': '2025-06-18'}
+    elif request['method'] == 'tools/list':
+        result = {'tools': [{'name': 'summary', 'description': 'Return a record summary',
+                             'inputSchema': {'type': 'object'}}]}
+    else:
+        result = {}
+    print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        home.join("config/teamagents/config.toml"),
+        format!(
+            "skills_paths = []\n\n[models.m]\nprovider = \"compatible\"\nmodel = \"x\"\n\n\
+             [tools.stats]\nkind = \"mcp\"\nmcp_server = \"stats\"\nmcp_transport = \"stdio\"\n\
+             mcp_execution = \"host\"\ncommand = \"/usr/bin/python3\"\nargs = [\"-u\", \"{}\"]\n\n\
+             [tools.dead]\nkind = \"mcp\"\nmcp_server = \"dead\"\nmcp_transport = \"stdio\"\n\
+             mcp_execution = \"host\"\ncommand = \"/nonexistent/never\"\nargs = []\n",
+            server.display()
+        ),
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
+        .args(["mcp", "list", "--cwd"])
+        .arg(home.join("ws"))
+        .env("XDG_STATE_HOME", home.join("state"))
+        .env("XDG_CONFIG_HOME", home.join("config"))
+        .output()
+        .expect("run cli");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("stats: 1 tool(s)"), "{stdout}");
+    assert!(stdout.contains("stats_summary — Return a record summary"), "{stdout}");
+    assert!(stdout.contains("dead: unavailable"), "{stdout}");
+    assert_eq!(output.status.code(), Some(1), "a service that could not be listed is a finding: {stdout}");
+}
+
 /// D-390: a prompt that starts with a dash is an argument, not a flag, once `--` ends the option list. Without
 /// the marker the parser refuses it as an unknown flag — found by a benchmark task whose instruction begins
 /// with `"- "`, where every attempt died at the parser (exit 2) before the model was reached.
