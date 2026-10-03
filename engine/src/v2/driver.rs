@@ -62,6 +62,53 @@ mod cadence {
 /// policy knob, overridable per goal via limits.max_check_rounds).
 const DEFAULT_MAX_CHECK_ROUNDS: i64 = 3;
 
+/// The names of the kernel's built-in tools (`finish`, `read_history`), which `team_kernel` does not carry in
+/// `profile.tools` but a dispatch or an error message must still know (D-402).
+fn builtin_names() -> impl Iterator<Item = String> {
+    teamagents_core::kernel::builtin_tool_schemas()
+        .into_iter()
+        .filter_map(|tool| tool["function"]["name"].as_str().map(str::to_string))
+        .collect::<Vec<_>>()
+        .into_iter()
+}
+
+/// Editing distance for a one-step recovery hint. Small and bounded: the names here are short, and a hint that is
+/// far away is worse than none.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    let mut previous: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.iter().enumerate() {
+        let mut current = vec![i + 1];
+        for (j, cb) in b.iter().enumerate() {
+            let cost = usize::from(ca != cb);
+            current.push(*[previous[j + 1] + 1, current[j] + 1, previous[j] + cost].iter().min().unwrap());
+        }
+        previous = current;
+    }
+    previous[b.len()]
+}
+
+/// D-402: what the model gets back when it calls a tool that does not exist. Naming the tools the instance
+/// actually has — and the closest one when the distance is small (`bash` → `shell`) — is what pi's
+/// recovery-oriented errors do, and it is cheap: the names are already computed per request.
+fn unknown_tool_message(name: &str, offered: &[String]) -> String {
+    let mut sorted: Vec<&str> = offered.iter().map(String::as_str).collect();
+    sorted.sort_unstable();
+    sorted.dedup();
+    let list = sorted.join(", ");
+    let close = sorted
+        .iter()
+        .map(|candidate| (*candidate, edit_distance(name, candidate)))
+        .filter(|(_, distance)| *distance <= 2)
+        .min_by_key(|(candidate, distance)| (*distance, candidate.len()));
+    match close {
+        Some((best, _)) => {
+            format!("unknown tool {name:?}. This instance is offered: {list}. Did you mean {best:?}?")
+        }
+        None => format!("unknown tool {name:?}. This instance is offered: {list}."),
+    }
+}
+
 /// Summary input cap and the output reserve default for the L2 trigger
 /// (ported D-28/L2 constants: 100k summary input, 8k reserve).
 const SUMMARY_INPUT_CAP: usize = 100_000;
@@ -377,6 +424,10 @@ pub struct Driver<P: Provider> {
     /// until the provider itself reports the overflow, exactly as D-28 L2
     /// decided) instead of burning a model call on every step.
     compact_failures: u32,
+    /// D-402: the tool names the *last* request offered this instance, so a call to a name that does not exist can
+    /// be answered with what does — and with the closest real name. One measured trial spent 53 of 255 operations
+    /// inventing tools (`bash`, `run`, `python`, `exec`, `pmars`, …) against a bare `unknown tool bash`.
+    offered: Vec<String>,
     /// R22/A20 L2 input: the provider-reported prompt size of the last
     /// completed turn. It is cached from live usage and read back from the
     /// store once per driver (after a crash/restart), so the trigger costs no
@@ -604,6 +655,7 @@ pub(crate) fn spawn_driver<P: Provider + 'static>(
         prepared: std::collections::HashMap::new(),
         storage_full: false,
         compact_failures: 0,
+        offered: Vec::new(),
         last_prompt: 0,
         last_prompt_loaded: false,
         hooks,
@@ -1451,6 +1503,9 @@ that delegated it learns the outcome only from a settlement.";
             }
         }
         let (kernel, offered_tools, surface_authorized) = self.team_kernel(snapshot).await?;
+        // D-402: remember the surface the request carries, so a later call to a name that does not exist is
+        // answered with what does (`unknown_tool_message`).
+        self.offered = offered_tools.iter().cloned().chain(builtin_names()).collect();
         let request_id = format!("req-{}", uuid::Uuid::new_v4());
         let mut request = kernel.prepare_request(&entries, &request_id);
         // L2 (§7, A20): a summary is taken before the request is fixed and
@@ -2445,6 +2500,19 @@ that delegated it learns the outcome only from a settlement.";
                 .await
                 .map_err(|e| format!("tool worker join: {e}"))?;
         self.notify_tool_call(&name, &args, receipt.ok, receipt.error.as_ref().map(|e| e.reason.clone()));
+        let mut receipt = receipt;
+        // D-402: the executor answers an unknown name with `unknown tool <name>` and nothing else. The driver knows
+        // the whole offered surface, so that is where the model learns what it can actually call.
+        if let Some(error) = receipt.error.as_mut() {
+            // The executor's `unknown tool X` is the measured case (a name that is not a tool at all). The binding
+            // gate's "tool X is not bound to this member" is left exactly as it was: it already says the true and
+            // actionable thing, and a test pins its words.
+            if error.reason.starts_with("unknown tool") {
+                let message = unknown_tool_message(&name, &self.offered);
+                error.reason = message.clone();
+                receipt.content = serde_json::json!({"error": message}).to_string();
+            }
+        }
         self.complete_op(
             operation_id,
             if receipt.ok { "SUCCEEDED" } else { "FAILED" },
@@ -3024,4 +3092,23 @@ fn hash_workspace_inputs(workspace: &Path, paths: Vec<String>) -> serde_json::Ma
 
 fn outcome_request(attempt_id: &str) -> String {
     attempt_id.split('/').next().unwrap_or(attempt_id).to_string()
+}
+
+#[cfg(test)]
+mod unknown_tool {
+    use super::unknown_tool_message;
+
+    /// D-402: a name one edit from a real tool gets the hint (`shel` → `shell`); the observed confusions (`bash`,
+    /// `run`, `python`) are further apart than any threshold worth setting, and for those the offered list is the
+    /// fix — the model can pick the real name from it.
+    #[test]
+    fn an_unknown_tool_is_answered_with_the_surface_and_a_typo_hint() {
+        let offered = vec!["shell".to_string(), "finish".to_string()];
+        let typo = unknown_tool_message("shel", &offered);
+        assert!(typo.contains("Did you mean \"shell\""), "{typo}");
+        let confusion = unknown_tool_message("bash", &offered);
+        assert!(!confusion.contains("Did you mean"), "a semantic confusion is not a typo: {confusion}");
+        assert!(confusion.contains("finish") && confusion.contains("shell"), "{confusion}");
+        assert!(confusion.contains("This instance is offered"), "{confusion}");
+    }
 }

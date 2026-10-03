@@ -1542,6 +1542,40 @@ async fn a_repair_round_names_the_failed_check_and_its_reason() {
     handle.shutdown().await.expect("shutdown");
 }
 
+/// D-402: a call to a tool that does not exist is answered with what the instance *can* call, and with the
+/// closest real name when there is one. Measured motivation: one instrumented trial spent 53 of 255 operations
+/// inventing tools (`bash`, `run`, `python`, `exec`, `pmars`, …) against a bare `unknown tool bash`.
+#[tokio::test]
+async fn an_invented_tool_name_is_answered_with_what_the_instance_can_call() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("unknown-tool");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let invented = json!({"role": "assistant", "content": "",
+        "tool_calls": [{"id": "c1", "type": "function",
+                        "function": {"name": "bash", "arguments": json!({"command": "echo hi"}).to_string()}}]});
+    let script = vec![Step::Message(invented), Step::Message(finish_call("tried bash"))];
+    // the file/shell bindings must be present, or the *binding gate* answers first — which is its own message and
+    // not the one under test here
+    let mut config = root.config(ScriptedProvider { script: Mutex::new(script.into()) });
+    config.bindings = vec!["files".into(), "shell".into()];
+    let handle = start(config).await.expect("start");
+    handle.input("do the thing").await.expect("input");
+    let _ = run_to_goal_close(&handle).await;
+    let connection = rusqlite::Connection::open(root.dir.join("session.sqlite")).expect("session db");
+    let receipt: String = connection
+        .query_row(
+            "SELECT receipt_json FROM operations WHERE intent_json LIKE '%\"bash\"%' ORDER BY rowid LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the invented call has a receipt");
+    assert!(receipt.contains("unknown tool"), "{receipt}");
+    assert!(receipt.contains("This instance is offered"), "the surface must be named: {receipt}");
+    assert!(receipt.contains("shell"), "a real tool must appear: {receipt}");
+    assert!(receipt.contains("finish"), "the built-ins too: {receipt}");
+    handle.shutdown().await.expect("shutdown");
+}
+
 #[tokio::test]
 async fn check_dispatch_refused_parks_without_burning_repair_rounds() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));

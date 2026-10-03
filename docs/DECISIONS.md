@@ -20,6 +20,51 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-402 The model invented tools for a fifth of one turn; the refusal now names the surface (2026-10-03)
+
+Profiling the instrumented "nothing delivered" trials (13 tasks' worth of evidence, five run here) turned up a
+defect that had nothing to do with those tasks' outcomes. In `winning-avg-corewars` the agent made **255
+operations of which 53 (21 %) called tools that do not exist** — `bash` three times, then `run`, `python`,
+`message`, `request_grant`, `chat`, `grant`, `exec`, `pmars`, `terminal`, `authorize`, `escalate`, and about forty
+distinct names in all — and every one came back as the bare
+
+```
+{"error": "unknown tool bash"}
+```
+
+which tells the model nothing about what it *can* call. That is the opposite of the recovery-oriented error the
+codemode work already aims at (D-372's reading of pi 1.0), and it is cheap to fix: the driver computes this
+instance's offered surface for every request anyway.
+
+**The change.** `execute_inline` rewrites the executor's `unknown tool X` into the surface plus a hint (the binding
+gate's `tool X is not bound to this member` is left exactly as it was: it already says the true and actionable
+thing, and a test pins its words — the first attempt rewrote both and that test caught it):
+
+```
+unknown tool "bash". This instance is offered: cancel_task, delegate, finish, read_history, send, shell, spawn,
+verify_goal, wait.
+```
+
+and, when the name is within two edits of a real one, a `Did you mean "shell"?`. The list is what makes recovery
+possible for the observed confusions (`bash`, `run`, `python` are semantic guesses, not typos, and are five or more
+edits away); the hint catches real typos. Both are asserted: a unit test for the two cases and an integration test
+that drives a real driver session and reads the receipt the model received.
+
+**Measured.** The same task re-run on the fixed binary, same model, same budget:
+
+| | operations | calls to invented tools | distinct invented names |
+|---|---|---|---|
+| before | 255 | **53 (21 %)** | ~40 (`bash`, `run`, `python`, `pmars`, …) |
+| after | **138** | **0** | none |
+
+The reward did not change (1.0 both times): what vanished was wasted work, not the outcome — which is the honest
+shape of a fix like this.
+
+**Formal.** None (a message, with two runnable tests).
+
+**Ceiling.** The offered list is the load-bearing part; a name that is neither close nor in the list still only
+gets the list, which is the best a message can do.
+
 ## D-401 Independent verification cannot recover a criterion the environment does not reveal (2026-10-03)
 
 D-398 said the design that would make independent verification *stronger* is a verifier that re-derives the
