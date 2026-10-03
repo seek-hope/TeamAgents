@@ -83,10 +83,14 @@ three full-set runs to date it reports the same two tasks, every time:
 ```
 
 **Exclusion convention from here on:** `qemu-alpine-ssh` and `qemu-startup` are scored 0 by their images'
-mirror rot, not by TeamAgents, so they are **excluded from the denominator** of any headline figure and listed
-as such beside it. The N = 3 figure is therefore **207/264 = 78.4 % [73.1, 82.9]** on the tasks whose verifier
-ran (or **210/264 = 79.5 % [74.3, 84.0]** with the D-390 parser correction); the two tasks stay pending until
-their images are refreshed.
+mirror rot, not by TeamAgents, and `pytorch-model-cli` scores 0 on an **under-determined specification** — it
+grades against the *reference implementation's* `/255` convention while the only criterion the environment offers
+(accuracy against labels) favours the tool's standardised one, so no agent can recover it (D-401; a fresh verifier
+with the artifact, the reference model and the real MNIST data re-derived the method and reached the same wrong
+conclusion in three of three attempts). All three are **excluded from the denominator** of any headline figure and
+listed as such beside it. The N = 3 figure is therefore **207/258 = 80.2 % [74.8, 84.7]** over the 86 evaluable
+tasks (or **210/258 = 81.4 % [76.1, 85.8]** with the D-390 parser correction); the three tasks stay pending
+until their images are refreshed or the specification is fixed.
 
 ## Measured results (2026-10-01)
 
