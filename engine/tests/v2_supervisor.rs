@@ -1481,7 +1481,11 @@ async fn a_task_driven_worker_turn_sees_a_live_user_grant() {
         .await
         .expect("grant");
     let before = requests().len();
-    for _ in 0..800 {
+    // D-407: this waits for a *scheduling* outcome (the worker's next request), not for a fact, so the bound is
+    // generous and the wait polls: 20 s was enough on an idle machine and not under `make check`, where it failed
+    // twice while passing alone three times out of three. The property is that the worker keeps working, not how
+    // fast it does.
+    for _ in 0..2_400 {
         if requests().len() > before {
             break;
         }

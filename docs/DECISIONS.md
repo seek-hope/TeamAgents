@@ -20,6 +20,21 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-407 A test that waits for a scheduling outcome under `make check` gets a bound it can survive (2026-10-04)
+
+`v2_supervisor::a_task_driven_worker_turn_sees_a_live_user_grant` waits for the worker to take another turn after a
+grant is issued, and asserted it within **20 seconds**. It failed twice inside `make check` and passed three times
+out of three when run alone, on the same binary — a load-sensitive bound on a *scheduling* outcome, not a fact the
+test could compute. The wait is now 60 seconds, with the reason in the comment.
+
+This is worth a decision rather than a shrug: the flake cost real time three times in this session (it also failed
+under the concurrent benchmark runs of D-396/D-402), and a gate that fails for reasons unrelated to the change under
+test teaches a reader to re-run instead of read. The property the test asserts — the worker keeps working after the
+grant — is unchanged; only the patience is.
+
+**Ceiling.** A longer bound is the cheap fix. The deterministic version drives the grant *before* the worker's turn,
+so nothing has to be waited for; it is recorded here as the upgrade path if the flake returns.
+
 ## D-406 Durable memory measured: 0/3 without the fact, 3/3 with it, and the control refuses to guess (2026-10-04)
 
 The memory dimension had one unmeasured part: does it change an **outcome**? The design below isolates it — the fact
