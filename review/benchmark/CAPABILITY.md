@@ -212,6 +212,23 @@ the abstract: **a self-check authored from the same assumption is not verificati
 would have caught it — predicting the same labels as the reference on the *verifier's* kind of image, not on
 its own — is exactly the independent-observer role P2 proposed.
 
+### 6.2a The independent-verification experiment on this task (D-401)
+
+`solution`'s mismatch above was used to test the strongest form of independent verification: the producer's actual
+artifact was baked into the task image and a **fresh agent** was asked to verify it, with the reference
+`model.py`/`model.pth`, the real MNIST data and its own 900 seconds. Three attempts, 0/3, all failing exactly
+`test_cli_tool_output` — and one verifier's report shows how much work that was: its own pickle reader found the
+weights **bit-exact**, it measured the three preprocessing conventions against real labels (raw 0.647, 0–1 0.659,
+standardised 0.833) and concluded that the standardised one is correct, then compared the binary against its own
+numpy reference on **10,000** images.
+
+**The criterion was unreachable, not the answer.** This task scores predictions against the *reference
+implementation's* output under the `/255` convention; the only criterion the environment offers is accuracy
+against labels, by which the tool's convention is *better*. An independent actor re-deriving the method still
+cannot recover a specification the environment does not reveal (D-401), which is the bound on independent
+verification and the reason the acceptance check (D-385) is the mechanism that actually helps: the user states the
+criterion.
+
 ### 6.3 Excluded, not measured (class 3)
 
 `qemu-alpine-ssh` and `qemu-startup` are scored 0 by their images' mirror rot, in every run:

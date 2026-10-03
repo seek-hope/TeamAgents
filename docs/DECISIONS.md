@@ -20,6 +20,46 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-401 Independent verification cannot recover a criterion the environment does not reveal (2026-10-03)
+
+D-398 said the design that would make independent verification *stronger* is a verifier that re-derives the
+acceptance criterion instead of re-running it, and named the ground truth to measure it on: `pytorch-model-cli`'s
+artifact disagrees with the task's reference on **11 of 50** images because the producer standardised with MNIST
+mean/std while the reference divides by 255 (D-391), and the producer's own 200-image self-check could not see it.
+
+**The experiment.** The producer's actual artifact — `cli_tool`, `weights.json`, `prediction.txt`, its own
+`cli_tool.cpp`, `eval_mnist.py` and `ref_infer.py` — was baked into the task image, and a **fresh agent** was asked
+to verify it, with the original instruction, the artifact, the reference `model.py`/`model.pth`, the real MNIST
+dataset reachable, and the task's own 900-second budget. Three attempts.
+
+**Result: 0/3, all three failing exactly `test_cli_tool_output`** — and all three doing real independent work (22 to
+41 shell calls, their own weight readers, their own numpy references). One verifier's report is the whole finding:
+
+> weights fidelity: re-extracted `model.pth` with my own zip/pickle reader — **float32 bit-exact** on all six
+> tensors. Preprocessing: downloaded the real MNIST t10k set and evaluated the model myself — raw **0.647**,
+> 0–1 **0.659**, normalized `(x/255−0.1307)/0.3081` **0.833** → *the tool's normalization is the intended one*
+> (83.3 % is the ceiling for this tiny 16-16 MLP). The binary vs an independent numpy reference: generated 10,000
+> PNGs from the real MNIST test set and ran the delivered `./cli_tool` on every one.
+
+**So independence of actor and even of method did not help — because the *criterion* was shared, and the
+environment never revealed it.** The task's expected values are the *reference implementation's predictions* under
+the `/255` convention, not ground truth; the only criterion the environment suggests is accuracy against labels,
+and by that criterion the standardised convention is **better** (0.833 against 0.659). Both the producer and the
+verifier asked "which is more accurate?", because that is the question the workspace answers, and the task scores
+the other question. The provided `image.png` gives no signal either: both conventions predict `2` for it, which is
+why `test_cli_tool_executable` passed for both.
+
+**What this bounds.** Independent verification is bounded by the **observability** of the criterion, not by the
+identity of the verifier and not by the independence of its method. Where the user can state the criterion
+(D-385's acceptance check) it is worth having; where a task hides a convention, no actor recovers it — which also
+means `pytorch-model-cli`'s 0/3 is not a verification failure and not a capability failure in the usual sense: it
+is an **under-determined specification**, and the same is true of the producer's 11/50.
+
+**Formal.** None (an experiment with a known ground truth).
+
+**Ceiling.** One task, three attempts, one model; the verifier's report is quoted from the session database it
+collected. It says nothing about criteria that *are* observable, which is the case D-385 serves.
+
 ## D-400 The acceptance gate cannot stop a turn that never claims to be done — measured, with the mechanism (2026-10-03)
 
 D-397 found 10 of the N = 3 run's 33 deadline trials had **already passed**, and read them as "the agent finished
