@@ -20,6 +20,42 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-406 Durable memory measured: 0/3 without the fact, 3/3 with it, and the control refuses to guess (2026-10-04)
+
+The memory dimension had one unmeasured part: does it change an **outcome**? The design below isolates it — the fact
+a session needs exists only in an *earlier session's sentence*, never in the workspace.
+
+**The fixture.** A scratch project with three scripts whose outputs are opaque and interchangeable tokens
+(`TOKEN-7f2a`, `TOKEN-91c4`, `TOKEN-3d8e`), byte-length-identical, same mode, same mtime, and a README that says
+plainly that nothing there names the project check. **Session A** (default) is told which script is the real check
+and asked to remember it. **Session B**, a *named* session (its own state root, D-364), is asked to run the project's
+real check and write its output verbatim to a file. The control arm is the same session B question with no A and no
+store at all.
+
+| arm | delivered the right token | tool calls |
+|---|---|---|
+| memory | **3/3** | `ls, memory` — one run called only `memory` |
+| control | **0/3** | `ls, memory, read_file, shell` (4-7 calls) |
+
+**The control's answer is the sharpest evidence.** Two of its three runs wrote, into the file they were asked to
+fill, that they *would not* deliver: the three scripts are "equally plausible", identical in size, mode and mtime,
+nothing references any of them, and "choosing one would be an unverifiable guess presented as fact". So the fact was
+genuinely unavailable without the earlier session, and the memory arm converted "cannot know" into "knows and acts".
+
+**Two probe errors of mine, both fixed before this result counted.** The first fixture made the answer inferable —
+the three scripts printed `3 passed`, `47 passed`, `12 passed`, and the control arm picked the largest. The second
+version put the fact in this experiment's *script* and the other arm's store on a fixed path, and a control-arm
+agent **read the script** and learned the answer from the harness. The fact now travels only in an environment
+variable (never written to a file the agent can reach) and the control arm runs first, before any store holding it
+exists on disk. Both are recorded because the intermediate run looked like a null result (3/3 against 3/3) and was
+not: it measured my fixture, not the feature.
+
+**Formal.** D-405's `V2Memory.tla` (`NotesAreAppendOnly`, `TheStoreRefusesAtTheCap`, `RecallIsBounded`).
+
+**Ceiling.** One synthetic task, three attempts per arm, one model; it measures that a fact carried across sessions
+is used and changes the outcome, not that memory helps a long real project (where the fact would usually be
+re-derivable and the store's value is different).
+
 ## D-405 Durable memory: one append-only note store at the state root, and a `memory` tool (2026-10-04)
 
 **The gap.** Everything an agent learns dies with the session that learned it. The context belongs to an instance
