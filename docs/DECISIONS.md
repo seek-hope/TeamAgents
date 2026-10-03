@@ -20,6 +20,55 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-405 Durable memory: one append-only note store at the state root, and a `memory` tool (2026-10-04)
+
+**The gap.** Everything an agent learns dies with the session that learned it. The context belongs to an instance
+epoch, the goal's settlement ends the work, and a session's database is its own file — so a second session under the
+same state root starts from nothing, and the only cross-session surfaces were the user's own files and the skills
+registry. That is the last capability dimension the roadmap had not touched.
+
+**The store.** `<state root>/memory.json`: a versioned, append-only list of notes. Each note records its **text**
+(capped at 2,000 characters), optional **tags**, and its **provenance** — the session, the instance and the time
+that remembered it. It is a state-root file, not a session table, which is exactly what makes it outlive a session;
+`Memory::remember` appends and persists in one atomic step (tmp + fsync + rename, the pattern `sessions.json` and
+`automations.json` already use), and a corrupt file is an error rather than a silently replaced one.
+
+**The tool.** `memory` rides the session's profile (`reference::session_tool_schemas`), **not** the base profile —
+the same placement as `view_image`, and for the same two reasons: it is a session capability whose store lives at
+the state root, and the pre-registered evaluation surface (`basic_tool_schemas`, D-182) must not change under the
+recorded batches. It is bound like `skills` (`DEFAULT_BINDINGS` gains `memory`), so the dispatch gate is the binding
+and not a special case. `action: "remember"` stores a note; `action: "recall"` returns the newest matching notes,
+each rendered with its provenance.
+
+**Three rules, and why each is a rule rather than a choice.**
+
+- **Append-only.** A note is never rewritten or evicted; at `MAX_NOTES` the store *refuses* rather than dropping
+  the oldest. A recall that answered one way keeps answering that way — which is the only reason a store like this
+  is worth writing to. (`V2Memory.tla`: `NotesAreAppendOnly`, `TheStoreRefusesAtTheCap`.)
+- **Bounded.** 2,000 characters per note, 500 notes, and a recall returns at most 20 whatever the caller asks for
+  (`limit.clamp(1, RECALL_MAX)`). A memory that can grow without bound is a context leak with a friendly name.
+  (`V2Memory.tla`: `RecallIsBounded`.)
+- **Provenanced.** Every note says who remembered it, in which session, and when, so a wrong memory is traceable
+  instead of anonymous — the `render()` line carries it into whatever the model reads.
+
+**Formal.** `verification/tla/V2Memory.tla` with `MC_memory.cfg` (verified) and the counterfactual
+`MC_memory_evicts.cfg`, which drops the oldest note to make room and **refutes** `NotesAreAppendOnly` — which is
+what makes "refuse at the cap" a checked rule. `make verify-model-all` 33/33, `verify-model-counterexamples` 94/94,
+`verify-kani` 3/3.
+
+**Tests.** `memory::notes_survive_a_reload_with_their_provenance`,
+`recall_filters_by_text_and_tag_newest_first_and_is_bounded`,
+`a_note_is_capped_and_the_store_never_evicts`, and `tools::the_memory_tool_is_bound_and_recalls_across_sessions`
+(the binding gate refuses an unbound member, a note written by one session is recalled by another, and the store
+file is the state root's).
+
+**Ceiling.** Recall is a case-insensitive substring or exact tag match, newest first — deliberately **not** a
+semantic ranking, and the tool's description says so; a store this size is searched by the model reading the
+results. Nothing injects memory automatically: the model must call `recall`, which keeps a session's context a
+consequence of its own choices rather than of what some earlier session left lying around. Notes cannot be updated
+or deleted (append-only, by rule); the store is shared by every session under one state root, which is the intended
+scope and also its limit.
+
 ## D-404 codemode's `tools.<name>` misses now name the tools that exist (2026-10-03)
 
 D-402 measured what a bare refusal costs on the product's own tool surface — 53 of one turn's 255 operations spent

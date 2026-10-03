@@ -100,6 +100,11 @@ happened. Diagnostics go to stderr, the outcome to stdout (`--json` prints one J
   verdict on a finished turn. The checks are the user's own: the attach is refused for a model identity, is
   unioned by id with the goal's existing contract, and is refused once the goal has registered a check round
 (cancel it and open the next goal to change the contract).
+- **Durable memory**: the `memory` tool lets a member `remember` a short note and any later session under
+  the same state root `recall` it. The store is `<state root>/memory.json`, a versioned append-only list:
+  a note is never rewritten or evicted (at 500 notes the store refuses rather than dropping the oldest), each
+  note is capped at 2,000 characters and carries the session and member that wrote it, and a recall returns
+  at most 20 newest-first matches with their provenance. It is bound like `skills` (D-405).
 - **What the configured MCP services offer**: `teamagents mcp list` connects to each `[tools.<name>]`
   binding with `kind = "mcp"` and prints its tools (the model-visible name and the server's one-line
   description); a service that cannot start is named with its reason, and the verb exits `1` when any of

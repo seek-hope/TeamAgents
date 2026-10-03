@@ -352,6 +352,22 @@ pub fn basic_tool_schemas(web: bool, skills: bool) -> Vec<Json> {
 /// web_search is not bound to this member" (measured 2026-09-27 with the surface witness, D-168) — while the
 /// `doctor` row written for exactly that config said "the model is offered neither". `skill` stays offered: the
 /// `skills` binding is product-default and the tool answers a capability state when no root resolves (D-167).
+/// The durable-memory tool (D-405), offered by a session's profile (`session_tool_schemas`) rather than by the base
+/// profile: the same reason `view_image` sits outside `basic_tool_schemas` — a tool the pinned evaluation surface
+/// never had must not enter the pin — and here it is also honest, because memory is a session capability whose store
+/// lives at the state root, not a property of the base profile.
+pub fn memory_schema() -> Json {
+    let wrap = |name: &str, description: &str, parameters: Json| json!({"type": "function", "function": {"name": name, "description": description, "parameters": parameters}});
+    wrap("memory", "Durable memory that outlives this session. `remember` stores one short note (text, optional tags; at most 2000 characters and the store never evicts, so keep it a pointer such as \"the parser rejects tabs\") and `recall` returns the newest matching notes, each stamped with the session and instance that remembered it and when. Every session under this state root shares the store, so a note written last week is available now; recall with no query returns the newest.",
+        json!({"type": "object", "properties": {
+            "action": {"type": "string", "enum": ["remember", "recall"], "description": "remember stores a note; recall reads them back."},
+            "text": {"type": "string", "description": "remember: the note itself."},
+            "tags": {"type": "array", "items": {"type": "string"}, "description": "remember: optional tags; a recall query matches a tag exactly or the text as a substring."},
+            "query": {"type": "string", "description": "recall: case-insensitive substring of the text, or a tag; empty means the newest notes."},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 20, "description": "recall: at most this many notes (default 5)."}
+        }, "required": ["action"]}))
+}
+
 pub fn session_tool_schemas(catalog: &UserConfig) -> Vec<Json> {
     let declares = |kind: &str| catalog.tools.values().any(|binding| binding.kind == kind);
     let mut schemas = basic_tool_schemas(true, true);
@@ -360,6 +376,8 @@ pub fn session_tool_schemas(catalog: &UserConfig) -> Vec<Json> {
         "web_fetch" => declares("web_fetch"),
         _ => true,
     });
+    // D-405: durable memory is a session capability, so it rides the session's profile
+    schemas.push(memory_schema());
     schemas
 }
 

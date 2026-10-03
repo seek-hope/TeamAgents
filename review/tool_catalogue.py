@@ -89,6 +89,9 @@ def tools():
     # function. It is still a tool the model may be offered, which is what this catalogue exists to document.
     conditional = reference.index("pub fn view_image_schema(")
     body += reference[conditional : reference.index("\n}\n", conditional)]
+    # D-405: durable memory rides the session profile (`session_tool_schemas`), so it is documented here too
+    memory = reference.index("pub fn memory_schema(")
+    body += reference[memory : reference.index("\n}\n", memory)]
     for match in re.finditer(r'wrap\("([a-z_]+)",\s*"((?:[^"\\]|\\.)*)",\s*json!\(', body):
         block = brace_block(body, body.find("{", match.end()))
         parameters = parse_schema(block, {})

@@ -108,7 +108,7 @@ default (D-239).
 
 | Key | Type | Absent | Read by | Meaning |
 |---|---|---|---|---|
-| `id` | `String` | empty | `core/src/kernel/instance.rs`, `core/src/v2/control.rs` … (22 files) | Stable id, used in failures, receipts and repair feedback. |
+| `id` | `String` | empty | `core/src/kernel/instance.rs`, `core/src/v2/control.rs` … (23 files) | Stable id, used in failures, receipts and repair feedback. |
 | `command` | `String` | empty | `core/src/v2/control.rs`, `engine/src/bound.rs` … (17 files) | The command, executed through the same shell tool the model uses. |
 | `timeout` | `Option<u64>` | unset (the reader applies its own) | `core/src/v2/control.rs`, `engine/src/mcp.rs` … (8 files) | Seconds; absent means the shell tool's own default. |
 | `network` | `bool` | false | `core/src/v2/control.rs`, `engine/src/mcp.rs` … (3 files) | Run with network access (the sandbox is offline by default). |

@@ -38,7 +38,7 @@ pub struct BoundTools {
 /// surface through the same one, and `web` expands to the configured web bindings.
 /// One list means a report can never describe a surface other than the one the
 /// session runs with.
-pub const DEFAULT_BINDINGS: &[&str] = &["files", "shell", "web", "skills"];
+pub const DEFAULT_BINDINGS: &[&str] = &["files", "shell", "web", "skills", "memory"];
 
 impl BoundTools {
     pub fn load(catalog: &UserConfig, bindings: &[String]) -> Result<BoundTools, String> {

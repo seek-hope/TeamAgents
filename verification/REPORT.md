@@ -5,6 +5,18 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
+## 0. Gate status (re-run 2026-10-04 at `MATERIAL-COMMIT`)
+
+* **D-405 added the durable-memory model and re-ran all three targets on this tree (2026-10-04).**
+  `V2Memory.tla` states the two claims the store's readers rely on — `NotesAreAppendOnly` (a note is never
+  rewritten or evicted; the code refuses at its cap instead) and `RecallIsBounded` (a recall returns at most
+  `RECALL_MAX` notes, all real), plus `TheStoreRefusesAtTheCap`. `make verify-model-all`: all **33** configurations `No error has been found` (rc 0); the new one is
+  `MC_memory.cfg`, exhaustive in under a second.
+  `make verify-model-counterexamples`: all **94** negative controls are refuted (rc 0); the new one is
+  `MC_memory_evicts.cfg`, which drops the oldest note to make room. `make verify-kani` reports `Complete - 3
+  successfully verified harnesses, 0 failures, 3 total` (rc 0). The round changed
+  `verification/tla/V2Memory.tla`, added its two configurations and registered them in both targets.
+
 ## 0. Gate status (re-run 2026-10-03 at `dee68840`)
 
 * **D-393 added the independent-verification provenance rule and re-ran all three targets on this tree

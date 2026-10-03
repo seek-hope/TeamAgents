@@ -259,4 +259,18 @@ Look at an image: loads a workspace image (png/jpeg/gif/webp, at most 5 MiB) so 
 |---|---|---|---|
 | `path` | `string` | yes | — |
 
+### `memory`
+
+*Offered by `reference::session_tool_schemas` (the profile's tools; the web half only for the kinds the config declares — §5.2/D-79/D-168).*
+
+Durable memory that outlives this session. `remember` stores one short note (text, optional tags; at most 2000 characters and the store never evicts, so keep it a pointer such as "the parser rejects tabs") and `recall` returns the newest matching notes, each stamped with the session and instance that remembered it and when. Every session under this state root shares the store, so a note written last week is available now; recall with no query returns the newest.
+
+| Parameter | Type | Required | Meaning |
+|---|---|---|---|
+| `action` | `string` | yes | remember stores a note; recall reads them back. |
+| `text` | `string` | no | remember: the note itself. |
+| `tags` | `array` | no | remember: optional tags; a recall query matches a tag exactly or the text as a substring. |
+| `query` | `string` | no | recall: case-insensitive substring of the text, or a tag; empty means the newest notes. |
+| `limit` | `integer` | no | recall: at most this many notes (default 5). |
+
 <!-- generated: end -->

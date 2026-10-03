@@ -1124,6 +1124,45 @@ fn skill_tool(catalog: &teamagents_core::models::UserConfig, args: &Json) -> Res
     }
 }
 
+/// Where a member's durable memory lives and who is remembering (D-405): the state root's `memory.json`, so a
+/// later session under the same root recalls it, plus the session and instance the note is stamped with.
+#[derive(Clone)]
+pub(crate) struct MemoryScope {
+    pub state_root: PathBuf,
+    pub session: String,
+    pub instance: String,
+}
+
+/// One process-wide lock for the store: drivers are tasks in one daemon, and a read-modify-write without it loses
+/// a note that two members remember at the same moment.
+static MEMORY_WRITES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// The `memory` tool (D-405): `remember {text, tags?}` and `recall {query?, limit?}`.
+fn memory_tool(scope: &MemoryScope, args: &Json) -> Result<Json, String> {
+    let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("recall");
+    let _guard = MEMORY_WRITES.lock().map_err(|_| "memory lock poisoned")?;
+    let mut store = crate::v2::memory::Memory::load(&scope.state_root)?;
+    match action {
+        "remember" => {
+            let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("");
+            let tags: Vec<String> = args
+                .get("tags")
+                .and_then(Json::as_array)
+                .map(|tags| tags.iter().filter_map(|tag| tag.as_str().map(str::to_string)).collect())
+                .unwrap_or_default();
+            let note = store.remember(text, &tags, &scope.session, &scope.instance, teamagents_core::models::now())?;
+            Ok(json!({"saved": note.id, "notes": store.notes.len()}))
+        }
+        "recall" => {
+            let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+            let limit = args.get("limit").and_then(Json::as_u64).unwrap_or(5) as usize;
+            let hits: Vec<String> = store.recall(query, limit).iter().map(|note| note.render()).collect();
+            Ok(json!({"matches": hits.len(), "notes": hits}))
+        }
+        other => Err(format!("unknown memory action {other:?} (use remember|recall)")),
+    }
+}
+
 /// Executor for one member root: the file, shell and web tools rooted there plus the web tools that member
 /// actually bound, over the member's own `ArtifactPaths` and turn control. `V2Toolkit::new` is its caller.
 pub(crate) fn member_executor_with_control(
@@ -1132,6 +1171,7 @@ pub(crate) fn member_executor_with_control(
     bindings: Vec<String>,
     artifacts: ArtifactPaths,
     shell_state: Option<PathBuf>,
+    memory: Option<MemoryScope>,
 ) -> impl Fn(&str, &Json, &TurnControl, ShellMode) -> Result<Json, String> + Send + Sync + 'static {
     let workspace = workspace_executor_with_control(root, artifacts, shell_state);
     let web: OnceLock<Result<WebTools, String>> = OnceLock::new();
@@ -1171,6 +1211,13 @@ pub(crate) fn member_executor_with_control(
                 return Err("tool skill is not bound to this member".into());
             }
             skill_tool(&catalog, args)
+        }
+        "memory" => {
+            if !bindings.iter().any(|b| b == "memory") {
+                return Err("tool memory is not bound to this member".into());
+            }
+            let scope = memory.as_ref().ok_or("memory: this session has no state root to keep notes in")?;
+            memory_tool(scope, args)
         }
         other => {
             let capability = if other == "shell" { "shell" } else { "files" };
@@ -2707,12 +2754,20 @@ impl V2Toolkit {
         // unavailable fails the boot honestly, an optional one only drops its
         // capability (same contract as the legacy member start, plan §7).
         let bound = Arc::new(crate::bound::BoundTools::load_in(&catalog, &bindings, &root)?);
+        // D-405: the memory store is `<state root>/memory.json`, so it outlives this session; the session and
+        // instance names are the note's provenance.
+        let memory = artifacts.as_ref().and_then(|path| path.parent()).map(|state_root| MemoryScope {
+            state_root: state_root.to_path_buf(),
+            session: wiring.session_id.clone(),
+            instance: wiring.instance_id.clone(),
+        });
         let executor = member_executor_with_control(
             root.clone(),
             catalog,
             bindings,
             ArtifactPaths::own(artifacts.clone()),
             shell_state.clone(),
+            memory,
         );
         let codemode_store = Arc::new(std::sync::Mutex::new(load_codemode_store(wiring.codemode_store.as_deref())));
         Ok(V2Toolkit { executor: Box::new(executor), bound, codemode_store, wiring, root, artifacts, shell_state })
@@ -2996,7 +3051,7 @@ mod tests {
         bindings: Vec<String>,
         artifacts: Option<PathBuf>,
     ) -> impl Fn(&str, &Json) -> Result<Json, String> + Send + Sync + 'static {
-        let executor = member_executor_with_control(root, catalog, bindings, ArtifactPaths::own(artifacts), None);
+        let executor = member_executor_with_control(root, catalog, bindings, ArtifactPaths::own(artifacts), None, None);
         move |tool, args| {
             executor(tool, args, &TurnControl::default(), ShellMode::Sandbox(SandboxBackend::bubblewrap()))
         }
@@ -3227,6 +3282,47 @@ mod tests {
         expand_image_reference(&dir, None, &mut other, true);
         assert_eq!(other["content"], json!("plain output"));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// D-405: the `memory` tool is bound like `skills`, remembers with provenance, and recalls across
+    /// "sessions" — the store is the state root's, not the session's.
+    #[test]
+    fn the_memory_tool_is_bound_and_recalls_across_sessions() {
+        let state = std::env::temp_dir().join(format!("ta-memory-tool-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(state.join("artifacts")).unwrap();
+        let workspace = state.join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let scope =
+            super::MemoryScope { state_root: state.clone(), session: "s-one".into(), instance: "i-leader".into() };
+        // not bound: refused, exactly like `skill`
+        let unbound = member_executor(
+            workspace.clone(),
+            teamagents_core::models::UserConfig::default(),
+            vec![],
+            Some(state.join("artifacts")),
+        );
+        let error = unbound("memory", &json!({"action": "recall"})).unwrap_err();
+        assert!(error.contains("is not bound to this member"), "{error}");
+
+        // the tool writes to the state root's store, with the session that wrote it
+        let store = state.join("memory.json");
+        let mut memory = crate::v2::memory::Memory::load(&state).unwrap();
+        memory.remember("the parser rejects tabs (D-12)", &["parser".into()], "s-one", "i-leader", 10.0).unwrap();
+        assert!(store.exists(), "the store is the state root's file: {}", store.display());
+        drop(memory);
+        let recalled = super::memory_tool(&scope, &json!({"action": "recall", "query": "tabs"})).unwrap();
+        assert_eq!(recalled["matches"], json!(1));
+        let line = recalled["notes"][0].as_str().unwrap();
+        assert!(line.contains("s-one") && line.contains("i-leader"), "provenance travels with the note: {line}");
+
+        // a second session recalls what the first one remembered
+        let other =
+            super::MemoryScope { state_root: state.clone(), session: "s-two".into(), instance: "i-worker".into() };
+        let saved = super::memory_tool(&other, &json!({"action": "remember", "text": "tests run offline"})).unwrap();
+        assert!(saved["saved"].as_str().unwrap().starts_with("m-"), "{saved}");
+        let both = super::memory_tool(&scope, &json!({"action": "recall", "limit": 5})).unwrap();
+        assert_eq!(both["matches"], json!(2), "the newest first, across sessions: {both}");
+        std::fs::remove_dir_all(&state).unwrap();
     }
 
     #[test]
