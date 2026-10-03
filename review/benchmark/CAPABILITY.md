@@ -123,10 +123,11 @@ Same tasks, same model, same budget (890 s, `low`, official route, pristine task
 | `pytorch-model-cli` | 0/3 | 0/3 | interface + self-consistency only (the digit's correctness is not in the instruction) |
 | **total** | **2/9** | **1/9** | |
 
-**The mechanism is observable and correct; the pass rate is flat.** In the `query-optimize` arm the gate did
-exactly its job — two of the three runs attached the check, failed it, spent the bounded repair rounds and settled
-the goal **BLOCKED** (`end: failed`, `goal_status: BLOCKED`, the failing check named) where the bare arm could have
-reported a wrong solution as finished. It just did not *converge*: the model could not repair the query inside the
+**The mechanism is observable and correct; the pass rate is flat.** In the `query-optimize` arm the gate fired — two of the three runs attached the check, failed it, spent the
+bounded repair rounds and settled the goal **BLOCKED** (`end: failed`, `goal_status: BLOCKED`, the failing check
+named) — but **D-395 shows the failure was `python3: command not found`, not a caught mismatch**: that image ships
+no `python3`, so the check never ran its assertion. The gate's behaviour is real; the claim that it was checking the
+right thing is not. It just did not *converge*: the model could not repair the query inside the
 remaining budget. On the other two tasks the instruction does not carry a machine-checkable criterion, so the
 checks were weak and caught nothing (and in `gcode-to-text` all three runs timed out before claiming success, so
 the check — which only ever verifies a *claimed success*, §8 — never ran at all). 9 trials per arm is far too

@@ -386,6 +386,11 @@ pub fn goal_limits(catalog: &UserConfig) -> Result<Json, String> {
     if let Some(minutes) = goal_deadline_minutes(catalog)? {
         limits.insert("deadline_minutes".into(), json!(minutes));
     }
+    // D-393: the same way the checks travel — a session-wide statement that a goal with checks settles only on a
+    // round another instance registered. Only meaningful together with checks, which the core re-checks.
+    if catalog.limits.independent_verification {
+        limits.insert("independent_verification".into(), json!(true));
+    }
     Ok(Json::Object(limits))
 }
 

@@ -20,6 +20,80 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-396 Independent verification measured: the safety property holds, the liveness is the model's (2026-10-03)
+
+The P2 mechanism (D-393) was measured the way the image path was (D-394): does a leader that is *told* it may not
+settle on its own round actually obtain an independent verifier?
+
+**Setup.** `query-optimize` at the task's own 1800-second budget, `independent_verification = true` plus the two
+acceptance checks, three attempts. Two runs were made: one with the check D-386 authored (a `python3` heredoc,
+which D-395 shows cannot run in that image) and one with the runnable `sqlite3 -readonly … && diff -q …` check.
+
+**Safety: held, and that is the half the runtime owns.** No trial settled. In the first run one trial reached
+BLOCKED, the others were still ACTIVE when the harness killed them at the deadline; in the second, one BLOCKED and
+two ACTIVE. Not one of the six settled on its producer's own round — the rule did its job without the model's
+cooperation.
+
+**Liveness: the model's, and unreliable.** Across the six attempts the leader **spawned a verifier and called
+`verify_goal` exactly once** (in the first run; never in the second). The other attempts retried their own round
+(the collected databases show `i-leader` rounds 1..3 and no second instance). The repair reason the driver feeds it
+names the tool and the goal — so the information is there, and the model still usually does not act on it. A goal
+that requires independent verification therefore blocks (or runs out the clock) rather than settling, which is the
+safe failure but not a working loop.
+
+**And a check that does not fit the budget is not a check.** In the second run the `sqlite3` equivalence check was
+`cancelled by user` in every round: two full scans of the WordNet database plus a diff were still running when the
+deadline killed the turn, while the cheap `one-statement` check passed. The acceptance criterion has to be
+runnable *within* the budget it is given, which a 1.26M-row corpus does not make automatic.
+
+**Two product consequences, recorded rather than acted on.** (1) The *initiation* of a verification is a leader
+decision today, and this measurement says that is not reliable enough to be the only path — a `delegate`-shaped
+nudge in the rep repair note is what exists; a stronger design (the runtime *asks* a specific idle instance, or
+`exec` names the verifier) is a decision for the user. (2) `capability_gap` now authorizes a check round through
+the **goal owner's** shell grant rather than the triggering instance's — which preserved
+`check_dispatch_refused_parks_without_burning_repair_rounds` unchanged while letting a verifier ride the owner's
+authority; the first attempt (no grant needed at all) silently reversed that rule and the existing test caught it.
+
+**Formal.** `V2Checks.tla`'s `IndependenceIsNotSelfVerified` (D-393), 32/32 configurations and 93/93 refuted
+controls.
+
+**Ceiling.** Six attempts on one task, one model. It measures whether *this* model delegates; it does not say a
+stronger model would, nor that a runtime-initiated verifier would help.
+
+## D-395 The D-386 acceptance check never ran: a check must be verified to have run, not just to have failed (2026-10-03)
+
+While re-measuring the independent-verification flow (D-393) the collected session database showed the
+acceptance check on `query-optimize` failing with
+
+```
+/bin/bash: line 28: python3: command not found        (exit 127)
+```
+
+The image is `alexgshaw/query-optimize:20251031`, and **it has no `python3` at all** — verified by running the image
+directly: PATH is the standard one and `/usr/local/bin/python3` does not exist; what it has is `sqlite3`, `perl`,
+`awk` and `sh`. The check D-386 authored was a `python3` heredoc, so it could never run its assertion in that
+container.
+
+**What that corrects.** D-386's `--accept` arm reported that "two runs attached the check, failed it, spent the
+bounded repair rounds and settled the goal BLOCKED with the failing check named", and read that as the gate
+catching a wrong solution. The gate *did* fire and the goal *did* block — a check that fails blocks the goal, which
+is the mechanism working — but the failure was `command not found`, not a semantic mismatch. The interpretation is
+void: the arm never measured whether the check encodes the task's real criterion. The measured outcomes of that A/B
+(2/9 bare against 1/9 with the gate) still stand as *what happened*; the explanation attached to them does not.
+
+**The rule this leaves behind.** A check's own receipt has to be read before a result is attributed to it: *did the
+assertion run?* Exit-non-zero is not evidence of a caught defect. Every check in this repository's benchmark work
+now carries a runnable interpreter for the image it is meant for — the same check re-authored for that image is
+`sqlite3 -readonly /app/oewn.sqlite < /app/my-sql-query.sql > /tmp/want.txt && sqlite3 -readonly … < /app/sol.sql >
+/tmp/got.txt && diff -q …`, which uses a tool the image actually ships — and the independent-verification
+measurement (D-396) is the first to run with it — where that check turned out to be too slow for the budget, which is its own finding.
+
+**Formal.** None.
+
+**Ceiling.** The failed check is recorded in one trial's collected database; the earlier D-386 runs' containers are
+gone, so the same reason is inferred for them from the identical command and image rather than read from their own
+receipts.
+
 ## D-394 The image path is used in a real task and does not convert it: measurement, not hope (2026-10-03)
 
 D-391 called `extract-moves-from-video` **structurally unreachable** — the task is to transcribe the moves out of a
@@ -344,6 +418,10 @@ pristine tasks, concurrency 3), checks derived **only from each task's instructi
 | `gcode-to-text` | 0/3 | 0/3 | only "/app/out.txt is non-empty" |
 | `pytorch-model-cli` | 0/3 | 0/3 | interface + self-consistency only |
 | **total** | **2/9** | **1/9** | |
+
+**Read this together with D-395**: the check this arm used could not run in that task's image (`python3` is
+not installed in it), so the BLOCKED outcomes it reports came from `command not found` rather than from a
+caught semantic mismatch. The numbers below stand as what happened; the interpretation does not.
 
 **The mechanism did exactly what it says.** In the `query-optimize` arm two runs attached the check, failed it,
 spent the bounded repair rounds and settled the goal BLOCKED with the failing check named (`end: failed`,

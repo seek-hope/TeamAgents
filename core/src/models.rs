@@ -176,6 +176,10 @@ pub struct GoalLimits {
     /// Wall-clock ceiling in minutes, counted from the moment the goal is created.
     #[serde(default)]
     pub deadline_minutes: Option<u64>,
+    /// D-393/D-395: does a goal with required checks need a round another instance registered before it may
+    /// settle? Opt-in, and the session's own statement about *who* may settle its goals.
+    #[serde(default)]
+    pub independent_verification: bool,
 }
 
 /// One user-defined acceptance check (`[[checks]]` in the config).

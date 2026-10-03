@@ -273,8 +273,29 @@ impl Control {
 /// granted shared workspace; collaboration intents need their connection or
 /// management grant — re-checked at the dispatch linearization point (§6.1,
 /// A04), so a revocation between import and dispatch fails the operation.
-fn capability_gap(tx: &Connection, instance: &str, intent: &Json) -> Result<Option<String>, String> {
+fn capability_gap(
+    tx: &Connection,
+    instance: &str,
+    intent: &Json,
+    check_owner: Option<&str>,
+) -> Result<Option<String>, String> {
     let gap = match intent["name"].as_str() {
+        // §8/D-393: a required-check operation runs under the authority of the **goal's owner** — the instance
+        // that produced the claim — not of whoever triggered the round. That keeps the rule this boundary already
+        // had (a goal whose owner holds no `shell@workspace` cannot run its checks, which the driver parks as
+        // verification-infrastructure failure) while letting another instance trigger the very same checks through
+        // `verify_goal`. Measured 2026-10-03: gating on the *caller* made every verification round fail with
+        // "instance i-verifier holds no shell@workspace grant". The subject comes from the *decision record* (the
+        // request is a `required_check` round) and never from the arguments, so a model cannot forge a `check_id`
+        // to borrow another instance's authority.
+        Some("shell") if check_owner.is_some() => {
+            let owner = check_owner.unwrap_or_default();
+            if authorized(tx, owner, "shell", "workspace")? {
+                None
+            } else {
+                Some(format!("instance {owner} holds no shell@workspace grant"))
+            }
+        }
         Some("shell") if !authorized(tx, instance, "shell", "workspace")? => {
             Some(format!("instance {instance} holds no shell@workspace grant"))
         }
@@ -634,7 +655,7 @@ fn reauthorize_operation(tx: &Connection, session_id: &str, params: &Json) -> Re
         .map_err(|e| format!("decision instance: {e}"))?;
     let intent: Json = serde_json::from_str(&intent_json).map_err(|e| format!("intent {operation_id}: {e}"))?;
     let current = grant_revision(tx)?;
-    if let Some(reason) = capability_gap(tx, &instance, &intent)? {
+    if let Some(reason) = capability_gap(tx, &instance, &intent, None)? {
         let receipt = json!({"operation_id": operation_id, "ok": false, "started": false,
                              "content": json!({"error": reason}).to_string(),
                              "error": {"class": "unauthorized", "reason": reason}});
@@ -2857,12 +2878,12 @@ fn dispatch_operation(tx: &Connection, session_id: &str, params: &Json) -> Resul
             "operation {operation_id} authorized at permission revision {grant_revision}, current {permission_revision}: refusing dispatch"
         ));
     }
-    let (instance, op_goal): (String, Option<String>) = tx
+    let (instance, op_goal, request_ref): (String, Option<String>, String) = tx
         .query_row(
-            "SELECT r.instance_id, r.goal_id FROM decisions d JOIN model_requests r ON d.request_id = r.request_id
+            "SELECT r.instance_id, r.goal_id, r.request_ref FROM decisions d JOIN model_requests r ON d.request_id = r.request_id
              WHERE d.decision_id = ?1",
             [&decision_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .map_err(|e| format!("decision instance: {e}"))?;
     let (_, _, lifecycle, _, _) = load_instance(tx, &instance)?;
@@ -2878,7 +2899,18 @@ fn dispatch_operation(tx: &Connection, session_id: &str, params: &Json) -> Resul
     }
     // authorization is re-checked at dispatch, the linearization point (§6.1)
     let intent: Json = serde_json::from_str(&intent_json).map_err(|e| format!("intent {operation_id}: {e}"))?;
-    if let Some(reason) = capability_gap(tx, &instance, &intent)? {
+    let check_owner: Option<String> = if request_ref == "required_check" {
+        match op_goal.as_deref() {
+            Some(goal) => tx
+                .query_row("SELECT id FROM instances WHERE active_goal_id = ?1 LIMIT 1", [goal], |row| row.get(0))
+                .optional()
+                .map_err(|e| format!("goal owner: {e}"))?,
+            None => None,
+        }
+    } else {
+        None
+    };
+    if let Some(reason) = capability_gap(tx, &instance, &intent, check_owner.as_deref())? {
         return Err(format!("operation {operation_id} unauthorized: {reason}"));
     }
     if approval_required {
@@ -7879,6 +7911,57 @@ mod tests {
 
     /// D-393: a goal that requires independent verification does not settle on its producer's own round, and it
     /// does settle once another instance has registered one.
+    /// D-393: a verification round runs under the **goal owner's** authority, so an instance that holds no
+    /// `shell@workspace` grant of its own can still trigger the owner's pre-authorized checks — while the old rule
+    /// stands for a goal whose owner has no grant at all (`check_dispatch_refused_parks_without_burning_rounds`).
+    #[test]
+    fn a_verification_round_rides_the_goal_owners_authority_not_the_triggers() {
+        let (mut ctl, path) = control("check-authority");
+        // the owner has the shared workspace (which is what grants shell@workspace); the verifier does not
+        ctl.submit(
+            cmd("mk-leader", "create_instance", json!({"id": "i-leader", "workspace_ref": "/tmp/ws"})),
+            Identity::User,
+        )
+        .expect("leader");
+        ctl.submit(
+            cmd("mk-verifier", "create_instance", json!({"id": "i-verifier", "workspace_ref": ""})),
+            Identity::User,
+        )
+        .expect("verifier");
+        ctl.submit(
+            cmd(
+                "g1",
+                "create_goal",
+                json!({"id": "g1", "instance_id": "i-leader",
+                       "limits": {"required_checks": [{"id": "c1", "command": "true"}],
+                                  "independent_verification": true}}),
+            ),
+            Identity::User,
+        )
+        .expect("goal");
+        assert!(!ctl.holds_covering_grant("i-verifier", "shell", "workspace").unwrap(), "the trigger holds none");
+        ctl.submit(
+            cmd(
+                "v-round",
+                "register_verification",
+                json!({"goal_id": "g1", "instance_id": "i-verifier", "round": 1,
+                       "checks": [{"id": "c1", "command": "true"}]}),
+            ),
+            Identity::System,
+        )
+        .expect("register");
+        let dispatched = ctl.submit(
+            cmd(
+                "v-dispatch",
+                "dispatch_operation",
+                json!({"operation_id": "check:g1:1:0", "approval_required": false, "permission_revision": 0}),
+            ),
+            Identity::System,
+        );
+        assert!(dispatched.is_ok(), "the owner's grant covers the verifier's round: {dispatched:?}");
+        cleanup(&path);
+    }
+
     #[test]
     fn independent_verification_refuses_the_producers_own_round_and_accepts_another_instances() {
         let (mut ctl, path) = control("independent-verification");

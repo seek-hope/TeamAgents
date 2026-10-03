@@ -102,6 +102,7 @@ default (D-239).
 |---|---|---|---|---|
 | `max_total_tokens` | `Option<u64>` | unset (the reader applies its own) | `core/src/v2/control.rs`, `engine/src/v2/daemon.rs` … (4 files) | Usage ceiling in tokens, counted from provider-reported usage, live reservations and each request's estimate; usage a provider never reported stays the goal's `unknown_usage` counter and does not charge the ceiling (D-287). |
 | `deadline_minutes` | `Option<u64>` | unset (the reader applies its own) | nothing: applied by the loader: config.rs turns it into each goal's absolute deadline | Wall-clock ceiling in minutes, counted from the moment the goal is created. |
+| `independent_verification` | `bool` | false | `core/src/v2/control.rs`, `engine/src/v2/driver.rs` | D-393/D-395: does a goal with required checks need a round another instance registered before it may settle? Opt-in, and the session's own statement about *who* may settle its goals. |
 
 ### `[[checks]]`
 

@@ -54,6 +54,9 @@ REASONING_EFFORT = os.environ.get("TEAMAGENTS_REASONING_EFFORT", "high")
 # `view_image` tool and lets a picture reach the wire. Off by default: the declaration is a claim about the
 # model, not a guess the harness may make.
 IMAGES = os.environ.get("TEAMAGENTS_IMAGES") == "1"
+# D-393/D-395: `TEAMAGENTS_INDEPENDENT_VERIFICATION=1` makes every goal this session creates settle only on
+# a check round **another instance** registered, which is what the two-instance P2 measurement exercises.
+INDEPENDENT_VERIFICATION = os.environ.get("TEAMAGENTS_INDEPENDENT_VERIFICATION") == "1"
 # D-385 `--accept` checks for the A/B (see `run`); empty keeps every trial a bare goal.
 ACCEPT = json.loads(os.environ.get("TEAMAGENTS_ACCEPT", "[]"))
 
@@ -71,7 +74,8 @@ context_window = 1000000
 timeout = 300
 max_retries = 3
 generation_options = {{ reasoning_effort = "{effort}" }}
-{images}"""
+{images}
+{limits}"""
 
 
 class TeamAgentsAgent(BaseInstalledAgent):
@@ -110,6 +114,7 @@ class TeamAgentsAgent(BaseInstalledAgent):
                     key_env=API_KEY_ENV,
                     effort=REASONING_EFFORT,
                     images="images = true\n" if IMAGES else "",
+                    limits="[limits]\nindependent_verification = true\n" if INDEPENDENT_VERIFICATION else "",
                 )
             )
             local_config = handle.name
