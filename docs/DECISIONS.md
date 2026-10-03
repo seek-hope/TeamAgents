@@ -20,6 +20,46 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-403 On a task where the agent never claims done, the acceptance gate never runs — the hypothesis was untestable and the mechanism is inert (2026-10-03)
+
+D-400 showed the acceptance gate runs at the *completion boundary*, so it cannot stop an agent that keeps working.
+The complementary hypothesis was that a **quantitative** criterion with the number in the feedback could drive
+*iteration*: `gpt2-codegolf`'s instruction demands a C file under 5000 bytes, one N=3 trial failed on exactly that,
+and the profiled run showed twelve `perl` one-liners golfing toward it. So the check was written to report the
+number every time:
+
+```
+gpt2.c is 6711 bytes (the instruction's limit is 5000)
+```
+
+with a pass only when it is under the limit. Three attempts per arm, same model, same budget (900 s).
+
+| arm | results | `gpt2.c` at the cut |
+|---|---|---|
+| bare | 1/3 | 4464 (passed), 7979, none |
+| `--accept size-under-limit` | 0/3 | 6711, 7786, none |
+
+**The experiment measured nothing about the hypothesis, and that is the finding.** The collected session
+databases show **zero `finish` calls and zero check rounds in all six trials**: the agent never claimed to be done,
+every turn was cut at the deadline, and the check therefore **never executed once** in either arm — the two arms
+were the same treatment and the 1/3 against 0/3 is noise. The repair-feedback path the hypothesis needs (fail →
+the failure text with the number → the model iterates) cannot engage on a task whose agent never reaches the
+completion boundary.
+
+**What that sharpens.** D-400 said the gate cannot stop a working turn; this says that where the agent never claims
+done, the gate is not merely unable to help — it is **inert**, and no criterion written for it can have any effect.
+The domain of the acceptance mechanism is exactly "the agent thinks it is finished": there it decides, and a wrong
+criterion there is harmful (D-400, `winning-avg-corewars`). Everywhere else it does nothing, which is worth knowing
+before writing more checks.
+
+**Incidental.** `gpt2-codegolf` itself is a capability wall rather than a feedback gap: the one pass produced a
+4464-byte file, the failures 6711–7979 bytes, and all of them were still being edited when the budget ended.
+
+**Formal.** None (a measurement, with its own null result stated).
+
+**Ceiling.** One task, N = 3 per arm, one model; the hypothesis is untested, not refuted — a task whose agent
+claims done and is then told a number it misses would be the place to test it.
+
 ## D-402 The model invented tools for a fifth of one turn; the refusal now names the surface (2026-10-03)
 
 Profiling the instrumented "nothing delivered" trials (13 tasks' worth of evidence, five run here) turned up a
