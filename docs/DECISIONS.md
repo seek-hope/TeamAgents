@@ -20,6 +20,33 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-404 codemode's `tools.<name>` misses now name the tools that exist (2026-10-03)
+
+D-402 measured what a bare refusal costs on the product's own tool surface — 53 of one turn's 255 operations spent
+inventing tools against `unknown tool bash`, and zero after the refusal named the surface — and pi's codemode does
+the same thing for scripts (`tools.Bash` suggests `tools.bash`). Our codemode had the gap: `tools` *is* a Proxy, but
+its `get` answered **any** property with a call function, so a miss surfaced either as the host's bare
+`unknown tool "…"` or, for a plain property typo, as nothing at all until the call failed.
+
+**The change.** The Proxy refuses an unknown name where the catalogue is in hand:
+
+- a case- and separator-insensitive match wins first — `tools.BigList` → *"did you mean tools.big_list?"* — which is
+  the shape the tool names actually take (`my-tool` is `tools.my_tool`);
+- otherwise the offered tools are listed (the first twenty) with a pointer to `ALL_TOOLS` and `searchTools(query)`,
+  both of which the prelude already defines.
+
+Nothing reaches the host for an unknown name, so the miss is **not** logged as a tool call: nothing was called.
+
+**Tests.** `codemode::a_script_that_names_a_tool_that_does_not_exist_is_told_what_does` covers both arms and
+asserts that no call was logged; the existing `a_script_that_calls_an_unbound_tool_rejects_and_logs_the_call` still
+passes unchanged, because a tool that *is* in the catalogue but has no remote is a different case (the host answers,
+and it is logged).
+
+**Formal.** None (a prelude message with a runnable test).
+
+**Ceiling.** The match is a flattened prefix test, not a fuzzy one: a name that is neither close nor offered gets
+the list, which is the best a message can do.
+
 ## D-403 On a task where the agent never claims done, the acceptance gate never runs — the hypothesis was untestable and the mechanism is inert (2026-10-03)
 
 D-400 showed the acceptance gate runs at the *completion boundary*, so it cannot stop an agent that keeps working.

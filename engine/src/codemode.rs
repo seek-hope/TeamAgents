@@ -261,10 +261,15 @@ fn prelude(meta: &[Meta]) -> String {
 globalThis.__names = {names};
 globalThis.__catalogue = {catalogue};
 globalThis.ALL_TOOLS = __catalogue.map((entry) => ({{ name: entry.name, description: entry.description }}));
+{unknown_help}
 globalThis.tools = new Proxy({{}}, {{
   get: (_target, property) => {{
     const key = String(property);
     const real = Object.prototype.hasOwnProperty.call(__names, key) ? __names[key] : key;
+    // D-404: refuse an unknown name here, with the catalogue in hand, instead of letting the host answer
+    if (!__catalogue.some((entry) => entry.name === real)) {{
+      throw new Error(__unknownTool(key));
+    }}
     return (args) => {{
       const reply = JSON.parse(__call(real, JSON.stringify(args === undefined ? {{}} : args)));
       if (!reply.ok) {{ throw new Error(reply.error); }}
@@ -322,11 +327,39 @@ globalThis.describeNamespace = (name) => {{
 "#,
         names = serde_json::to_string(&names).unwrap_or_else(|_| "{}".into()),
         catalogue = serde_json::to_string(&catalogue).unwrap_or_else(|_| "[]".into()),
+        unknown_help = UNKNOWN_TOOL_HELP,
     )
 }
 
 /// Format an already-caught exception. `Ctx::catch` consumes the pending exception, so the exit marker and the
 /// error text must be read from the same value.
+/// D-404: what a script gets when it names a tool that does not exist. `tools` is a Proxy, so the miss is caught
+/// before the host call, where the catalogue is — and the answer names the close tools (case- and
+/// separator-insensitive, so `tools.Bash` finds `bash`) or, failing that, points at `ALL_TOOLS` and
+/// `searchTools`. pi's codemode does the same (`tools.Bash` suggests `tools.bash`), and the same principle just
+/// removed a fifth of one measured turn's operations on the tool surface (D-402).
+const UNKNOWN_TOOL_HELP: &str = r#"
+globalThis.__unknownTool = (key) => {
+  const flatten = (name) => String(name).toLowerCase().replace(/[^a-z0-9]/g, "");
+  const wanted = flatten(key);
+  const close = __catalogue
+    .filter((entry) => entry.name !== key)
+    .filter((entry) => {
+      const flat = flatten(entry.name);
+      return flat === wanted || flat.startsWith(wanted) || wanted.startsWith(flat);
+    })
+    .map((entry) => "tools." + entry.name);
+  if (close.length > 0) {
+    return "unknown tool " + key + " — did you mean " + close.slice(0, 3).join(" or ")
+      + "? (`ALL_TOOLS` lists every tool, `searchTools(query)` finds one by name or description)";
+  }
+  const all = __catalogue.map((entry) => entry.name);
+  const shown = all.slice(0, 20).join(", ") + (all.length > 20 ? ", …" : "");
+  return "unknown tool " + key + " — this session offers: " + shown
+    + " (`ALL_TOOLS` is the full list, `searchTools(query)` finds one by name or description)";
+};
+"#;
+
 fn exception_of(value: Value<'_>) -> String {
     if let Some(exception) = value.as_exception() {
         let message = exception.message().unwrap_or_default();
@@ -624,6 +657,28 @@ mod tests {
             "the returned value is emitted like text(): {}",
             outcome.output
         );
+    }
+
+    /// D-404: a name that is not a tool is refused with the catalogue in hand — the close tools when there are
+    /// any (`tools.Bash` → `tools.bash`, the separator-insensitive match pi does) and the offered list otherwise.
+    /// The call never reaches the host, so it is not logged as a tool call: nothing was called.
+    #[test]
+    fn a_script_that_names_a_tool_that_does_not_exist_is_told_what_does() {
+        let close = run_source(r#"return await tools.BigList({});"#);
+        let error = close.error.expect("a script error");
+        assert!(
+            error.contains("did you mean tools.big_list") || error.contains("did you mean tools.big-list"),
+            "{error}"
+        );
+        assert!(error.contains("searchTools"), "and how to look one up: {error}");
+        assert!(close.calls.is_empty(), "nothing was called: {:?}", close.calls);
+
+        let nowhere = run_source(r#"return await tools.no_such_tool_anywhere({});"#);
+        let error = nowhere.error.expect("a script error");
+        assert!(error.contains("unknown tool no_such_tool_anywhere"), "{error}");
+        assert!(error.contains("echo"), "the offered tools are named: {error}");
+        assert!(error.contains("ALL_TOOLS"), "{error}");
+        assert!(nowhere.calls.is_empty(), "nothing was called: {:?}", nowhere.calls);
     }
 
     #[test]
