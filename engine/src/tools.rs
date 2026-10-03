@@ -2756,8 +2756,10 @@ impl V2Toolkit {
         let bound = Arc::new(crate::bound::BoundTools::load_in(&catalog, &bindings, &root)?);
         // D-405: the memory store is `<state root>/memory.json`, so it outlives this session; the session and
         // instance names are the note's provenance.
-        let memory = artifacts.as_ref().and_then(|path| path.parent()).map(|state_root| MemoryScope {
-            state_root: state_root.to_path_buf(),
+        // D-405: the base directory, not the session's own root, so every named session under this state root
+        // shares one memory (`sessions::base_of`).
+        let memory = artifacts.as_ref().and_then(|path| path.parent()).map(|session_root| MemoryScope {
+            state_root: crate::v2::sessions::base_of(session_root),
             session: wiring.session_id.clone(),
             instance: wiring.instance_id.clone(),
         });

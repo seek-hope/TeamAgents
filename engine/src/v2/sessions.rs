@@ -32,6 +32,43 @@ pub struct SessionEntry {
     pub archived: bool,
 }
 
+/// The base directory a state root belongs to (D-405): a named session lives at `<base>/sessions/<id>` (D-364), so
+/// its base is two levels up, while the default session *is* the base. A durable store that must outlive any one
+/// session (memory, D-405) belongs there, not in a session's own root — otherwise "cross-session" would mean
+/// "across the runs of one named session" and nothing more.
+pub fn base_of(root: &Path) -> PathBuf {
+    let sessions = root.parent();
+    let base = sessions.and_then(Path::parent);
+    match (sessions, base) {
+        (Some(sessions), Some(base))
+            if sessions.file_name() == Some(std::ffi::OsStr::new("sessions")) && base.join(REGISTRY_FILE).exists() =>
+        {
+            base.to_path_buf()
+        }
+        _ => root.to_path_buf(),
+    }
+}
+
+#[cfg(test)]
+mod base_tests {
+    use super::base_of;
+
+    /// D-405: a named session's root is two levels below the base; the default session's root *is* the base. The
+    /// durable store (memory) hangs off the base, so "cross-session" covers every named session under one root.
+    #[test]
+    fn a_named_sessions_root_resolves_to_the_base_and_the_default_to_itself() {
+        let base = std::env::temp_dir().join(format!("ta-sessions-base-{}", uuid::Uuid::new_v4()));
+        let named = base.join("sessions/one");
+        std::fs::create_dir_all(&named).unwrap();
+        // without the registry this is not a base yet: a bare tree keeps its own root
+        assert_eq!(base_of(&named), named, "no registry, no base");
+        std::fs::write(base.join("sessions.json"), "{}").unwrap();
+        assert_eq!(base_of(&named), base);
+        assert_eq!(base_of(&base), base, "the default session is the base");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+}
+
 impl SessionEntry {
     pub fn dir(&self, home: &Path) -> PathBuf {
         home.join(&self.path)

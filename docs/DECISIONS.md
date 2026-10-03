@@ -27,9 +27,12 @@ epoch, the goal's settlement ends the work, and a session's database is its own 
 same state root starts from nothing, and the only cross-session surfaces were the user's own files and the skills
 registry. That is the last capability dimension the roadmap had not touched.
 
-**The store.** `<state root>/memory.json`: a versioned, append-only list of notes. Each note records its **text**
+**The store.** `<base>/memory.json` — the base directory that holds `sessions.json`, which for the default session
+*is* its state root and for a named one is two levels above it (`sessions::base_of`). That placement is the point:
+a named session is its own state root (D-364), so a store inside the session root would have meant "across the runs
+of one named session" and nothing more. The file is a versioned, append-only list of notes. Each note records its **text**
 (capped at 2,000 characters), optional **tags**, and its **provenance** — the session, the instance and the time
-that remembered it. It is a state-root file, not a session table, which is exactly what makes it outlive a session;
+that remembered it. It is a base-directory file, not a session table, which is exactly what makes it outlive a session;
 `Memory::remember` appends and persists in one atomic step (tmp + fsync + rename, the pattern `sessions.json` and
 `automations.json` already use), and a corrupt file is an error rather than a silently replaced one.
 
@@ -61,6 +64,11 @@ what makes "refuse at the cap" a checked rule. `make verify-model-all` 33/33, `v
 `a_note_is_capped_and_the_store_never_evicts`, and `tools::the_memory_tool_is_bound_and_recalls_across_sessions`
 (the binding gate refuses an unbound member, a note written by one session is recalled by another, and the store
 file is the state root's).
+
+**A correction made while verifying it live.** The first version hung the store off the session's own state root
+and described it as cross-session; reading D-364's layout — "a named session is its own state root" — showed that
+would have been per named session. The store moved to the base, `sessions::base_of` resolves it (with its own test
+for both the named and the default case), and the claim is now the one that holds.
 
 **Ceiling.** Recall is a case-insensitive substring or exact tag match, newest first — deliberately **not** a
 semantic ranking, and the tool's description says so; a store this size is searched by the model reading the

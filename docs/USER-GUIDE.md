@@ -101,7 +101,9 @@ happened. Diagnostics go to stderr, the outcome to stdout (`--json` prints one J
   unioned by id with the goal's existing contract, and is refused once the goal has registered a check round
 (cancel it and open the next goal to change the contract).
 - **Durable memory**: the `memory` tool lets a member `remember` a short note and any later session under
-  the same state root `recall` it. The store is `<state root>/memory.json`, a versioned append-only list:
+  the same base directory `recall` it (the state root itself for the default session; a named session's base is
+  the directory holding `sessions.json`, so every named session under it shares the store). The file is
+  `<base>/memory.json`, a versioned append-only list:
   a note is never rewritten or evicted (at 500 notes the store refuses rather than dropping the oldest), each
   note is capped at 2,000 characters and carries the session and member that wrote it, and a recall returns
   at most 20 newest-first matches with their provenance. It is bound like `skills` (D-405).
