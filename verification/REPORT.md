@@ -5,7 +5,7 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
-## 0. Gate status (re-run 2026-10-04 at `MATERIAL-COMMIT`)
+## 0. Gate status (re-run 2026-10-04 at `d366a5a5`)
 
 * **D-405 added the durable-memory model and re-ran all three targets on this tree (2026-10-04).**
   `V2Memory.tla` states the two claims the store's readers rely on — `NotesAreAppendOnly` (a note is never
