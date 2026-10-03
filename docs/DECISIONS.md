@@ -20,6 +20,43 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-397 A timeout is a cut, not a verdict: 10 of the full set's 33 deadline trials had already passed (2026-10-03)
+
+Item 3 of the post-D-394 plan was to attribute the N = 3 run's 33 deadline trials. The first pass re-read their
+`verifier_result` and their verifiers' own output, and it corrected the framing the earlier decisions used:
+
+| | trials | what the verifier said |
+|---|---|---|
+| **passed anyway** | **10** | every test passed (`adaptive-rejection-sampler` 9/9 three times, `largest-eigenval` 27/27 twice, `make-mips-interpreter` 3/3, `winning-avg-corewars` 3/3, `torch-pipeline-parallelism` 4/4, `filter-js-from-html` 2/2, `gpt2-codegolf` 1/1) |
+| delivered nothing | 17 | `File … does not exist` / `Timeout waiting for frame.bmp` |
+| delivered, wrong | 6 | `Filter modified 3 clean HTML files out of 12`, `Time pctg 99.16% (need 60.00%)`, `ProcessRaisedException`, an expected stdout line missing |
+
+**So a deadline is not a failure.** Ten trials were cut off with a workspace that the task's own verifier graded
+1.0: the agent had done the work and was still working when the budget ran out — polishing, or re-running its own
+commands, or simply not knowing it was done. D-389 said "33 trials (12 %) ended on the task's own deadline with the
+agent still working"; that sentence is true and incomplete, and the two decisions that leaned on it (D-389's
+"where the remaining gap is", D-396's framing of the same metric) now read it this way.
+
+**What the three groups mean.**
+
+- *Passed-anyway (10).* The lever is **stopping**, not time: the agent had no criterion that told it the work was
+  finished, which is the same gap D-383 measured and the same one the user's own acceptance checks fill (D-385).
+  A real user's run carries `[[checks]]`; every benchmark run in this tree carries none.
+- *Nothing delivered (17).* The four-way attribution of D-391 and the 4× re-runs still stand for the ones that were
+  tested (`gcode-to-text` finishes and answers wrongly; `train-fasttext` reaches a near-miss; `make-doom-for-mips`
+  is 2 of 3; `extract-moves-from-video` needs the image path, D-394). More time helps this group least.
+- *Delivered, wrong (6).* Ordinary correctness, the class D-383 described.
+
+**What this does not justify.** No product change follows: the two levers the runtime owns are already shipped (the
+acceptance boundary that can refuse a settlement, and the image path), and the measurement that would test the
+first one properly needs a check that runs inside the budget on the image at hand — which D-395 and D-396 showed is
+its own piece of work, not an afterthought.
+
+**Formal.** None.
+
+**Ceiling.** One run at N = 1 per task (the 89 × 3 set), read from `verifier_result` and the verifiers' stdout; the
+"passed anyway" group is exact (reward 1.0), the other two are read from the failing assertion's text.
+
 ## D-396 Independent verification measured: the safety property holds, the liveness is the model's (2026-10-03)
 
 The P2 mechanism (D-393) was measured the way the image path was (D-394): does a leader that is *told* it may not
@@ -323,8 +360,8 @@ Nine tasks never passed in three attempts: `extract-moves-from-video`, `gcode-to
 could be two tasks higher.
 
 **How much of the remaining gap is the clock.** 33 of 267 trials (12 %) ended on the task's own deadline with
-the agent still working, and the exceptions are concentrated in the same tasks that make up the 0/3 and 1/3
-rows — the same shape D-381 found and could not convert with a larger budget on a fixed sample. This run does
+the agent still working — **and 10 of those 33 were graded 1.0 anyway** (D-397): a deadline is a cut, not a
+verdict. The exceptions are concentrated in the same tasks that make up the 0/3 and 1/3 rows — the same shape D-381 found and could not convert with a larger budget on a fixed sample. This run does
 not separate "needs more time" from "cannot solve it"; the nine never-passing tasks are the place to look
 individually, and D-383's capability analysis already showed the pattern (well-formed artifact, wrong
 semantics) for the non-timeout ones.

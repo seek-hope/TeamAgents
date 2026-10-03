@@ -123,7 +123,8 @@ with a dash.
  207 of 267 trials passed, and because every task ran three
 times the per-task mean agrees with the trial mean exactly: **77.5 % [72.2 %, 82.1 %]**. Per task: **55 tasks
 3/3, 17 tasks 2/3, 8 tasks 1/3, 9 tasks 0/3**; 40 trials (15 %) ended in an exception (33 `AgentTimeoutError`,
-7 non-zero exits), and 6 trials (`qemu-alpine-ssh` ×3, `qemu-startup` ×3) had a verifier that never ran
+7 non-zero exits) — and **10 of the 33 deadline trials were graded 1.0 anyway** (D-397:
+a deadline is a cut, not a verdict), and 6 trials (`qemu-alpine-ssh` ×3, `qemu-startup` ×3) had a verifier that never ran
 because those images' `apt` sources 404 today — so that number is a floor by up to two tasks. The nine tasks
 that never passed in three attempts are `extract-moves-from-video`, `gcode-to-text`, `make-doom-for-mips`,
 `mteb-retrieve`, `pytorch-model-cli`, `pytorch-model-recovery`, `qemu-alpine-ssh`, `qemu-startup` and
