@@ -20,6 +20,41 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-398 Provenance is not independence: the verifier runs the same checks, so P2 added no verification strength (2026-10-03)
+
+Item 2 of the post-D-394 plan was to build the *initiation* of an independent verification (the runtime asking a
+specific idle instance, or `exec` naming the verifier), because D-396 measured that a leader left to decide for
+itself delegates in about one attempt of six. Reading the two paths side by side first changed the plan:
+
+- the **producer's** round is `step_completion_checks` → `register_check_runs` (system identity) → the runtime
+  dispatches the user's checks → `check_verdict` decides from the receipts;
+- the **verifier's** round is the `verify_goal` tool → `register_verification` (system identity) → the *same*
+  dispatch of the *same* commands → the *same* `check_verdict`.
+
+The commands, the authority and the verdict computation are identical. A producer cannot forge the outcome: the
+receipts are the runtime's, and the verdict is computed from them, not from anything the model says. So the rule
+D-393 added changes **who may settle**, not **what is verified** — and against the requirement "the deliverable is
+well-formed but semantically wrong" (the measured failure mode, D-383) it adds precisely nothing, because a
+re-check of the same criterion with the same method cannot find what that method cannot see.
+
+**What the rule is still worth.** An auditable "who attested": the settlement names the verifying instance, which
+is a real property for a user who must answer that question, and the mechanism is verified (`V2Checks.tla`, the
+control test and the live session test). It is not a stronger gate, and it is not worth building initiation
+machinery for until it is.
+
+**What would be.** A verifier that does something the producer cannot: **re-derive the acceptance criterion** rather
+than run the user's command again. The ground truth already exists in this tree — `pytorch-model-cli`'s artifact
+differs from the task's reference on exactly **11 of 50** images because the producer standardised with MNIST
+mean/std while the reference divides by 255 (D-391), and the producer's own 200-image self-check could not see it
+because accuracy does not separate the two conventions (D-391/D-386). A verification whose job is to falsify — to
+build its own comparison against the provided reference rather than re-run the criterion — is the design that
+addresses that, and measuring it is the next experiment, not this one.
+
+**Formal.** None (an analysis of two paths that already carry their own models).
+
+**Ceiling.** This reasons from the code and from D-396's measurement; it does not measure whether an
+independently-deriving verifier finds the mismatch — that is the experiment it asks for.
+
 ## D-397 A timeout is a cut, not a verdict: 10 of the full set's 33 deadline trials had already passed (2026-10-03)
 
 Item 3 of the post-D-394 plan was to attribute the N = 3 run's 33 deadline trials. The first pass re-read their
