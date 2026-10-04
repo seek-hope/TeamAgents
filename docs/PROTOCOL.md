@@ -78,7 +78,7 @@ the handler re-checks who may do this rather than trusting the request.
 | `blocked_report` | — | yes | `core/src/v2/control.rs:142` |
 | `submit_input` | `envelope_id`, `instance_id`, `text` | yes | `core/src/v2/control.rs:143` |
 | `begin_request` | `est_prompt_tokens`, `instance_id`, `offered_tools`, `request_id`, `request_ref`, `revision`, `surface_authorized` | yes | `core/src/v2/control.rs:144` |
-| `record_attempt` | `attempt_id`, `elapsed_ms`, `error_class`, `request_id`, `response_ref`, `status`, `unknown_usage`, `usage` | yes | `core/src/v2/control.rs:145` |
+| `record_attempt` | `attempt_id`, `elapsed_ms`, `error_class`, `request_id`, `response_ref`, `status`, `stream`, `unknown_usage`, `usage` | yes | `core/src/v2/control.rs:145` |
 | `begin_compression` | `est_prompt_tokens`, `instance_id`, `request_id`, `request_ref` | yes | `core/src/v2/control.rs:146` |
 | `compress_context` | `attempt_id`, `instance_id`, `keep_ids`, `request_id`, `summary` | yes | `core/src/v2/control.rs:147` |
 | `fail_compression` | `reason`, `request_id` | yes | `core/src/v2/control.rs:148` |

@@ -783,7 +783,7 @@ mod tests {
                 &crate::mcp_auth::Tokens {
                     access_token: "a".into(),
                     refresh_token: Some("r".into()),
-                    expires_at: Some(crate::mcp_auth::now() + 3600.0),
+                    expires_at: Some((crate::mcp_auth::now() + 3600.0) as i64),
                     token_endpoint: None,
                     client_id: None,
                     client_secret_env: None,
@@ -800,7 +800,7 @@ mod tests {
                 &crate::mcp_auth::Tokens {
                     access_token: "a".into(),
                     refresh_token: None,
-                    expires_at: Some(crate::mcp_auth::now() - 10.0),
+                    expires_at: Some((crate::mcp_auth::now() - 10.0) as i64),
                     token_endpoint: None,
                     client_id: None,
                     client_secret_env: None,

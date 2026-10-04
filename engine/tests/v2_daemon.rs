@@ -55,6 +55,7 @@ impl Provider for ScriptedProvider {
                 },
                 raw: json!({"scripted": true}),
                 elapsed_ms: delay,
+                timing: teamagents_engine::providers::StreamTimingReport::default(),
             });
         }
         // {"__error__": "…"} scripts a permanent provider failure
@@ -75,6 +76,7 @@ impl Provider for ScriptedProvider {
             },
             raw: json!({"scripted": true}),
             elapsed_ms: 1,
+            timing: teamagents_engine::providers::StreamTimingReport::default(),
         })
     }
 }

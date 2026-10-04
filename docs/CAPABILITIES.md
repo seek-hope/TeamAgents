@@ -102,7 +102,10 @@ wrap-up note, a deadline) is observable only where the model comes up for air (D
 attempt spent 98 % of its 730 s in model requests (68 of them, one 190 s) while another spent 94–96 % of
 775–841 s inside tool calls (three of them asking for 300 s) — so a bound on one resource cannot help the other
 family, and the next experiment (`[limits] max_tool_seconds`, a ceiling on what one call may ask for) is
-pre-registered against the tool-dominated family rather than assumed (D-414).
+pre-registered against the tool-dominated family rather than assumed (D-414). The other half of that split was
+measured to its end: a long model request is the model **streaming slowly** — frame gaps of at most 1.1 s and a
+first frame within 0.7 s across 232 requests — so there is no stall to detect and no runtime lever on that
+family (D-416).
 
 ## 7. Pending
 

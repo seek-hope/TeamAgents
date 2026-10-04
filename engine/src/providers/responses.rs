@@ -166,6 +166,7 @@ impl Provider for Responses {
             .unwrap_or(false);
         let items: Vec<Json>;
         let usage: Json;
+        let mut timing = super::StreamTiming::new(started);
         if is_sse {
             let mut text = String::new();
             let mut streamed: Vec<Json> = vec![];
@@ -217,7 +218,7 @@ impl Provider for Responses {
                 }
                 Ok(ControlFlow::Continue(()))
             };
-            match pump_sse(response, cancel, self.stall_bound(), &mut on_frame).await? {
+            match pump_sse(response, cancel, self.stall_bound(), &mut on_frame, &mut timing).await? {
                 SseEnd::Closed => {}
                 SseEnd::Cancelled => return Err(ProviderError::interrupted("turn interrupted")),
                 SseEnd::Transport(message) => return Err(stream_failure_msg(&message, emitted)),
@@ -273,6 +274,7 @@ impl Provider for Responses {
             return Err(ProviderError::permanent("responses API: empty output"));
         }
         Ok(AttemptOutcome {
+            timing: timing.report(),
             response: ModelResponse {
                 message,
                 usage: Usage::from_json(&json!({"usage": usage})),

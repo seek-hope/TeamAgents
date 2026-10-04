@@ -251,12 +251,61 @@ pub enum ProviderEvent {
     TextDelta(String),
 }
 
+/// D-416: what a stream's timing looked like, so a request that took a long time can be told from one that sat
+/// silent. The unit is a **frame**, the same thing the stall rule counts (a keep-alive comment is not progress),
+/// which is why this is measured in `pump_sse` rather than in each adapter.
+#[derive(Debug, Clone, Default)]
+pub struct StreamTiming {
+    frames: u64,
+    /// Time from the request's start to the first frame, in ms. `None` until one arrives.
+    pub first_frame_ms: Option<u64>,
+    /// The longest gap between two frames, in ms. Zero for a single frame or none.
+    pub max_gap_ms: u64,
+    last_frame: Option<std::time::Instant>,
+    started: Option<std::time::Instant>,
+}
+
+/// The three numbers a finished attempt reports (no `Instant`s, so it can ride an event payload).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StreamTimingReport {
+    pub frames: u64,
+    pub first_frame_ms: Option<u64>,
+    pub max_gap_ms: u64,
+}
+
+impl StreamTiming {
+    pub fn new(started: std::time::Instant) -> StreamTiming {
+        StreamTiming { started: Some(started), ..Default::default() }
+    }
+
+    /// One decoded frame arrived: this is what the stall deadline also resets on.
+    pub fn frame(&mut self) {
+        let now = std::time::Instant::now();
+        if self.first_frame_ms.is_none() {
+            if let Some(started) = self.started {
+                self.first_frame_ms = Some(now.duration_since(started).as_millis() as u64);
+            }
+        }
+        if let Some(last) = self.last_frame {
+            self.max_gap_ms = self.max_gap_ms.max(now.duration_since(last).as_millis() as u64);
+        }
+        self.last_frame = Some(now);
+        self.frames += 1;
+    }
+
+    pub fn report(&self) -> StreamTimingReport {
+        StreamTimingReport { frames: self.frames, first_frame_ms: self.first_frame_ms, max_gap_ms: self.max_gap_ms }
+    }
+}
+
 #[derive(Debug)]
 pub struct AttemptOutcome {
     pub response: ModelResponse,
     /// Raw assembled wire body for the trace (no credentials, no auth headers).
     pub raw: Json,
     pub elapsed_ms: u64,
+    /// D-416: how the stream behaved while it ran (`frames = 0` for a non-streamed body).
+    pub timing: StreamTimingReport,
 }
 
 /// One transport attempt against one endpoint. Implementations must stream
@@ -469,6 +518,7 @@ pub(crate) async fn pump_sse(
     cancel: &Cancel,
     stall: Duration,
     mut on_frame: impl FnMut(&str) -> Result<std::ops::ControlFlow<()>, ProviderError> + Send,
+    timing: &mut StreamTiming,
 ) -> Result<SseEnd, ProviderError> {
     use std::ops::ControlFlow;
     let mut stream = response.bytes_stream();
@@ -508,6 +558,9 @@ pub(crate) async fn pump_sse(
             }
             if delivered {
                 deadline = tokio::time::Instant::now() + stall;
+                // D-416: the same event that resets the stall deadline is the stream's progress, so the timing is
+                // recorded here rather than in each adapter
+                timing.frame();
             }
         }
     }
@@ -541,7 +594,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_model, stream_stall_bound};
+    use super::{resolve_model, stream_stall_bound, StreamTiming, StreamTimingReport};
     use std::time::Duration;
     use teamagents_core::models::{ModelProfile, UserConfig};
 
@@ -574,5 +627,25 @@ mod tests {
         assert_eq!(stream_stall_bound(Duration::from_secs(1)), Duration::from_secs(120));
         assert_eq!(stream_stall_bound(Duration::from_secs(300)), Duration::from_secs(300));
         assert_eq!(stream_stall_bound(Duration::from_secs(3600)), Duration::from_secs(900));
+    }
+
+    /// D-416: the three numbers a stream reports. A frame resets the gap clock, the first one measures the wait for
+    /// the model's first word, and a body that never streamed reports no frames — which is not the same as a stream
+    /// with no gap (that difference is what makes the column in `review/benchmark/cadence.py` readable).
+    #[test]
+    fn frames_measure_the_first_wait_and_the_longest_silence() {
+        let mut timing = StreamTiming::new(std::time::Instant::now());
+        assert_eq!(timing.report(), StreamTimingReport { frames: 0, first_frame_ms: None, max_gap_ms: 0 });
+        timing.frame();
+        let first = timing.report();
+        assert_eq!(first.frames, 1);
+        assert_eq!(first.max_gap_ms, 0, "one frame has no gap to measure");
+        assert!(first.first_frame_ms.is_some());
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        timing.frame();
+        let second = timing.report();
+        assert_eq!(second.frames, 2);
+        assert!(second.max_gap_ms >= 30, "the silence between two frames is the gap: {second:?}");
+        assert_eq!(second.first_frame_ms, first.first_frame_ms, "the first wait is measured once");
     }
 }

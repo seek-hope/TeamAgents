@@ -45,9 +45,12 @@ pub struct Tokens {
     pub access_token: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refresh_token: Option<String>,
-    /// Unix seconds at which `access_token` stops being valid, when the server said.
+    /// Unix seconds at which `access_token` stops being valid, when the server said. **Integer seconds on
+    /// purpose**: this file is JSON, and an `f64` here loses its last bit on a round trip (measured: a value
+    /// written as `…8308105` read back as `…8308103`), which is a flake in every test that compares the file and
+    /// no useful precision for an expiry the client only compares against a 60-second skew.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expires_at: Option<f64>,
+    pub expires_at: Option<i64>,
     /// The token endpoint to refresh against, kept so a refresh does not need metadata discovery again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_endpoint: Option<String>,
@@ -67,7 +70,7 @@ impl Tokens {
     /// An access token with no stated lifetime is treated as valid: the server is the authority, and a 401 is
     /// answered by a refresh or by asking the user to sign in again — never by guessing here.
     pub fn expired(&self, now: f64) -> bool {
-        self.expires_at.is_some_and(|at| now + EXPIRY_SKEW_SECS >= at)
+        self.expires_at.is_some_and(|at| now + EXPIRY_SKEW_SECS >= at as f64)
     }
 }
 
@@ -396,7 +399,7 @@ fn tokens_from_response(response: &Value, base: Tokens) -> Result<Tokens, String
         .as_str()
         .filter(|t| !t.is_empty())
         .ok_or_else(|| "the token response carries no access_token".to_string())?;
-    let expires_at = response["expires_in"].as_f64().map(|seconds| now() + seconds);
+    let expires_at = response["expires_in"].as_f64().map(|seconds| (now() + seconds) as i64);
     let scopes: Vec<String> = response["scope"]
         .as_str()
         .map(|list| list.split_whitespace().map(str::to_string).collect())
@@ -790,7 +793,7 @@ mod tests {
         let tokens = Tokens {
             access_token: "a".into(),
             refresh_token: Some("r".into()),
-            expires_at: Some(now() + 3600.0),
+            expires_at: Some((now() + 3600.0) as i64),
             token_endpoint: Some("https://as.example/token".into()),
             client_id: Some("c".into()),
             client_secret_env: Some("SENTRY_SECRET".into()),
@@ -813,7 +816,7 @@ mod tests {
         store.put("eternal", &eternal).unwrap();
         assert_eq!(store.access_token("eternal").unwrap().as_deref(), Some("a"));
         let mut stale = tokens.clone();
-        stale.expires_at = Some(now() - 10.0);
+        stale.expires_at = Some((now() - 10.0) as i64);
         stale.refresh_token = None;
         store.put("stale", &stale).unwrap();
         let refused = store.access_token("stale").unwrap_err();

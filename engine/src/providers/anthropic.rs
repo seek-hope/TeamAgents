@@ -157,6 +157,7 @@ impl Provider for Anthropic {
             .map(|v| v.contains("text/event-stream"))
             .unwrap_or(false);
         let data: Json;
+        let mut timing = super::StreamTiming::new(started);
         if is_sse {
             let mut blocks: BTreeMap<usize, Json> = BTreeMap::new();
             let mut arguments: BTreeMap<usize, String> = BTreeMap::new();
@@ -217,7 +218,7 @@ impl Provider for Anthropic {
                 }
                 Ok(ControlFlow::Continue(()))
             };
-            match pump_sse(response, cancel, self.stall_bound(), &mut on_frame).await? {
+            match pump_sse(response, cancel, self.stall_bound(), &mut on_frame, &mut timing).await? {
                 SseEnd::Closed => {}
                 SseEnd::Cancelled => return Err(ProviderError::interrupted("turn interrupted")),
                 SseEnd::Transport(message) => return Err(stream_failure_msg(&message, emitted)),
@@ -275,6 +276,7 @@ impl Provider for Anthropic {
             return Err(ProviderError::permanent("anthropic API: empty content"));
         }
         Ok(AttemptOutcome {
+            timing: timing.report(),
             response: ModelResponse {
                 message,
                 usage: Usage::from_json(&json!({"usage": data["usage"]})),

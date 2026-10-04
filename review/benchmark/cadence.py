@@ -31,6 +31,10 @@ from collections import Counter
 # A gap shorter than this is ordinary protocol traffic, not a question worth asking about.
 GAP_MIN_SECONDS = 20.0
 
+# D-416: a silence inside a stream this long is what a turn-eating stall looks like (the runtime's own stall rule
+# only fires at `timeout.clamp(120s, 900s)`, so a silent stretch below that is invisible to it).
+STREAM_GAP_MIN_MS = 20_000
+
 
 def attempts_with_state(jobs: str):
     """[(attempt dir, state db or None)] for every trial under `jobs`."""
@@ -98,6 +102,22 @@ def profile(attempt: pathlib.Path, db: pathlib.Path) -> dict:
         if scope in starts:
             tool_spans.append((starts[scope], at))
     connection.close()
+    # D-416: how each stream behaved while it ran. A request's `elapsed_ms` alone cannot tell a steady stream from
+    # one that sat silent; the adapter's frame timing can (a frame is what also resets the stall rule).
+    streams = []
+    for _, kind, payload, _ in events:
+        if kind != "attempt_recorded":
+            continue
+        stream = json.loads(payload or "{}").get("stream")
+        if isinstance(stream, dict) and stream.get("frames") is not None:
+            streams.append(
+                {
+                    "frames": stream.get("frames") or 0,
+                    "first_frame_ms": stream.get("first_frame_ms"),
+                    "max_gap_ms": stream.get("max_gap_ms") or 0,
+                }
+            )
+
     gaps = []
     for (_, kind, _, at), (_, next_kind, _, next_at) in zip(events, events[1:]):
         if next_at - at < GAP_MIN_SECONDS:
@@ -128,6 +148,13 @@ def profile(attempt: pathlib.Path, db: pathlib.Path) -> dict:
         "tool_share": round(tool_seconds / wall, 3) if wall > 0 else None,
         "largest_tool_seconds": round(largest_tool[1], 1),
         "other_share": round(max(wall - model_seconds - tool_seconds, 0.0) / wall, 3) if wall > 0 else None,
+        "streams": streams,
+        "stream_requests": len(streams),
+        "stream_max_gap_seconds": round(max((s["max_gap_ms"] for s in streams), default=0) / 1000.0, 1),
+        "stream_max_first_frame_seconds": round(
+            max((s["first_frame_ms"] or 0 for s in streams), default=0) / 1000.0, 1
+        ),
+        "stream_silent_requests": sum(1 for s in streams if s["max_gap_ms"] >= STREAM_GAP_MIN_MS),
         "gaps": gaps[:6],
         "operations": kinds.get("operation_completed", 0),
         "kinds": dict(kinds.most_common(6)),
@@ -159,7 +186,7 @@ def main() -> int:
     else:
         print(
             f"{'attempt':28} {'wall s':>7} {'model s':>8} {'tool s':>7} {'other':>6} {'req':>4} {'ops':>4} "
-            f"{'max req':>8} {'max tool':>9}"
+            f"{'max req':>8} {'max tool':>9} {'frames':>7} {'silent':>7} {'max gap':>8}"
         )
         for row in rows:
             if row.get("no_receipt"):
@@ -168,10 +195,19 @@ def main() -> int:
             if row.get("empty"):
                 print(f"{row['attempt'][:28]:28} {'empty':>7}")
                 continue
+            # an attempt recorded before the timing existed has *no receipt* for those columns, which is not the
+            # same as "it streamed with no gap" (D-395's rule, one instrument later)
+            streamed = row["stream_requests"]
+            tail = (
+                f"{streamed:>7} {row['stream_silent_requests']:>7} {row['stream_max_gap_seconds']:>7.0f}s"
+                if streamed
+                else f"{'—':>7} {'—':>7} {'no receipt':>8}"
+            )
             print(
                 f"{row['attempt'][:28]:28} {row['wall']:>7.0f} {row['model_seconds']:>8.0f} "
                 f"{row['tool_seconds']:>7.0f} {row['other_share']:>6.2f} {row['model_requests']:>4} "
-                f"{row['operations']:>4} {row['largest_model_seconds']:>8.0f} {row['largest_tool_seconds']:>9.0f}"
+                f"{row['operations']:>4} {row['largest_model_seconds']:>8.0f} {row['largest_tool_seconds']:>9.0f} "
+                f"{tail}"
             )
             for gap in row["gaps"][:3]:
                 print(f"{'':28} at {gap['at']:>6.0f}s: {gap['seconds']:>5.0f}s — {label(gap)}")

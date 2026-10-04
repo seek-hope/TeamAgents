@@ -1899,12 +1899,16 @@ fn record_attempt(tx: &Connection, session_id: &str, params: &Json) -> Result<Js
         }
     }
     publish_list(tx, session_id, params)?;
+    // D-416: the stream's own timing rides the event, so a long request that streamed steadily and one that sat
+    // silent are distinguishable afterwards. It is deliberately not a column: this is evidence about a transport,
+    // and the event log is where the rest of a turn's evidence already lives.
+    let stream = params.get("stream").cloned().unwrap_or(Json::Null);
     event(
         tx,
         session_id,
         "attempt_recorded",
         request_id,
-        &json!({"attempt_id": attempt_id, "status": status, "selected": selected}),
+        &json!({"attempt_id": attempt_id, "status": status, "selected": selected, "stream": stream}),
     )?;
     Ok(json!({"attempt_id": attempt_id, "selected": selected}))
 }

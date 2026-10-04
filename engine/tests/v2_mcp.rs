@@ -58,6 +58,7 @@ impl Provider for ScriptedProvider {
             },
             raw: json!({"scripted": true}),
             elapsed_ms: 1,
+            timing: teamagents_engine::providers::StreamTimingReport::default(),
         })
     }
 }

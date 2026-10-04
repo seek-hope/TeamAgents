@@ -186,6 +186,7 @@ impl Provider for ChatCompletions {
         let mut usage = json!({});
         let mut emitted = false;
         let mut complete = false;
+        let mut timing = super::StreamTiming::new(started);
         if is_sse {
             let mut on_frame = |data: &str| -> Result<ControlFlow<()>, ProviderError> {
                 if data == "[DONE]" {
@@ -224,7 +225,7 @@ impl Provider for ChatCompletions {
                 }
                 Ok(ControlFlow::Continue(()))
             };
-            match pump_sse(response, cancel, self.stall_bound(), &mut on_frame).await? {
+            match pump_sse(response, cancel, self.stall_bound(), &mut on_frame, &mut timing).await? {
                 SseEnd::Closed => {}
                 SseEnd::Cancelled => return Err(ProviderError::interrupted("turn interrupted")),
                 SseEnd::Transport(message) => return Err(stream_failure_msg(&message, emitted)),
@@ -281,6 +282,7 @@ impl Provider for ChatCompletions {
         }
         let (message, usage, raw) = super::finish_chat_message(message, blocks, finish_reason, usage)?;
         Ok(AttemptOutcome {
+            timing: timing.report(),
             response: ModelResponse {
                 message,
                 usage,

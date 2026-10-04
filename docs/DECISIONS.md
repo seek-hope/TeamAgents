@@ -20,6 +20,76 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-417 A credential's expiry is integer seconds: a JSON `f64` round trip loses the last bit (2026-10-04)
+
+**How it surfaced.** `mcp_auth::tests::the_token_file_is_private_and_round_trips` — written with D-412 — failed
+about once in three full-suite runs and always passed when run alone. Run in a loop until it failed, the assertion
+printed both sides:
+
+```
+left:  expires_at: Some(1791133578.8308103)     // what the store read back
+right: expires_at: Some(1791133578.8308105)     // what the test wrote
+```
+
+The store is JSON, `expires_at` was an `f64`, and `serde_json` did **not** round-trip that value exactly. Two
+things follow, and the second is the one that matters:
+
+* The test was flaky, which is a defect in the tree even though the product's behaviour was unaffected — the
+  expiry is compared against a 60-second skew, so a 2×10⁻⁷-second drift changes nothing. A flake in a suite is
+  how a real failure gets ignored later (D-407's shape).
+* The **storage format** was the wrong shape for the value. An expiry needs second precision at most, and a
+  credential file is read by a person debugging a sign-in; `Option<i64>` Unix seconds is both exact through JSON
+  and legible. `Tokens::expires_at` is now `Option<i64>`, `expired()` compares against `now + 60 s`, and the
+  refresh path stores `(now() + expires_in) as i64`.
+
+**Evidence.** The test loops clean six times after the change (it failed in run 1 of the same loop before), plus
+`v2_daemon::the_checkpoint_lists_the_sessions_mcp_services` and `daemon::tests::mcp_rows_name_the_credential_state`,
+which build their own `Tokens` values.
+
+**Ceiling.** The same hazard applies to any other `f64` this product writes into JSON — the note store's
+`created`/timestamps are in SQLite `REAL` (not JSON) and the goal's `deadline` likewise, so the credential file was
+the only JSON `f64` a reader compares for equality; a future JSON-serialised timestamp should be an integer from
+the start.
+
+## D-416 What a long model request actually is: frames, and the stall thread it closes (2026-10-04)
+
+**The question D-414 left open.** Its decomposition attributed 52–98 % of a window to model requests, with one
+measured request of 190 s. The next proposed lever was a **stall detector** — abort a request that produces
+nothing for a while and retry — but nothing distinguished a request that *sat silent* from one that *streamed
+slowly*, and the runtime's own stall rule (`pump_sse`: no **frame** for `timeout.clamp(120 s, 900 s)`) is far too
+slow to be the constraint on a turn that lasts 890 s. So: instrument first.
+
+**The instrument.** Every decoded SSE frame is a progress event — it is also exactly what resets the stall
+deadline — so the measurement lives in `pump_sse` and every adapter (chat/completions, anthropic, responses) gets
+it: `StreamTiming` counts frames, the wait for the first one and the longest silence between two, and
+`AttemptOutcome.timing` carries the three numbers (zero frames means "not streamed", which is not the same as "no
+gap"). They ride the `attempt_recorded` event, deliberately not a new column: this is evidence about a transport,
+and the event log is where a turn's evidence already lives (`command_params` and the event catalogue keep the
+payload honest). `review/benchmark/cadence.py` reports them per attempt, and prints **no receipt** for an attempt
+recorded before the instrument existed rather than a zero.
+
+**Measured** (`review/benchmark/stream3`, 3 tasks × 3 attempts, `low`, official endpoint, 890 s bound, state
+collected; 9 attempts with a timing receipt, 232 measured requests):
+
+| | value |
+|---|---|
+| frames per attempt | 5,904 – 134,718 |
+| **longest silence between two frames, anywhere** | **1.1 s** (p90 ≈ 0.6 s) |
+| longest wait for a request's first frame | 0.7 s |
+| mean request duration | 2.5 – 13.2 s |
+
+**What it means.** A long model request here is the model **producing tokens continuously and slowly** — roughly
+10–15 frames per second of model time throughout — not a connection that went quiet. There is nothing for a stall
+detector to detect: the existing rule already covers the case that would matter (a dead stream), and the
+model-latency share of a window is the provider's throughput, which no runtime lever in this product can bound.
+The stall-detector proposal is therefore **closed by measurement rather than implemented**, and the honest answer
+for that family is D-414's: fewer round-trips, or a faster model — both outside the runtime.
+
+**Ceiling of the instrument.** It measures frame *arrival*, not token count or useful work: a stream that emits an
+empty delta every second would look identical to a productive one. The per-attempt frame counts (tens of
+thousands against tens of requests) show that is not what happens here, but the two are distinguishable only by
+reading the assembled message, not by this column.
+
 ## D-415 A ceiling on one model tool call: `[limits] max_tool_seconds` (2026-10-04)
 
 **What D-414 asked for.** Its decomposition showed the window is task-dependent, and that on the tool-dominated

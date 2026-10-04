@@ -275,6 +275,23 @@ cannot be called a stall from this data alone (it may have streamed tokens the w
 built from `request_began` → the following `attempt_recorded`, which is order-based, while the `attempts` table's
 `elapsed_ms` keeps the per-request figure exact.
 
+### And what a long request is: frames (D-416)
+
+The `frames` / `silent` / `max gap` columns come from the stream timing each attempt records (D-416: frames, the
+wait for the first one, the longest silence between two), so the question D-414 left open — is a 190-second
+request slow or stalled? — is answered from the same command. Measured on 9 attempts (3 tasks × 3, 890 s bound,
+state collected, 232 requests):
+
+| | value |
+|---|---|
+| frames per attempt | 5,904 – 134,718 |
+| longest silence between two frames anywhere | **1.1 s** (p90 ≈ 0.6 s) |
+| longest wait for the first frame | 0.7 s |
+
+A long request is the model producing tokens continuously and slowly, so there is nothing for a stall detector to
+detect and the model-latency family is the provider's throughput rather than a runtime lever. An attempt recorded
+before the instrument existed prints **no receipt** in those columns, not a zero.
+
 ### `ceiling_ab.py` — does a per-call ceiling help? (D-415, pre-registered in D-414)
 
 Two arms over the tool-dominated family (`query-optimize`, `gpt2-codegolf`, `winning-avg-corewars`,

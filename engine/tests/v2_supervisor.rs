@@ -71,6 +71,7 @@ impl Provider for ScriptedProvider {
                 },
                 raw: json!({"scripted": true}),
                 elapsed_ms: 1,
+                timing: teamagents_engine::providers::StreamTimingReport::default(),
             }),
             Step::Slow(..) => unreachable!("the delay was already applied"),
             Step::Deltas(..) => unreachable!("the deltas were already emitted and the delay applied"),

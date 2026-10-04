@@ -57,6 +57,7 @@ impl Provider for ScriptedProvider {
                 },
                 raw: json!({"scripted": true}),
                 elapsed_ms: 1,
+                timing: teamagents_engine::providers::StreamTimingReport::default(),
             }),
             Step::Hang => loop {
                 tokio::time::sleep(Duration::from_secs(60)).await;

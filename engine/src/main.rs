@@ -1295,7 +1295,9 @@ fn run_mcp_login(args: &Args) -> i32 {
             }
             let lifetime = tokens
                 .expires_at
-                .map(|at| format!(", valid about {} more minutes", ((at - mcp_auth::now()) / 60.0).max(0.0) as u64))
+                .map(|at| {
+                    format!(", valid about {} more minutes", ((at as f64 - mcp_auth::now()) / 60.0).max(0.0) as u64)
+                })
                 .unwrap_or_default();
             println!("signed in {name}: credential stored in {}{lifetime}", store.path().display());
             0

@@ -1650,6 +1650,13 @@ that delegated it learns the outcome only from a settlement.";
                             json!({"attempt_id": attempt_id, "request_id": request_id, "status": "COMPLETE",
                                    "elapsed_ms": outcome.elapsed_ms, "usage": outcome.response.usage.map(|u| json!({
                                        "prompt_tokens": u.prompt, "completion_tokens": u.completion, "total_tokens": u.total})),
+                                   // D-416: how the stream behaved — the frames that arrived, the wait for the
+                                   // first one, and the longest silence between two. A long request that streamed
+                                   // steadily and one that sat silent are the same `elapsed_ms` otherwise, and the
+                                   // stall rule (which resets on a frame) is the reason this is observable at all.
+                                   "stream": {"frames": outcome.timing.frames,
+                                              "first_frame_ms": outcome.timing.first_frame_ms,
+                                              "max_gap_ms": outcome.timing.max_gap_ms},
                                    "response_ref": response_ref, "publish": [response_ref]}),
                         ),
                         Identity::System,
