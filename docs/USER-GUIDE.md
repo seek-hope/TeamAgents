@@ -286,6 +286,7 @@ Every goal this session creates can be bounded in cost and in time (D-64):
 [limits]
 max_total_tokens = 2000000   # optional: usage ceiling (provider-reported usage + each request's estimate)
 deadline_minutes = 45        # optional: wall clock, counted from the moment the goal is created
+max_tool_seconds = 60        # optional: the most one *model* tool call may run (a ceiling on what it asks for)
 ```
 
 - `max_total_tokens` is the goal's own ceiling: a new request is refused when the settled usage plus the live
@@ -294,7 +295,12 @@ deadline_minutes = 45        # optional: wall clock, counted from the moment the
   bills can still overshoot the ceiling afterwards — that is the design's choice, not a bug.
 - `deadline_minutes` is turned into the goal's absolute deadline when the session creates it; past that
   moment no new request starts and the instance parks with the deadline as the reason (A35).
-- With neither configured a goal — and therefore the session — runs until you stop it, which is why `doctor`
+- `max_tool_seconds` bounds **one call**, not the session: the model names a timeout for a shell command and
+  this caps it, so a single command cannot swallow a turn's window (measured: three calls of 300 s inside one
+  775-second trial, D-414). A short ask stays short; only a longer one is cut, and the command's own timeout
+  message says so. A user's own `[[checks]] timeout` is **your** number and is never capped. A zero or a value
+  over an hour is a config error at load time.
+- With none of them configured a goal — and therefore the session — runs until you stop it, which is why `doctor`
   says so out loud (`goal limits: none: …`). A zero is a config error at load time.
 - Both come from **your** config: like `[[checks]]`, a cloned project cannot set them. They are fixed when
   the goal is created; changing them means starting a new session (or a new state root).

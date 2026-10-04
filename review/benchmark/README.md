@@ -274,3 +274,20 @@ Two things follow, and neither is "more wall clock would fix it":
 cannot be called a stall from this data alone (it may have streamed tokens the whole time); and the model span is
 built from `request_began` → the following `attempt_recorded`, which is order-based, while the `attempts` table's
 `elapsed_ms` keeps the per-request figure exact.
+
+### `ceiling_ab.py` — does a per-call ceiling help? (D-415, pre-registered in D-414)
+
+Two arms over the tool-dominated family (`query-optimize`, `gpt2-codegolf`, `winning-avg-corewars`,
+`code-from-image`), 3 attempts each, differing only in `TEAMAGENTS_MAX_TOOL_SECONDS` (unset = the product's own
+behaviour, i.e. whatever timeout the model asks for). Every attempt collects its state, so `cadence.py` shows
+whether the ceiling really cut the calls — a score-only comparison could not tell "the cap worked" from "the model
+stopped asking".
+
+| arm | passed | largest single call | tool time | operations | wall | settled / cut |
+|---|---|---|---|---|---|---|
+| bare | 4/12 | 181 s | 3481 s | 801 | 7430 s | 6 / 6 |
+| ceiling 60 s | 5/12 | 60 s | 2803 s (−19 %) | 700 | 6846 s (−8 %) | 6 / 6 |
+
+Per task: `code-from-image` 2/3 → 3/3, `query-optimize` 0/3 → 1/3, `gpt2-codegolf` 2/3 → 1/3,
+`winning-avg-corewars` 0/3 → 0/3. The mechanism is confirmed and the rate is not measurably changed either way at
+this sample size; the model-latency family D-414 separated is untouched by this lever.

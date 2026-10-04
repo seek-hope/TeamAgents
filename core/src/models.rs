@@ -202,6 +202,12 @@ pub struct GoalLimits {
     /// settle? Opt-in, and the session's own statement about *who* may settle its goals.
     #[serde(default)]
     pub independent_verification: bool,
+    /// D-415: the most seconds one *model* tool call may run. The model picks a call's `timeout` (the shell tool's
+    /// default is 120 s) and this bounds the pick, so a single command cannot swallow a turn's whole window
+    /// (measured: three calls of 300 s inside one 775-second trial, D-414). A user's own `[[checks]] timeout` is
+    /// the user's number and is not clamped. Unset means no ceiling.
+    #[serde(default)]
+    pub max_tool_seconds: Option<u64>,
 }
 
 /// One user-defined acceptance check (`[[checks]]` in the config).

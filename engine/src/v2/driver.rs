@@ -189,6 +189,14 @@ pub(crate) struct Shared {
     pub(crate) preview: Mutex<String>,
 }
 
+/// D-415: whether a shell call's `timeout` came from the model (clamped by `[limits] max_tool_seconds`) or from
+/// the user's own `[[checks]]` (never clamped — it is the user's number).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TimeoutSource {
+    Model,
+    User,
+}
+
 /// Client handle: user operations go through the same serialized storage
 /// worker as the driver, so commands linearize with driver transitions (§9).
 pub struct DriverHandle {
@@ -657,6 +665,8 @@ pub(crate) fn spawn_driver<P: Provider + 'static>(
             memory_root: Some(crate::v2::sessions::base_of(
                 config.instances_dir.parent().unwrap_or(&config.state_root),
             )),
+            // D-415: the session's ceiling on one model-picked tool timeout
+            max_tool_seconds: config.catalog.limits.max_tool_seconds,
         },
     )?);
     let driver = Driver {
@@ -1983,7 +1993,7 @@ that delegated it learns the outcome only from a settlement.";
             let recovered = status != "PREPARED";
             let name = intent["name"].as_str().unwrap_or("");
             match name {
-                "shell" => self.execute_shell(&operation_id, &intent, !recovered).await?,
+                "shell" => self.execute_shell(&operation_id, &intent, !recovered, TimeoutSource::Model).await?,
                 "read_history" => self.execute_readback(&operation_id, &intent, snapshot).await?,
                 // A `finish` that stated no usable outcome arrives here as an
                 // ordinary intent (the kernel refuses to read an outcome it
@@ -2030,7 +2040,15 @@ that delegated it learns the outcome only from a settlement.";
     /// `pre_tool`: run the user's policy hook first. False for a recovered call
     /// (the decision was made at dispatch) and for the required checks, which are
     /// the user's own acceptance commands rather than model tool calls.
-    async fn execute_shell(&mut self, operation_id: &str, intent: &Json, pre_tool: bool) -> Result<(), String> {
+    /// Whose number a shell call's `timeout` is (D-415): the model picks one, and the session's ceiling may bound
+    /// it; a user's `[[checks]]` command carries the user's own timeout and is never clamped.
+    async fn execute_shell(
+        &mut self,
+        operation_id: &str,
+        intent: &Json,
+        pre_tool: bool,
+        source: TimeoutSource,
+    ) -> Result<(), String> {
         if pre_tool {
             if let Some(reason) = self.pre_tool_denied("shell", &intent["args"]).await {
                 self.notify_tool_call("shell", &intent["args"], false, Some(reason.clone()));
@@ -2041,7 +2059,11 @@ that delegated it learns the outcome only from a settlement.";
         let job_dir = self.config.state_root.join("jobs").join(operation_id.replace(['/', ':'], "_"));
         let mode = ShellMode::from_permissions(Some(&self.config.permissions), self.config.sandbox.clone())?;
         let command_text = intent["args"]["command"].as_str().unwrap_or("");
-        let timeout = intent["args"]["timeout"].as_u64().unwrap_or(120);
+        let asked = intent["args"]["timeout"].as_u64();
+        let timeout = match source {
+            TimeoutSource::User => crate::tools::bounded_timeout(asked, None),
+            TimeoutSource::Model => crate::tools::bounded_timeout(asked, self.config.catalog.limits.max_tool_seconds),
+        };
         let network = intent["args"]["network"].as_bool().unwrap_or(false);
         let spec = match shell_command_spec(
             command_text,
@@ -3064,7 +3086,7 @@ that delegated it learns the outcome only from a settlement.";
                     }
                 }
             }
-            self.execute_shell(operation_id, &intent, false).await?;
+            self.execute_shell(operation_id, &intent, false, TimeoutSource::User).await?;
         }
         Ok(())
     }

@@ -20,6 +20,58 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-415 A ceiling on one model tool call: `[limits] max_tool_seconds` (2026-10-04)
+
+**What D-414 asked for.** Its decomposition showed the window is task-dependent, and that on the tool-dominated
+family it is almost entirely command execution — `query-optimize`'s three attempts spent 730/647/792 s of
+775/734/841 s inside tool calls, three of them asking for 300 s. It also showed that a long call is **chosen by
+the model** (the `shell` tool's default is 120 s; the model asked for 300), which is what makes a *ceiling* the
+runtime's only lever there rather than a shorter default that would bite every short call too. D-414 pre-registered
+the experiment; this entry is the change and its measurement.
+
+**What was added.** `[limits] max_tool_seconds` (`GoalLimits::max_tool_seconds`, config-validated: a zero or more
+than an hour is refused with the reason). One helper, `tools::bounded_timeout(asked, ceiling)`, is the whole rule,
+and every shell dispatch in the tree goes through it: the v2 driver's job path (`execute_shell`, which carries the
+caller's `TimeoutSource` — the model's number is clamped, a user's `[[checks]] timeout` is not, because that is the
+user's own number) and the toolkit's own shell arm (the reference loop's path), so one session cannot have two
+rules. The clamp is observable where it matters: the job's own `deadline_ms`, which is what the runner enforces
+(`V2Jobs`' deadline rule, the same machinery `jobs_runner::deadline_cancels_a_stuck_command` covers).
+
+**Formal.** None, and the reason is different from D-413's: this is a **pure clamp** (`min`) with no state and no
+protocol step — a model of it would be a model of `min`, restating the code. The property worth having is that the
+runner's deadline for a model-dispatched command never exceeds the ceiling, and that is pinned where it is
+observable, by reading the job the runtime writes.
+
+**Unit and session evidence.** `v2_driver::the_configured_ceiling_bounds_a_model_picked_tool_timeout` runs three
+real sessions through the driver and reads the job on disk each time: a 3600 s ask with a 60 s ceiling lands a
+deadline ~60 s out; the same ask with no ceiling lands ~3600 s out; a 30 s ask under a 600 s ceiling is left
+untouched. `tools::bounded_timeout_tests` pins the clamp itself (including the "no ask, but a ceiling" case).
+
+**The pre-registered experiment, run** (`review/benchmark/ceiling_ab.py`, 4 tool-dominated tasks × 3 attempts ×
+2 arms, `low`, official endpoint, 890 s client bound, each task's own budget, state collected so the mechanism is
+visible):
+
+| arm | passed | largest single call | tool time | operations | wall | settled / cut |
+|---|---|---|---|---|---|---|
+| bare | 4/12 | **181 s** | 3481 s | 801 | 7430 s | 6 / 6 |
+| ceiling 60 s | 5/12 | **60 s** | 2803 s (−19 %) | 700 | 6846 s (−8 %) | 6 / 6 |
+
+Per task: `code-from-image` 2/3 → 3/3, `query-optimize` 0/3 → 1/3, `gpt2-codegolf` 2/3 → 1/3,
+`winning-avg-corewars` 0/3 → 0/3.
+
+**The honest reading.** The mechanism is confirmed — the longest call lands exactly on the ceiling and the total
+time inside commands falls — and the falsifier D-414 named (a ceiling breaking legitimate long commands and
+lowering the rate) did **not** fire: 4 vs 5 of 12 is far inside the ±5-trial band a run carries (D-388), and the
+one task that fell by a trial is matched by two that rose. So this is a **bound on a resource, not a scoring
+lever**: it changes the failure mode a user meets (a command cut at a stated limit rather than a turn that never
+comes up for air) and it costs less wall clock, while the model's own latency — the larger share of two of the
+four measured families (D-414) — is untouched by it.
+
+**Ceiling of this change.** It bounds a *call*, not a session: a model that splits one long command into five
+medium ones is back where it started, and it does nothing for the model-latency family (98 % of one measured
+window). It is therefore the smaller of the two levers D-414 separated, and it is the one that can be implemented
+without new measurement machinery.
+
 ## D-414 Where a trial's window actually goes: model latency or tool calls, and the cap that follows from it (2026-10-04)
 
 **What was missing.** D-410 concluded that every runtime lever (a deadline, a wrap-up note, an acceptance gate) is

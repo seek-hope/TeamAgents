@@ -60,6 +60,9 @@ INDEPENDENT_VERIFICATION = os.environ.get("TEAMAGENTS_INDEPENDENT_VERIFICATION")
 # D-410: `TEAMAGENTS_DEADLINE_MINUTES` gives every goal a deadline (the config's `[limits] deadline_minutes`),
 # which is what makes the runtime's wrap-up note reach the model before the wall.
 DEADLINE_MINUTES = os.environ.get("TEAMAGENTS_DEADLINE_MINUTES", "")
+# D-415: `TEAMAGENTS_MAX_TOOL_SECONDS` writes `[limits] max_tool_seconds` — the ceiling on what one model
+# tool call may ask for. Unset means the product's own behaviour (no ceiling).
+MAX_TOOL_SECONDS = os.environ.get("TEAMAGENTS_MAX_TOOL_SECONDS", "")
 # D-385 `--accept` checks for the A/B (see `run`); empty keeps every trial a bare goal.
 ACCEPT = json.loads(os.environ.get("TEAMAGENTS_ACCEPT", "[]"))
 
@@ -119,7 +122,8 @@ class TeamAgentsAgent(BaseInstalledAgent):
                     images="images = true\n" if IMAGES else "",
                     limits=("[limits]\n"
                             + ("independent_verification = true\n" if INDEPENDENT_VERIFICATION else "")
-                            + (f"deadline_minutes = {DEADLINE_MINUTES}\n" if DEADLINE_MINUTES else "")),
+                            + (f"deadline_minutes = {DEADLINE_MINUTES}\n" if DEADLINE_MINUTES else "")
+                            + (f"max_tool_seconds = {MAX_TOOL_SECONDS}\n" if MAX_TOOL_SECONDS else "")),
                 )
             )
             local_config = handle.name

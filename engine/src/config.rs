@@ -485,6 +485,21 @@ pub fn goal_limits(catalog: &UserConfig) -> Result<Json, String> {
             .map_err(|e| format!("configured [[checks]] are not usable: {e}"))?;
         limits.insert("required_checks".into(), checks);
     }
+    // D-415: a ceiling of zero would forbid every command, which is a config mistake rather than a policy
+    match catalog.limits.max_tool_seconds {
+        Some(0) => {
+            return Err(
+                "[limits] max_tool_seconds must be a positive number of seconds (leave it out for no ceiling)".into()
+            )
+        }
+        Some(seconds) if seconds > 3600 => {
+            return Err(format!(
+                "[limits] max_tool_seconds = {seconds} is longer than an hour: that is not a bound on one call \
+                 (docs/CONFIG.md)"
+            ))
+        }
+        _ => {}
+    }
     match catalog.limits.max_total_tokens {
         Some(0) => return Err("[limits] max_total_tokens must be a positive number of tokens".into()),
         Some(max) => {

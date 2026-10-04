@@ -75,6 +75,14 @@ fn reply(text: &str) -> Json {
     json!({"role": "assistant", "content": text})
 }
 
+/// A shell call that names its own timeout, the way a model deciding a long command does.
+fn shell_call_with_timeout(id: &str, command: &str, seconds: u64) -> Json {
+    json!({"role": "assistant", "content": "",
+           "tool_calls": [{"id": id, "type": "function",
+                           "function": {"name": "shell",
+                                        "arguments": json!({"command": command, "timeout": seconds}).to_string()}}]})
+}
+
 fn shell_call(id: &str, command: &str) -> Json {
     json!({"role": "assistant", "content": "",
            "tool_calls": [{"id": id, "type": "function",
@@ -415,6 +423,50 @@ async fn a_settled_shell_job_leaves_no_runner_behind() {
         "no runner answers for a settled job (a live one would reply to `status`)"
     );
     handle.shutdown().await.expect("shutdown");
+}
+
+/// D-415: the model picks a call's timeout and `[limits] max_tool_seconds` bounds the pick. The proof is the job's
+/// own deadline (what the runner enforces), not the receipt: the model asks for an hour, the session caps one call
+/// at 60 seconds, and the job written to disk carries the capped deadline.
+#[tokio::test]
+async fn the_configured_ceiling_bounds_a_model_picked_tool_timeout() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    for (case, ceiling, asked, expected) in
+        [(1, Some(60_u64), 3600_u64, 60_u64), (2, None, 3600, 3600), (3, Some(600), 30, 30)]
+    {
+        // a fresh root per case: a second goal on the same session would be refused
+        let root = root(&format!("timeout-ceiling-{case}"));
+        std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+        let mut config = root.config(ScriptedProvider {
+            script: Mutex::new(
+                vec![
+                    Step::Message(shell_call_with_timeout("c1", "echo bounded > bounded.txt", asked)),
+                    Step::Message(finish_call("one command, as asked")),
+                ]
+                .into(),
+            ),
+        });
+        config.catalog.limits.max_tool_seconds = ceiling;
+        let handle = start(config).await.expect("start");
+        handle.input("run one command").await.expect("input");
+        assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+        let jobs: Vec<PathBuf> = std::fs::read_dir(root.dir.join("state").join("jobs"))
+            .expect("the job directory exists")
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(jobs.len(), 1, "one command, one job: {jobs:?}");
+        let spec: Json =
+            serde_json::from_str(&std::fs::read_to_string(jobs[0].join("job.json")).expect("job.json")).unwrap();
+        let deadline = spec["deadline_ms"].as_u64().expect("the job carries its deadline");
+        let remaining = deadline.saturating_sub(teamagents_engine::jobs::now_ms()) / 1000;
+        // the command itself finished in well under a second, so the deadline still stands ahead of us: what it
+        // says is the timeout the runner was given
+        assert!(
+            remaining <= expected && remaining + 5 >= expected,
+            "ceiling {ceiling:?} / asked {asked}s: the job's deadline is {remaining}s out, expected about {expected}s ({spec})"
+        );
+        handle.shutdown().await.expect("shutdown");
+    }
 }
 
 #[tokio::test]

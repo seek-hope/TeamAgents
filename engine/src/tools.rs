@@ -704,6 +704,7 @@ fn workspace_executor_with_control(
     root: PathBuf,
     artifacts: ArtifactPaths,
     shell_state: Option<PathBuf>,
+    max_tool_seconds: Option<u64>,
 ) -> impl Fn(&str, &Json, &TurnControl, ShellMode) -> Result<Json, String> + Send + Sync + 'static {
     // cross-process write locks live beside the session state, never in the project
     let lock_dir = artifacts.own.as_ref().and_then(|dir| dir.parent()).map(|state| state.join("locks"));
@@ -924,7 +925,8 @@ fn workspace_executor_with_control(
             }
             "shell" => {
                 let command = arg("command");
-                let timeout = args.get("timeout").and_then(|v| v.as_u64()).unwrap_or(120);
+                // D-415: the model picks this number; the session's ceiling bounds it
+                let timeout = bounded_timeout(args.get("timeout").and_then(|v| v.as_u64()), max_tool_seconds);
                 let network = args.get("network").and_then(|v| v.as_bool()).unwrap_or(false);
                 shell_run_at(
                     &command,
@@ -1163,6 +1165,20 @@ fn memory_tool(scope: &MemoryScope, args: &Json) -> Result<Json, String> {
     }
 }
 
+/// The shell tool's own default when a model names no `timeout`, in seconds.
+pub const DEFAULT_SHELL_TIMEOUT_SECONDS: u64 = 120;
+
+/// D-415: a model-picked `timeout`, bounded by the session's ceiling (`[limits] max_tool_seconds`). One helper for
+/// every shell dispatch in the tree, so the rule cannot differ between the v2 driver's job path and the toolkit's
+/// own; a user's `[[checks]] timeout` never comes through here (it is the user's number, not the model's).
+pub fn bounded_timeout(asked: Option<u64>, ceiling: Option<u64>) -> u64 {
+    let asked = asked.unwrap_or(DEFAULT_SHELL_TIMEOUT_SECONDS);
+    match ceiling {
+        Some(ceiling) if ceiling > 0 => asked.min(ceiling),
+        _ => asked,
+    }
+}
+
 /// Executor for one member root: the file, shell and web tools rooted there plus the web tools that member
 /// actually bound, over the member's own `ArtifactPaths` and turn control. `V2Toolkit::new` is its caller.
 pub(crate) fn member_executor_with_control(
@@ -1172,8 +1188,9 @@ pub(crate) fn member_executor_with_control(
     artifacts: ArtifactPaths,
     shell_state: Option<PathBuf>,
     memory: Option<MemoryScope>,
+    max_tool_seconds: Option<u64>,
 ) -> impl Fn(&str, &Json, &TurnControl, ShellMode) -> Result<Json, String> + Send + Sync + 'static {
-    let workspace = workspace_executor_with_control(root, artifacts, shell_state);
+    let workspace = workspace_executor_with_control(root, artifacts, shell_state, max_tool_seconds);
     let web: OnceLock<Result<WebTools, String>> = OnceLock::new();
     move |tool: &str, args: &Json, control: &TurnControl, mode: ShellMode| match tool {
         "web_search" => {
@@ -2743,6 +2760,10 @@ pub(crate) struct ToolWiring {
     /// (`sessions::base_of`), resolved by the driver, which alone knows where the session root is. The driver's
     /// own `state_root` is the *instance* directory, so it cannot be derived from the toolkit's paths.
     pub memory_root: Option<PathBuf>,
+    /// D-415: the ceiling a *model-picked* shell timeout is clamped to (`[limits] max_tool_seconds`). The driver
+    /// clamps its own job path; this carries the same ceiling to the toolkit's shell arm, so one session has one
+    /// rule.
+    pub max_tool_seconds: Option<u64>,
 }
 
 impl V2Toolkit {
@@ -2773,6 +2794,7 @@ impl V2Toolkit {
             ArtifactPaths::own(artifacts.clone()),
             shell_state.clone(),
             memory,
+            wiring.max_tool_seconds,
         );
         let codemode_store = Arc::new(std::sync::Mutex::new(load_codemode_store(wiring.codemode_store.as_deref())));
         Ok(V2Toolkit { executor: Box::new(executor), bound, codemode_store, wiring, root, artifacts, shell_state })
@@ -2855,7 +2877,9 @@ impl V2Toolkit {
         };
         if intent.name == "shell" {
             let command = intent.args.get("command").and_then(|v| v.as_str()).unwrap_or("");
-            let timeout = intent.args.get("timeout").and_then(|v| v.as_u64()).unwrap_or(120);
+            // D-415: the same ceiling the driver applies to its own job path
+            let timeout =
+                bounded_timeout(intent.args.get("timeout").and_then(|v| v.as_u64()), self.wiring.max_tool_seconds);
             let network = intent.args.get("network").and_then(|v| v.as_bool()).unwrap_or(false);
             let outcome = shell_outcome_at(
                 command,
@@ -3044,6 +3068,24 @@ impl TurnControl {
 }
 
 #[cfg(test)]
+mod bounded_timeout_tests {
+    use super::*;
+
+    /// D-415: the clamp is a pure function, so its four readings are pinned here rather than through a session: a
+    /// long ask is capped, a short ask is left alone, no ceiling leaves the ask (or the tool's default) untouched,
+    /// and a zero ceiling reads as unset (the loader refuses one, so this is belt and braces).
+    #[test]
+    fn a_model_picked_timeout_is_bounded_by_the_sessions_ceiling() {
+        assert_eq!(bounded_timeout(Some(3600), Some(60)), 60);
+        assert_eq!(bounded_timeout(Some(30), Some(600)), 30);
+        assert_eq!(bounded_timeout(Some(300), None), 300);
+        assert_eq!(bounded_timeout(None, None), DEFAULT_SHELL_TIMEOUT_SECONDS);
+        assert_eq!(bounded_timeout(None, Some(45)), 45, "an unstated ask still respects the ceiling");
+        assert_eq!(bounded_timeout(Some(90), Some(0)), 90, "a zero ceiling is not a ceiling");
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -3056,7 +3098,8 @@ mod tests {
         bindings: Vec<String>,
         artifacts: Option<PathBuf>,
     ) -> impl Fn(&str, &Json) -> Result<Json, String> + Send + Sync + 'static {
-        let executor = member_executor_with_control(root, catalog, bindings, ArtifactPaths::own(artifacts), None, None);
+        let executor =
+            member_executor_with_control(root, catalog, bindings, ArtifactPaths::own(artifacts), None, None, None);
         move |tool, args| {
             executor(tool, args, &TurnControl::default(), ShellMode::Sandbox(SandboxBackend::bubblewrap()))
         }
@@ -3066,7 +3109,7 @@ mod tests {
         root: PathBuf,
         artifacts: Option<PathBuf>,
     ) -> impl Fn(&str, &Json) -> Result<Json, String> + Send + Sync + 'static {
-        let executor = workspace_executor_with_control(root, ArtifactPaths::own(artifacts), None);
+        let executor = workspace_executor_with_control(root, ArtifactPaths::own(artifacts), None, None);
         move |tool, args| {
             executor(tool, args, &TurnControl::default(), ShellMode::Sandbox(SandboxBackend::bubblewrap()))
         }
