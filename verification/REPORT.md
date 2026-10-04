@@ -5,7 +5,7 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
-## 0. Gate status (re-run 2026-10-05 at `MATERIAL-COMMIT`)
+## 0. Gate status (re-run 2026-10-05 at `609c15c3`)
 
 * **D-418 added the check briefing and its two claims, and re-ran all three targets on this tree (2026-10-05).**
   `V2Checks.tla` gained the `Brief` step — the runtime tells the instance which checks the goal must satisfy while
