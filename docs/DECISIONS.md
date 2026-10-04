@@ -20,6 +20,42 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-411 The capability map, and two stale statements in the benchmark's own reading (2026-10-04)
+
+**The gap.** Every capability this product has is evidenced somewhere — a test in `make check`, a probe under
+`review/dogfood/`, a TLA+ claim, a dated measurement — but nothing said *which* of those a reader should read for
+one capability, and nothing said what the evidence had measured as that capability's **boundary**. The ledgers are
+deep by design (the A01–A36 matrix is 36 dense rows, `docs/DECISIONS.md` is 409 entries, the benchmark reading is
+244 lines), so the honest summary of a capability ("proven / implemented-but-unmeasured / measured-with-a-known-
+boundary / open") existed only in conversation.
+
+**What was added.** `docs/CAPABILITIES.md`: one row per capability in six areas (the kernel, information and
+authority, execution and verification, context and cognition, the product surface, and the evaluation standing),
+each row naming the strongest check behind it, the boundary that check itself measured, and what has no evidence
+yet — plus an explicit evidence-class key (test / probe / model / measurement) and a table of the ledgers it
+points into. It is a **map, not a ledger**: every claim is a pointer, and nothing in it overrides
+`docs/ACCEPTANCE.md`, `docs/DECISIONS.md` or `verification/REPORT.md`.
+
+**Two statements in `review/benchmark/CAPABILITY.md` were stale, and the map is what surfaced them.**
+
+- §4 opened with "Nothing here is implemented" — its own note that a product behaviour change was not that
+  document's to make. Two of its three proposals were built under the user's standing authority and measured
+  afterwards: P1's ingress is D-385 (and its
+  measured domain is narrower than proposed — it gates *settlement*, D-400/D-403), and P2's provenance rule is
+  D-393 (an auditable "who attested", not added verification strength, D-398/D-401). P3 was not built; its
+  motivating stall became D-410's wrap-up note, whose bound is the step boundary. The paragraph now records that
+  status and keeps each proposal's original claim so the record of what was proposed stays readable.
+- §6.1's `extract-moves-from-video` paragraph asserted that the product "has **no path that carries an image to
+  the model**" in the same sentence that credited D-392 with building one — pre-D-392 text left beside a
+  post-D-392 measurement. It now reads: the path exists, the model uses it (D-394: `view_image` called 5 times in
+  one instrumented attempt), and the remaining barrier is a capability gap rather than a missing flow.
+
+**Ceiling.** The page is hand-written, so it drifts when a later change adds a capability and does not touch it.
+The mitigation is structural rather than a new audit: every row's evidence is a pointer to an object that *is*
+checked (a test name, a `.tla` claim listed by a configuration, a decision entry, a probe path), so a row that
+went stale would disagree with a ledger a reader can reach in one step. A future change that makes the map itself
+wrong should update the map in the same commit, as this one did for the benchmark reading.
+
 ## D-410 The runtime tells a goal when its deadline is close — and that signal only exists at a step boundary (2026-10-04)
 
 A deadline used to be invisible until it *refused* a request. Three measurements said that was the wrong moment:

@@ -16,6 +16,7 @@
 | [使用指南](docs/USER-GUIDE.md) | 上手、配置、权限、Skills/MCP、恢复与清理 |
 | [与 Codex CLI、Pi、Hermes 的对比](docs/PRODUCT-COMPARISON.md) | 带日期与出处的对比快照，以及它引出的决策 |
 | [验收对照表](docs/ACCEPTANCE.md) | A01–A36 逐项证据与已知缺口 |
+| [能力与证据](docs/CAPABILITIES.md) | 每项能力一行：背后的检查、该检查量出的边界、以及仍未决的部分 |
 | [开发与维护](docs/DEVELOPMENT.md) | 工具链、门禁、目录约定、复跑命令 |
 | [设计与验收基线](docs/DESIGN.md) | 已确认需求、架构与协议约束、验收矩阵 A01–A36、完成定义 |
 | [决策记录](docs/DECISIONS.md) | 用户确认的方向、边界与偏离记录 |

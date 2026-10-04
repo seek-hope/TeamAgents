@@ -66,8 +66,12 @@ The timeouts split into two kinds, and only one is about time:
 
 ## 4. Proposed improvements, each with a falsifiable claim
 
-Nothing here is implemented: product behavior changes are the user's call (AGENTS.md). Each proposal states the
-claim, how it would be measured on this same harness, and what would be verified formally.
+**Status (2026-10-04).** P1 and P2 were built and measured after this section was written, under the user's
+standing authority, and P3 was not: P1's ingress is D-385 (measured flat, §5; its domain narrows to *settlement*,
+D-400/D-403), P2's provenance rule is D-393 (`V2Checks`' `IndependenceIsNotSelfVerified`, measured in §6.2a — it
+adds an auditable "who attested" and cannot recover an unobservable criterion, D-398/D-401), and P3's motivating
+stall became D-410's wrap-up note instead, whose measured bound is the step boundary. Each proposal keeps its
+original claim, measurement and formal obligation so the record of what was proposed stays readable.
 
 ### P1 — Goal-level acceptance checks that must pass before "done"
 
@@ -160,11 +164,13 @@ So the four split cleanly: one **capability** (`gcode-to-text`), one **nearly so
 `gcode-to-text` is the cleanest single result in this document: with four times the budget the agent **finished
 and answered wrongly**, on a task whose answer is a single line. More time does not reach it.
 
-`extract-moves-from-video` deserved its own sentence, because it was a **product** gap rather than a model one — and after D-392/D-394 it is neither: the image path exists, the model reads pictures through it, and the task still exceeds it:
-the task is to transcribe the moves out of a **video** of a Zork session, and this product has **no path that
-carries an image to the model** — the codemode `image()` helper accepts `data:` URLs but v2 has no image context
-flow at all (the ceiling recorded in D-376, and the reason the helper refuses remote URLs). Every attempt
-therefore has to OCR frames locally; none produced a file in 7,200 s.
+`extract-moves-from-video` deserved its own sentence, because it *was* a product gap rather than a model one: the
+task is to transcribe the moves out of a **video** of a Zork session, and at the time of this measurement v2 had
+no path that carried an image to the model (the ceiling D-376 recorded), so every attempt had to OCR frames
+locally and none produced a file in 7,200 s. D-392 built that path and D-394 re-measured the task: the model now
+calls `view_image` (5 times in one instrumented attempt, alongside 28 shell calls and 34 requests), so the
+structural barrier is gone — and the task still exceeds it at its own 1,800 s. What remains is a capability gap,
+not a missing flow.
 
 ### 6.2 Well-formed artifact, wrong semantics (class 2)
 
@@ -242,3 +248,7 @@ fact cannot be ignored. They are excluded from the denominator (see the README's
   anyway (D-381).
 - **Two of the failures themselves**: `qemu-alpine-ssh` is mirror rot, not a result; `adaptive-rejection-sampler`
   and `build-pmars` were harness artifacts and now pass.
+- **Every runtime lever at once**: an acceptance gate (D-400), a wrap-up note (D-410) and a deadline (D-397) are
+  each observable only where the model comes up for air between steps, and the runs that time out spend their
+  window inside one long tool call. That is D-410's measured bound, and it is why the next lever is a bound on a
+  single tool call rather than another signal delivered between them.

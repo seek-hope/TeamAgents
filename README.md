@@ -21,6 +21,7 @@ and reports back; you watch progress and approve anything that leaves the sandbo
 | [User guide](docs/USER-GUIDE.md) | Getting started, configuration, permissions, Skills/MCP, recovery and cleanup |
 | [Comparison with Codex CLI, Pi and Hermes](docs/PRODUCT-COMPARISON.md) | a dated, sourced snapshot of how this product compares, and the decisions it surfaces |
 | [Acceptance](docs/ACCEPTANCE.md) | Per-item evidence for the A01–A36 acceptance matrix, plus known gaps |
+| [Capabilities](docs/CAPABILITIES.md) | One row per capability: the check behind it, the boundary that check measured, and what is still open |
 | [Design baseline](docs/DESIGN.md) | Confirmed requirements, architecture and protocol constraints, A01–A36, definition of done |
 | [Development](docs/DEVELOPMENT.md) | Toolchain, gates, layout conventions, re-run commands |
 | [Decisions](docs/DECISIONS.md) | Confirmed direction, boundaries and deviations |
