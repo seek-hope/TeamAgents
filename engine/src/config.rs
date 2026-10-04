@@ -62,6 +62,89 @@ pub fn xdg_state_home() -> PathBuf {
     env_path("XDG_STATE_HOME").unwrap_or_else(|| home_dir().join(".local").join("state"))
 }
 
+/// Add one `[tools.<name>]` binding to the user config (D-408, the write half of `mcp list`).
+///
+/// The file is edited **by appending a block**, never by re-serialising it: a user's config carries comments and
+/// ordering this build has no business rewriting. Two things are checked before the write lands — the name is not
+/// already bound, and the result still parses — and a failure leaves the file untouched.
+pub fn add_tool_binding(path: &Path, name: &str, binding: &serde_json::Value) -> Result<(), String> {
+    if name.is_empty() || name.contains(|c: char| c.is_whitespace() || c == '.' || c == '"') {
+        return Err(format!("{name:?} is not usable as a binding name (no whitespace, dots or quotes)"));
+    }
+    let existing = std::fs::read_to_string(path).unwrap_or_default();
+    if !existing.trim().is_empty() {
+        let parsed: UserConfig = toml::from_str(&existing).map_err(|e| format!("{}: {e}", path.display()))?;
+        if parsed.tools.contains_key(name) {
+            return Err(format!("[tools.{name}] is already in {}; remove it first", path.display()));
+        }
+    }
+    let object = binding.as_object().ok_or("a binding must be a table")?;
+    let mut block = format!("\n[tools.{name}]\n");
+    for (key, value) in object {
+        let rendered = match value {
+            serde_json::Value::String(text) => format!("{key} = {text:?}").replace('\\', "\\\\"),
+            serde_json::Value::Bool(flag) => format!("{key} = {flag}"),
+            serde_json::Value::Number(number) => format!("{key} = {number}"),
+            serde_json::Value::Array(items) => {
+                let parts: Vec<String> = items
+                    .iter()
+                    .map(|item| match item {
+                        serde_json::Value::String(text) => Ok(format!("{text:?}").replace('\\', "\\\\")),
+                        _ => Err(format!("{key}: only strings are supported in an array")),
+                    })
+                    .collect::<Result<_, String>>()?;
+                format!("{key} = [{}]", parts.join(", "))
+            }
+            _ => return Err(format!("{key}: only strings, booleans, numbers and string arrays are supported")),
+        };
+        block.push_str(&rendered);
+        block.push('\n');
+    }
+    let combined = format!("{existing}{block}");
+    // the only guarantee that matters: what we are about to write is a config this build can read back, and it
+    // carries the binding
+    let parsed: UserConfig = toml::from_str(&combined).map_err(|e| format!("the result would not parse: {e}"))?;
+    if !parsed.tools.contains_key(name) {
+        return Err("the block did not produce a binding; nothing was written".into());
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
+    }
+    std::fs::write(path, combined).map_err(|e| format!("write {}: {e}", path.display()))?;
+    Ok(())
+}
+
+/// Remove one `[tools.<name>]` binding from the user config (D-408). The block runs from its header to the next
+/// table header or the end of the file; the result is parsed back before it is written, and a removal that would
+/// break the file is refused with the file untouched.
+pub fn remove_tool_binding(path: &Path, name: &str) -> Result<(), String> {
+    let existing = std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let parsed: UserConfig = toml::from_str(&existing).map_err(|e| format!("{}: {e}", path.display()))?;
+    if !parsed.tools.contains_key(name) {
+        return Err(format!("[tools.{name}] is not in {}", path.display()));
+    }
+    let header = format!("[tools.{name}]");
+    let mut kept: Vec<&str> = Vec::new();
+    let mut inside = false;
+    for line in existing.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('[') {
+            inside = trimmed.starts_with(&header)
+                && (trimmed.len() == header.len() || trimmed.as_bytes()[header.len()] == b']');
+        }
+        if !inside {
+            kept.push(line);
+        }
+    }
+    let combined = format!("{}\n", kept.join("\n").trim_end());
+    let recheck: UserConfig = toml::from_str(&combined).map_err(|e| format!("the result would not parse: {e}"))?;
+    if recheck.tools.contains_key(name) {
+        return Err(format!("[tools.{name}] survived the removal; nothing was written"));
+    }
+    std::fs::write(path, combined).map_err(|e| format!("write {}: {e}", path.display()))?;
+    Ok(())
+}
+
 pub fn user_config_path() -> PathBuf {
     xdg_config_home().join(APP).join("config.toml")
 }
@@ -773,6 +856,52 @@ command = "test -s README.md"
                 .expect_err(&format!("{label} must be refused"));
             assert!(error.contains("checks") || error.contains("id"), "{label}: the message names the check: {error}");
         }
+    }
+
+    /// D-408: `mcp add` appends one `[tools.<name>]` block and `mcp remove` takes exactly that block back, with
+    /// the rest of a hand-written config — comments included — untouched, and both refusing before anything lands.
+    #[test]
+    fn a_tool_binding_is_appended_and_removed_without_touching_the_rest() {
+        let dir = std::env::temp_dir().join(format!("ta-tools-edit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "# my own config\n[models.m]\nprovider = \"openai\"\nmodel = \"x\"\n").unwrap();
+
+        add_tool_binding(
+            &path,
+            "stats",
+            &serde_json::json!({"kind": "mcp", "mcp_server": "stats", "mcp_transport": "stdio",
+                                "mcp_execution": "host", "command": "/bin/echo", "args": ["a", "b"]}),
+        )
+        .expect("add");
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# my own config"), "the comment survives: {text}");
+        let parsed: UserConfig = toml::from_str(&text).expect("parses");
+        assert_eq!(parsed.tools["stats"].command.as_deref(), Some("/bin/echo"));
+        assert_eq!(parsed.tools["stats"].args, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(parsed.tools["stats"].mcp_execution.as_deref(), Some("host"));
+
+        // the same name twice is refused, and the file is untouched
+        let before = text.clone();
+        let error = add_tool_binding(&path, "stats", &serde_json::json!({"kind": "mcp"})).unwrap_err();
+        assert!(error.contains("already"), "{error}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+
+        // a name that would not survive the TOML round trip is refused too
+        assert!(add_tool_binding(&path, "bad name", &serde_json::json!({"kind": "mcp"})).is_err());
+
+        // removing takes that block and nothing else
+        remove_tool_binding(&path, "stats").expect("remove");
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(!after.contains("[tools.stats]"), "{after}");
+        assert!(after.contains("# my own config") && after.contains("[models.m]"), "{after}");
+        let parsed: UserConfig = toml::from_str(&after).expect("parses after removal");
+        assert!(!parsed.tools.contains_key("stats"));
+        assert!(parsed.models.contains_key("m"));
+        // and removing what is not there is a refusal, not a rewrite
+        assert!(remove_tool_binding(&path, "stats").is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

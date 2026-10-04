@@ -238,6 +238,52 @@ fn a_rejected_argument_says_which_one_and_why() {
     assert!(!home.join("session.sqlite").exists(), "an empty --state-root must not initialize the cwd");
 }
 
+/// D-408: `mcp add` writes one binding the loader accepts and `mcp remove` takes it back out, refusing before
+/// anything lands when the name is taken or the flags do not describe a usable service.
+#[test]
+fn mcp_add_and_remove_edit_only_that_binding() {
+    let home = Scratch::new("mcp-edit");
+    std::fs::create_dir_all(home.join("config/teamagents")).unwrap();
+    let config = home.join("config/teamagents/config.toml");
+    std::fs::write(&config, "# a user's own comment\n[models.m]\nprovider = \"compatible\"\nmodel = \"x\"\n").unwrap();
+    let run = |args: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
+            .args(args)
+            .env("XDG_STATE_HOME", home.join("state"))
+            .env("XDG_CONFIG_HOME", home.join("config"))
+            .output()
+            .expect("run cli");
+        (
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    };
+    let (code, out, err) =
+        run(&["mcp", "add", "--name", "mine", "--command", "/bin/echo", "--arg", "hello", "--execution", "host"]);
+    assert_eq!(code, Some(0), "{out}{err}");
+    let text = std::fs::read_to_string(&config).unwrap();
+    assert!(text.contains("[tools.mine]"), "{text}");
+    assert!(text.contains("# a user's own comment") && text.contains("[models.m]"), "the rest survives: {text}");
+
+    // the name is taken: refused, and the file is byte-identical afterwards
+    let before = text.clone();
+    let (code, _, err) = run(&["mcp", "add", "--name", "mine", "--command", "/bin/echo"]);
+    assert_eq!(code, Some(2), "{err}");
+    assert!(err.contains("already"), "{err}");
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), before);
+
+    // a transport this build does not speak, and a missing command, are usage errors
+    assert_eq!(run(&["mcp", "add", "--name", "other", "--transport", "sse", "--url", "http://x"]).0, Some(2));
+    assert_eq!(run(&["mcp", "add", "--name", "other"]).0, Some(2));
+
+    let (code, out, err) = run(&["mcp", "remove", "--name", "mine"]);
+    assert_eq!(code, Some(0), "{out}{err}");
+    let text = std::fs::read_to_string(&config).unwrap();
+    assert!(!text.contains("[tools.mine]") && text.contains("[models.m]"), "{text}");
+    assert_eq!(run(&["mcp", "remove", "--name", "mine"]).0, Some(2), "removing what is not there is a refusal");
+}
+
 /// D-399: `mcp list` answers what the configured services actually offer — which is the surface a user lost when
 /// MCP became reachable only through codemode (D-376). A healthy server is listed with its tools, a broken one is
 /// named with its reason, and the verb exits 1 so a CI job can catch it.

@@ -39,6 +39,9 @@ usage: teamagents [--cwd DIR] [--state-root PATH] [--session ID] [--model KEY] [
   teamagents tasks cancel --id ID               cancel one; a delegator waiting on it is released\n\
   teamagents artifacts [list] [--json]          what this state root holds on disk (bytes, owner, presence)\n\
   teamagents mcp list                           the tools each configured MCP service offers (D-399)\n\
+  teamagents mcp add --name N --command CMD     bind an MCP service in the user config (D-408):\n\
+       [--arg A]… [--transport stdio|http] [--url U] [--execution workspace|host] [--server NAME]\n\
+  teamagents mcp remove --name N                take that binding back out\n\
   teamagents artifacts gc [--json]              collect the artifacts nothing references (needs no session)\n\
   teamagents runners [list] [--json]            the job runners this state root still carries\n\
   teamagents surface [--id INSTANCE] [--json]   what each model request was offered: tool names, authorized\n\
@@ -85,6 +88,15 @@ fn reject(reason: &str) -> ! {
 }
 
 /// A flag whose value is missing, empty, or looks like another flag.
+/// The value of a flag that takes one (`--arg "x"`): a missing or flag-shaped value is a usage error, never an
+/// empty string that silently becomes configuration.
+fn value_after(argv: &[String], i: usize, flag: &str) -> String {
+    argv.get(i + 1)
+        .cloned()
+        .filter(|value| !value.is_empty() && !value.starts_with('-'))
+        .unwrap_or_else(|| needs_a_value(flag))
+}
+
 fn needs_a_value(flag: &str) -> ! {
     reject(&format!("{flag} needs a value"))
 }
@@ -149,6 +161,13 @@ pub struct Args {
     pub prompt: Option<String>,
     /// D-368: `sessions search --query TEXT [--limit N]`.
     pub query: Option<String>,
+    /// D-408: `mcp add` — the binding this build writes into the user config.
+    pub mcp_command: Option<String>,
+    pub mcp_args: Vec<String>,
+    pub mcp_transport: Option<String>,
+    pub mcp_url: Option<String>,
+    pub mcp_execution: Option<String>,
+    pub mcp_server: Option<String>,
     pub limit: Option<u64>,
     /// D-267: `goals open --deadline MINUTES` — a deadline for the new goal, measured from now (§8).
     pub deadline_minutes: Option<u64>,
@@ -197,6 +216,12 @@ fn parse_args() -> Args {
         every_minutes: None,
         prompt: None,
         query: None,
+        mcp_command: None,
+        mcp_args: Vec::new(),
+        mcp_transport: None,
+        mcp_url: None,
+        mcp_execution: None,
+        mcp_server: None,
         limit: None,
         deadline_minutes: None,
     };
@@ -419,7 +444,7 @@ fn parse_args() -> Args {
                 );
                 i += 2;
             }
-            "--name" if matches!(args.command.as_deref(), Some("sessions" | "automations")) => {
+            "--name" if matches!(args.command.as_deref(), Some("sessions" | "automations" | "mcp")) => {
                 if args.session_name.is_some() {
                     given_twice("--name");
                 }
@@ -429,6 +454,30 @@ fn parse_args() -> Args {
                         .filter(|v| !v.is_empty() && !v.starts_with('-'))
                         .unwrap_or_else(|| needs_a_value("--name")),
                 );
+                i += 2;
+            }
+            "--command" if args.command.as_deref() == Some("mcp") => {
+                args.mcp_command = Some(value_after(&argv, i, "--command"));
+                i += 2;
+            }
+            "--arg" if args.command.as_deref() == Some("mcp") => {
+                args.mcp_args.push(value_after(&argv, i, "--arg"));
+                i += 2;
+            }
+            "--transport" if args.command.as_deref() == Some("mcp") => {
+                args.mcp_transport = Some(value_after(&argv, i, "--transport"));
+                i += 2;
+            }
+            "--url" if args.command.as_deref() == Some("mcp") => {
+                args.mcp_url = Some(value_after(&argv, i, "--url"));
+                i += 2;
+            }
+            "--execution" if args.command.as_deref() == Some("mcp") => {
+                args.mcp_execution = Some(value_after(&argv, i, "--execution"));
+                i += 2;
+            }
+            "--server" if args.command.as_deref() == Some("mcp") => {
+                args.mcp_server = Some(value_after(&argv, i, "--server"));
                 i += 2;
             }
             "--every" if args.command.as_deref() == Some("automations") => {
@@ -902,10 +951,106 @@ fn run_approvals(args: &Args) -> i32 {
 /// This connects to each configured service and prints its tools, exiting 1 when any service failed (so a CI job
 /// can catch a broken one) while still listing the healthy ones.
 fn run_mcp(args: &Args) -> i32 {
-    if args.positional.as_deref().is_some_and(|verb| verb != "list") {
-        eprintln!("mcp takes no sub-verb other than `list`: teamagents mcp list [--cwd DIR]");
+    match args.positional.as_deref().unwrap_or("list") {
+        "list" => run_mcp_list(args),
+        "add" => run_mcp_add(args),
+        "remove" => run_mcp_remove(args),
+        other => {
+            eprintln!(
+                "mcp {other}: unknown sub-verb; teamagents mcp [list | add --name N [--command CMD] [--arg A]… \
+                 [--transport stdio|http] [--url U] [--execution workspace|host] [--server NAME] | remove --name N]"
+            );
+            2
+        }
+    }
+}
+
+/// `mcp add` (D-408): write one `[tools.<name>]` binding into the user config. The binding is validated as a
+/// `ToolBinding` *before* the file is touched, so a typo in a transport or a missing command is a usage error
+/// rather than a config that fails the next daemon start.
+fn run_mcp_add(args: &Args) -> i32 {
+    let Some(name) = args.session_name.clone() else {
+        eprintln!("mcp add needs --name NAME (the binding's name in [tools.<name>])");
+        return 2;
+    };
+    let transport = args.mcp_transport.clone().unwrap_or_else(|| "stdio".into());
+    let mut binding = serde_json::Map::new();
+    binding.insert("kind".into(), serde_json::json!("mcp"));
+    if let Some(server) = args.mcp_server.clone() {
+        binding.insert("mcp_server".into(), serde_json::json!(server));
+    }
+    match transport.as_str() {
+        "stdio" => {
+            let Some(command) = args.mcp_command.clone() else {
+                eprintln!("mcp add --transport stdio needs --command CMD");
+                return 2;
+            };
+            binding.insert("mcp_transport".into(), serde_json::json!("stdio"));
+            binding.insert("command".into(), serde_json::json!(command));
+            if !args.mcp_args.is_empty() {
+                binding.insert("args".into(), serde_json::json!(args.mcp_args));
+            }
+        }
+        "http" => {
+            let Some(url) = args.mcp_url.clone() else {
+                eprintln!("mcp add --transport http needs --url URL");
+                return 2;
+            };
+            binding.insert("mcp_transport".into(), serde_json::json!("http"));
+            binding.insert("url".into(), serde_json::json!(url));
+        }
+        other => {
+            eprintln!("mcp add --transport {other}: this build speaks stdio and http");
+            return 2;
+        }
+    }
+    if let Some(execution) = args.mcp_execution.clone() {
+        if !matches!(execution.as_str(), "workspace" | "host") {
+            eprintln!("mcp add --execution {execution}: use workspace or host");
+            return 2;
+        }
+        binding.insert("mcp_execution".into(), serde_json::json!(execution));
+    }
+    let binding = serde_json::Value::Object(binding);
+    // the same validator the loader uses: an unusable binding never reaches the file
+    if let Err(error) = serde_json::from_value::<teamagents_core::models::ToolBinding>(binding.clone()) {
+        eprintln!("mcp add: {error}");
         return 2;
     }
+    let path = teamagents_engine::config::user_config_path();
+    match teamagents_engine::config::add_tool_binding(&path, &name, &binding) {
+        Ok(()) => {
+            println!("added [tools.{name}] to {}", path.display());
+            println!("run `teamagents mcp list` to see what the service offers");
+            0
+        }
+        Err(error) => {
+            eprintln!("mcp add: {error}");
+            2
+        }
+    }
+}
+
+/// `mcp remove` (D-408): take one binding back out, leaving the rest of the user's file alone.
+fn run_mcp_remove(args: &Args) -> i32 {
+    let Some(name) = args.session_name.clone() else {
+        eprintln!("mcp remove needs --name NAME");
+        return 2;
+    };
+    let path = teamagents_engine::config::user_config_path();
+    match teamagents_engine::config::remove_tool_binding(&path, &name) {
+        Ok(()) => {
+            println!("removed [tools.{name}] from {}", path.display());
+            0
+        }
+        Err(error) => {
+            eprintln!("mcp remove: {error}");
+            2
+        }
+    }
+}
+
+fn run_mcp_list(args: &Args) -> i32 {
     let workspace = args
         .cwd
         .clone()

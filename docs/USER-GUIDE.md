@@ -107,6 +107,11 @@ happened. Diagnostics go to stderr, the outcome to stdout (`--json` prints one J
   a note is never rewritten or evicted (at 500 notes the store refuses rather than dropping the oldest), each
   note is capped at 2,000 characters and carries the session and member that wrote it, and a recall returns
   at most 20 newest-first matches with their provenance. It is bound like `skills` (D-405).
+- **Binding an MCP service**: `teamagents mcp add --name stats --command /usr/bin/python3 --arg server.py
+  --execution host` writes one `[tools.stats]` table into the user config (stdio, or `--transport http
+  --url …`), and `teamagents mcp remove --name stats` takes it back out. The binding is validated before the
+  file is touched, the block is appended rather than the file re-written, and removing the block leaves the
+  rest of the config — comments included — alone (D-408).
 - **What the configured MCP services offer**: `teamagents mcp list` connects to each `[tools.<name>]`
   binding with `kind = "mcp"` and prints its tools (the model-visible name and the server's one-line
   description); a service that cannot start is named with its reason, and the verb exits `1` when any of

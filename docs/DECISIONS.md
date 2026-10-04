@@ -20,6 +20,33 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-408 `mcp add` / `mcp remove`: the config ergonomics the MCP surface was missing (2026-10-04)
+
+D-399 gave a user `mcp list`; the other half was still a text editor. The comparison's Pi column has
+`pi mcp add/remove/login`, and here a binding had to be hand-written as a `[tools.<name>]` table with a `kind`,
+a transport, a command, args, an execution mode — with a typo caught only when the daemon next started.
+
+`teamagents mcp add --name N --command CMD [--arg A]… [--transport stdio|http] [--url U] [--execution
+workspace|host] [--server NAME]` and `teamagents mcp remove --name N` close it, with three rules that matter more
+than the verbs themselves:
+
+- **the binding is validated before the file is touched** — it is parsed as a `ToolBinding` through the same serde
+  surface the loader uses, so a transport this build does not speak, a missing command for stdio or a missing URL
+  for http is a usage error with the file untouched;
+- **the user's file is appended to, never re-serialised** — a config carries comments and ordering this build has no
+  business rewriting, so `add` appends one block, and the result is parsed back *before* it is written;
+- **`remove` takes exactly that block** (its header to the next table header), refuses a name that is not bound, and
+  refuses (writing nothing) if the result would not parse or the binding somehow survived.
+
+**Tests.** `config::a_tool_binding_is_appended_and_removed_without_touching_the_rest` (a hand-written comment and a
+`[models.*]` table survive both operations; a taken name and an unusable name are refused with the file
+byte-identical) and `cli::mcp_add_and_remove_edit_only_that_binding` (the real binary: add, the taken-name refusal,
+`sse` and a missing command as usage errors, remove, and removing twice).
+
+**Ceiling.** OAuth is not here: per-server credentials, the `iss` check (RFC 9207) and step-up sign-in are what
+D-372's list records against the Pi column, and they are a sign-in flow rather than a config edit. A binding added
+by this verb is exactly what a session would bind — `mcp list` shows it in the same breath.
+
 ## D-407 A test that waits for a scheduling outcome under `make check` gets a bound it can survive (2026-10-04)
 
 `v2_supervisor::a_task_driven_worker_turn_sees_a_live_user_grant` waits for the worker to take another turn after a
@@ -332,7 +359,7 @@ why D-395's "read the check's receipt" rule matters.
 per-cell differences are inside D-388's ±5-task band and only the mechanism and the `winning-avg-corewars` swing
 are large enough to read.
 
-
+## D-399 `teamagents mcp list`: the surface that vanished when MCP moved behind codemode (2026-10-03)
 
 The comparison's Pi column has `pi mcp add/list/remove/login` and an in-session `/mcp`; this product answered with
 the config file and `doctor`. That was already thin, and D-376 made it thinner: once the bound MCP tools stopped
