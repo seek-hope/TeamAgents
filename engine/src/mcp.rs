@@ -31,6 +31,48 @@ pub struct McpClient {
     workspace: Arc<Mutex<Option<std::path::PathBuf>>>,
 }
 
+/// How an HTTP MCP client authenticates (D-412): the bearer token it is using now, plus — for a binding that
+/// signed in with OAuth — the one callback that can mint a new one when the server answers 401. The load-time
+/// resolution already refreshes an expired token; this is the mid-session safety net, not the primary path.
+/// The one callback an OAuth binding uses when the server answers 401: mint a fresh token, or `Ok(None)` when
+/// there is nothing to mint from. Named so the type in `HttpAuth` stays readable (D-412).
+pub type TokenRefresh = Arc<dyn Fn() -> Result<Option<String>, String> + Send + Sync>;
+
+pub struct HttpAuth {
+    token: Mutex<Option<String>>,
+    refresh: Mutex<Option<TokenRefresh>>,
+}
+
+impl HttpAuth {
+    pub fn none() -> HttpAuth {
+        HttpAuth { token: Mutex::new(None), refresh: Mutex::new(None) }
+    }
+
+    pub fn bearer(token: Option<String>) -> HttpAuth {
+        HttpAuth { token: Mutex::new(token), refresh: Mutex::new(None) }
+    }
+
+    fn current(&self) -> Option<String> {
+        self.token.lock().unwrap().clone()
+    }
+
+    pub fn set_refresh(&self, refresh: TokenRefresh) {
+        *self.refresh.lock().unwrap() = Some(refresh);
+    }
+
+    /// Run the refresher once and adopt what it returns. `Ok(None)` and a missing refresher both mean "no new
+    /// credential", which the caller reports as a refusal rather than retrying forever.
+    fn refresh(&self) -> Result<Option<String>, String> {
+        let refresher = self.refresh.lock().unwrap().clone();
+        let Some(refresher) = refresher else { return Ok(None) };
+        let fresh = refresher()?;
+        if let Some(token) = &fresh {
+            *self.token.lock().unwrap() = Some(token.clone());
+        }
+        Ok(fresh)
+    }
+}
+
 enum Transport {
     Stdio {
         child: Mutex<Option<Child>>,
@@ -39,7 +81,7 @@ enum Transport {
     },
     Http {
         url: String,
-        token: Option<String>,
+        auth: HttpAuth,
         // shared with the push reader thread, which may need to answer a
         // server-initiated request over the same session
         session: Arc<Mutex<Option<String>>>,
@@ -203,7 +245,7 @@ impl McpClient {
         let client = Arc::new(Self {
             transport: Transport::Http {
                 url: url.to_string(),
-                token,
+                auth: HttpAuth::bearer(token),
                 session: Arc::new(Mutex::new(None)),
                 protocol: Arc::new(Mutex::new(None)),
                 stream: Mutex::new(None),
@@ -239,14 +281,15 @@ impl McpClient {
     /// progress, or its own requests such as sampling/roots). Servers that do
     /// not support it answer 405 — then this is simply a no-op.
     fn open_push_stream(&self) {
-        let Transport::Http { url, token, session, protocol, stream } = &self.transport else { return };
+        let Transport::Http { url, auth, session, protocol, stream } = &self.transport else { return };
+        let token = auth.current();
         let agent = ureq::AgentBuilder::new()
             .redirects(0)
             .timeout_connect(Duration::from_secs(2))
             .timeout_read(Duration::from_secs(1))
             .build();
         let mut request = agent.get(url).set("accept", "text/event-stream");
-        if let Some(token) = token {
+        if let Some(token) = &token {
             request = request.set("authorization", &format!("Bearer {token}"));
         }
         if let Some(id) = session.lock().unwrap().clone() {
@@ -273,6 +316,14 @@ impl McpClient {
             (url.clone(), token.clone(), session.clone(), protocol.clone(), stop.clone(), self.workspace.clone());
         let join = std::thread::spawn(move || read_push_stream(reader, reply));
         *stream.lock().unwrap() = Some(PushStream { stop, join: Some(join) });
+    }
+
+    /// Install the refresher an OAuth binding uses when the server answers 401 (D-412). Safe to call after
+    /// `connect_http`: a token resolved at load time covers the handshake, and this covers the rest of the session.
+    pub fn set_token_refresh(&self, refresh: TokenRefresh) {
+        if let Transport::Http { auth, .. } = &self.transport {
+            auth.set_refresh(refresh);
+        }
     }
 
     /// The member's workspace, used to answer `roots/list`.
@@ -310,9 +361,23 @@ impl McpClient {
                     }
                 }
             }
-            Transport::Http { url, token, session, protocol, .. } => {
+            Transport::Http { url, auth, session, protocol, .. } => {
                 let version = protocol.lock().unwrap().clone();
-                let payload = http_roundtrip(url, token.as_deref(), session, version.as_deref(), &body, timeout_ms)?
+                let mut attempt =
+                    http_roundtrip(url, auth.current().as_deref(), session, version.as_deref(), &body, timeout_ms);
+                if matches!(attempt, Err(HttpFailure::Unauthorized)) {
+                    // the server refused the credential: refresh once (an OAuth binding has the material; a
+                    // static one has nothing to refresh with) and retry this request, never a side effect
+                    let fresh = auth.refresh()?;
+                    attempt = match fresh {
+                        Some(token) => {
+                            http_roundtrip(url, Some(&token), session, version.as_deref(), &body, timeout_ms)
+                        }
+                        None => Err(HttpFailure::Other(unauthorized_message())),
+                    };
+                }
+                let payload = attempt
+                    .map_err(|failure| failure.into_message())?
                     .ok_or_else(|| format!("MCP {method} returned no response"))?;
                 match payload.get("error") {
                     Some(error) if !error.is_null() => Err(format!("{error}")),
@@ -329,9 +394,10 @@ impl McpClient {
         let body = json!({"jsonrpc": "2.0", "method": method, "params": params});
         match &self.transport {
             Transport::Stdio { stdin, .. } => write_line(stdin, &body),
-            Transport::Http { url, token, session, protocol, .. } => {
+            Transport::Http { url, auth, session, protocol, .. } => {
                 let version = protocol.lock().unwrap().clone();
-                http_roundtrip(url, token.as_deref(), session, version.as_deref(), &body, self.startup_ms)?;
+                http_roundtrip(url, auth.current().as_deref(), session, version.as_deref(), &body, self.startup_ms)
+                    .map_err(|failure| failure.into_message())?;
                 Ok(())
             }
         }
@@ -396,7 +462,8 @@ impl McpClient {
                     let _ = child.wait();
                 }
             }
-            Transport::Http { url, token, session, protocol, stream } => {
+            Transport::Http { url, auth, session, protocol, stream } => {
+                let token = auth.current();
                 if let Some(handle) = stream.lock().unwrap().take() {
                     handle.stop.store(true, Ordering::SeqCst);
                     if let Some(join) = handle.join {
@@ -546,6 +613,40 @@ fn write_line(stdin: &Mutex<ChildStdin>, message: &Json) -> Result<(), String> {
 /// One POST of a JSON-RPC message; the response is a single JSON document or
 /// an SSE stream. Returns None for a 202 (notification accepted, no body).
 /// Remembers the server-issued `mcp-session-id` and sends it from then on.
+/// A transport-level failure, split so the client can tell a refused credential (which one refresh may fix) from
+/// everything else (which it cannot).
+enum HttpFailure {
+    Unauthorized,
+    Other(String),
+}
+
+impl std::fmt::Display for HttpFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HttpFailure::Unauthorized => write!(f, "{}", unauthorized_message()),
+            HttpFailure::Other(message) => write!(f, "{message}"),
+        }
+    }
+}
+
+impl HttpFailure {
+    fn into_message(self) -> String {
+        match self {
+            HttpFailure::Unauthorized => unauthorized_message(),
+            HttpFailure::Other(message) => message,
+        }
+    }
+}
+
+/// The sentence a user acts on when the server refuses the credential and there is nothing to refresh with. The
+/// service name is the caller's (it knows the binding), so this stays about the wire.
+fn unauthorized_message() -> String {
+    "MCP server refused the credential (HTTP 401): the token is missing, expired or not accepted for this \
+     endpoint — sign in again with `teamagents mcp login --name <service>` or fix the binding's \
+     bearer_token_env_var"
+        .into()
+}
+
 fn http_roundtrip(
     url: &str,
     token: Option<&str>,
@@ -553,7 +654,7 @@ fn http_roundtrip(
     protocol: Option<&str>,
     body: &Json,
     timeout_ms: u64,
-) -> Result<Option<Json>, String> {
+) -> Result<Option<Json>, HttpFailure> {
     // A binding authorizes this endpoint only; never forward tokens or session
     // headers to a redirect target, including another endpoint on the same host.
     let agent = ureq::AgentBuilder::new().redirects(0).build();
@@ -571,9 +672,14 @@ fn http_roundtrip(
     if let Some(version) = protocol {
         request = request.set("mcp-protocol-version", version);
     }
-    let response = request.send_string(&body.to_string()).map_err(|e| format!("MCP HTTP request failed: {e}"))?;
+    let response = request.send_string(&body.to_string()).map_err(|e| match e {
+        ureq::Error::Status(401, _) => HttpFailure::Unauthorized,
+        other => HttpFailure::Other(format!("MCP HTTP request failed: {other}")),
+    })?;
     if (300..400).contains(&response.status()) {
-        return Err("MCP HTTP redirects are not allowed; configure the final endpoint explicitly".into());
+        return Err(HttpFailure::Other(
+            "MCP HTTP redirects are not allowed; configure the final endpoint explicitly".into(),
+        ));
     }
     if let Some(id) = response.header("mcp-session-id") {
         *session.lock().unwrap() = Some(id.to_string());
@@ -583,14 +689,14 @@ fn http_roundtrip(
     }
     let content_type = response.header("content-type").unwrap_or("").to_string();
     if content_type.contains("text/event-stream") {
-        let stream = response.into_string().map_err(|e| format!("MCP HTTP bad SSE body: {e}"))?;
+        let stream = response.into_string().map_err(|e| HttpFailure::Other(format!("MCP HTTP bad SSE body: {e}")))?;
         return sse_json(&stream, &body["id"])
             .map(Some)
-            .ok_or_else(|| "MCP HTTP SSE stream carried no matching JSON-RPC response".into());
+            .ok_or_else(|| HttpFailure::Other("MCP HTTP SSE stream carried no matching JSON-RPC response".into()));
     }
-    let payload: Json = response.into_json().map_err(|e| format!("MCP HTTP bad json: {e}"))?;
+    let payload: Json = response.into_json().map_err(|e| HttpFailure::Other(format!("MCP HTTP bad json: {e}")))?;
     if body.get("id").is_some() && payload.get("id") != body.get("id") {
-        return Err("MCP HTTP response id does not match request".into());
+        return Err(HttpFailure::Other("MCP HTTP response id does not match request".into()));
     }
     Ok(Some(payload))
 }

@@ -38,10 +38,16 @@ usage: teamagents [--cwd DIR] [--state-root PATH] [--session ID] [--model KEY] [
   teamagents tasks [list] [--json]              the session's tasks\n\
   teamagents tasks cancel --id ID               cancel one; a delegator waiting on it is released\n\
   teamagents artifacts [list] [--json]          what this state root holds on disk (bytes, owner, presence)\n\
-  teamagents mcp list                           the tools each configured MCP service offers (D-399)\n\
+  teamagents mcp list                           the tools each configured MCP service offers (D-399),\n\
+       and whether an oauth binding is signed in\n\
   teamagents mcp add --name N --command CMD     bind an MCP service in the user config (D-408):\n\
        [--arg A]… [--transport stdio|http] [--url U] [--execution workspace|host] [--server NAME]\n\
+       [--oauth [--oauth-client-id ID]]         an http service that signs in with OAuth (D-412)\n\
   teamagents mcp remove --name N                take that binding back out\n\
+  teamagents mcp login --name N                 sign in to an oauth binding (D-412): the URL is printed, the\n\
+       [--no-browser] [--paste] [--timeout SEC]  browser is opened unless --no-browser, the loopback callback is\n\
+       waited for unless --paste reads the redirected URL from stdin\n\
+  teamagents mcp logout --name N                forget that service's stored credential\n\
   teamagents artifacts gc [--json]              collect the artifacts nothing references (needs no session)\n\
   teamagents runners [list] [--json]            the job runners this state root still carries\n\
   teamagents surface [--id INSTANCE] [--json]   what each model request was offered: tool names, authorized\n\
@@ -171,6 +177,17 @@ pub struct Args {
     pub limit: Option<u64>,
     /// D-267: `goals open --deadline MINUTES` — a deadline for the new goal, measured from now (§8).
     pub deadline_minutes: Option<u64>,
+    /// D-412: `mcp login --paste` — the browser is on another machine, so read the redirected URL from stdin
+    /// instead of waiting on the loopback listener.
+    pub mcp_login_paste: bool,
+    /// D-412: `mcp login --no-browser` — print the authorization URL and wait; do not try to open a browser.
+    pub mcp_login_no_browser: bool,
+    /// D-412: `mcp login --timeout SEC` — how long to wait for the callback (default 300).
+    pub mcp_login_timeout: Option<u64>,
+    /// D-412: `mcp add --oauth` — write an OAuth HTTP binding (`[tools.<name>]` with `oauth = true`).
+    pub mcp_oauth: bool,
+    /// D-412: `mcp add --oauth-client-id ID` — a pre-registered client instead of dynamic registration.
+    pub mcp_oauth_client_id: Option<String>,
 }
 
 fn parse_args() -> Args {
@@ -224,6 +241,11 @@ fn parse_args() -> Args {
         mcp_server: None,
         limit: None,
         deadline_minutes: None,
+        mcp_login_paste: false,
+        mcp_login_no_browser: false,
+        mcp_login_timeout: None,
+        mcp_oauth: false,
+        mcp_oauth_client_id: None,
     };
     let mut i = 0;
     while i < argv.len() {
@@ -466,6 +488,28 @@ fn parse_args() -> Args {
             }
             "--transport" if args.command.as_deref() == Some("mcp") => {
                 args.mcp_transport = Some(value_after(&argv, i, "--transport"));
+                i += 2;
+            }
+            "--paste" if args.command.as_deref() == Some("mcp") => {
+                args.mcp_login_paste = true;
+                i += 1;
+            }
+            "--no-browser" if args.command.as_deref() == Some("mcp") => {
+                args.mcp_login_no_browser = true;
+                i += 1;
+            }
+            "--timeout" if args.command.as_deref() == Some("mcp") => {
+                args.mcp_login_timeout = Some(
+                    argv.get(i + 1).and_then(|v| v.parse::<u64>().ok()).unwrap_or_else(|| needs_a_value("--timeout")),
+                );
+                i += 2;
+            }
+            "--oauth" if args.command.as_deref() == Some("mcp") => {
+                args.mcp_oauth = true;
+                i += 1;
+            }
+            "--oauth-client-id" if args.command.as_deref() == Some("mcp") => {
+                args.mcp_oauth_client_id = Some(value_after(&argv, i, "--oauth-client-id"));
                 i += 2;
             }
             "--url" if args.command.as_deref() == Some("mcp") => {
@@ -955,10 +999,13 @@ fn run_mcp(args: &Args) -> i32 {
         "list" => run_mcp_list(args),
         "add" => run_mcp_add(args),
         "remove" => run_mcp_remove(args),
+        "login" => run_mcp_login(args),
+        "logout" => run_mcp_logout(args),
         other => {
             eprintln!(
                 "mcp {other}: unknown sub-verb; teamagents mcp [list | add --name N [--command CMD] [--arg A]… \
-                 [--transport stdio|http] [--url U] [--execution workspace|host] [--server NAME] | remove --name N]"
+                 [--transport stdio|http] [--url U] [--execution workspace|host] [--server NAME] [--oauth] | \
+                 remove --name N | login --name N [--no-browser] [--paste] [--timeout SEC] | logout --name N]"
             );
             2
         }
@@ -1002,6 +1049,18 @@ fn run_mcp_add(args: &Args) -> i32 {
         other => {
             eprintln!("mcp add --transport {other}: this build speaks stdio and http");
             return 2;
+        }
+    }
+    // D-412: an OAuth binding is an HTTP binding that signs in — the flag writes the keys the loader validates,
+    // and a combination the loader would refuse is refused here, before the file is touched.
+    if args.mcp_oauth || args.mcp_oauth_client_id.is_some() {
+        if transport != "http" {
+            eprintln!("mcp add --oauth needs --transport http: OAuth applies to a remote MCP endpoint");
+            return 2;
+        }
+        binding.insert("oauth".into(), serde_json::json!(true));
+        if let Some(client_id) = args.mcp_oauth_client_id.clone() {
+            binding.insert("oauth_client_id".into(), serde_json::json!(client_id));
         }
     }
     if let Some(execution) = args.mcp_execution.clone() {
@@ -1064,6 +1123,20 @@ fn run_mcp_list(args: &Args) -> i32 {
             return 2;
         }
     };
+    // D-412: an OAuth binding's credential state is the first thing a user needs from this command — a service
+    // that is not signed in is not a broken service, and the next step is a verb, not a config edit.
+    let store = teamagents_engine::mcp_auth::Store::at(&teamagents_engine::mcp_auth::Store::default_path());
+    let mut names: Vec<&String> = catalog.tools.keys().collect();
+    names.sort();
+    for name in &names {
+        let binding = &catalog.tools[*name];
+        if binding.oauth {
+            match store.state(name) {
+                Ok(state) => println!("{name}: oauth — {state}"),
+                Err(error) => println!("{name}: oauth — credential file unreadable: {error}"),
+            }
+        }
+    }
     let services = teamagents_engine::bound::list_services(&catalog, &workspace);
     if services.is_empty() {
         println!("no MCP services are configured: bind one in the user config as [tools.<name>] with kind = \"mcp\"");
@@ -1089,6 +1162,172 @@ fn run_mcp_list(args: &Args) -> i32 {
         1
     } else {
         0
+    }
+}
+
+/// `mcp login` (D-412): the authorization-code flow with PKCE for an OAuth HTTP binding.
+///
+/// The steps are explicit here rather than behind one helper because `--paste` has to *print the URL first* and
+/// only then read the redirected URL from stdin — a single call would have nothing to show the user before it
+/// blocked. Nothing secret is printed: the URL carries the challenge, never the verifier, and the token goes
+/// straight into the store beside the config.
+fn run_mcp_login(args: &Args) -> i32 {
+    use teamagents_engine::mcp_auth;
+    let Some(name) = args.session_name.clone() else {
+        eprintln!("mcp login needs --name NAME (the [tools.<name>] binding)");
+        return 2;
+    };
+    let workspace = args
+        .cwd
+        .clone()
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."));
+    let (catalog, _project) = match teamagents_engine::config::load_user_config_for(&workspace) {
+        Ok(loaded) => loaded,
+        Err(error) => {
+            eprintln!("mcp login: {error}");
+            return 2;
+        }
+    };
+    let Some(binding) = catalog.tools.get(&name) else {
+        eprintln!(
+            "mcp login: no [tools.{name}] binding in {}",
+            teamagents_engine::config::user_config_path().display()
+        );
+        return 2;
+    };
+    // the engine decides what the flow sends; the CLI only prints the URL and waits (D-412)
+    let params = match mcp_auth::params(binding) {
+        Ok(params) => params,
+        Err(error) => {
+            eprintln!("mcp login: [tools.{name}]: {error}");
+            return 2;
+        }
+    };
+    let client_secret = match params.client_secret() {
+        Ok(secret) => secret,
+        Err(error) => {
+            eprintln!("mcp login: {error}");
+            return 2;
+        }
+    };
+    let url = params.resource.clone();
+    let store = mcp_auth::Store::at(&mcp_auth::Store::default_path());
+    let callback_port = params.callback_port;
+    let metadata = match mcp_auth::discover(&url) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            eprintln!("mcp login: {error}");
+            return 2;
+        }
+    };
+    let callback = match mcp_auth::bind_callback(callback_port) {
+        Ok(callback) => callback,
+        Err(error) => {
+            eprintln!("mcp login: {error}");
+            return 2;
+        }
+    };
+    let (client_id, client_secret) = match params.client_id.clone() {
+        Some(id) => (id, client_secret),
+        None => match mcp_auth::register(
+            &metadata,
+            &callback.redirect_uri,
+            &params.client_name,
+            params.client_secret_env.as_deref(),
+        ) {
+            Ok(registered) => registered,
+            Err(error) => {
+                eprintln!("mcp login: {error}");
+                return 2;
+            }
+        },
+    };
+    let scopes = if params.scopes.is_empty() { metadata.scopes_supported.clone() } else { params.scopes.clone() };
+    let mut pending = match mcp_auth::authorize(mcp_auth::AuthorizeRequest {
+        metadata: &metadata,
+        resource: &params.resource,
+        client_id: &client_id,
+        client_secret,
+        client_secret_env: params.client_secret_env.as_deref(),
+        callback,
+        scopes: &scopes,
+    }) {
+        Ok(pending) => pending,
+        Err(error) => {
+            eprintln!("mcp login: {error}");
+            return 2;
+        }
+    };
+    println!("open this URL to authorize {name}:\n  {}", pending.authorize_url);
+    if args.mcp_login_no_browser {
+        println!("(waiting for the redirect at {})", pending.redirect_uri);
+    } else if mcp_auth::open_browser(&pending.authorize_url) {
+        println!("(opened a browser; the redirect goes to {})", pending.redirect_uri);
+    } else {
+        println!("(no browser opened; the redirect goes to {})", pending.redirect_uri);
+    }
+    let code = if args.mcp_login_paste {
+        println!("paste the redirected URL (the whole http://127.0.0.1:… line) and press Enter:");
+        match mcp_auth::read_pasted_url().and_then(|pasted| pending.paste(&pasted)) {
+            Ok(code) => code,
+            Err(error) => {
+                eprintln!("mcp login: {error}");
+                return 2;
+            }
+        }
+    } else {
+        let timeout = args.mcp_login_timeout.map_or(mcp_auth::CALLBACK_TIMEOUT, std::time::Duration::from_secs);
+        match pending.wait(timeout) {
+            Ok(code) => code,
+            Err(error) => {
+                eprintln!("mcp login: {error}");
+                return 2;
+            }
+        }
+    };
+    match pending.complete(&code) {
+        Ok(tokens) => {
+            if let Err(error) = store.put(&name, &tokens) {
+                eprintln!("mcp login: {error}");
+                return 2;
+            }
+            let lifetime = tokens
+                .expires_at
+                .map(|at| format!(", valid about {} more minutes", ((at - mcp_auth::now()) / 60.0).max(0.0) as u64))
+                .unwrap_or_default();
+            println!("signed in {name}: credential stored in {}{lifetime}", store.path().display());
+            0
+        }
+        Err(error) => {
+            eprintln!("mcp login: {error}");
+            2
+        }
+    }
+}
+
+/// `mcp logout` (D-412): delete one service's stored credential. The binding stays.
+fn run_mcp_logout(args: &Args) -> i32 {
+    use teamagents_engine::mcp_auth;
+    let Some(name) = args.session_name.clone() else {
+        eprintln!("mcp logout needs --name NAME");
+        return 2;
+    };
+    let store = mcp_auth::Store::at(&mcp_auth::Store::default_path());
+    match store.remove(&name) {
+        Ok(true) => {
+            println!("signed out {name}: the credential is gone from {}", store.path().display());
+            0
+        }
+        Ok(false) => {
+            println!("{name} had no stored credential");
+            0
+        }
+        Err(error) => {
+            eprintln!("mcp logout: {error}");
+            2
+        }
     }
 }
 

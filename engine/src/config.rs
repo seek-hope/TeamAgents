@@ -423,6 +423,35 @@ fn validate_tools(catalog: &UserConfig) -> Result<(), String> {
                 _ => {}
             }
         }
+        // D-412: the OAuth keys are only meaningful for one kind, one transport, and never beside a second
+        // credential for the same endpoint — a config that names two answers to "what do I send" would decide it
+        // by whichever code path ran last.
+        if binding.oauth {
+            if binding.mcp_transport.as_deref().unwrap_or("stdio") != "http" {
+                return Err(format!(
+                    "tools.{name}.oauth = true needs mcp_transport = \"http\": OAuth applies to a remote MCP \
+                     endpoint (docs/CONFIG.md, `[tools.<name>]`)"
+                ));
+            }
+            if binding.bearer_token_env_var.is_some() {
+                return Err(format!(
+                    "tools.{name}: oauth = true and bearer_token_env_var are two credentials for one endpoint; \
+                     keep one (docs/CONFIG.md)"
+                ));
+            }
+            if let Some(var) = binding.oauth_client_secret_env_var.as_deref() {
+                if binding.oauth_client_id.is_none() {
+                    return Err(format!(
+                        "tools.{name}.oauth_client_secret_env_var = {var:?} names the secret of a pre-registered \
+                         client: set oauth_client_id too, or drop it and let the sign-in register this client \
+                         dynamically"
+                    ));
+                }
+            }
+            if binding.oauth_scopes.iter().any(|scope| scope.trim().is_empty()) {
+                return Err(format!("tools.{name}.oauth_scopes holds an empty scope (docs/CONFIG.md)"));
+            }
+        }
         if let Some(execution) = binding.mcp_execution.as_deref() {
             if !MCP_EXECUTIONS.contains(&execution) {
                 return Err(format!(

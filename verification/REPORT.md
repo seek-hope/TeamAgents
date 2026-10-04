@@ -5,6 +5,23 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
+## 0. Gate status (re-run 2026-10-04 at `MATERIAL-COMMIT`)
+
+* **D-412 added the MCP OAuth flow and its model, and re-ran all three targets on this tree (2026-10-04).**
+  `V2Oauth.tla` states the five claims the sign-in rests on — `TokenOnlyToItsResource` (the RFC 8707 `resource`
+  binds a credential to one endpoint), `VerifierNeverLeavesTheClient` (PKCE), `CodesAreSingleUse`,
+  `NoRequestWithAnExpiredToken` (refresh or sign in again) and `LogoutIsEffective` — over a model that carries a
+  monotone clock, a per-service credential, the authorization code's request, and a log of what was presented
+  where. `make verify-model-all`: all **35** configurations `No error has been found` (rc 0); the new one is
+  `MC_oauth.cfg`, exhaustive in under a second. `make verify-model-counterexamples`: all **101** negative controls
+  are refuted (rc 0); the five new ones are `MC_oauth_wrong_resource.cfg`, `MC_oauth_reuses_code.cfg`,
+  `MC_oauth_verifier_leaks.cfg`, `MC_oauth_uses_expired.cfg` and `MC_oauth_logout_ignored.cfg`, each refuting the
+  claim it names. Writing the model found two modelling defects that would have made a claim vacuous — a
+  string-vs-tuple sentinel TLC refuses to compare, and a logout control that the resource guard made unreachable,
+  so `LogoutIsEffective` verified under a control that should have refuted it. `make verify-kani` reports
+  `Complete - 3 successfully verified harnesses, 0 failures, 3 total` (rc 0). The round added
+  `verification/tla/V2Oauth.tla`, six configurations and registered them in both targets.
+
 ## 0. Gate status (re-run 2026-10-04 at `4df3b80c`)
 
 * **D-410 added the wrap-up-warning model and re-ran all three targets on this tree (2026-10-04).**

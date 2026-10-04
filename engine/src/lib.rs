@@ -18,6 +18,7 @@ pub mod config;
 pub mod hooks;
 pub mod jobs;
 pub mod mcp;
+pub mod mcp_auth;
 pub mod observability;
 pub mod providers;
 pub mod reference;

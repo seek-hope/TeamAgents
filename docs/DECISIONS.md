@@ -20,6 +20,62 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-412 MCP OAuth sign-in: the authorization-code flow with PKCE, and the five rules it has to keep (2026-10-04)
+
+**The gap.** `docs/PRODUCT-COMPARISON.md`'s MCP row had one item left: Pi's `pi mcp login` signs in to a remote
+MCP server that answers 401 without a token, and this product could only paste one (`bearer_token_env_var`) or do
+without. `mcp list`/`add`/`remove` (D-399/D-408) had closed the rest of the row.
+
+**What was added.** `engine/src/mcp_auth.rs` and the `mcp login`/`mcp logout` verbs:
+
+- **Discovery, then registration.** `discover` reads the protected-resource metadata (RFC 9728) to find the
+  authorization server, then its metadata (RFC 8414, with the OpenID fallback); a server that cannot be discovered
+  is refused with the URL that did not answer. Without a configured `oauth_client_id`, the sign-in registers this
+  client dynamically (RFC 7591) — and it **binds the loopback callback first**, so the redirect URI it registers
+  is the exact one the authorization server will be asked to return to. (The first draft registered
+  `http://127.0.0.1:0/callback` before binding, which a strict server would refuse.)
+- **PKCE (S256) always, with a `state`.** The verifier never leaves the process until the token exchange; the
+  authorization URL carries only the challenge, the state and the RFC 8707 `resource`.
+- **Two ways back.** The loopback listener takes the browser's redirect; `--paste` reads a redirected URL from
+  stdin instead, which is the SSH case. Both check the `state` and refuse a code this sign-in did not ask for.
+- **One credential file, mode 0600, outside the repository.** `<xdg_config_home>/<APP>/mcp-auth.json`, written
+  atomically (tmp + fsync + rename) and created 0600. It holds tokens; a client secret is read from the
+  environment variable the config names and never written. Nothing secret is printed: the URL carries the
+  challenge, and the token goes straight into the store.
+- **Use and refresh.** An `oauth = true` binding resolves its credential **before** the MCP handshake (the first
+  draft resolved it after `connect_http`, whose `initialize` therefore went out unauthenticated — found by the
+  end-to-end test, not by a unit test), refreshes an expired token when the server issued a refresh token, and
+  installs a one-shot refresher for the mid-session 401. A credential that expired with nothing to refresh is a
+  refusal naming `teamagents mcp login --name <service>`, as is a 401 with no credential at all.
+- **Config keys** (`[tools.<name>]`): `oauth`, `oauth_client_id`, `oauth_client_secret_env_var`,
+  `oauth_callback_port`, `oauth_client_name`, `oauth_scopes`, validated at load — `oauth` needs the `http`
+  transport, may not sit beside `bearer_token_env_var` (two credentials for one endpoint), and a client-secret
+  variable without a client id is refused with the reason.
+
+**Formal (the mandate).** `verification/tla/V2Oauth.tla` with `MC_oauth.cfg` and five controls, one per claim:
+`TokenOnlyToItsResource`, `VerifierNeverLeavesTheClient`, `CodesAreSingleUse`, `NoRequestWithAnExpiredToken` and
+the temporal `LogoutIsEffective`. Two modelling defects surfaced while writing it, both of the kind that makes a
+claim vacuous rather than false: TLC refuses to compare a bare sentinel with a tuple (the "signed out" state is
+now credential-shaped), and the logout control was unreachable because a second guard still demanded a real
+stored credential — so `LogoutIsEffective` *verified* under a control that should have refuted it until the
+guards were separated. `make verify-model-all` 35/35, `make verify-model-counterexamples` 101/101.
+
+**Evidence.** `engine/tests/mcp_oauth.rs` drives the real binary against a fake authorization server and a
+protected MCP endpoint (both roles in one loopback listener) with isolated `XDG_CONFIG_HOME`/`XDG_STATE_HOME`:
+the test acts as the browser (it fetches the printed authorization URL, takes the `Location` and pastes it back),
+and the fake server checks that the PKCE verifier hashes to the challenge that travelled and that the token
+exchange happens once. Four tests: sign in → `mcp list` shows the state and the service's tool → sign out → the
+service is no longer authenticated and the refusal names the lever; an expired credential is refreshed without
+asking the user again; `oauth` + `bearer_token_env_var` is refused; `mcp add --oauth` writes the keys and refuses
+an OAuth flag on a stdio binding. Plus three unit tests in the module (the 0600 round trip including the
+expired-without-refresh refusal, the callback parser for a request line *and* a pasted URL, and the authorization
+URL's contents — no verifier, a challenge, a state, the resource).
+
+**Boundary, stated plainly.** No vendor's OAuth server was exercised: the evidence is a fake authorization server
+plus the specifications the code names (RFC 6749/7636/7591/8414/8707/9728). `docs/PRODUCT-COMPARISON.md` therefore
+records the flow as implemented and locally accepted, not as accepted against a live vendor, and an in-session
+`/mcp` remains absent (the comparison's last MCP item).
+
 ## D-411 The capability map, and two stale statements in the benchmark's own reading (2026-10-04)
 
 **The gap.** Every capability this product has is evidenced somewhere — a test in `make check`, a probe under

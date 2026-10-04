@@ -116,6 +116,28 @@ pub struct ToolBinding {
     /// secret is read from — the token itself never lands in this file.
     #[serde(default)]
     pub bearer_token_env_var: Option<String>,
+    /// D-412: sign in to this HTTP service with OAuth (`teamagents mcp login --name <binding>`) and use the
+    /// credential stored beside the config (`mcp-auth.json`, mode 0600). Mutually exclusive with
+    /// `bearer_token_env_var`: one endpoint, one credential.
+    #[serde(default)]
+    pub oauth: bool,
+    /// A pre-registered client id. Without it the sign-in registers this client dynamically (RFC 7591), which is
+    /// what a server with no `registration_endpoint` cannot do — that server needs this key.
+    #[serde(default)]
+    pub oauth_client_id: Option<String>,
+    /// Names the environment variable holding that client's secret; the secret itself never lands in this file.
+    #[serde(default)]
+    pub oauth_client_secret_env_var: Option<String>,
+    /// The loopback port the redirect URI uses. Unset means any free port, which is what a dynamically registered
+    /// client prefers; a server that demands an exact pre-registered redirect URI needs this set.
+    #[serde(default)]
+    pub oauth_callback_port: Option<u16>,
+    /// The name this client registers under (default "TeamAgents").
+    #[serde(default)]
+    pub oauth_client_name: Option<String>,
+    /// Scopes to request; unset means whatever the authorization server advertises.
+    #[serde(default)]
+    pub oauth_scopes: Vec<String>,
     /// initialize/tools/list timeout in seconds (default 60).
     #[serde(default)]
     pub startup_timeout_s: Option<u64>,

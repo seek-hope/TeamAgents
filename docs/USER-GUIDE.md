@@ -661,6 +661,33 @@ teamagents goals cancel --id g-spent    # close a goal nothing can spend (its ce
   transport (`python3 review/dogfood/mcp_http.py`, D-104). Calls go through the same permission, approval, budget, cancellation and receipt entry
   points. A remote call dispatched before a crash is recorded as `OUTCOME_UNKNOWN` after recovery and is
   **never replayed**.
+- **Signing in to a remote service** (D-412): an HTTP MCP server that answers 401 until you present a token it
+  issues itself needs a sign-in, not a pasted secret. Bind it with `oauth = true` and sign in once:
+
+  ```toml
+  [tools.sentry]
+  kind = "mcp"
+  mcp_transport = "http"
+  url = "https://mcp.example.com/mcp"
+  oauth = true                  # the credential comes from `teamagents mcp login`, never from this file
+  # oauth_client_id = "..."     # only for a server that cannot register a client dynamically
+  # oauth_client_secret_env_var = "MCP_SECRET"   # names the variable, never the value
+  # oauth_callback_port = 8765  # only if the server demands an exact pre-registered redirect URI
+  ```
+
+  `teamagents mcp login --name sentry` finds the authorization server (through the endpoint's own
+  `.well-known/oauth-protected-resource`, then the authorization server's metadata), registers this client
+  dynamically unless you named one, prints the authorization URL, opens a browser and waits for the redirect on
+  `http://127.0.0.1:<port>/callback`. Over SSH (`--paste`) it prints the URL and reads the *redirected URL* you
+  paste back instead; `--no-browser` just prints it, `--timeout SEC` bounds the wait. The flow uses PKCE (S256)
+  with a `state` the callback must echo, and the token is stored in
+  `<xdg_config_home>/teamagents/mcp-auth.json` — **mode 0600, outside the repository, never printed, never in a
+  prompt or a log**; only the variable *name* of a client secret ever appears in the config. An expired token is
+  refreshed silently when the server issued a refresh token, a mid-session 401 is answered by one refresh and a
+  retry, and a credential that cannot be renewed is a refusal that names the verb to run
+  (`teamagents mcp login --name <service>`). `teamagents mcp list` prints each OAuth binding's state
+  (`signed in` / `expired (will refresh)` / `not signed in`) before the tools it offers, and
+  `teamagents mcp logout --name sentry` deletes the stored credential.
 - **Binding one is writing it down** (D-74): a `[tools.<name>] kind = "mcp"` entry in your config *is* the
   binding, exactly like `[tools.web]` for the web tools — the service starts with the session and its tools
   reach every member's model surface as `<name>_<tool>`. Only your **user** config is read today (a

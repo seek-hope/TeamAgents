@@ -225,20 +225,44 @@ fn load_service(name: &str, binding: &ToolBinding, root: &Path) -> Result<(Arc<M
         "http" => {
             let url =
                 binding.url.clone().ok_or_else(|| format!("binding {name:?} needs a url for the http transport"))?;
-            // the token lives only in the named environment variable, never in config
-            let token = match &binding.bearer_token_env_var {
-                Some(var) => Some(
-                    std::env::var(var)
-                        .map_err(|_| format!("binding {name:?}: bearer token env var {var} is not set"))?,
+            // The credential is resolved *before* the client connects: `connect_http` performs the initialize
+            // handshake, so a token read any later would arrive after the request that needs it (D-412).
+            //
+            // * `bearer_token_env_var` names the variable, and a variable that is not set is a hard error, never a
+            //   silent empty secret.
+            // * `oauth = true` reads the credential `teamagents mcp login` stored beside the config, refreshing it
+            //   if the server issued a refresh token. No credential yet is *not* an error here: the client
+            //   connects unauthenticated on purpose, and the server's own 401 carries the `mcp login` sentence —
+            //   a better place to learn it than a load-time guess. An expired credential with nothing to refresh
+            //   *is* an error, and `access_token` states it.
+            let (token, refresh) = match (&binding.bearer_token_env_var, binding.oauth) {
+                (Some(var), _) => (
+                    Some(
+                        std::env::var(var)
+                            .map_err(|_| format!("binding {name:?}: bearer token env var {var} is not set"))?,
+                    ),
+                    None,
                 ),
-                None => None,
+                (None, true) => {
+                    let store = crate::mcp_auth::Store::at(&crate::mcp_auth::Store::default_path());
+                    let token = store.access_token(name).map_err(|error| format!("binding {name:?}: {error}"))?;
+                    let service = name.to_string();
+                    let refresher = std::sync::Arc::new(move || store.access_token(&service));
+                    (token, Some(refresher))
+                }
+                (None, false) => (None, None),
             };
-            McpClient::connect_http(
+            let client = McpClient::connect_http(
                 &url,
                 token,
                 binding.startup_timeout_s.unwrap_or(60),
                 binding.tool_timeout_s.unwrap_or(120),
-            )?
+            )?;
+            // the mid-session half: a token that expires while the session runs is refreshed once on a 401
+            if let Some(refresher) = refresh {
+                client.set_token_refresh(refresher);
+            }
+            client
         }
         "sse" => {
             return Err(format!(
