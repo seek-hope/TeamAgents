@@ -20,6 +20,49 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-409 On a real task a second session gains nothing measurable from memory — because the workspace is the memory (2026-10-04)
+
+D-406 showed durable memory turning an unknowable into a knowable on a task where the fact lived **only** in an
+earlier session's sentence (0/3 control, 3/3 with memory). The complementary question is the real one: on a
+benchmark task, does a second session that inherits the first session's notes do better? The answer is **no**, and
+the reason is the interesting part.
+
+**The design.** A two-turn adapter: turn A runs `query-optimize`'s instruction in the default session; turn B is a
+*second session* in the same container and workspace, asked to "recall what you already know from durable memory,
+then finish the task". The memory arm's B shares turn A's state root (so it can recall); the control arm's B gets a
+state root that has never seen turn A. Everything else — above all the **workspace**, which persists in both arms —
+is identical. Three attempts per arm, `reasoning_effort = low`, the task's own budget.
+
+| arm | passed | wall clock | turn B's operations |
+|---|---|---|---|
+| control (no memory) | **2/3** | 1357 / 1242 / 1527 s | 0 / 38 / 9 |
+| memory | **2/3** | 1256 / 1210 / 1291 s | 14 / 28 / 25 |
+
+**No difference in outcome, wall clock or work.** Turn B in both arms reads the files turn A left — `my-sql-query.sql`,
+a partial `sol.sql`, whatever logs — and that is where the state is. A note is worth something only for what the
+artifacts do **not** carry: a convention, a decision, a reason, a dead end. On this task there was none to carry.
+
+**Two harness bugs, fixed before this result counted** (both would have produced a false reading):
+the experiment's `PYTHONPATH` put `/tmp/ta-harbor` first, so `import teamagents_agent` picked a **stale copy** of the
+adapter whose config used `PARATERA_API_KEY` and every turn died on a missing key; and `sessions new --name later`
+sets a *display* name while the session **id** is generated, so `--session later` exited 2 in all six trials of the
+first instrumented run (whose "0/3 against 1/3" was that bug, not a measurement) — the adapter now takes the id from
+the tool's own output.
+
+**A cleanup error of mine.** Freeing space in `/tmp` (a 16 GiB tmpfs that had reached 80 %) with `rm -rf
+/tmp/harbor-*` also deleted `/tmp/harbor-venv`, the harbor virtualenv; it was rebuilt (`harbor==0.23.0`) and the run
+above is from the rebuilt one.
+
+**What this settles.** Memory is worth building for facts *outside* the workspace, and there is no reason to expect
+it to lift a benchmark whose state is on disk — which is also why D-406 had to construct a task to measure it at all.
+Together the two measurements bound the feature honestly: 0/3 → 3/3 where the fact is session-only, 2/3 → 2/3 where
+the artifacts carry it.
+
+**Formal.** D-405's `V2Memory.tla`.
+
+**Ceiling.** One task, N = 3 per arm, one model, one second turn. A longer real project — many sessions, thousands of
+notes, facts that never became files — is the setting this cannot speak to.
+
 ## D-408 `mcp add` / `mcp remove`: the config ergonomics the MCP surface was missing (2026-10-04)
 
 D-399 gave a user `mcp list`; the other half was still a text editor. The comparison's Pi column has
