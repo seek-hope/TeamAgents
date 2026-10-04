@@ -1,0 +1,19 @@
+{
+  "dataset": "SWE-bench/SWE-bench_Verified",
+  "rule": "random.Random(20261005).sample(all 500 instance ids, 12) \u2014 the seed is recorded before the run",
+  "seed": 20261005,
+  "instances": [
+    "django__django-14053",
+    "matplotlib__matplotlib-25479",
+    "django__django-14351",
+    "django__django-15732",
+    "django__django-12304",
+    "django__django-11433",
+    "matplotlib__matplotlib-26208",
+    "matplotlib__matplotlib-24026",
+    "astropy__astropy-14369",
+    "django__django-11333",
+    "django__django-11734",
+    "scikit-learn__scikit-learn-14141"
+  ]
+}

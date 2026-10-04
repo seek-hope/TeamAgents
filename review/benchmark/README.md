@@ -341,3 +341,30 @@ instances) and `sympy/sympy` (75) are 61 % of Verified and were excluded by the 
 is weaker than the published ones (one shot, no retries, no scaffolding), and N = 14. Leakage was ruled out first:
 `git rev-list HEAD --count == git rev-list --all --count` inside the images, no remote, so the fix commit is not
 reachable. The follow-up that tests the "small repositories only" explanation is pre-registered in the decision.
+
+## The next axis: τ³-bench (tool-agent-user interaction)
+
+Terminal-Bench 2.1 and SWE-bench both grade a *single* trajectory. τ³-bench (`sierra-research/tau2-bench`,
+the maintained successor of the outdated τ-bench) grades something else: a **conversation with a simulated user**
+under a domain policy, with the verdict read from the database state the tools produced — a policy-compliance and
+tool-use axis neither benchmark touches.
+
+The integration shape is fixed by what the product is: τ³-bench's domain tools are exposed as an **MCP stdio
+server** (a thin wrapper over its own `Tool` objects), and a `HalfDuplexAgent` (its interface:
+`get_init_state` + `generate_next_message`) drives the product — one `teamagents exec --json` per user turn into a
+persistent session, whose `reply` becomes the assistant message. That is also a test of a product surface the
+other benchmarks hardly touch (MCP bindings and their tool plumbing) rather than another code-editing run.
+
+Cost, measured before starting: the repository is public and ships its data, `pip install -e .` is the setup, and
+the work is the bridge (~150 lines) plus the agent class (~80). It needs an LLM for the user simulator (the same
+DeepSeek endpoint) and no browser or GPU. It is not started yet: the SWE-bench falsification run has the machine,
+and it is pre-registered here so the next benchmark is chosen before its result.
+
+### The falsification, and the unbiased sample (D-419)
+
+The heavy repositories were run as the pre-registered falsification of "the optimistic number is small-repo bias":
+**12 of 12 resolved** on the first six `django/django` and six `sympy/sympy` instances — the explanation was wrong,
+and the decision records that. What the pre-registered *rule* still shares across repositories is that "first K in
+dataset order" means the **earlier PRs** of each project, so the number to quote afterwards is a **seeded random
+sample of twelve from all 500** (`swebench_subset_random.json`, seed `20261005`, recorded before the run).
+Combined so far: 25 of 26 non-randomly chosen instances across nine repositories.

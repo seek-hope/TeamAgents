@@ -87,11 +87,34 @@ remote configured, so the fix commit is not reachable inside the container.
   *easy for this model* rather than at this harness being strong.
 * **N = 14**; one instance is a 7 % swing.
 
-**The falsification this result asks for, pre-registered here.** The claim above — that the rate is optimistic
-because the heavy repositories were left out — is testable: run the same pipeline on a fixed subset drawn from
-`django/django` and `sympy/sympy` (the first K in dataset order, no cherry-picking), and record the rate. If it
-stays near 13/14, the "small repositories only" explanation is wrong and the product is simply strong on Verified;
-if it falls, the caveat is the measurement. That run is the next step and its numbers land in this entry.
+**The falsification was pre-registered and it came back against my own explanation: 12 of 12 resolved on the heavy
+repositories.** The same pipeline on the first six `django/django` and first six `sympy/sympy` instances in dataset
+order (the two repositories that are 61 % of Verified) resolved **every** instance: 12 submitted, 12 resolved, 0
+unresolved, 0 ambiguous, 0 empty patches, 0 infra failures. Combined with the first run that is **25 of 26
+Verified instances across nine repositories** (`astropy`, `django`, `mwaskom/seaborn`, `pallets/flask`,
+`psf/requests`, `pylint-dev`, `pytest-dev`, `sphinx-doc`, `sympy`). So "the optimistic number came from small
+repositories" is **refuted** — the correction is recorded here because that explanation was mine, stated in
+advance, and it was wrong.
+
+**What replaces it, and the next test.** The pre-registered rule — *the first K instances per repository in the
+dataset's own order* — turns out to share one property across every repository: instance ids are assigned in PR
+order, so "first" means the **earlier (older) PRs** of each project, which is a real and unexamined selection. The
+test that removes it is a **seeded random sample of twelve instances from all 500** (`random.Random(20261005)`,
+the seed recorded before the run), run through the same pipeline; that is the number to quote afterwards, and this
+entry will carry it. Until then the honest summary is: *25 of 26 on a non-random subset, with the subset's bias
+narrowed from "small repositories" to "earlier PRs", and the unbiased estimate pending.*
+
+**A harness quirk worth knowing.** A graded run's *last* step can raise `ValueError: I/O operation on closed file`
+from the harness's own logging on shutdown, after it has written its report; the adapter's `--grade-only` reruns
+just the grading off the predictions file, which is how this run's verdict was read.
+
+**And the third axis, pre-registered before its result.** Two benchmarks still share a shape: one trajectory,
+graded at the end. τ³-bench (`sierra-research/tau2-bench`) grades a **conversation with a simulated user** under a
+domain policy, with the verdict read from the database state the tools produced. The integration is fixed by what
+this product is: the domain tools become an **MCP stdio server** (its own `Tool` objects wrapped), and a
+`HalfDuplexAgent` drives the product — one `teamagents exec --json` per user turn in a persistent session, the
+`reply` becoming the assistant message — which also exercises the MCP bindings the other two benchmarks barely
+touch. Recorded in `review/benchmark/README.md`; not started, and the choice was made before any τ³ result.
 
 ## D-418 The criterion arrives before the work: the goal's required checks are briefed at the turn's start (2026-10-04)
 
