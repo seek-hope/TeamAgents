@@ -1,0 +1,22 @@
+{
+  "dataset": "SWE-bench/SWE-bench_Verified",
+  "rule": "the first K instances of the two largest-by-count repos in the dataset's own order (the falsification D-419 pre-registered)",
+  "plan": {
+    "django/django": 6,
+    "sympy/sympy": 6
+  },
+  "instances": [
+    "django__django-10097",
+    "django__django-10554",
+    "django__django-10880",
+    "django__django-10914",
+    "django__django-10973",
+    "django__django-10999",
+    "sympy__sympy-11618",
+    "sympy__sympy-12096",
+    "sympy__sympy-12419",
+    "sympy__sympy-12481",
+    "sympy__sympy-12489",
+    "sympy__sympy-13031"
+  ]
+}

@@ -9,6 +9,9 @@ __pycache__/
 *.sqlite-wal
 *.sqlite-shm
 # Local probes and scratch artifacts, TLC state directories and runtime state roots
+# The SWE-bench harness writes its per-instance logs to `logs/run_evaluation/...` relative to cwd; the
+# adapter now points that cwd at the run's own output directory, and this keeps a stray run out of the tree.
+/logs/
 /review/tmp/
 /verification/tla/states/
 /states/

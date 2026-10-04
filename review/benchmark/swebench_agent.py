@@ -131,7 +131,9 @@ def grade(predictions: pathlib.Path, instances: list[str], out: pathlib.Path) ->
         "--report_dir", str(out / "grading"),
     ]
     print("+ " + " ".join(command), flush=True)
-    return subprocess.call(command)
+    # The harness writes `logs/run_evaluation/<run>/...` relative to the *cwd*; running it from the run's own
+    # output directory keeps those logs with the evidence they belong to instead of in the repository root.
+    return subprocess.call(command, cwd=str(out))
 
 
 def main() -> int:

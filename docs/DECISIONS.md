@@ -62,6 +62,37 @@ about this product on a benchmark it was never tuned on*, plus a pipeline that c
 a different subset later — not a leaderboard row. A result near zero and a result near the published rate are
 both possible; the decision records whichever arrives.
 
+**Result: 13 of 14 resolved by the official grader** — `logs/run_evaluation/teamagents/teamagents-deepseek-flash/
+<instance>/report.json` shows `patch_successfully_applied: true`, `resolved: true` and **zero failures** in both
+`FAIL_TO_PASS` and `PASS_TO_PASS` for each (requests-1142's is a single test, `test_no_content_length`; requests-1766
+and pytest-10081 carry dozens of PASS_TO_PASS). The summary: 14 submitted, 14 completed, 13 resolved, 1
+`ambiguous_failure` (`pylint-dev__pylint-4604` — the harness could not decide, which is not a clean fail), 0 empty
+patches, 0 infra failures, 0 errors. Every run ended `completed` with the goal SUCCEEDED; patches were 13–229
+lines; **median wall clock 1.6 minutes** per instance (max 4.0).
+
+**The probe errors were ruled out before believing that.** The verdicts are the official harness's, with the test
+patch applied by the grader to a fresh container of the same image; the patches are the agent's (they differ from
+the dataset's gold patches); and the images carry **no leakage**: `git rev-list HEAD --count` equals
+`git rev-list --all --count` in both images checked (`pallets__flask-5014` 4968, `psf__requests-1142` 2577) with no
+remote configured, so the fix commit is not reachable inside the container.
+
+**Why the number is still not a Verified rate.** Three reasons, and the first is the important one:
+
+* **The subset is not the dataset.** It is the *smaller* repositories, chosen by a rule fixed before the run; the
+  two largest by instance count — `django/django` (231) and `sympy/sympy` (75), together **61 % of Verified** —
+  were excluded by that choice, and they are also the heaviest environments. 13/14 says something about these
+  fourteen instances, not about Verified.
+* **The harness is weaker here than the published ones.** One shot at the raw problem statement, no retries, no
+  scaffolding, no hints about the tests — and it still resolved thirteen. That points at the instances being
+  *easy for this model* rather than at this harness being strong.
+* **N = 14**; one instance is a 7 % swing.
+
+**The falsification this result asks for, pre-registered here.** The claim above — that the rate is optimistic
+because the heavy repositories were left out — is testable: run the same pipeline on a fixed subset drawn from
+`django/django` and `sympy/sympy` (the first K in dataset order, no cherry-picking), and record the rate. If it
+stays near 13/14, the "small repositories only" explanation is wrong and the product is simply strong on Verified;
+if it falls, the caveat is the measurement. That run is the next step and its numbers land in this entry.
+
 ## D-418 The criterion arrives before the work: the goal's required checks are briefed at the turn's start (2026-10-04)
 
 **The gap.** A goal's `required_checks` were read in exactly two places: the gate at the **completion boundary**

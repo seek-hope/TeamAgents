@@ -328,3 +328,16 @@ plus one fixed instruction line, a patch of `git add -A && git diff HEAD` with t
 paths excluded, and the **official** grader for the verdict. Fourteen instances are not a leaderboard row: the
 published numbers are 500 instances with heavy scaffolding, while this gives the product one shot at the raw
 statement. See the decision for the result and its limits.
+
+### The result of the first subset (D-419)
+
+14 submitted, 14 completed, **13 resolved** by the official grader (one `ambiguous_failure`), 0 empty patches,
+0 infra failures; patches 13–229 lines, median wall clock **1.6 minutes** per instance. Each per-instance verdict
+is in `logs/run_evaluation/teamagents/teamagents-deepseek-flash/<instance>/report.json`
+(`patch_successfully_applied`, `resolved`, and the `FAIL_TO_PASS`/`PASS_TO_PASS` lists with zero failures).
+
+**Not a Verified rate, and the decision says why:** the subset is the smaller repositories — `django/django` (231
+instances) and `sympy/sympy` (75) are 61 % of Verified and were excluded by the pre-registered rule — the harness
+is weaker than the published ones (one shot, no retries, no scaffolding), and N = 14. Leakage was ruled out first:
+`git rev-list HEAD --count == git rev-list --all --count` inside the images, no remote, so the fix commit is not
+reachable. The follow-up that tests the "small repositories only" explanation is pre-registered in the decision.
