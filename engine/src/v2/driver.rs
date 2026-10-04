@@ -62,6 +62,11 @@ mod cadence {
 /// policy knob, overridable per goal via limits.max_check_rounds).
 const DEFAULT_MAX_CHECK_ROUNDS: i64 = 3;
 
+/// D-410: how close to its deadline a goal gets before the runtime tells the model, in seconds. Absolute rather
+/// than a fraction: the runtime knows the deadline, not the budget it was set from (`exec --timeout` is the
+/// client's own bound), and a claim it cannot compute is worse than a fixed one it can.
+const DEADLINE_WARNING_SECS: f64 = 120.0;
+
 /// The names of the kernel's built-in tools (`finish`, `read_history`), which `team_kernel` does not carry in
 /// `profile.tools` but a dispatch or an error message must still know (D-402).
 fn builtin_names() -> impl Iterator<Item = String> {
@@ -169,6 +174,9 @@ struct Snapshot {
     epoch: i64,
     active_request: Option<String>,
     active_goal: Option<String>,
+    /// The active goal's absolute deadline, if it has one. Read here rather than in its own storage call: the
+    /// worker's queue is bounded, and a second call per step is what turned a warning into a failed turn (D-410).
+    goal_deadline: Option<f64>,
 }
 
 pub(crate) struct Shared {
@@ -842,8 +850,10 @@ impl<P: Provider> Driver<P> {
                 control
                     .connection()
                     .query_row(
-                        "SELECT lifecycle, phase, revision, context_epoch, active_request_id, active_goal_id
-                         FROM instances WHERE id = ?1",
+                        "SELECT i.lifecycle, i.phase, i.revision, i.context_epoch, i.active_request_id,
+                                i.active_goal_id, g.deadline
+                         FROM instances i LEFT JOIN goals g ON g.id = i.active_goal_id
+                         WHERE i.id = ?1",
                         [&instance],
                         |row| {
                             Ok(Snapshot {
@@ -853,6 +863,7 @@ impl<P: Provider> Driver<P> {
                                 epoch: row.get(3)?,
                                 active_request: row.get(4)?,
                                 active_goal: row.get(5)?,
+                                goal_deadline: row.get(6)?,
                             })
                         },
                     )
@@ -1471,6 +1482,9 @@ that delegated it learns the outcome only from a settlement.";
             )
             .await?;
         let revision = drained["revision"].as_i64().unwrap_or(snapshot.revision);
+        // D-410: before the request is built, a goal whose deadline is close gets its one wrap-up note, so the
+        // model can settle or report with time to spare instead of being cut mid-edit.
+        self.warn_before_deadline(snapshot).await?;
         let mut entries = self.context_entries(snapshot).await?;
         self.expand_images(&mut entries);
         // A turn opens for *unaddressed* work only: content that arrived since the
@@ -2739,6 +2753,32 @@ that delegated it learns the outcome only from a settlement.";
     /// Goal-level required checks from the stored limits (§8): predefined by
     /// the user or project bootstrap at create_goal; an empty list settles
     /// completion on the candidate alone. Returns (checks, max_rounds).
+    /// D-410: tell the model once, while a live goal's deadline is close, how long is left. A deadline with no
+    /// note is a deadline the model only ever learns about when a request is *refused*, which is the wrong moment
+    /// (the turn is over) — see D-397 and D-400 for what that cost.
+    async fn warn_before_deadline(&mut self, snapshot: &Snapshot) -> Result<(), String> {
+        let Some(goal) = snapshot.active_goal.clone() else { return Ok(()) };
+        let Some(deadline) = snapshot.goal_deadline else { return Ok(()) };
+        let remaining = deadline - teamagents_core::models::now();
+        if remaining <= 0.0 || remaining > DEADLINE_WARNING_SECS {
+            return Ok(());
+        }
+        // Best effort: the deadline itself is untouched and still enforced, so a warning that could not be queued
+        // (the storage worker's bounded queue is full) must not fail the turn that is racing the clock. Nothing was
+        // appended, so the next step tries again.
+        let _ = self
+            .submit(
+                self.command(
+                    format!("deadline-warning-{goal}"),
+                    "deadline_warning",
+                    json!({"goal_id": goal, "instance_id": self.config.instance_id}),
+                ),
+                Identity::System,
+            )
+            .await;
+        Ok(())
+    }
+
     /// D-393: does this goal require a round that another instance registered?
     async fn requires_independent(&self, goal: &str) -> Result<bool, String> {
         let goal = goal.to_string();

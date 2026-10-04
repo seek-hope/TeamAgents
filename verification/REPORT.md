@@ -5,6 +5,23 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
+## 0. Gate status (re-run 2026-10-04 at `MATERIAL-COMMIT`)
+
+* **D-410 added the wrap-up-warning model and re-ran all three targets on this tree (2026-10-04).**
+  `V2Control.tla` gained the driver's wrap-up note as a modelled step: a second monotone clock fact
+  (`nearDeadline`, the code's `remaining <= 120s`) beside `DeadlinePasses`, the `Warn(i)` action (one note per
+  goal, appended only while the goal is ACTIVE and the deadline still ahead, landing as unaddressed work like any
+  boundary input) and its two claims — `AtMostOneWarning` (state) and `WarnIsTimely` (temporal). `make
+  verify-model-all`: all **34** configurations `No error has been found` (rc 0); the new one is
+  `MC_control_warn.cfg`, 582,397 states generated / 113,280 distinct. `make verify-model-counterexamples`:
+  all **96** negative controls are refuted (rc 0); the two new ones are `MC_control_warn_late.cfg` (a warning after
+  the deadline — `WarnIsTimely` refuted at 138 states) and `MC_control_warn_repeat.cfg` (a warning on every step
+  near it — `AtMostOneWarning` refuted at 132 states). The first draft of the action reset the D-72
+  `afterLanding` monitor, which `MC.cfg` refuted through `SettlementFollowsATurnAfterTheLanding`: a runtime note
+  is not a user input. `make verify-kani` reports `Complete - 3 successfully verified harnesses, 0 failures, 3
+  total` (rc 0). The round changed `verification/tla/V2Control.tla`, added three configurations and registered
+  them in both targets.
+
 ## 0. Gate status (re-run 2026-10-04 at `d366a5a5`)
 
 * **D-405 added the durable-memory model and re-ran all three targets on this tree (2026-10-04).**

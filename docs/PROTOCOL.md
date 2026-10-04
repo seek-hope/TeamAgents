@@ -96,16 +96,17 @@ the handler re-checks who may do this rather than trusting the request.
 | `register_verification` | — | yes | `core/src/v2/control.rs:160` |
 | `repair_completion` | `failures`, `goal_id`, `instance_id`, `round` | yes | `core/src/v2/control.rs:161` |
 | `block_goal` | `goal_id`, `instance_id`, `reason` | yes | `core/src/v2/control.rs:162` |
-| `cancel_goal` | `goal_id` | yes | `core/src/v2/control.rs:163` |
-| `close_completion` | `instance_id` | no | `core/src/v2/control.rs:164` |
-| `artifact_abandon` | `id` | yes | `core/src/v2/control.rs:165` |
-| `set_lifecycle` | `instance_id`, `lifecycle`, `reason` | yes | `core/src/v2/control.rs:166` |
-| `artifact_stage` | `digest`, `id`, `kind`, `owner_ref`, `owner_scope`, `size`, `storage_ref` | no | `core/src/v2/control.rs:167` |
-| `artifact_publish` | `id` | no | `core/src/v2/control.rs:168` |
-| `artifact_gc_claim` | `limit` | no | `core/src/v2/control.rs:169` |
-| `artifact_collect` | `id` | no | `core/src/v2/control.rs:170` |
-| `prune_history` | `days`, `evidence`, `now` | yes | `core/src/v2/control.rs:171` |
-| `fork_reset` | `keep_instance`, `source_root`, `target_root` | yes | `core/src/v2/control.rs:172` |
+| `deadline_warning` | `goal_id`, `instance_id` | yes | `core/src/v2/control.rs:163` |
+| `cancel_goal` | `goal_id` | yes | `core/src/v2/control.rs:164` |
+| `close_completion` | `instance_id` | no | `core/src/v2/control.rs:165` |
+| `artifact_abandon` | `id` | yes | `core/src/v2/control.rs:166` |
+| `set_lifecycle` | `instance_id`, `lifecycle`, `reason` | yes | `core/src/v2/control.rs:167` |
+| `artifact_stage` | `digest`, `id`, `kind`, `owner_ref`, `owner_scope`, `size`, `storage_ref` | no | `core/src/v2/control.rs:168` |
+| `artifact_publish` | `id` | no | `core/src/v2/control.rs:169` |
+| `artifact_gc_claim` | `limit` | no | `core/src/v2/control.rs:170` |
+| `artifact_collect` | `id` | no | `core/src/v2/control.rs:171` |
+| `prune_history` | `days`, `evidence`, `now` | yes | `core/src/v2/control.rs:172` |
+| `fork_reset` | `keep_instance`, `source_root`, `target_root` | yes | `core/src/v2/control.rs:173` |
 
 ### Every field the protocol carries in one object, and where it is built
 

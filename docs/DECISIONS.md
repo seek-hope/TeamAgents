@@ -20,6 +20,66 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-410 The runtime tells a goal when its deadline is close — and that signal only exists at a step boundary (2026-10-04)
+
+A deadline used to be invisible until it *refused* a request. Three measurements said that was the wrong moment:
+D-397 found ten of one run's 33 deadline trials had already produced a passing result and were still working, D-400
+showed the acceptance gate only acts after the model claims to be done, and D-403 that it therefore never runs on a
+task whose agent never claims. The missing signal is "time is nearly up".
+
+**What was added.** A driver-internal control command `deadline_warning` (system identity) appends **one** note to the
+goal's conversation — `runtime: about N seconds remain before goal <id>'s deadline. Settle it now — call finish with
+what you have …` — with the entry id `goal-deadline-warning-<goal>`, so a restarted driver appends it at most once.
+The remaining time is computed by the runtime, never taken from the caller, and the command refuses (sending
+nothing) for a goal that is not ACTIVE, has no deadline, or whose deadline has passed: a note the runtime cannot
+stand behind is worse than none. The driver calls it at the start of every step when 120 s or less remain. Nothing
+about the deadline itself changed — the same absolute time is still enforced by `begin_request`.
+
+**A defect only the real system showed.** The first implementation read the deadline with its own
+`storage.call(...)` at the start of every step. That call goes to the driver's bounded single-writer queue, and a
+second call per step filled it under load: `warn_before_deadline` returned `storage queue full: backpressure`, the
+`?` turned that into a **failed step**, and `a_tiny_configured_ceiling_parks_the_session_instead_of_running_it`
+(running the real binary: a 4-token ceiling must park the leader for *budget*) began parking it for a driver error
+instead — reproduced with and without the change under `git stash`. The deadline is now a column of the snapshot
+query the step already makes (`LEFT JOIN goals`), so the hook costs no storage traffic, and the queued note is
+best-effort: a courtesy that cannot be sent must not fail the turn that is racing the clock.
+
+**Tests.** `control::the_deadline_warning_is_sent_once_and_only_before_a_live_deadline` (a model identity is refused;
+one note per goal; no deadline / passed deadline / settled goal each answer `sent: false` with the reason; the note is
+in the conversation) and `v2_driver::a_goal_close_to_its_deadline_is_told_once_to_wrap_up` (a live driver with a
+30-second deadline: the event fires, the note is the model-visible context, and exactly one such entry exists).
+
+**Measured, three ways, and the third is the honest one.**
+
+| configuration | result | did the warning fire? |
+|---|---|---|
+| 12 timeout-prone tasks, `deadline_minutes = 15`, against a bare arm | bare **0/12**, deadline **5/12** | **no** — 0 warnings in an instrumented check: 15 min lands *after* the client's 890 s cut, so the deadline was never reached inside the turn |
+| the same 12 tasks at `deadline_minutes = 13` | bare **0/12**, deadline **1/12** | partly: 2 runs settled, 10 were still cut |
+| three of those tasks, instrumented, at 13 min | 2 goals **SUCCEEDED**, 1 settled honestly as **FAILED**; **one warning each, ~110 s before the deadline** | yes |
+
+So the 5/12 in the first row is **not** evidence for this feature (no note ever reached a model) — it is the deadline
+ending runs a few seconds early plus run-to-run variation — and the third row is what the feature does when it can
+act: the model is told, and it settles with what it has.
+
+**Why it rarely helps the tasks that actually time out.** The warning is delivered at a **step boundary**, and a step
+can be a single long tool call; the runs that hit the deadline are exactly the ones spending long stretches inside
+one. At 13 minutes only 2 of 12 runs were between steps when the note was due; the other 10 were still inside a call
+when both the warning and the deadline passed. This is the same wall the other two attempts hit from different sides
+(D-381's larger budget, D-400/D-403's acceptance gate): every lever the runtime owns is observable only where the
+model comes up for air.
+
+**The upgrade path, recorded not taken.** Bound a single tool call's wall clock (or interrupt one as the deadline
+nears, which trades work for a decision point), so a goal near its deadline returns to the model more often. That is
+a change to how commands run, not to when they are judged, and it is the only lever in this family that does not
+depend on the model's cadence.
+
+**Formal.** None new: the note is conversation content, not a state transition, so `V2Control`'s
+`NoRequestAfterDeadline` is unchanged — and the third measurement is what shows the residual gap is cadence, which a
+model of the protocol would not have shown.
+
+**Ceiling.** Twelve tasks at N = 1 per arm, one model, one client timeout; the first row is a void measurement kept
+because it shows how easily this class of change can be credited with an effect it did not cause.
+
 ## D-409 On a real task a second session gains nothing measurable from memory — because the workspace is the memory (2026-10-04)
 
 D-406 showed durable memory turning an unknowable into a knowable on a task where the fact lived **only** in an

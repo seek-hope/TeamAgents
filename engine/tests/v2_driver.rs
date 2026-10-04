@@ -1576,6 +1576,58 @@ async fn an_invented_tool_name_is_answered_with_what_the_instance_can_call() {
     handle.shutdown().await.expect("shutdown");
 }
 
+/// D-410: a goal whose deadline is close is told once, in the conversation, how long is left — and the note is
+/// written *before* the request that sees it. A goal with a distant (or absent) deadline is told nothing: the
+/// warning is about a moment, not a policy.
+#[tokio::test]
+async fn a_goal_close_to_its_deadline_is_told_once_to_wrap_up() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("deadline-warning");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let mut control = second_control(&root);
+    control
+        .submit(
+            cmd(
+                "mk-i",
+                "create_instance",
+                json!({"id": "i-main", "workspace_ref": root.dir.join("ws").to_string_lossy()}),
+            ),
+            teamagents_core::v2::Identity::User,
+        )
+        .expect("instance");
+    let soon = teamagents_core::models::now() + 30.0;
+    control
+        .submit(
+            cmd("mk-g", "create_goal", json!({"id": "goal-s-test", "instance_id": "i-main", "deadline": soon})),
+            teamagents_core::v2::Identity::User,
+        )
+        .expect("goal");
+    drop(control);
+    let script = vec![Step::Message(reply("working on it")), Step::Message(reply("still here"))];
+    let handle = start(root.config(ScriptedProvider { script: Mutex::new(script.into()) })).await.expect("start");
+    handle.input("do the work").await.expect("input");
+    let warned = wait_event_where("goal_deadline_warning", &handle, 20_000, |_| true).await;
+    assert!(warned["payload"]["seconds_left"].as_i64().unwrap_or(0) > 0, "{warned}");
+    // the note is in the conversation the model reads, and it names the lever
+    let connection = rusqlite::Connection::open(root.dir.join("session.sqlite")).expect("session db");
+    let note: String = connection
+        .query_row(
+            "SELECT message_json FROM context_entries WHERE envelope_id = 'goal-deadline-warning-goal-s-test'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the note exists");
+    assert!(note.contains("finish"), "{note}");
+    // and it is one note, not one per turn
+    let count: i64 = connection
+        .query_row("SELECT COUNT(*) FROM context_entries WHERE envelope_id LIKE 'goal-deadline-warning-%'", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(count, 1, "at most one warning per goal");
+    handle.shutdown().await.expect("shutdown");
+}
+
 #[tokio::test]
 async fn check_dispatch_refused_parks_without_burning_repair_rounds() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));

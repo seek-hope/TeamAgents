@@ -33,7 +33,10 @@ CONSTANTS Instances,       \* {"L"} or {"L","W"}
           ReaskAfterReply, \* counterfactual: re-open a turn when the last word is the model's own (D-65)
           RuntimeTailIsWork, \* counterfactual: treat the runtime's own closing note as unaddressed (D-71)
           MaxEpoch,        \* bound on ResetInstance (keeps the state graph finite)
-          MaxUnknown       \* bound on lost-attempt accounting
+          MaxUnknown,      \* bound on lost-attempt accounting
+          WarnLate,        \* counterfactual: warn a goal that is already past its deadline (D-410)
+          WarnRepeatedly,  \* counterfactual: warn one goal more than once (D-410)
+          MaxWarns         \* bound on the warnings one goal may receive
 
 ASSUME Instances # {} /\ Ops # {} /\ ReqIds # {} /\ AttIds # {} /\ ApprovalOps \subseteq Ops
 
@@ -61,9 +64,12 @@ VARIABLES
   attempts,  \* attempt slot -> [req, status]
   ops,       \* operation -> [status, instance, epoch, effect, dispatched]
   approvals, \* operation -> "none" | "PENDING" | ApprovalDone
-  dead       \* crashed instances (in-memory view lost; durable state stays)
+  dead,      \* crashed instances (in-memory view lost; durable state stays)
+  nearDeadline, \* the goal's wall-clock deadline is within the runtime's warning window (D-410);
+                \* a second monotone clock fact, because the code observes two thresholds of one clock
+  warns      \* warnings appended to the goal's conversation (at most one in the code, D-410)
 
-vars == <<inst, goal, requests, attempts, ops, approvals, dead>>
+vars == <<inst, goal, requests, attempts, ops, approvals, dead, nearDeadline, warns>>
 
 \* ------------------------------------------------------------------- helpers --
 UsedReqs == { r \in ReqIds : requests[r].status # "none" }
@@ -92,7 +98,7 @@ Input(i) ==
   /\ Alive(i) /\ inst[i].phase = "READY" /\ inst[i].lifecycle = "ACTIVE"
   /\ inst' = [inst EXCEPT ![i].tail = "user", ![i].queue = FALSE,
                               ![i].afterLanding = FALSE]
-  /\ UNCHANGED <<goal, requests, attempts, ops, approvals, dead>>
+  /\ UNCHANGED <<goal, requests, attempts, ops, approvals, dead, nearDeadline, warns>>
 
 \* the driver's boundary: apply the queued input once the turn in flight ended.
 \* Weak fairness on this action is the liveness assumption behind
@@ -101,14 +107,14 @@ ApplyQueued(i) ==
   /\ Alive(i) /\ inst[i].queue /\ inst[i].phase = "READY" /\ inst[i].lifecycle = "ACTIVE"
   /\ inst' = [inst EXCEPT ![i].tail = "user", ![i].queue = FALSE,
                               ![i].afterLanding = FALSE]
-  /\ UNCHANGED <<goal, requests, attempts, ops, approvals, dead>>
+  /\ UNCHANGED <<goal, requests, attempts, ops, approvals, dead, nearDeadline, warns>>
 
 \* the user submits while a walk is in flight: the input waits for the boundary
 QueueInput(i) ==
   /\ Alive(i) /\ inst[i].lifecycle = "ACTIVE"
   /\ inst[i].phase \in {"MODEL_PENDING", "TOOLS_PENDING", "COMPLETION_PENDING"}
   /\ inst' = [inst EXCEPT ![i].queue = TRUE]
-  /\ UNCHANGED <<goal, requests, attempts, ops, approvals, dead>>
+  /\ UNCHANGED <<goal, requests, attempts, ops, approvals, dead, nearDeadline, warns>>
 
 \* Counterfactual (AllowMidTurnInput = TRUE): the pre-D-63 code stored the input
 \* in the running turn's context. The turn's own reply then lands *after* it, so
@@ -120,14 +126,40 @@ MidTurnInput(i) ==
   /\ Alive(i) /\ inst[i].lifecycle = "ACTIVE" /\ inst[i].phase # "READY"
   /\ inst' = [inst EXCEPT ![i].tail = "user", ![i].inputMidTurn = TRUE,
                               ![i].afterLanding = FALSE]
-  /\ UNCHANGED <<goal, requests, attempts, ops, approvals, dead>>
+  /\ UNCHANGED <<goal, requests, attempts, ops, approvals, dead, nearDeadline, warns>>
 
 \* the wall clock passes the goal's deadline (a fixed timestamp in the code; the
 \* model only needs the monotone fact that it has passed)
 DeadlinePasses ==
   /\ ~goal.deadlinePassed
   /\ goal' = [goal EXCEPT !.deadlinePassed = TRUE]
-  /\ UNCHANGED <<inst, requests, attempts, ops, approvals, dead>>
+  /\ UNCHANGED <<inst, requests, attempts, ops, approvals, dead, nearDeadline, warns>>
+
+\* D-410: the wall clock reaches the runtime's warning window (the code's `remaining <= 120s`). Modelled as its
+\* own monotone fact beside `DeadlinePasses`, so the two thresholds of one clock stay distinct: the warning is
+\* only ever timely while the deadline itself is still ahead.
+DeadlineNears ==
+  /\ ~nearDeadline /\ ~goal.deadlinePassed
+  /\ nearDeadline' = TRUE
+  /\ UNCHANGED <<inst, goal, requests, attempts, ops, approvals, dead, warns>>
+
+\* D-410: once the deadline is close, the runtime tells the goal's instance in its own voice that time is nearly
+\* up. The note is conversation content, not a state change: it settles nothing, cancels nothing and — the point
+\* — does not move the deadline gate (`NoRequestAfterDeadline` still holds, and `WarnIsTimely` pins the guard).
+\* It speaks in the conversation like a message (tail "user"), which is what opens the turn the model answers — but
+\* it is not a *user input*: the D-72 monitor `afterLanding` is about the client's own input, so a runtime note
+\* leaves it alone (`SettlementFollowsATurnAfterTheLanding` is precisely the rule that would catch getting this
+\* wrong). `warns` is monotone and the action appends at most one note unless the counterfactual
+\* `WarnRepeatedly` drops the guard; `WarnLate` drops "before the deadline" and must be refuted.
+Warn(i) ==
+  /\ Alive(i) /\ inst[i].lifecycle = "ACTIVE"
+  /\ goal.status = "ACTIVE"              \* a settled goal is never warned: the runtime cannot stand behind it
+  /\ nearDeadline                        \* only inside the window
+  /\ (WarnLate \/ ~goal.deadlinePassed)  \* the counterfactual drops the "still ahead" guard
+  /\ (WarnRepeatedly \/ warns = 0)       \* the counterfactual drops the "at most once" guard
+  /\ warns' = warns + 1
+  /\ inst' = [inst EXCEPT ![i].tail = "user"]
+  /\ UNCHANGED <<goal, requests, attempts, ops, approvals, dead, nearDeadline>>
 
 \* READY -> MODEL_PENDING: revision guard, idle rule, budget reservation
 BeginRequest(i) ==
@@ -157,7 +189,7 @@ BeginRequest(i) ==
                                   \* landed last (a boundary drained the queue first:
                                   \* `~inst[i].queue` above)
                                   ![i].afterLanding = TRUE]
-  /\ UNCHANGED <<attempts, ops, approvals, dead>>
+  /\ UNCHANGED <<attempts, ops, approvals, dead, nearDeadline, warns>>
 
 \* the atomic response selection bills the goal; late completes only archive
 RecordAttempt(i) ==
@@ -168,7 +200,7 @@ RecordAttempt(i) ==
             attempts' = [attempts EXCEPT ![a] = [req |-> r, status |-> "COMPLETE"]]
             /\ requests' = [requests EXCEPT ![r].selected = TRUE]
             /\ goal' = [goal EXCEPT !.known = @ + 1]
-  /\ UNCHANGED <<inst, ops, approvals, dead>>
+  /\ UNCHANGED <<inst, ops, approvals, dead, nearDeadline, warns>>
 
 \* an in-flight attempt lost to a crash: counted as unknown, never replayed
 LostAttempt(i) ==
@@ -177,7 +209,7 @@ LostAttempt(i) ==
   /\ \E r \in UsedReqs :
        /\ inst[i].activeReq = r /\ requests[r].status = "PENDING"
        /\ goal' = [goal EXCEPT !.unknown = @ + 1]
-  /\ UNCHANGED <<inst, requests, attempts, ops, approvals, dead>>
+  /\ UNCHANGED <<inst, requests, attempts, ops, approvals, dead, nearDeadline, warns>>
 
 \* response import: context append + decision + phase, one transaction
 ImportResponse(i) ==
@@ -200,25 +232,25 @@ ImportResponse(i) ==
                              effect |-> 0, dispatched |-> FALSE] ]
                    ELSE ops
        /\ approvals' = IF requests[r].result = "ops" THEN [ o \in Ops |-> "none" ] ELSE approvals
-  /\ UNCHANGED <<attempts, dead>>
+  /\ UNCHANGED <<attempts, dead, nearDeadline, warns>>
 
 \* a shell-like operation asks the user; the runtime never self-approves (§6.2)
 RequestApproval(o) ==
   /\ Alive(ops[o].instance) /\ ops[o].status = "PREPARED"
   /\ o \in ApprovalOps /\ approvals[o] = "none"
   /\ approvals' = [approvals EXCEPT ![o] = "PENDING"]
-  /\ UNCHANGED <<inst, goal, requests, attempts, ops, dead>>
+  /\ UNCHANGED <<inst, goal, requests, attempts, ops, dead, nearDeadline, warns>>
 
 Approve(o) ==
   /\ approvals[o] = "PENDING"
   /\ approvals' = [approvals EXCEPT ![o] = "APPROVED"]
-  /\ UNCHANGED <<inst, goal, requests, attempts, ops, dead>>
+  /\ UNCHANGED <<inst, goal, requests, attempts, ops, dead, nearDeadline, warns>>
 
 Deny(o) ==
   /\ approvals[o] = "PENDING"
   /\ approvals' = [approvals EXCEPT ![o] = "DENIED"]
   /\ ops' = [ops EXCEPT ![o].status = "CANCELLED_BEFORE_START"]
-  /\ UNCHANGED <<inst, goal, requests, attempts, dead>>
+  /\ UNCHANGED <<inst, goal, requests, attempts, dead, nearDeadline, warns>>
 
 \* the linearization point: durable dispatch record after the re-checks
 Dispatch(o) ==
@@ -228,14 +260,14 @@ Dispatch(o) ==
   /\ inst[ops[o].instance].lifecycle = "ACTIVE"
   /\ ApprovalSatisfied(o)
   /\ ops' = [ops EXCEPT ![o].status = "DISPATCH_COMMITTED", ![o].dispatched = TRUE]
-  /\ UNCHANGED <<inst, goal, requests, attempts, approvals, dead>>
+  /\ UNCHANGED <<inst, goal, requests, attempts, approvals, dead, nearDeadline, warns>>
 
 \* the external effect only starts after its durable record (A08)
 StartEffect(o) ==
   /\ Alive(ops[o].instance)
   /\ ops[o].status = "DISPATCH_COMMITTED"
   /\ ops' = [ops EXCEPT ![o].status = "RUNNING", ![o].effect = @ + 1]
-  /\ UNCHANGED <<inst, goal, requests, attempts, approvals, dead>>
+  /\ UNCHANGED <<inst, goal, requests, attempts, approvals, dead, nearDeadline, warns>>
 
 Complete(o, outcome) ==
   /\ outcome \in OpTerminal
@@ -243,7 +275,7 @@ Complete(o, outcome) ==
   /\ ops[o].epoch = inst[ops[o].instance].ctxEpoch   \* no receipt across epochs
   /\ ~(ops[o].status = "PREPARED" /\ outcome \in {"SUCCEEDED", "FAILED", "OUTCOME_UNKNOWN"})
   /\ ops' = [ops EXCEPT ![o].status = outcome]
-  /\ UNCHANGED <<inst, goal, requests, attempts, approvals, dead>>
+  /\ UNCHANGED <<inst, goal, requests, attempts, approvals, dead, nearDeadline, warns>>
 
 \* decision consumption: receipts join the context, phase READY, approvals expire
 ConsumeDecision(i) ==
@@ -253,12 +285,12 @@ ConsumeDecision(i) ==
        /\ DoneOps(i) = Ops
        /\ inst' = [inst EXCEPT ![i].phase = "READY", ![i].tail = "tool", ![i].activeReq = nil]
        /\ approvals' = [ o \in Ops |-> IF approvals[o] = "PENDING" THEN "EXPIRED" ELSE approvals[o] ]
-       /\ UNCHANGED <<goal, requests, attempts, ops, dead>>
+       /\ UNCHANGED <<goal, requests, attempts, ops, dead, nearDeadline, warns>>
 
 Crash(i) ==
   /\ Alive(i)
   /\ dead' = dead \cup {i}
-  /\ UNCHANGED <<inst, goal, requests, attempts, ops, approvals>>
+  /\ UNCHANGED <<inst, goal, requests, attempts, ops, approvals, nearDeadline, warns>>
 
 \* recovery never restarts a possibly-started effect (A08/A11)
 Recover(i) ==
@@ -266,8 +298,8 @@ Recover(i) ==
   /\ dead' = dead \ {i}
   /\ \/ \E o \in Ops : ops[o].instance = i /\ ops[o].status \in {"DISPATCH_COMMITTED", "RUNNING"}
                         /\ ops' = [ops EXCEPT ![o].status = "OUTCOME_UNKNOWN"]
-                        /\ UNCHANGED <<inst, goal, requests, attempts, approvals>>
-     \/ UNCHANGED <<inst, goal, requests, attempts, ops, approvals>>
+                        /\ UNCHANGED <<inst, goal, requests, attempts, approvals, nearDeadline, warns>>
+     \/ UNCHANGED <<inst, goal, requests, attempts, ops, approvals, nearDeadline, warns>>
 
 \* user cancel: request closes, reservation released, instance READY (A13)
 CancelRequest(i) ==
@@ -278,7 +310,7 @@ CancelRequest(i) ==
        /\ goal' = [goal EXCEPT !.reserved = @ \ {<<r, requests[r].est>>}]
        /\ inst' = [inst EXCEPT ![i].phase = "READY", ![i].activeReq = nil,
                                   ![i].revision = @ + 1, ![i].expectRev = @ + 1]
-  /\ UNCHANGED <<attempts, ops, approvals, dead>>
+  /\ UNCHANGED <<attempts, ops, approvals, dead, nearDeadline, warns>>
 
 \* permanent failure parks the instance and keeps the input (§5.4/A07)
 FailRequest(i) ==
@@ -289,7 +321,7 @@ FailRequest(i) ==
        /\ goal' = [goal EXCEPT !.reserved = @ \ {<<r, requests[r].est>>}]
        /\ inst' = [inst EXCEPT ![i].lifecycle = "PARKED", ![i].activeReq = nil,
                                   ![i].phase = "READY"]
-  /\ UNCHANGED <<attempts, ops, approvals, dead>>
+  /\ UNCHANGED <<attempts, ops, approvals, dead, nearDeadline, warns>>
 
 \* goal settlement happens once and only from ACTIVE (§8). The settlement leaves
 \* the runtime's own closing note as the instance's last word: the runtime states
@@ -313,7 +345,7 @@ SettleGoal(i, status) ==
   /\ goal' = [goal EXCEPT !.status = status]
   /\ inst' = [inst EXCEPT ![i].phase = "READY", ![i].tail = "runtime",
                               ![i].settledAfterTurn = inst[i].afterLanding]
-  /\ UNCHANGED <<requests, attempts, ops, approvals, dead>>
+  /\ UNCHANGED <<requests, attempts, ops, approvals, dead, nearDeadline, warns>>
 
 \* D-341/D-344: the user's lever on a goal nothing can spend. A goal whose ceiling or deadline is gone stays
 \* ACTIVE for ever, refusing new work (A18's gate) and still listed (A18's known gap); the instance its refusal
@@ -330,7 +362,7 @@ CancelGoal ==
                  IF ReleaseOnCancel /\ inst[j].lifecycle = "PARKED"
                    THEN [inst[j] EXCEPT !.lifecycle = "ACTIVE"]
                    ELSE inst[j] ]
-  /\ UNCHANGED <<requests, attempts, ops, approvals, dead>>
+  /\ UNCHANGED <<requests, attempts, ops, approvals, dead, nearDeadline, warns>>
 
 \* reset: new epoch closes the old execution, reservations released (A24)
 ResetInstance(i) ==
@@ -349,7 +381,7 @@ ResetInstance(i) ==
        /\ ops' = [ o \in Ops |->
                      IF ops[o].instance = i /\ ops[o].status \in OpNonTerminal
                        THEN [ops[o] EXCEPT !.status = "CANCELLED"] ELSE ops[o] ]
-  /\ UNCHANGED <<attempts, approvals, dead>>
+  /\ UNCHANGED <<attempts, approvals, dead, nearDeadline, warns>>
 
 SetLifecycle(i, l) ==
   /\ Alive(i) /\ l \in {"ACTIVE", "PAUSED", "PARKED", "TERMINATED"}
@@ -357,7 +389,7 @@ SetLifecycle(i, l) ==
   \* a terminated instance takes no input: a queued one is not deliverable any more
   /\ inst' = [inst EXCEPT ![i].lifecycle = l,
                            ![i].queue = IF l = "TERMINATED" THEN FALSE ELSE inst[i].queue]
-  /\ UNCHANGED <<goal, requests, attempts, ops, approvals, dead>>
+  /\ UNCHANGED <<goal, requests, attempts, ops, approvals, dead, nearDeadline, warns>>
 
 \* ---------------------------------------------------------------------- spec --
 \* an idle step keeps the model open-ended (TLC then reports no false deadlock)
@@ -365,6 +397,8 @@ Stutter == UNCHANGED vars
 
 Next ==
   \/ DeadlinePasses
+  \/ DeadlineNears
+  \/ \E i \in Instances : Warn(i)
   \/ \E i \in Instances : Input(i)
   \/ \E i \in Instances : QueueInput(i)
   \/ \E i \in Instances : ApplyQueued(i)
@@ -410,6 +444,8 @@ Init ==
                             epoch |-> 0, effect |-> 0, dispatched |-> FALSE] ]
   /\ approvals = [ o \in Ops |-> "none" ]
   /\ dead = {}
+  /\ nearDeadline = FALSE
+  /\ warns = 0
 
 \* The turn advances: at least one step an instance's in-flight turn can take next.
 \* Weak fairness on it is the assumption behind `QueuedInputEntersTheContext` — the
@@ -458,6 +494,8 @@ TypeOK ==
   /\ \A o \in Ops : ops[o].effect \in {0, 1}
   /\ goal.status \in {"ACTIVE", "SUCCEEDED", "FAILED", "BLOCKED", "CANCELLED"}
   /\ goal.deadlinePassed \in BOOLEAN
+  /\ nearDeadline \in BOOLEAN
+  /\ warns \in 0..MaxWarns
 
 \* A25/A12: no side effect before an approval that was required
 NoEffectBeforeApproval ==
@@ -543,6 +581,12 @@ CancelledGoalReleasesParkedInstances ==
   [][ (goal.status # "CANCELLED" /\ goal' = [goal EXCEPT !.status = "CANCELLED"])
       => \A i \in Instances : inst'[i].lifecycle # "PARKED" ]_vars
 
+\* D-410: the runtime warns a goal at most once — one note, not one per step (the settlement note is written once
+\* for the same reason: a runtime that repeats itself is the turn storm again). `WarnRepeatedly` is the
+\* counterfactual that must refute it.
+AtMostOneWarning ==
+  warns <= 1
+
 \* §6.1: an advancing executor always holds the current revision
 StaleExecutorRejected ==
   \A i \in Instances : inst[i].phase = "MODEL_PENDING" => Fresh(i)
@@ -582,6 +626,13 @@ NoReceiptAcrossEpochs ==
   [][ \A o \in Ops :
         (ops'[o].status \in {"SUCCEEDED", "FAILED"} /\ ops[o].status \notin {"SUCCEEDED", "FAILED"})
           => ops[o].epoch = inst[ops[o].instance].ctxEpoch ]_vars
+
+\* D-410: a warning is only appended while the deadline is still ahead and the goal is live. Stated over the
+\* appending step (`warns` grows) rather than as a state invariant, because a timely warning survives the deadline
+\* passing later; `WarnLate` must refute it.
+WarnIsTimely ==
+  [][ (warns' > warns)
+        => (~goal.deadlinePassed /\ goal.status = "ACTIVE" /\ nearDeadline) ]_vars
 
 \* the admission gate: a request only starts while known + reserved + est fits
 AdmissionGate ==

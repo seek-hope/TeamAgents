@@ -160,6 +160,7 @@ fn dispatch(
         "register_verification" => register_verification(tx, session_id, params, identity),
         "repair_completion" => repair_completion(tx, session_id, params, identity),
         "block_goal" => block_goal(tx, session_id, params, identity),
+        "deadline_warning" => deadline_warning(tx, session_id, params, identity),
         "cancel_goal" => cancel_goal(tx, session_id, params, identity),
         "close_completion" => close_completion(tx, session_id, params),
         "artifact_abandon" => artifact_abandon(tx, session_id, params),
@@ -3659,6 +3660,70 @@ fn block_goal(tx: &Connection, session_id: &str, params: &Json, identity: &Ident
         &json!({"goal_id": goal_id, "status": "BLOCKED", "reason": reason, "detached": detached}),
     )?;
     Ok(json!({"goal_id": goal_id, "status": "BLOCKED", "detached": detached}))
+}
+
+/// The runtime's wrap-up note (D-410): as a goal approaches its deadline the model is told **once** how much time is
+/// left and what to do with it.
+///
+/// The measurement behind it: a deadline used to be invisible until it *refused* a request, and one N = 3 run had
+/// ten trials that had already produced a passing result and were still working when the window closed (D-397),
+/// while the acceptance gate only acts after the model claims to be done (D-400). Nothing here changes the
+/// deadline — the same absolute time is still enforced by `begin_request` — and the note cannot repeat: the entry
+/// id is the goal's, so a restarted driver appends it at most once.
+fn deadline_warning(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
+    if !matches!(identity, Identity::System) {
+        return Err("deadline_warning is driver-internal (system identity required)".into());
+    }
+    let goal_id = params["goal_id"].as_str().ok_or("deadline_warning.goal_id required")?;
+    let instance_id = params["instance_id"].as_str().ok_or("deadline_warning.instance_id required")?;
+    let (status, deadline): (String, Option<f64>) = tx
+        .query_row(
+            "SELECT status, deadline FROM goals WHERE id = ?1 AND session_id = ?2",
+            rusqlite::params![goal_id, session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|e| format!("deadline_warning {goal_id}: {e}"))?;
+    if status != "ACTIVE" {
+        return Ok(json!({"goal_id": goal_id, "sent": false, "reason": "not ACTIVE"}));
+    }
+    // the remaining time is computed here, never taken from the caller: a warning that states a number the
+    // runtime cannot stand behind is worse than none
+    let Some(deadline) = deadline else {
+        return Ok(json!({"goal_id": goal_id, "sent": false, "reason": "no deadline"}));
+    };
+    let remaining = deadline - crate::models::now();
+    if remaining <= 0.0 {
+        return Ok(json!({"goal_id": goal_id, "sent": false, "reason": "deadline passed"}));
+    }
+    let (session, epoch, _, _, _) = load_instance(tx, instance_id)?;
+    if session != session_id {
+        return Err(format!("instance {instance_id} does not belong to this session"));
+    }
+    let text = format!(
+        "runtime: about {} seconds remain before goal {goal_id}'s deadline. Settle it now — call `finish` with what \
+         you have (and say what is unfinished if it is not all done) — because after the deadline the runtime \
+         starts no further request and the goal ends as it stands.",
+        remaining as i64
+    );
+    let appended = append_context(
+        tx,
+        instance_id,
+        epoch,
+        "note",
+        &json!({"role": "user", "content": text}),
+        Some(&format!("goal-deadline-warning-{goal_id}")),
+        &json!([]),
+    )?;
+    if appended {
+        event(
+            tx,
+            session_id,
+            "goal_deadline_warning",
+            goal_id,
+            &json!({"goal_id": goal_id, "seconds_left": remaining as i64}),
+        )?;
+    }
+    Ok(json!({"goal_id": goal_id, "sent": appended, "seconds_left": remaining as i64}))
 }
 
 /// End a completion turn with nothing to settle (§5.2): a finish from an
@@ -7906,6 +7971,69 @@ mod tests {
             )
             .unwrap_err();
         assert!(err.contains("not ACTIVE"), "{err}");
+        cleanup(&path);
+    }
+
+    /// D-410: the wrap-up note goes out once per goal, only while the goal is live and the deadline is still
+    /// ahead, and never from a model identity — a note the runtime cannot stand behind is worse than none.
+    #[test]
+    fn the_deadline_warning_is_sent_once_and_only_before_a_live_deadline() {
+        let (mut ctl, path) = control("deadline-warning");
+        create_instance(&mut ctl, "i1");
+        let now = crate::models::now();
+        ctl.submit(
+            cmd("g1", "create_goal", json!({"id": "g1", "instance_id": "i1", "deadline": now + 120.0})),
+            Identity::User,
+        )
+        .expect("goal with a deadline");
+        // the model cannot issue it
+        assert!(ctl
+            .submit(
+                cmd("w-bad", "deadline_warning", json!({"goal_id": "g1", "instance_id": "i1"})),
+                Identity::Instance("i1".into()),
+            )
+            .is_err());
+        let first = ctl
+            .submit(cmd("w1", "deadline_warning", json!({"goal_id": "g1", "instance_id": "i1"})), Identity::System)
+            .expect("warning");
+        assert_eq!(first["sent"], json!(true));
+        assert!(first["seconds_left"].as_i64().unwrap_or(0) > 100, "{first}");
+        let again = ctl
+            .submit(cmd("w2", "deadline_warning", json!({"goal_id": "g1", "instance_id": "i1"})), Identity::System)
+            .expect("replay");
+        assert_eq!(again["sent"], json!(false), "at most one note per goal: {again}");
+        let note: String = ctl
+            .connection()
+            .query_row(
+                "SELECT message_json FROM context_entries WHERE envelope_id = 'goal-deadline-warning-g1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("the note is in the conversation");
+        assert!(note.contains("remain") && note.contains("finish"), "{note}");
+
+        // a goal with no deadline has nothing to warn about; a passed one cannot be warned about
+        ctl.submit(cmd("g2", "create_goal", json!({"id": "g2", "instance_id": "i1"})), Identity::User).expect("g2");
+        let none = ctl
+            .submit(cmd("w3", "deadline_warning", json!({"goal_id": "g2", "instance_id": "i1"})), Identity::System)
+            .expect("no deadline");
+        assert_eq!(none["sent"], json!(false));
+        assert_eq!(none["reason"], json!("no deadline"));
+        ctl.submit(
+            cmd("g3", "create_goal", json!({"id": "g3", "instance_id": "i1", "deadline": now - 5.0})),
+            Identity::User,
+        )
+        .expect("g3");
+        let passed = ctl
+            .submit(cmd("w4", "deadline_warning", json!({"goal_id": "g3", "instance_id": "i1"})), Identity::System)
+            .expect("passed deadline");
+        assert_eq!(passed["reason"], json!("deadline passed"));
+        // and a settled goal gets nothing
+        ctl.submit(cmd("cancel-g2", "cancel_goal", json!({"goal_id": "g2"})), Identity::User).expect("cancel");
+        let closed = ctl
+            .submit(cmd("w5", "deadline_warning", json!({"goal_id": "g2", "instance_id": "i1"})), Identity::System)
+            .expect("settled");
+        assert_eq!(closed["reason"], json!("not ACTIVE"));
         cleanup(&path);
     }
 

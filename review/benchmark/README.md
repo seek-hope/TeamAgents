@@ -219,3 +219,23 @@ bounds it — which the attribution above says is the binding constraint.
 
 Raw job output: `harbor view <jobs dir>`; per-trial `result.json` carries the exception, the verifier reward and
 the agent command.
+
+## `deadline_wrapup_ab.py` — does a wrap-up note convert cuts into settlements? (D-410)
+
+Two arms over the 12 tasks that hit their deadline in the N=3 full-set run (D-389), one attempt each: `bare` (no
+goal deadline, so the client's own bound cuts the turn) and `deadline` (`TEAMAGENTS_DEADLINE_MINUTES` inside that
+bound, so the runtime warns when ~120 s remain — the note the product now writes, D-410). It reads the mechanism's
+own receipt out of the state each attempt committed (`goal_deadline_warning` events and the
+`goal-deadline-warning-<goal>` conversation entries), and it refuses to attribute anything to the note when no
+receipt was collected:
+
+```bash
+python3 review/benchmark/deadline_wrapup_ab.py --tree <task tree> --jobs /tmp/ta-harbor/wrapup   # runs both arms
+python3 review/benchmark/deadline_wrapup_ab.py --tree <task tree> --jobs /tmp/ta-harbor/wrapup --analyze-only
+```
+
+Measured 2026-10-04 with `--minutes 13 --turn-timeout 890`: `bare` **0/12**, `deadline` **1/12** (2 runs settled,
+10 were still cut; 3 instrumented attempts showed one note each, ~110 s before the deadline). `--minutes 15`
+against the same bound is a **void** measurement kept as a record: the deadline lands after the client's cut, no
+note ever fired, and the arm's 5/12 is a deadline-only effect plus run-to-run variation. The note is delivered at a
+step boundary, which is why runs that spend the window inside one tool call receive neither it nor the deadline.
