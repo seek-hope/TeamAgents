@@ -5,7 +5,7 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
-## 0. Gate status (re-run 2026-10-04 at `MATERIAL-COMMIT`)
+## 0. Gate status (re-run 2026-10-04 at `b31bf65d`)
 
 * **D-412 added the MCP OAuth flow and its model, and re-ran all three targets on this tree (2026-10-04).**
   `V2Oauth.tla` states the five claims the sign-in rests on — `TokenOnlyToItsResource` (the RFC 8707 `resource`
