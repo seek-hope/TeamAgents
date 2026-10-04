@@ -97,6 +97,11 @@ because the image ships no `python3`).
 lower reasoning effort scored *better* than higher (D-380) and a 12-hour budget changed nothing (D-381) — but
 **throughput and cadence**: a turn is bounded by wall clock, and every runtime lever (an acceptance gate, a
 wrap-up note, a deadline) is observable only where the model comes up for air (D-400, D-403, D-410).
+`review/benchmark/cadence.py` then decomposed the window itself, and its composition is **task-dependent**: one
+attempt spent 98 % of its 730 s in model requests (68 of them, one 190 s) while another spent 94–96 % of
+775–841 s inside tool calls (three of them asking for 300 s) — so a bound on one resource cannot help the other
+family, and the next experiment (`[limits] max_tool_seconds`, a ceiling on what one call may ask for) is
+pre-registered against the tool-dominated family rather than assumed (D-414).
 
 ## 7. Pending
 

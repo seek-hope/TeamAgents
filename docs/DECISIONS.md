@@ -20,6 +20,52 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-414 Where a trial's window actually goes: model latency or tool calls, and the cap that follows from it (2026-10-04)
+
+**What was missing.** D-410 concluded that every runtime lever (a deadline, a wrap-up note, an acceptance gate) is
+observable only where the model comes up for air, and named "bound a single tool call's wall clock" as the next
+lever *without measuring which resource the window is spent on*. Three decisions before it had the same shape:
+"throughput, not reasoning depth" (D-380), "a 12-hour budget changes nothing" (D-381), "the gate is inert" (D-403).
+None of them said what absorbed the time inside a trial.
+
+**The instrument.** `review/benchmark/cadence.py` reads the state an attempt committed and decomposes its wall
+clock into **model latency** (`attempts.elapsed_ms`, which the provider adapter measures from request start to the
+completed stream), **tool calls** (exact: `operation_dispatched` → `operation_completed` per operation id) and the
+rest, reporting the largest single request and the largest single tool call and labelling every gap ≥ 20 s by the
+interval that covered it. An attempt with no collected state is reported as **no receipt**, never as a zero
+(D-395's rule), and a directory with no receipts exits 1.
+
+**Measured (2026-10-04, the attempts that had state, each at its own budget).**
+
+| attempt | wall s | model s | tool s | requests | operations | largest request | largest tool call |
+|---|---|---|---|---|---|---|---|
+| `adaptive-rejection-sampler` | 730 | 718 (98 %) | 223 | 68 | 75 | **190 s** | 56 s |
+| `gpt2-codegolf` | 678 | 435 (64 %) | 256 | 57 | 67 | 56 s | **142 s** |
+| `winning-avg-corewars` | 672 | 352 (52 %) | 319 | 34 | 35 | 52 s | **173 s** |
+| `query-optimize` × 3 | 775 / 734 / 841 | 44 / 87 / 49 (6–12 %) | **730 / 647 / 792** | 16 / 36 / 16 | 23 / 46 / 24 | ≤ 10 s | **300 s, 188 s, 183 s** |
+
+**What it says.** The composition is **task-dependent**, and the two families are opposite. One task is almost pure
+model latency — 68 requests of ~10 s each, with a single 190-second one — so *no* bound on a tool call would give
+it anything. Another is almost pure command execution: 94–96 % of the window inside tool calls, three of them
+asking for 300 s. And long single calls are **chosen by the model**, not imposed: the `shell` tool's default is
+120 s and the model asked for 300 s, which is what makes a *ceiling* the runtime's only lever here — a shorter
+default would bite the calls that were always short.
+
+**What this decision does not do.** No product change, and deliberately: the measurement says where time goes, not
+that capping helps, and a cap has a real cost (a 300-second command that was about to finish, cut). The next
+experiment is therefore **pre-registered here, not run**: `[limits] max_tool_seconds` (a ceiling on what one call
+may ask for, applied by the runner that already enforces a command's own deadline — `V2Jobs`'s
+`deadline_cancels_a_stuck_command`), measured on the tool-dominated task family (`query-optimize`-like) against
+the same tasks uncapped, with the falsifiable claim *"a ceiling converts long single calls into several shorter
+ones and lets the turn settle earlier, without lowering the pass rate"*; the inverse reading (the ceiling breaking
+a legitimate long command and lowering the rate) is what would kill it. The model-latency family is out of scope
+for it, which is the useful part of the measurement: the two families need different instruments.
+
+**The instrument's ceiling, stated.** It measures request *duration*, not throughput, so a 190-second request
+cannot be called a stall from this data (it may have streamed tokens throughout); and the model span is built from
+`request_began` → the following `attempt_recorded` (order-based, so two interleaved drivers make it a union), while
+`attempts.elapsed_ms` keeps the per-request figure exact.
+
 ## D-413 The session says what it bound: `/mcp` in the TUI, and the lever a credential stored mid-session needs (2026-10-04)
 
 **The gap.** Two halves, one of them created by D-412 itself.

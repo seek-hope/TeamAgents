@@ -35,7 +35,7 @@ the log is still a supported way to observe it (and the probes that do assert on
 | `artifact_abandoned` | `id` | `artifact_id` | `core/src/v2/control.rs:3996` | observability only |
 | `artifact_collected` | `id` | `artifact_id` | `core/src/v2/control.rs:4274` | observability only |
 | `artifacts_gc_claimed` | `""` | `claimed` | `core/src/v2/control.rs:4081` | observability only |
-| `attempt_recorded` | `request_id` | `attempt_id`, `selected`, `status` | `core/src/v2/control.rs:1902` | `engine/tests/v2_daemon.rs`, `engine/tests/v2_driver.rs` |
+| `attempt_recorded` | `request_id` | `attempt_id`, `selected`, `status` | `core/src/v2/control.rs:1902` | `engine/tests/v2_daemon.rs`, `engine/tests/v2_driver.rs`, `review/benchmark/cadence.py` |
 | `budget_refused` | `instance_id` | `est`, `goal_id`, `known`, `max`, `request_id`, `reserved` | `core/src/v2/control.rs:1804` | `engine/src/v2/driver.rs`, `engine/src/v2/exec.rs`, `engine/tests/v2_driver.rs`, `review/dogfood/budget.py` |
 | `check_round_registered` | `goal_id` | `checks`, `goal_id`, `round` | `core/src/v2/control.rs:3505` | `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `engine/tests/v2_driver.rs`, `review/dogfood/checks.py`, `review/dogfood/stale_check.py` |
 | `completion_closed` | `instance_id` | `instance_id` | `core/src/v2/control.rs:3759` | `tui/src/v2app.rs`, `engine/tests/v2_driver.rs` |
@@ -68,10 +68,10 @@ the log is still a supported way to observe it (and the probes that do assert on
 | `message_sent` | `recipient` | `correlation_id`, `envelope_id`, `sender` | `core/src/v2/control.rs:856` | `review/dogfood/team_ring.py` |
 | `operation_cancel_requested` | `operation_id` | `reason` | `core/src/v2/control.rs:3000` | observability only |
 | `operation_cancelled` | `operation_id` | `reason` | `core/src/v2/control.rs:2995` | observability only |
-| `operation_completed` | `operation_id` | `status` | `core/src/v2/control.rs:2749` | `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `engine/tests/v2_driver.rs`, `engine/tests/v2_mcp.rs`, `engine/tests/v2_spawn_failure.rs` |
-| `operation_dispatched` | `operation_id` | `operation_id` | `core/src/v2/control.rs:2965` | `engine/tests/v2_driver.rs`, `engine/tests/v2_mcp.rs` |
+| `operation_completed` | `operation_id` | `status` | `core/src/v2/control.rs:2749` | `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `engine/tests/v2_driver.rs`, `engine/tests/v2_mcp.rs`, `engine/tests/v2_spawn_failure.rs`, `review/benchmark/cadence.py` |
+| `operation_dispatched` | `operation_id` | `operation_id` | `core/src/v2/control.rs:2965` | `engine/tests/v2_driver.rs`, `engine/tests/v2_mcp.rs`, `review/benchmark/cadence.py` |
 | `operation_unauthorized` | `operation_id` | `reason` | `core/src/v2/control.rs:670` | observability only |
-| `request_began` | `instance_id` | `request_id` | `core/src/v2/control.rs:1711` | `engine/tests/v2_driver.rs`, `engine/tests/v2_supervisor.rs` |
+| `request_began` | `instance_id` | `request_id` | `core/src/v2/control.rs:1711` | `engine/tests/v2_driver.rs`, `engine/tests/v2_supervisor.rs`, `review/benchmark/cadence.py` |
 | `request_cancelled` | `&instance` / `instance_id` | `reason`, `request_id` | `core/src/v2/control.rs:3235`, `core/src/v2/control.rs:3296` | observability only |
 | `request_failed` | `&instance` | `parked`, `reason`, `request_id` | `core/src/v2/control.rs:3091` | `engine/src/v2/exec.rs`, `engine/tests/v2_driver.rs` |
 | `response_imported` | `&request_instance` | `decision_id`, `intents`, `phase`, `request_id` | `core/src/v2/control.rs:2697` | `tui/src/v2app.rs`, `engine/tests/v2_driver.rs` |

@@ -239,3 +239,38 @@ Measured 2026-10-04 with `--minutes 13 --turn-timeout 890`: `bare` **0/12**, `de
 against the same bound is a **void** measurement kept as a record: the deadline lands after the client's cut, no
 note ever fired, and the arm's 5/12 is a deadline-only effect plus run-to-run variation. The note is delivered at a
 step boundary, which is why runs that spend the window inside one tool call receive neither it nor the deadline.
+
+## `cadence.py` — where a trial's window went (D-414)
+
+Reads the state an attempt committed (`session.sqlite` under the collected `artifacts/`) and decomposes its wall
+clock into **model latency** (`attempts.elapsed_ms`, measured by the provider adapter from request start to the
+completed stream), **tool calls** (paired `operation_dispatched` → `operation_completed` per operation id, exact)
+and the rest, with the largest single request and the largest single tool call, and every gap ≥ 20 s labelled by
+the exact interval that covered it. An attempt that collected no state is reported as **no receipt**, never as a
+zero.
+
+```bash
+python3 review/benchmark/cadence.py /tmp/ta-harbor/<jobs dir> [...]     # one or more jobs directories
+```
+
+Measured 2026-10-04 on the attempts that had state (their own budgets, `low`, official endpoint):
+
+| attempt | wall s | model s | tool s | req | ops | largest request | largest tool call |
+|---|---|---|---|---|---|---|---|
+| `adaptive-rejection-sampler` (deadline arm, 13 min) | 730 | 718 (98 %) | 223 | 68 | 75 | **190 s** | 56 s |
+| `gpt2-codegolf` (deadline arm) | 678 | 435 (64 %) | 256 | 57 | 67 | 56 s | **142 s** |
+| `winning-avg-corewars` (deadline arm) | 672 | 352 (52 %) | 319 | 34 | 35 | 52 s | **173 s** |
+| `query-optimize` × 3 (acceptance-gate arm, D-400) | 775 / 734 / 841 | 44 / 87 / 49 (6–12 %) | **730 / 647 / 792** | 16 / 36 / 16 | 23 / 46 / 24 | ≤ 10 s | **300 s, 188 s, 183 s** |
+
+Two things follow, and neither is "more wall clock would fix it":
+
+* The window's composition is **task-dependent**, and the two families are opposite: a task dominated by model
+  latency (98 % in 68 requests) gains nothing from any bound on a tool call, while a task dominated by tool time
+  (94–96 %, with single calls of 300 s, 188 s and 187 s) is almost entirely command execution.
+* Long single calls are real and the model *chooses* them (the `shell` tool's default is 120 s and the model asked
+  for 300 s), so the runtime's lever is a **ceiling** on what one call may ask for — not a shorter default.
+
+**The instrument's ceiling, stated:** it measures request *duration*, not throughput, so a 190-second request
+cannot be called a stall from this data alone (it may have streamed tokens the whole time); and the model span is
+built from `request_began` → the following `attempt_recorded`, which is order-based, while the `attempts` table's
+`elapsed_ms` keeps the per-request figure exact.
