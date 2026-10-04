@@ -5,6 +5,18 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
+## 0. Gate status (re-run 2026-10-05 at `MATERIAL-COMMIT`)
+
+* **D-418 added the check briefing and its two claims, and re-ran all three targets on this tree (2026-10-05).**
+  `V2Checks.tla` gained the `Brief` step — the runtime tells the instance which checks the goal must satisfy while
+  the work is planned, rather than when the gate runs at the completion boundary — with `BriefingIsOnce` (state) and
+  `BriefingIsForAGoalWithChecks` (temporal). `make verify-model-all`: all **36** configurations `No error has been
+  found` (rc 0); the new one is `MC_checks_briefing.cfg`, exhaustive in seconds. `make
+  verify-model-counterexamples`: all **102** negative controls are refuted (rc 0); the new one is
+  `MC_checks_brief_without.cfg`, which briefs a goal that requires nothing. `make verify-kani` reports
+  `Complete - 3 successfully verified harnesses, 0 failures, 3 total` (rc 0). The round changed
+  `verification/tla/V2Checks.tla`, added two configurations and registered them in both targets.
+
 ## 0. Gate status (re-run 2026-10-04 at `b31bf65d`)
 
 * **D-412 added the MCP OAuth flow and its model, and re-ran all three targets on this tree (2026-10-04).**

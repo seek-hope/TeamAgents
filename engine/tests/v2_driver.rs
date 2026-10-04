@@ -1632,6 +1632,61 @@ async fn an_invented_tool_name_is_answered_with_what_the_instance_can_call() {
 /// D-410: a goal whose deadline is close is told once, in the conversation, how long is left — and the note is
 /// written *before* the request that sees it. A goal with a distant (or absent) deadline is told nothing: the
 /// warning is about a moment, not a policy.
+/// D-418: a goal that carries required checks tells its instance *before* the turn is planned — the criterion is
+/// the user's own text, and the runtime used to keep it until the completion boundary (where D-386/D-400/D-403 all
+/// measured that arriving late is too late). A goal with no checks is told nothing.
+#[tokio::test]
+async fn a_goal_with_required_checks_is_told_them_before_the_first_request() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("check-briefing");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    // the goal carries the user's checks: `create_goal` with the same limits shape the daemon writes
+    let mut control = second_control(&root);
+    control
+        .submit(
+            cmd(
+                "mk-i",
+                "create_instance",
+                json!({"id": "i-main", "workspace_ref": root.dir.join("ws").to_string_lossy()}),
+            ),
+            teamagents_core::v2::Identity::User,
+        )
+        .expect("instance");
+    control
+        .submit(
+            cmd(
+                "mk-g",
+                "create_goal",
+                json!({"id": "goal-b-test", "instance_id": "i-main",
+                       "limits": {"required_checks": [{"id": "answer", "command": "grep -q 42 answer.txt"}]}}),
+            ),
+            teamagents_core::v2::Identity::User,
+        )
+        .expect("goal");
+    drop(control);
+    let script = vec![Step::Message(reply("working")), Step::Message(reply("still here"))];
+    let handle = start(root.config(ScriptedProvider { script: Mutex::new(script.into()) })).await.expect("start");
+    handle.input("do the work").await.expect("input");
+    let briefed = wait_event_where("goal_checks_briefed", &handle, 20_000, |_| true).await;
+    assert_eq!(briefed["payload"]["checks"], json!(1), "{briefed}");
+    let connection = rusqlite::Connection::open(root.dir.join("session.sqlite")).expect("session db");
+    let note: String = connection
+        .query_row(
+            "SELECT message_json FROM context_entries WHERE envelope_id = 'goal-checks-briefing-goal-b-test'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the note exists");
+    assert!(note.contains("grep -q 42 answer.txt"), "{note}");
+    let count: i64 = connection
+        .query_row("SELECT COUNT(*) FROM context_entries WHERE envelope_id LIKE 'goal-checks-briefing-%'", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(count, 1, "one briefing per goal");
+    handle.shutdown().await.expect("shutdown");
+}
+
 #[tokio::test]
 async fn a_goal_close_to_its_deadline_is_told_once_to_wrap_up() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));

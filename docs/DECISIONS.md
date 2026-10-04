@@ -20,6 +20,93 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-419 A second, independent benchmark: SWE-bench Verified, run by its official harness (2026-10-04)
+
+**Why.** Every measurement of this product's agentic behaviour so far came from Terminal-Bench 2.1 — the same
+task set that produced the product changes of D-385, D-400, D-402, D-410 and D-415. A product tuned against one
+benchmark's tasks is exactly the overfitting trap, and the tell is that the fixes were justified by *that*
+dataset's timeout list and *that* dataset's grading. The answer is not to stop reading the first benchmark but to
+add one whose tasks, images and grader this repository has never touched.
+
+**The benchmark.** SWE-bench **Verified** (500 real GitHub issues across twelve repositories), graded by the
+repository's **own tests** — FAIL_TO_PASS and PASS_TO_PASS — through the official `swebench` harness. Its grader
+is the strongest independence available: no harness can be talked to, and the verdict is a test suite the product
+never sees.
+
+**The pipeline** (`review/benchmark/swebench_agent.py`), fixed before any result was read:
+
+* the **official** image for each instance is pulled (`swebench/sweb.eval.x86_64.<id>`), so the environment is the
+  one the grader will use rather than one this repository built;
+* the product runs inside it — the static musl binary mounted at `/usr/local/bin/teamagents`, a frozen config
+  (`deepseek` / `deepseek-flash` / `DEEPSEEK_API_KEY`), `--full-auto`, `--cwd /testbed`, and a state root
+  **outside** the repository so the product's own files cannot reach the patch;
+* the prompt is the instance's `problem_statement` verbatim, prefixed by exactly one instruction line ("fix the
+  issue; change the repository's own code; do not add or modify tests; report with `finish`") — no
+  harness-specific scaffolding, no retries, no hints about the tests;
+* the patch is `git add -A && git diff HEAD` in `/testbed`, with the paths that were already dirty in the image
+  (`build/` in the requests image) recorded beforehand and unstaged afterwards, so an image's own leftovers cannot
+  travel into a patch;
+* grading is `python3 -m swebench.harness.run_evaluation` on the predictions file — the official verdict.
+
+**The subset, pre-registered.** 14 instances, chosen by the rule *"the first K instances of each chosen repo in
+the dataset's own order"* (no instance selected, dropped or replaced after seeing a run):
+`psf/requests` 3, `pytest-dev/pytest` 3, `pylint-dev/pylint` 2, `sphinx-doc/sphinx` 2, `mwaskom/seaborn` 1,
+`pallets/flask` 1, `astropy/astropy` 2 — recorded in `review/benchmark/swebench_subset.json`, spanning
+libraries, a test framework and an application rather than one project. One attempt per instance, `--timeout
+1200`, two instances at a time, the product's default limits (no tool ceiling, no configured checks).
+
+**What this can and cannot say, stated in advance.** Fourteen instances are **not** comparable to published
+SWE-bench Verified numbers: those are 500 instances and use elaborate agent scaffolding with retries, while this
+run gives the product the raw statement and one shot. The number is therefore a *first independent data point
+about this product on a benchmark it was never tuned on*, plus a pipeline that can be pointed at the full set or
+a different subset later — not a leaderboard row. A result near zero and a result near the published rate are
+both possible; the decision records whichever arrives.
+
+## D-418 The criterion arrives before the work: the goal's required checks are briefed at the turn's start (2026-10-04)
+
+**The gap.** A goal's `required_checks` were read in exactly two places: the gate at the **completion boundary**
+(`repair_completion`) and `verify_goal`, which the model has to think of calling. Three measurements say arriving
+then is arriving late — the gate cannot stop a turn that never claims to be done (D-400), it is inert where the
+model never calls `finish` (D-403), and where it did fire the model spent its bounded repair rounds and ended
+BLOCKED (D-386: two of three `query-optimize` runs). The criterion was knowable from the first second — the user
+wrote it in their config — and the runtime kept it to itself until the end. D-410's finding is the same shape from
+the other side ("the signal must reach the model where it can act on it"), which is why the fix is the mirror of
+its wrap-up note: *inform at the start* instead of *warn at the end*.
+
+**What was added.** A control command `goal_checks_briefing` (system identity only) and
+`driver::brief_checks`, called at the start of a step next to `warn_before_deadline`:
+
+* the command composes the text **from the goal's own stored `limits_json`**, never from the caller — the same
+  rule `deadline_warning` follows;
+* it sends nothing for a goal that is not ACTIVE or that requires no checks (there is no criterion to state), and
+  the entry id `goal-checks-briefing-<goal>` means a restarted driver appends **at most one** note;
+* the driver reads the checks from the snapshot's own join (no storage call per step — D-410's defect, not
+  repeated) and submits the command best-effort, so a full queue cannot fail a turn;
+* the note names each `id` and its command and says what to do: run them as you work, or with `verify_goal`, and
+  do not report done until they pass.
+
+**Formal.** `V2Checks.tla` — the module that already owns the contract and the gate — gained the `Brief` step with
+`BriefingIsOnce` (state) and `BriefingIsForAGoalWithChecks` (temporal), verified by `tla/MC_checks_briefing.cfg`
+and refuted by `tla/MC_checks_brief_without.cfg` (which briefs a goal that requires nothing). `make
+verify-model-all` 36/36, `make verify-model-counterexamples` 102/102.
+
+**Evidence.** `control::the_check_briefing_names_the_required_checks_once_and_only_for_a_live_goal` (the text is
+the runtime's own composition, a model identity is refused, one note per goal, and the three `sent: false` reasons)
+and `v2_driver::a_goal_with_required_checks_is_told_them_before_the_first_request` (a real driver: the event fires,
+the note is the model-visible context, exactly one entry exists, and it names the command).
+
+**The measurement this change still needs, pre-registered here.** The claim: *a goal whose required check is
+stated at turn start converges (settles SUCCEEDED) more often than the same goal where the criterion arrives only
+at the completion boundary* — the same three tasks and both arms D-400 used, differing only in whether the
+briefing is written (`TEAMAGENTS_BRIEF_CHECKS=0` as the control). The falsifier is the inverse reading: the
+briefing changes nothing or lowers the rate (a model told about a check it cannot satisfy may burn its turn
+trying). The measurement is not in this entry yet because D-419's SWE-bench run is using the machine; the entry
+will carry the numbers when it lands.
+
+**Ceiling.** A briefing is not enforcement: the gate still decides settlement, a model may still ignore the note,
+and a *wrong* check is still worse than none (D-400's own finding — the briefing makes a wrong check arrive
+earlier, not better).
+
 ## D-417 A credential's expiry is integer seconds: a JSON `f64` round trip loses the last bit (2026-10-04)
 
 **How it surfaced.** `mcp_auth::tests::the_token_file_is_private_and_round_trips` — written with D-412 — failed

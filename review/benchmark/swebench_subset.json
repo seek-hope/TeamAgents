@@ -1,0 +1,29 @@
+{
+  "dataset": "SWE-bench/SWE-bench_Verified",
+  "rule": "the first K instances per repo in the dataset's own order (chosen before any run)",
+  "plan": {
+    "psf/requests": 3,
+    "pytest-dev/pytest": 3,
+    "pylint-dev/pylint": 2,
+    "sphinx-doc/sphinx": 2,
+    "mwaskom/seaborn": 1,
+    "pallets/flask": 1,
+    "astropy/astropy": 2
+  },
+  "instances": [
+    "psf__requests-1142",
+    "psf__requests-1724",
+    "psf__requests-1766",
+    "pytest-dev__pytest-10051",
+    "pytest-dev__pytest-10081",
+    "pytest-dev__pytest-10356",
+    "pylint-dev__pylint-4551",
+    "pylint-dev__pylint-4604",
+    "sphinx-doc__sphinx-10323",
+    "sphinx-doc__sphinx-10435",
+    "mwaskom__seaborn-3069",
+    "pallets__flask-5014",
+    "astropy__astropy-12907",
+    "astropy__astropy-13033"
+  ]
+}

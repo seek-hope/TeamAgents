@@ -161,6 +161,7 @@ fn dispatch(
         "repair_completion" => repair_completion(tx, session_id, params, identity),
         "block_goal" => block_goal(tx, session_id, params, identity),
         "deadline_warning" => deadline_warning(tx, session_id, params, identity),
+        "goal_checks_briefing" => goal_checks_briefing(tx, session_id, params, identity),
         "cancel_goal" => cancel_goal(tx, session_id, params, identity),
         "close_completion" => close_completion(tx, session_id, params),
         "artifact_abandon" => artifact_abandon(tx, session_id, params),
@@ -3674,6 +3675,67 @@ fn block_goal(tx: &Connection, session_id: &str, params: &Json, identity: &Ident
 /// while the acceptance gate only acts after the model claims to be done (D-400). Nothing here changes the
 /// deadline — the same absolute time is still enforced by `begin_request` — and the note cannot repeat: the entry
 /// id is the goal's, so a restarted driver appends it at most once.
+/// D-418: tell the goal's instance, once, which acceptance commands the goal must satisfy — the note the driver
+/// writes when a turn opens, so the criterion is known while the work is planned instead of at the completion
+/// boundary (the gate that checks it runs there, and three measurements say that is too late: D-386/D-400/D-403).
+///
+/// The text is composed here from the goal's own stored limits, never taken from the caller, and the guards mirror
+/// `deadline_warning`'s: a model identity is refused, a goal that is not ACTIVE sends nothing, a goal with no
+/// required checks sends nothing (there is no criterion to state), and the entry id is the goal's, so a restarted
+/// driver appends it at most once.
+fn goal_checks_briefing(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
+    if !matches!(identity, Identity::System) {
+        return Err("goal_checks_briefing is driver-internal (system identity required)".into());
+    }
+    let goal_id = params["goal_id"].as_str().ok_or("goal_checks_briefing.goal_id required")?;
+    let instance_id = params["instance_id"].as_str().ok_or("goal_checks_briefing.instance_id required")?;
+    let (status, limits): (String, String) = tx
+        .query_row(
+            "SELECT status, limits_json FROM goals WHERE id = ?1 AND session_id = ?2",
+            rusqlite::params![goal_id, session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|e| format!("goal_checks_briefing {goal_id}: {e}"))?;
+    if status != "ACTIVE" {
+        return Ok(json!({"goal_id": goal_id, "sent": false, "reason": "not ACTIVE"}));
+    }
+    let checks = serde_json::from_str::<Json>(&limits)
+        .ok()
+        .and_then(|limits| limits["required_checks"].as_array().cloned())
+        .unwrap_or_default();
+    if checks.is_empty() {
+        return Ok(json!({"goal_id": goal_id, "sent": false, "reason": "no required checks"}));
+    }
+    let (session, epoch, _, _, _) = load_instance(tx, instance_id)?;
+    if session != session_id {
+        return Err(format!("instance {instance_id} does not belong to this session"));
+    }
+    let listed = checks
+        .iter()
+        .map(|check| format!("`{}`: {}", check["id"].as_str().unwrap_or("?"), check["command"].as_str().unwrap_or("?")))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let text = format!(
+        "runtime: goal {goal_id} must satisfy {} required check(s) before it can settle — {listed}. Run them as \
+         you work (the shell tool runs the same command) or with `verify_goal`, and do not report the work as done \
+         until they pass.",
+        checks.len()
+    );
+    let appended = append_context(
+        tx,
+        instance_id,
+        epoch,
+        "note",
+        &json!({"role": "user", "content": text}),
+        Some(&format!("goal-checks-briefing-{goal_id}")),
+        &json!([]),
+    )?;
+    if appended {
+        event(tx, session_id, "goal_checks_briefed", goal_id, &json!({"checks": checks.len()}))?;
+    }
+    Ok(json!({"goal_id": goal_id, "sent": appended, "checks": checks.len()}))
+}
+
 fn deadline_warning(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
     if !matches!(identity, Identity::System) {
         return Err("deadline_warning is driver-internal (system identity required)".into());
@@ -7975,6 +8037,60 @@ mod tests {
             )
             .unwrap_err();
         assert!(err.contains("not ACTIVE"), "{err}");
+        cleanup(&path);
+    }
+
+    /// D-418: the criterion note goes out once, only for a live goal that really has required checks, and never
+    /// from a model identity — the text is the runtime's own composition of the user's commands.
+    #[test]
+    fn the_check_briefing_names_the_required_checks_once_and_only_for_a_live_goal() {
+        let (mut ctl, path) = control("check-briefing");
+        create_instance(&mut ctl, "i1");
+        ctl.submit(
+            cmd(
+                "g1",
+                "create_goal",
+                json!({"id": "g1", "instance_id": "i1",
+                       "limits": {"required_checks": [
+                           {"id": "rows", "command": "diff -q want.txt got.txt"},
+                           {"id": "tests", "command": "pytest -q"}]}}),
+            ),
+            Identity::User,
+        )
+        .expect("goal with checks");
+        // a model cannot brief itself
+        assert!(ctl
+            .submit(
+                cmd("b-bad", "goal_checks_briefing", json!({"goal_id": "g1", "instance_id": "i1"})),
+                Identity::Instance("i1".into()),
+            )
+            .is_err());
+        let first = ctl
+            .submit(cmd("b1", "goal_checks_briefing", json!({"goal_id": "g1", "instance_id": "i1"})), Identity::System)
+            .expect("briefing");
+        assert_eq!(first["sent"], json!(true), "{first}");
+        assert_eq!(first["checks"], json!(2));
+        let again = ctl
+            .submit(cmd("b2", "goal_checks_briefing", json!({"goal_id": "g1", "instance_id": "i1"})), Identity::System)
+            .expect("replay");
+        assert_eq!(again["sent"], json!(false), "at most one note per goal: {again}");
+        let note: String = ctl
+            .connection()
+            .query_row(
+                "SELECT message_json FROM context_entries WHERE envelope_id = 'goal-checks-briefing-g1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("the note is in the conversation");
+        assert!(note.contains("rows") && note.contains("pytest -q"), "{note}");
+        assert!(note.contains("verify_goal") && note.contains("do not report"), "{note}");
+        // a goal without checks has no criterion to state
+        ctl.submit(cmd("g2", "create_goal", json!({"id": "g2", "instance_id": "i1"})), Identity::User).expect("g2");
+        let none = ctl
+            .submit(cmd("b3", "goal_checks_briefing", json!({"goal_id": "g2", "instance_id": "i1"})), Identity::System)
+            .expect("no checks");
+        assert_eq!(none["sent"], json!(false));
+        assert_eq!(none["reason"], json!("no required checks"));
         cleanup(&path);
     }
 

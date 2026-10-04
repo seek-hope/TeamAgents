@@ -177,6 +177,9 @@ struct Snapshot {
     /// The active goal's absolute deadline, if it has one. Read here rather than in its own storage call: the
     /// worker's queue is bounded, and a second call per step is what turned a warning into a failed turn (D-410).
     goal_deadline: Option<f64>,
+    /// D-418: the active goal's `required_checks` (the user's own acceptance commands), for the same reason — the
+    /// model is told the criterion when its turn opens, and that must not cost a storage call per step.
+    goal_checks: Vec<Json>,
 }
 
 pub(crate) struct Shared {
@@ -861,7 +864,7 @@ impl<P: Provider> Driver<P> {
                     .connection()
                     .query_row(
                         "SELECT i.lifecycle, i.phase, i.revision, i.context_epoch, i.active_request_id,
-                                i.active_goal_id, g.deadline
+                                i.active_goal_id, g.deadline, g.limits_json
                          FROM instances i LEFT JOIN goals g ON g.id = i.active_goal_id
                          WHERE i.id = ?1",
                         [&instance],
@@ -874,6 +877,11 @@ impl<P: Provider> Driver<P> {
                                 active_request: row.get(4)?,
                                 active_goal: row.get(5)?,
                                 goal_deadline: row.get(6)?,
+                                goal_checks: row
+                                    .get::<_, Option<String>>(7)?
+                                    .and_then(|limits| serde_json::from_str::<Json>(&limits).ok())
+                                    .and_then(|limits| limits["required_checks"].as_array().cloned())
+                                    .unwrap_or_default(),
                             })
                         },
                     )
@@ -1495,6 +1503,8 @@ that delegated it learns the outcome only from a settlement.";
         // D-410: before the request is built, a goal whose deadline is close gets its one wrap-up note, so the
         // model can settle or report with time to spare instead of being cut mid-edit.
         self.warn_before_deadline(snapshot).await?;
+        // D-418: and the criterion itself, before the model plans the turn rather than when it claims to be done.
+        self.brief_checks(snapshot).await?;
         let mut entries = self.context_entries(snapshot).await?;
         self.expand_images(&mut entries);
         // A turn opens for *unaddressed* work only: content that arrived since the
@@ -2782,6 +2792,33 @@ that delegated it learns the outcome only from a settlement.";
     /// Goal-level required checks from the stored limits (§8): predefined by
     /// the user or project bootstrap at create_goal; an empty list settles
     /// completion on the candidate alone. Returns (checks, max_rounds).
+    /// D-418: tell the model, once per goal, which acceptance commands the goal must satisfy — at the *start* of
+    /// its turn, not when it claims to be done.
+    ///
+    /// The gate that checks them runs at the completion boundary (`repair_completion`), and three measurements say
+    /// that is too late to be useful: the gate cannot stop a turn that never claims done (D-400), it is inert where
+    /// the model never calls `finish` (D-403), and where it did fire the model spent its bounded repair rounds and
+    /// ended BLOCKED (D-386). The criterion was knowable from the first second — the user wrote it in their config —
+    /// and the runtime was keeping it to itself until the end.
+    async fn brief_checks(&mut self, snapshot: &Snapshot) -> Result<(), String> {
+        let Some(goal) = snapshot.active_goal.clone() else { return Ok(()) };
+        if snapshot.goal_checks.is_empty() {
+            return Ok(());
+        }
+        // Best effort, like the wrap-up note: nothing was appended if this failed, so the next step tries again.
+        let _ = self
+            .submit(
+                self.command(
+                    format!("check-briefing-{goal}"),
+                    "goal_checks_briefing",
+                    json!({"goal_id": goal, "instance_id": self.config.instance_id}),
+                ),
+                Identity::System,
+            )
+            .await;
+        Ok(())
+    }
+
     /// D-410: tell the model once, while a live goal's deadline is close, how long is left. A deadline with no
     /// note is a deadline the model only ever learns about when a request is *refused*, which is the wrong moment
     /// (the turn is over) — see D-397 and D-400 for what that cost.

@@ -308,3 +308,23 @@ stopped asking".
 Per task: `code-from-image` 2/3 → 3/3, `query-optimize` 0/3 → 1/3, `gpt2-codegolf` 2/3 → 1/3,
 `winning-avg-corewars` 0/3 → 0/3. The mechanism is confirmed and the rate is not measurably changed either way at
 this sample size; the model-latency family D-414 separated is untouched by this lever.
+
+
+## SWE-bench Verified — the second benchmark (`swebench_agent.py`, D-419)
+
+Terminal-Bench 2.1 is one dataset, and the product changes of D-385/D-400/D-402/D-410/D-415 were all justified by
+it. SWE-bench **Verified** is the independent half: real GitHub issues in twelve repositories, graded by the
+repository's own tests through the official `swebench` harness — a grader no harness can talk to.
+
+```bash
+# the subset is pinned in swebench_subset.json; the rows are fetched into the ignored scratch once
+python3 review/benchmark/swebench_agent.py --instances $(python3 -c "import json;print(' '.join(json.load(open('review/benchmark/swebench_subset.json'))['instances']))") \
+    --out /tmp/swebench-run1 --timeout 1200 --jobs 2
+```
+
+The pipeline is stated in the decision: the **official** image per instance, the static binary and a frozen
+config mounted in, `/testbed` as the workspace, a state root outside the repository, the raw problem statement
+plus one fixed instruction line, a patch of `git add -A && git diff HEAD` with the image's pre-existing dirty
+paths excluded, and the **official** grader for the verdict. Fourteen instances are not a leaderboard row: the
+published numbers are 500 instances with heavy scaffolding, while this gives the product one shot at the raw
+statement. See the decision for the result and its limits.
