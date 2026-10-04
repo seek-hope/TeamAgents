@@ -85,6 +85,12 @@ model-latency share of a window is the provider's throughput, which no runtime l
 The stall-detector proposal is therefore **closed by measurement rather than implemented**, and the honest answer
 for that family is D-414's: fewer round-trips, or a faster model — both outside the runtime.
 
+**The first run of this measurement was void, and the way it was void is worth keeping.** Its events carried no
+`stream` key at all: the container binary predated the instrument, so the numbers were absent rather than wrong.
+The rule that caught it is D-395's, one instrument later — *read the receipt before believing a measurement* — and
+the second run's own guard (an attempt with no timing prints "no receipt") is what made the first one obvious
+instead of reading as "no gaps".
+
 **Ceiling of the instrument.** It measures frame *arrival*, not token count or useful work: a stream that emits an
 empty delta every second would look identical to a productive one. The per-attempt frame counts (tens of
 thousands against tens of requests) show that is not what happens here, but the two are distinguishable only by
