@@ -69,12 +69,30 @@ where
     let session_db = config.supervisor.session_db.clone();
     let session_id = config.supervisor.session_id.clone();
     let state_root = config.supervisor.state_root.clone();
+    // D-413: the MCP services this session was configured with, so a client can see what the session knows
+    // instead of re-reading a config file it may not even be able to parse (the TUI is a client with no config
+    // loader). Only the catalog's own rows: loading a service would spawn it, which is the daemon's job at boot.
+    let mut mcp: Vec<McpService> = config
+        .supervisor
+        .catalog
+        .tools
+        .iter()
+        .filter(|(_, binding)| binding.kind == "mcp")
+        .map(|(name, binding)| McpService {
+            name: name.clone(),
+            transport: binding.mcp_transport.clone().unwrap_or_else(|| "stdio".into()),
+            required: binding.required,
+            oauth: binding.oauth,
+        })
+        .collect();
+    mcp.sort_by(|a, b| a.name.cmp(&b.name));
     let facts = Arc::new(SessionFacts {
         session_id: session_id.clone(),
         state_root: state_root.to_string_lossy().into_owned(),
         workspace: config.supervisor.workspace.to_string_lossy().into_owned(),
         permissions: config.supervisor.permissions.clone(),
         goal_limits: config.supervisor.goal_limits.clone(),
+        mcp,
     });
     // D-227: refuse before binding, so the answer names the limit and the fix instead of the OS's
     // `bind …: path must be shorter than SUN_LEN` (`cli::require_socket_path_fits` holds the boundary).
@@ -149,6 +167,40 @@ where
 /// workspace it runs in and the permission mode it booted with, D-41/D-57). A
 /// client that joins a running session learns the truth here instead of
 /// assuming the settings it asked for took effect.
+/// One configured MCP service, as the session knows it (D-413): the *configuration* is fixed for the session's
+/// lifetime (the catalog is loaded once), while the credential state is read when a checkpoint is built, because
+/// that is exactly what changes while a session runs (the user signs in from another terminal).
+#[derive(Clone)]
+struct McpService {
+    name: String,
+    transport: String,
+    required: bool,
+    oauth: bool,
+}
+
+/// The MCP rows a client reads, with the credential state as it is *now* (D-413). Top level and taking the store,
+/// so the mapping can be tested against a store the test owns rather than whatever the machine's own
+/// `mcp-auth.json` happens to hold.
+fn mcp_rows(services: &[McpService], store: &crate::mcp_auth::Store) -> Json {
+    Json::Array(
+        services
+            .iter()
+            .map(|service| {
+                let credential = if service.oauth {
+                    match store.state(&service.name) {
+                        Ok(state) => Json::from(state),
+                        Err(error) => Json::from(format!("credential file unreadable: {error}")),
+                    }
+                } else {
+                    Json::Null
+                };
+                json!({"name": service.name, "transport": service.transport, "required": service.required,
+                       "oauth": service.oauth, "credential": credential})
+            })
+            .collect(),
+    )
+}
+
 #[derive(Clone)]
 struct SessionFacts {
     session_id: String,
@@ -159,6 +211,8 @@ struct SessionFacts {
     /// creates (D-64) — including one a client opens later, which until this existed carried no ceiling and no
     /// required check because only the bootstrap supplied them.
     goal_limits: Json,
+    /// D-413: the configured MCP services (and, per checkpoint, their credential state).
+    mcp: Vec<McpService>,
 }
 
 async fn accept_loop(
@@ -304,7 +358,15 @@ async fn handle(request: &Json, supervisor: &SupervisorHandle, session_db: &Path
             // the database. Passing the payload keeps previews inside `read_method`'s dispatch, which is what
             // `docs/PROTOCOL.md` is generated from.
             let previews = if method == "previews" { supervisor.previews() } else { Json::Null };
-            match read_only(session_db, session_id, |conn| read_method(method, &params, conn, &previews)) {
+            // the MCP rows are read per checkpoint: the credential state is a small local file and it is the one
+            // thing about these services that changes while a session runs (D-413)
+            let mcp = if method == "checkpoint" {
+                let store = crate::mcp_auth::Store::at(&crate::mcp_auth::Store::default_path());
+                mcp_rows(&facts.mcp, &store)
+            } else {
+                Json::Null
+            };
+            match read_only(session_db, session_id, |conn| read_method(method, &params, conn, &previews, &mcp)) {
                 Ok(result) => reply(true, result),
                 Err(error) => reply(false, json!(error)),
             }
@@ -348,7 +410,7 @@ fn read_only<T>(
 
 /// Snapshot query shared by `checkpoint` (same read transaction as the
 /// watermark) — instances with lifecycle/phase plus the single-goal view.
-fn read_snapshot(conn: &rusqlite::Connection) -> Result<Json, String> {
+fn read_snapshot(conn: &rusqlite::Connection, mcp: &Json) -> Result<Json, String> {
     // `model` rides along (D-69): a team can span providers (`spawn(model = …)`),
     // and without it no client can say which member runs on what.
     // `reason` rides along too (D-165): the last lifecycle transition's own words, which is what answers "why
@@ -415,7 +477,10 @@ fn read_snapshot(conn: &rusqlite::Connection) -> Result<Json, String> {
                "limits": serde_json::from_str::<Json>(&limits).unwrap_or(Json::Null),
                // the absolute deadline (D-64): a client that shows limits must be able
                // to say when the goal stops accepting new requests
-               "deadline": deadline}))}))
+               "deadline": deadline})),
+        // D-413: the configured MCP services and their credential state, so a client that cannot read this
+        // machine's config (the TUI is one) can still tell a user what the session bound and what to do next.
+        "mcp": mcp}))
 }
 
 fn read_events(conn: &rusqlite::Connection, since: i64) -> Result<Vec<Json>, String> {
@@ -471,7 +536,13 @@ fn apply_session_goal_limits(params: &mut Json, session_limits: &Json) {
     }
 }
 
-fn read_method(method: &str, params: &Json, conn: &rusqlite::Connection, previews: &Json) -> Result<Json, String> {
+fn read_method(
+    method: &str,
+    params: &Json,
+    conn: &rusqlite::Connection,
+    previews: &Json,
+    mcp: &Json,
+) -> Result<Json, String> {
     match method {
         // §9: the text each instance is streaming right now. It is a transient read the supervisor answers from
         // memory (D-366), dropped by the caller the moment the complete response lands; nothing here is persisted.
@@ -483,7 +554,7 @@ fn read_method(method: &str, params: &Json, conn: &rusqlite::Connection, preview
         // the client learns exactly which point its snapshot is consistent with
         "checkpoint" => {
             let tx = conn.unchecked_transaction().map_err(|e| format!("checkpoint tx: {e}"))?;
-            let snapshot = read_snapshot(&tx)?;
+            let snapshot = read_snapshot(&tx, mcp)?;
             let watermark = watermark(&tx)?;
             tx.commit().map_err(|e| format!("checkpoint commit: {e}"))?;
             Ok(json!({"snapshot": snapshot, "watermark": watermark}))
@@ -683,3 +754,69 @@ every part's command in turn. Report completion with the finish tool. Keep task 
 acceptance criteria, and never bypass runtime permissions. Work is anchored to an active goal, and a settled goal
 cannot be reopened: when it is settled, report that further work needs a new goal from the user (the
 runtime opens none by itself) instead of retrying a delegation that has nowhere to be charged.";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// D-413: the state a client acts on. The store is the caller's (this test owns a scratch file, so the answer
+    /// does not depend on whatever the machine's own `mcp-auth.json` happens to hold), and the four states the
+    /// store can report reach the row unchanged.
+    #[test]
+    fn mcp_rows_name_the_credential_state() {
+        let dir = std::env::temp_dir().join(format!("teamagents-mcp-row-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = crate::mcp_auth::Store::at(&dir.join("mcp-auth.json"));
+        let service = |oauth| McpService { name: "sentry".into(), transport: "http".into(), required: true, oauth };
+        // nothing stored yet
+        let row = |oauth: bool| {
+            let rows = mcp_rows(&[service(oauth)], &store);
+            rows[0].clone()
+        };
+        assert_eq!(row(true)["credential"], json!("not signed in"), "{:?}", row(true));
+        assert_eq!(row(false)["credential"], Json::Null, "no OAuth, no state to report");
+        // a live credential
+        store
+            .put(
+                "sentry",
+                &crate::mcp_auth::Tokens {
+                    access_token: "a".into(),
+                    refresh_token: Some("r".into()),
+                    expires_at: Some(crate::mcp_auth::now() + 3600.0),
+                    token_endpoint: None,
+                    client_id: None,
+                    client_secret_env: None,
+                    resource: None,
+                    scopes: vec![],
+                },
+            )
+            .unwrap();
+        assert_eq!(row(true)["credential"], json!("signed in"));
+        // one that expired with nothing to renew it
+        store
+            .put(
+                "sentry",
+                &crate::mcp_auth::Tokens {
+                    access_token: "a".into(),
+                    refresh_token: None,
+                    expires_at: Some(crate::mcp_auth::now() - 10.0),
+                    token_endpoint: None,
+                    client_id: None,
+                    client_secret_env: None,
+                    resource: None,
+                    scopes: vec![],
+                },
+            )
+            .unwrap();
+        assert_eq!(row(true)["credential"], json!("expired (sign in again)"));
+        // a store this build did not write is reported, never guessed
+        std::fs::write(store.path(), "{not json").unwrap();
+        let broken = row(true);
+        assert!(
+            broken["credential"].as_str().unwrap_or_default().starts_with("credential file unreadable"),
+            "{broken}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

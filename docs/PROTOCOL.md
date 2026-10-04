@@ -45,15 +45,15 @@ the handler re-checks who may do this rather than trusting the request.
 
 | Method | Parameters | Reply keys | Answered at |
 |---|---|---|---|
-| `previews` | — | `previews` | `engine/src/v2/daemon.rs:478` |
-| `checkpoint` | — | `snapshot`, `watermark` | `engine/src/v2/daemon.rs:484` |
-| `events` | `since` | `events`, `resync_required`, `watermark` | `engine/src/v2/daemon.rs:491` |
-| `history` | `instance_id`, `limit` | `entries`, `envelope_id`, `epoch`, `idx`, `instance_id`, `kind`, `message` | `engine/src/v2/daemon.rs:500` |
-| `surfaces` | `instance_id`, `limit` | `epoch`, `goal_id`, `instance_id`, `kind`, `offered_tools`, `request_id`, `status`, `surface_authorized`, `surfaces` | `engine/src/v2/daemon.rs:531` |
-| `tasks` | — | `assignee`, `goal_id`, `id`, `status`, `tasks` | `engine/src/v2/daemon.rs:563` |
-| `approvals` | — | `approvals`, `id`, `operation_id`, `preview`, `tool` | `engine/src/v2/daemon.rs:579` |
-| `goals` | — | `attached_instances`, `deadline`, `goals`, `id`, `known_usage`, `limits`, `status`, `unknown_usage` | `engine/src/v2/daemon.rs:608` |
-| `grants` | — | `action`, `grants`, `id`, `issuer`, `parent_grant_id`, `resource_scope`, `revision`, `revoked`, `subject` | `engine/src/v2/daemon.rs:643` |
+| `previews` | — | `previews` | `engine/src/v2/daemon.rs:549` |
+| `checkpoint` | — | `snapshot`, `watermark` | `engine/src/v2/daemon.rs:555` |
+| `events` | `since` | `events`, `resync_required`, `watermark` | `engine/src/v2/daemon.rs:562` |
+| `history` | `instance_id`, `limit` | `entries`, `envelope_id`, `epoch`, `idx`, `instance_id`, `kind`, `message` | `engine/src/v2/daemon.rs:571` |
+| `surfaces` | `instance_id`, `limit` | `epoch`, `goal_id`, `instance_id`, `kind`, `offered_tools`, `request_id`, `status`, `surface_authorized`, `surfaces` | `engine/src/v2/daemon.rs:602` |
+| `tasks` | — | `assignee`, `goal_id`, `id`, `status`, `tasks` | `engine/src/v2/daemon.rs:634` |
+| `approvals` | — | `approvals`, `id`, `operation_id`, `preview`, `tool` | `engine/src/v2/daemon.rs:650` |
+| `goals` | — | `attached_instances`, `deadline`, `goals`, `id`, `known_usage`, `limits`, `status`, `unknown_usage` | `engine/src/v2/daemon.rs:679` |
+| `grants` | — | `action`, `grants`, `id`, `issuer`, `parent_grant_id`, `resource_scope`, `revision`, `revoked`, `subject` | `engine/src/v2/daemon.rs:714` |
 
 ### Commands (executed by the control plane)
 
@@ -116,6 +116,7 @@ literals in `engine/src/v2/daemon.rs`; this table is that list. A row is one lit
 
 | Built at | Fields |
 |---|---|
+| `mcp_rows` | `name`, `transport`, `required`, `oauth`, `credential` |
 | `run_scheduler` | `id`, `instance_id` |
 | `serve_client` | `server`, `protocol_version`, `session_id`, `state_root`, `permissions`, `workspace` |
 | `serve_client` | `request_id`, `ok`, `error` |
@@ -124,7 +125,7 @@ literals in `engine/src/v2/daemon.rs`; this table is that list. A row is one lit
 | `handle` | — |
 | `handle` | `stopping`, `state_root` |
 | `read_snapshot` | `id`, `lifecycle`, `phase`, `model`, `reason` |
-| `read_snapshot` | `instances`, `goal` |
+| `read_snapshot` | `instances`, `goal`, `mcp` |
 | `read_snapshot` | `status`, `known_usage`, `unknown_usage`, `limits`, `deadline` |
 | `read_events` | `sequence`, `kind`, `scope`, `payload` |
 | `apply_session_goal_limits` | — |

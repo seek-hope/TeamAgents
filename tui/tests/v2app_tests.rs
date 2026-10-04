@@ -788,3 +788,49 @@ fn composer_inserts_newlines_and_submits_the_whole_text() {
     // the footer advertises the newline chord
     assert!(app.footer_hint().contains("Ctrl+J newline"), "{}", app.footer_hint());
 }
+
+/// D-413: `/mcp` answers from the checkpoint the daemon sends — the TUI has no config loader, and asking by
+/// loading a service would start a second copy of it. The report names each service, and the two things a user
+/// acts on: an OAuth binding's credential state and the reload lever for a credential stored while the session
+/// runs.
+#[test]
+fn mcp_lists_the_sessions_services_and_their_credential_state() {
+    let mut app = V2App::new("s-test");
+    app.apply_checkpoint(
+        serde_json::json!({
+            "instances": [],
+            "goal": null,
+            "mcp": [
+                {"name": "remote", "transport": "http", "required": true, "oauth": true,
+                 "credential": "not signed in"},
+                {"name": "local", "transport": "stdio", "required": false, "oauth": false, "credential": null},
+            ]
+        }),
+        5,
+    );
+    let report = app.mcp_report();
+    assert!(report.contains("remote (http, required, oauth: not signed in)"), "{report}");
+    assert!(report.contains("local (stdio, optional)"), "{report}");
+    assert!(report.contains("teamagents mcp login --name X"), "{report}");
+    assert!(report.contains("pause and resume"), "{report}");
+
+    // the composer route is the same report, and `/help` advertises the command. A slash command is consumed by
+    // the composer (no `SubmitInput` effect), so it is typed and sent directly rather than through `send`.
+    for text in ["/mcp", "/help"] {
+        for c in text.chars() {
+            app.handle_key(key(KeyCode::Char(c)));
+        }
+        assert!(app.handle_key(key(KeyCode::Enter)).is_none(), "{text} is not a prompt");
+    }
+    let help = app.entries.last().expect("help").text.clone();
+    assert!(help.contains("/mcp"), "{help}");
+    let note = app.entries[app.entries.len() - 2].text.clone();
+    assert!(note.contains("remote (http, required"), "{note}");
+
+    // a session with no MCP services says what to do instead of printing nothing
+    let mut bare = V2App::new("s-test");
+    bare.apply_checkpoint(serde_json::json!({"instances": [], "goal": null, "mcp": []}), 5);
+    let report = bare.mcp_report();
+    assert!(report.contains("no MCP services are configured"), "{report}");
+    assert!(report.contains("teamagents mcp add"), "{report}");
+}

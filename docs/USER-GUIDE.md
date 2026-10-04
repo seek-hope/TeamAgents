@@ -687,7 +687,14 @@ teamagents goals cancel --id g-spent    # close a goal nothing can spend (its ce
   retry, and a credential that cannot be renewed is a refusal that names the verb to run
   (`teamagents mcp login --name <service>`). `teamagents mcp list` prints each OAuth binding's state
   (`signed in` / `expired (will refresh)` / `not signed in`) before the tools it offers, and
-  `teamagents mcp logout --name sentry` deletes the stored credential.
+  `teamagents mcp logout --name sentry` deletes the stored credential. **In the TUI**, `/mcp` prints the same
+  services with their credential state (the daemon sends them in its checkpoint, because the TUI is a client with
+  no config loader — and it must not load a service itself, which would start a second copy of it). A service is
+  bound when its instance's driver boots, so a credential stored while a session runs is picked up by
+  **pausing and resuming that instance** (`instances pause --id X` then `resume --id X`, or just `resume` when a
+  `required` service parked it) — the driver, and with it the toolkit, is rebuilt; the conversation and the goal
+  are untouched. A `required` service with no credential parks its instance instead, with the runtime's own
+  reason, which is the other path to the same lever.
 - **Binding one is writing it down** (D-74): a `[tools.<name>] kind = "mcp"` entry in your config *is* the
   binding, exactly like `[tools.web]` for the web tools — the service starts with the session and its tools
   reach every member's model surface as `<name>_<tool>`. Only your **user** config is read today (a

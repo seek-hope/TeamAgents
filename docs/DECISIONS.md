@@ -20,6 +20,57 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-413 The session says what it bound: `/mcp` in the TUI, and the lever a credential stored mid-session needs (2026-10-04)
+
+**The gap.** Two halves, one of them created by D-412 itself.
+
+* The comparison's last MCP item was an in-session `/mcp`: a user inside the TUI could not see which services the
+  session was configured with or whether an OAuth binding was signed in.
+* A **running instance keeps the tool surface it booted with** (`V2Toolkit::new` runs once per driver start, and
+  `load_in` binds each service then). So `teamagents mcp login --name X` stored a credential that a live session
+  did not pick up: an optional service that was unavailable at boot stays unavailable for the instance's life, and
+  nothing told the user which lever fixes that. D-412's own boundary statement did not mention it.
+
+**What was added.** The daemon's checkpoint now carries the session's configured MCP services —
+`snapshot.mcp`, one row per `[tools.<name>] kind = "mcp"` with its transport, whether it is `required`, whether it
+is OAuth, and (for an OAuth binding) its credential state read from `mcp-auth.json` (`signed in`,
+`expired (will refresh)`, `expired (sign in again)`, `not signed in`, or the reason the file cannot be read). The
+TUI's `/mcp` prints those rows plus the two things a user acts on: the sign-in verb and the reload lever. The rows
+are built from the catalog and the credential file and **never by loading a service** — the TUI is a client, and a
+status view that started a second copy of a stdio server or opened a second session to an HTTP one would be a
+defect, not a feature.
+
+**Why the checkpoint and not its own method.** The TUI already polls `checkpoint`, so the rows ride the read it
+already makes: no new protocol method, no new client plumbing, and `docs/PROTOCOL.md`'s two checkpoint fields
+(`snapshot`, `watermark`) are unchanged — the rows are part of the snapshot, which is where a session's *current
+facts* belong. The credential state is read when the checkpoint is built (a small local file), because that is the
+one thing about these services that changes while a session runs.
+
+**The reload lever, named and bounded.** A credential stored mid-session takes effect when the instance's driver
+is rebuilt: `instances pause --id X` then `resume --id X` (or `resume` alone when a `required` service parked the
+instance with the runtime's reason). The conversation and the goal survive — a pause stops the driver, and the
+context is durable. This is stated in the user guide, in `/mcp`'s own text and in D-412's row, rather than left for
+a user to discover; a *per-service* reconnect (Pi's `mcp reconnect`) would need a new control command and a
+toolkit-swap at a turn boundary, and this decision does not take it: the parity item was the in-session surface,
+and the honest cheap lever exists.
+
+**What stays headless, on purpose.** Signing in *from inside the TUI* is not implemented: the flow opens a browser,
+listens on a loopback port and can wait five minutes, and none of that belongs on a TUI event loop. `teamagents
+mcp login` is a separate process, and `/mcp` prints it. Recorded as a deliberate difference, not a gap.
+
+**Evidence.** `v2_daemon::the_checkpoint_lists_the_sessions_mcp_services` (a session with an OAuth HTTP binding
+and an optional stdio binding whose command does not exist: the checkpoint carries both, sorted, with the OAuth
+row's state a string and the non-OAuth row's `null`; the session boots with the optional service gone, which is
+the D-74 contract), `daemon::tests::mcp_rows_name_the_credential_state` (the state mapping against a store this
+test owns — the four states plus an unreadable file, so the answer never depends on the machine's own
+`mcp-auth.json`), and `v2app_tests::mcp_lists_the_sessions_services_and_their_credential_state` (the report, the
+composer route, `/help` advertising the command, and the empty case saying what to do).
+
+**Formal.** None, and not by omission: the change is a **read-only projection** of state the models already cover
+(the catalog, and `V2Oauth.tla`'s credential rules), with no transition of its own to state an invariant about.
+The one property worth naming — a credential is *read*, never guessed — is `V2Oauth`'s `NoRequestWithAnExpiredToken`
+and the store's own refusals, both already checked.
+
 ## D-412 MCP OAuth sign-in: the authorization-code flow with PKCE, and the five rules it has to keep (2026-10-04)
 
 **The gap.** `docs/PRODUCT-COMPARISON.md`'s MCP row had one item left: Pi's `pi mcp login` signs in to a remote

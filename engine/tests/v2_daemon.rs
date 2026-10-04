@@ -224,6 +224,47 @@ async fn boot(tag: &str, scripts: HashMap<String, Vec<Json>>) -> (Root, DaemonHa
     (root, handle)
 }
 
+/// D-413: the checkpoint tells every client which MCP services the session was configured with — and, for an
+/// OAuth binding, its credential state — because the client that needs it (the TUI) has no config loader, and
+/// answering by loading the service would start a second copy of it.
+#[tokio::test]
+async fn the_checkpoint_lists_the_sessions_mcp_services() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("mcp-facts");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let catalog: UserConfig = serde_json::from_value(json!({
+        "tools": {
+            // an OAuth HTTP binding: its state string comes from the credential file (asserted generically here;
+            // the mapping itself is `daemon::tests::mcp_rows_name_the_credential_state`, which owns a store)
+            "remote": {"kind": "mcp", "mcp_transport": "http", "url": "http://127.0.0.1:1/mcp",
+                       "oauth": true, "required": true},
+            // a stdio binding with a command that does not exist: an *optional* service disappears quietly, and
+            // the session still boots. Its credential is not OAuth's, so the row carries null.
+            "local": {"kind": "mcp", "command": "/nonexistent/ta-mcp-probe", "required": false},
+        }
+    }))
+    .expect("catalog");
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let handle = serve(config_recording(&root, HashMap::new(), catalog, vec!["files".into()], json!({}), &seen))
+        .await
+        .expect("daemon");
+    let mut client = Client::connect(&root.dir.join("state/daemon.sock")).await;
+    let checkpoint = client.call("checkpoint", json!({})).await;
+    assert_eq!(checkpoint["ok"], json!(true), "{checkpoint}");
+    let mcp = checkpoint["result"]["snapshot"]["mcp"].as_array().expect("the snapshot carries the rows");
+    let names: Vec<&str> = mcp.iter().filter_map(|row| row["name"].as_str()).collect();
+    assert_eq!(names, vec!["local", "remote"], "every configured MCP service, sorted: {mcp:?}");
+    let remote = mcp.iter().find(|row| row["name"] == json!("remote")).unwrap();
+    assert_eq!(remote["transport"], json!("http"));
+    assert_eq!(remote["required"], json!(true), "{remote}");
+    assert!(remote["credential"].is_string(), "an OAuth row states its credential: {remote}");
+    let local = mcp.iter().find(|row| row["name"] == json!("local")).unwrap();
+    assert_eq!(local["transport"], json!("stdio"));
+    assert_eq!(local["required"], json!(false));
+    assert!(local["credential"].is_null(), "a non-OAuth row has no OAuth state: {local}");
+    handle.shutdown().await.expect("shutdown");
+}
+
 /// D-392, end to end through the real driver: the request the product builds carries the picture as an
 /// OpenAI-shaped part for a model that declares `images = true`, and the placeholder for one that does not.
 /// This is the only place the wire content can be asserted — the request is fixed in memory and never persisted —

@@ -11,7 +11,7 @@ use crate::text::Composer;
 
 /// The slash commands the composer understands (D-370), shown while a `/` draft is open and by `/help`.
 const SLASH_HELP: &str =
-    "commands: /help · /status · /chat · /instances · /tasks · /topology · /approvals · /interrupt · /quit";
+    "commands: /help · /status · /chat · /instances · /tasks · /topology · /approvals · /mcp · /interrupt · /quit";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Focus {
@@ -61,6 +61,19 @@ pub struct ChatEntry {
     pub kind: ChatKind,
     pub who: String,
     pub text: String,
+}
+
+/// One configured MCP service, as the daemon reports it (D-413). The TUI cannot read the machine's config (it is
+/// a client, not the loader), so this is what lets `/mcp` answer "what did this session bind, and what is the next
+/// step for it?" without starting a second copy of any server.
+#[derive(Debug, Clone, PartialEq)]
+pub struct McpInfo {
+    pub name: String,
+    pub transport: String,
+    pub required: bool,
+    /// `Some(state)` for an OAuth binding (`signed in`, `expired (will refresh)`, `not signed in`), `None` for a
+    /// binding whose credential comes from the environment.
+    pub credential: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -193,6 +206,8 @@ pub struct V2App {
     /// Current top-level view (§9 panels); Chat is the default.
     pub view: View,
     pub instances: Vec<InstanceInfo>,
+    /// D-413: the session's configured MCP services and their credential state.
+    pub mcp: Vec<McpInfo>,
     /// Index into `instances`: the conversation shown and input target.
     pub active: usize,
     pub entries: Vec<ChatEntry>,
@@ -228,6 +243,7 @@ impl V2App {
             session_id: session_id.to_string(),
             view: View::Chat,
             instances: vec![],
+            mcp: vec![],
             active: 0,
             entries: vec![],
             goal: None,
@@ -293,6 +309,18 @@ impl V2App {
     /// event stream resumes from — one consistent read (§9).
     pub fn apply_checkpoint(&mut self, snapshot: Json, watermark: i64) {
         let previous = self.active_instance().map(|i| i.id.clone());
+        self.mcp = snapshot["mcp"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .map(|row| McpInfo {
+                name: row["name"].as_str().unwrap_or("").to_string(),
+                transport: row["transport"].as_str().unwrap_or("stdio").to_string(),
+                required: row["required"].as_bool().unwrap_or(false),
+                credential: row["credential"].as_str().map(str::to_string),
+            })
+            .collect();
         self.instances = snapshot["instances"]
             .as_array()
             .cloned()
@@ -874,6 +902,10 @@ impl V2App {
                 self.note(status);
                 None
             }
+            "/mcp" => {
+                self.note(self.mcp_report());
+                None
+            }
             "/interrupt" => match self.active_instance() {
                 Some(instance) => Some(V2Effect::Interrupt { instance: instance.id.clone() }),
                 None => {
@@ -886,6 +918,33 @@ impl V2App {
                 None
             }
         }
+    }
+
+    /// What `/mcp` prints (D-413): one line per configured service. The two things a user acts on are here — the
+    /// credential state (sign in with `teamagents mcp login --name X`) and the fact that a service bound at boot is
+    /// what the session offers (so a credential stored while the session runs needs the instance's driver to be
+    /// rebuilt: `instances pause` then `resume`, or `resume` when a required service parked it).
+    pub fn mcp_report(&self) -> String {
+        if self.mcp.is_empty() {
+            return "no MCP services are configured for this session: bind one with \
+                    `teamagents mcp add --name N --command CMD` (or `--transport http --url U`) and restart it"
+                .to_string();
+        }
+        let mut out = String::from("MCP services in this session:\n");
+        for service in &self.mcp {
+            let required = if service.required { "required" } else { "optional" };
+            match &service.credential {
+                Some(state) => {
+                    out.push_str(&format!("  {} ({}, {}, oauth: {state})\n", service.name, service.transport, required))
+                }
+                None => out.push_str(&format!("  {} ({}, {})\n", service.name, service.transport, required)),
+            }
+        }
+        out.push_str(
+            "a service is bound when its instance's driver boots; after `teamagents mcp login --name X`, \
+             pause and resume that instance to pick the credential up (`mcp logout --name X` forgets it)",
+        );
+        out
     }
 
     fn composer_key(&mut self, key: crossterm::event::KeyEvent) -> Option<V2Effect> {
