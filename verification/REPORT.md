@@ -5,7 +5,7 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
-## 0. Gate status (re-run 2026-10-04 at `MATERIAL-COMMIT`)
+## 0. Gate status (re-run 2026-10-04 at `4df3b80c`)
 
 * **D-410 added the wrap-up-warning model and re-ran all three targets on this tree (2026-10-04).**
   `V2Control.tla` gained the driver's wrap-up note as a modelled step: a second monotone clock fact
