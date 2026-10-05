@@ -103,10 +103,27 @@ per task, and now a DB check that reads the product's own calls), plus the rule 
 is a product too, and the first number it produces deserves the same suspicion as a flattering one** — here it was
 an *un*flattering number that was wrong.
 
-**Boundaries.** One domain (retail), ten tasks, one seed, one model pair; the user side is an LLM, so the user is
-stochastic while the reward is not; the agent is driven one goal per turn because that is how this product opens
-work; and τ³-bench's own `NLAssertionsEvaluator` is excluded (it calls a hard-coded OpenAI model), so a published
-`pass^1` for this split is not directly comparable.
+**Scaled up, and across a second domain.** The corrected harness then ran the pre-registered *first N tasks in
+the dataset's own order* for two splits, one attempt each (2026-10-05):
+
+| split | tasks | solved | Wilson 95 % |
+|---|---|---|---|
+| retail | 40 | **34 (85 %)** | [0.71, 0.93] |
+| airline | 10 | **10 (100 %)** | [0.72, 1.00] |
+
+Receipts verified with `review/benchmark/harness_health.py --tau3` (every task kept its trajectory and carries both
+readings of its verdict). The native verdict is `0.0` for 49 of the 50 tasks and `1.0` for one — the exception is
+the artefact behaving correctly: that task's reference database state *is* the initial one, so the empty replay
+matches. It is also why the audit checks for *systematic* agreement rather than any single agreement.
+
+**Boundaries, which the scale-up does not remove.** One model pair (DeepSeek Flash answering, `deepseek/deepseek-chat`
+as the simulated user), one seed, one attempt per task, and the tasks are the first N of each split rather than a
+random sample — the airline split's first ten are not the airline split. The user side is an LLM, so the user is
+stochastic while the reward is not. τ³-bench's own `NLAssertionsEvaluator` is excluded (it calls a hard-coded
+OpenAI model), and because this product executes tools inside itself, the reward comes from replaying its recorded
+calls rather than from the conversation — the same criterion τ³-bench applies, read from a different source. A
+published `pass^1` for these splits comes from different user simulators and different harness scaffolding, so
+these are *comparable in substance and not a leaderboard row*.
 
 ## D-419 A second, independent benchmark: SWE-bench Verified, run by its official harness (2026-10-04)
 

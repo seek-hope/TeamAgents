@@ -357,7 +357,10 @@ other benchmarks hardly touch (MCP bindings and their tool plumbing) rather than
 
 Cost, measured before starting: the repository is public and ships its data, `pip install -e .` is the setup, and
 the work is the bridge (~150 lines) plus the agent class (~80). It needs an LLM for the user simulator (the same
-DeepSeek endpoint) and no browser or GPU. **Implemented and measured (D-420): 8 of 10 retail tasks.** The first run reported 0/10 and this file said so
+DeepSeek endpoint) and no browser or GPU. **Measured (D-420): 34 of 40 retail tasks (85 %) and 10 of 10 airline tasks**, one attempt each, the first N of
+each split in the dataset's own order, with the receipts checked by `harness_health.py --tau3`. An earlier version
+of this line said "8 of 10": that was the corrected harness on a smaller sample. **The first-ever run of this
+pipeline said 0 of 10 and was a harness artefact** — see below. The first run reported 0/10 and this file said so
 with a failure story attached; both were wrong, and the correction is the interesting part: τ³-bench's
 `EnvironmentEvaluator` rebuilds the agent's database by replaying the agent's `tool_calls` **as they appear in its
 conversation**, which for this product is never (the tools run inside the product), so every trajectory graded

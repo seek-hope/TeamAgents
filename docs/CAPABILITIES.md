@@ -83,7 +83,7 @@ different things on purpose — a single benchmark's tasks are a shape a product
 |---|---|---|---|
 | Terminal-Bench 2.1 | container tasks, the task's own tests | 89 tasks × 3, per-task budgets (D-389/D-390) | **210/267 = 78.7 %** [0.733, 0.831]; 210/258 = 81.4 % over the 86 evaluable tasks |
 | SWE-bench Verified | real GitHub issues, the **repository's own tests**, official harness | seeded random 12, retrieval **blocked** (D-419) | **8/12 = 66.7 %** [0.39, 0.86] |
-| τ³-bench (retail) | a **conversation with a simulated user**, graded from the **database state** | 10 tasks, DB check recomputed from the product's own calls, seeded (D-420) | **8/10** |
+| τ³-bench (retail / airline) | a **conversation with a simulated user**, graded from the **database state** | first 40 retail and first 10 airline tasks, DB check recomputed from the product's own calls (D-420) | **34/40 = 85 %** · **10/10** |
 
 **Rule 1: a benchmark whose fixes are public must be run with the retrieval channel closed, and the guard's
 receipt read.** SWE-bench's first three runs (13/14, 12/12, 12/12) were void: near-verbatim copies of the upstream
