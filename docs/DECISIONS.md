@@ -20,6 +20,52 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-420 The third axis: τ³-bench — a conversation with a simulated user, graded from the database (2026-10-05)
+
+**Why a third one.** Terminal-Bench 2.1 and SWE-bench both grade *one trajectory*: a terminal task, a code patch.
+τ³-bench (`sierra-research/tau2-bench`, the maintained successor of the outdated τ-bench) grades something
+neither touches: a **multi-turn conversation with a simulated user** under a **domain policy**, with the reward
+read from the **database state the tools produced**. It is also the axis the product's own thesis lives on — a
+leader plus members talking to a user — so a zero here is a different fact from a zero on SWE-bench.
+
+**The integration, in the product's own terms.** Nothing about the product was changed to fit the benchmark:
+
+* the domain's tools are exposed as an **MCP stdio server** (`review/benchmark/tau2_mcp_server.py`), so they reach
+  the model through the product's MCP path. The server holds **no state**: every `tools/list` and `tools/call` is
+  forwarded over a Unix socket to the runner, which answers with `environment.get_response` — the *same*
+  environment the simulated user and the grader see. A bridge with its own copy of the database would grade
+  something that never happened.
+* the **policy goes in the product's own channel**: τ³-bench's `domain_policy` text is written as
+  `instruction_files`, which every member's system text receives (D-102/D-246).
+* each user turn is one `teamagents exec` in a **persistent session** (a new goal per turn, because a settled goal
+  cannot be reopened), so the model sees the whole dialogue.
+* the reward is τ³-bench's own **DB check** (`EvaluationType.ENV`). Its experimental `NLAssertionsEvaluator` is
+  excluded on purpose: it calls a hard-coded OpenAI model, which is neither deterministic nor reachable here — this
+  is the standard metric, not a shortcut.
+
+**Result: 0 of 10 retail tasks** (seeded, `max_steps=12`, DeepSeek Flash as the agent model and
+`deepseek/deepseek-chat` as the user simulator, 2026-10-05). The trajectories are healthy and the failure is
+specific, which is what makes it worth recording: 6–11 domain tool calls per dialogue (median 8), 8–12 messages,
+nine dialogues ended with the user simulator's `###STOP###` and one with `###TRANSFER###` (the simulated user
+giving up to a human). The tools it reached for are the right ones — 32 `get_order_details`, 17
+`get_product_details`, 10 `find_user_id_by_name_zip`, 10 `get_user_details`, 7
+`exchange_delivered_order_items`, 3 `modify_pending_order_items` — and the DB still did not match.
+
+**The failure mode, read out of one trajectory.** It asked `get_order_details` for `W2378156`; the environment
+answered `Error: Order not found`; it then used **`#W2378156`** — an identifier the environment does not have —
+for the rest of the dialogue, including the `exchange_delivered_order_items` call that was supposed to change the
+database, and told the user the exchange was **confirmed**. The database was never touched. That is D-383's class
+("the deliverable exists, is well-formed, and is semantically wrong") in a conversation, and it is the same
+self-verification gap D-418 and D-401 name from other directions: nothing in the loop made the agent re-read the
+tool's own error.
+
+**Boundaries, in advance of anyone quoting this.** One domain (retail), ten tasks, one seed, one model pair; the
+user side is an LLM, so the *user* is stochastic while the *reward* is not; the agent is driven one goal per turn
+because that is how this product opens work; and a 0/10 on ten tasks cannot distinguish "cannot do this class" from
+"failed these ten" — it says the axis is unsolved, not how far off it is. The next measurement that would sharpen
+it: run the same ten with `--task-ids` fixed and read each `reward_detail.json`'s DB diff, and compare against the
+τ³-bench reference numbers for strong harnesses on the full retail split.
+
 ## D-419 A second, independent benchmark: SWE-bench Verified, run by its official harness (2026-10-04)
 
 **Why.** Every measurement of this product's agentic behaviour so far came from Terminal-Bench 2.1 — the same

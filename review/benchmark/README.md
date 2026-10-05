@@ -357,8 +357,19 @@ other benchmarks hardly touch (MCP bindings and their tool plumbing) rather than
 
 Cost, measured before starting: the repository is public and ships its data, `pip install -e .` is the setup, and
 the work is the bridge (~150 lines) plus the agent class (~80). It needs an LLM for the user simulator (the same
-DeepSeek endpoint) and no browser or GPU. It is not started yet: the SWE-bench falsification run has the machine,
-and it is pre-registered here so the next benchmark is chosen before its result.
+DeepSeek endpoint) and no browser or GPU. **Implemented and measured (D-420): 0 of 10 retail tasks** with the DB check as the reward, 6–11 domain tool
+calls per dialogue, and the failure traced in a trajectory: the agent used `#W2378156` where the environment only
+knows `W2378156`, got `Error: Order not found` back, kept going with the wrong identifier and told the user the
+exchange was confirmed. The database never changed.
+
+```bash
+# needs tau2 (pip install -e . from sierra-research/tau2-bench) and the same DeepSeek endpoint
+python3 review/benchmark/tau2_teamagents_agent.py --domain retail --tasks 10 --timeout 420 --out /tmp/tau3-retail10
+```
+
+Per task the runner writes the reward, the full `reward_detail.json` (the DB check's verdict), `calls.json` (every
+tool call the bridge served), and `conversation.json` — the trajectory evidence D-419's lesson requires. The
+experimental `NLAssertionsEvaluator` is excluded (`EvaluationType.ENV`): it calls a hard-coded OpenAI model.
 
 ### The falsification, and the unbiased sample (D-419)
 
