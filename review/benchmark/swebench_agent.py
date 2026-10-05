@@ -76,7 +76,7 @@ def image_for(instance_id: str) -> str:
     return f"swebench/sweb.eval.x86_64.{instance_id.replace('__', '_1776_')}:latest"
 
 
-def run_one(instance: dict, out: pathlib.Path, timeout: int) -> dict:
+def run_one(instance: dict, out: pathlib.Path, timeout: int, block_retrieval: bool) -> dict:
     instance_id = instance["instance_id"]
     image = image_for(instance_id)
     print(f"== {instance_id}: {image}", flush=True)
@@ -101,11 +101,24 @@ def run_one(instance: dict, out: pathlib.Path, timeout: int) -> dict:
         "cd /testbed && git add -A && while read -r path; do [ -n \"$path\" ] && git reset -q -- \"$path\" 2>/dev/null; "
         "done < /opt/ta-in/baseline.txt; git diff HEAD > /opt/ta-in/patch.diff"
     )
+    # D-419's correction: an agent with the open internet can *fetch* the upstream fix instead of writing one
+    # (measured: several patches matched the dataset's gold patch to 0.97-0.99). `--no-retrieval` blackholes the
+    # hosts that would serve it and turns pip's index off; the model endpoint stays reachable, which is the
+    # difference between "no internet" and "no cheating channel".
+    guard = [
+        "--add-host", "github.com:127.0.0.1", "--add-host", "api.github.com:127.0.0.1",
+        "--add-host", "codeload.github.com:127.0.0.1", "--add-host", "raw.githubusercontent.com:127.0.0.1",
+        "--add-host", "objects.githubusercontent.com:127.0.0.1", "--add-host", "gitlab.com:127.0.0.1",
+        "--add-host", "bitbucket.org:127.0.0.1", "--add-host", "pypi.org:127.0.0.1",
+        "--add-host", "files.pythonhosted.org:127.0.0.1", "--add-host", "sourceforge.net:127.0.0.1",
+        "-e", "PIP_NO_INDEX=1",
+    ] if block_retrieval else []
     started = subprocess.run(
         [
-            "docker", "run", "--rm",
+            "docker", "run", "--rm", *guard,
             "-v", f"{BINARY}:/usr/local/bin/teamagents:ro",
             "-v", f"{work}:/opt/ta-in",
+            "-v", f"{work}/state:/opt/ta/state",
             "-e", "DEEPSEEK_API_KEY",
             "-w", "/testbed",
             image, "bash", "-lc", command,
@@ -133,7 +146,22 @@ def grade(predictions: pathlib.Path, instances: list[str], out: pathlib.Path) ->
     print("+ " + " ".join(command), flush=True)
     # The harness writes `logs/run_evaluation/<run>/...` relative to the *cwd*; running it from the run's own
     # output directory keeps those logs with the evidence they belong to instead of in the repository root.
-    return subprocess.call(command, cwd=str(out))
+    code = subprocess.call(command, cwd=str(out))
+    # Its last step can raise inside urllib3's connection teardown *after* it has written its report (measured on
+    # every run so far). The report is the verdict, so a non-zero exit with a report present is reported as the
+    # quirk it is rather than as a failed grading.
+    reports = sorted(pathlib.Path(out, "grading").glob("*.json"))
+    if reports:
+        summary = json.loads(reports[-1].read_text())
+        for instance, verdict in sorted(summary.items()):
+            if isinstance(verdict, dict) and "resolved" in verdict:
+                print(f"   {instance}: resolved={verdict['resolved']} "
+                      f"applied={verdict.get('patch_successfully_applied')} "
+                      f"infra={verdict.get('infra_failure')}", flush=True)
+        if code != 0:
+            print(f"   (grader exited {code} after writing its report: the teardown crash, not a verdict)", flush=True)
+        return 0
+    return code
 
 
 def main() -> int:
@@ -143,6 +171,8 @@ def main() -> int:
     parser.add_argument("--timeout", type=int, default=1200, help="per-instance turn bound in seconds")
     parser.add_argument("--jobs", type=int, default=2)
     parser.add_argument("--grade-only", action="store_true")
+    parser.add_argument("--no-retrieval", action="store_true",
+                        help="blackhole the hosts a fix could be fetched from (D-419's correction)")
     args = parser.parse_args()
 
     out = pathlib.Path(args.out).resolve()
@@ -151,7 +181,7 @@ def main() -> int:
     if not args.grade_only:
         rows = [instance_row(instance) for instance in args.instances]
         with ThreadPoolExecutor(max_workers=args.jobs) as pool:
-            results = list(pool.map(lambda row: run_one(row, out, args.timeout), rows))
+            results = list(pool.map(lambda row: run_one(row, out, args.timeout, args.no_retrieval), rows))
         with predictions.open("w") as handle:
             for result in results:
                 handle.write(json.dumps({"instance_id": result["instance_id"],

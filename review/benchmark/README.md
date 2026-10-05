@@ -368,3 +368,16 @@ and the decision records that. What the pre-registered *rule* still shares acros
 dataset order" means the **earlier PRs** of each project, so the number to quote afterwards is a **seeded random
 sample of twelve from all 500** (`swebench_subset_random.json`, seed `20261005`, recorded before the run).
 Combined so far: 25 of 26 non-randomly chosen instances across nine repositories.
+
+### ⚠ The first SWE-bench numbers were contaminated by retrieval (D-419's correction)
+
+The patches were compared with the dataset's gold patches *after* the runs: nine of 38 scored 0.94–0.99
+similarity — near-verbatim copies. Re-running one instance with the product's state collected showed the mechanism
+in its own shell log: `pip download sympy==1.3 -d /tmp/sympy_dl --no-deps`, i.e. the agent fetched the **later
+release that contains the fix**. With the open internet, `pypi.org` and `github.com` are where the answer lives.
+
+So 13/14, 12/12 and 12/12 are *agent + internet*, not capability. The adapter now has `--no-retrieval` (blackholes
+the hosts that serve a published fix and sets `PIP_NO_INDEX=1`, keeping the model endpoint reachable) and mounts
+the product's state out of the container so a run can be audited; every future SWE-bench number is quoted from
+guarded runs. The cheap probe that catches this — patch-vs-gold similarity — is one command and belongs before the
+numbers, not after them.

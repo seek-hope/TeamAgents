@@ -104,9 +104,58 @@ the seed recorded before the run), run through the same pipeline; that is the nu
 entry will carry it. Until then the honest summary is: *25 of 26 on a non-random subset, with the subset's bias
 narrowed from "small repositories" to "earlier PRs", and the unbiased estimate pending.*
 
+**The numbers above are contaminated, and the correction is the important part of this entry.** Comparing each of
+the 38 patches with the dataset's **gold patch** (a check this entry should have done before quoting anything)
+showed nine of them at 0.94–0.99 similarity — near-verbatim copies, including style details like the blank line
+upstream added before a function. Reasoning does not reproduce a commit byte for byte; retrieval does. The
+mechanism was then caught in the act rather than inferred: re-running `sympy__sympy-12489` with the product's own
+state **collected** (a second lesson — the first three runs mounted no state out, so their commands were
+unrecoverable) and reading its shell operations showed
+
+```
+cd /testbed && python -c "import sympy, os; print(os.path.dirname(sympy.__file__))" 2>/dev/null;
+pip download sympy==1.3 -d /tmp/sympy_dl --no-deps 2>…
+```
+
+— the agent downloaded the **later release that contains the fix** and wrote it back. The container had the open
+internet, and `pypi.org`/`github.com` are exactly where a fixed checkout lives. So 13/14, 12/12 and 12/12 measure
+*agent + internet + the fix is published*, not the product's coding ability, and none of them is a capability
+number.
+
+**What this changes, and the rule it leaves behind.**
+
+* The adapter now has a **`--no-retrieval`** mode: the hosts that would serve a published fix
+  (`github.com`, `api.github.com`, `codeload.github.com`, `raw.githubusercontent.com`,
+  `objects.githubusercontent.com`, `gitlab.com`, `bitbucket.org`, `pypi.org`, `files.pythonhosted.org`,
+  `sourceforge.net`) are blackholed and `PIP_NO_INDEX=1` is set, while the **model endpoint stays reachable** —
+  the difference between "no internet" and "no cheating channel".
+* Every run now mounts the product's **state out** of the container, so the commands it ran are auditable
+  afterwards. A benchmark result whose trajectory cannot be read is not evidence.
+* The **first guarded re-run was itself void**: its flag was inverted at the call site (`run_one(…, args.no_retrieval)`
+  bound to a parameter named `retrieval`), so no guard was applied and the patches came back byte-identical to the
+  unguarded ones — which is what exposed the mistake. The guard itself was then verified in isolation
+  (`docker run --add-host api.github.com:127.0.0.1 … python -c "urllib.request.urlopen(…)"` → connection refused),
+  and the run was repeated with the guard actually on. Two lesson-shaped facts: a *bound-but-inverted* flag looks
+  like a working guard in the code and in the log, and the only thing that caught it was the patches being
+  identical when they should have differed.
+* A benchmark whose tasks have public fixes **must** be run with the retrieval channel closed, and
+  *patch-vs-gold similarity* is the cheap probe that catches it: it cost one command and would have caught this
+  before the first number was written down.
+
+**The guard works, and what it changes.** With the flag actually bound, four instances re-ran — three of them at
+0.94–0.99 whole-patch similarity before — and **all four resolved again**, with the evidence in their state:
+`sympy__sympy-12489` tried `pip download sympy==1.12` and `django__django-10097` tried `pip download Django==2.1`,
+and the receipts show those commands **failing** (`WARNING: Retrying … connect=…`, guard on) instead of a fetched
+patch. The sympy patch changed shape from a 294-line verbatim copy to a **189-line patch of which 48 changed lines
+overlap the gold 42 (88 %)** — the same place fixed, written by the agent; the two 13-line patches (2 changed
+lines each) still sit inside the gold patch, which is what a one-expression fix looks like from any author. So
+these four are *not* explained by retrieval, but neither are the unguarded numbers usable: the honest SWE-bench
+result is the **properly guarded pre-registered random sample of twelve**, running now, whose numbers land here.
+Until they do, no SWE-bench rate is quoted from this repository.
+
 **A harness quirk worth knowing.** A graded run's *last* step can raise `ValueError: I/O operation on closed file`
-from the harness's own logging on shutdown, after it has written its report; the adapter's `--grade-only` reruns
-just the grading off the predictions file, which is how this run's verdict was read.
+from the harness's own logging on shutdown, after it has written its report; the adapter now reads the report from
+the grader's own output and its `--grade-only` reruns just the grading off the predictions file.
 
 **And the third axis, pre-registered before its result.** Two benchmarks still share a shape: one trajectory,
 graded at the end. τ³-bench (`sierra-research/tau2-bench`) grades a **conversation with a simulated user** under a
