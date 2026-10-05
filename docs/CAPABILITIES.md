@@ -47,6 +47,7 @@ no more than a decision's own wording, the row says so.
 | A job runner that outlives an exit and then retires | A12; `review/runner_cost.py` (idle cost 0.40 % → 0.00 % of a core), `review/host_cleanup.py` (the census and the classes it may stop) | an *unsettled* job's runner keeps waiting by design, at ~0 CPU | — |
 | A ceiling on one model tool call (`[limits] max_tool_seconds`) | `v2_driver::the_configured_ceiling_bounds_a_model_picked_tool_timeout` (the job's own `deadline_ms`: a 3600 s ask capped to 60 s, an uncapped arm left at 3600 s, a 30 s ask untouched), `tools::bounded_timeout_tests` | it is a ceiling on what a **model** may ask for, not a shorter default: a long legitimate command is cut at the ceiling and must be split by the model; a user's own `[[checks]]` timeout is never clamped (D-415) | a measurement of whether the cut helps |
 | Recovery-oriented errors instead of bare refusals | D-402 (`winning-avg-corewars`: 53 invented tool calls → 0 and 255 → 138 operations once the answer names the offered tools); D-404 (the same in codemode) | measured as operations and invented calls, not as a score | — |
+| The criterion arrives **before** the work: a goal's required checks are briefed at the turn's start | `control::the_check_briefing_names_the_required_checks_once_and_only_for_a_live_goal`, `v2_driver::a_goal_with_required_checks_is_told_them_before_the_first_request`; `V2Checks`' `BriefingIsOnce` + `BriefingIsForAGoalWithChecks`, refuted by a control that briefs a goal requiring nothing (D-418) | the text is composed by the runtime from the goal's own stored limits and written at most once per goal; **its benefit is unmeasured** — the A/B (D-400's three tasks, both arms carrying the same check, control = the pre-D-418 binary) is pre-registered and running | the A/B's number |
 | A wrap-up note when a goal's deadline is close | `control::the_deadline_warning_is_sent_once_and_only_before_a_live_deadline`, `v2_driver::a_goal_close_to_its_deadline_is_told_once_to_wrap_up`; `V2Control.tla` (`AtMostOneWarning`, `WarnIsTimely`) with two refuted controls; `review/benchmark/deadline_wrapup_ab.py` | **delivered only at a step boundary**: on the 12 timeout-prone tasks, bare 0/12 against 1/12 with a 13-minute deadline, and the runs that miss it are inside one long tool call — the same wall D-381's 12-hour budget and D-400's gate hit from other sides (D-410) | bound a single tool call's wall clock so a goal near its deadline returns to the model more often |
 | A deadline is a cut, not a verdict | D-397: **10 of the 33 deadline trials were graded 1.0 anyway**; `review/benchmark/verifier_health.py` separates a verifier that never ran | more time does not convert the rest: a 12-hour budget did not raise the score (D-381) | — |
 
@@ -72,16 +73,36 @@ no more than a decision's own wording, the row says so.
 | Workspace policies: shared, isolated, git worktree | `workspace::tests::shared_and_isolated_roots`, `worktree_lifecycle_and_guards`; `review/dogfood/workspace.py` | retirement refuses anything with uncommitted or unmerged work, and says why | — |
 | Install, init, doctor, cleanup, reopen | `engine/tests/install.rs`; `review/dogfood/boundary.py`; `make release-rehearsal`; `review/install_check.py` | **the published release tag is an earlier implementation**, so the install guide describes more than the newest release contains (A36's open gap) | a release of this tree |
 
-## 6. Evaluation standing: Terminal-Bench 2.1, DeepSeek Flash, official endpoint
+## 6. Evaluation standing: three benchmarks, DeepSeek Flash
 
-The headline row and the rules that make it readable are in
-[../review/benchmark/README.md](../review/benchmark/README.md); this is the short form.
+The headline rows and the rules that make them readable are in
+[../review/benchmark/README.md](../review/benchmark/README.md); this is the short form. The three measure
+different things on purpose — a single benchmark's tasks are a shape a product can be tuned into (D-419).
 
-| Run | Trials | Passed | Wilson 95 % |
+| Benchmark | What it grades | Sample | Result |
 |---|---|---|---|
-| fixed 20-task sample, corrected harness (D-382) | 60 | 46 (76.7 %) | [0.646, 0.856] |
-| full set, N = 3, per-task budgets, after the parser fix (D-389, D-390) | 267 | **210 (78.7 %)** | **[0.733, 0.831]** |
-| the same, over the 86 evaluable tasks | 258 | **210 (81.4 %)** | **[0.761, 0.858]** |
+| Terminal-Bench 2.1 | container tasks, the task's own tests | 89 tasks × 3, per-task budgets (D-389/D-390) | **210/267 = 78.7 %** [0.733, 0.831]; 210/258 = 81.4 % over the 86 evaluable tasks |
+| SWE-bench Verified | real GitHub issues, the **repository's own tests**, official harness | seeded random 12, retrieval **blocked** (D-419) | **8/12 = 66.7 %** [0.39, 0.86] |
+| τ³-bench (retail) | a **conversation with a simulated user**, graded from the **database state** | 10 tasks, DB check, seeded (D-420) | **0/10** |
+
+**Rule 1: a benchmark whose fixes are public must be run with the retrieval channel closed, and the guard's
+receipt read.** SWE-bench's first three runs (13/14, 12/12, 12/12) were void: near-verbatim copies of the upstream
+patches, fetched with `pip download <pkg>==<later>` and `https://github.com/<repo>/commit/<sha>.patch` (D-419).
+Patch-vs-gold similarity is the cheap probe, and a run's trajectory must be collected to be auditable at all.
+
+**Rule 2: read the check's own receipt before attributing a result to it** (D-395: an acceptance check that never
+ran because the image ships no `python3`; D-410: a wrap-up note no model ever received; D-416: a measurement whose
+binary predated the instrument).
+
+**Where the remaining failures are.** Terminal-Bench: not reasoning depth (D-380: lower effort scored better; D-381:
+a 12-hour budget changed nothing) but throughput and cadence, and the window's composition is task-dependent —
+one attempt spent 98 % of its 730 s in model requests (68 of them, one 190 s), another 94–96 % of 775–841 s inside
+tool calls (three asking for 300 s), with long calls *chosen by the model* (D-414). A long request is the model
+streaming slowly, never a stalled connection (D-416: frame gaps ≤ 1.1 s across 232 requests). SWE-bench: four of
+twelve failed with patches that take a different route than the reference fix. τ³-bench: the dialogues look right
+(6–11 domain tool calls, the right tools) and the **database is still wrong** — one trajectory used
+`#W2378156` where the environment only knows `W2378156`, got `Error: Order not found`, kept going with the wrong
+identifier and told the user the exchange was confirmed (D-420).
 
 **How to read it.** One full-set run is a point estimate with a **±5-task band** (D-388). Each task runs with its
 **own** authored budget (48 × 900 s, 17 × 1,800 s, 13 × 3,600 s, plus three longer) because harbor does; the
@@ -115,6 +136,8 @@ family (D-416).
 - **A tool call's wall clock** — the upgrade path D-410 records and does not take: bound one call, or interrupt it
   as a deadline nears, so a goal near its deadline reaches the model more often. It is the only lever in that
   family that does not depend on the model's cadence.
+- **The briefing's own measurement** — the one capability in this map whose *benefit* has no number yet: the
+  pre-registered A/B (both arms carry the same check; the control is the binary from before D-418) is running.
 - **Memory on a longer horizon** — D-406 measures the isolated case and D-409 the real-task case; what neither
   speaks to is a project over many sessions whose facts never became files.
 - **The published release** — the newest tag is an earlier implementation, which is A36's open gap and what
