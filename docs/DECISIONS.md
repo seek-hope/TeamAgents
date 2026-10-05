@@ -20,6 +20,46 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-424 The context axis, measured and then closed: large prompts cost money, not latency (2026-10-05)
+
+**Why this was the last hypothesis.** D-380/D-381/D-414/D-416 left "throughput is the binding constraint" standing,
+and three things were already ruled out as levers (a stall detector, a wrap-up note, more wall clock). The one
+mechanism still plausible was **context economy**: the product declares the model's native window, so with a
+1M-token window its compaction never fires — measured, `summaries = 0` in every attempt while conversations grew
+to 73–151 entries — and prompts grew unboundedly. If request latency tracked prompt size, capping the context would
+be a real lever on the binding constraint.
+
+**Measured, from the runs' own state** (1,075 requests with usage across the Terminal-Bench/deadline/τ³ runs, then 411
+requests in the instrumented Terminal-Bench run that carry D-416's **frame timing**, which is what separates
+prefill from generation):
+
+| prompt size | n | prefill (first frame) | completion tokens | latency |
+|---|---|---|---|---|
+| 3 k – 32 k | 137 | **0.23 s** | 301 | 2.0 s |
+| 33 k – 97 k | 137 | 0.40 s | 751 | 3.9 s |
+| 97 k – 204 k | 137 | **0.56 s** | 903 | 5.0 s |
+
+Prompts are indeed large (median 49.7 k tokens, p90 114.8 k, max 204.5 k, never compacted), and latency does rise
+with them — **but the rise is generation, not prefill**: a 200 k-token prompt costs about half a second of prefill,
+while the model's own completion grows 301 → 903 tokens across the same buckets and carries the latency. Within one
+attempt the confound is plain: 6,050 completion tokens took 33.8 s while 556 took 2.8 s at a larger prompt.
+
+**So the hypothesis is refuted, and the axis closes as a cost question.** Large prompts are a **billing** fact
+(prompt tokens are paid on every request) and a **context-quality** question (what the model must read), not a
+throughput one. Capping or masking the context would not buy back window time, so it is not justified as a
+performance change; it would be justified as a *cost* change for a user paying per token, with the claim
+"prompt tokens per task fall without changing outcomes" — and its arm is a token count, not a benchmark score.
+
+**What this leaves.** Every product lever this session could name is now measured: the ones that help (naming the
+offered tools in an error, D-402/D-404; images, D-392; memory for facts outside the workspace, D-406; a ceiling on
+one tool call, D-415 — mechanism confirmed, pass rate neutral) and the ones that do not (a stall detector, D-416;
+a wrap-up note, D-410; the *arrival time* of the acceptance criterion, D-418; capping the context for latency,
+here). The two benchmarks that grade correctly now have their failures attributed to the criterion's visibility
+(D-422) and to under-determined specifications (D-401/D-423), and the third axis scores 85 % / 100 % once its
+grader reads the product's own calls (D-420). The honest next investment is therefore not another mechanism but a
+decision about direction: either a **cost** change (context economy, measured in tokens) or work on the **model's
+own** behaviour via the user's criterion — which is where every measurement keeps pointing.
+
 ## D-423 `mteb-retrieve` is under-determined too, and the class has a name: self-check that rewrites the answer (2026-10-05)
 
 **The question.** D-391 left three Terminal-Bench failures as "deterministic semantics"; one of them,
