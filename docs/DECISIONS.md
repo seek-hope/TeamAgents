@@ -308,7 +308,26 @@ are therefore on the table — a request built while a synthetic check batch is 
 requestor merged with another's — and pinning which is the next step, with a deterministic test rather than
 another live run.
 
-**What this changes about the change.** The briefing as worded ("run them as you work … do not report the work as
+**The shape bug, pinned and fixed.** The mechanism is exact, not a hypothesis: the boundary's synthetic answer
+(`answer_dangling_calls`, whose purpose is to answer the `finish` call, which has no operation) fired for a call
+whose **operation was still open**, and then that operation's own receipt landed as a second tool result with a
+different envelope id (`answer-<instance>:<epoch>:<idx>-<call>` beside `<decision_id>:<index>`), so the dedup that
+keys on the envelope id did not stop it. Measured in the failing trial: entry 42 (assistant, call
+`call_00_4IDOEWT…`) → 43 (synthetic answer, envelope `answer-i-leader:0:42-…`) → 44/45 (the synthetic check round)
+→ **46 (the same call's real receipt, envelope `d-req-827b7120-…:0`)** — a `tool` message whose `tool_calls` were
+no longer adjacent, which is exactly what the provider refuses. Duplicates appear in **two of nine** treatment
+trials and in **0 of 9 control trials**, which is why the briefing is what exposed it: told to run the checks
+itself, the model has a shell operation in flight when the boundary registers its round. The fix is one condition —
+`answer_dangling_calls` skips a call whose operation is `PREPARED`/`DISPATCH_COMMITTED`/`RUNNING`, because its
+receipt is coming — with
+`control::a_call_whose_operation_is_still_open_is_not_answered_by_the_synthetic_boundary`, which was checked to
+**fail without the fix** and pass with it (the repo's rule: a test that passes either way proves nothing).
+
+**Caveats of that fix, stated.** `operations` carries no instance column, so the open-call set is scoped by epoch;
+provider call ids are UUIDs so a collision needs a hand-written `check-<round>-<pos>` id to clash across instances
+of one epoch, and the residual case (a call with no operation *row at all* yet, answered synthetically and then
+given a real receipt when the row appears) is not covered by the measured mechanism and is left for a test if it
+ever appears. **What this changes about the change.** The briefing as worded ("run them as you work … do not report the work as
 done until they pass") is now known to be at least *unhelpful* and possibly harmful on this sample, so the honest
 state of the feature is: the mechanism works exactly as designed (verified), its measured effect is negative, and
 it exposed a conversation-shape bug that a real run found and the unit tests could not. Two follow-ups are

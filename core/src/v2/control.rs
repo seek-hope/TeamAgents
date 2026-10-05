@@ -2295,6 +2295,26 @@ fn answer_dangling_calls(
             .filter_map(|message| message["tool_call_id"].as_str().map(str::to_string))
             .collect()
     };
+    // A call whose *operation* is still open will get its own receipt; answering it here as well is how one call
+    // ended up with two tool results — the synthetic answer, then the real receipt — and the duplicate landed
+    // after the completion boundary's synthetic check-round entry, so the next request carried a `tool` message
+    // whose `tool_calls` were no longer adjacent and the provider refused it with a permanent 400 (measured:
+    // D-418's A/B, two of nine treatment trials). Only calls nothing else will answer are answered here.
+    let open_calls: std::collections::HashSet<String> = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT intent_json FROM operations
+                 WHERE epoch = ?1 AND status IN ('PREPARED', 'DISPATCH_COMMITTED', 'RUNNING')",
+            )
+            .map_err(|e| format!("answer open operations: {e}"))?;
+        let rows = stmt
+            .query_map(rusqlite::params![epoch], |row| row.get::<_, String>(0))
+            .map_err(|e| format!("answer open operations query: {e}"))?;
+        rows.filter_map(|row| row.ok())
+            .filter_map(|raw| serde_json::from_str::<Json>(&raw).ok())
+            .filter_map(|intent| intent["call_id"].as_str().map(str::to_string))
+            .collect()
+    };
     let assistants: Vec<(String, String)> = {
         let mut stmt = tx
             .prepare(
@@ -2314,7 +2334,7 @@ fn answer_dangling_calls(
         let Some(calls) = message["tool_calls"].as_array() else { continue };
         for call in calls {
             let Some(call_id) = call["id"].as_str() else { continue };
-            if answered.contains(call_id) {
+            if answered.contains(call_id) || open_calls.contains(call_id) {
                 continue;
             }
             append_context(
@@ -8037,6 +8057,56 @@ mod tests {
             )
             .unwrap_err();
         assert!(err.contains("not ACTIVE"), "{err}");
+        cleanup(&path);
+    }
+
+    /// D-418 follow-up: the completion boundary answers a call nothing else will answer (the `finish` call has no
+    /// operation) — but **not** a call whose own operation is still open, because its real receipt is coming. Two
+    /// answers to one call is what produced a transcript the provider refuses ("Messages with role 'tool' must be a
+    /// response to a preceding message with 'tool_calls'"), and it parked two instances of a real benchmark run.
+    #[test]
+    fn a_call_whose_operation_is_still_open_is_not_answered_by_the_synthetic_boundary() {
+        let (mut ctl, path) = control("dangling-open");
+        create_instance(&mut ctl, "i1");
+        let tx = ctl.connection();
+        // the model's assistant entry: one call with an operation in flight, one `finish` with none
+        append_context(
+            tx,
+            "i1",
+            0,
+            "assistant",
+            &json!({"role": "assistant", "content": "",
+                    "tool_calls": [{"id": "running-call", "type": "function",
+                                    "function": {"name": "shell", "arguments": "{}"}},
+                                   {"id": "finish-call", "type": "function",
+                                    "function": {"name": "finish", "arguments": "{}"}}]}),
+            Some("d-req-test"),
+            &json!([]),
+        )
+        .expect("assistant entry");
+        tx.execute(
+            "INSERT INTO operations
+             (operation_id, decision_id, tool_index, goal_id, epoch, intent_json, args_hash, grant_revision, status)
+             VALUES ('d-req-test:0', 'd-req-test', 0, NULL, 0, ?1, 'h', 0, 'RUNNING')",
+            rusqlite::params![json!({"call_id": "running-call", "name": "shell", "args": {}}).to_string()],
+        )
+        .expect("open operation");
+        // the boundary answers the `finish` call only
+        let answered = answer_dangling_calls(tx, "i1", 0, "synthetic").expect("answer");
+        assert_eq!(answered.as_deref(), Some("finish-call"), "the open call's receipt is still coming");
+        assert!(answer_dangling_calls(tx, "i1", 0, "synthetic").expect("second pass").is_none());
+        let results: Vec<String> = {
+            let mut stmt = tx
+                .prepare("SELECT message_json FROM context_entries WHERE instance_id = 'i1' AND kind = 'tool_result'")
+                .unwrap();
+            stmt.query_map([], |row| row.get::<_, String>(0)).unwrap().filter_map(|row| row.ok()).collect()
+        };
+        assert_eq!(results.len(), 1, "exactly one answer, and not for the open call: {results:?}");
+        assert!(results[0].contains("finish-call"), "{results:?}");
+        assert!(
+            !results.iter().any(|raw| raw.contains("running-call")),
+            "the open call was answered twice: {results:?}"
+        );
         cleanup(&path);
     }
 
