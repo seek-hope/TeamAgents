@@ -442,3 +442,19 @@ checkout, so no agent can run the criterion it will be judged by. That is the be
 product gap: the only lever is the user's own `--accept`/`[[checks]]` criterion, and D-418's A/B measured its
 arrival time as a null. `harness_health.py --swebench` verifies the receipts these conclusions rest on (trajectory,
 grading, and 16 fetch attempts in the guarded run).
+
+
+### `mteb-retrieve`, attributed: an under-determined criterion (D-423)
+
+An instrumented run with trajectories collected shows the instruction names the model, revision, query, "5th
+highest cosine similarity" and the package — and nothing about prompts (54 words; `prompt`, `passage`, `task_name`
+and `Scifact` all absent). `mteb` applies a query prompt only when the caller names a task or a `prompt_type`, and
+the two conventions rank the corpus differently: the agent's own session printed
+`RESULT: 'HumanEval: …'` (no prompt) and `RESULT prompt: MTEB: Massive Text Embedding Benchmark` (with it — the
+graded line). The task's criterion is therefore not recoverable from the instruction, and it joins
+`pytorch-model-cli` in the excluded bucket: **210/255 = 82.4 %** over the 85 evaluable tasks.
+
+The same trajectory also shows the *other* half: it computed the expected line, wrote it, then ran a verification
+through `sentence_transformers` without mteb's prompt, and that script **wrote its own line back to
+`/app/result.txt`**. A self-check that mutates the deliverable is A17's `stale_inputs` shape, but A17 covers
+user-configured `[[checks]]`; this was the agent's own ad-hoc check, and nothing applied.

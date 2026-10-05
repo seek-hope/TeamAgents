@@ -20,6 +20,53 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-423 `mteb-retrieve` is under-determined too, and the class has a name: self-check that rewrites the answer (2026-10-05)
+
+**The question.** D-391 left three Terminal-Bench failures as "deterministic semantics"; one of them,
+`mteb-retrieve`, delivered a line from the right corpus with what looked like the wrong method. An instrumented
+run (three tasks × two attempts, own budgets, **trajectories collected**) was made to attribute it, and it turned
+out to be two findings in one.
+
+**First: the instruction does not determine the answer.** It names the model, the revision, the query, "the 5th
+highest cosine similarity" and the required package — and it says nothing about prompts (checked mechanically:
+`prompt`, `passage`, `task_name`, `Scifact` all absent; 54 words). But `mteb` applies a **query prompt** only when
+the caller names a task or a `prompt_type`, and the two conventions rank the corpus differently. The agent's own
+trajectory contains both, from the same session:
+
+```
+RESULT: 'HumanEval: Benchmarking Python code generation via functional examples'   (rank 5 without the prompt)
+RESULT prompt: MTEB: Massive Text Embedding Benchmark                              (rank 5 with it — the expected line)
+```
+
+So the task's criterion is **not recoverable from the instruction**: two defensible readings of "5th highest
+cosine similarity" give different lines, and the graded one is the one that depends on an unstated convention.
+That is D-401's class (`pytorch-model-cli`'s `/255`) a second time, now with the agent itself producing both
+answers in one run. `mteb-retrieve` joins the excluded set, and the exclusion is now evidenced rather than
+asserted.
+
+**Second, and more useful: what the agent did with the two answers.** It computed the expected line, wrote it,
+then ran a **verification through a different API** (`sentence_transformers` directly, without mteb's prompt),
+and that script **wrote its own line back to `/app/result.txt`** — the wrong one — which the agent then reported as
+done. The failure is therefore not "it could not compute the answer": it is that a **self-check mutated the
+deliverable** and the agent did not notice. The product already owns the rule that a check must not rewrite what it
+checks — A17 classifies exactly that as `stale_inputs` and blocks the goal — but it applies to **user-configured
+`[[checks]]`**, and this was the agent's own ad-hoc check, so nothing applied.
+
+**What this does and does not justify.** It does not justify a product change on its own: one run, one task, and
+the behaviour ("a verification step overwrote the artifact") was inferred from the deliverable's content and the
+commands, not from a controlled experiment. It does justify two things: the task moves to the excluded bucket, and
+a product question is now on the table with a plausible mechanism — *an artifact a goal declares should not be
+rewritten by a step that only claims to verify it* — which is the same shape as A17 but for checks the agent
+writes itself. That is pre-registered here as the next experiment candidate, not implemented.
+
+**The other two, for the record.** `gcode-to-text` **passed one of two attempts** at its own budget (the other
+timed out): it is not a capability ceiling, it is variance and wall clock. `make-doom-for-mips` timed out in both
+attempts at its own budget (D-391's 4× run had it finishing with a matching frame and one failing stdout
+assertion), so it is budget-bound rather than semantic.
+
+**Denominator.** With `mteb-retrieve` excluded beside the two mirror-rot images and `pytorch-model-cli`, the
+Terminal-Bench headline is **210/255 = 82.4 %** over the 85 evaluable tasks (from 210/258 = 81.4 % over 86).
+
 ## D-422 Why four SWE-bench instances failed: the criterion is not in the environment (2026-10-05)
 
 **The question.** D-419 left four of twelve guarded instances unresolved (`astropy__astropy-14369`,
