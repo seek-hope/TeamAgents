@@ -327,13 +327,20 @@ receipt is coming — with
 provider call ids are UUIDs so a collision needs a hand-written `check-<round>-<pos>` id to clash across instances
 of one epoch, and the residual case (a call with no operation *row at all* yet, answered synthetically and then
 given a real receipt when the row appears) is not covered by the measured mechanism and is left for a test if it
-ever appears. **What this changes about the change.** The briefing as worded ("run them as you work … do not report the work as
-done until they pass") is now known to be at least *unhelpful* and possibly harmful on this sample, so the honest
-state of the feature is: the mechanism works exactly as designed (verified), its measured effect is negative, and
-it exposed a conversation-shape bug that a real run found and the unit tests could not. Two follow-ups are
-recorded rather than guessed at: fix the shape bug (with the test that pins it), and re-word the briefing to state
-the criterion **without** making the model responsible for satisfying it before it may report — then re-run this
-same A/B.
+ever appears. **What this changes about the change.** The briefing as first worded ("run them as you work … do not report the
+work as done until they pass") is measured at least *unhelpful* on this sample — 0/9 against 3/9 — and it is what
+put a model into running the checks itself while the boundary registered its own round, which is how the shape bug
+surfaced. The honest state of the feature is therefore: the mechanism works exactly as designed (verified), its
+measured effect with the *gate* wording is negative, and the run that measured it found a conversation-shape bug
+the unit tests could not.
+
+**The rewording, and the A/B that is running against it.** The note now states the criterion as **information**:
+that N acceptance commands will be run when the goal ends, that the goal settles only if they pass, that they are
+the user's own criteria to plan around, that the **runtime** runs them (the model need not), and that work which
+cannot satisfy one should say so with `finish` and report what is missing rather than continuing. The model is no
+longer made responsible for a gate it may be unable to pass. The same A/B runs against the same control (the
+binary from before D-418, verified to lack `goal_checks_briefing`) and its numbers land here; the first wording's
+3/9 baseline and 0/9 result stay recorded above.
 
 **What the A/B was pre-registered as.** The claim: *a goal whose required check is
 stated at turn start converges (settles SUCCEEDED) more often than the same goal where the criterion arrives only

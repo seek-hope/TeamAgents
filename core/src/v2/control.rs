@@ -3735,10 +3735,16 @@ fn goal_checks_briefing(tx: &Connection, session_id: &str, params: &Json, identi
         .map(|check| format!("`{}`: {}", check["id"].as_str().unwrap_or("?"), check["command"].as_str().unwrap_or("?")))
         .collect::<Vec<_>>()
         .join("; ");
+    // D-418's A/B measured the first wording ("run them as you work … do not report the work as done until they
+    // pass") at 0/9 against 3/9 without any briefing, and it is what made a model run the checks itself while the
+    // boundary registered its own round. This wording states the criterion as **information**: what will be
+    // checked, that the runtime runs it, and what to do when the work cannot satisfy it — the model is not made
+    // responsible for a gate it may be unable to pass.
     let text = format!(
-        "runtime: goal {goal_id} must satisfy {} required check(s) before it can settle — {listed}. Run them as \
-         you work (the shell tool runs the same command) or with `verify_goal`, and do not report the work as done \
-         until they pass.",
+        "runtime: when this goal ends, {} acceptance command(s) will be run and the goal settles only if they pass \
+         — {listed}. They are the user's own criteria; plan so they hold. You do not have to run them (the runtime \
+         does, at the end). If your work cannot satisfy one, say so with `finish` and report what is missing \
+         rather than continuing.",
         checks.len()
     );
     let appended = append_context(
@@ -8153,7 +8159,10 @@ mod tests {
             )
             .expect("the note is in the conversation");
         assert!(note.contains("rows") && note.contains("pytest -q"), "{note}");
-        assert!(note.contains("verify_goal") && note.contains("do not report"), "{note}");
+        // the wording states the criterion as information: what will be checked, who runs it, and what to do when
+        // the work cannot satisfy it (the first wording made the model responsible for the gate and measured worse)
+        assert!(note.contains("the runtime \\n does") || note.contains("the runtime does"), "{note}");
+        assert!(note.contains("`finish`") && note.contains("report what is missing"), "{note}");
         // a goal without checks has no criterion to state
         ctl.submit(cmd("g2", "create_goal", json!({"id": "g2", "instance_id": "i1"})), Identity::User).expect("g2");
         let none = ctl
