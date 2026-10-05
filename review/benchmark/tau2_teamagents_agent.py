@@ -93,7 +93,11 @@ class Bridge:
                 requestor="assistant",
             )
             response = self.environment.get_response(call)
-            self.calls.append({"name": call.name, "arguments": call.arguments})
+            # The *response* is recorded too: the product-behaviour question this axis asks is not only "which
+            # tools did it call" but "did it read what they answered" (one trajectory used an order id the
+            # environment does not know, was told so, and reported success anyway — D-420).
+            self.calls.append({"name": call.name, "arguments": call.arguments,
+                               "response": response.content, "isError": bool(response.error)})
             return {"content": response.content, "isError": bool(response.error)}
         return {"content": f"unknown op {request.get('op')!r}", "isError": True}
 
