@@ -194,6 +194,54 @@ class TeamAgentsAgent:
         return payload.get("reply") or "(no reply)"
 
 
+def db_reward(task, calls: list[dict], env_constructor) -> dict:
+    """τ³-bench's DB check, computed from **the product's own tool calls** rather than from the message stream.
+
+    This is the correction D-420 needed: `EnvironmentEvaluator` rebuilds the agent's database with
+    `set_state(message_history=full_trajectory)`, i.e. it replays the agent's `tool_calls` **as they appear in
+    τ³-bench's conversation**. TeamAgents executes its tools inside the product — the conversation carries text, not
+    tool calls — so that replay is empty and the check reports `db_match: false` whatever the agent did. Replaying
+    the calls the bridge actually served (they are recorded) reproduces the state the live environment reached, and
+    that is what the reference hash is compared against.
+
+    Returns `{match, agent_hash, gold_hash}`; a call the environment refuses is reported, never silently skipped.
+    """
+    from tau2.data_model.message import ToolCall
+
+    def fresh():
+        return env_constructor()
+
+    def initialized():
+        environment = fresh()
+        initial = task.initial_state
+        environment.set_state(
+            initialization_data=getattr(initial, "initialization_data", None),
+            initialization_actions=getattr(initial, "initialization_actions", None),
+            message_history=list(getattr(initial, "message_history", None) or []),
+        )
+        return environment
+
+    gold = initialized()
+    for action in (task.evaluation_criteria.actions or []):
+        try:
+            gold.make_tool_call(tool_name=action.name, requestor=action.requestor, **action.arguments)
+        except Exception as error:  # recorded, not swallowed: a broken reference must be visible
+            print(f"   gold action failed: {action.name}: {error}", file=sys.stderr)
+
+    agent = initialized()
+    refusals = 0
+    for call in calls:
+        response = agent.get_response(
+            ToolCall(id="c", name=call["name"], arguments=call["arguments"], requestor="assistant")
+        )
+        if response.error:
+            refusals += 1
+
+    gold_hash, agent_hash = gold.get_db_hash(), agent.get_db_hash()
+    return {"match": gold_hash == agent_hash, "gold_hash": gold_hash, "agent_hash": agent_hash,
+            "refused_calls": refusals, "agent_calls": len(calls)}
+
+
 def create_agent(tools, domain_policy, **kwargs):
     return TeamAgentsAgent(tools, domain_policy, **kwargs)
 
@@ -241,13 +289,13 @@ def main() -> int:
             # `NLAssertionsEvaluator` is experimental and calls a hard-coded OpenAI model (`gpt-4.1`), which is
             # both non-deterministic and unreachable here; leaving it out is the standard metric, not a shortcut.
             simulation = run_simulation(orchestrator, evaluation_type=EvaluationType.ENV)
+            tau3_reward = simulation.reward_info.reward if simulation.reward_info else None
             reward = simulation.reward_info.reward if simulation.reward_info else None
         except Exception as error:  # a task that cannot run is reported, never silently skipped
             import traceback
 
             reward = None
             (run_dir / "error.txt").write_text(f"{type(error).__name__}: {error}\n\n{traceback.format_exc()}")
-        rewards.append(reward)
         # The trajectory is evidence, not decoration (D-419's lesson): the tool calls the bridge really served, the
         # conversation, and the reward. A run with zero tool calls did not test the product's tool path at all.
         reward_detail = None
@@ -256,6 +304,10 @@ def main() -> int:
             (run_dir / "reward_detail.json").write_text(json.dumps(reward_detail, indent=2, default=str))
         calls = getattr(getattr(orchestrator, "agent", None), "bridge", None)
         call_log = calls.calls if calls is not None else []
+        # the honest reward: τ³-bench's DB check recomputed from the product's own calls (see `db_reward`)
+        check = db_reward(task, call_log, registry.get_env_constructor(args.domain))
+        reward = 1.0 if check["match"] else 0.0
+        rewards.append(reward)
         conversation = []
         if "simulation" in locals() and simulation is not None:
             for message in getattr(simulation, "messages", []) or []:
@@ -265,9 +317,10 @@ def main() -> int:
         (run_dir / "calls.json").write_text(json.dumps(call_log, indent=2))
         (run_dir / "conversation.json").write_text(json.dumps(conversation, indent=2))
         print(f"{index + 1}/{len(tasks)} {task.id}: reward={reward} tool_calls={len(call_log)} "
-              f"messages={len(conversation)} ({time.time() - started:.0f}s)", flush=True)
+              f"messages={len(conversation)} refused={check['refused_calls']} "
+              f"(tau3-native reward={tau3_reward}) ({time.time() - started:.0f}s)", flush=True)
         (run_dir / "reward.json").write_text(json.dumps({"task": task.id, "reward": reward,
-                                                         "tool_calls": len(call_log)}))
+                                                         "tool_calls": len(call_log), "db_check": check}))
     passed = sum(1 for r in rewards if r == 1.0)
     print(f"\n{args.domain}: {passed}/{len(rewards)} solved (rewards {rewards})")
     (out / "summary.json").write_text(json.dumps({"domain": args.domain, "passed": passed,

@@ -43,28 +43,39 @@ leader plus members talking to a user — so a zero here is a different fact fro
   excluded on purpose: it calls a hard-coded OpenAI model, which is neither deterministic nor reachable here — this
   is the standard metric, not a shortcut.
 
-**Result: 0 of 10 retail tasks** (seeded, `max_steps=12`, DeepSeek Flash as the agent model and
-`deepseek/deepseek-chat` as the user simulator, 2026-10-05). The trajectories are healthy and the failure is
-specific, which is what makes it worth recording: 6–11 domain tool calls per dialogue (median 8), 8–12 messages,
-nine dialogues ended with the user simulator's `###STOP###` and one with `###TRANSFER###` (the simulated user
-giving up to a human). The tools it reached for are the right ones — 32 `get_order_details`, 17
-`get_product_details`, 10 `find_user_id_by_name_zip`, 10 `get_user_details`, 7
-`exchange_delivered_order_items`, 3 `modify_pending_order_items` — and the DB still did not match.
+**First result — and it was a harness artefact, not a result.** The first ten-task run reported **0/10** with
+healthy-looking trajectories (6–11 domain tool calls each, median 8, the right tools), and this entry first
+recorded that as the axis being unsolved, with a failure mode read out of one dialogue. **Both readings were
+wrong**, and the way they were caught is the point: replaying the calls the bridge had actually served onto a fresh
+τ³-bench environment reproduced the reference database hash **exactly** (`eab1dde2ca84`) for a task whose live run
+had graded `db_match: false`. A right answer graded wrong is a harness bug.
 
-**The failure mode, read out of one trajectory.** It asked `get_order_details` for `W2378156`; the environment
-answered `Error: Order not found`; it then used **`#W2378156`** — an identifier the environment does not have —
-for the rest of the dialogue, including the `exchange_delivered_order_items` call that was supposed to change the
-database, and told the user the exchange was **confirmed**. The database was never touched. That is D-383's class
-("the deliverable exists, is well-formed, and is semantically wrong") in a conversation, and it is the same
-self-verification gap D-418 and D-401 name from other directions: nothing in the loop made the agent re-read the
-tool's own error.
+The cause is code-level: `EnvironmentEvaluator` rebuilds the agent's database with
+`set_state(message_history=full_trajectory)` — it replays the agent's `tool_calls` **as they appear in τ³-bench's
+conversation**. TeamAgents executes its tools *inside the product*, so that conversation carries text and no tool
+calls, the replay is empty, and the predicted database is the **initial** state for every trajectory, whatever the
+agent did. The failure mode this entry first recorded was misread for the same reason: the reference actions use
+`#W2378156` too, so the `#` was the domain's own form, not an invented identifier.
 
-**Boundaries, in advance of anyone quoting this.** One domain (retail), ten tasks, one seed, one model pair; the
-user side is an LLM, so the *user* is stochastic while the *reward* is not; the agent is driven one goal per turn
-because that is how this product opens work; and a 0/10 on ten tasks cannot distinguish "cannot do this class" from
-"failed these ten" — it says the axis is unsolved, not how far off it is. The next measurement that would sharpen
-it: run the same ten with `--task-ids` fixed and read each `reward_detail.json`'s DB diff, and compare against the
-τ³-bench reference numbers for strong harnesses on the full retail split.
+**The corrected number: 8 of 10 retail tasks** (same seeded ten, same model pair, `max_steps=12`; the DB check
+recomputed from the product's own recorded calls — `db_reward` in the adapter — with τ³-bench's native verdict
+reported beside it, which is `0.0` for all ten and makes the artefact visible in the run itself). Two of the
+dialogues had a call the environment refused, and the agent still reached the reference state; two did not.
+
+**What it means, and what it does not.** The third axis is **not** unsolved: on ten retail tasks with one shot and
+no scaffolding, this lands where strong harnesses land on the retail split. The 0/10 that stood here for an hour
+is retracted, and the "self-verification gap" story that was read from it is withdrawn — the evidence for that gap
+has to come from the two benchmarks that grade correctly (Terminal-Bench's container tests and SWE-bench's
+repository tests), not from this one. What this entry leaves behind is the tooling that makes the axis measurable
+at all (the MCP bridge, the environment handle, the policy as `instruction_files`, the trajectory and reward-detail
+per task, and now a DB check that reads the product's own calls), plus the rule it re-taught: **a benchmark harness
+is a product too, and the first number it produces deserves the same suspicion as a flattering one** — here it was
+an *un*flattering number that was wrong.
+
+**Boundaries.** One domain (retail), ten tasks, one seed, one model pair; the user side is an LLM, so the user is
+stochastic while the reward is not; the agent is driven one goal per turn because that is how this product opens
+work; and τ³-bench's own `NLAssertionsEvaluator` is excluded (it calls a hard-coded OpenAI model), so a published
+`pass^1` for this split is not directly comparable.
 
 ## D-419 A second, independent benchmark: SWE-bench Verified, run by its official harness (2026-10-04)
 

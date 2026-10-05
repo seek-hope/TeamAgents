@@ -357,10 +357,13 @@ other benchmarks hardly touch (MCP bindings and their tool plumbing) rather than
 
 Cost, measured before starting: the repository is public and ships its data, `pip install -e .` is the setup, and
 the work is the bridge (~150 lines) plus the agent class (~80). It needs an LLM for the user simulator (the same
-DeepSeek endpoint) and no browser or GPU. **Implemented and measured (D-420): 0 of 10 retail tasks** with the DB check as the reward, 6–11 domain tool
-calls per dialogue, and the failure traced in a trajectory: the agent used `#W2378156` where the environment only
-knows `W2378156`, got `Error: Order not found` back, kept going with the wrong identifier and told the user the
-exchange was confirmed. The database never changed.
+DeepSeek endpoint) and no browser or GPU. **Implemented and measured (D-420): 8 of 10 retail tasks.** The first run reported 0/10 and this file said so
+with a failure story attached; both were wrong, and the correction is the interesting part: τ³-bench's
+`EnvironmentEvaluator` rebuilds the agent's database by replaying the agent's `tool_calls` **as they appear in its
+conversation**, which for this product is never (the tools run inside the product), so every trajectory graded
+`db_match: false`. Replaying the calls the bridge actually served reproduced the reference hash exactly. The
+adapter now computes the DB check from the product's own calls (`db_reward`) and prints τ³-bench's native verdict
+beside it — 0.0 for all ten, which keeps the artefact visible in the run itself.
 
 ```bash
 # needs tau2 (pip install -e . from sierra-research/tau2-bench) and the same DeepSeek endpoint

@@ -83,7 +83,7 @@ different things on purpose — a single benchmark's tasks are a shape a product
 |---|---|---|---|
 | Terminal-Bench 2.1 | container tasks, the task's own tests | 89 tasks × 3, per-task budgets (D-389/D-390) | **210/267 = 78.7 %** [0.733, 0.831]; 210/258 = 81.4 % over the 86 evaluable tasks |
 | SWE-bench Verified | real GitHub issues, the **repository's own tests**, official harness | seeded random 12, retrieval **blocked** (D-419) | **8/12 = 66.7 %** [0.39, 0.86] |
-| τ³-bench (retail) | a **conversation with a simulated user**, graded from the **database state** | 10 tasks, DB check, seeded (D-420) | **0/10** |
+| τ³-bench (retail) | a **conversation with a simulated user**, graded from the **database state** | 10 tasks, DB check recomputed from the product's own calls, seeded (D-420) | **8/10** |
 
 **Rule 1: a benchmark whose fixes are public must be run with the retrieval channel closed, and the guard's
 receipt read.** SWE-bench's first three runs (13/14, 12/12, 12/12) were void: near-verbatim copies of the upstream
@@ -99,10 +99,9 @@ a 12-hour budget changed nothing) but throughput and cadence, and the window's c
 one attempt spent 98 % of its 730 s in model requests (68 of them, one 190 s), another 94–96 % of 775–841 s inside
 tool calls (three asking for 300 s), with long calls *chosen by the model* (D-414). A long request is the model
 streaming slowly, never a stalled connection (D-416: frame gaps ≤ 1.1 s across 232 requests). SWE-bench: four of
-twelve failed with patches that take a different route than the reference fix. τ³-bench: the dialogues look right
-(6–11 domain tool calls, the right tools) and the **database is still wrong** — one trajectory used
-`#W2378156` where the environment only knows `W2378156`, got `Error: Order not found`, kept going with the wrong
-identifier and told the user the exchange was confirmed (D-420).
+twelve failed with patches that take a different route than the reference fix. τ³-bench: **8/10**, once the harness graded from the product's
+own tool calls rather than from a conversation the product's tools never appear in — the first run's 0/10 was a
+harness artefact and is retracted, and with it the "self-verification gap" story that had been read out of it.
 
 **How to read it.** One full-set run is a point estimate with a **±5-task band** (D-388). Each task runs with its
 **own** authored budget (48 × 900 s, 17 × 1,800 s, 13 × 3,600 s, plus three longer) because harbor does; the
