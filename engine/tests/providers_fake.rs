@@ -156,10 +156,14 @@ fn sse_assembles_reasoning_tool_calls_and_usage() {
 /// include `reasoning_content`; the runtime authors such messages itself (the
 /// required-check round), and without the field the *next* request is rejected with
 /// "The `reasoning_content` in the thinking mode must be passed back to the API" — a
-/// real run's repair turn died there (D-70). The adapter fills an *empty* one (no
-/// invented reasoning) for that protocol only, and never overwrites recorded reasoning.
+/// real run's repair turn died there (D-70). The requirement is that the field is
+/// **present**, and an empty string satisfies it (verified against deepseek-flash,
+/// deepseek-reasoner and deepseek-chat). Echoing the model's own recorded reasoning
+/// back on every request is therefore pure cost — measured at 81 % of the assistant
+/// bytes and ~85 k tokens of a full-context request in one attempt (D-425) — so the
+/// thinking wire sends an empty field for these messages and keeps the text at rest.
 #[test]
-fn the_thinking_wire_echoes_reasoning_for_assistant_tool_calls() {
+fn the_thinking_wire_sends_an_empty_reasoning_field_for_assistant_tool_calls() {
     let rt = runtime();
     let reply = json_response(
         "200 OK",
@@ -187,7 +191,7 @@ fn the_thinking_wire_echoes_reasoning_for_assistant_tool_calls() {
     let sent = request_body(&server);
     let messages = sent["messages"].as_array().unwrap();
     assert_eq!(messages[0]["reasoning_content"], json!(""), "the synthetic call gets an empty one: {messages:?}");
-    assert_eq!(messages[1]["reasoning_content"], json!("real reasoning"), "recorded reasoning is untouched");
+    assert_eq!(messages[1]["reasoning_content"], json!(""), "a recorded reasoning is not echoed back: {messages:?}");
     rt.block_on(server.task).unwrap();
 }
 

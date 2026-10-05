@@ -106,13 +106,13 @@ harness artefact and is retracted, and with it the "self-verification gap" story
 **How to read it.** One full-set run is a point estimate with a **±5-task band** (D-388). Each task runs with its
 **own** authored budget (48 × 900 s, 17 × 1,800 s, 13 × 3,600 s, plus three longer) because harbor does; the
 harness never shrinks a real model's context window; and the adapter calls the same system-dependency setup every
-built-in harbor agent does (D-382). Four tasks are **excluded from the headline denominator** and listed beside
+built-in harbor agent does (D-382). Three tasks are **excluded from the headline denominator** and listed beside
 it: `qemu-alpine-ssh` and `qemu-startup` (their images' mirror rot — the verifier cannot install anything, so the
-0 is not the agent's), `pytorch-model-cli` (an under-determined specification: it grades the reference
-implementation's `/255` convention while the only criterion the environment offers favours the other one, D-401), and
-`mteb-retrieve` (the instruction is silent on the prompt convention that decides the answer, and the agent's own run
-produced both candidate lines — `MTEB` with the prompt, `HumanEval` without it — while writing the wrong one after a
-self-check through another API overwrote the file, D-423).
+0 is not the agent's), and `pytorch-model-cli` (an under-determined specification: it grades the reference
+implementation's `/255` convention while the only criterion the environment offers favours the other one, D-401).
+`mteb-retrieve` was excluded here for a while (D-423) and is back in the denominator: a later trajectory showed the
+prompt it needs is discoverable from `mteb`'s own model metadata, which is what the instruction says to use — the
+earlier failures were a self-check that overwrote the correct answer (D-425).
 **Read a check's own receipt before attributing a result to it** (D-395: an acceptance check that never ran
 because the image ships no `python3`).
 

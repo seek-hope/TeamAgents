@@ -20,6 +20,48 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-425 Reasoning is not echoed back: 34 % fewer prompt tokens, and `mteb-retrieve` is not under-determined after all (2026-10-05)
+
+**The cost lever, measured.** D-424 showed the context is a billing question rather than a throughput one, and
+measured *what* fills it: in one Terminal-Bench attempt, `tool_result` entries were 67 % of the stored context but
+the wire view caps and masks them, while **`reasoning_content` was 81 % of the assistant bytes** — the model's own
+thinking, re-sent in full on every request (~85 k tokens of a full-context request). The adapter's own comment
+records the requirement: DeepSeek's thinking mode needs the field **present** on an assistant message that carries
+tool calls, and "an empty string satisfies it (verified against deepseek-flash, deepseek-reasoner and
+deepseek-chat)". Echoing the recorded text was therefore pure cost, and the thinking wire now sends an empty field
+for those messages (the text stays at rest; `providers_fake::the_thinking_wire_sends_an_empty_reasoning_field_for_assistant_tool_calls`,
+the renamed D-70 test).
+
+**Measured on the same three tasks, two attempts each, same model and effort** (the provider's own reported
+`prompt_tokens`, so the receipt is the provider's):
+
+| arm | requests | median prompt | max prompt | total prompt |
+|---|---|---|---|---|
+| before | 411 | 61 299 | 204 461 | **29.12 M** |
+| after | 414 | **46 752** | **133 669** | **19.29 M** |
+
+−24 % median, −35 % maximum, **−34 % total** with the same number of requests, i.e. the same work.
+Outcomes are not interpretable at two attempts each and are recorded as such: two passes before and two after, but
+`gcode-to-text` 1/2 → 0/2 while `mteb-retrieve` 0/2 → **2/2**.
+
+**And that last column corrects D-423.** The two passing attempts were read: both discovered the model's prompt
+from **`mteb`'s own metadata** (`mteb.get_model_meta("BAAI/bge-small-zh-v1.5").prompt`) and then used
+`mteb.get_model(...)` to encode — which is exactly what the instruction tells the agent to do ("You must use the
+installed mteb package (version 1.36.8) to load and encode the model"). So the criterion **is** recoverable, and
+D-423's "under-determined specification" reading was an inference from one attempt's two internal results that a
+later trajectory refutes. `mteb-retrieve` is **restored to the denominator**; what D-423 also found — a
+verification step through `sentence_transformers` that wrote its own line over the correct answer in
+`/app/result.txt` — stands as the cause of the earlier failures, and it is a *model* behaviour with a *product*
+question attached (A17's rule for user-configured checks has no counterpart for a check the agent writes itself).
+
+**Terminal-Bench headline, corrected back:** **210/267 = 78.7 %** [0.733, 0.831], and **210/258 = 81.4 %** over the
+86 evaluable tasks, excluding only the two mirror-rot images and `pytorch-model-cli` (whose criterion the
+environment genuinely does not reveal, D-401).
+
+**Boundary.** Three tasks, two attempts each, one model and effort; the token receipts are the provider's own
+counts, and no claim is made that the outcome mix is unchanged at this sample size — only that the cost fell by a
+third for the same work.
+
 ## D-424 The context axis, measured and then closed: large prompts cost money, not latency (2026-10-05)
 
 **Why this was the last hypothesis.** D-380/D-381/D-414/D-416 left "throughput is the binding constraint" standing,
@@ -14649,7 +14691,7 @@ so the scope is safe for every model on that protocol, and a *recorded* reasonin
 Keeping the field out of the context preserves the design's protocol-neutral kernel (native continuation
 fields stay per-protocol, as the existing `responses_output`/`anthropic_blocks` stripping already does).
 
-**Verification**: `providers_fake::the_thinking_wire_echoes_reasoning_for_assistant_tool_calls` (the filler
+**Verification**: `providers_fake::the_thinking_wire_sends_an_empty_reasoning_field_for_assistant_tool_calls` (renamed by D-425, which empties the field on these messages instead of echoing the text) (the filler
 appears only when the flag is on, and a recorded reasoning is untouched), and the real-model harness
 `review/dogfood/checks.py` that found the defect now completes: 8 model requests, 12.7 s, `end=failed`,
 goal **BLOCKED**, the artifact written, the repair ledger naming `check_id: impossible` / `class: exit`, and

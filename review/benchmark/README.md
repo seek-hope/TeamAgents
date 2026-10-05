@@ -458,3 +458,25 @@ The same trajectory also shows the *other* half: it computed the expected line, 
 through `sentence_transformers` without mteb's prompt, and that script **wrote its own line back to
 `/app/result.txt`**. A self-check that mutates the deliverable is A17's `stale_inputs` shape, but A17 covers
 user-configured `[[checks]]`; this was the agent's own ad-hoc check, and nothing applied.
+
+
+### Reasoning is not echoed back (D-425)
+
+The wire view caps and masks tool outputs, but the model's own `reasoning_content` was 81 % of the assistant bytes
+in one attempt and was re-sent in full on every request (~85 k tokens of a full-context request). DeepSeek's
+requirement is that the field is *present* on an assistant message carrying tool calls, and an empty string
+satisfies it (the adapter's own comment records the verification). The thinking wire now sends an empty field.
+
+Same three tasks, two attempts each, provider-reported `prompt_tokens`:
+
+| arm | requests | median prompt | max prompt | total prompt |
+|---|---|---|---|---|
+| before | 411 | 61 299 | 204 461 | **29.12 M** |
+| after | 414 | 46 752 | 133 669 | **19.29 M** |
+
+−34 % total for the same number of requests. Outcomes at two attempts each are noise (two passes before, two
+after) and are not claimed.
+
+The same run corrected D-423 as well: the two passing `mteb-retrieve` attempts read the model's prompt from
+`mteb.get_model_meta(...).prompt` — which is what the instruction says to use — so that task's criterion is
+recoverable and it is back in the denominator (**210/258 = 81.4 %** over the 86 evaluable tasks).

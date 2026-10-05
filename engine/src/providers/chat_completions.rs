@@ -91,12 +91,16 @@ impl ChatCompletions {
                 if let Some(fields) = message.as_object_mut() {
                     fields.remove("responses_output");
                     fields.remove("anthropic_blocks");
-                    // the thinking-mode requirement above: an assistant tool call
-                    // without a recorded reasoning gets an empty one
+                    // The thinking-mode requirement is that the field is *present* on an assistant message that
+                    // carries tool calls, and the comment above records that an empty string satisfies it
+                    // (verified against deepseek-flash, deepseek-reasoner and deepseek-chat). Echoing the model's
+                    // own recorded reasoning back on every request is therefore pure cost: measured in one
+                    // Terminal-Bench attempt, `reasoning_content` was 81 % of the assistant bytes in the context
+                    // and ~85 k tokens of a full-context request (D-425). What the model needs is its *answers*
+                    // and its *tool calls*; its earlier thinking is not an input.
                     if self.reasoning_echo
                         && fields.get("role") == Some(&json!("assistant"))
                         && fields.get("tool_calls").and_then(Json::as_array).is_some_and(|calls| !calls.is_empty())
-                        && !fields.contains_key("reasoning_content")
                     {
                         fields.insert("reasoning_content".into(), json!(""));
                     }
