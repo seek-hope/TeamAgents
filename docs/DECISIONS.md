@@ -338,9 +338,28 @@ the unit tests could not.
 that N acceptance commands will be run when the goal ends, that the goal settles only if they pass, that they are
 the user's own criteria to plan around, that the **runtime** runs them (the model need not), and that work which
 cannot satisfy one should say so with `finish` and report what is missing rather than continuing. The model is no
-longer made responsible for a gate it may be unable to pass. The same A/B runs against the same control (the
-binary from before D-418, verified to lack `goal_checks_briefing`) and its numbers land here; the first wording's
-3/9 baseline and 0/9 result stay recorded above.
+longer made responsible for a gate it may be unable to pass. The same A/B ran against the same control (the
+binary from before D-418, verified to lack `goal_checks_briefing`), with the same receipts — the note fired in
+**all nine** treatment trials and in **none** of the nine control ones — and the verdict is that **this sample
+cannot separate the briefing from the noise, in either wording**:
+
+| run | wording | control | briefing |
+|---|---|---|---|
+| 1 | gate ("do not report the work as done until they pass") | 3/9 | **0/9** |
+| 2 | information ("the runtime runs them … if your work cannot satisfy one, say so with `finish`") | **0/9** | **2/9** |
+
+The two runs point in **opposite directions**, and the *control arm's own score* — same binary both times, unchanged
+in between — moved from 3/9 to 0/9, which is the same size as the difference being attributed to the treatment. Nine
+trials per arm cannot resolve this, and the honest conclusion is a null one: **the briefing is not shown to help or
+to hurt**, and D-418's original hope (that arriving early would fix the "claimed done without checking" gap the
+three benchmarks point at) is not supported.
+
+**What that leaves.** The briefing stays as it is — information the model may use, one note per goal, cheap, and
+not shown to hurt — but it is not evidence-based as an improvement, and nothing about it addresses a model that can
+read the criterion and still not satisfy it. The gap the benchmarks actually show is *verification*, and the
+mechanisms that could close it are in the boundary (which already runs the checks, and already feeds the verdict
+back to the model) rather than in what the model is told. The durable outcome of this line of work is the
+conversation-shape bug the run found and the fix with its test, not the briefing.
 
 **What the A/B was pre-registered as.** The claim: *a goal whose required check is
 stated at turn start converges (settles SUCCEEDED) more often than the same goal where the criterion arrives only
