@@ -431,3 +431,14 @@ It is regression-tested both ways: it passes the guarded SWE-bench run (reportin
 trajectories contain) and fails the pre-guard run with the two patches that match the gold patch at 0.96 and 0.92.
 Where the trajectories record no fetch attempt the answer is **unknown, not clean** — a guard that was never tested
 is not a guard.
+
+
+### Why the four SWE-bench failures failed (D-422)
+
+All four unresolved instances ran the repository's own tests (11–17 test runs each, three of them as their *last*
+command), reproduced the issue from its text, and finished well inside the bound (178–1 017 s of 1 200 s). They
+still failed because SWE-bench's FAIL_TO_PASS test is **injected by the grader at grading time** — it is not in the
+checkout, so no agent can run the criterion it will be judged by. That is the benchmark's boundary rather than a
+product gap: the only lever is the user's own `--accept`/`[[checks]]` criterion, and D-418's A/B measured its
+arrival time as a null. `harness_health.py --swebench` verifies the receipts these conclusions rest on (trajectory,
+grading, and 16 fetch attempts in the guarded run).

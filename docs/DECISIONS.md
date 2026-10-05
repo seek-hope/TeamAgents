@@ -20,6 +20,44 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-422 Why four SWE-bench instances failed: the criterion is not in the environment (2026-10-05)
+
+**The question.** D-419 left four of twelve guarded instances unresolved (`astropy__astropy-14369`,
+`django__django-11734`, `matplotlib__matplotlib-25479`, `matplotlib__matplotlib-26208`) with patches that take a
+different route than the reference fix. That is an attribution, not a cause, and the two plausible causes have
+opposite product meanings: *the agent claimed done without verifying* (a behaviour the product can act on, and the
+one the three benchmarks had been pointing at) versus *the environment does not reveal the criterion* (nothing the
+product can do).
+
+**What the trajectories say.** All four collected their state, so their commands were read afterwards
+(`review/benchmark/harness_health.py --swebench` verifies the run carries those receipts):
+
+| instance | wall | operations | test runs | reproduced the issue | ran a test last |
+|---|---|---|---|---|---|
+| `astropy__astropy-14369` | 178 s | 48 | 13 | yes (`python -c` with the issue's own unit strings) | yes |
+| `django__django-11734` | 215 s | 74 | 17 | yes | yes |
+| `matplotlib__matplotlib-25479` | 505 s | 113 | 11 | yes (4) | no (finished on `git diff`) |
+| `matplotlib__matplotlib-26208` | 1 017 s | 171 | 13 | yes (24) | yes |
+
+Every one ended `completed` with the goal SUCCEEDED, none was cut off (the bound was 1 200 s), and every one ran
+the repository's own tests — including three that ran a test as their **last** command. So they verified as far as
+this environment allows.
+
+**Why that is not enough, and cannot be made enough.** SWE-bench's FAIL_TO_PASS test is **injected by the grader
+at grading time**: it is not in the checkout the agent works in, so no agent can run the criterion it will be
+judged by. What it can do is reproduce the issue from the text, run the existing suite to avoid regressions — and
+guess the reference implementation's exact choice where the issue leaves room. That is the same bound D-401
+measured from the other side (`pytorch-model-cli`: an independent verifier re-derived the method and still could
+not recover an unobservable convention), and it is why published harnesses on the full Verified set land in the
+60–75 % range: 8/12 = 66.7 % sits inside it.
+
+**What this decides.** No product change is justified by these four failures. The only lever a product has on this
+class is the **user's own criterion** (`--accept`/`[[checks]]`, D-385), and D-418's A/B has since measured the
+*arrival time* of that criterion as a null at nine trials per arm — so the remaining honest answer for SWE-bench is
+"this is the benchmark's boundary", not "the product is missing something". The line is closed here; the
+unattributed set that remains is Terminal-Bench 2.1's deterministic-semantics failures, where the environment
+*does* contain the tooling and the tests, and whose trajectories are being collected now.
+
 ## D-421 The receipts, checked mechanically: a harness audit that fails a run without them (2026-10-05)
 
 **Why.** Three corrections this session came from reading a receipt *after* a number had been written down: a
