@@ -153,6 +153,35 @@ these four are *not* explained by retrieval, but neither are the unguarded numbe
 result is the **properly guarded pre-registered random sample of twelve**, running now, whose numbers land here.
 Until they do, no SWE-bench rate is quoted from this repository.
 
+**The guarded number: 8 of 12 resolved (66.7 %, Wilson 95 % [0.39, 0.86])** on the pre-registered seeded random
+sample (`20261005`), with retrieval blocked and every run's state collected. The four that failed
+(`astropy__astropy-14369`, `django__django-11734`, `matplotlib__matplotlib-25479`, `matplotlib__matplotlib-26208`)
+produced patches whose changed lines overlap the gold patch by **0 %** — they took a different route and did not
+solve the issue, which is what a failure looks like when nobody is copying. Wall clock per instance spread from
+0.2 to 17 minutes (against 0.2–4 unguarded), and no patch is a whole-text clone of gold.
+
+| run | retrieval | resolved | wall (median) |
+|---|---|---|---|
+| first subset (14, small repos) | open internet | 13 | 1.6 min |
+| heavy-repo falsification (12) | open internet | 12 | — |
+| seeded random sample (12) | open internet | **12** | — |
+| **seeded random sample (12)** | **blocked** | **8 (66.7 %)** | 5.7 min |
+
+**What the honest number means.** 66.7 % on twelve verified instances, one shot at the raw problem statement, no
+scaffolding and no retries, lands inside the range published agentic harnesses report on the full 500-instance set
+(roughly 60–75 % for the strong ones). That is a credible result for a harness this thin, and it is the opposite
+of the 97 % the unguarded runs produced — which is exactly why the unguarded numbers are not quoted. The rate
+still carries N = 12 (a one-instance swing is 8 points) and the harness is weaker than the published ones, so it
+is a *floor-shaped* data point rather than a leaderboard claim; the pipeline now supports the full set if a
+longer run is ever wanted.
+
+**The rule this leaves for every future benchmark.** Before believing a number from a benchmark whose tasks have
+public fixes: (1) close the retrieval channel and *verify the guard bites* (a receipt showing the fetch failing,
+not an attempt), (2) collect the trajectory so the run is auditable, and (3) compare the patches with the gold
+patches — the last is one command and it is what caught this. The same rule applies to Terminal-Bench 2.1, where
+the tasks' own trees still set `allow_internet = true`: its "fix" is not published as a patch, so retrieval is not
+the same hazard there, but the *trajectory-collection* half is the next thing its adapter should gain.
+
 **A harness quirk worth knowing.** A graded run's *last* step can raise `ValueError: I/O operation on closed file`
 from the harness's own logging on shutdown, after it has written its report; the adapter now reads the report from
 the grader's own output and its `--grade-only` reruns just the grading off the predictions file.

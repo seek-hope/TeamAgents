@@ -381,3 +381,19 @@ the hosts that serve a published fix and sets `PIP_NO_INDEX=1`, keeping the mode
 the product's state out of the container so a run can be audited; every future SWE-bench number is quoted from
 guarded runs. The cheap probe that catches this — patch-vs-gold similarity — is one command and belongs before the
 numbers, not after them.
+
+### The honest SWE-bench number (D-419)
+
+| run | retrieval | instances | resolved | median wall |
+|---|---|---|---|---|
+| first subset (14, small repos) | open internet | 14 | 13 | 1.6 min |
+| heavy-repo falsification | open internet | 12 | 12 | — |
+| seeded random sample | open internet | 12 | 12 | — |
+| **seeded random sample** | **blocked** | **12** | **8 (66.7 %)** | 5.7 min |
+
+The same twelve pre-registered instances, with `--no-retrieval` and the product's state collected: **8 of 12**,
+Wilson 95 % [0.39, 0.86]. The four that failed have **0 %** changed-line overlap with their gold patches — a
+different route, not a copied one — and per-instance wall clock spread from 0.2 to 17 minutes, against 0.2–4 with
+the open internet. That number sits in the range published agentic harnesses report on the full set, which the
+unguarded 97 % never did. N = 12 and one shot at the raw statement, so it is a floor-shaped data point, not a
+leaderboard row; the pipeline can be pointed at the full 500 if a longer run is wanted.
