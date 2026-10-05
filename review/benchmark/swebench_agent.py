@@ -99,7 +99,10 @@ def run_one(instance: dict, out: pathlib.Path, timeout: int, block_retrieval: bo
         "--state-root /opt/ta/state/teamagents/v2 --cwd /testbed -- \"$(cat /opt/ta-in/prompt.txt)\" "
         "> /opt/ta-in/report.json 2>&1; echo \"exec rc=$?\" >> /opt/ta-in/report.json; "
         "cd /testbed && git add -A && while read -r path; do [ -n \"$path\" ] && git reset -q -- \"$path\" 2>/dev/null; "
-        "done < /opt/ta-in/baseline.txt; git diff HEAD > /opt/ta-in/patch.diff"
+        "done < /opt/ta-in/baseline.txt; git diff HEAD > /opt/ta-in/patch.diff; "
+        # D-419's lesson applied to the tooling: the run's trajectory has to be readable afterwards. The container
+        # is root, the host is not, so a root-owned state directory is unauditable — this makes it readable.
+        "chmod -R a+rX /opt/ta/state 2>/dev/null; true"
     )
     # D-419's correction: an agent with the open internet can *fetch* the upstream fix instead of writing one
     # (measured: several patches matched the dataset's gold patch to 0.97-0.99). `--no-retrieval` blackholes the

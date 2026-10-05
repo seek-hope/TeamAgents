@@ -20,6 +20,37 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-421 The receipts, checked mechanically: a harness audit that fails a run without them (2026-10-05)
+
+**Why.** Three corrections this session came from reading a receipt *after* a number had been written down: a
+harness that never installed a CA bundle and under-measured the product (D-382), patches that turned out to be
+fetched upstream fixes and over-measured it (D-419), and a grader that rebuilt the agent's database from a
+conversation the product's tools never appear in, again under-measuring it (D-420). Each was found by hand, by
+suspecting a plausible number. `review/benchmark/harness_health.py` asks the same three questions mechanically for
+any of the three pipelines, and **exits 1** when a receipt is missing:
+
+* **trajectory** — did the attempt keep the product's own state, so the commands it ran can be read afterwards?
+  A benchmark result whose trajectory cannot be read is not evidence (D-419).
+* **grading** — is there a second reading of the verdict? SWE-bench: the official per-instance report, plus the
+  patch's similarity to the dataset's gold patch, where a near-verbatim copy means retrieval (D-419 measured nine
+  of thirty-eight at 0.94–0.99). τ³-bench: the DB check recomputed from the product's own calls beside the
+  harness's native one, which is `0.0` for every trajectory when tools run inside the product (D-420).
+* **retrieval** — SWE-bench only: the product's own log showing fetch attempts. Where the trajectories record
+  none, the answer is reported as **unknown, not clean**: a guard that was never tested is not a guard.
+
+**Regression-tested, both ways.** On the guarded SWE-bench run it passes and reports the 16 fetch attempts the
+trajectories contain; on the *pre-guard* run (`/tmp/swebench-run3`, kept as the contaminated sample) it fails with
+the two patches that match gold at 0.96 and 0.92 — the defect it exists to catch. Its first version had two bugs of
+its own, caught by running it: it looked for τ³'s native verdict to disagree on *any* task (agreement on a task
+whose honest reward is also 0 is not a signal, so only systematic agreement is), and it guessed the SWE-bench
+directory layout wrong and reported "no attempt found" for a run with twelve. It also found a real defect in the
+adapter — the mounted trajectory was root-owned and therefore unreadable on the host — which the adapter now fixes
+by making the state world-readable before the container exits.
+
+**Ceiling.** It checks *receipts*, not correctness: a run can have every receipt and still measure the wrong thing
+(the harness's own task selection, for instance). The rules it encodes are the ones three measurements taught; a
+fourth kind of harness bug would need a fourth question.
+
 ## D-420 The third axis: τ³-bench — a conversation with a simulated user, graded from the database (2026-10-05)
 
 **Why a third one.** Terminal-Bench 2.1 and SWE-bench both grade *one trajectory*: a terminal task, a code patch.

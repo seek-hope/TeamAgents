@@ -411,3 +411,20 @@ different route, not a copied one — and per-instance wall clock spread from 0.
 the open internet. That number sits in the range published agentic harnesses report on the full set, which the
 unguarded 97 % never did. N = 12 and one shot at the raw statement, so it is a floor-shaped data point, not a
 leaderboard row; the pipeline can be pointed at the full 500 if a longer run is wanted.
+
+## `harness_health.py` — the receipts, checked mechanically (D-421)
+
+Three corrections this session (D-382, D-419, D-420) came from reading a receipt after a number had been written
+down, each found by hand. This script asks the same three questions for any of the three pipelines and exits 1
+when a receipt is missing:
+
+```bash
+python3 review/benchmark/harness_health.py --swebench /tmp/swebench-final   # trajectory, grading, retrieval
+python3 review/benchmark/harness_health.py --tau3 /tmp/tau3-honest         # trajectory, two readings of the reward
+python3 review/benchmark/harness_health.py --tb <jobs dir>                 # trajectory
+```
+
+It is regression-tested both ways: it passes the guarded SWE-bench run (reporting the 16 fetch attempts its
+trajectories contain) and fails the pre-guard run with the two patches that match the gold patch at 0.96 and 0.92.
+Where the trajectories record no fetch attempt the answer is **unknown, not clean** — a guard that was never tested
+is not a guard.
