@@ -273,7 +273,50 @@ the runtime's own composition, a model identity is refused, one note per goal, a
 and `v2_driver::a_goal_with_required_checks_is_told_them_before_the_first_request` (a real driver: the event fires,
 the note is the model-visible context, exactly one entry exists, and it names the command).
 
-**The measurement this change still needs, pre-registered here.** The claim: *a goal whose required check is
+**The measurement, run (2026-10-05), and it came back negative — with a bug attached.** Both arms carried the
+same instruction-derived acceptance check (`exec --accept`); the control is the binary built from the commit
+before this one and verified to lack `goal_checks_briefing`, the treatment the current binary, verified to have it.
+The isolation is airtight: the briefing fired in **all nine** treatment trials (one `goal_checks_briefed` event and
+one `goal-checks-briefing-*` note each) and in **none** of the nine control trials.
+
+| task | control | briefing |
+|---|---|---|
+| `query-optimize` | 1/3 | 0/3 |
+| `gcode-to-text` | 0/3 | 0/3 |
+| `pytorch-model-cli` | **2/3** | **0/3** |
+| total | **3/9** | **0/9** |
+
+So telling the model the criterion at the start **did not help** on this sample; it is 3/9 against 0/9, and the
+task where the control did well lost both passes. That is a negative result for the change as written, and it is
+consistent with D-400's earlier reading (the gate's arrival time was never the binding constraint).
+
+**And two of the nine treatment trials died on a provider error the control arm never hit:**
+
+```
+permanent model error: chat API 400: {"error":{"message":"Messages with role 'tool' must be a response to a
+preceding message with 'tool_calls'"}}
+```
+
+Both parked the instance (`parked: true`, attempts `error_class: Permanent`). The stored conversation is
+**well-formed** in those trials — all 80 entries, scanned two ways: every `tool` result has an outstanding call
+from a preceding assistant-with-`tool_calls`, and every tool batch is headed by one — so the violation is in the
+**request assembly**, not in what was persisted. The briefing's own note sits at index 2 (after the task, before
+the first assistant), so the note's *placement* is not the trigger either; what correlates is that the model,
+told to run the checks itself, starts running them **while the runtime's own completion-boundary round also
+dispatches its synthetic check operations**, and the two batches meet in one request. Two candidate mechanisms
+are therefore on the table — a request built while a synthetic check batch is half-applied, or a batch from one
+requestor merged with another's — and pinning which is the next step, with a deterministic test rather than
+another live run.
+
+**What this changes about the change.** The briefing as worded ("run them as you work … do not report the work as
+done until they pass") is now known to be at least *unhelpful* and possibly harmful on this sample, so the honest
+state of the feature is: the mechanism works exactly as designed (verified), its measured effect is negative, and
+it exposed a conversation-shape bug that a real run found and the unit tests could not. Two follow-ups are
+recorded rather than guessed at: fix the shape bug (with the test that pins it), and re-word the briefing to state
+the criterion **without** making the model responsible for satisfying it before it may report — then re-run this
+same A/B.
+
+**What the A/B was pre-registered as.** The claim: *a goal whose required check is
 stated at turn start converges (settles SUCCEEDED) more often than the same goal where the criterion arrives only
 at the completion boundary* — the same three tasks and both arms D-400 used, differing only in whether the
 briefing is written (`TEAMAGENTS_BRIEF_CHECKS=0` as the control). The falsifier is the inverse reading: the
