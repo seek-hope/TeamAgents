@@ -126,6 +126,8 @@ async fn main() -> Fallible<()> {
         leader_id: "i-leader".into(),
         leader_profile: KernelProfile {
             images: false,
+            tool_output_chars: None,
+            context_keep_chars: None,
             model: lead.clone(),
             instructions: teamagents_engine::v2::daemon::LEADER_INSTRUCTIONS.into(),
             tools: {

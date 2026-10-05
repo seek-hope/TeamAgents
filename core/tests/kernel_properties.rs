@@ -27,6 +27,8 @@ fn kernel() -> KernelInstance {
             tools: vec![json!({"type":"function","function":{"name":"shell","parameters":{"type":"object"}}})],
             options: json!({}),
             context_window: Some(1_000_000),
+            tool_output_chars: None,
+            context_keep_chars: None,
         },
     )
 }
@@ -304,7 +306,7 @@ fn tool_output_cap_keeps_head_and_tail_within_bounds() {
         // every position holds a distinct character, so head and tail are locatable
         let content: String =
             (0..length).map(|index| char::from_u32(0x4E00 + (index % 2000) as u32).unwrap()).collect();
-        let capped = cap_tool_output(&content);
+        let capped = cap_tool_output(&content, TOOL_OUTPUT_CAP);
         if length <= TOOL_OUTPUT_CAP {
             assert_eq!(capped, content, "content within the cap must not be rewritten");
             continue;

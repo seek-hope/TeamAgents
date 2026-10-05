@@ -81,6 +81,8 @@ async fn runner_spawn_failure_fails_the_op_and_the_driver_survives() {
         sandbox: teamagents_engine::tools::SandboxBackend::bubblewrap(),
         profile: KernelProfile {
             images: false,
+            tool_output_chars: None,
+            context_keep_chars: None,
             model: "scripted".into(),
             instructions: "test agent".into(),
             tools: vec![json!({"type": "function", "function": {

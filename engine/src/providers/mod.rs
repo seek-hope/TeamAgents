@@ -413,6 +413,9 @@ pub fn resolve_profile(profile: KernelProfile, catalog: &UserConfig) -> KernelPr
         // D-392: the catalog entry is authoritative for the capability, and the fallback keeps whatever the
         // caller resolved (an unknown model keeps fail-closed `false`).
         images: entry.images || profile.images,
+        // D-426: the session's cost limits travel with the profile the kernel builds every request from
+        tool_output_chars: catalog.limits.tool_output_chars,
+        context_keep_chars: catalog.limits.context_keep_chars,
     }
 }
 

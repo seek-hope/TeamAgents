@@ -228,15 +228,16 @@ pub fn estimated_tokens(value: &Json) -> u64 {
     (ascii.div_ceil(4) + text.chars().filter(|c| !c.is_ascii()).count()) as u64 + images * IMAGE_TOKEN_ALLOWANCE
 }
 
-/// Per-call model-facing output cap (same policy as the legacy loop).
+/// Per-call model-facing output cap (same policy as the legacy loop). D-426 lets a session lower it
+/// (`[limits] tool_output_chars`); the text above the cap stays in the store with a readback recipe.
 pub const TOOL_OUTPUT_CAP: usize = 24_000;
 
-pub fn cap_tool_output(content: &str) -> String {
+pub fn cap_tool_output(content: &str, cap: usize) -> String {
     let chars = content.chars().count();
-    if chars <= TOOL_OUTPUT_CAP {
+    if chars <= cap {
         return content.to_string();
     }
-    let half = TOOL_OUTPUT_CAP / 2;
+    let half = cap / 2;
     let head: String = content.chars().take(half).collect();
     let tail: String = content.chars().skip(chars.saturating_sub(half)).collect();
     format!(

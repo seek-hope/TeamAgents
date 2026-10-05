@@ -277,6 +277,8 @@ fn main() -> Fallible<()> {
     let (tools, _) = tools_for(args.web);
     let profile = KernelProfile {
         images: false,
+        tool_output_chars: None,
+        context_keep_chars: None,
         model: args.model.clone(),
         instructions: instructions_for(style, &workspace.to_string_lossy()),
         tools,

@@ -202,6 +202,15 @@ pub struct GoalLimits {
     /// settle? Opt-in, and the session's own statement about *who* may settle its goals.
     #[serde(default)]
     pub independent_verification: bool,
+    /// D-426: the most characters of one tool output the model is shown (unset keeps the built-in 24 000). A
+    /// *cost* limit: the full text stays in the store and the readback tool pages it, so a lower value trades
+    /// re-sent tokens for one extra call when the model really needs the rest.
+    #[serde(default)]
+    pub tool_output_chars: Option<usize>,
+    /// D-426: how many characters of tool output the wire view keeps before masking the older ones (unset keeps a
+    /// quarter of the model's context window, clamped). Lower values cut the tokens re-sent on every request.
+    #[serde(default)]
+    pub context_keep_chars: Option<usize>,
     /// D-415: the most seconds one *model* tool call may run. The model picks a call's `timeout` (the shell tool's
     /// default is 120 s) and this bounds the pick, so a single command cannot swallow a turn's whole window
     /// (measured: three calls of 300 s inside one 775-second trial, D-414). A user's own `[[checks]] timeout` is

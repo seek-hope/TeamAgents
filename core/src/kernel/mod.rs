@@ -30,6 +30,8 @@ mod tests {
                 ],
                 options: json!({"temperature": 0.2}),
                 context_window: Some(1_000_000),
+                tool_output_chars: None,
+                context_keep_chars: None,
             },
         )
     }
@@ -224,6 +226,8 @@ mod tests {
                 options: json!({}),
                 // tiny window forces masking of everything older
                 context_window: Some(4),
+                tool_output_chars: None,
+                context_keep_chars: None,
             },
         );
         let big = "x".repeat(40_000);
@@ -247,6 +251,57 @@ mod tests {
         assert!(content.contains("c1"));
         // originals stay in the store; only the wire copy is masked
         assert_eq!(entries[0].message["content"].as_str().unwrap().len(), 40_000);
+    }
+
+    /// D-426: the two cost limits a session can set — the per-call character cap and the keep budget — change the
+    /// **wire view** only. Both are measured as prompt-token savings; what matters for the contract is that the
+    /// stored text is untouched and the readback recipe survives, so the model can still page what it was not shown.
+    #[test]
+    fn the_cost_limits_change_the_wire_view_and_not_the_store() {
+        let big = "y".repeat(40_000);
+        let entries = |kernel: &KernelInstance| {
+            vec![
+                kernel.apply_observation(
+                    &Observation::ToolResult {
+                        call_id: "c1".into(),
+                        name: "shell".into(),
+                        content: big.clone(),
+                        receipt_ref: "r1".into(),
+                    },
+                    "e1",
+                ),
+                ContextEntry::new("e2", EntryKind::Assistant, json!({"role":"assistant","content":"next"})),
+            ]
+        };
+        let profile = |cap: Option<usize>, keep: Option<usize>| KernelProfile {
+            images: false,
+            model: "m".into(),
+            instructions: "i".into(),
+            tools: vec![],
+            options: json!({}),
+            context_window: Some(1_000_000), // a big window would otherwise keep everything
+            tool_output_chars: cap,
+            context_keep_chars: keep,
+        };
+        // with the default cap the 40 kB output is truncated but present
+        let kernel = KernelInstance::new("inst-1", 0, profile(None, None));
+        let default_view = kernel.prepare_request(&entries(&kernel), "req");
+        let default_content = default_view.messages[1]["content"].as_str().unwrap().to_string();
+        assert!(default_content.contains("chars truncated"), "{default_content:.80}");
+        assert!(!default_content.contains("tool output hidden"));
+        // a lower cap cuts more, still with the readback recipe
+        let kernel = KernelInstance::new("inst-1", 0, profile(Some(2_000), None));
+        let tight = kernel.prepare_request(&entries(&kernel), "req");
+        let tight_content = tight.messages[1]["content"].as_str().unwrap();
+        assert!(tight_content.len() < default_content.len(), "the cap lowered the view");
+        assert!(tight_content.contains("read_history") && tight_content.contains("c1"));
+        // a keep budget of zero hides it entirely (the oldest output) — the model is told how to get it back
+        let kernel = KernelInstance::new("inst-1", 0, profile(Some(2_000), Some(0)));
+        let hidden = kernel.prepare_request(&entries(&kernel), "req");
+        let hidden_content = hidden.messages[1]["content"].as_str().unwrap();
+        assert!(hidden_content.contains("tool output hidden"), "{hidden_content}");
+        // and the store keeps every byte either way
+        assert_eq!(entries(&kernel)[0].message["content"].as_str().unwrap().len(), 40_000);
     }
 
     /// A message (or note) landing between a call and its answer must not

@@ -1017,6 +1017,9 @@ fn daemon_boot(
                 tools: member_tools,
                 options: json!({}),
                 context_window: None,
+                // D-426: `resolve_profile` fills these from `[limits]` when the session boots
+                tool_output_chars: None,
+                context_keep_chars: None,
             },
             state_root: state_root.clone(),
             workspace,

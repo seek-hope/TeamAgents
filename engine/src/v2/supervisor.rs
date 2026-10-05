@@ -295,6 +295,18 @@ fn stored_profile(json: &Json, fallback: &KernelProfile) -> KernelProfile {
         tools: json["tools"].as_array().cloned().unwrap_or_default(),
         options: json.get("options").cloned().unwrap_or(json!({})),
         context_window: json["context_window"].as_u64().or(fallback.context_window),
+        // D-426: a spawned instance inherits the session's cost limits from the leader's profile (they are the
+        // user's `[limits]`, not a per-member choice), and a stored profile that names them wins.
+        tool_output_chars: json
+            .get("tool_output_chars")
+            .and_then(Json::as_u64)
+            .map(|v| v as usize)
+            .or(fallback.tool_output_chars),
+        context_keep_chars: json
+            .get("context_keep_chars")
+            .and_then(Json::as_u64)
+            .map(|v| v as usize)
+            .or(fallback.context_keep_chars),
     }
 }
 

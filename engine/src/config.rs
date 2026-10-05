@@ -1004,6 +1004,8 @@ model = "gpt"
                 options: serde_json::json!({}),
                 context_window: None,
                 images: false,
+                tool_output_chars: None,
+                context_keep_chars: None,
             },
             &catalog,
         );

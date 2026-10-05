@@ -287,6 +287,8 @@ Every goal this session creates can be bounded in cost and in time (D-64):
 max_total_tokens = 2000000   # optional: usage ceiling (provider-reported usage + each request's estimate)
 deadline_minutes = 45        # optional: wall clock, counted from the moment the goal is created
 max_tool_seconds = 60        # optional: the most one *model* tool call may run (a ceiling on what it asks for)
+tool_output_chars = 8000     # optional: the most characters of one tool output the model is shown (default 24000)
+context_keep_chars = 64000   # optional: how much tool output the request keeps before masking older ones
 ```
 
 - `max_total_tokens` is the goal's own ceiling: a new request is refused when the settled usage plus the live
@@ -300,6 +302,11 @@ max_tool_seconds = 60        # optional: the most one *model* tool call may run 
   775-second trial, D-414). A short ask stays short; only a longer one is cut, and the command's own timeout
   message says so. A user's own `[[checks]] timeout` is **your** number and is never capped. A zero or a value
   over an hour is a config error at load time.
+- `tool_output_chars` and `context_keep_chars` are **cost** limits: they change what a request carries, never what
+  is stored. The full text of every tool output stays in the session with a readback recipe, so a model that needs
+  the rest calls `read_history` for it. Measured on one task set, the defaults cost 61 299 prompt tokens per request
+  at the median and the lean pair above 33 387, with the same outcomes (D-426). Lower them when you pay per prompt
+  token; leave them unset to keep the defaults.
 - With none of them configured a goal — and therefore the session — runs until you stop it, which is why `doctor`
   says so out loud (`goal limits: none: …`). A zero is a config error at load time.
 - Both come from **your** config: like `[[checks]]`, a cloned project cannot set them. They are fixed when

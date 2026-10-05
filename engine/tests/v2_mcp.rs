@@ -99,6 +99,8 @@ impl Root {
             sandbox: teamagents_engine::tools::SandboxBackend::bubblewrap(),
             profile: KernelProfile {
                 images: false,
+                tool_output_chars: None,
+                context_keep_chars: None,
                 model: "scripted".into(),
                 instructions: "test agent".into(),
                 tools: vec![],

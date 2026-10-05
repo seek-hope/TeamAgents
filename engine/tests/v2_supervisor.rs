@@ -142,6 +142,8 @@ where
         leader_id: "i-leader".into(),
         leader_profile: KernelProfile {
             images: false,
+            tool_output_chars: None,
+            context_keep_chars: None,
             model: "scripted".into(),
             instructions: "team leader".into(),
             tools: vec![json!({"type": "function", "function": {

@@ -63,6 +63,9 @@ DEADLINE_MINUTES = os.environ.get("TEAMAGENTS_DEADLINE_MINUTES", "")
 # D-415: `TEAMAGENTS_MAX_TOOL_SECONDS` writes `[limits] max_tool_seconds` — the ceiling on what one model
 # tool call may ask for. Unset means the product's own behaviour (no ceiling).
 MAX_TOOL_SECONDS = os.environ.get("TEAMAGENTS_MAX_TOOL_SECONDS", "")
+# D-426: the two context-cost limits (`[limits]`), so an arm can run lean without a config rewrite.
+TOOL_OUTPUT_CHARS = os.environ.get("TEAMAGENTS_TOOL_OUTPUT_CHARS", "")
+CONTEXT_KEEP_CHARS = os.environ.get("TEAMAGENTS_CONTEXT_KEEP_CHARS", "")
 # D-385 `--accept` checks for the A/B (see `run`); empty keeps every trial a bare goal.
 ACCEPT = json.loads(os.environ.get("TEAMAGENTS_ACCEPT", "[]"))
 
@@ -123,7 +126,9 @@ class TeamAgentsAgent(BaseInstalledAgent):
                     limits=("[limits]\n"
                             + ("independent_verification = true\n" if INDEPENDENT_VERIFICATION else "")
                             + (f"deadline_minutes = {DEADLINE_MINUTES}\n" if DEADLINE_MINUTES else "")
-                            + (f"max_tool_seconds = {MAX_TOOL_SECONDS}\n" if MAX_TOOL_SECONDS else "")),
+                            + (f"max_tool_seconds = {MAX_TOOL_SECONDS}\n" if MAX_TOOL_SECONDS else "")
+                            + (f"tool_output_chars = {TOOL_OUTPUT_CHARS}\n" if TOOL_OUTPUT_CHARS else "")
+                            + (f"context_keep_chars = {CONTEXT_KEEP_CHARS}\n" if CONTEXT_KEEP_CHARS else "")),
                 )
             )
             local_config = handle.name

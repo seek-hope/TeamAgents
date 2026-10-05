@@ -20,6 +20,48 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-426 The context limits are the session's: two `[limits]` keys that cut the wire by a third (2026-10-05)
+
+**Where this came from.** D-424 measured the context as a *cost* question and attributed the wire view: after
+D-425 emptied the reasoning echo, **tool outputs were 75 % of what a request carries** (assistant text and calls
+24 %, everything else 0.3 %). Two numbers decided it — `TOOL_OUTPUT_CAP` (24 000 characters per tool output) and a
+keep budget of `context_window / 4` clamped to 256 000 characters — and both were implicit: a session could not
+say "I will pay for less context", and a 1 M-token window kept the largest view the clamp allows.
+
+**What was added.** `[limits] tool_output_chars` and `[limits] context_keep_chars`, carried on the instance's
+profile (`resolve_profile` fills them from the catalog, `stored_profile` keeps them across a restart, a spawned
+member inherits the session's) and honoured by the kernel's wire view: `cap_tool_output(content, cap)` and an
+explicit budget that wins over the window-derived one. Nothing about the **store** changes — the full text stays
+with its readback recipe, so the model can page what it was not shown (`read_history`), which is what makes this a
+cost limit rather than a capability one. `core::kernel::the_cost_limits_change_the_wire_view_and_not_the_store`
+pins all three readings (the default truncation, a lower cap, a zero budget that hides the output entirely) and
+that the stored 40 000 characters survive.
+
+**Measured, three data points on the same three tasks** (provider-reported `prompt_tokens`; the "before" arm is
+the binary from the commit before this change, verified to lack the wiring):
+
+| arm | requests | median prompt | max prompt | total prompt | passed |
+|---|---|---|---|---|---|
+| D-425's before (reasoning echoed) | 411 | 61 299 | 204 461 | 29.12 M | 2/6 |
+| reasoning dropped (D-425) | 414 | 46 752 | 133 669 | 19.29 M | 2/6 |
+| **+ `tool_output_chars = 8000`, `context_keep_chars = 64000`** | **625** | **33 387** | **75 836** | **20.72 M** | **1/9** |
+| the same, against its own control | 561 | 52 391 | 129 601 | 29.38 M | 1/9 |
+
+The last two rows are the controlled comparison: **median −36 %, maximum −42 %, total −29 %** — and the lean arm
+made *more* requests (625 against 561) while spending less, so the saving is per-request, not per-task. Outcomes
+are identical (1 of 9 passed in each arm, the same task) which, at nine trials an arm, is as much as this sample
+can say: the claim here is the *token* count, and the outcome column is a guard against an obvious regression, not
+a result.
+
+**Cumulative, stated as what it is.** From the un-optimised context to now, the median request fell 61 299 →
+33 387 tokens (−46 %) and the worst request 204 461 → 75 836 (−63 %) with no information destroyed (readback) and
+no outcome change detectable at these sample sizes. It is a **billing** improvement for a user paying per prompt
+token; it is not a performance one, because D-424 also measured that prefill is ~0.5 s even at 200 k tokens.
+
+**Ceiling.** Three tasks, three attempts an arm, one model and effort; the limits are per-session settings, so a
+user can restore the old behaviour with two keys, and the defaults are unchanged — this change adds the ability to
+say "less", it does not decide it for anyone.
+
 ## D-425 Reasoning is not echoed back: 34 % fewer prompt tokens, and `mteb-retrieve` is not under-determined after all (2026-10-05)
 
 **The cost lever, measured.** D-424 showed the context is a billing question rather than a throughput one, and

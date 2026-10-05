@@ -139,6 +139,8 @@ fn config_recording(
             leader_id: "i-leader".into(),
             leader_profile: KernelProfile {
                 images: false,
+                tool_output_chars: None,
+                context_keep_chars: None,
                 model: "scripted".into(),
                 instructions: "team leader".into(),
                 tools: vec![],
@@ -868,6 +870,8 @@ async fn the_snapshot_reports_each_members_model() {
     // is "deepseek-flash", and the row must carry the latter
     cfg.supervisor.leader_profile = KernelProfile {
         images: false,
+        tool_output_chars: None,
+        context_keep_chars: None,
         model: "leader_main".into(),
         instructions: "team leader".into(),
         tools: vec![],

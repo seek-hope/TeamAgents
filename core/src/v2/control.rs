@@ -9095,6 +9095,8 @@ mod tests {
                 tools: vec![],
                 options: json!({}),
                 context_window: Some(1_000_000),
+                tool_output_chars: None,
+                context_keep_chars: None,
             },
         );
         let view = kernel.prepare_request(&entries, "r-next");

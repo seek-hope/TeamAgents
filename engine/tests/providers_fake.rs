@@ -277,6 +277,8 @@ fn effort_normalizes_at_the_config_boundary() {
         tools: vec![],
         options,
         context_window: None,
+        tool_output_chars: None,
+        context_keep_chars: None,
     };
     let resolved = resolve_profile(kernel("ds", json!({})), &catalog);
     assert_eq!(resolved.options["reasoning_effort"], "max");

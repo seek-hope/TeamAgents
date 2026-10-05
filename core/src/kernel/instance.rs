@@ -24,6 +24,13 @@ pub struct KernelProfile {
     /// May a request from this instance carry an image part (D-392)? Mirrors the model profile's `images`,
     /// resolved once per request; the request builder substitutes a placeholder when it is false.
     pub images: bool,
+    /// D-426: the most characters of one tool output the model is shown (unset = `TOOL_OUTPUT_CAP`). This is a
+    /// *cost* limit, not a capability one: the full text stays in the store and the readback tool pages it.
+    pub tool_output_chars: Option<usize>,
+    /// D-426: how many characters of tool output the wire view keeps before masking the older ones (unset = a
+    /// quarter of the context window, clamped). Large windows keep large views, which is what made prompts reach
+    /// 204 k tokens in one measured attempt.
+    pub context_keep_chars: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -63,7 +70,12 @@ impl KernelInstance {
     pub fn prepare_request(&self, entries: &[ContextEntry], request_id: &str) -> ModelRequest {
         let mut messages = Vec::with_capacity(entries.len() + 1);
         messages.push(json!({"role": "system", "content": self.profile.instructions}));
-        messages.extend(materialize(entries, self.profile.context_window));
+        messages.extend(materialize(
+            entries,
+            self.profile.context_window,
+            self.profile.tool_output_chars,
+            self.profile.context_keep_chars,
+        ));
         let mut tools = self.profile.tools.clone();
         tools.extend(builtin_tool_schemas());
         let est = estimated_tokens(&json!({"messages": messages, "tools": tools}));
@@ -288,7 +300,13 @@ const NO_TOOL_RESULT: &str = "[no tool result follows: the runtime answered this
 /// L1 view-only masking of old tool outputs (ported contract): originals stay
 /// in the context store; only the wire copy is masked, with a readback recipe
 /// that preserves page coordinates.
-fn materialize(entries: &[ContextEntry], context_window: Option<u64>) -> Vec<Json> {
+fn materialize(
+    entries: &[ContextEntry],
+    context_window: Option<u64>,
+    output_chars: Option<usize>,
+    keep_chars: Option<usize>,
+) -> Vec<Json> {
+    let output_cap = output_chars.unwrap_or(TOOL_OUTPUT_CAP).max(1);
     let stored: Vec<Json> = entries.iter().map(|entry| entry.message.clone()).collect();
     let messages = pair_tool_results(&stored);
     let last_assistant = messages.iter().rposition(|m| m["role"] == "assistant").unwrap_or(0);
@@ -318,7 +336,7 @@ fn materialize(entries: &[ContextEntry], context_window: Option<u64>) -> Vec<Jso
     for message in &mut out {
         if message["role"] == "tool" {
             if let Some(content) = message["content"].as_str() {
-                let capped = cap_tool_output(content);
+                let capped = cap_tool_output(content, output_cap);
                 if capped != content {
                     message["content"] = json!(format!(
                         "{capped}\n[Full output: {}]",
@@ -331,9 +349,13 @@ fn materialize(entries: &[ContextEntry], context_window: Option<u64>) -> Vec<Jso
     if out.is_empty() {
         return out;
     }
-    let mut budget = context_window
-        .map(|window| (window / 4).clamp(MASK_KEEP_RECENT as u64, MASK_KEEP_MAX as u64) as usize)
-        .unwrap_or(MASK_KEEP_RECENT);
+    // D-426: an explicit budget wins over the window-derived one; the default keeps the older rule (a quarter of
+    // the window, clamped) so a session that says nothing behaves exactly as before.
+    let mut budget = keep_chars.unwrap_or_else(|| {
+        context_window
+            .map(|window| (window / 4).clamp(MASK_KEEP_RECENT as u64, MASK_KEEP_MAX as u64) as usize)
+            .unwrap_or(MASK_KEEP_RECENT)
+    });
     for i in (0..=last_assistant).rev() {
         let message = &out[i];
         if message["role"] != "tool" {

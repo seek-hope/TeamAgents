@@ -2464,7 +2464,9 @@ that delegated it learns the outcome only from a settlement.";
                         tools: profile.tools.clone(),
                         options: json!({}),
                         context_window: None,
-                        images: false, // the catalog entry resolves it (D-392)
+                        images: false,           // the catalog entry resolves it (D-392)
+                        tool_output_chars: None, // the catalog resolves the cost limits too (D-426)
+                        context_keep_chars: None,
                     };
                     // the child gets the entry's wire-effective profile: its model
                     // name, merged generation options and native window
