@@ -20,6 +20,66 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-437 The ssh sandbox backend: the command runs on another host, or it does not run (2026-10-06)
+
+**Why.** `docs/PRODUCT-COMPARISON.md` §2 item 4 has listed the sandbox backends as partly done since D-369: this
+build runs a session's shell under bubblewrap or Docker, both of which confine a process *here*. A session whose
+work belongs on another machine had no backend at all, and that is the one Pi ships (micro-VM/OpenShell) and
+Hermes has seven of. **SSH is the backend this machine can both implement and *measure*** — `sshd` is present, so
+the live half is a real server rather than a mock — where a micro-VM would need KVM and root, and a claim about it
+that cannot be run here would be exactly the kind of thing this repository refuses to write down. The micro-VM
+remains open and is recorded as such at the end.
+
+**What was added.** `[permissions] sandbox = "ssh"` with `sandbox_ssh_target` (one destination: `user@host` or an
+alias from the user's own `~/.ssh/config`), `sandbox_ssh_workdir` (the directory the remote command runs in; empty
+means the session's own path, which is what a synced tree wants) and `sandbox_ssh_options` (extra argv for the
+client: a non-default port, a specific key, a jump host). The command itself travels as `sh -c <script>` on the
+remote, where the script is `cd '<workdir>' && ( <the session's own wrapped command> )` — a **subshell**, so the
+`cd` guards all of it; `cd X && script` would bind only to the script's first line.
+
+**Fail-closed, at both ends.** At load: a missing target, a target that starts with `-` or contains several words,
+a `-`-leading workdir, a multi-word option, and `mcp_execution = "workspace"` (that path still builds bubblewrap's
+argv) are all refused — the shape D-161 established for a safety setting. At dispatch: the cheap gate requires an
+`ssh` and a target, and everything else is ssh's own refusal (a connection error, exit 255) recorded in the
+operation's receipt. **What must never happen is a local run**, and the two rules `V2Isolation.tla` already models
+are what say so: `RunsOnlyUnderTheConfiguredBackend` and `UnavailableBackendNeverRuns`. The module was already
+parametric over `Backends` (D-369's whole point), so the new backend needed *configurations* rather than a
+specification: `MC_isolation_ssh.cfg` (verified), `MC_isolation_ssh_unreachable.cfg` (refutes
+`UnavailableBackendNeverRuns`) and `MC_isolation_ssh_fallback.cfg` (refutes
+`RunsOnlyUnderTheConfiguredBackend`).
+
+**What it does not promise, stated where it is chosen.** It is not a namespace: `network = false` cannot be
+enforced on the remote (so that flag is meaningful only under the local backends), and a cancelled call may leave
+the remote process running — killing the local `ssh` closes the channel, it does not signal the far side. That is
+the same ceiling the synchronous shell path already documents for a service that daemonized itself.
+
+**The live probe caught two real defects, one of which the unit tests had blessed.** `review/dogfood/sandbox_ssh.py`
+starts a real `sshd` on a high port with keys under its scratch root, drives a real session in `approved_scope`
+(the mode the sandbox applies in — `full_auto` is the host *by design*, D-41), approves the parked call through the
+CLI (`approvals approve --id`, D-67), and then checks where the marker file landed:
+
+* **the argv shape was wrong and the unit test asserted the wrong shape.** `ssh` concatenates the arguments after
+  the destination into one command string, so `ssh host sh -c 'cd … && …'` written as three argv items becomes
+  `sh -c cd '…' && …` on the remote — the `cd` loses its operand, goes to the remote home, and the command runs
+  *there*. The probe measured it (`pwd` printed `$HOME`); the unit test had asserted the same broken shape and
+  passed, because it encoded the belief the code did. The script is now one argument (`sh -c '<script>'`), and the
+  test asserts the single-argument contract;
+* **the remote shell state was a fixed path.** The state directory `/tmp/.teamagents-shell` is *mounted* per
+  sandbox by bubblewrap and Docker, so those two isolate it by construction; over ssh it was shared, and a second
+  run restored the first run's `cwd` — the same symptom as above from a different cause. The remote path is now
+  derived from the member's own state directory, so two sessions on one host no longer share state.
+
+**Evidence.** `tools::tests::ssh_argv_sends_the_command_to_the_remote_under_the_products_own_options` (the
+single-argument script, the product's `-o` options before the user's — OpenSSH's first value wins, which is what
+keeps `BatchMode=yes` in force — the quoted remote `cd`, and the escaped quote in a workdir), the config refusals
+in `config::tests`, `review/dogfood/sandbox_ssh.py` live (the command runs in the configured *remote* directory and
+nowhere locally; with the sshd stopped, nothing runs locally and the receipt records ssh's own refusal), and the
+three `V2Isolation` configurations above.
+
+**Still open.** A **micro-VM** backend (KVM, root, its own image story) is not implemented and cannot be measured
+on this host; the comparison's item 4 therefore stays partly open, with SSH now covering "somewhere else" and the
+micro-VM covering "a kernel of its own".
+
 ## D-436 A finished owner stops holding its artifact (2026-10-06)
 
 **The defect D-253 measured, and the half of it that was a bug rather than a policy.** Both places that stage an

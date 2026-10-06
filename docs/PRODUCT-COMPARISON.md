@@ -64,8 +64,12 @@ what their projects claim. Codex was run on 2026-09-27 (its help output is the e
    contract is unchanged (`review/dogfood/stream_json.py` measures it without a credential).
 4. **Sandbox backends** (Pi: micro-VM/Docker/OpenShell; Hermes: seven backends). **Partly done since D-369**:
    the shell tool (and everything dispatched through its one spec builder, plus MCP `workspace` execution) now
-   runs under bubblewrap **or** Docker, chosen in the user config, failing closed. Micro-VM/remote/SSH backends
-   are still a new execution boundary with its own verification, and are not implemented.
+   runs under bubblewrap **or** Docker, chosen in the user config, failing closed. **D-437 added the ssh
+   backend**: `sandbox = "ssh"` runs the session's shell on another host, under the same two rules the
+   `V2Isolation` model already carried (the configured backend or nothing — an unreachable host is a refusal,
+   never a local run), with a real `sshd` in `review/dogfood/sandbox_ssh.py` as its live half and the three
+   configurations `MC_isolation_ssh*.cfg`. A **micro-VM** (KVM, root, its own image story) is still not
+   implemented, and cannot be measured on a host without those; it is the remaining half of this item.
 5. **Automations** (Pi: a separate project, `pi-chat`; Hermes: built-in cron + delivery). **Done since D-367**:
    `<state root>/automations.json` declares periodic prompts, the daemon's scheduler opens one goal per due
    automation and does not overlap itself, and the schedule is modelled by `V2Schedule`.

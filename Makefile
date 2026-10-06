@@ -163,7 +163,7 @@ TLA_METADIR = $(CURDIR)/review/tmp/tla
 
 # small exhaustive configurations for every module (seconds; the wide config is verify-model-wide)
 verify-model-all: verify-tools
-	@cd verification/tla && for cfg in MC.cfg MC_control_two.cfg MC_control_warn.cfg MC_oauth.cfg MC_artifact.cfg MC_wait.cfg MC_task.cfg MC_task_two.cfg MC_approval.cfg MC_compress.cfg MC_daemon.cfg MC_daemon_stop.cfg MC_checks.cfg MC_checks_briefing.cfg MC_checks_independent.cfg MC_memory.cfg MC_grants.cfg MC_authority.cfg MC_store.cfg MC_retention.cfg MC_history.cfg MC_sessions.cfg MC_schedule.cfg MC_isolation.cfg MC_codemode.cfg MC_images.cfg MC_images_blind_model.cfg MC_jobs.cfg MC_inbox.cfg MC_diskfull.cfg MC_coordinator.cfg MC_trust.cfg MC_prompt.cfg MC_retry.cfg MC_workspace.cfg MC_concurrency.cfg MC_projecttrust.cfg MC_prune.cfg; do \
+	@cd verification/tla && for cfg in MC.cfg MC_control_two.cfg MC_control_warn.cfg MC_oauth.cfg MC_artifact.cfg MC_wait.cfg MC_task.cfg MC_task_two.cfg MC_approval.cfg MC_compress.cfg MC_daemon.cfg MC_daemon_stop.cfg MC_checks.cfg MC_checks_briefing.cfg MC_checks_independent.cfg MC_memory.cfg MC_grants.cfg MC_authority.cfg MC_store.cfg MC_retention.cfg MC_history.cfg MC_sessions.cfg MC_schedule.cfg MC_isolation.cfg MC_isolation_ssh.cfg MC_codemode.cfg MC_images.cfg MC_images_blind_model.cfg MC_jobs.cfg MC_inbox.cfg MC_diskfull.cfg MC_coordinator.cfg MC_trust.cfg MC_prompt.cfg MC_retry.cfg MC_workspace.cfg MC_concurrency.cfg MC_projecttrust.cfg MC_prune.cfg; do \
 		echo "== $$cfg =="; \
 		meta="$(TLA_METADIR)/$$cfg-$$$$"; rm -rf "$$meta"; \
 		out=$$(java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
@@ -203,6 +203,7 @@ verify-model-counterexamples: verify-tools
 		MC_schedule_duplicate.cfg:V2Schedule.tla MC_schedule_overlap.cfg:V2Schedule.tla \
 		MC_schedule_disabled.cfg:V2Schedule.tla MC_schedule_early.cfg:V2Schedule.tla \
 		MC_isolation_fallback.cfg:V2Isolation.tla MC_isolation_unavailable.cfg:V2Isolation.tla \
+		MC_isolation_ssh_unreachable.cfg:V2Isolation.tla MC_isolation_ssh_fallback.cfg:V2Isolation.tla \
 		MC_codemode_leak.cfg:V2Codemode.tla MC_codemode_veto.cfg:V2Codemode.tla \
 		MC_jobs_guess_notrun.cfg:V2Jobs.tla MC_jobs_double_go.cfg:V2Jobs.tla \
 		MC_jobs_late_go.cfg:V2Jobs.tla MC_jobs_spawn_first.cfg:V2Jobs.tla \

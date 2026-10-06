@@ -1406,9 +1406,13 @@ fn project_permissions(user: &toml::Value) -> Result<Permissions, String> {
             && key != "trusted_projects"
             && key != "sandbox"
             && key != "sandbox_image"
+            && key != "sandbox_ssh_target"
+            && key != "sandbox_ssh_workdir"
+            && key != "sandbox_ssh_options"
         {
             return Err(format!(
-                "{} ([permissions] takes mode, trust_project, trusted_projects, sandbox and sandbox_image)",
+                "{} ([permissions] takes mode, trust_project, trusted_projects, sandbox, sandbox_image, \
+                 sandbox_ssh_target, sandbox_ssh_workdir and sandbox_ssh_options)",
                 unknown_key(key)
             ));
         }
@@ -1480,14 +1484,74 @@ pub fn sandbox_from_config() -> Result<crate::tools::SandboxBackend, String> {
         Some(value) => match value.as_str() {
             Some("bubblewrap") => SandboxKind::Bubblewrap,
             Some("docker") => SandboxKind::Docker,
+            Some("ssh") => SandboxKind::Ssh,
             other => {
                 return Err(format!(
-                    "invalid sandbox {other:?} in user config: this build serves bubblewrap and docker"
+                    "invalid sandbox {other:?} in user config: this build serves bubblewrap, docker and ssh"
                 ))
             }
         },
     };
     let image = table.get("sandbox_image").and_then(|value| value.as_str()).unwrap_or("").to_string();
+    let ssh_target = table.get("sandbox_ssh_target").and_then(|value| value.as_str()).unwrap_or("").to_string();
+    let ssh_workdir = table.get("sandbox_ssh_workdir").and_then(|value| value.as_str()).unwrap_or("").to_string();
+    let ssh_options = table
+        .get("sandbox_ssh_options")
+        .map(|value| {
+            value
+                .as_array()
+                .ok_or_else(|| format!("sandbox_ssh_options must be an array of strings, got {value}"))?
+                .iter()
+                .map(|entry| {
+                    entry
+                        .as_str()
+                        .filter(|text| !text.trim().is_empty())
+                        .map(str::to_string)
+                        .ok_or_else(|| format!("sandbox_ssh_options takes strings, got {entry}"))
+                })
+                .collect::<Result<Vec<String>, String>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
+    if kind == SandboxKind::Ssh {
+        // D-437: fail closed at load, like the docker image rule. A target that starts with `-` is refused
+        // because ssh would read it as an option, and the empty target would mean "no host at all".
+        if ssh_target.trim().is_empty() {
+            return Err(
+                "[permissions] sandbox = \"ssh\" needs sandbox_ssh_target = \"user@host\" (or an alias from your \
+                 own ~/.ssh/config)"
+                    .into(),
+            );
+        }
+        if ssh_target.starts_with('-') || ssh_target.split_whitespace().count() != 1 {
+            return Err(format!(
+                "sandbox_ssh_target {ssh_target:?} must be one destination (user@host or an ssh-config alias), \
+                 not an option and not several words"
+            ));
+        }
+        if ssh_workdir.starts_with('-') {
+            return Err(format!("sandbox_ssh_workdir {ssh_workdir:?} must be a directory, not an option"));
+        }
+        for option in &ssh_options {
+            // an empty or multi-word entry would be read as a destination; the options are argv items, not a shell
+            if option.split_whitespace().count() != 1 {
+                return Err(format!("sandbox_ssh_options entry {option:?} must be one argv item (no spaces)"));
+            }
+        }
+        // the MCP workspace path builds bubblewrap's argv, so it is refused under ssh exactly as under docker
+        if let Some(tools) = parsed.get("tools").and_then(|value| value.as_table()) {
+            for (name, tool) in tools {
+                let is_mcp = tool.get("kind").and_then(|value| value.as_str()) == Some("mcp");
+                let execution = tool.get("mcp_execution").and_then(|value| value.as_str()).unwrap_or("workspace");
+                if is_mcp && execution == "workspace" {
+                    return Err(format!(
+                        "[permissions] sandbox = \"ssh\" does not serve workspace MCP execution: tools.{name} \
+                         needs mcp_execution = \"host\", or use sandbox = \"bubblewrap\""
+                    ));
+                }
+            }
+        }
+    }
     if kind == SandboxKind::Docker {
         if image.trim().is_empty() {
             return Err("[permissions] sandbox = \"docker\" needs sandbox_image = \"<image>\" (pull it first)".into());
@@ -1505,7 +1569,7 @@ pub fn sandbox_from_config() -> Result<crate::tools::SandboxBackend, String> {
             }
         }
     }
-    Ok(SandboxBackend { kind, image })
+    Ok(SandboxBackend { kind, image, ssh_target, ssh_workdir, ssh_options })
 }
 
 /// The text a member's prompt gets from `instruction_files` (D-102 recorded the promise; D-246 delivers it).

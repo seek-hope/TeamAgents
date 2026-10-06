@@ -1246,6 +1246,17 @@ pub(crate) fn member_executor_with_control(
     }
 }
 
+/// A stable 64-bit FNV-1a hash, for deriving a per-session path that does not change between runs of the same
+/// session (`DefaultHasher` is explicitly not stable across releases, and this name ends up in a remote path).
+fn stable_hash(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in bytes {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
 fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
@@ -1416,6 +1427,28 @@ pub fn sandbox_state_for(backend: &SandboxBackend) -> Result<(), String> {
 fn probe_sandbox(backend: &SandboxBackend) -> Result<(), String> {
     match backend.kind {
         SandboxKind::Bubblewrap => probe_bubblewrap(),
+        // D-437: the probe answers the only question the fail-closed rule depends on — does a command *reach* the
+        // configured host right now? `BatchMode=yes` turns a missing key or an unknown host into a fast refusal
+        // instead of a prompt that would hang a turn.
+        SandboxKind::Ssh => {
+            if which("ssh").is_none() {
+                return Err("ssh is not available: refusing to run commands without isolation".into());
+            }
+            if backend.ssh_target.trim().is_empty() {
+                return Err("sandbox = \"ssh\" needs [permissions] sandbox_ssh_target".into());
+            }
+            let argv = ssh_argv(&backend.ssh_target, Path::new(""), "true", &backend.ssh_options);
+            match std::process::Command::new(&argv[0]).args(&argv[1..]).output() {
+                Ok(out) if out.status.success() => Ok(()),
+                Ok(out) => Err(format!(
+                    "the ssh target {:?} did not answer (`ssh … true` exited {}): {}",
+                    backend.ssh_target,
+                    out.status.code().map(|code| code.to_string()).unwrap_or_else(|| "no code".into()),
+                    String::from_utf8_lossy(&out.stderr).trim()
+                )),
+                Err(error) => Err(format!("ssh could not be run: {error}")),
+            }
+        }
         SandboxKind::Docker => {
             if which("docker").is_none() {
                 return Err("docker is not available: refusing to run commands without isolation".into());
@@ -1453,6 +1486,17 @@ fn backend_available(backend: &SandboxBackend) -> Result<(), String> {
                 Ok(())
             } else {
                 Err("bwrap is not available: refusing to run commands without isolation".into())
+            }
+        }
+        // D-437: the cheap gate is "is there an ssh, and does the config name a host". The *connectivity* probe is
+        // `probe_sandbox`'s (it runs `ssh … true`), which the command path must not do per call.
+        SandboxKind::Ssh => {
+            if which("ssh").is_none() {
+                Err("ssh is not available: refusing to run commands without isolation".into())
+            } else if backend.ssh_target.trim().is_empty() {
+                Err("sandbox = \"ssh\" needs [permissions] sandbox_ssh_target".into())
+            } else {
+                Ok(())
             }
         }
         SandboxKind::Docker => {
@@ -1493,6 +1537,10 @@ const SHELL_STATE_SANDBOX: &str = "/tmp/.teamagents-shell";
 pub enum SandboxKind {
     Bubblewrap,
     Docker,
+    /// D-437: the command runs on **another host** over ssh. The isolation here is not a namespace: it is the
+    /// remote account, and this backend makes no claim beyond it (the module docstring of `ssh_argv` is the honest
+    /// statement of what ssh can and cannot enforce).
+    Ssh,
 }
 
 /// The selected backend and, for Docker, the image it runs. `image` is empty for bubblewrap.
@@ -1500,17 +1548,47 @@ pub enum SandboxKind {
 pub struct SandboxBackend {
     pub kind: SandboxKind,
     pub image: String,
+    /// D-437: the ssh destination (`user@host`, or an alias from the user's own `~/.ssh/config`), for
+    /// `kind = Ssh`. Empty for the two local backends.
+    pub ssh_target: String,
+    /// D-437: the directory the remote command runs in. Empty means "the session's own workdir path", which is
+    /// what a synced tree wants; a host without that path needs this set (`cd` fails loudly otherwise).
+    pub ssh_workdir: String,
+    /// D-437: extra argv for the ssh *client*, for what a destination string cannot express — a non-default port,
+    /// a specific key, a jump host. They are placed **after** the product's own `-o` list on purpose: OpenSSH uses
+    /// the first value it is given for a parameter, so a user option cannot weaken `BatchMode=yes` (a prompt would
+    /// hang a turn) or `StrictHostKeyChecking=accept-new`.
+    pub ssh_options: Vec<String>,
 }
 
 impl SandboxBackend {
+    /// D-437: the ssh backend, built from its three settings (the config validator is what guarantees the target
+    /// is a single destination and the options are single argv items).
+    pub fn ssh(target: String, workdir: String, options: Vec<String>) -> Self {
+        SandboxBackend {
+            kind: SandboxKind::Ssh,
+            image: String::new(),
+            ssh_target: target,
+            ssh_workdir: workdir,
+            ssh_options: options,
+        }
+    }
+
     pub fn bubblewrap() -> Self {
-        SandboxBackend { kind: SandboxKind::Bubblewrap, image: String::new() }
+        SandboxBackend {
+            kind: SandboxKind::Bubblewrap,
+            image: String::new(),
+            ssh_target: String::new(),
+            ssh_workdir: String::new(),
+            ssh_options: Vec::new(),
+        }
     }
 
     pub fn name(&self) -> &'static str {
         match self.kind {
             SandboxKind::Bubblewrap => "bubblewrap",
             SandboxKind::Docker => "docker",
+            SandboxKind::Ssh => "ssh",
         }
     }
 }
@@ -1567,7 +1645,8 @@ fn shell_state_preamble(sandbox_dir: &str) -> String {
     // preserve deliberate HOME exports, including the workspace itself.
     let quoted_dir = shell_quote(sandbox_dir);
     format!(
-        r#"__ta_state={quoted_dir}/state.sh
+        r#"mkdir -p {quoted_dir} 2>/dev/null || true
+__ta_state={quoted_dir}/state.sh
 __ta_initial_cwd=$(builtin pwd)
 __ta_default_home=$HOME
 __ta_home_version=0
@@ -1660,6 +1739,56 @@ pub fn docker_argv(
     argv.push("/bin/bash".into());
     argv.push("-lc".into());
     argv.push(command.to_string());
+    argv
+}
+
+/// The argv for `kind = Ssh` (D-437): the command runs on the remote host over `ssh`, in `workdir`.
+///
+/// What this backend does and does not promise, because a reader of `[permissions] sandbox = "ssh"` is owed the
+/// statement rather than an implication:
+///
+/// * **it is not a namespace.** bubblewrap and Docker confine a process *here*; ssh hands it to another account,
+///   whose own security is the boundary. The product's rule that survives unchanged is the one `V2Isolation.tla`
+///   models: the command runs under the **configured** backend or it does not run at all — an unreachable host is
+///   a refusal, never a local shell, and a lost connection is never retried locally;
+/// * **`network = false` cannot be enforced here.** The remote's network is the remote's business; the probe's
+///   `ssh` line says so in `doctor` rather than pretending. (bubblewrap and Docker do enforce it, which is why
+///   the flag stays meaningful there.)
+/// * **a cancelled call may leave the remote process running.** Killing the local `ssh` closes the channel; the
+///   remote command is not signalled. That is the same ceiling the synchronous shell path documents for a service
+///   that daemonized itself, and it is stated rather than hidden.
+///
+/// `BatchMode=yes` is what makes a missing key or an unreachable host a fast, clear failure instead of a password
+/// prompt that would hang a turn; `StrictHostKeyChecking=accept-new` is the product's own choice of the three
+/// options ssh offers (refusing an unknown host would make the backend useless on first use; accepting *changed*
+/// keys silently would not).
+pub fn ssh_argv(target: &str, workdir: &Path, command: &str, options: &[String]) -> Vec<String> {
+    let workdir = if workdir.as_os_str().is_empty() { ".".to_string() } else { workdir.to_string_lossy().into_owned() };
+    // Two quoting rules meet here, and both were measured on a real sshd before they were written down:
+    //
+    // 1. the whole wrapped script goes inside a subshell, so the `cd` guards *all* of it — `cd X && script` binds
+    //    only to the script's first line, and a preamble line that failed left the rest running in the remote home;
+    // 2. the script travels as **one** argv item. `ssh` concatenates the arguments after the destination into a
+    //    command string, so `ssh host sh -c 'cd … && …'` split into three arguments becomes
+    //    `sh -c cd '…' && …` — the `cd` loses its operand, goes to the remote home, and the command runs there
+    //    (measured: exactly that, and the unit test asserted the broken shape and passed, because it encoded the
+    //    same belief the code did; the probe against a real sshd is what settled it).
+    let script = format!("cd {} && (\n{}\n)", shell_quote(&workdir), command);
+    let remote = format!("sh -c {}", shell_quote(&script));
+    let mut argv: Vec<String> = vec![
+        "ssh".into(),
+        "-o".into(),
+        "BatchMode=yes".into(),
+        "-o".into(),
+        "StrictHostKeyChecking=accept-new".into(),
+        "-o".into(),
+        "ConnectTimeout=10".into(),
+    ];
+    // the user's own extra options come after the ones above (first value wins in OpenSSH, so they cannot relax
+    // what the product needs) and before the destination, which is one argument and never starts with `-`
+    argv.extend(options.iter().cloned());
+    argv.push(target.to_string());
+    argv.push(remote);
     argv
 }
 
@@ -2047,6 +2176,15 @@ pub(crate) fn shell_command_spec(
     let state_dir = match (&mode, shell_state) {
         (ShellMode::Host, Some(state)) => state.to_string_lossy().into_owned(),
         (ShellMode::Sandbox(SandboxBackend { kind: SandboxKind::Docker, .. }), _) => DOCKER_SHELL_STATE.to_string(),
+        // D-437: the remote's shell state is **per session**, derived from this member's own state directory.
+        // The local backends isolate the state by *mounting* a different directory into each sandbox; ssh has
+        // nothing to mount, and a fixed remote path made two sessions on one host share `cwd` and exports —
+        // measured: a second run restored the first run's `cwd`, so the command ran in the remote home instead of
+        // the configured workdir. The hash is of the local state path, which is already unique per member.
+        (ShellMode::Sandbox(SandboxBackend { kind: SandboxKind::Ssh, .. }), Some(state)) => {
+            format!("{SHELL_STATE_SANDBOX}-{:016x}", stable_hash(state.to_string_lossy().as_bytes()))
+        }
+        (ShellMode::Sandbox(SandboxBackend { kind: SandboxKind::Ssh, .. }), None) => SHELL_STATE_SANDBOX.to_string(),
         _ => SHELL_STATE_SANDBOX.to_string(),
     };
     let wrapped = match shell_state {
@@ -2062,7 +2200,15 @@ pub(crate) fn shell_command_spec(
             };
             (executable.to_string_lossy().into_owned(), argv[1..].to_vec(), false)
         }
-        ShellMode::Sandbox(SandboxBackend { kind: SandboxKind::Docker, image }) => {
+        ShellMode::Sandbox(SandboxBackend { kind: SandboxKind::Ssh, ssh_target, ssh_workdir, ssh_options, .. }) => {
+            let remote_dir = if ssh_workdir.trim().is_empty() { cwd.clone() } else { PathBuf::from(ssh_workdir) };
+            let argv = ssh_argv(ssh_target, &remote_dir, &wrapped, ssh_options);
+            let Some(executable) = which("ssh") else {
+                return Err(SpecError::isolation("IsolationUnavailable: ssh disappeared before execution"));
+            };
+            (executable.to_string_lossy().into_owned(), argv[1..].to_vec(), true)
+        }
+        ShellMode::Sandbox(SandboxBackend { kind: SandboxKind::Docker, image, .. }) => {
             let argv = docker_argv(&cwd, network, &wrapped, shell_state, image);
             let Some(executable) = which("docker") else {
                 return Err(SpecError::isolation("IsolationUnavailable: docker disappeared before execution"));
@@ -2077,6 +2223,9 @@ pub(crate) fn shell_command_spec(
     // whitelist environment: no model keys, no credentials (§2). The Docker *client* is a host tool, so it gets
     // the host PATH/HOME (for `~/.docker/config.json`) and the `DOCKER_*` variables; the container's environment
     // is the `--env` list `docker_argv` built, and the model's credentials never reach either.
+    // `docker_client` is the "this backend's executable is a *host* tool" flag: docker and ssh both need the
+    // host's PATH and HOME (docker's config, ssh's `~/.ssh/config` and keys). The model's credentials are still
+    // whitelisted out below either way.
     let mut env: Vec<(String, String)> = if docker_client {
         let mut env = vec![
             ("PATH".into(), std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into())),
@@ -3862,6 +4011,37 @@ mod tests {
         }
     }
 
+    /// D-437: the ssh backend's argv, and the statements that matter — the command really goes to the remote in a
+    /// `sh -lc`, the remote `cd` is quoted, the product's own `-o` options come **before** the user's (OpenSSH's
+    /// first-value-wins is what keeps `BatchMode=yes` in force), and the destination is one argument so a host
+    /// cannot be read as an option.
+    #[test]
+    fn ssh_argv_sends_the_command_to_the_remote_under_the_products_own_options() {
+        let options = vec!["-p".to_string(), "22222".to_string(), "-i".to_string(), "/tmp/id".to_string()];
+        let argv = ssh_argv("user@host", Path::new("/work/dir"), "echo hi", &options);
+        assert_eq!(argv[0], "ssh");
+        let batch = argv.iter().position(|item| item == "BatchMode=yes").expect("BatchMode is set");
+        let user_option = argv.iter().position(|item| item == "-p").expect("the user's options are passed");
+        assert!(batch < user_option, "the product's options must be first: they win in OpenSSH: {argv:?}");
+        let destination = argv.iter().position(|item| item == "user@host").expect("the destination");
+        assert_eq!(
+            &argv[destination..],
+            ["user@host", "sh -c 'cd '\\''/work/dir'\\'' && (\necho hi\n)'"],
+            "one destination, then the guarded script as ONE argument (ssh concatenates the rest): {argv:?}"
+        );
+        assert_eq!(
+            argv[argv.len() - 1],
+            "sh -c 'cd '\\''/work/dir'\\'' && (\necho hi\n)'",
+            "the remote cd is quoted inside a single-argument script: {argv:?}"
+        );
+        // a workdir with a quote cannot break out of the remote command
+        let tricky = ssh_argv("h", Path::new("/tmp/it's here"), "true", &[]);
+        assert!(tricky[tricky.len() - 1].contains("'\\''"), "the quote is escaped: {tricky:?}");
+        // no workdir at all means the remote's own cwd, not an empty `cd`
+        let here = ssh_argv("h", Path::new(""), "pwd", &[]);
+        assert_eq!(here[here.len() - 1], "sh -c 'cd '\\''.'\\'' && (\npwd\n)'");
+    }
+
     #[test]
     fn docker_argv_is_stable_and_runs_isolated() {
         let dir = std::env::temp_dir();
@@ -3888,7 +4068,13 @@ mod tests {
             eprintln!("skipped: no local debian image to run (tried debian:stable-slim, debian:trixie)");
             return;
         };
-        let backend = SandboxBackend { kind: SandboxKind::Docker, image: image.to_string() };
+        let backend = SandboxBackend {
+            kind: SandboxKind::Docker,
+            image: image.to_string(),
+            ssh_target: String::new(),
+            ssh_workdir: String::new(),
+            ssh_options: Vec::new(),
+        };
         assert!(probe_sandbox(&backend).is_ok(), "the probe accepts a present image: {:?}", probe_sandbox(&backend));
         let probe = std::env::temp_dir().join(format!("ta-docker-{}-{}", std::process::id(), uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&probe).unwrap();
@@ -3910,7 +4096,13 @@ mod tests {
             eprintln!("skipped: docker is not on PATH");
             return;
         }
-        let backend = SandboxBackend { kind: SandboxKind::Docker, image: "teamagents-no-such-image:never".into() };
+        let backend = SandboxBackend {
+            kind: SandboxKind::Docker,
+            image: "teamagents-no-such-image:never".into(),
+            ssh_target: String::new(),
+            ssh_workdir: String::new(),
+            ssh_options: Vec::new(),
+        };
         let reason = probe_sandbox(&backend).unwrap_err();
         assert!(reason.contains("not present locally"), "a missing image is refused, not pulled: {reason}");
     }

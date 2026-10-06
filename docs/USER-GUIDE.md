@@ -540,14 +540,25 @@ sessions you start:
 ```toml
 [permissions]
 mode = "full_auto"            # or "approved_scope" (the default); the flag still wins
-# sandbox = "bubblewrap"      # or "docker" (D-369); the isolation backend for approved_scope
+# sandbox = "bubblewrap"      # or "docker" (D-369) or "ssh" (D-437); the backend for approved_scope
 # sandbox_image = "debian:stable-slim"   # required for docker; the image must be present locally
+# sandbox_ssh_target = "user@host"       # required for ssh: one destination, or an alias from ~/.ssh/config
+# sandbox_ssh_workdir = "/srv/work"      # optional for ssh: where the remote command runs (default: the session's own path)
+# sandbox_ssh_options = ["-p", "2222"]   # optional for ssh: extra argv for the client (port, key, jump host)
 ```
 
-`sandbox` picks the backend `approved_scope` runs commands in: `bubblewrap` (the default) or `docker`, which
-also needs `sandbox_image` naming a locally present image. A missing or unusable backend refuses the command
-(`IsolationUnavailable`) — it never runs on the host, and `doctor` reports the selected backend. Workspace MCP
-servers are not served under `docker` yet (`mcp_execution = "host"` or bubblewrap).
+`sandbox` picks the backend `approved_scope` runs commands in: `bubblewrap` (the default), `docker`, which also
+needs `sandbox_image` naming a locally present image, or `ssh`, which needs `sandbox_ssh_target` and runs the
+command on that host. A missing or unusable backend refuses the command (`IsolationUnavailable`, or the ssh
+client's own connection error) — **it never runs on the host**, and `doctor` reports the selected backend.
+Workspace MCP servers are not served under `docker` or `ssh` yet (`mcp_execution = "host"` or bubblewrap).
+
+What `ssh` does not promise, because a reader of the setting is owed the statement: it is not a namespace —
+`network = false` cannot be enforced on the remote, and a cancelled call may leave the remote process running
+(killing the local `ssh` closes the channel, it does not signal the far side). Its shell state (the `cwd` and
+exports a command leaves behind) lives on the **remote**, under a path derived per session, so two sessions on one
+host do not share it. `ssh_workdir` exists because the session's own path may not exist on the other machine: the
+`cd` fails loudly rather than running the command somewhere else.
 
 A project file can never set the mode (only your user config is read for it), and nothing a model says changes
 it. A client that

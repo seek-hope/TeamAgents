@@ -5,6 +5,17 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
+## 0. Gate status (re-run 2026-10-06 at `MATERIAL-COMMIT`)
+
+* **D-437 added the ssh sandbox backend, and re-ran the targets on this tree (2026-10-06).** `V2Isolation.tla` was
+  already parametric over `Backends`, so the third backend needed configurations, not a specification: the
+  positive `MC_isolation_ssh.cfg` (verified) and the two controls `MC_isolation_ssh_unreachable.cfg` (refutes
+  `UnavailableBackendNeverRuns`) and `MC_isolation_ssh_fallback.cfg` (refutes
+  `RunsOnlyUnderTheConfiguredBackend`) — the two failures ssh makes plausible, an unreachable host and a local
+  fallback after a lost connection. `make verify-model-all`: all **39** configurations `No error has been
+  found` (rc 0). `make verify-model-counterexamples`: all **113** negative controls refuted (rc 0). `make
+  verify-kani` reports `Complete - 3 successfully verified harnesses, 0 failures, 3 total` (rc 0).
+
 ## 0. Gate status (re-run 2026-10-06 at `5af08d54`)
 
 * **D-436 released the owner's hold on an artifact, and re-ran the targets on this tree (2026-10-06).**
