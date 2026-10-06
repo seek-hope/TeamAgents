@@ -7,7 +7,7 @@ model probe sets and the three formal gates).
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 130 / engine 370 / tui 43 test targets) and `make pty` passes — re-measured 2026-09-29: `pty v2 smoke: ok`, rc 0, 41 s, credential-free; both are
+`make check` is green (core 130 / engine 371 / tui 43 test targets) and `make pty` passes — re-measured 2026-09-29: `pty v2 smoke: ok`, rc 0, 41 s, credential-free; both are
 preconditions for every item below. `make check` includes `make language-check`, which fails on non-English
 characters outside the two documented exceptions (`README.zh-CN.md` and the frozen material under
 `review/eval`).
@@ -377,6 +377,13 @@ design decision **for the user**.
   whether the *default* should be different — workers getting the shell, or the Leader being allowed to hand
   out the authority it holds — is a design decision that changes §5.1's spawn contract and needs the user's
   call; both options are recorded in `docs/DECISIONS.md` D-61 ("Left open").
+  **And since D-441 the surface states it instead of leaving it to be inferred**: `teamagents authority` (and its
+  `--json` report, as `gaps`) names every ACTIVE instance missing `shell@workspace` and prints the exact `grant`
+  that would fix it, computed with the runtime's own vocabulary and covering rule (`capability::scope_covers`,
+  shared with the dispatch gate rather than copied) — pinned by
+  `authority::tests::the_authority_view_names_what_an_instance_cannot_do_and_the_hand_that_would_help`, which also
+  holds the narrowness: a leader that holds everything reports no gap, a terminated instance is not reported, and
+  the other asymmetries (a member is not its leader; `task_result` is issued per task) stay out of the list.
   **And since D-256 the cost of that default is measured rather than argued**: in all three round-4 D trials
   **no member made a single `execute` call** (`review/eval/r2-p6/anatomy.py` reads the split out of the
   committed checkpoints: members 5–7 requests, 6–29 inspections, one edit each, zero executions) while the

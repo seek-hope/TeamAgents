@@ -72,9 +72,13 @@ pub fn execute(options: &AuthorityOptions) -> Result<Json, (i32, String)> {
             let checkpoint = client
                 .call("checkpoint", json!({}))
                 .map_err(|error| (1, format!("authority: cannot read the instances: {error}")))?;
-            json!({"session_id": session["session_id"], "state_root": session["state_root"],
+            let report = json!({"session_id": session["session_id"], "state_root": session["state_root"],
                    "revision": view["revision"], "instances": checkpoint["snapshot"]["instances"],
-                   "grants": view["grants"]})
+                   "grants": view["grants"]});
+            let gaps = capability_gaps(&report);
+            let mut report = report;
+            report["gaps"] = json!(gaps);
+            report
         }
         AuthorityCommand::Grant { subject, action, scope, parent } => {
             grant(&mut client, &session, subject, action, scope, parent.as_deref())?
@@ -82,6 +86,47 @@ pub fn execute(options: &AuthorityOptions) -> Result<Json, (i32, String)> {
         AuthorityCommand::Revoke { grant: wanted } => revoke(&mut client, &session, wanted)?,
     };
     Ok(report)
+}
+
+/// What each ACTIVE instance cannot do, and the command that would let it (D-441).
+///
+/// Exactly one capability is reported, and the narrowness is the point: `shell@workspace`. The control plane
+/// grants it to an instance the **user** creates and not to one an instance spawns (D-61), and that asymmetry is
+/// the one whose absence surprises a user — it is why a team's members could not run a command in the round-5
+/// measurements (D-256's anatomy: "no member executes anything"). The other asymmetries are the design:
+/// `message`/`delegate`/`manage` are the leader's, and `task_result` is issued per task when one is delegated, so
+/// listing their absence would be noise about a member being a member. The check uses the runtime's own
+/// vocabulary and covering rule (`capability::scope_covers`) rather than a second copy of it, so this view cannot
+/// disagree with the dispatch gate about what a grant means.
+fn capability_gaps(report: &Json) -> Vec<Json> {
+    use teamagents_core::v2::capability::scope_covers;
+    let grants: Vec<&Json> = report["grants"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|grant| !grant["revoked"].as_bool().unwrap_or(false))
+        .collect();
+    let mut gaps = Vec::new();
+    for instance in report["instances"].as_array().into_iter().flatten() {
+        if instance["lifecycle"].as_str() != Some("ACTIVE") {
+            continue;
+        }
+        let subject = instance["id"].as_str().unwrap_or("");
+        let held = grants.iter().any(|grant| {
+            grant["subject"].as_str() == Some(subject)
+                && grant["action"].as_str() == Some("shell")
+                && scope_covers(grant["resource_scope"].as_str().unwrap_or(""), "workspace")
+        });
+        if held {
+            continue;
+        }
+        gaps.push(json!({
+            "instance": subject,
+            "missing": "shell@workspace",
+            "hand": format!("teamagents authority grant --subject {subject} --action shell --scope workspace"),
+        }));
+    }
+    gaps
 }
 
 fn connect(socket: &Path) -> Result<Client, (i32, String)> {
@@ -269,6 +314,24 @@ fn print_list(report: &Json) {
             .collect();
         println!("instances: {}", listed.join(", "));
     }
+    // D-441: the sentence the user was missing — which members cannot do what, before they wonder why nothing
+    // happens. Printed whatever the grant list holds, because "no gaps" is information too.
+    let gaps = report["gaps"].as_array().cloned().unwrap_or_default();
+    if instances.iter().any(|instance| instance["lifecycle"].as_str() == Some("ACTIVE")) {
+        if gaps.is_empty() {
+            println!("capability gaps: none for the ACTIVE instances");
+        } else {
+            println!("capability gaps (an instance the user created holds shell@workspace; one an instance spawns does not):");
+            for gap in &gaps {
+                println!(
+                    "  {} cannot {} — issue one with `{}`",
+                    gap["instance"].as_str().unwrap_or(""),
+                    gap["missing"].as_str().unwrap_or(""),
+                    gap["hand"].as_str().unwrap_or("")
+                );
+            }
+        }
+    }
     if grants.is_empty() {
         println!("no grants");
         return;
@@ -331,7 +394,66 @@ fn print_list(report: &Json) {
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve, AuthorityCommand};
+    /// D-441: the gaps view names what a member cannot do and the command that would let it. The rule it uses is
+    /// the runtime's own (`capability::asks_about`) and its covering (a session-scoped grant covers everything),
+    /// so the view cannot disagree with the dispatch gate about what a grant means.
+    #[test]
+    fn the_authority_view_names_what_an_instance_cannot_do_and_the_hand_that_would_help() {
+        let report = json!({
+            "instances": [
+                {"id": "i-leader", "lifecycle": "ACTIVE", "phase": "READY"},
+                {"id": "i-worker", "lifecycle": "ACTIVE", "phase": "READY"},
+                {"id": "i-old", "lifecycle": "TERMINATED", "phase": "READY"}
+            ],
+            "grants": [
+                // the user's own instance: shell@workspace by creation (control.rs) plus the collaboration set.
+                {"subject": "i-leader", "action": "shell", "resource_scope": "workspace", "revoked": false},
+                {"subject": "i-leader", "action": "manage", "resource_scope": "session", "revoked": false},
+                {"subject": "i-leader", "action": "delegate", "resource_scope": "session", "revoked": false},
+                {"subject": "i-leader", "action": "message", "resource_scope": "session", "revoked": false},
+                // a member holds a delegation of one task, which is not a shell capability
+                {"subject": "i-worker", "action": "task_result", "resource_scope": "task:t-1", "revoked": false}
+            ]
+        });
+        let gaps = capability_gaps(&report);
+        let named: Vec<(String, String)> = gaps
+            .iter()
+            .map(|gap| {
+                (gap["instance"].as_str().unwrap_or("").to_string(), gap["missing"].as_str().unwrap_or("").to_string())
+            })
+            .collect();
+        assert!(
+            !named.iter().any(|(instance, _)| instance == "i-leader"),
+            "the leader holds everything it is asked about: {named:?}"
+        );
+        assert!(
+            !named.iter().any(|(instance, _)| instance == "i-old"),
+            "a terminated instance is not reported: {named:?}"
+        );
+        // exactly one gap is reported, for the member: the capability whose absence is the surprise. The other
+        // asymmetries are the design (a member is not its leader), and the view stays quiet about them.
+        assert_eq!(named, vec![("i-worker".to_string(), "shell@workspace".to_string())], "{named:?}");
+        // the hand is copy-pasteable, and it is the surface that can actually issue one
+        let shell = gaps.iter().find(|gap| gap["missing"] == json!("shell@workspace")).expect("the shell gap");
+        assert_eq!(
+            shell["hand"],
+            json!("teamagents authority grant --subject i-worker --action shell --scope workspace")
+        );
+        // a session-scoped shell grant covers the workspace shape, which is the covering rule the dispatch gate
+        // uses too: move the member's shell grant to "session" and the gap disappears
+        let mut session_scoped = report.clone();
+        session_scoped["grants"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"subject": "i-worker", "action": "shell", "resource_scope": "session", "revoked": false}));
+        assert!(
+            capability_gaps(&session_scoped).iter().all(|gap| gap["instance"] != json!("i-worker")),
+            "a session grant covers it: {:?}",
+            capability_gaps(&session_scoped)
+        );
+    }
+
+    use super::{capability_gaps, resolve, AuthorityCommand};
     use serde_json::json;
 
     #[test]

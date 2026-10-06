@@ -227,12 +227,6 @@ fn bump_grant_revision(tx: &Connection) -> Result<i64, String> {
     Ok(next)
 }
 
-/// Scope coverage (§5.1): "session" covers the whole session; otherwise the
-/// granted scope must equal or be a path prefix of the requested one.
-fn scope_covers(granted: &str, requested: &str) -> bool {
-    granted == "session" || granted == requested || requested.starts_with(&format!("{granted}/"))
-}
-
 /// The most specific active grant covering (subject, action, resource).
 fn active_grant(
     tx: &Connection,
@@ -249,7 +243,9 @@ fn active_grant(
     let mut best: Option<(String, String)> = None;
     for row in rows {
         let (id, scope) = row.map_err(|e| format!("grant row: {e}"))?;
-        if scope_covers(&scope, resource) && best.as_ref().is_none_or(|(_, held)| scope.len() > held.len()) {
+        if crate::v2::capability::scope_covers(&scope, resource)
+            && best.as_ref().is_none_or(|(_, held)| scope.len() > held.len())
+        {
             best = Some((id, scope));
         }
     }
@@ -369,7 +365,7 @@ fn issue_grant(tx: &Connection, session_id: &str, params: &Json, identity: &Iden
             return Err(format!("parent grant {parent_id} is missing or revoked"));
         };
         let action_ok = p_action == action || (p_action == "manage" && matches!(action, "message" | "delegate"));
-        if !action_ok || !scope_covers(&p_scope, scope) {
+        if !action_ok || !crate::v2::capability::scope_covers(&p_scope, scope) {
             return Err(format!("parent grant {parent_id} does not cover {action}@{scope}"));
         }
     }

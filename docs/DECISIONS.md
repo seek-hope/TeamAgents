@@ -20,6 +20,39 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-441 The authority surface says what an instance cannot do (2026-10-06)
+
+**Why.** D-61's rule is deliberate: the bootstrap grants the Leader `manage`/`delegate`/`message` and — because the
+control plane gives `shell@workspace` to an instance the *user* creates — the shared-workspace shell, while a worker
+the Leader spawns holds none of them. The measured cost of that asymmetry is in D-256's anatomy: in a team trial
+**no member executed anything**, because the tool surface hides `shell` from an instance that cannot dispatch it
+(D-60) — so nothing is ever refused, the member simply never tries, and the user is never told why their members
+were idle. The lever existed (`teamagents authority grant …`) and nothing said it was needed.
+
+**What was added.** `teamagents authority` prints a `capability gaps` line — and its JSON report gains `gaps` —
+naming every ACTIVE instance that does not hold `shell@workspace`, with the exact command that would fix it:
+
+```
+capability gaps (an instance the user created holds shell@workspace; one an instance spawns does not):
+  i-worker cannot shell@workspace — issue one with `teamagents authority grant --subject i-worker --action shell --scope workspace`
+```
+
+**The narrowness is the design, and it is pinned.** The list reports that one capability on purpose. The other
+asymmetries are what a team *is* — a member is not its leader — and `task_result` is issued per task when one is
+delegated, not held in advance; listing their absence would have been noise about a member being a member. The
+first version of the view did list them all and was narrowed after the test showed a leader being told it "cannot
+`task_result@task:<id>`". What it *does* reuse is the runtime's own vocabulary and covering rule: `capability::
+scope_covers` moved into `capability.rs` as the single home, `control`'s dispatch gate and this view both call it,
+and a session-scoped `shell` grant therefore satisfies the view exactly as it satisfies dispatch.
+
+**Evidence.** `authority::tests::the_authority_view_names_what_an_instance_cannot_do_and_the_hand_that_would_help`
+(a leader holding everything reports no gap; a terminated instance is not reported; the member's one gap is
+`shell@workspace` with a copy-pasteable hand; the same grant moved to `session` closes it), plus a live session:
+`teamagents authority` on a real state root prints `capability gaps: none for the ACTIVE instances` and `--json`
+carries `gaps: []`. No formal material: this is a projection over state the control plane already owns — no new
+transition, no new state — and the covering rule it uses is the one `V2Authority`'s `NoDeadGrantPair` and the
+dispatch tests already pin, so there is nothing new for a model to certify.
+
 ## D-440 The scope sentence is a null: the pre-registered A/B read (2026-10-06)
 
 **D-439 pre-registered this and commits it before the data; this is its result.** Both arms were run fresh on the same 50 airline dialogues, same model and endpoint, one

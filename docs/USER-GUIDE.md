@@ -476,9 +476,15 @@ Leader the three capabilities its own team tools need (`manage`, `delegate`, `me
 workspace shell; a worker the Leader spawns holds **none** of them (§5.1), which is deliberate — an agent the
 team created does not inherit the user's reach. A worker therefore cannot run shell commands until you grant
 it `shell@workspace`; it uses the file, web and skill tools (they need their binding, not a grant) until then.
+**The list says so now** (D-441): `authority` prints a `capability gaps` line naming each ACTIVE instance that is
+missing `shell@workspace` and the command that would give it one, so a user whose members are idle does not have
+to infer why. It reports that capability alone on purpose — the other asymmetries are the design, and `task_result`
+is issued per task when one is delegated rather than held in advance.
 
 ```bash
-teamagents authority                                                  # instances + grants, with the ids
+teamagents authority                                   # instances + grants, and what an instance cannot do
+teamagents authority --json                            # the same, with `gaps`: what each ACTIVE instance is
+                                                       # missing and the exact `grant` that would fix it (D-441)
 teamagents authority grant --subject i-worker-1 --action shell --scope workspace
 teamagents authority revoke --grant g-1a2b3c4d        # the full id or an unambiguous prefix
 ```

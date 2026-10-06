@@ -72,6 +72,13 @@ pub fn asks_about(action: &str) -> Option<ScopeShape> {
     }
 }
 
+/// Scope coverage (§5.1): `"session"` covers the whole session; otherwise the granted scope must equal the
+/// requested one or be a path prefix of it. One rule, one home: `control`'s dispatch gate and the authority
+/// surface's gaps view both ask this question, and a second copy is how the two would drift.
+pub fn scope_covers(granted: &str, requested: &str) -> bool {
+    granted == "session" || granted == requested || requested.starts_with(&format!("{granted}/"))
+}
+
 /// Whether a grant of `action` over `scope` authorizes anything at all: it
 /// covers at least one resource some check asks about. The session covers every
 /// resource, so any known action over `session` qualifies; otherwise the scope
