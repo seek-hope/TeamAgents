@@ -415,6 +415,20 @@ the open internet. That number sits in the range published agentic harnesses rep
 unguarded 97 % never did. N = 12 and one shot at the raw statement, so it is a floor-shaped data point, not a
 leaderboard row; the pipeline can be pointed at the full 500 if a longer run is wanted.
 
+## `tau3_silence.py` — dialogues that ended in silence (D-431)
+
+```bash
+python3 review/benchmark/tau3_silence.py /var/tmp/tau3-full-retail
+```
+
+The τ³ reward is a database comparison, so a dialogue can pass while the *user* read nothing: a model can settle
+a goal by calling the runtime's `finish` and writing no prose at all. This script reads the adapter's own
+per-turn `exec` reports (`turn-N.json` — the `reply` field is what the user read, `reply_source` says where the
+words came from) and counts both the turns with no text and the dialogues whose **final** turn has none. On the
+full retail split before D-431: 24 of 487 turns and **12 of 114 dialogues (10.5 %)**, of which only two also
+failed the DB check — a user-visible defect the score was hiding. It exits 1 on a directory it cannot read,
+because an unreadable run is not a clean one.
+
 ## `harness_health.py` — the receipts, checked mechanically (D-421)
 
 Three corrections this session (D-382, D-419, D-420) came from reading a receipt after a number had been written

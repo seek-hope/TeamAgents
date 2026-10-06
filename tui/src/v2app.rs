@@ -158,6 +158,12 @@ pub struct GoalInfo {
     /// The goal's absolute deadline in epoch seconds (`[limits] deadline_minutes`,
     /// D-64): shown as the time left, so a configured ceiling is visible.
     pub deadline: Option<f64>,
+    /// What the model said it did when it settled the goal (D-431). A model can settle a goal by calling
+    /// `finish` without writing a single word of prose (measured on the tau3 retail split: 12 of 114 dialogues
+    /// ended that way, and a user read an empty reply), and the summary it recorded with that call is the only
+    /// account of the work there is. The status line shows it, so a TUI user is not left with a bare
+    /// `goal SUCCEEDED`.
+    pub summary: Option<String>,
 }
 
 /// Side effects for the main loop to execute through the daemon client.
@@ -387,6 +393,10 @@ impl V2App {
                 unknown: g["unknown_usage"].as_i64().unwrap_or(0) != 0,
                 limit_total: g["limits"]["max_total_tokens"].as_i64(),
                 deadline: g["deadline"].as_f64(),
+                summary: g["summary"].as_str().filter(|text| !text.trim().is_empty()).map(|text| {
+                    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                    collapsed.chars().take(110).collect()
+                }),
             })
         });
         if self.instance_sel >= self.instances.len() {
@@ -1188,6 +1198,11 @@ impl V2App {
                 }
                 if g.unknown {
                     text.push_str(" (includes unknown)");
+                }
+                // D-431: the model's own account of the work, when it settled with a summary — which is the
+                // only thing a user can read for a goal the model settled without writing prose.
+                if let Some(summary) = &g.summary {
+                    text.push_str(&format!(" · {summary}"));
                 }
                 if let Some(deadline) = g.deadline {
                     let left = deadline - crate::now_epoch();

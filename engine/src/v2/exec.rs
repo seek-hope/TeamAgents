@@ -690,6 +690,17 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
     };
     let verification_path = write_verification(&client.state_root, &verification);
     let checks_ok = verification.iter().all(|entry| entry["ok"] == json!(true));
+    // D-431: a goal can settle with the model writing nothing — it called `finish` and stopped (measured on the
+    // tau3 retail split: 12 of 114 dialogues ended that way, and the user read an empty reply). The model did
+    // say what it did, in the completion candidate it settled with, and the checkpoint carries that summary for
+    // the goal it reports; so a silent settlement reports the summary and says where the words came from. This
+    // is the last read of the run, and only when there is no reply to report.
+    let snapshot_for_reply = if reply.is_none() && goal_status.is_some() {
+        client.call("checkpoint", json!({})).unwrap_or(Json::Null)
+    } else {
+        Json::Null
+    };
+    let (reply, reply_source) = reply_for_report(reply, goal_status.as_deref(), &snapshot_for_reply);
     let report = json!({
         "session_id": client.session_id,
         "state_root": client.state_root,
@@ -702,6 +713,10 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
         "end": end.name(),
         "goal_status": goal_status,
         "reply": reply.as_ref().map(|text| text.chars().take(2000).collect::<String>()),
+        // D-431: where `reply` came from — the model's own words (`model`), its completion summary when it went
+        // silent (`summary`), or nothing (`""`, no reply to report). A consumer that shows the reply to a user
+        // can tell the two apart, which is the whole point of reporting the fallback rather than inventing text.
+        "reply_source": reply_source,
         "failure": turn_failure,
         "approval": pending_approval,
         "input_queued": queued,
@@ -814,6 +829,31 @@ fn run_streaming(options: &ExecOptions) -> Result<ExecRun, (i32, String)> {
     Ok(run)
 }
 
+/// D-431: what a run reports as the user's `reply`, and where the words came from.
+///
+/// The member's own last text wins whenever there is one. A goal that settled without any text — the model
+/// called `finish` and stopped — has nothing of its own to report, but its completion summary *is* its own
+/// account of the work, so it stands in; `reply_source` says so, and plain mode says it in words. Neither a
+/// missing summary nor a still-active goal invents anything: an empty reply stays empty.
+fn reply_for_report(
+    reply: Option<String>,
+    goal_status: Option<&str>,
+    snapshot: &Json,
+) -> (Option<String>, &'static str) {
+    // a model that emitted only whitespace wrote nothing a user can read, which is the case this whole
+    // function exists for: it must not be reported as `model` text, and it must not hide a summary either.
+    let reply = reply.filter(|text| !text.trim().is_empty());
+    if reply.is_some() {
+        return (reply, "model");
+    }
+    if goal_status.is_some() {
+        if let Some(summary) = snapshot["goal"]["summary"].as_str().filter(|text| !text.trim().is_empty()) {
+            return (Some(summary.to_string()), "summary");
+        }
+    }
+    (None, "")
+}
+
 fn print_human(report: &Json, options: &ExecOptions) {
     match report["end"].as_str().unwrap_or("") {
         "approval_required" => {
@@ -841,14 +881,28 @@ fn print_human(report: &Json, options: &ExecOptions) {
             if report["input_queued"] == json!(true) {
                 println!("queued: a turn was already running, so this input enters after it ends");
             }
+            // D-431: the status and the reply are not alternatives. A model can settle a goal in the same
+            // message it answers in, and the branch order here used to print one *or* the other — so a settled
+            // run hid the model's own words, and a run that settled without writing anything printed a status
+            // and nothing a user could read. The reply now follows the status whenever there is one, and says
+            // where it came from when it is the completion summary rather than the model's last text.
             if let Some(reason) = report["failure"].as_str() {
                 println!("turn failed: {reason}");
-            } else if let Some(status) = report["goal_status"].as_str() {
+            }
+            if let Some(status) = report["goal_status"].as_str() {
                 println!("goal ended: {status}");
-            } else if let Some(text) = report["reply"].as_str() {
-                println!("{text}");
-            } else {
-                println!("the run ended without a reply");
+            }
+            match report["reply"].as_str() {
+                Some(text) => {
+                    if report["reply_source"] == json!("summary") {
+                        println!("the model settled the goal without writing anything; its own summary of the work:");
+                    }
+                    println!("{text}");
+                }
+                None if report["failure"].is_null() && report["goal_status"].is_null() => {
+                    println!("the run ended without a reply");
+                }
+                None => {}
             }
         }
     }
@@ -1040,8 +1094,8 @@ fn leader_instance(checkpoint: &Json) -> Option<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::{
-        add_attempt_usage, capped, leader_instance, parked_fate, parse_check_result, resolve_prefix, run_checks,
-        run_fate, socket_lost, timeout_line, unchargeable_goal_advisory, Attribution, End,
+        add_attempt_usage, capped, leader_instance, parked_fate, parse_check_result, reply_for_report, resolve_prefix,
+        run_checks, run_fate, socket_lost, timeout_line, unchargeable_goal_advisory, Attribution, End, Json,
     };
     use serde_json::json;
     use std::path::Path;
@@ -1181,6 +1235,35 @@ mod tests {
         assert_eq!(End::Failed.exit_code(false), 1);
         assert_eq!(End::ApprovalRequired.exit_code(true), 3);
         assert_eq!(End::Timeout.exit_code(true), 124);
+    }
+
+    /// D-431: a settled goal with no text reports the model's own completion summary, and says that is what it
+    /// is; a run with the member's text keeps it; a settled goal with no summary reports nothing.
+    #[test]
+    fn a_silent_settlement_reports_the_summary_and_names_it() {
+        let snapshot = json!({"goal": {"status": "SUCCEEDED", "summary": "cancelled order W1 and refunded"}});
+        assert_eq!(
+            reply_for_report(None, Some("SUCCEEDED"), &snapshot),
+            (Some("cancelled order W1 and refunded".to_string()), "summary")
+        );
+        assert_eq!(
+            reply_for_report(Some("all done".to_string()), Some("SUCCEEDED"), &snapshot),
+            (Some("all done".to_string()), "model")
+        );
+        // whitespace is not text: it neither counts as the model's words nor hides a summary
+        assert_eq!(
+            reply_for_report(Some("   \n".to_string()), Some("SUCCEEDED"), &snapshot),
+            (Some("cancelled order W1 and refunded".to_string()), "summary")
+        );
+        assert_eq!(reply_for_report(Some("  ".to_string()), None, &snapshot), (None, ""), "nothing to report");
+        // an active goal never had a settlement to summarise, and a whitespace summary is not one
+        assert_eq!(reply_for_report(None, None, &snapshot), (None, ""));
+        assert_eq!(reply_for_report(None, Some("FAILED"), &json!({"goal": {"summary": "   "}})), (None, ""));
+        assert_eq!(
+            reply_for_report(None, Some("FAILED"), &Json::Null),
+            (None, ""),
+            "an unreadable snapshot invents nothing"
+        );
     }
 
     /// D-72: the client reports what *its own* input produced. The conversation

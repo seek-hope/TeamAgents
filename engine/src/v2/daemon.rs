@@ -485,19 +485,38 @@ fn read_snapshot(conn: &rusqlite::Connection, mcp: &Json, sessions: &Json) -> Re
     for row in rows {
         instances.push(row.map_err(|e| format!("snapshot row: {e}"))?);
     }
-    let goal: Option<(String, String, i64, String, Option<f64>)> = conn
+    // D-431: a goal can settle with the model writing no text at all — it just called `finish` (measured on the
+    // tau3 retail split: 12 of 114 dialogues ended that way). The user then reads nothing, although the model
+    // *did* say what it did, in the completion candidate it settled with. That summary is in the settling event,
+    // so it is read here for the goal this snapshot reports; the event's `scope` is the goal id.
+    let goal: Option<(String, String, String, i64, String, Option<f64>)> = conn
         .query_row(
             // D-266: a session can now carry more than one goal (the boot goal plus one the user opened), and
             // `LIMIT 1` without an order returned an arbitrary row — a client could be shown the settled goal
             // while an active one existed. The active goal wins; among those (and among settled ones) the newest.
-            "SELECT status, known_usage_json, unknown_usage, limits_json, deadline FROM goals
+            "SELECT id, status, known_usage_json, unknown_usage, limits_json, deadline FROM goals
              ORDER BY (status = 'ACTIVE') DESC, rowid DESC LIMIT 1",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
         )
         .ok();
-    Ok(json!({"instances": instances, "goal": goal.map(|(status, usage, unknown, limits, deadline)|
+    let summary: Option<String> = goal
+        .as_ref()
+        .and_then(|(id, ..)| {
+            conn.query_row(
+                "SELECT payload_json FROM events WHERE kind = 'goal_completed' AND scope = ?1
+                 ORDER BY sequence DESC LIMIT 1",
+                [id],
+                |row| row.get::<_, String>(0),
+            )
+            .ok()
+        })
+        .and_then(|payload| serde_json::from_str::<Json>(&payload).ok())
+        .and_then(|payload| payload["completion"]["summary"].as_str().map(str::to_string))
+        .filter(|text| !text.trim().is_empty());
+    Ok(json!({"instances": instances, "goal": goal.map(|(_, status, usage, unknown, limits, deadline)|
         json!({"status": status, "known_usage": serde_json::from_str::<Json>(&usage).unwrap_or(Json::Null),
+               "summary": summary,
                "unknown_usage": unknown,
                "limits": serde_json::from_str::<Json>(&limits).unwrap_or(Json::Null),
                // the absolute deadline (D-64): a client that shows limits must be able

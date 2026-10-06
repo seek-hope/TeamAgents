@@ -569,6 +569,31 @@ fn input_params(text: &str) -> Json {
     json!({"instance_id": "i-leader", "envelope_id": format!("env-{}", uuid::Uuid::new_v4()), "text": text})
 }
 
+/// D-431: the checkpoint carries the completion summary of the goal it reports, because a model can settle a goal
+/// by calling `finish` without writing a word of prose — and then the summary it recorded *is* the only account of
+/// the work a user can read. Measured on the tau3 retail split: 12 of 114 dialogues ended that way.
+#[tokio::test]
+async fn the_checkpoint_carries_the_completion_summary_of_the_goal_it_reports() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let scripts =
+        HashMap::from([("i-leader".to_string(), vec![finish_call("cancelled order W1 and refunded the other card")])]);
+    let (root, _handle) = boot("summary", scripts).await;
+    let mut client = Client::connect(&root.dir.join("state/daemon.sock")).await;
+    // before anything settles there is no summary to report
+    let before = client.call("checkpoint", json!({})).await;
+    assert_eq!(before["result"]["snapshot"]["goal"]["summary"], Json::Null, "{before}");
+    let since = before["result"]["watermark"].as_i64().unwrap();
+    client.command("cmd-summary", "submit_input", input_params("cancel it")).await;
+    let (status, _) = wait_goal(&mut client, since).await;
+    assert_eq!(status, "SUCCEEDED");
+    let after = client.call("checkpoint", json!({})).await;
+    assert_eq!(
+        after["result"]["snapshot"]["goal"]["summary"],
+        json!("cancelled order W1 and refunded the other card"),
+        "{after}"
+    );
+}
+
 #[tokio::test]
 async fn handshake_checkpoint_command_and_goal_completion() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));

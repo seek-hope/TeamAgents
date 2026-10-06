@@ -160,7 +160,7 @@ row, which the TUI's panel and `instances` print when a member is not running (D
 | Verb | Fields it adds |
 |---|---|
 | every report | `session_id`, `state_root` |
-| `exec` | `permissions`, `session_workspace`, `instance_id`, `instance_lifecycle`, `end`, `goal_status`, `reply`, `failure`, `approval`, `input_queued`, `workspace`, `verification`, `verification_path`, `acceptance`, `acceptance_goal`, `watermark`, `usage` |
+| `exec` | `permissions`, `session_workspace`, `instance_id`, `instance_lifecycle`, `end`, `goal_status`, `reply`, `reply_source`, `failure`, `approval`, `input_queued`, `workspace`, `verification`, `verification_path`, `acceptance`, `acceptance_goal`, `watermark`, `usage` |
 | `authority list` | `revision`, `instances`, `grants` |
 | `authority grant` | `grant_id`, `revision`, `subject`, `action`, `resource_scope`, `parent_grant_id` |
 | `authority revoke` | `grant_id`, `grant`, `revoked`, `revision` |
@@ -185,6 +185,11 @@ What the field names do not carry:
   its output; `verification_path` is the ledger written next to the session database (`null` when no check ran).
 - `acceptance` is what the run attached to the goal with `--accept` (each entry an `id` and a `command`), and
   `acceptance_goal` names the goal it went to (`null` when no `--accept` was given).
+- `reply_source` says where `reply` came from (D-431): `model` for the member's own last text, `summary` when
+  the model settled the goal **without writing anything** and the reply is the completion summary it recorded
+  with its `finish` call, and `""` when there is no reply to report. It exists so a consumer that shows a reply
+  to a user can tell the model's words from the runtime's fallback — plain mode says the same thing in words
+  ("the model settled the goal without writing anything; its own summary of the work:").
 - `usage` is what *this run* cost, as the provider reported it: `prompt_tokens`, `completion_tokens`,
   `total_tokens`, `requests`, and `unpriced_attempts` (attempts the provider never priced, which are **not**
   counted as free). Plain mode prints the same numbers as one `tokens: …` line. They are the numbers the

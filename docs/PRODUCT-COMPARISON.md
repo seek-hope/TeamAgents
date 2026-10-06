@@ -83,8 +83,13 @@ what their projects claim. Codex was run on 2026-09-27 (its help output is the e
    machine's config). What stays headless is *signing in from inside the TUI*: a loopback callback plus a
    browser is a separate process's job, and Pi's advantage there is convenience, not capability. D-74/D-78 are the
    entries this item was opened from.
-8. **Config overrides** (Codex: `-c key=value`). This product's flags cover the session-shaping keys
-   (`--cwd`, `--state-root`, `--model`, `--full-auto`); everything else is the config file. **Low value.**
+8. **Config overrides** (Codex: `-c key=value`). This snapshot judged it **low value** (the flags covered the
+   session-shaping keys and everything else was the config file) — and that judgement was wrong for the workflow
+   that mattered: the benchmark harness had to rewrite a config file per arm, which is both a step to get wrong
+   and a copy of the config that can drift from the tree. D-428 added `-c key=value` (validated exactly like a
+   file, dotted keys, unknown keys refused with a pointer to `docs/CONFIG.md`), and D-430 moved the arms onto it.
+   The lesson is recorded rather than erased: a comparison drawn from the two CLIs' surfaces can miss which one's
+   *missing* flag is a load-bearing convenience elsewhere.
 9. **Project config**: done since D-244 — the product reads repository-local configuration
    (`<cwd>/.teamagents/config.toml`) under the user's `[permissions] trust_project` opt-in, which is what Codex
    and Pi do. What remains is what `docs/ACCEPTANCE.md` records: no walk up to a parent directory, and one

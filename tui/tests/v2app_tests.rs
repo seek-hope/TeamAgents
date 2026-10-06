@@ -139,6 +139,30 @@ fn the_instances_hint_stops_offering_lifecycle_keys_for_a_terminated_member() {
     assert!(hint.contains("Enter set conversation target") && hint.contains("up/down select"), "{hint}");
 }
 
+/// D-431: a model can settle a goal by calling `finish` without writing any prose (measured on the tau3 retail
+/// split: 12 of 114 dialogues ended that way, and the user read nothing). The checkpoint carries the completion
+/// summary, and the status line shows it, so a settled goal is not just a bare `goal SUCCEEDED`.
+#[test]
+fn a_settled_goal_shows_the_models_own_completion_summary() {
+    let mut app = app();
+    assert_eq!(app.status_line().find("cancelled"), None, "an active goal has no summary to show");
+    let mut settled = checkpoint();
+    settled["goal"]["status"] = Json::String("SUCCEEDED".into());
+    settled["goal"]["summary"] = Json::String("  cancelled order W1\nand refunded the other card  ".into());
+    app.apply_checkpoint(settled, 6);
+    let status = app.status_line();
+    assert!(status.contains("goal SUCCEEDED"), "{status}");
+    // whitespace is collapsed, so a multi-line summary stays on the status line
+    assert!(status.contains("cancelled order W1 and refunded the other card"), "{status}");
+    assert!(!status.contains('\n'), "{status}");
+    // and an empty summary is not shown as a dangling separator
+    let mut blank = V2App::new("s-test");
+    let mut quiet = checkpoint();
+    quiet["goal"]["summary"] = Json::String("   ".into());
+    blank.apply_checkpoint(quiet, 5);
+    assert!(!blank.status_line().ends_with(" · "), "{}", blank.status_line());
+}
+
 #[test]
 fn checkpoint_defaults_to_the_leader_and_tracks_budget() {
     let app = app();

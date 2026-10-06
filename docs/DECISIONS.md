@@ -20,6 +20,42 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-431 A silent settlement now reports the model's own summary (2026-10-06)
+
+**The measurement that opened this.** The full tau3-bench retail split (114 dialogues, one dialogue per task, the
+product's native window, official endpoint) scored **96/114 = 84.2 %** — consistent with the earlier 40-dialogue
+sample (34/40 = 85 %), so that sample was not optimistic. Reading the 18 failures' own receipts rather than their
+rewards found something the reward had hidden: `review/benchmark/tau3_silence.py` counts the dialogues whose last
+turn carries no reply at all and reports **12 of 114 (10.5 %)**, with **24 of 487 turns** empty. Only two of those
+dialogues also failed the DB check, so a reward-shaped measurement sees a defect that affects one dialogue in ten
+as a two-dialogue scoring difference.
+
+**What happens.** The model settles the goal by calling the runtime's `finish` tool and writes no prose at all.
+`interpret_response` sees no text and no tool calls (`KernelOutput::Reply("")`), the settlement is committed, and
+`exec` reports `end: completed`, `goal_status: SUCCEEDED`, `reply: null` — a user reads nothing, although the
+model *did* say what it did, in the completion candidate it settled with. The branch order in plain mode hid even
+that: `goal_status` and `reply` were alternatives, so a settled run printed the status *instead of* the reply.
+
+**The fix, in three places, all using the model's own words.** The daemon's checkpoint carries the reported goal's
+completion `summary`, read from the `goal_completed` event whose scope is that goal (`read_snapshot`); `exec`
+falls back to it when the run has no model text and the goal settled, and reports **`reply_source`** — `model`,
+`summary`, or `""` — so a consumer can tell the model's words from the runtime's fallback; the TUI's status line
+shows the summary beside the settled goal. Plain mode prints the status and then the reply, saying in words which
+of the two it is when it is the summary.
+
+**Why a fallback rather than another round.** The alternative was to refuse the silent `finish` and ask the model
+for a sentence, which costs a model round on one turn in ten and changes what the model may do; the summary is
+already the model's own account of the work, recorded in the same call that settled it, so reporting it adds
+nothing and invents nothing. An empty or whitespace-only model reply is treated as no reply (it is not `model`
+text, and it does not hide a summary either), and a goal that never settled has no summary to fall back to.
+
+**Evidence.** `exec::tests::a_silent_settlement_reports_the_summary_and_names_it` (the fallback and its four
+boundaries), `v2_daemon::the_checkpoint_carries_the_completion_summary_of_the_goal_it_reports` (null before the
+settlement, the summary after, over the real socket), `v2app_tests::a_settled_goal_shows_the_models_own_completion_summary`
+(collapsed onto the status line, absent for an active goal and for a whitespace summary), and the re-run of the
+**same 114 dialogues** with `review/benchmark/tau3_silence.py` reading the result — the two numbers belong in the
+same place, so they are recorded in the follow-up commit.
+
 ## D-430 The benchmark harness reads its receipts as a make target, and its arms are `-c` overrides (2026-10-05)
 
 **Two small changes to the tooling the evidence rests on.**
