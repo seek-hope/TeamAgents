@@ -20,6 +20,37 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-439 The airline failures read, and a pre-registered scope-discipline arm (2026-10-06)
+
+**Why the full splits were worth reading.** The tau3-bench airline split is 41/50 in the run recorded in D-431,
+and its nine failures had never been read one by one, while the retail split's eighteen had (D-422's shape). The
+receipts say they are not one thing:
+
+| failures | shape | what the receipts show |
+|---|---|---|
+| 7, 29, 32 | the agent escalated | "YOU ARE BEING TRANSFERRED TO A HUMAN AGENT" — the domain policy has that path, and the graded state assumes the request was served instead. A tension in the *benchmark's* authoring, not a product defect |
+| 18 | overreach | the user asked to downgrade the cabin only ("I'm not changing the flights or the passengers — just the cabin") and the agent's 88 calls end with `update_reservation_baggages`: an action nobody asked for, and the graded state sees it |
+| 9, 10, 16, 39, 44 | a wrong choice among legal options | task 16 was asked for "the cheapest Economy fare (not Basic Economy)"; the agent searched, changed the reservation to `HAT227` and reported success — the mismatch is which flight, not whether it acted |
+
+**The one class with a product lever is overreach**, and the lever is the one D-262 already used: the Leader's own
+instructions. A user can add a sentence to the system text without a rebuild (D-246's `instruction_files`), which is
+how a user would do it, so the experiment needs no product change to run — the adapter gained
+`TEAMAGENTS_EXTRA_INSTRUCTION` for the arm.
+
+**Pre-registered before the data.** Arms: **A** = the airline split with the current instructions, **B** = the same
+50 dialogues with one extra instruction file:
+
+> Change exactly what the user asked for and nothing else: when a request names a specific change, do not also
+> adjust other fields (baggage, seats, dates) it did not mention, even when they look improvable.
+
+Metric: dialogues solved, the adapter's own DB check, same model (`deepseek-flash`), same endpoint, same 50 tasks in
+the dataset's order, one attempt each, both arms run fresh (the 41/50 above is *not* the control: it was run before
+this design). Decision rule, written before the data: the sentence is adopted only if B solves **at least five more
+dialogues** than A; a difference of four or fewer is reported as **not readable**, because two runs of the same
+114-dialogue task set with a treatment that could not change the outcome differed by two (D-431) and 50 dialogues
+carry wider intervals than 114. A null result is the expected outcome of a one-sentence change and is reported as
+such rather than argued away.
+
 ## D-438 Withdrawn: the conversation does not reference the artifacts after all (2026-10-06)
 
 **What this was going to be.** D-253's remaining policy question — may the conversation's own reference expire, so

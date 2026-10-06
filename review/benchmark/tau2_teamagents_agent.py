@@ -134,12 +134,20 @@ class TeamAgentsAgent:
         self.work = pathlib.Path(tempfile.mkdtemp(prefix="ta-tau3-"))
         self.bridge = Bridge(environment, str(self.work / "bridge.sock"))
         (self.work / "policy.md").write_text(self.domain_policy)
+        # D-439: an optional *second* instruction file, which is how a user would add a sentence to the system text
+        # without a rebuild (D-246) — the A/B arm of the scope-discipline experiment, and the reason that
+        # experiment needs no product change to run.
+        self.extra_instruction = os.environ.get("TEAMAGENTS_EXTRA_INSTRUCTION", "")
+        instructions = [str(self.work / "policy.md")]
+        if self.extra_instruction:
+            (self.work / "scope.md").write_text(self.extra_instruction)
+            instructions.append(str(self.work / "scope.md"))
         (self.work / "config").mkdir(exist_ok=True)
         (self.work / "config" / "teamagents").mkdir(exist_ok=True)
         (self.work / "config" / "teamagents" / "config.toml").write_text(
             # `instruction_files` is a *top-level* key (it is appended to every member's system text); writing it
             # inside the model table is a load error, which is how the first smoke run failed.
-            "instruction_files = [\"" + str(self.work / "policy.md") + "\"]\n\n"
+            "instruction_files = [" + ", ".join(f'\"{path}\"' for path in instructions) + "]\n\n"
             "[models.leader_main]\nprovider = \"deepseek\"\nmodel = \"deepseek-flash\"\n"
             "api_key_env = \"DEEPSEEK_API_KEY\"\n\n"
             "[tools.tau3]\nkind = \"mcp\"\nmcp_transport = \"stdio\"\n"
