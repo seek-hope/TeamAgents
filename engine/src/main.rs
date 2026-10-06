@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 use teamagents_engine::{cli, tools};
 
 const HELP: &str = "TeamAgents: work with a Leader in your terminal\n\n\
-usage: teamagents [--cwd DIR] [--state-root PATH] [--session ID] [--model KEY] [--full-auto]\n\
+usage: teamagents [--cwd DIR] [--state-root PATH] [--session ID] [--model KEY] [--full-auto] [-c key=value]…\n\
+  -c key=value                        override a config key for this invocation (repeatable; docs/CONFIG.md lists them)\n\
   teamagents                          TUI attached to your daemon (starts one if needed)\n\
   teamagents exec [--json|--stream-json] [--timeout SEC] [--check CMD] [--accept ID=CMD] [--] \"…\"   one headless input\n\
   teamagents authority [list] [--json]          the session's grants, with the ids revoke needs\n\
@@ -188,6 +189,9 @@ pub struct Args {
     pub mcp_oauth: bool,
     /// D-412: `mcp add --oauth-client-id ID` — a pre-registered client instead of dynamic registration.
     pub mcp_oauth_client_id: Option<String>,
+    /// D-428: `-c key=value` (Codex's `-c`): a config override for this invocation, applied to the merged config
+    /// before it is deserialised and forwarded to a daemon this client starts.
+    pub overrides: Vec<String>,
 }
 
 fn parse_args() -> Args {
@@ -246,6 +250,7 @@ fn parse_args() -> Args {
         mcp_login_timeout: None,
         mcp_oauth: false,
         mcp_oauth_client_id: None,
+        overrides: Vec::new(),
     };
     let mut i = 0;
     while i < argv.len() {
@@ -484,6 +489,15 @@ fn parse_args() -> Args {
             }
             "--arg" if args.command.as_deref() == Some("mcp") => {
                 args.mcp_args.push(value_after(&argv, i, "--arg"));
+                i += 2;
+            }
+            "-c" => {
+                let value = value_after(&argv, i, "-c");
+                if !value.contains('=') {
+                    eprintln!("-c wants key=value, got {value:?} (e.g. -c limits.tool_output_chars=8000)");
+                    std::process::exit(2);
+                }
+                args.overrides.push(value);
                 i += 2;
             }
             "--transport" if args.command.as_deref() == Some("mcp") => {
@@ -782,6 +796,7 @@ fn run_tui(args: &Args) -> i32 {
         model: args.model.clone(),
         full_auto: args.full_auto,
         cwd: args.cwd.as_deref().map(Path::new),
+        overrides: &args.overrides,
     }) {
         Ok((socket, started)) => {
             note_session_settings(&socket, args.full_auto, args.cwd.as_deref(), started);
@@ -825,6 +840,7 @@ fn run_exec(args: &Args) -> i32 {
         model: args.model.clone(),
         full_auto: args.full_auto,
         cwd: args.cwd.as_deref().map(Path::new),
+        overrides: &args.overrides,
     }) {
         Ok((socket, started)) => {
             note_session_settings(&socket, args.full_auto, args.cwd.as_deref(), started);
@@ -1957,10 +1973,12 @@ struct DaemonRequest<'a> {
     model: Option<String>,
     full_auto: bool,
     cwd: Option<&'a Path>,
+    /// D-428: the invocation's `-c` overrides, forwarded to a daemon this client starts
+    overrides: &'a [String],
 }
 
 fn ensure_daemon(request: DaemonRequest<'_>) -> Result<(PathBuf, bool), String> {
-    let DaemonRequest { state_root, model, full_auto, cwd } = request;
+    let DaemonRequest { state_root, model, full_auto, cwd, overrides } = request;
     // D-163, before the liveness probe: a `--cwd` that is not a directory can never be honoured — not by a
     // session this client starts, and not by one that is already running (which keeps its own workspace) —
     // and the same path is what `--check` would run the user's acceptance commands in. So it is refused
@@ -2007,6 +2025,10 @@ fn ensure_daemon(request: DaemonRequest<'_>) -> Result<(PathBuf, bool), String> 
     // directory this client was started from, silently ignoring --cwd
     if let Some(cwd) = cwd {
         command.arg("--cwd").arg(cwd);
+    }
+    // D-428: a daemon this client starts reads the config, so the invocation's overrides travel with it
+    for override_text in overrides {
+        command.arg("-c").arg(override_text);
     }
     // A detached daemon has no terminal to complain on: its banner, its startup
     // failure and anything it logs later land in <state root>/daemon.log.
@@ -2129,9 +2151,15 @@ fn main() {
             }
             cli::daemon_stop(args.state_root.clone().map(PathBuf::from))
         }
-        Some("daemon") => cli::daemon(args.state_root.clone(), args.cwd.clone(), args.model.clone(), args.full_auto),
+        Some("daemon") => cli::daemon(
+            args.state_root.clone(),
+            args.cwd.clone(),
+            args.model.clone(),
+            args.full_auto,
+            args.overrides.clone(),
+        ),
         Some("init") => cli::init(args.state_root.clone().map(PathBuf::from)),
-        Some("doctor") => cli::doctor(args.state_root.clone().map(PathBuf::from)),
+        Some("doctor") => cli::doctor(args.state_root.clone().map(PathBuf::from), &args.overrides),
         Some("version") => cli::version(),
         Some("exec") => run_exec(&args),
         Some("authority") => run_authority(&args),

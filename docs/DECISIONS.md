@@ -20,6 +20,39 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-428 `-c key=value`: a config override for one invocation (2026-10-05)
+
+**Why.** D-425/D-426 added two cost keys and D-427 made the bill visible, but trying a setting still meant editing
+`config.toml`. Codex has `-c key=value` for exactly this; it is also what this repository's own benchmark adapter
+has to work around, writing a whole config file per arm.
+
+**What was added.** `-c key=value`, repeatable, parsed by the client and applied to the merged config **before it is
+deserialised** — so it goes through the same validation as a file, not a second weaker path:
+
+* **dotted keys walk into tables** (`limits.tool_output_chars=8000`, `models.leader_main.model=deepseek-flash`);
+* **the value is parsed as TOML when it can be** (numbers, booleans, arrays, quoted strings) and taken as a string
+  otherwise, so `-c model=deepseek-flash` needs no quotes. The first implementation parsed the raw text as a TOML
+  *document*, which silently made every number a string (measured: `tool_output_chars` arrived as `"8000"` and the
+  loader refused the type) — the fix wraps it as `v = <text>` and takes the right-hand side;
+* **a key this build does not serve is refused** with the same `docs/CONFIG.md` pointer the file loader gives, and a
+  misspelled key *inside* a served table is refused a step later by `deny_unknown_fields` naming the field and the
+  allowed set;
+* a client that **starts** the daemon forwards its overrides on the daemon's own command line, because the daemon is
+  what loads the config; a session already running keeps the settings it booted with, exactly like `--cwd`.
+  `doctor` and `mcp list` honour them too, since they load the config themselves.
+
+**Evidence.** `config::tests::config_overrides_walk_dotted_keys_and_refuse_what_the_build_does_not_serve` (dotted
+walk, TOML scalar, bare string, unknown top-level key, unknown inner field refused by the loader, unused-key
+survival) and `cli::a_config_override_reaches_the_config_and_a_bad_one_is_refused` (the real binary: a valid override
+accepted, `nonsense=1` refused with the pointer and exit 1, `limits.nope=1` refused by the loader, a wrong type
+refused). Live: `doctor -c instruction_files='["/tmp/x.md"]'` reports the file it cannot read, which is how the
+override reaching the config was confirmed.
+
+**Ceiling.** It overrides the *user* config's tree; the project file's rules are untouched (a `-c` value cannot make
+a project's tools trusted, since trust is read from the user file's `[permissions]` before any override). No
+completion, no validation of the *meaning* beyond the loader's own — `-c` can set a key to a value the session will
+refuse later, and says so then.
+
 ## D-427 The run says what it cost — and the word `usage:` was already taken (2026-10-05)
 
 **Why.** D-425 and D-426 cut prompt tokens by a third, but only a user reading the raw events could see the

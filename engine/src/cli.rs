@@ -1,7 +1,7 @@
 //! CLI entry points: init / doctor / daemon / exec / version.
 
 use crate::config::{
-    load_user_config_for, missing_key_envs, project_config_path, sessions_dir, state_dir, user_config_path,
+    load_user_config_for_with, missing_key_envs, project_config_path, sessions_dir, state_dir, user_config_path,
 };
 use crate::tools::{bwrap_available, which};
 use crate::VERSION;
@@ -183,7 +183,7 @@ fn v2_state_root_row(root: &Path, journal: &str, sync: &str, version: &str, carr
     }
 }
 
-pub fn doctor(state_root: Option<PathBuf>) -> i32 {
+pub fn doctor(state_root: Option<PathBuf>, overrides: &[String]) -> i32 {
     let mut results = vec![];
     // the core is a library now: report the linked core's own version string
     check(&mut results, "rust core", true, format!("teamagents-core {}", teamagents_core::core_version()));
@@ -192,7 +192,7 @@ pub fn doctor(state_root: Option<PathBuf>) -> i32 {
     // repository-local one, under the user's trust gate — and reports the merge's decision in its own row,
     // because the daemon's copy of it lands in `<state root>/daemon.log`.
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let catalog = load_user_config_for(&cwd);
+    let catalog = load_user_config_for_with(&cwd, overrides);
     match &catalog {
         Ok((catalog, merge)) => {
             let models: Vec<&String> = catalog.models.keys().collect();
@@ -756,8 +756,14 @@ pub fn daemon_stop(state_root: Option<PathBuf>) -> i32 {
     }
 }
 
-pub fn daemon(state_root: Option<String>, cwd: Option<String>, model: Option<String>, full_auto: bool) -> i32 {
-    daemon_run(state_root, cwd, model, full_auto)
+pub fn daemon(
+    state_root: Option<String>,
+    cwd: Option<String>,
+    model: Option<String>,
+    full_auto: bool,
+    overrides: Vec<String>,
+) -> i32 {
+    daemon_run(state_root, cwd, model, full_auto, overrides)
 }
 
 /// The capabilities a session binds (D-78): the daemon boots with this list and
@@ -766,8 +772,14 @@ fn default_bindings() -> Vec<String> {
     crate::bound::DEFAULT_BINDINGS.iter().map(|name| (*name).to_string()).collect()
 }
 
-fn daemon_run(state_root: Option<String>, cwd: Option<String>, model: Option<String>, full_auto: bool) -> i32 {
-    match daemon_boot(state_root, cwd, model, full_auto) {
+fn daemon_run(
+    state_root: Option<String>,
+    cwd: Option<String>,
+    model: Option<String>,
+    full_auto: bool,
+    overrides: Vec<String>,
+) -> i32 {
+    match daemon_boot(state_root, cwd, model, full_auto, &overrides) {
         Ok(()) => 0,
         Err(e) => {
             eprintln!("daemon: {e}");
@@ -956,6 +968,7 @@ fn daemon_boot(
     cwd: Option<String>,
     model: Option<String>,
     full_auto: bool,
+    overrides: &[String],
 ) -> Result<(), String> {
     use teamagents_core::kernel::KernelProfile;
     // D-244: the workspace is resolved *first*, because the repository-local config belongs to the directory the
@@ -966,7 +979,8 @@ fn daemon_boot(
         None => std::env::current_dir().map_err(|e| e.to_string())?,
     };
     require_workspace_dir(&workspace)?;
-    let (catalog, project) = load_user_config_for(&workspace)?;
+    // D-428: the command line's `-c` overrides enter the same load the daemon's config comes from
+    let (catalog, project) = load_user_config_for_with(&workspace, overrides)?;
     report_project_merge(&project);
     let mut available: Vec<String> = catalog.models.keys().cloned().collect();
     available.sort();

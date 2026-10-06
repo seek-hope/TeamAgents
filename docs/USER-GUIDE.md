@@ -38,6 +38,13 @@ teamagents                           # open the TUI (starts the per-user daemon 
   grant --subject ID --action shell --scope workspace` hands one out and `teamagents authority revoke --grant
   ID` takes it back. This is how a worker the Leader spawned gets the shared-workspace shell (§3); the full
   contract is in §3.1.
+- **`-c key=value` overrides a config key for one invocation** (D-428): repeatable, dotted into tables
+  (`-c limits.tool_output_chars=8000`, `-c models.leader_main.model=deepseek-flash`), with numbers and booleans
+  parsed as TOML and anything else taken as a string (no quotes needed). It is the way to *try* a setting — the
+  cost keys of §2.2 in particular — without editing `config.toml`; a client that starts the daemon passes its
+  overrides on, and a key this build does not serve is refused with the `docs/CONFIG.md` pointer rather than
+  ignored. A session already running keeps the settings it booted with, so the same rule as `--cwd` applies:
+  stop that daemon or use another `--state-root`.
 - **A session owns its workspace and permission mode**: both are fixed when the daemon boots (`--cwd DIR`,
   `--full-auto`), so a client that joins a session already running keeps that session's settings and prints
   them (`note: a session is already running for this state root in … mode` / `that session works in …`).

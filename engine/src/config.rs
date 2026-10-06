@@ -729,6 +729,39 @@ mod tests {
     /// the merge path's refusal); D-244 dissolved it when the merge path became the product's path, because that
     /// difference would have refused to boot on the shipped config's `~/.agents/skills` — the case D-66/D-168
     /// designed a `doctor` warning for (`doctor_reports_the_skills_registry_and_missing_configured_paths`).
+    /// D-428: `-c key=value` walks dotted keys, takes TOML values where they parse and strings where they do not,
+    /// and refuses a key this build does not serve (a typo must not be a silent no-op).
+    #[test]
+    fn config_overrides_walk_dotted_keys_and_refuse_what_the_build_does_not_serve() {
+        let mut config: toml::Value = "[models.m]\nprovider = \"deepseek\"\n".parse().unwrap();
+        apply_overrides(
+            &mut config,
+            &[
+                "limits.tool_output_chars=8000".to_string(),
+                "models.m.model=deepseek-flash".to_string(),
+                "limits.context_keep_chars=64000".to_string(),
+            ],
+        )
+        .expect("overrides");
+        assert_eq!(config["limits"]["tool_output_chars"].as_integer(), Some(8000));
+        assert_eq!(config["limits"]["context_keep_chars"].as_integer(), Some(64000));
+        assert_eq!(
+            config["models"]["m"]["model"].as_str(),
+            Some("deepseek-flash"),
+            "a bare value is a string, so no quotes are needed: {config}"
+        );
+        assert_eq!(config["models"]["m"]["provider"].as_str(), Some("deepseek"), "untouched keys survive");
+        // a key this build does not serve is refused with the pointer, not dropped
+        let error = apply_overrides(&mut config, &["nonsense=1".to_string()]).expect_err("refused");
+        assert!(error.contains("unknown key") && error.contains("docs/CONFIG.md"), "{error}");
+        assert!(apply_overrides(&mut config, &["limits".to_string()]).is_err(), "a bare key is not key=value");
+        // a misspelled key *inside* a served table applies here (the top-level key is legal) and is refused a step
+        // later by the loader's own `deny_unknown_fields`, the same refusal a config file gets
+        apply_overrides(&mut config, &["limits.nope=1".to_string()]).expect("applies");
+        let error = parse_user_config(&toml::to_string(&config).unwrap()).expect_err("the loader refuses it");
+        assert!(error.contains("nope"), "the refusal names the key: {error}");
+    }
+
     #[test]
     fn both_loaders_refuse_the_same_shapes() {
         let _env = crate::env_lock();
@@ -1085,15 +1118,64 @@ pub struct ProjectMerge {
 /// unchanged and are refused even when trusted: `[permissions]` (`mode` and the trust flag itself), `hooks`,
 /// `checks`, `retention` and `limits` are the user's policy — a check is a command that runs without an approval
 /// prompt, and a limit is the user's ceiling, not the repository's.
+/// D-428: `-c key=value` overrides, applied to the merged TOML **before** it is deserialised, so a command line
+/// can try a setting without editing the config file (and without a second, weaker set of rules). The dotted key
+/// walks into tables (`limits.tool_output_chars`, `models.leader_main.model`), the value is parsed as TOML when it
+/// looks like TOML and taken as a string otherwise (`-c model=deepseek-flash` needs no quotes), and an unknown
+/// top-level key is refused with the same pointer the file loader gives — a typo must not be a silent no-op.
+pub fn apply_overrides(config: &mut toml::Value, overrides: &[String]) -> Result<Vec<String>, String> {
+    let mut applied = Vec::new();
+    for override_text in overrides {
+        let (key, raw) =
+            override_text.split_once('=').ok_or_else(|| format!("-c wants key=value, got {override_text:?}"))?;
+        let key = key.trim();
+        if key.is_empty() {
+            return Err(format!("-c wants a key before `=`, got {override_text:?}"));
+        }
+        let path: Vec<&str> = key.split('.').collect();
+        if !CATALOG_KEYS.contains(&path[0]) && path[0] != "permissions" {
+            return Err(format!("unknown key `{key}` in -c; docs/CONFIG.md lists every key this build serves"));
+        }
+        // A bare scalar is not a TOML *document*, so `"8000".parse::<toml::Value>()` fails and a naive fallback
+        // turns every number and boolean into a string (measured: `tool_output_chars` arrived as "8000"). Parsing
+        // it as the right-hand side of a key accepts numbers, booleans, arrays and quoted strings; anything else
+        // (`deepseek-flash`) is a string, which is what a user typing an unquoted value means.
+        let value = match format!("v = {raw}").parse::<toml::Value>() {
+            Ok(document) => document.get("v").cloned().unwrap_or_else(|| toml::Value::String(raw.trim().to_string())),
+            Err(_) => toml::Value::String(raw.trim().to_string()),
+        };
+        let mut cursor: &mut toml::Value = config;
+        for step in &path[..path.len() - 1] {
+            let table = cursor
+                .as_table_mut()
+                .ok_or_else(|| format!("-c {key}: {} is not a table", path[..path.len() - 1].join(".")))?;
+            cursor = table.entry((*step).to_string()).or_insert_with(|| toml::Value::Table(Default::default()));
+        }
+        let table = cursor
+            .as_table_mut()
+            .ok_or_else(|| format!("-c {key}: {} is not a table", path[..path.len() - 1].join(".")))?;
+        table.insert(path[path.len() - 1].to_string(), value);
+        applied.push(key.to_string());
+    }
+    Ok(applied)
+}
+
 pub fn load_user_config_for(cwd: &Path) -> Result<(UserConfig, ProjectMerge), String> {
+    load_user_config_for_with(cwd, &[])
+}
+
+/// The same load with `-c` overrides applied to the user file's own tree (D-428).
+pub fn load_user_config_for_with(cwd: &Path, overrides: &[String]) -> Result<(UserConfig, ProjectMerge), String> {
     let mut outcome = ProjectMerge { path: project_config_path(cwd), ..Default::default() };
     let user_text = read_config_file(&user_config_path())?;
     let project_text = read_config_file(&outcome.path)?;
-    let user: toml::Value = if user_text.trim().is_empty() {
+    let mut user: toml::Value = if user_text.trim().is_empty() {
         toml::Value::Table(Default::default())
     } else {
         user_text.parse().map_err(|e| format!("bad TOML: {e}"))?
     };
+    // D-428: the command line's own overrides enter here, before anything reads the tree
+    apply_overrides(&mut user, overrides)?;
     let project: toml::Value = if project_text.trim().is_empty() {
         toml::Value::Table(Default::default())
     } else {

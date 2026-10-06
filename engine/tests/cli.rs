@@ -131,6 +131,48 @@ fn teamagents(args: &[&str], state_home: &std::path::Path, config_home: &std::pa
     text
 }
 
+/// D-428: `-c key=value` overrides reach the config a session loads, and a bad one is refused rather than
+/// ignored — an unknown top-level key with the pointer, an unknown field inside a served table by the loader.
+#[test]
+fn a_config_override_reaches_the_config_and_a_bad_one_is_refused() {
+    let home = Scratch::new("config-override");
+    let config_home = home.join("config");
+    std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
+    std::fs::write(
+        config_home.join("teamagents/config.toml"),
+        "[models.leader_main]\nprovider = \"compatible\"\nmodel = \"test\"\napi_key_env = \"TA_OVERRIDE_KEY\"\n",
+    )
+    .unwrap();
+    let run = |args: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
+            .args(args)
+            .env("XDG_STATE_HOME", home.join("state"))
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("TA_OVERRIDE_KEY", "test-value")
+            .output()
+            .expect("run cli");
+        let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+        text.push_str(&String::from_utf8_lossy(&output.stderr));
+        (output.status.code(), text)
+    };
+    // a valid override is accepted (the config row does not fail)
+    let (code, text) = run(&["doctor", "-c", "limits.tool_output_chars=8000"]);
+    assert_eq!(code, Some(0), "{text}");
+    assert!(!text.lines().any(|line| line.contains("[FAIL]") && line.contains("user config")), "{text}");
+    // a key this build does not serve
+    let (code, text) = run(&["doctor", "-c", "nonsense=1"]);
+    assert_eq!(code, Some(1), "{text}");
+    assert!(text.contains("unknown key `nonsense` in -c") && text.contains("docs/CONFIG.md"), "{text}");
+    // a key inside a served table that the loader does not have
+    let (code, text) = run(&["doctor", "-c", "limits.nope=1"]);
+    assert_eq!(code, Some(1), "{text}");
+    assert!(text.contains("unknown field `nope`"), "{text}");
+    // and a value the loader cannot use
+    let (code, text) = run(&["doctor", "-c", "limits.tool_output_chars=lots"]);
+    assert_eq!(code, Some(1), "{text}");
+    assert!(text.contains("tool_output_chars"), "{text}");
+}
+
 /// D-228: the two inversions of D-166's mistake — a *directory* where the session database or the socket
 /// belongs. Measured 2026-09-27: `init` answered SQLite's `unable to open database file` (the path three times,
 /// no fix), `exec` answered `Connection refused … start teamagents daemon first` (a diagnosis pointing at the
