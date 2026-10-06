@@ -27,16 +27,20 @@
 //! `store::open_read_only`, which probes the log and refuses *by name* when it cannot attach it — a silent
 //! under-report is the one answer a census must never give.
 //!
-//! **What it does not do, measured 2026-09-28**: it does not invent a *release* policy. Both places that stage an
-//! artifact write an `owner_ref` (`driver.rs`: a model response's request, a tool output's operation), nothing
-//! ever clears it, and the reference clauses in `artifact_gc_claim` ask for `owner_ref IS NULL` — so a real
-//! session's artifacts are never claimable while their owning fact exists, and that fact is never pruned. A
-//! scripted session with a 300 KB tool output left three LIVE artifacts, 0 claimable. `V2Artifact.tla` says the
-//! same thing structurally: the "LIVE and unreferenced" state exists there only under the counterfactual
-//! `GcIgnoresHolders`. So `gc` today is the recovery half (a sweep that a *crash* left half-done) plus the
-//! census; whether artifact bytes should expire with `[retention] history_days` — they are "ordinary history" in
-//! §9's words — or under their own knob is a policy the user has not stated, and it is recorded as an open
-//! question rather than guessed at here.
+//! **What it does now, and what it still does not.** Measured 2026-09-28: both places that stage an artifact
+//! write an `owner_ref` and nothing ever cleared it, while `artifact_gc_claim` asks for `owner_ref IS NULL` — so
+//! a real session's artifacts were never claimable and a scripted session's 300 KB tool output left three LIVE
+//! artifacts, 0 claimable. **D-436 released that hold**: an owner that has finished (a request that is not
+//! `PENDING`, an operation whose status is terminal but not `OUTCOME_UNKNOWN`) stops protecting its artifact
+//! (`artifact_release_spent_owners`), and the reference clauses then decide what may go — so `history_days` can
+//! finally free bytes, because the event it swept was the last thing holding them.
+//!
+//! The release is itself windowed, and that is the half the probe insisted on: the first version freed a freshly
+//! settled operation's blob with **no** `[retention]` configured, so the release now needs `history_days > 0` and
+//! an artifact older than it (0 — the default — releases nothing, and the sweep is byte-for-byte what it was).
+//! What stays open is the *other* reference: the conversation's own `payload_ref`, which no window sweeps, so a
+//! tool output's full blob survives as long as its conversation does while the model sees the capped text
+//! (D-426). Whether *that* reference should expire is D-253's policy question and remains the user's.
 
 use rusqlite::OptionalExtension;
 use serde_json::{json, Value as Json};
@@ -55,6 +59,9 @@ pub struct ArtifactsOptions {
     pub state_root: PathBuf,
     pub command: ArtifactsCommand,
     pub json_out: bool,
+    /// D-436: the user's `[retention] history_days`, which is the window a *finished* owner's hold is released
+    /// after. 0 (the default) releases nothing: the sweep then does exactly what it did before the decision.
+    pub history_days: u64,
 }
 
 /// One row of the census.
@@ -165,7 +172,7 @@ pub fn execute(options: &ArtifactsOptions) -> Result<Json, (i32, String)> {
         .collect();
     let bytes: i64 = rows.iter().map(|row| row.size).sum();
     if !listing {
-        return sweep(&db, &options.state_root, &sessions, rows, bytes);
+        return sweep(&db, &options.state_root, &sessions, rows, bytes, options.history_days);
     }
     Ok(json!({
         "session_id": if sessions.len() == 1 { Json::String(sessions[0].clone()) } else { Json::Null },
@@ -210,7 +217,28 @@ fn open(db: &Path, writable: bool) -> Result<teamagents_core::v2::Control, (i32,
 /// on-demand verb cannot use this transport: no session is live, so *it* holds that lock and owns the store,
 /// and drives the same two commands through `collect_once`. There is one algorithm here; what differs is who
 /// owns the writer, which is exactly what the lock decides.
-pub async fn sweep_through(storage: &super::storage::Storage, limit: i64) -> Result<Json, String> {
+pub async fn sweep_through(storage: &super::storage::Storage, limit: i64, days: u64) -> Result<Json, String> {
+    // D-436: an owner that has finished holds nothing — but only once the artifact is *ordinary history*, i.e.
+    // older than the `[retention] history_days` window, the same window that sweeps the events referencing it.
+    // With `history_days = 0` (the default) nothing is released and this sweep is byte-for-byte what it was
+    // before the decision.
+    if days > 0 {
+        storage
+            .call({
+                let command_id = format!("gc-release-{}", uuid::Uuid::new_v4());
+                move |control| {
+                    control.submit(
+                        teamagents_core::v2::Command {
+                            command_id,
+                            method: "artifact_release_spent_owners".into(),
+                            params: json!({"limit": limit, "days": days}),
+                        },
+                        teamagents_core::v2::Identity::System,
+                    )
+                }
+            })
+            .await??;
+    }
     let claimed = storage
         .call({
             let command_id = format!("gc-claim-{}", uuid::Uuid::new_v4());
@@ -287,13 +315,35 @@ pub async fn sweep_through(storage: &super::storage::Storage, limit: i64) -> Res
 /// §4.3's collection, exactly as a driver's boot runs it: claim (one transaction), delete the bytes (outside it),
 /// collect the row. A deletion that fails leaves the row DELETING — the next run retries, which is the design's
 /// "a failed deletion can be retried".
-fn sweep(db: &Path, state_root: &Path, sessions: &[String], rows: Vec<Row>, bytes: i64) -> Result<Json, (i32, String)> {
+fn sweep(
+    db: &Path,
+    state_root: &Path,
+    sessions: &[String],
+    rows: Vec<Row>,
+    bytes: i64,
+    days: u64,
+) -> Result<Json, (i32, String)> {
     let mut claimed_all: Vec<String> = Vec::new();
     let mut freed = 0u64;
     let mut failed: Vec<Json> = Vec::new();
     for session_id in sessions {
         let mut control = teamagents_core::v2::Control::open(db, session_id, false)
             .map_err(|error| (2, format!("artifacts gc: {}: {error}", db.display())))?;
+        // D-436: release the holds of owners that have finished, so the claim below is not blocked by a fact
+        // that is over — but only past the `[retention] history_days` window, which is the same window that
+        // sweeps the events referencing the artifact. With the default 0 this step is not sent at all.
+        if days > 0 {
+            control
+                .submit(
+                    teamagents_core::v2::Command {
+                        command_id: format!("artifacts-gc-release-{}", uuid::Uuid::new_v4()),
+                        method: "artifact_release_spent_owners".into(),
+                        params: json!({"limit": 1000, "days": days}),
+                    },
+                    teamagents_core::v2::Identity::System,
+                )
+                .map_err(|error| (1, format!("artifacts gc: the session refused the release: {error}")))?;
+        }
         let claimed = control
             .submit(
                 teamagents_core::v2::Command {

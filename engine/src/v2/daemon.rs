@@ -87,6 +87,9 @@ where
         .collect();
     mcp.sort_by(|a, b| a.name.cmp(&b.name));
     // D-429: the sibling sessions, read once at boot (the registry is a file beside the state root)
+    // D-436: the window a *finished* owner's artifact hold is released after — the user's `[retention]
+    // history_days`, the same window that sweeps the events referencing the artifact (0 = release nothing).
+    let history_days = config.supervisor.catalog.retention.history_days;
     let sessions = {
         let base = crate::v2::sessions::base_of(&state_root);
         match crate::v2::sessions::Registry::load(&base) {
@@ -142,7 +145,7 @@ where
     // is swept before any client sees it and a second daemon for this root cannot sweep twice. It drives the
     // collector *through that supervisor's own single writer* — the lock and the writer are the same handle —
     // never by opening a second `Control` beside them, which is what the lock exists to prevent. One sweep.
-    match crate::v2::artifacts::sweep_through(supervisor.storage(), 1000).await {
+    match crate::v2::artifacts::sweep_through(supervisor.storage(), 1000, history_days).await {
         Ok(report) => {
             let collected = report["collected"].as_array().map(Vec::len).unwrap_or(0);
             if collected > 0 {

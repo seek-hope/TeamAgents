@@ -17,7 +17,11 @@ EXTENDS Naturals, FiniteSets
 
 CONSTANTS Artifacts,  \* artifact slots, e.g. {"a1","a2"}
           Owners,     \* reference owners, e.g. {"r1","r2"}
-          GcIgnoresHolders  \* counterfactual: GC claims an artifact that still has references
+          Spent,      \* the artifacts whose staging owner has finished (D-436): a finished owner holds nothing
+          Aged,       \* ...and which are older than the `[retention] history_days` window: ordinary history
+          GcIgnoresHolders,  \* counterfactual: GC claims an artifact that still has references
+          ReleaseLiveOwner,  \* counterfactual: a hold is released although its owner has not finished
+          ReleaseFreshArtifact \* counterfactual: a hold is released inside the retention window
 
 ASSUME Artifacts # {} /\ Owners # {}
 
@@ -29,9 +33,10 @@ VARIABLES
   disk,     \* artifact -> whether the bytes are durably on disk
   holders,  \* artifact -> set of live reference owners (bounded on purpose)
   owner,    \* artifact -> whether a publishing owner is still protecting it
-  staged    \* artifact -> the tmp file was written but the row may not exist
+  staged,   \* artifact -> the tmp file was written but the row may not exist
+  released  \* artifact -> the holds released so far (a monitor for the release rule)
 
-vars == <<row, disk, holders, owner, staged>>
+vars == <<row, disk, holders, owner, staged, released>>
 
 \* ------------------------------------------------------------------- actions --
 \* 1) bytes first: tmp file, fsync, rename (a crash here leaves an orphan file)
@@ -40,14 +45,14 @@ WriteBytes(id) ==
   /\ staged[id] = FALSE
   /\ disk' = [disk EXCEPT ![id] = "present"]
   /\ staged' = [staged EXCEPT ![id] = TRUE]
-  /\ UNCHANGED <<row, holders, owner>>
+  /\ UNCHANGED <<row, holders, owner, released>>
 
 \* 2) then the STAGING row with its owner (crash between 1 and 2 = orphan file)
 StageRow(id) ==
   /\ staged[id] /\ row[id] = "none"
   /\ row' = [row EXCEPT ![id] = "STAGING"]
   /\ owner' = [owner EXCEPT ![id] = TRUE]
-  /\ UNCHANGED <<disk, holders, staged>>
+  /\ UNCHANGED <<disk, holders, staged, released>>
 
 \* 3) the referencing transaction: LIVE flip and the reference commit together
 PublishWithReference(id, who) ==
@@ -56,20 +61,20 @@ PublishWithReference(id, who) ==
   /\ row' = [row EXCEPT ![id] = "LIVE"]
   /\ holders' = [holders EXCEPT ![id] = @ \cup {who}]
   /\ owner' = [owner EXCEPT ![id] = FALSE]
-  /\ UNCHANGED <<disk, staged>>
+  /\ UNCHANGED <<disk, staged, released>>
 
 \* add another reference to an already live artifact (new owner attaches)
 AddReference(id, who) ==
   /\ row[id] = "LIVE" /\ disk[id] = "present"
   /\ who \in Owners \ holders[id]
   /\ holders' = [holders EXCEPT ![id] = @ \cup {who}]
-  /\ UNCHANGED <<row, disk, owner, staged>>
+  /\ UNCHANGED <<row, disk, owner, staged, released>>
 
 \* GC claim: only ownerless, unreferenced LIVE artifacts become DELETING
 GcClaim(id) ==
   /\ row[id] = "LIVE" /\ (GcIgnoresHolders \/ holders[id] = {}) /\ ~owner[id]
   /\ row' = [row EXCEPT ![id] = "DELETING"]
-  /\ UNCHANGED <<disk, holders, owner, staged>>
+  /\ UNCHANGED <<disk, holders, owner, staged, released>>
 
 \* GC delete: the file goes away, the row leaves the catalog
 GcDelete(id) ==
@@ -77,20 +82,27 @@ GcDelete(id) ==
   /\ disk' = [disk EXCEPT ![id] = "absent"]
   /\ row' = [row EXCEPT ![id] = "none"]
   /\ staged' = [staged EXCEPT ![id] = FALSE]
-  /\ UNCHANGED <<holders, owner>>
+  /\ UNCHANGED <<holders, owner, released>>
 
 \* orphan cleanup: a STAGING artifact whose publishing request died is abandoned
 Abandon(id) ==
   /\ row[id] = "STAGING"
   /\ row' = [row EXCEPT ![id] = "ABANDONED"]
   /\ owner' = [owner EXCEPT ![id] = FALSE]
-  /\ UNCHANGED <<disk, holders, staged>>
+  /\ UNCHANGED <<disk, holders, staged, released>>
 
-\* a dropped owner stops protecting an aborted publish (still not claimable
-\* while the row is STAGING: GC only claims LIVE)
+\* D-436: a dropped owner stops protecting its artifact — for an aborted publish, and (the half the product was
+\* missing) when the staging owner has **finished**: `Spent` is the product's own rule, a request that is not
+\* PENDING or an operation whose status is terminal but not OUTCOME_UNKNOWN (that one's runner may still verify).
+\* The release touches only the hold: `row`, `disk` and `holders` are unchanged, so `GcClaim` still decides what
+\* may go. Before D-436 nothing in the product ever dropped a hold, which is why the model's `~owner[id]` had no
+\* counterpart in the code (the D-253 probe measured the consequence: 3 LIVE artifacts, 0 claimable).
 DropOwner(id) ==
   /\ owner[id]
+  /\ (ReleaseLiveOwner \/ id \in Spent)
+  /\ (ReleaseFreshArtifact \/ id \in Aged)
   /\ owner' = [owner EXCEPT ![id] = FALSE]
+  /\ released' = released \cup (IF id \in Spent /\ id \in Aged THEN {} ELSE {id})
   /\ UNCHANGED <<row, disk, holders, staged>>
 
 \* ---------------------------------------------------------------------- spec --
@@ -114,6 +126,7 @@ Init ==
   /\ holders = [ id \in Artifacts |-> {} ]
   /\ owner = [ id \in Artifacts |-> FALSE ]
   /\ staged = [ id \in Artifacts |-> FALSE ]
+  /\ released = {}
 
 Spec == Init /\ [][Next]_vars
 
@@ -122,6 +135,7 @@ TypeOK ==
   /\ \A id \in Artifacts : row[id] \in States
   /\ \A id \in Artifacts : disk[id] \in Disk
   /\ \A id \in Artifacts : holders[id] \subseteq Owners
+  /\ released \subseteq Artifacts
 
 \* §4.3: a database reference never points at bytes that were not persisted
 NoReferenceToUnpersisted ==
@@ -134,6 +148,17 @@ LiveIsPersisted ==
 \* GC only ever claims artifacts nobody references and no owner protects
 GcClaimsOnlyUnreferencedLive ==
   \A id \in Artifacts : row[id] = "DELETING" => holders[id] = {}
+
+\* D-436: a hold is released only when its owner has finished **and** the artifact is past the retention window
+\* (an artifact is ordinary history in §9's words, and the window is the same one that sweeps the events
+\* referencing it). The two counterfactuals refute one half each: `ReleaseLiveOwner` releases a live owner's
+\* hold, `ReleaseFreshArtifact` releases one inside the window.
+OwnerHoldsUntilItsSubjectIsFinished == released \subseteq Spent
+NothingIsReleasedInsideTheWindow == released \subseteq Aged
+
+\* and the release is not a deletion: it changes the hold, never the row or the bytes
+ReleaseKeepsTheRowAndTheBytes ==
+  \A id \in Artifacts : id \in released => disk[id] = "present" \/ row[id] = "none"
 
 \* STAGING/ABANDONED artifacts are never deleted by the collector
 CollectorSkipsIncomplete ==

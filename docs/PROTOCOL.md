@@ -45,15 +45,15 @@ the handler re-checks who may do this rather than trusting the request.
 
 | Method | Parameters | Reply keys | Answered at |
 |---|---|---|---|
-| `previews` | — | `previews` | `engine/src/v2/daemon.rs:596` |
-| `checkpoint` | — | `snapshot`, `watermark` | `engine/src/v2/daemon.rs:602` |
-| `events` | `since` | `events`, `resync_required`, `watermark` | `engine/src/v2/daemon.rs:609` |
-| `history` | `instance_id`, `limit` | `entries`, `envelope_id`, `epoch`, `idx`, `instance_id`, `kind`, `message` | `engine/src/v2/daemon.rs:618` |
-| `surfaces` | `instance_id`, `limit` | `epoch`, `goal_id`, `instance_id`, `kind`, `offered_tools`, `request_id`, `status`, `surface_authorized`, `surfaces` | `engine/src/v2/daemon.rs:649` |
-| `tasks` | — | `assignee`, `goal_id`, `id`, `status`, `tasks` | `engine/src/v2/daemon.rs:681` |
-| `approvals` | — | `approvals`, `id`, `operation_id`, `preview`, `tool` | `engine/src/v2/daemon.rs:697` |
-| `goals` | — | `attached_instances`, `deadline`, `goals`, `id`, `known_usage`, `limits`, `status`, `summary`, `unknown_usage` | `engine/src/v2/daemon.rs:726` |
-| `grants` | — | `action`, `grants`, `id`, `issuer`, `parent_grant_id`, `resource_scope`, `revision`, `revoked`, `subject` | `engine/src/v2/daemon.rs:772` |
+| `previews` | — | `previews` | `engine/src/v2/daemon.rs:599` |
+| `checkpoint` | — | `snapshot`, `watermark` | `engine/src/v2/daemon.rs:605` |
+| `events` | `since` | `events`, `resync_required`, `watermark` | `engine/src/v2/daemon.rs:612` |
+| `history` | `instance_id`, `limit` | `entries`, `envelope_id`, `epoch`, `idx`, `instance_id`, `kind`, `message` | `engine/src/v2/daemon.rs:621` |
+| `surfaces` | `instance_id`, `limit` | `epoch`, `goal_id`, `instance_id`, `kind`, `offered_tools`, `request_id`, `status`, `surface_authorized`, `surfaces` | `engine/src/v2/daemon.rs:652` |
+| `tasks` | — | `assignee`, `goal_id`, `id`, `status`, `tasks` | `engine/src/v2/daemon.rs:684` |
+| `approvals` | — | `approvals`, `id`, `operation_id`, `preview`, `tool` | `engine/src/v2/daemon.rs:700` |
+| `goals` | — | `attached_instances`, `deadline`, `goals`, `id`, `known_usage`, `limits`, `status`, `summary`, `unknown_usage` | `engine/src/v2/daemon.rs:729` |
+| `grants` | — | `action`, `grants`, `id`, `issuer`, `parent_grant_id`, `resource_scope`, `revision`, `revoked`, `subject` | `engine/src/v2/daemon.rs:775` |
 
 ### Commands (executed by the control plane)
 
@@ -104,10 +104,11 @@ the handler re-checks who may do this rather than trusting the request.
 | `set_lifecycle` | `instance_id`, `lifecycle`, `reason` | yes | `core/src/v2/control.rs:168` |
 | `artifact_stage` | `digest`, `id`, `kind`, `owner_ref`, `owner_scope`, `size`, `storage_ref` | no | `core/src/v2/control.rs:169` |
 | `artifact_publish` | `id` | no | `core/src/v2/control.rs:170` |
-| `artifact_gc_claim` | `limit` | no | `core/src/v2/control.rs:171` |
-| `artifact_collect` | `id` | no | `core/src/v2/control.rs:172` |
-| `prune_history` | `days`, `evidence`, `now` | yes | `core/src/v2/control.rs:173` |
-| `fork_reset` | `keep_instance`, `source_root`, `target_root` | yes | `core/src/v2/control.rs:174` |
+| `artifact_release_spent_owners` | `days`, `limit` | no | `core/src/v2/control.rs:171` |
+| `artifact_gc_claim` | `limit` | no | `core/src/v2/control.rs:172` |
+| `artifact_collect` | `id` | no | `core/src/v2/control.rs:173` |
+| `prune_history` | `days`, `evidence`, `now` | yes | `core/src/v2/control.rs:174` |
+| `fork_reset` | `keep_instance`, `source_root`, `target_root` | yes | `core/src/v2/control.rs:175` |
 
 ### Every field the protocol carries in one object, and where it is built
 

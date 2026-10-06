@@ -14,8 +14,10 @@ artifacts [list|gc]` is that on-demand half. This probe runs it against a real s
 3. **the sweep with no session** — after the daemon is stopped, `gc` runs, reports what it claimed, freed and
    skipped, and leaves the catalog consistent;
 4. **what it cannot reach, with the number that says so** — every artifact a real session stages carries an
-   owner (`driver.rs`: a model response's request, a tool output's operation), nothing ever clears it, and the
-   claim asks for `owner_ref IS NULL`, so a live session's bytes are *never* collectable: this probe measures the
+   owner (`driver.rs`: a model response's request, a tool output's operation). **Since D-436 the sweep releases a
+   hold whose owner has finished**, so the census after a sweep shows no owner; what still keeps the bytes is the
+   *reference* (the event that points at the artifact), and whether that may expire with `[retention] history_days`
+   is the policy question D-253 records. Before D-436 nothing ever cleared the owner, and this probe measured the
    catalog size before and after the sweep and prints the unchanged number. `V2Artifact.tla` says the same
    structurally (a LIVE, unreferenced artifact exists there only under the counterfactual `GcIgnoresHolders`),
    which is why the probe asserts the *finding* instead of pretending the sweep collected something. Whether
@@ -29,6 +31,7 @@ output is large enough to become an artifact, and the turn after the tool result
     python3 review/dogfood/artifacts.py --state-dir /tmp/ta-artifacts
 """
 import argparse
+import sqlite3
 import atexit
 import json
 import os
@@ -88,8 +91,13 @@ class FakeChat(BaseHTTPRequestHandler):
 
 
 def config(port: int) -> str:
-    return f"""# Artifacts probe (D-253): a local chat-completions server, no credentials, no network.
+    return f"""# Artifacts probe (D-253, D-436): a local chat-completions server, no credentials, no network.
 skills_paths = []
+
+# D-436: an artifact is ordinary history, so a *finished* owner's hold is released once the artifact is older than
+# this window — the same window that sweeps the events referencing it. 0 (the default) releases nothing.
+[retention]
+history_days = 30
 
 [models.leader_main]
 provider = "openai"
@@ -159,30 +167,47 @@ def main() -> int:
     if code != 1 or "already has a coordinator" not in err or "daemon --stop" not in err:
         failures.append(f"the sweep must refuse beside a live session and name the lever: {code} {err!r}")
 
-    # with no session it runs — and this is the finding: nothing was collectable, and the bytes did not move
+    # with no session it runs. D-436's premise: the artifacts have to be *older than the window* for their
+    # finished owner's hold to be released, and a probe cannot wait 30 days — so it backdates them, which is the
+    # same "arrange the premise in the file the product reads" the sessions-prune probe does.
     stopped = subprocess.run([str(BIN), "daemon", "--stop", "--state-root", str(state_root)],
                              capture_output=True, text=True, env=env, timeout=60)
     print(f"4. daemon --stop: exit={stopped.returncode} {stopped.stdout.strip()[:60]!r}")
     before = report.get("bytes", 0)
+    connection = sqlite3.connect(str(state_root / "session.sqlite"))
+    connection.execute("UPDATE artifacts SET created = created - 40 * 86400")
+    connection.commit()
+    connection.close()
+    print("4b. backdated the artifacts 40 days (the config asks for a 30-day window)")
     code, swept, err = artifacts(state_root, env, "gc")
     print(f"5. gc with no session: exit={code} collected={swept.get('collected')} "
           f"freed={swept.get('freed_bytes')} catalog_bytes={swept.get('bytes')} (before: {before})")
     if code != 0:
         failures.append(f"the sweep must run with no session: {code} {err!r}")
-    if swept.get("collected"):
-        failures.append(f"an artifact with a live owner was collected: {swept.get('collected')}")
-    if swept.get("bytes") != before:
-        failures.append(f"the catalog changed although nothing was collectable: {before} → {swept.get('bytes')}")
-    # the finding, stated as a measurement: the bytes a real session staged are still there
-    after = [row for row in (swept.get("artifacts") or rows) if row.get("bytes_present")]
-    print(f"6. bytes still on disk after the sweep: {len(after)} of {len(rows)} "
-          f"(the policy that would release them is the user's, see the known gap)")
-    if len(after) != present:
-        failures.append(f"the sweep deleted bytes it could not claim: {present} → {len(after)}")
+    if not swept.get("collected"):
+        failures.append("a finished owner's aged artifact was not collected: the D-436 release did not happen")
+    if not swept.get("freed_bytes"):
+        failures.append(f"nothing was freed although an artifact was collected: {swept}")
+    # D-436: the sweep released the finished owners' holds and took what nothing referenced any more. What stays
+    # is what a *reference* still points at — and whether such a reference may expire with `[retention]
+    # history_days` is the rest of D-253's policy question, not this decision's.
+    code, listed, err = artifacts(state_root, env, "list")
+    roles = [row.get("owner_ref") for row in (listed.get("artifacts") or [])]
+    print(f"6. owners after the sweep: {roles} (the finished owners' holds are released, D-436)")
+    if code != 0:
+        failures.append(f"the census after the sweep must work: {code} {err!r}")
+    if any(role is not None for role in roles):
+        failures.append(f"a finished owner still holds its artifact after the sweep: {roles}")
+    left = [row for row in (listed.get("artifacts") or []) if row.get("bytes_present")]
+    taken = len(rows) - len(listed.get("artifacts") or [])
+    print(f"7. after the sweep: {taken} of {len(rows)} artifacts collected, {len(left)} still on disk "
+          f"(released holds + the references that keep the rest is the D-436 rule)")
+    if taken != len(swept.get("collected") or []):
+        failures.append(f"the census does not agree with the sweep: {taken} vs {swept.get('collected')}")
 
     leak_guard.stop_daemons(state_root)
     left = (len(leak_guard.daemon_pids(root)), len(leak_guard.runner_pids(root)))
-    print(f"7. cleaned up: daemons/runners left = {left}")
+    print(f"8. cleaned up: daemons/runners left = {left}")
     if left != (0, 0):
         failures.append(f"the probe left processes behind: {left}")
     for failure in failures:

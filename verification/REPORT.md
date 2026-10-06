@@ -5,6 +5,19 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
+## 0. Gate status (re-run 2026-10-06 at `MATERIAL-COMMIT`)
+
+* **D-436 released the owner's hold on an artifact, and re-ran the targets on this tree (2026-10-06).**
+  `verification/tla/V2Artifact.tla` gained the rule its `DropOwner` step was missing: a hold may be released
+  only when its owner has finished (`OwnerHoldsUntilItsSubjectIsFinished`, with the counterfactual
+  `MC_artifact_release_live_owner.cfg`), and releasing it changes the hold and nothing else
+  (`ReleaseKeepsTheRowAndTheBytes`). This is the half the product was missing — both staging sites wrote an
+  `owner_ref` and nothing ever cleared it, so `artifact_gc_claim`'s `owner_ref IS NULL` was never satisfiable for
+  a real session's artifacts and `[retention] history_days` swept their references without freeing a byte.
+  `make verify-model-all`: all **38** configurations `No error has been found` (rc 0). `make
+  verify-model-counterexamples`: all **111** negative controls refuted (rc 0). `make verify-kani` reports
+  `Complete - 3 successfully verified harnesses, 0 failures, 3 total` (rc 0).
+
 ## 0. Gate status (re-run 2026-10-06 at `6e50ef26`)
 
 * **D-435 made `[retention] archived_days` real, and re-ran the targets on this tree (2026-10-06).**

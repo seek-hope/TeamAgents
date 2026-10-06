@@ -2013,7 +2013,22 @@ fn run_artifacts(args: &Args) -> i32 {
             return 2;
         }
     };
-    teamagents_engine::v2::artifacts::run(ArtifactsOptions { state_root, command, json_out: args.exec_json })
+    // D-436: the release window comes from the user's config, and a config this build cannot read is reported
+    // rather than treated as "no window" (the same rule `sessions prune` follows).
+    let workspace = args.cwd.clone().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+    let history_days = match teamagents_engine::config::load_user_config_for(&workspace) {
+        Ok((catalog, _)) => catalog.retention.history_days,
+        Err(error) => {
+            eprintln!("artifacts: reading your config failed: {error}");
+            return 2;
+        }
+    };
+    teamagents_engine::v2::artifacts::run(ArtifactsOptions {
+        state_root,
+        command,
+        json_out: args.exec_json,
+        history_days,
+    })
 }
 
 /// Say it out loud when `--full-auto` could not apply: the mode belongs to the

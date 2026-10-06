@@ -168,6 +168,7 @@ fn dispatch(
         "set_lifecycle" => set_lifecycle(tx, session_id, params, identity),
         "artifact_stage" => artifact_stage(tx, session_id, params),
         "artifact_publish" => artifact_publish(tx, session_id, params),
+        "artifact_release_spent_owners" => artifact_release_spent_owners(tx, session_id, params),
         "artifact_gc_claim" => artifact_gc_claim(tx, session_id, params),
         "artifact_collect" => artifact_collect(tx, session_id, params),
         "prune_history" => prune_history(tx, session_id, params),
@@ -4178,6 +4179,74 @@ fn artifact_gc_claim(tx: &Connection, session_id: &str, params: &Json) -> Result
     Ok(json!({"claimed": candidates}))
 }
 
+/// Release an owner's hold once its subject is spent (D-436).
+///
+/// Both places that stage an artifact write an `owner_ref` — `driver.rs` writes a model response's request and a
+/// tool output's operation — and nothing ever cleared it, while `artifact_gc_claim` asks for `owner_ref IS NULL`.
+/// So a real session's artifacts were never claimable, however old, and `[retention] history_days` pruned the
+/// events that referenced them without freeing a byte (measured: a scripted session's 300 KB tool output left
+/// three LIVE artifacts, 0 claimable). This is the missing half: an owner that has *finished* does not hold
+/// anything, and that is a defect rather than a policy — what remains of the question (may the conversation's own
+/// reference expire, so the full-output blob goes while its capped text stays) is still the user's to answer.
+///
+/// The rule is narrow, and each half fails closed:
+///
+/// * an artifact is released only when it is older than the window the caller passes (`days`, the user's
+///   `[retention] history_days`): an artifact is *ordinary history* in §9's words, and this is the same window
+///   that sweeps the events referencing it. `days = 0` is **refused**, exactly as `prune_history` refuses it — a
+///   sweep with retention switched off must not take anything, and the default keeps every byte where it is;
+/// * `owner_scope = 'request'`: released only when the request row exists and is **not** `PENDING`;
+/// * `owner_scope = 'operation'`: released only when the operation reached a terminal status — and
+///   `OUTCOME_UNKNOWN` is deliberately **not** terminal here, because §6.3 keeps that operation's runner alive
+///   for verification, which is a live need for its artifact;
+/// * any other scope (`session`, a job, anything a future build adds) is left alone: an owner this build does not
+///   understand is an owner it does not release.
+///
+/// Releasing changes only the *owner* hold. The reference clauses of `artifact_gc_claim` still decide
+/// releasability, so an artifact the conversation or a live fact points at stays exactly where it was; what
+/// becomes possible is the ordinary-history case, where the events that referenced it are already swept.
+fn artifact_release_spent_owners(tx: &Connection, session_id: &str, params: &Json) -> Result<Json, String> {
+    let limit = params["limit"].as_i64().unwrap_or(1000);
+    let days = params["days"].as_i64().unwrap_or(0);
+    if days <= 0 {
+        return Err(
+            "a release needs a positive window: artifacts are ordinary history, and [retention] history_days = 0              keeps every one of them"
+                .into(),
+        );
+    }
+    let horizon = crate::models::now() - (days as f64) * 86_400.0;
+    let candidates: Vec<String> = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT id FROM artifacts
+                 WHERE session_id = ?1 AND completeness = 'LIVE' AND owner_ref IS NOT NULL
+                   AND created < ?3
+                   AND (
+                     (owner_scope = 'request'
+                      AND EXISTS (SELECT 1 FROM model_requests r
+                                   WHERE r.request_id = artifacts.owner_ref AND r.status <> 'PENDING'))
+                     OR
+                     (owner_scope = 'operation'
+                      AND EXISTS (SELECT 1 FROM operations o
+                                   WHERE o.operation_id = artifacts.owner_ref
+                                     AND o.status IN ('SUCCEEDED', 'FAILED', 'CANCELLED', 'CANCELLED_BEFORE_START')))
+                   )
+                 LIMIT ?2",
+            )
+            .map_err(|e| format!("release prepare: {e}"))?;
+        let rows = stmt
+            .query_map(rusqlite::params![session_id, limit, horizon], |row| row.get(0))
+            .map_err(|e| format!("release query: {e}"))?;
+        rows.collect::<Result<Vec<String>, _>>().map_err(|e| format!("release collect: {e}"))?
+    };
+    for id in &candidates {
+        tx.execute("UPDATE artifacts SET owner_ref = NULL WHERE id = ?1 AND owner_ref IS NOT NULL", [id])
+            .map_err(|e| format!("release {id}: {e}"))?;
+    }
+    event(tx, session_id, "artifact_owners_released", "", &json!({"released": candidates.len()}))?;
+    Ok(json!({"released": candidates}))
+}
+
 /// GC delete (§4.3, `V2Artifact::GcDelete`): the caller has deleted a claimed (DELETING) artifact's bytes
 /// *outside* any transaction — a file operation may not run inside one (§4.1) — and this removes the row so the
 /// catalog and the disk agree again. The claim's reference clauses are re-checked here rather than trusted: a
@@ -4902,6 +4971,88 @@ mod tests {
             .expect("complete op1");
         assert_eq!(last["decision_open"], json!(false));
         assert_eq!(phase_of(&ctl, "i1"), "READY");
+        cleanup(&path);
+    }
+
+    /// D-436: an owner that has *finished* holds nothing. Before this, both staging sites wrote `owner_ref` and
+    /// nothing ever cleared it, so a real session's artifacts could never be claimed — measured on the D-253
+    /// probe's shape, a 300 KB tool output left three LIVE artifacts and 0 claimable, and `history_days` swept
+    /// the events that referenced them without freeing a byte.
+    #[test]
+    fn an_owner_that_has_finished_releases_its_artifact_and_an_open_one_does_not() {
+        let (mut ctl, path) = control("release-owners");
+        let stage = |ctl: &mut Control, id: &str, scope: &str, owner: &str| {
+            let params = json!({"id": id, "digest": format!("sha256:{id}"), "storage_ref": format!("file:///tmp/{id}"),
+                                "owner_scope": scope, "owner_ref": owner});
+            ctl.submit(cmd(&format!("st-{id}"), "artifact_stage", params), Identity::System).expect("stage");
+            ctl.submit(cmd(&format!("pub-{id}"), "artifact_publish", json!({"id": id})), Identity::System)
+                .expect("publish");
+        };
+        // two operations (one terminal, one whose outcome is unknown) and two requests (one open, one finished),
+        // plus an owner this build does not understand
+        ctl.connection()
+            .execute_batch(
+                "INSERT INTO operations (operation_id, decision_id, tool_index, epoch, args_hash, status)
+                   VALUES ('op-done', 'd-1', 0, 0, 'h', 'SUCCEEDED'), ('op-unknown', 'd-1', 1, 0, 'h', 'OUTCOME_UNKNOWN');
+                 INSERT INTO model_requests (request_id, instance_id, epoch, request_ref, status)
+                   VALUES ('r-open', 'i1', 0, 'x', 'PENDING'), ('r-done', 'i1', 0, 'x', 'COMPLETE');",
+            )
+            .expect("owner rows");
+        stage(&mut ctl, "art-op-done", "operation", "op-done");
+        stage(&mut ctl, "art-op-unknown", "operation", "op-unknown");
+        stage(&mut ctl, "art-req-open", "request", "r-open");
+        stage(&mut ctl, "art-req-done", "request", "r-done");
+        stage(&mut ctl, "art-session", "session", "job:j1");
+
+        let released = |ctl: &mut Control, command: &str, days: i64| -> Vec<String> {
+            let report = ctl
+                .submit(
+                    cmd(command, "artifact_release_spent_owners", json!({"limit": 100, "days": days})),
+                    Identity::System,
+                )
+                .expect("release");
+            serde_json::from_value(report["released"].clone()).expect("released list")
+        };
+        // D-436: the window is required, exactly as `prune_history` requires it — a sweep with retention switched
+        // off must not take anything, and the default (0) leaves every byte where it is
+        let refused = ctl
+            .submit(cmd("rel-nodays", "artifact_release_spent_owners", json!({"days": 0})), Identity::System)
+            .unwrap_err();
+        assert!(refused.contains("positive window") && refused.contains("history_days"), "{refused}");
+        // and an artifact inside the window stays held even though its owner has finished: the age is what makes
+        // it ordinary history, and the probe is what caught the first version of this rule releasing it at once
+        assert_eq!(released(&mut ctl, "rel-fresh", 30), Vec::<String>::new(), "fresh artifacts stay held");
+        // age the artifacts past the window the caller asks for (a real session's artifacts reach this by being
+        // old; the test moves the clock instead of waiting 30 days)
+        ctl.connection()
+            .execute("UPDATE artifacts SET created = created - 40 * 86400 WHERE id LIKE 'art-%'", [])
+            .expect("age them");
+        let mut first = released(&mut ctl, "rel-1", 30);
+        first.sort();
+        // the finished operation's and the finished request's artifacts; NOT the unknown outcome (its runner may
+        // still verify), not the open request, and not a scope this build does not understand
+        assert_eq!(first, vec!["art-op-done".to_string(), "art-req-done".to_string()]);
+        // the release does not decide releasability by itself: an artifact the conversation still points at stays
+        ctl.connection()
+            .execute(
+                "INSERT INTO context_entries (instance_id, epoch, idx, id, kind, message_json, payload_ref, created)
+                   VALUES ('i1', 0, 1, 'e-1', 'tool_result', '{}', 'art-op-done', 0.0)",
+                [],
+            )
+            .expect("reference it");
+        let claimed =
+            ctl.submit(cmd("gc-1", "artifact_gc_claim", json!({"limit": 10})), Identity::System).expect("claim");
+        // the released-and-unreferenced one is claimable, the referenced one is not: the release changes the
+        // *owner* hold only, the reference clauses still decide
+        assert_eq!(claimed["claimed"], json!(["art-req-done"]), "a referenced artifact is not claimable");
+        // …and once nothing references it, the ordinary claim takes it — which is the point: `history_days` can
+        // now free bytes, because the reference it swept was the only thing left holding them
+        ctl.connection().execute("DELETE FROM context_entries WHERE payload_ref = 'art-op-done'", []).unwrap();
+        let claimed =
+            ctl.submit(cmd("gc-2", "artifact_gc_claim", json!({"limit": 10})), Identity::System).expect("claim");
+        assert_eq!(claimed["claimed"], json!(["art-op-done"]));
+        // a second release finds nothing new: the hold is already gone
+        assert_eq!(released(&mut ctl, "rel-2", 30), Vec::<String>::new());
         cleanup(&path);
     }
 

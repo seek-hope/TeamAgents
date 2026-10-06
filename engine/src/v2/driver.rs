@@ -1458,7 +1458,8 @@ that delegated it learns the outcome only from a settlement.";
         // through this driver's storage worker (the session's own single writer); the daemon's start calls the
         // same function through its supervisor, and the on-demand verb drives the same two commands from the
         // process that holds the coordinator lock when no session is live.
-        let report = crate::v2::artifacts::sweep_through(&self.storage, 100).await?;
+        let days = self.config.catalog.retention.history_days;
+        let report = crate::v2::artifacts::sweep_through(&self.storage, 100, days).await?;
         for failure in report["failed"].as_array().into_iter().flatten() {
             eprintln!(
                 "driver: could not delete artifact {} at {}: {}",

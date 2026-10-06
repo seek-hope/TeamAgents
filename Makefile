@@ -250,6 +250,8 @@ verify-model-counterexamples: verify-tools
 		MC_prune_dating.cfg:V2Prune.tla \
 		MC_prune_live.cfg:V2Prune.tla \
 		MC_prune_evidence.cfg:V2Prune.tla \
+		MC_artifact_release_live_owner.cfg:V2Artifact.tla \
+		MC_artifact_release_fresh.cfg:V2Artifact.tla \
 		MC_prompt_members_use_their_profile.cfg:V2Prompt.tla \
 		MC_prompt_rules_frozen_at_start.cfg:V2Prompt.tla \
 		MC_prompt_ignore_unreadable.cfg:V2Prompt.tla \

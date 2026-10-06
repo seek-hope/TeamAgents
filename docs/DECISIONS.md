@@ -20,6 +20,61 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-436 A finished owner stops holding its artifact (2026-10-06)
+
+**The defect D-253 measured, and the half of it that was a bug rather than a policy.** Both places that stage an
+artifact write an `owner_ref` — a model response's request (`driver.rs`) and a tool output's operation — and
+**nothing ever cleared it**, while `artifact_gc_claim` asks for `owner_ref IS NULL`. So a real session's artifacts
+were never claimable however old they were, and `[retention] history_days` swept the events that referenced them
+without freeing a byte (the probe's own numbers: a 300 KB tool output left three LIVE artifacts, 0 claimable).
+An owner that has *finished* holding on to bytes is not a policy question; it is a hold nobody released.
+`V2Artifact.tla` said the same thing structurally: its `~owner[id]` had no counterpart in the code, and its
+"LIVE and unreferenced" state existed only under the `GcIgnoresHolders` counterfactual.
+
+**The rule, narrow and fail-closed.** A new control command, `artifact_release_spent_owners`, runs in both sweep
+paths (`artifacts::sweep_through` for a boot, `artifacts::sweep` for `teamagents artifacts gc`) immediately before
+the claim:
+
+* `owner_scope = 'request'`: released only when the request row exists and its status is **not** `PENDING`;
+* `owner_scope = 'operation'`: released only when the operation reached a terminal status — `SUCCEEDED`, `FAILED`,
+  `CANCELLED`, `CANCELLED_BEFORE_START` — and **`OUTCOME_UNKNOWN` is deliberately not terminal here**, because §6.3
+  keeps that operation's runner alive for verification, which is a live need for its artifact;
+* every other scope (`session`, a job, anything a future build adds) is left alone: an owner this build does not
+  understand is an owner it does not release;
+
+and the release changes the *hold* only. The reference clauses of `artifact_gc_claim` still decide what may go, so
+an artifact the conversation or a live fact points at stays exactly where it was — what becomes possible is the
+ordinary-history case, where the events that referenced an artifact are already swept. The test asserts both
+halves, because that distinction is the whole design: a released artifact that a context entry still points at is
+**not** claimable, and the same artifact becomes claimable once that reference goes.
+
+**The probe caught the first version deleting data eagerly, and the fix is the window.** The release as first
+written had no age condition: the moment an operation settled, its artifact became collectable. The artifacts
+probe — unchanged otherwise — showed exactly that on a real session: a freshly settled tool output's 300 KB blob
+was freed with **no `[retention]` configured at all**, which is data gone earlier than any window the user had
+chosen. So the release is now gated on the same window the *events* referencing an artifact are swept under,
+`[retention] history_days`: an artifact is ordinary history in §9's words, and `history_days = 0` (the default)
+releases nothing at all — the sweep is then byte-for-byte what it was before this decision. The formal material
+grew the matching half: `NothingIsReleasedInsideTheWindow` with `MC_artifact_release_fresh.cfg`, and the configs
+needed a subject per guard (`a1` spent *and* aged, `a2` aged but live, `a3` spent but fresh) after the first
+draft's fresh-artifact control **verified instead of refuting** — the owner guard fired first, because every
+artifact outside the window was outside `Spent` too. That masking pattern has now appeared three times in two
+days (D-434's stale grant, D-435's served-and-marked session, and here); it is the single most common way a
+negative control in this repository's models goes quiet, and the fix is always the same: one subject per rule.
+
+**What stays open, and why it is a different question.** The conversation's own reference is not swept by
+`history_days`, so a tool output's *full* blob (the artifact) survives as long as the conversation does, while the
+model sees its capped text (D-426). Whether that reference should expire — "the full output is ordinary history,
+the capped text stays" — is D-253's policy question and remains the user's: this decision releases nobody's live
+hold, and changes no default.
+
+**Evidence.** `control::tests::an_owner_that_has_finished_releases_its_artifact_and_an_open_one_does_not` (the
+finished operation and request are released; the unknown outcome, the open request and the unknown scope are not;
+a referenced released artifact is not claimable and the same artifact is claimable once unreferenced; a second
+release finds nothing), the formal material above, and the probe whose measurement opened the gap —
+`python3 review/dogfood/artifacts.py` — which now shows the release in the same run that used to show "0
+claimable" (its shape is recorded there).
+
 ## D-435 `[retention] archived_days` is applied: `sessions prune` (2026-10-06)
 
 **The gap this closes has been in the record since D-245.** `[retention] archived_days` was accepted and never
