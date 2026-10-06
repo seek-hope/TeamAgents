@@ -4,6 +4,15 @@ The project keeps three Rust crates: `core`, `engine` and `tui`. The product con
 [design baseline](DESIGN.md), confirmed decisions in [DECISIONS](DECISIONS.md) and the real-service
 acceptance boundary in [ACCEPTANCE](ACCEPTANCE.md).
 
+The code's generated references are four documents, each checked against the code it describes: the event log
+([EVENTS.md](EVENTS.md)), the daemon's wire protocol ([PROTOCOL.md](PROTOCOL.md)), the tool schemas
+([TOOLS.md](TOOLS.md)) and the configuration surface ([CONFIG.md](CONFIG.md)).
+
+<!-- maps: docs/CONFIG.md reader=user -->
+<!-- maps: docs/EVENTS.md reader=developer -->
+<!-- maps: docs/PROTOCOL.md reader=developer -->
+<!-- maps: docs/TOOLS.md reader=developer -->
+
 ## Environment and the single entry point
 
 Work from the repository root. `rust-toolchain.toml` pins the Rust version, Clippy and rustfmt; the local
@@ -34,7 +43,9 @@ targets with warnings as errors, the three crates' tests and repository hygiene.
 audits — each one a claim the tree makes about itself, each with the decision that built it, and
 `review/hygiene_catalogue.py` fails when a script the build runs is missing from this list (D-184):
 
-* **the documents**: `review/decisions_log.py` keeps `docs/DECISIONS.md`'s shape — one heading per entry,
+* **the documents**: `review/doc_inventory.py` keeps the map — every tracked document outside the two language
+  exceptions declares its reader (user / developer / agent / evidence) and exactly one home, that home links it
+  and an entry point reaches it (D-443); `review/decisions_log.py` keeps `docs/DECISIONS.md`'s shape — one heading per entry,
   newest-first, each with a body (D-107); `review/decision_queue.py` keeps the user's decision queue
   complete — an entry that asks for the user's word must appear in `docs/ACCEPTANCE.md`'s known gaps or
   `docs/PRODUCT-COMPARISON.md` §2, or name the later decision that closed it (D-195); `review/citations.py` resolves every backticked citation in tracked
@@ -53,7 +64,8 @@ audits — each one a claim the tree makes about itself, each with the decision 
 * **what the code does with what it is given**: `review/flag_fields.py` fails a flag parsed into an `Args`
   field no code reads (the `--engine` shape, D-180/D-181); `review/command_params.py` fails a command payload
   field the command layer never reads (D-124); `review/dead_code.py` lists the public items the product's own
-  code never calls (D-78/D-86, in hygiene since D-130); `review/env_knobs.py` keeps the `TEAMAGENTS_*` table
+  code never calls, and refuses an exemption that names no authority or that is doing no work (D-78/D-86/D-443,
+  in hygiene since D-130); `review/env_knobs.py` keeps the `TEAMAGENTS_*` table
   below equal to the code's reads; `review/project_config_claim.py` checks the one fact every document states —
   the project config is read, under the user's opt-in (D-133, wired by D-244), and `review/release_artifact.py` does the same for the second one —
   the published release is not this product (D-203: the fact is computed from the tags, whose trees all predate

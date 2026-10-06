@@ -19,6 +19,8 @@ note (D-202): §0 pins the commit the gates were last run at, and the rule that 
 material — so a change to `tla/` or `kani/` lands one commit before the pin that documents its re-run, which is the
 shape D-206 was committed in.
 
+<!-- maps: verification/REPORT.md reader=evidence -->
+
 ## Running
 
 ```bash

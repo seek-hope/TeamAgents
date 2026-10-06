@@ -9,6 +9,10 @@ __pycache__/
 *.sqlite-wal
 *.sqlite-shm
 # Local probes and scratch artifacts, TLC state directories and runtime state roots
+# `/pi/` is the my-pi goal harness's own state (its STATUS.md and state.jsonl): agent state, not repository
+# content, and `citations.py`/`decision_citations.py` read *untracked* files (D-443 — the goal's own check
+# commands were being counted as the tree's `make` citations before this line existed).
+/.pi/
 # The SWE-bench harness writes its per-instance logs to `logs/run_evaluation/...` relative to cwd; the
 # adapter now points that cwd at the run's own output directory, and this keeps a stray run out of the tree.
 /logs/

@@ -378,6 +378,7 @@ hygiene: language-check
 	python3 review/tool_catalogue.py
 	python3 review/config_reference.py
 	python3 review/dead_code.py
+	python3 review/doc_inventory.py
 	python3 review/eval_manifests.py
 	python3 review/eval_surface.py
 	python3 review/eval/r2-p6/anatomy.py --self-check

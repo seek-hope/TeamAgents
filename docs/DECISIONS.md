@@ -20,6 +20,87 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-443 The documentation map, and the dead-code allowlists that must justify themselves (2026-10-06)
+
+**Why.** This entry comes out of the tidy-up goal ("keep only the documentation a user and a developer need to
+understand the project, and clean dead code"). The documents were already held to a web of audits — citations,
+the decision log's shape, the requirement trace, the four generated references — but nothing said which document
+is for a *user*, which for a *developer* and which is the evidence trail, nor which document introduces each of
+the others. A document mapped by nobody is a document nobody reads, and two homes for one fact drift. The
+dead-code audit had the same shape of gap from the other side: it listed what the product never calls, but
+nothing checked the notes that excuse the survivors.
+
+**The documentation map (`review/doc_inventory.py`, in `make hygiene`).** Every tracked markdown file outside
+the two documented language exceptions — `README.zh-CN.md`, which `review/readme_zh.py` holds to `README.md`, and
+the frozen `review/eval/` material — must be listed exactly once by a `<!-- maps: PATH reader=ROLE -->` line,
+where the role is `user`, `developer`, `agent` or `evidence`; the map that lists it must link it with a relative
+Markdown link; and an entry point must reach it through relative links. Each refusal has its own control in
+`--self-check` (an orphan, an unlisted document, a document listed by two maps, a listing whose map does not link
+it, a bad role, and a listing for a path that is not a document). The five entry points (`README.md`,
+`AGENTS.md`, `docs/DEVELOPMENT.md`, `verification/README.md`, `review/README.md`) need no listing, and one
+exemption is stated with its reason rather than left implicit: `.github/release-notes.md`, the release workflow's
+`--notes-file` body, is a build input and not a document for a reader.
+
+**Measured.** Twenty-four documents are tracked outside the exceptions — 23,943 lines before the map lines and
+23,978 after, with no file deleted — listed by four maps: seven in `README.md`, four in `docs/DEVELOPMENT.md`
+(the generated references), one in `verification/README.md` and six in `review/README.md`. Readers: four `user`,
+four `developer`, ten `evidence`. Zero findings.
+
+**What was removed, and what was kept with a reason.** The measured outcome for deletions is a null, and that is
+the result rather than a shortcut: the only file reachable from nothing is the release workflow's body file
+(exempt above); the three dated notes (`review/dsec-kernel-reference-2026-09-24.md`,
+`review/pi-durable-reference-2026-10-02.md`, `review/fix-notes-verification-2026-09-24.md`) are each cited by
+this log and the last also by `verification/REPORT.md`, and ACCEPTANCE Q19 keeps review evidence, so deleting
+them would break live citations to satisfy nothing; and no document's content was found fully contained in
+another's section. Two documents the review index had never listed (`review/benchmark/README.md` and
+`review/benchmark/CAPABILITY.md`) joined the map, and `docs/DEVELOPMENT.md` now links the four generated
+references it names.
+
+**Dead code: the allowlists now justify themselves.** `review/dead_code.py` gained three rules: an ordinary `//`
+comment is prose exactly as a `///` doc comment is, so it is not a call — the blind spot that kept
+`driver::cancel_turn` looking called because one comment in the supervisor mentions it (excluding the whole
+comment family surfaced no other finding in the tree, measured); every allowlist reason must name its authority,
+a binding `D-<n>` or the literal `mechanical:`; and an exemption doing no work is itself a finding. That last
+rule found the entry it was written for: `merge_branch` was excused as "an open item only a test drives", and
+D-252 had since wired the merge surface (`engine/src/v2/intervene.rs` calls it), so the entry was removed. The
+audit now reads 540 public items, zero uncalled, fourteen known and allowed, each with an authority.
+
+**The produced-but-unread events, and the write-less `payload_ref`.** Fifteen event kinds have no reader in this
+tree: `artifact_abandoned`, `artifact_collected`, `artifact_owners_released`, `artifacts_gc_claimed`,
+`goal_cancelled`, `goal_checks_required`, `goal_created`, `history_pruned`, `inbox_drained`,
+`instance_interrupted`, `instance_terminated`, `operation_cancel_requested`, `operation_cancelled`,
+`operation_unauthorized` and `request_cancelled`. They are not dead: each is emitted by production code at a
+state transition the durable record must carry (a staging artifact's abandonment, a GC claim and its collection,
+D-436's hold release, a goal's creation and cancellation, the check requirement, a retention sweep, an inbox
+drain, an interrupt, a termination, the request and effect halves of a command cancel, and a refused operation),
+and `review/event_catalogue.py` holds the emitted set and `docs/EVENTS.md` in step (D-125). Their reader is the
+session database itself — the user, a diagnosis, or a consumer outside this tree — so dropping one would remove a
+transition from the log, which is a design change and not a tidy-up. The `context_entries.payload_ref` path has
+the opposite shape: readers (artifact collection and the history sweep consult it) and **no production writer** —
+the only INSERT that sets it is a test in `core/src/v2/control.rs`, which is what D-438 measured when it declined
+to wire the retrieval half. It stays, with that reason recorded here: wiring it would hold artifact bytes past
+the window for a pointer nothing follows.
+
+**A harness finding, recorded because it bit this goal.** `review/citations.py` reads *untracked* files (`git
+ls-files --cached --others --exclude-standard`), and the durable-goal harness keeps its state under `.pi/`
+inside the repository. That state carries this goal's own check list, so the audit's `make` count jumped from 756
+to 766 and its `§` count from 1086 to 1087 with nothing in the tree changed. `.gitignore` now carries `/.pi/`
+beside `/review/tmp/`: agent state is not repository content, and an audit that reads scratch is an audit whose
+numbers depend on who ran last.
+
+**No formal material changed.** Every TLA+ module and configuration under the verification directory is
+untouched, so the verification report keeps the re-run pin it already carries, and the three formal targets were
+re-run only as a non-regression check: 39 positive configurations verified, 113 negative controls refuted and 3
+Kani harnesses proved.
+
+**Ceilings.** The map checks shape, never judgement: it can say a document declares a reader and one home, not
+that the reader is right or that the document is worth its lines; it reads Markdown links only, so a route found
+through the GitHub UI is invisible to it; and its declarations are HTML comments, invisible in the rendered page.
+Two things this goal deliberately did not do, left as open items rather than decided here: shrinking
+`docs/DECISIONS.md` by archiving superseded entries would require teaching `review/decision_citations.py` an
+archive index and de-recording the citations that point into it, and wiring `payload_ref` is the D-438 question
+above.
+
 ## D-442 The TUI's instances panel marks a member that cannot run commands (2026-10-06)
 
 **Why, straight out of D-441.** `teamagents authority` states the capability gap, but a TUI user does not run that

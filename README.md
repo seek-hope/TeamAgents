@@ -28,6 +28,16 @@ and reports back; you watch progress and approve anything that leaves the sandbo
 | [Install guide](docs/INSTALL.md) | Download, install and upgrade |
 | [Formal verification](verification/README.md) | TLA+ specs and Kani proofs: properties ↔ code ↔ acceptance items, unproven list |
 
+<!-- The reading map (D-443): every tracked document declares its reader and exactly one home, the map below
+     points at it, and review/doc_inventory.py checks the three directions. The entry points need no line. -->
+<!-- maps: docs/ACCEPTANCE.md reader=evidence -->
+<!-- maps: docs/CAPABILITIES.md reader=evidence -->
+<!-- maps: docs/DECISIONS.md reader=evidence -->
+<!-- maps: docs/DESIGN.md reader=developer -->
+<!-- maps: docs/INSTALL.md reader=user -->
+<!-- maps: docs/PRODUCT-COMPARISON.md reader=user -->
+<!-- maps: docs/USER-GUIDE.md reader=user -->
+
 > **First time here:** [download and install](docs/INSTALL.md) · [latest release](https://github.com/seek-hope/TeamAgents/releases/latest)
 
 ## How it works
