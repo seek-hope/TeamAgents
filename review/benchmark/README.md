@@ -358,7 +358,16 @@ other benchmarks hardly touch (MCP bindings and their tool plumbing) rather than
 Cost, measured before starting: the repository is public and ships its data, `pip install -e .` is the setup, and
 the work is the bridge (~150 lines) plus the agent class (~80). It needs an LLM for the user simulator (the same
 DeepSeek endpoint) and no browser or GPU. **Measured (D-420): 34 of 40 retail tasks (85 %) and 10 of 10 airline tasks**, one attempt each, the first N of
-each split in the dataset's own order, with the receipts checked by `harness_health.py --tau3`. An earlier version
+each split in the dataset's own order, with the receipts checked by `harness_health.py --tau3`.
+
+**Measured again on the full splits (D-431, 2026-10-06): 96 of 114 retail dialogues (84.2 %) and 41 of 50 airline
+dialogues (82.0 %)** — the complete retail and airline splits, one attempt each, on the same endpoint. The first-40
+sample had been slightly optimistic and the first-10 airline sample much more so, which is what a full split is
+for; the retail number was reproduced at 98/114 in a second run the same day, and that second run's treatment was
+one that provably could not change the outcome, so the difference (84.2 % vs 86.0 %) is this benchmark's noise at
+n = 114 rather than an effect. The full-split airline run also showed what D-431 fixed: **18 of its 50 dialogues
+(36 %) settled a goal with the model writing no prose at all**, and every one of them now reports the summary the
+model recorded with its own `finish` call (`reply_source: summary`, 32 of 50 reporting the model's text). An earlier version
 of this line said "8 of 10": that was the corrected harness on a smaller sample. **The first-ever run of this
 pipeline said 0 of 10 and was a harness artefact** — see below. The first run reported 0/10 and this file said so
 with a failure story attached; both were wrong, and the correction is the interesting part: τ³-bench's

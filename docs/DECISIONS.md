@@ -35,13 +35,20 @@ quiet when it fails (a dialogue's evidence matters more than its cleanup). The l
 
 **The guard was tested, because an untested guard is not one.** Started on a scratch root, the daemon process was
 alive before `daemon --stop --state-root …` and gone after; a three-dialogue run under an isolated `TMPDIR` left
-**one** daemon instead of three. The two that stayed were the ones whose … and here the third case matters: the
-first dialogue's work directory had been **removed under its daemon** by something in the tau3 stack, so its socket
-was already gone, `daemon --stop` correctly reported that nothing was listening, and the process kept sleeping with
-its deleted files open. That is recorded, not fixed: a watchdog that shuts a daemon down when its state root
-vanishes is a design question of its own, and the observation is what a future reader needs in order not to
-diagnose it as a product defect. What *was* checked is that a stop never destroys state: after a verified stop the
-state root still holds `session.sqlite` and its WAL (only the socket is removed, as `daemon_stop`'s own doc says).
+**0 daemons and 0 bridges** and all three work directories intact. What *was* checked in the same round is that a
+stop never destroys state: after a verified stop the state root still holds `session.sqlite` and its WAL (only the
+socket is removed, as `daemon_stop`'s own doc says) — the checks only ever asked whether state survived because the
+first draft of this entry claimed the opposite shape, see below.
+
+**A finding I attributed wrongly, and the check that caught it.** An intermediate run left one daemon behind, whose
+state root had vanished under it: its socket was gone, so `daemon --stop` correctly said nothing was listening, and
+the process slept with its deleted files open. The first version of this entry wrote that up as "something in the
+tau3 stack removes a dialogue's work directory" — a plausible cause that I had not verified. It was my own
+housekeeping: an earlier *failed* invocation of the same verification run had left its daemon alive, and my
+`rm -rf` of that run's `TMPDIR` deleted the directory out from under it. The clean re-run above (no `rm` during the
+run) leaves nothing behind at all. The observation itself stands and is recorded because a reader who reproduces it
+will otherwise diagnose it as a product defect: a daemon whose state root is deleted keeps sleeping. A watchdog for
+that is a design question of its own, not part of this fix.
 
 **Housekeeping.** The 348 leftovers were stopped with SIGTERM — the daemon's own documented stop, and prompt (six
 seconds for 253 of them) — leaving the two daemons this machine's user runs, and the one dialogue that was live at
