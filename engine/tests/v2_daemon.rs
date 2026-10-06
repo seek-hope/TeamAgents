@@ -228,6 +228,58 @@ async fn boot(tag: &str, scripts: HashMap<String, Vec<Json>>) -> (Root, DaemonHa
     (root, handle)
 }
 
+/// D-429: the checkpoint carries the named sessions under this base and marks the one this daemon serves — the
+/// registry lives beside the state root, not inside it, and a TUI has no config loader of its own.
+#[tokio::test]
+async fn the_checkpoint_lists_the_bases_sessions_and_marks_the_one_it_serves() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    // a *short* root: the base + `sessions/<id>/daemon.sock` must fit Linux's `sun_path` (the product refuses
+    // longer ones itself, D-227), and the harness's own names are long enough to cross it
+    let root =
+        Root { dir: std::env::temp_dir().join(format!("ta-sr-{}", &uuid::Uuid::new_v4().simple().to_string()[..6])) };
+    std::fs::create_dir_all(&root.dir).unwrap();
+    // the base keeps the registry; the daemon serves one of its named sessions
+    let base = root.dir.join("state");
+    std::fs::create_dir_all(&base).unwrap();
+    let mut registry = teamagents_engine::v2::sessions::Registry::load(&base).expect("registry");
+    let one = registry.new_session("first").expect("first session");
+    let two = registry.new_session("later work").expect("second session");
+    registry.save().expect("save the registry");
+    let served = one.dir(&base);
+    std::fs::create_dir_all(&served).unwrap();
+
+    let mut config = config(&root, HashMap::new());
+    config.supervisor.state_root = served.clone();
+    config.supervisor.session_db = served.join("session.sqlite");
+    config.socket = served.join("daemon.sock");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let handle = serve(config).await.expect("daemon");
+    let mut client = Client::connect(&served.join("daemon.sock")).await;
+    let checkpoint = client.call("checkpoint", json!({})).await;
+    assert_eq!(checkpoint["ok"], json!(true), "{checkpoint}");
+    let rows = checkpoint["result"]["snapshot"]["sessions"].as_array().expect("session rows");
+    // the base's own default session is a row too: it is what a client attaches to when it names no session, so a
+    // picker must be able to switch *back* to it
+    assert_eq!(rows.len(), 3, "the default session plus the two named ones: {rows:?}");
+    assert!(rows.iter().any(|row| row["id"] == json!("default")), "{rows:?}");
+    let active: Vec<&str> =
+        rows.iter().filter(|row| row["active"] == json!(true)).filter_map(|row| row["id"].as_str()).collect();
+    assert_eq!(active, vec![one.id.as_str()], "exactly the served session is marked: {rows:?}");
+    let later = rows.iter().find(|row| row["id"] == json!(two.id)).expect("the other session");
+    assert_eq!(
+        rows.iter().filter(|row| row["active"] == json!(true)).count(),
+        1,
+        "exactly one row is the served session: {rows:?}"
+    );
+    assert_eq!(later["name"], json!("later work"), "{later}");
+    assert!(
+        later["root"].as_str().unwrap_or("").ends_with(&two.path.to_string_lossy().to_string()),
+        "a row carries the root a client would attach to: {later}"
+    );
+    assert_eq!(later["active"], json!(false));
+    handle.shutdown().await.expect("shutdown");
+}
+
 /// D-413: the checkpoint tells every client which MCP services the session was configured with — and, for an
 /// OAuth binding, its credential state — because the client that needs it (the TUI) has no config loader, and
 /// answering by loading the service would start a second copy of it.

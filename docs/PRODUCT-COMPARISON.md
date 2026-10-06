@@ -48,9 +48,11 @@ what their projects claim. Codex was run on 2026-09-27 (its help output is the e
 
 1. **Sessions beyond one-per-state-root** (Codex: `resume`/`fork`/`archive`; Hermes: continuity across
    surfaces). **Done** in the registry sense since D-364/D-365/D-368 — named sessions under one base, with
-   list/new/archive/delete/rename/restore/fork/search and `--session`. What remains is the *shared
-   app-server* shape Codex has: here one state root is still owned by one daemon, and the TUI has no picker;
-   it would be a second product surface rather than a protocol gap.
+   list/new/archive/delete/rename/restore/fork/search and `--session`. **And the TUI offers them now** (D-429):
+   `/sessions` lists the sessions under this base with the attached one marked and `/switch <id>` attaches this
+   client to another one (its daemon started if needed), the rows arriving in the daemon's checkpoint because a
+   TUI has no registry loader of its own. What remains is the *shared app-server* shape Codex has: here one state
+   root is still owned by one daemon, so a switch is a client-side move rather than a multiplexed connection.
 2. **Interrupt-and-redirect** (Hermes documents it; Codex has queueing). **Done** since D-363: a user-only
    `interrupt_instance` command performs the existing `V2Control.CancelRequest`, the supervisor aborts the
    provider stream, and the input queued behind the turn takes over (`instances interrupt --id`, TUI `i`).

@@ -14,7 +14,7 @@ use ratatui::Terminal;
 use serde_json::json;
 
 use teamagents_tui::daemon_client::DaemonClient;
-use teamagents_tui::v2app::{Focus as V2Focus, V2App, V2Effect, View as V2View};
+use teamagents_tui::v2app::{Focus as V2Focus, SessionInfo as V2AppSession, V2App, V2Effect, View as V2View};
 use teamagents_tui::v2ui;
 
 struct Args {
@@ -131,7 +131,8 @@ fn restore_terminal() {
 /// R19 v2 entry: connect the session daemon and run the conversation
 /// interface (plan §9 — the TUI never executes anything itself).
 fn v2_main(socket: &std::path::Path) -> ! {
-    let mut client = match DaemonClient::connect(socket) {
+    let socket = socket.to_path_buf();
+    let client = match DaemonClient::connect(&socket) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("cannot connect to the daemon ({}): {e}", socket.display());
@@ -139,7 +140,7 @@ fn v2_main(socket: &std::path::Path) -> ! {
             std::process::exit(1);
         }
     };
-    let mut app = V2App::new(&client.session_id.clone());
+    let app = V2App::new(&client.session_id.clone());
 
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -159,7 +160,8 @@ fn v2_main(socket: &std::path::Path) -> ! {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).expect("terminal");
 
-    let code = run_v2(&mut terminal, &mut client, &mut app);
+    // D-429: the loop owns the client and the view, because `/switch` replaces both
+    let code = run_v2(&mut terminal, client, app, socket.clone());
 
     restore_terminal();
     drop(terminal);
@@ -205,8 +207,31 @@ fn v2_refresh_grants(client: &mut DaemonClient, app: &mut V2App) {
     }
 }
 
+/// D-429: attach to another session — a client-side move, and the *only* one the TUI makes: the session row the
+/// daemon reported carries the state root whose daemon owns it, so the client connects there instead of reading a
+/// registry it has no loader for. The new daemon is started by this client if it is not running (the same rule the
+/// CLI's `--session` follows).
+fn switch_session(
+    current: &std::path::Path,
+    id: &str,
+    sessions: &[V2AppSession],
+) -> Result<(std::path::PathBuf, DaemonClient, V2App), String> {
+    let session = sessions.iter().find(|session| session.id == id).ok_or("no such session")?;
+    if session.root.is_empty() {
+        return Err("the daemon did not report that session's state root".into());
+    }
+    let target = std::path::PathBuf::from(&session.root).join("daemon.sock");
+    let _ = current;
+    let client =
+        DaemonClient::connect(&target).map_err(|error| format!("cannot connect to {}{error}", target.display()))?;
+    let app = V2App::new(&client.session_id.clone());
+    Ok((target, client, app))
+}
+
 fn run_v2_effect(effect: V2Effect, client: &mut DaemonClient, app: &mut V2App) {
     match effect {
+        // handled by the loop, which can replace the client and the view; reaching here would be a bug
+        V2Effect::SwitchSession { .. } => {}
         V2Effect::SubmitInput { instance, envelope, text } => {
             // the envelope id doubles as the command id: a retry after a lost
             // reply dedups at the control plane (§9)
@@ -285,14 +310,15 @@ fn run_v2_effect(effect: V2Effect, client: &mut DaemonClient, app: &mut V2App) {
 
 fn run_v2(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
-    client: &mut DaemonClient,
-    app: &mut V2App,
+    mut client: DaemonClient,
+    mut app: V2App,
+    mut socket: std::path::PathBuf,
 ) -> i32 {
-    v2_sync_checkpoint(client, app);
-    v2_refresh_history(client, app);
-    v2_refresh_approvals(client, app);
-    v2_refresh_tasks(client, app);
-    v2_refresh_grants(client, app);
+    v2_sync_checkpoint(&mut client, &mut app);
+    v2_refresh_history(&mut client, &mut app);
+    v2_refresh_approvals(&mut client, &mut app);
+    v2_refresh_tasks(&mut client, &mut app);
+    v2_refresh_grants(&mut client, &mut app);
     let mut last_event_poll = Instant::now();
     let mut last_slow = Instant::now();
     let mut dirty = true;
@@ -304,7 +330,7 @@ fn run_v2(
     let mut last_disconnected = app.disconnected;
     loop {
         if dirty {
-            let _ = terminal.draw(|f| v2ui::render(f, app));
+            let _ = terminal.draw(|f| v2ui::render(f, &mut app));
             dirty = false;
         }
         if app.quit {
@@ -313,8 +339,21 @@ fn run_v2(
         if event::poll(Duration::from_millis(40)).unwrap_or(false) {
             match event::read() {
                 Ok(Event::Key(key)) if key.kind != KeyEventKind::Release => {
-                    if let Some(effect) = app.handle_key(key) {
-                        run_v2_effect(effect, client, app);
+                    match app.handle_key(key) {
+                        // D-429: switching sessions replaces both the client and the view — the loop owns them, so
+                        // it is handled here rather than inside the generic effect runner.
+                        Some(V2Effect::SwitchSession { id }) => match switch_session(&socket, &id, &app.sessions) {
+                            Ok((new_socket, new_client, mut new_app)) => {
+                                socket = new_socket;
+                                client = new_client;
+                                v2_sync_checkpoint(&mut client, &mut new_app);
+                                new_app.system_note(format!("attached to session {id}"));
+                                app = new_app;
+                            }
+                            Err(error) => app.system_note(format!("/switch {id}: {error}")),
+                        },
+                        Some(effect) => run_v2_effect(effect, &mut client, &mut app),
+                        None => {}
                     }
                     dirty = true;
                 }
@@ -327,10 +366,10 @@ fn run_v2(
                                 .size()
                                 .map(|s| ratatui::layout::Rect::new(0, 0, s.width, s.height))
                                 .unwrap_or_default();
-                            let geo = v2ui::geometry(app, size);
+                            let geo = v2ui::geometry(&app, size);
                             match app.view {
                                 V2View::Chat => {
-                                    if let Some(index) = v2ui::approval_at(&geo, app, m.row, m.column) {
+                                    if let Some(index) = v2ui::approval_at(&geo, &app, m.row, m.column) {
                                         app.focus = V2Focus::Approvals;
                                         app.approval_sel = index;
                                     }
@@ -374,18 +413,18 @@ fn run_v2(
         let now_active = app.active_instance().map(|i| i.id.clone());
         if now_active != active_id {
             active_id = now_active;
-            v2_refresh_history(client, app);
+            v2_refresh_history(&mut client, &mut app);
             dirty = true;
         }
         // entering a panel refreshes its data once; events keep it current
         if app.view != last_view {
             last_view = app.view;
             match app.view {
-                V2View::Instances => v2_sync_checkpoint(client, app),
-                V2View::Tasks => v2_refresh_tasks(client, app),
+                V2View::Instances => v2_sync_checkpoint(&mut client, &mut app),
+                V2View::Tasks => v2_refresh_tasks(&mut client, &mut app),
                 V2View::Topology => {
-                    v2_refresh_grants(client, app);
-                    v2_refresh_tasks(client, app);
+                    v2_refresh_grants(&mut client, &mut app);
+                    v2_refresh_tasks(&mut client, &mut app);
                 }
                 V2View::Chat => {}
             }
@@ -410,19 +449,19 @@ fn run_v2(
                     app.mark_connected();
                     let refresh = app.apply_events(&events);
                     if refresh.history {
-                        v2_refresh_history(client, app);
+                        v2_refresh_history(&mut client, &mut app);
                     }
                     if refresh.approvals {
-                        v2_refresh_approvals(client, app);
+                        v2_refresh_approvals(&mut client, &mut app);
                     }
                     if refresh.checkpoint {
-                        v2_sync_checkpoint(client, app);
+                        v2_sync_checkpoint(&mut client, &mut app);
                     }
                     if refresh.tasks {
-                        v2_refresh_tasks(client, app);
+                        v2_refresh_tasks(&mut client, &mut app);
                     }
                     if refresh.grants {
-                        v2_refresh_grants(client, app);
+                        v2_refresh_grants(&mut client, &mut app);
                     }
                     if !events.is_empty() {
                         dirty = true;
@@ -438,16 +477,16 @@ fn run_v2(
             last_slow = Instant::now();
             if app.disconnected {
                 // reconnect: a fresh checkpoint re-syncs snapshot + watermark
-                v2_sync_checkpoint(client, app);
+                v2_sync_checkpoint(&mut client, &mut app);
                 if !app.disconnected {
-                    v2_refresh_history(client, app);
-                    v2_refresh_approvals(client, app);
-                    v2_refresh_tasks(client, app);
-                    v2_refresh_grants(client, app);
+                    v2_refresh_history(&mut client, &mut app);
+                    v2_refresh_approvals(&mut client, &mut app);
+                    v2_refresh_tasks(&mut client, &mut app);
+                    v2_refresh_grants(&mut client, &mut app);
                     dirty = true;
                 }
             } else {
-                v2_refresh_approvals(client, app);
+                v2_refresh_approvals(&mut client, &mut app);
             }
         }
     }

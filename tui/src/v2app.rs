@@ -11,7 +11,8 @@ use crate::text::Composer;
 
 /// The slash commands the composer understands (D-370), shown while a `/` draft is open and by `/help`.
 const SLASH_HELP: &str =
-    "commands: /help · /status · /chat · /instances · /tasks · /topology · /approvals · /mcp · /interrupt · /quit";
+    "commands: /help · /status · /chat · /instances · /tasks · /topology · /approvals · /mcp · /sessions · \
+     /switch · /interrupt · /quit";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Focus {
@@ -61,6 +62,17 @@ pub struct ChatEntry {
     pub kind: ChatKind,
     pub who: String,
     pub text: String,
+}
+
+/// D-429: one named session under this base, as the daemon reports it. The `root` is what makes switching possible
+/// from a client that has no config loader of its own: it names the directory whose daemon owns that session.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionInfo {
+    pub id: String,
+    pub name: String,
+    pub root: String,
+    /// The session *this* daemon serves.
+    pub active: bool,
 }
 
 /// One configured MCP service, as the daemon reports it (D-413). The TUI cannot read the machine's config (it is
@@ -171,6 +183,10 @@ pub enum V2Effect {
     Interrupt {
         instance: String,
     },
+    /// D-429: attach this client to another named session (the main loop connects to that session's own daemon).
+    SwitchSession {
+        id: String,
+    },
     /// Cancel a non-terminal task from the panel (§5.3).
     CancelTask {
         task_id: String,
@@ -208,6 +224,8 @@ pub struct V2App {
     pub instances: Vec<InstanceInfo>,
     /// D-413: the session's configured MCP services and their credential state.
     pub mcp: Vec<McpInfo>,
+    /// D-429: the named sessions under this base (this one marked), so `/sessions` can offer them.
+    pub sessions: Vec<SessionInfo>,
     /// Index into `instances`: the conversation shown and input target.
     pub active: usize,
     pub entries: Vec<ChatEntry>,
@@ -244,6 +262,7 @@ impl V2App {
             view: View::Chat,
             instances: vec![],
             mcp: vec![],
+            sessions: vec![],
             active: 0,
             entries: vec![],
             goal: None,
@@ -291,6 +310,12 @@ impl V2App {
         self.previews.iter().find(|(instance, _)| instance == id).map(|(_, text)| text.as_str())
     }
 
+    /// A runtime note the user reads in the conversation (D-429 uses it for a session switch, which is a client
+    /// event rather than a chat message).
+    pub fn system_note(&mut self, text: impl Into<String>) {
+        self.note(text);
+    }
+
     fn note(&mut self, text: impl Into<String>) {
         self.entries.push(ChatEntry { kind: ChatKind::System, who: "system".into(), text: text.into() });
         if self.entries.len() > NOTE_CAP * 4 {
@@ -319,6 +344,18 @@ impl V2App {
                 transport: row["transport"].as_str().unwrap_or("stdio").to_string(),
                 required: row["required"].as_bool().unwrap_or(false),
                 credential: row["credential"].as_str().map(str::to_string),
+            })
+            .collect();
+        self.sessions = snapshot["sessions"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .map(|row| SessionInfo {
+                id: row["id"].as_str().unwrap_or("").to_string(),
+                name: row["name"].as_str().unwrap_or("").to_string(),
+                root: row["root"].as_str().unwrap_or("").to_string(),
+                active: row["active"].as_bool().unwrap_or(false),
             })
             .collect();
         self.instances = snapshot["instances"]
@@ -902,6 +939,25 @@ impl V2App {
                 self.note(status);
                 None
             }
+            "/sessions" => {
+                self.note(self.sessions_report());
+                None
+            }
+            "/switch" => {
+                // `/switch <id>` — the same effect `/sessions` tells the user about
+                let id = text.split_whitespace().nth(1).unwrap_or("").to_string();
+                match self.sessions.iter().find(|session| session.id == id) {
+                    Some(session) if !session.active => Some(V2Effect::SwitchSession { id: session.id.clone() }),
+                    Some(_) => {
+                        self.note(format!("/switch {id}: this is the session already attached"));
+                        None
+                    }
+                    None => {
+                        self.note(format!("/switch {id}: no such session; /sessions lists them"));
+                        None
+                    }
+                }
+            }
             "/mcp" => {
                 self.note(self.mcp_report());
                 None
@@ -918,6 +974,22 @@ impl V2App {
                 None
             }
         }
+    }
+
+    /// What `/sessions` prints (D-429): the named sessions under this base with this one marked, and the command
+    /// that switches. A TUI user otherwise has to know an id and pass it on the command line.
+    pub fn sessions_report(&self) -> String {
+        if self.sessions.is_empty() {
+            return "no other sessions under this base: `teamagents sessions new --name NAME` creates one".to_string();
+        }
+        let mut out = String::from("sessions under this base:\n");
+        for session in &self.sessions {
+            let marker = if session.active { " (attached)" } else { "" };
+            let name = if session.name.is_empty() { "-" } else { session.name.as_str() };
+            out.push_str(&format!("  {}{marker}  name: {name}\n", session.id));
+        }
+        out.push_str("`/switch <id>` attaches this client to another session (its own daemon, started if needed)");
+        out
     }
 
     /// What `/mcp` prints (D-413): one line per configured service. The two things a user acts on are here — the

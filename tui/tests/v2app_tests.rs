@@ -789,6 +789,51 @@ fn composer_inserts_newlines_and_submits_the_whole_text() {
     assert!(app.footer_hint().contains("Ctrl+J newline"), "{}", app.footer_hint());
 }
 
+/// D-429: `/sessions` lists the named sessions the daemon reports and marks the one this client is attached to,
+/// and `/switch <id>` produces the effect the loop turns into a reconnect (never for the attached one).
+#[test]
+fn sessions_lists_the_named_sessions_and_switching_is_an_effect() {
+    let mut app = V2App::new("s-test");
+    app.apply_checkpoint(
+        serde_json::json!({
+            "instances": [],
+            "goal": null,
+            "mcp": [],
+            "sessions": [
+                {"id": "s-main", "name": "", "root": "/tmp/base", "active": true},
+                {"id": "s-later", "name": "later work", "root": "/tmp/base/sessions/later", "active": false},
+            ]
+        }),
+        5,
+    );
+    let report = app.sessions_report();
+    assert!(report.contains("s-main (attached)"), "{report}");
+    assert!(report.contains("s-later") && report.contains("later work"), "{report}");
+    assert!(report.contains("/switch <id>"), "{report}");
+
+    let mut app = V2App::new("s-test");
+    app.apply_checkpoint(
+        serde_json::json!({"instances": [], "goal": null, "mcp": [],
+                           "sessions": [{"id": "s-main", "name": "", "root": "/tmp/base", "active": true},
+                                        {"id": "s-later", "name": "", "root": "/tmp/base/sessions/later",
+                                         "active": false}]}),
+        5,
+    );
+    // `/switch s-later` asks the loop to reconnect; the attached session and an unknown id do not
+    for text in ["/switch s-later", "/switch s-main", "/switch nope"] {
+        for c in text.chars() {
+            app.handle_key(key(KeyCode::Char(c)));
+        }
+        let effect = app.handle_key(key(KeyCode::Enter));
+        if text == "/switch s-later" {
+            let V2Effect::SwitchSession { id } = effect.expect("an effect") else { panic!("wrong effect") };
+            assert_eq!(id, "s-later");
+        } else {
+            assert!(effect.is_none(), "{text} must not switch");
+        }
+    }
+}
+
 /// D-413: `/mcp` answers from the checkpoint the daemon sends — the TUI has no config loader, and asking by
 /// loading a service would start a second copy of it. The report names each service, and the two things a user
 /// acts on: an OAuth binding's credential state and the reload lever for a credential stored while the session

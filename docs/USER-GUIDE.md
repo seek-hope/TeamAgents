@@ -712,6 +712,10 @@ teamagents goals cancel --id g-spent    # close a goal nothing can spend (its ce
   retry, and a credential that cannot be renewed is a refusal that names the verb to run
   (`teamagents mcp login --name <service>`). `teamagents mcp list` prints each OAuth binding's state
   (`signed in` / `expired (will refresh)` / `not signed in`) before the tools it offers, and
+  **In the TUI**, `/sessions` lists the named sessions under this base with the attached one marked, and
+  `/switch <id>` attaches this client to another one (its daemon is started if it is not running) — the sessions
+  and their roots arrive in the daemon's checkpoint, because a TUI is a client with no registry loader of its own
+  (D-429). The base's own default session is listed too, so switching back is one command.
   `teamagents mcp logout --name sentry` deletes the stored credential. **In the TUI**, `/mcp` prints the same
   services with their credential state (the daemon sends them in its checkpoint, because the TUI is a client with
   no config loader — and it must not load a service itself, which would start a second copy of it). A service is

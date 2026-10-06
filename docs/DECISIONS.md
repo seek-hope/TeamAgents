@@ -20,6 +20,42 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-429 The TUI offers the sessions under this base, and switching is one command (2026-10-05)
+
+**Why.** `docs/PRODUCT-COMPARISON.md` §2 item 1 has listed "the TUI has no picker" as the remaining half of the
+sessions row since D-364: the registry, `--session`, list/new/archive/delete/rename/restore/fork/search all exist,
+but a TUI user had to know a session id and pass it on the command line — and a TUI is where a user looks for one.
+
+**What was added.** The daemon's checkpoint now carries the sessions under its base, and the TUI gained two
+commands:
+
+* `/sessions` prints them with the attached one marked and its display name, plus the command that switches;
+* `/switch <id>` produces a `SwitchSession` effect the main loop turns into a **client-side move**: it connects to
+  that session's own daemon (started if it is not running, the same rule `--session` follows) and resyncs. The
+  attached session and an unknown id do nothing but say so.
+
+**Where the rows come from, and why.** The registry lives *beside* the state root (`<base>/sessions.json`), not
+inside it, and the TUI is a client with no config or registry loader — so the daemon reads the registry once at
+boot (it knows its own base through `sessions::base_of`) and each row carries the session's **root**, which is
+exactly what a client needs to attach: `<root>/daemon.sock`. That keeps the registry's format in one place, and it
+is the same choice D-413 made for the MCP rows. The base's own **default** session is a row too — it is what a
+client attaches to when it names no session, so a picker has to be able to switch back to it.
+
+The loop had to change shape for this: `run_v2` now **owns** the client and the view (and the socket path) instead
+of borrowing them, because a switch replaces all three. Nothing else about the loop moved.
+
+**Evidence.** `v2_daemon::the_checkpoint_lists_the_bases_sessions_and_marks_the_one_it_serves` (a base with a
+registry and two named sessions, the daemon serving one: three rows — default plus both named — exactly one marked
+active, each carrying the root a client would attach to) and
+`v2app_tests::sessions_lists_the_named_sessions_and_switching_is_an_effect` (the report marks the attached session,
+and `/switch` yields the effect only for a different, existing session). Both were written around one real
+constraint the first draft hit: a base plus `sessions/<id>/daemon.sock` can cross Linux's `sun_path`, which the
+product refuses itself (D-227) — the test builds a short root rather than pretending.
+
+**Ceiling.** Switching is a *client-side* move: one state root is still owned by one daemon, so this is a picker,
+not Codex's shared app-server. A switch drops the TUI's own scroll/selection state (the conversation is the
+session's, and it resyncs), and `/sessions` shows what the registry has — archived sessions are not listed.
+
 ## D-428 `-c key=value`: a config override for one invocation (2026-10-05)
 
 **Why.** D-425/D-426 added two cost keys and D-427 made the bill visible, but trying a setting still meant editing

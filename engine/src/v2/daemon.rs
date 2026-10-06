@@ -86,6 +86,24 @@ where
         })
         .collect();
     mcp.sort_by(|a, b| a.name.cmp(&b.name));
+    // D-429: the sibling sessions, read once at boot (the registry is a file beside the state root)
+    let sessions = {
+        let base = crate::v2::sessions::base_of(&state_root);
+        match crate::v2::sessions::Registry::load(&base) {
+            Ok(registry) => Json::Array(
+                registry
+                    .rows()
+                    .into_iter()
+                    .map(|(entry, path)| {
+                        json!({"id": entry.id, "name": entry.name, "root": path.to_string_lossy(),
+                               "active": path == state_root})
+                    })
+                    .collect(),
+            ),
+            // a base without a registry (the default session's own root) simply has no siblings
+            Err(_) => Json::Array(vec![]),
+        }
+    };
     let facts = Arc::new(SessionFacts {
         session_id: session_id.clone(),
         state_root: state_root.to_string_lossy().into_owned(),
@@ -93,6 +111,7 @@ where
         permissions: config.supervisor.permissions.clone(),
         goal_limits: config.supervisor.goal_limits.clone(),
         mcp,
+        sessions,
     });
     // D-227: refuse before binding, so the answer names the limit and the fix instead of the OS's
     // `bind …: path must be shorter than SUN_LEN` (`cli::require_socket_path_fits` holds the boundary).
@@ -213,6 +232,10 @@ struct SessionFacts {
     goal_limits: Json,
     /// D-413: the configured MCP services (and, per checkpoint, their credential state).
     mcp: Vec<McpService>,
+    /// D-429: the named sessions under this base, and which one this daemon serves — a client reads them from the
+    /// checkpoint because the registry lives beside the state root, not inside it, and a TUI has no business
+    /// reading the filesystem (D-364's registry is the daemon's own knowledge).
+    sessions: Json,
 }
 
 async fn accept_loop(
@@ -366,7 +389,9 @@ async fn handle(request: &Json, supervisor: &SupervisorHandle, session_db: &Path
             } else {
                 Json::Null
             };
-            match read_only(session_db, session_id, |conn| read_method(method, &params, conn, &previews, &mcp)) {
+            match read_only(session_db, session_id, |conn| {
+                read_method(method, &params, conn, &previews, &mcp, &facts.sessions)
+            }) {
                 Ok(result) => reply(true, result),
                 Err(error) => reply(false, json!(error)),
             }
@@ -410,7 +435,7 @@ fn read_only<T>(
 
 /// Snapshot query shared by `checkpoint` (same read transaction as the
 /// watermark) — instances with lifecycle/phase plus the single-goal view.
-fn read_snapshot(conn: &rusqlite::Connection, mcp: &Json) -> Result<Json, String> {
+fn read_snapshot(conn: &rusqlite::Connection, mcp: &Json, sessions: &Json) -> Result<Json, String> {
     // `model` rides along (D-69): a team can span providers (`spawn(model = …)`),
     // and without it no client can say which member runs on what.
     // `reason` rides along too (D-165): the last lifecycle transition's own words, which is what answers "why
@@ -480,7 +505,9 @@ fn read_snapshot(conn: &rusqlite::Connection, mcp: &Json) -> Result<Json, String
                "deadline": deadline})),
         // D-413: the configured MCP services and their credential state, so a client that cannot read this
         // machine's config (the TUI is one) can still tell a user what the session bound and what to do next.
-        "mcp": mcp}))
+        "mcp": mcp,
+        // D-429: the named sessions under this base, so a TUI can offer them without reading the filesystem
+        "sessions": sessions}))
 }
 
 fn read_events(conn: &rusqlite::Connection, since: i64) -> Result<Vec<Json>, String> {
@@ -542,6 +569,7 @@ fn read_method(
     conn: &rusqlite::Connection,
     previews: &Json,
     mcp: &Json,
+    sessions: &Json,
 ) -> Result<Json, String> {
     match method {
         // §9: the text each instance is streaming right now. It is a transient read the supervisor answers from
@@ -554,7 +582,7 @@ fn read_method(
         // the client learns exactly which point its snapshot is consistent with
         "checkpoint" => {
             let tx = conn.unchecked_transaction().map_err(|e| format!("checkpoint tx: {e}"))?;
-            let snapshot = read_snapshot(&tx, mcp)?;
+            let snapshot = read_snapshot(&tx, mcp, sessions)?;
             let watermark = watermark(&tx)?;
             tx.commit().map_err(|e| format!("checkpoint commit: {e}"))?;
             Ok(json!({"snapshot": snapshot, "watermark": watermark}))
