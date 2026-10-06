@@ -5,7 +5,7 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
-## 0. Gate status (re-run 2026-10-05 at `MATERIAL-COMMIT`)
+## 0. Gate status (re-run 2026-10-05 at `3f9fec94`)
 
 * **D-425/D-426/D-427 changed the wire view and re-ran all three targets on this tree (2026-10-05).** The context
   work touched `core/src/kernel/types.rs` (the per-call output cap and the view budget), which is the material the
