@@ -5,7 +5,7 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
-## 0. Gate status (re-run 2026-10-06 at `MATERIAL-COMMIT`)
+## 0. Gate status (re-run 2026-10-06 at `6e50ef26`)
 
 * **D-435 made `[retention] archived_days` real, and re-ran the targets on this tree (2026-10-06).**
   `verification/tla/V2Prune.tla` is new: it models what `sessions prune` may take — an archived session whose
