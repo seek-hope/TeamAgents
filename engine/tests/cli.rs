@@ -462,9 +462,14 @@ fn doctor_reports_which_retention_keys_apply() {
         String::from_utf8_lossy(&output.stdout).into_owned()
     };
     let text = run(&format!("[retention]\nhistory_days = 7\narchived_days = 30\n{model}"));
-    assert!(text.contains("[WARN] retention"), "{text}");
+    // D-435: both keys are applied now — `history_days` by a session's boot and `archived_days` by
+    // `sessions prune` — so the row is an `ok` and names each lever instead of warning about one of them
+    assert!(text.contains("[ok  ] retention"), "both retention keys are supported settings: {text}");
     assert!(text.contains("drops events and applied deliveries"), "the applied key says what it does: {text}");
-    assert!(text.contains("archived_days=30 is not applied"), "the unapplied key says so: {text}");
+    assert!(
+        text.contains("archived_days=30: `teamagents sessions prune --yes` removes archived sessions"),
+        "the other applied key names its lever: {text}"
+    );
     std::fs::write(root.join("EVIDENCE"), "").unwrap();
     let text = run(&format!("[retention]\nhistory_days = 7\n{model}"));
     assert!(text.contains("[ok  ] retention"), "a marked root is the user's wish, honoured: {text}");
@@ -697,10 +702,13 @@ fn doctor_probes_isolation_and_config_errors() {
     let with_hooks = run(&home.join("state"));
     assert!(with_hooks.contains("[FAIL] hooks.notify"), "{with_hooks}");
     assert!(with_hooks.contains("[ok  ] hooks.pre_tool"), "{with_hooks}");
-    // D-75/D-245: retention stays user-config-only, `history_days` is applied and `archived_days` is not, so
-    // the row reports each key for what it is instead of printing the numbers as if both were in effect
-    assert!(with_hooks.contains("[WARN] retention"), "the policy is reported honestly: {with_hooks}");
-    assert!(with_hooks.contains("archived_days=30 is not applied"), "{with_hooks}");
+    // D-75/D-245/D-435: retention stays user-config-only, and the row reports each key for what it is — both
+    // are applied now (by a session's boot and by `sessions prune`), so it names the lever rather than warning
+    assert!(with_hooks.contains("[ok  ] retention"), "the policy is reported honestly: {with_hooks}");
+    assert!(
+        with_hooks.contains("archived_days=30: `teamagents sessions prune --yes` removes archived sessions"),
+        "{with_hooks}"
+    );
 
     // D-74: a declared MCP service is bound at session start, so doctor names each
     // one and says whether it can run (a mistyped command would stop the boot)
@@ -3465,6 +3473,87 @@ fn sessions_rename_restore_and_search_wire_through_the_cli() {
 
 /// D-365: `sessions fork` snapshots a session while refusing a live source, registers the copy, and the copy
 /// opens as a session of its own (and can be forked again).
+/// D-435: `[retention] archived_days` finally has a lever, and the lever's contract is what this pins — a
+/// retention window is never guessed, a window of 0 is not "delete everything", deleting needs `--yes`, and a
+/// dry run answers the same question without touching anything. The age rule itself is
+/// `sessions::tests::prune_takes_only_archived_sessions_past_the_window_and_says_why_the_rest_stay`.
+#[test]
+fn sessions_prune_needs_a_window_and_a_confirmation_and_its_dry_run_deletes_nothing() {
+    // A unique scratch root rather than `Scratch::new` (which is keyed by label and process id and removes its
+    // directory at creation). Measured 2026-10-06: this test failed intermittently under the full `cli` file run
+    // — a file write inside it hit `NotFound` and a registry sync did too — while passing alone and with
+    // `--test-threads=1`, and it has been green in three consecutive full runs since the root became unique. The
+    // cause was not isolated further; what is recorded is the observation and the shape that stopped it.
+    let home = std::env::temp_dir().join(format!("ta-sessions-prune-{}", uuid::Uuid::new_v4()));
+    let _ = std::fs::remove_dir_all(&home);
+    let base = home.join("base");
+    let config_home = home.join("config");
+    std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
+    std::fs::write(
+        config_home.join("teamagents/config.toml"),
+        "[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\n\
+         api_key_env = \"TA_PRUNE_KEY\"\nbase_url = \"http://127.0.0.1:1/v1\"\ntimeout = 5\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(&base).unwrap();
+    let root = base.to_string_lossy().into_owned();
+    let run = |args: &[&str]| -> (Option<i32>, String, String) {
+        let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
+            .args(args)
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_STATE_HOME", home.join("state"))
+            .env("TA_PRUNE_KEY", "test-value")
+            .output()
+            .expect("run cli");
+        (
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    };
+    // the id is generated (`--name` is the display name), so the test reads it back the way a user would
+    let (code, out, err) = run(&["sessions", "new", "--name", "old", "--json", "--state-root", &root]);
+    assert_eq!(code, Some(0), "{err}");
+    let id = serde_json::from_str::<serde_json::Value>(&out).unwrap()["id"]
+        .as_str()
+        .expect("the new session's id")
+        .to_string();
+    let (code, _, err) = run(&["sessions", "archive", "--id", &id, "--state-root", &root]);
+    assert_eq!(code, Some(0), "{err}");
+
+    // no window anywhere: neither the config nor the command line says what "old" means
+    let (code, _, err) = run(&["sessions", "prune", "--state-root", &root]);
+    assert_eq!(code, Some(2), "{err}");
+    assert!(err.contains("needs a window") && err.contains("archived_days"), "{err}");
+    // and a window of zero is a refusal, not a licence to delete every archive
+    let (code, _, err) = run(&["sessions", "prune", "--days", "0", "--state-root", &root]);
+    assert_eq!(code, Some(2), "{err}");
+    assert!(err.contains("--days 0"), "{err}");
+    // deleting a session is irreversible, so it needs `--yes`
+    let (code, _, err) = run(&["sessions", "prune", "--days", "30", "--state-root", &root]);
+    assert_eq!(code, Some(2), "{err}");
+    assert!(err.contains("--yes") && err.contains("--dry-run"), "{err}");
+
+    // a dry run answers with the rule: the session was archived seconds ago, so the window keeps it, and the
+    // report says exactly that while deleting nothing
+    let (code, out, err) = run(&["sessions", "prune", "--days", "30", "--dry-run", "--state-root", &root]);
+    assert_eq!(code, Some(0), "{err}");
+    assert!(out.contains("would free: 0 archived session(s) older than 30 day(s)"), "{out}");
+    assert!(out.contains(&format!("{id}: kept: archived 0 day(s) ago, inside the 30-day window")), "{out}");
+    assert!(base.join("archive").join(&id).exists(), "a dry run deletes nothing");
+    // and the configured window works the same way (`[retention] archived_days = 30` in the user's config)
+    std::fs::write(
+        config_home.join("teamagents/config.toml"),
+        "[retention]\narchived_days = 30\n\n[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\n\
+         api_key_env = \"TA_PRUNE_KEY\"\nbase_url = \"http://127.0.0.1:1/v1\"\ntimeout = 5\n",
+    )
+    .unwrap();
+    let (code, out, err) = run(&["sessions", "prune", "--dry-run", "--state-root", &root]);
+    assert_eq!(code, Some(0), "{err}");
+    assert!(out.contains("older than 30 day(s)"), "the configured window is the default: {out}");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
 #[test]
 fn sessions_fork_snapshots_a_session_and_refuses_a_live_source() {
     let home = Scratch::new("sessions-fork");

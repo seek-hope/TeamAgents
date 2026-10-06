@@ -32,6 +32,7 @@ usage: teamagents [--cwd DIR] [--state-root PATH] [--session ID] [--model KEY] [
   teamagents sessions search --query TEXT [--limit N]  search every session's conversation (read-only, D-368)\n\
   teamagents sessions archive --id ID           move a named session aside (refused while a daemon runs it)\n\
   teamagents sessions delete --id ID --yes      remove a named session's directory and history\n\
+  teamagents sessions prune [--days N] [--dry-run] [--yes]  drop archived sessions older than the window\n\
   teamagents automations [list] [--json]        schedules that start a goal on their own (D-367)\n\
   teamagents automations add --every MIN --prompt TEXT [--name NAME]   create one\n\
   teamagents automations pause|resume --id ID   stop it, or re-arm it one period out\n\
@@ -156,6 +157,10 @@ pub struct Args {
     pub grant: Option<String>,
     pub approval_id: Option<String>,
     pub confirmed: bool,
+    /// D-435: `sessions prune --days N` — the archive window, defaulting to `[retention] archived_days`.
+    pub days: Option<u64>,
+    /// D-435: `sessions prune --dry-run` — report what would go and why the rest stays, delete nothing.
+    pub dry_run: bool,
     /// D-248: `daemon --stop` — stop the session's daemon (as opposed to starting one).
     pub daemon_stop: bool,
     /// D-267: `goals open --attach INSTANCE` — attach the new goal to that instance, which is what makes a later
@@ -229,6 +234,8 @@ fn parse_args() -> Args {
         grant: None,
         approval_id: None,
         confirmed: false,
+        days: None,
+        dry_run: false,
         daemon_stop: false,
         stream_json: false,
         service_stop: false,
@@ -421,6 +428,25 @@ fn parse_args() -> Args {
                     reject("--json and --stream-json are two shapes of the same stdout: pick one");
                 }
                 args.stream_json = true;
+                i += 1;
+            }
+            // D-435: the archive window and the see-first lever. `--days 0` is not a shortcut for "everything":
+            // the verb refuses a zero window, because "delete every archived session" is not what a retention
+            // window of nothing means (D-245's `history_days = 0` keeps history, it does not delete it).
+            "--days" if args.command.as_deref() == Some("sessions") => {
+                if args.days.is_some() {
+                    given_twice("--days");
+                }
+                args.days = Some(
+                    argv.get(i + 1).and_then(|v| v.parse::<u64>().ok()).unwrap_or_else(|| needs_a_value("--days")),
+                );
+                i += 2;
+            }
+            "--dry-run" if args.command.as_deref() == Some("sessions") => {
+                if args.dry_run {
+                    given_twice("--dry-run");
+                }
+                args.dry_run = true;
                 i += 1;
             }
             "--yes"
@@ -1738,6 +1764,91 @@ fn run_sessions(args: &Args) -> i32 {
                     1
                 }
             }
+        }
+        // D-435: `[retention] archived_days` finally has a meaning — the window measured from the archive time —
+        // and this is its lever. It is explicit and confirmed because it deletes directories: `--dry-run` shows
+        // exactly what `--yes` would remove, and every archived session that stays says why.
+        "prune" => {
+            let days = match args.days {
+                Some(0) => {
+                    eprintln!(
+                        "sessions prune: --days 0 would delete every archived session; a retention window is a \
+                         number of days, and 0 means 'keep' for the sibling key (see docs/USER-GUIDE.md §5)"
+                    );
+                    return 2;
+                }
+                Some(days) => Some(days),
+                // the configured window; a config this build cannot read is reported rather than treated as
+                // "no window" (a broken file must not look like a policy the user chose)
+                None => {
+                    let workspace = args.cwd.clone().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+                    match teamagents_engine::config::load_user_config_for(&workspace) {
+                        Ok((catalog, _)) if catalog.retention.archived_days > 0 => {
+                            Some(catalog.retention.archived_days)
+                        }
+                        Ok(_) => None,
+                        Err(error) => {
+                            eprintln!("sessions prune: reading your config failed: {error}");
+                            return 2;
+                        }
+                    }
+                }
+            };
+            let Some(days) = days else {
+                eprintln!(
+                    "sessions prune needs a window: set `[retention] archived_days` in your config or pass \
+                     `--days N` (0 keeps everything, which is what happens when neither is set)"
+                );
+                return 2;
+            };
+            if !args.dry_run && !args.confirmed {
+                eprintln!(
+                    "pruning removes archived sessions older than {days} day(s) and their history: add --yes to \
+                     mean it, or --dry-run to see what it would do"
+                );
+                return 2;
+            }
+            // a dry run asks the same question and throws the answer away: the rule is one function, so what a
+            // dry run prints is what --yes does
+            let report = match registry.prune(days, args.dry_run) {
+                Ok(report) => report,
+                Err(error) => {
+                    eprintln!("sessions prune: {error}");
+                    return 1;
+                }
+            };
+            if args.exec_json {
+                let report = serde_json::json!({
+                    "state_root": home.to_string_lossy(),
+                    "days": days,
+                    "dry_run": args.dry_run,
+                    "removed": report.removed.iter().map(|(id, dir, bytes)| serde_json::json!({
+                        "id": id, "path": dir.to_string_lossy(), "bytes": bytes})).collect::<Vec<_>>(),
+                    "kept": report.kept.iter().map(|(id, reason)| serde_json::json!({
+                        "id": id, "reason": reason})).collect::<Vec<_>>(),
+                });
+                println!("{}", serde_json::to_string(&report).unwrap_or_else(|_| "{}".into()));
+                return 0;
+            }
+            for (id, dir, bytes) in &report.removed {
+                println!(
+                    "{} session {id} ({}, {} bytes)",
+                    if args.dry_run { "would prune" } else { "pruned" },
+                    dir.display(),
+                    bytes
+                );
+            }
+            for (id, reason) in &report.kept {
+                println!("  {id}: {reason}");
+            }
+            let freed: u64 = report.removed.iter().map(|(_, _, bytes)| bytes).sum();
+            let mib = freed as f64 / (1024.0 * 1024.0);
+            println!(
+                "{}: {} archived session(s) older than {days} day(s), {mib:.1} MiB",
+                if args.dry_run { "would free" } else { "freed" },
+                report.removed.len()
+            );
+            0
         }
         "delete" => match args.approval_id.as_deref() {
             Some(id) if args.confirmed => match registry.delete(id) {

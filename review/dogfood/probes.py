@@ -47,6 +47,7 @@ OFFLINE = [
     ("truncation.py", [], "A19's whole path over a real socket: truncated before output retries, after it fails"),
     ("max_retries.py", [], "a profile's `max_retries` is the budget its own driver uses, per instance (D-247)"),
     ("project_config.py", [], "the repository-local config is read, and gated by the user's opt-in (D-244), per repository and found by walking up (D-434)"),
+    ("sessions_prune.py", [], "`[retention] archived_days` is applied by `sessions prune`, and only takes archived sessions past the window (D-435)"),
     ("instructions.py", [], "`instruction_files` reach every member's prompt, seen in the requests (D-246)"),
     ("input_latency.py", [], "per-keystroke composer latency against the scripted daemon"),
     ("tui_panels.py", [], "the instances panel's keys against a real daemon (D-95)"),

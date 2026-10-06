@@ -281,8 +281,13 @@ pub struct Hooks {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Retention {
-    /// **Accepted and not applied** (D-245): this build keeps one session per state root (A33), so there is no
-    /// "archived sessions" set to walk. It becomes meaningful with multi-session.
+    /// Applied by `teamagents sessions prune` (D-435): an **archived** session whose archive time is older than
+    /// this many days is removed — its directory and its registry record — when the user runs that verb (or sees
+    /// it with `--dry-run`, which deletes nothing). The rule is deliberately narrow, and
+    /// `verification/tla/V2Prune.tla` pins each half: only archived sessions are candidates (the state root in
+    /// use never is), a row with no recorded archive time is never pruned, a session a daemon still serves is
+    /// kept with the lever to stop it, and the `EVIDENCE` marker wins over the window. 0 (the default) keeps
+    /// every archived session: a window of nothing is not "delete everything".
     #[serde(default)]
     pub archived_days: u64,
     /// Drop applied deliveries and events older than this many days **when a session starts** (its daemon

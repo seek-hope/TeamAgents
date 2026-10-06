@@ -653,12 +653,14 @@ pub fn doctor(state_root: Option<PathBuf>, overrides: &[String]) -> i32 {
             };
             if catalog.retention.archived_days > 0 {
                 detail.push_str(&format!(
-                    "; archived_days={} is not applied: this build keeps one session per state root (A33), so \
-                     there is no archived-session set to walk",
+                    "; archived_days={}: `teamagents sessions prune --yes` removes archived sessions whose \
+                     archive time is older than that (`--dry-run` shows what it would take)",
                     catalog.retention.archived_days
                 ));
             }
-            optional_check(&mut results, "retention", catalog.retention.archived_days == 0, detail);
+            // D-435: `archived_days` is applied now, so it is no longer a reason for a WARN — both keys are
+            // supported settings, and the row reports what each of them does.
+            optional_check(&mut results, "retention", true, detail);
         }
     }
     // The probe runs on the state directory this build actually uses, never on the legacy `sessions/` path:

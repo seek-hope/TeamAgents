@@ -30,6 +30,10 @@ pub struct SessionEntry {
     pub path: PathBuf,
     pub created_ms: u64,
     pub archived: bool,
+    /// When this session was archived, in milliseconds since the epoch (D-435). `0` means *unknown* — a row
+    /// written before this field existed — and an unknown archive time is never pruned: the rule deletes only
+    /// what it can date, so a state root is never removed on a guess.
+    pub archived_ms: u64,
 }
 
 /// The base directory a state root belongs to (D-405): a named session lives at `<base>/sessions/<id>` (D-364), so
@@ -131,6 +135,9 @@ impl Registry {
                 path,
                 created_ms: raw["created_ms"].as_u64().unwrap_or(0),
                 archived: raw["archived"].as_bool().unwrap_or(false),
+                // additive: a registry written by an earlier build has no `archived_ms`, and reading it as 0 is
+                // what makes such a session unprunable rather than pruned from its creation date
+                archived_ms: raw["archived_ms"].as_u64().unwrap_or(0),
             });
         }
         // Injective, both ways: two ids may not name one path, and one id may not name two.
@@ -165,6 +172,7 @@ impl Registry {
                 "path": session.path.to_string_lossy(),
                 "created_ms": session.created_ms,
                 "archived": session.archived,
+                "archived_ms": session.archived_ms,
             })).collect::<Vec<_>>(),
         });
         let tmp = self.home.join(format!("{REGISTRY_FILE}.tmp"));
@@ -202,6 +210,7 @@ impl Registry {
                 name: "default (this state root)".to_string(),
                 path: PathBuf::new(),
                 created_ms: 0,
+                archived_ms: 0,
                 archived: false,
             },
             self.home.clone(),
@@ -234,6 +243,7 @@ impl Registry {
             path,
             created_ms: now_ms(),
             archived: false,
+            archived_ms: 0,
         };
         self.sessions.push(entry.clone());
         self.save()?;
@@ -292,6 +302,7 @@ impl Registry {
             path,
             created_ms: now_ms(),
             archived: false,
+            archived_ms: 0,
         };
         self.sessions.push(entry.clone());
         self.save()?;
@@ -337,6 +348,7 @@ impl Registry {
         }
         std::fs::rename(&from, &to).map_err(|e| format!("restore {}: {e}", from.display()))?;
         self.sessions[index].archived = false;
+        self.sessions[index].archived_ms = 0;
         self.sessions[index].path = PathBuf::from("sessions").join(id);
         let entry = self.sessions[index].clone();
         self.save()?;
@@ -363,9 +375,97 @@ impl Registry {
         }
         std::fs::rename(&from, &to).map_err(|e| format!("archive {}: {e}", from.display()))?;
         self.sessions[index].archived = true;
+        self.sessions[index].archived_ms = now_ms();
         self.sessions[index].path = PathBuf::from("archive").join(&entry.id);
         self.save()?;
         Ok(to)
+    }
+
+    /// Remove archived sessions whose archive time is older than `days`, and say why every other one stays
+    /// (D-435).
+    ///
+    /// This is what `[retention] archived_days` means now that named sessions exist: the key was accepted and
+    /// never applied since D-245, because one state root meant one session and there was no archived set to walk.
+    /// The rule is deliberately narrower than "delete what is old":
+    ///
+    /// * only **archived** rows are candidates at all — the default session is not a row, so the root a user is
+    ///   working in can never be chosen here;
+    /// * a row with no recorded archive time (`archived_ms == 0`, written before this field existed) is **kept**:
+    ///   the rule deletes only what it can date, never a state root on a guess;
+    /// * a session a daemon is still serving is kept with the lever to stop it (the same `is_live` the fork's
+    ///   source check uses);
+    /// * a state root carrying the `EVIDENCE` marker (D-245) is kept — the marker means "do not prune this",
+    ///   and it was read for history before this rule existed;
+    /// * anything inside the window is kept, and the report says how long ago it was archived.
+    ///
+    /// The return value is the receipt: `removed` (id, path, bytes) for what went, `kept` (id, reason) for what
+    /// stayed — a prune that quietly skipped something would be worse than no prune at all. `dry_run` asks the
+    /// same question and changes nothing, which is why it is one function: what `--dry-run` prints is what
+    /// `--yes` does.
+    pub fn prune(&mut self, days: u64, dry_run: bool) -> Result<PruneReport, String> {
+        let now = now_ms();
+        let window = days.saturating_mul(24 * 60 * 60 * 1000);
+        let mut report = PruneReport::default();
+        let mut keep = Vec::new();
+        let mut remove = Vec::new();
+        for entry in &self.sessions {
+            if !entry.archived {
+                continue; // not a candidate: prune removes archived sessions only, and says nothing about live work
+            }
+            if entry.archived_ms == 0 {
+                keep.push((
+                    entry.id.clone(),
+                    "kept: no archive time recorded (archived by an earlier build); restore and archive it again \
+                     to make it prunable"
+                        .to_string(),
+                ));
+                continue;
+            }
+            let age = now.saturating_sub(entry.archived_ms);
+            if age < window {
+                keep.push((
+                    entry.id.clone(),
+                    format!("kept: archived {} day(s) ago, inside the {days}-day window", age / (24 * 60 * 60 * 1000)),
+                ));
+                continue;
+            }
+            let dir = entry.dir(&self.home);
+            if is_live(&dir) {
+                keep.push((
+                    entry.id.clone(),
+                    format!(
+                        "kept: a daemon is still serving {} — stop it first with `teamagents --state-root {} daemon \
+                         --stop`",
+                        dir.display(),
+                        dir.display()
+                    ),
+                ));
+                continue;
+            }
+            if crate::config::state_root_marked_as_evidence(&dir) {
+                keep.push((
+                    entry.id.clone(),
+                    format!("kept: {} carries the {} marker", dir.display(), crate::config::EVIDENCE_MARKER),
+                ));
+                continue;
+            }
+            remove.push((entry.id.clone(), dir));
+        }
+        for (id, dir) in remove {
+            let bytes = directory_bytes(&dir);
+            if !dry_run && dir.exists() {
+                std::fs::remove_dir_all(&dir).map_err(|e| format!("remove {}: {e}", dir.display()))?;
+            }
+            report.removed.push((id.clone(), dir, bytes));
+            if !dry_run {
+                self.sessions.retain(|session| session.id != id);
+            }
+        }
+        report.kept = keep;
+        if !dry_run && !report.removed.is_empty() {
+            self.save()?;
+        }
+        Ok(report)
     }
 
     /// Remove a named session's directory and its record. Refused while a daemon holds it, and for the default.
@@ -501,6 +601,29 @@ pub fn refuse_if_live(dir: &Path, id: &str) -> Result<(), String> {
     ))
 }
 
+/// What `Registry::prune` did: what went, and why everything else stayed (D-435).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PruneReport {
+    /// (id, the directory removed, its size in bytes) for every session that went.
+    pub removed: Vec<(String, PathBuf, u64)>,
+    /// (id, the reason it stayed) for every archived session the window did not take.
+    pub kept: Vec<(String, String)>,
+}
+
+/// The bytes under a directory, best effort: a prune reports what it freed, and an unreadable subtree is reported
+/// as what could be measured rather than failing the deletion that already happened.
+fn directory_bytes(dir: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+    entries
+        .filter_map(Result::ok)
+        .map(|entry| match entry.file_type() {
+            Ok(kind) if kind.is_dir() => directory_bytes(&entry.path()),
+            Ok(_) => entry.metadata().map(|meta| meta.len()).unwrap_or(0),
+            Err(_) => 0,
+        })
+        .sum()
+}
+
 /// Whether a daemon is answering this session's socket. Connecting only reads the greeting.
 pub fn is_live(dir: &Path) -> bool {
     let socket = dir.join("daemon.sock");
@@ -545,6 +668,95 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    /// D-435: `[retention] archived_days` got its meaning — a prune removes archived sessions past the window and
+    /// reports why every other one stays. The four rules are one test on purpose: they are what stops a deletion
+    /// from taking a state root a user is working in, or one whose age nobody knows.
+    #[test]
+    fn prune_takes_only_archived_sessions_past_the_window_and_says_why_the_rest_stay() {
+        let scratch = Scratch::new("prune");
+        let mut registry = Registry::load(scratch.path()).unwrap();
+        let old = registry.new_session("old").unwrap();
+        let fresh = registry.new_session("fresh").unwrap();
+        let live = registry.new_session("live").unwrap();
+        let undated = registry.new_session("undated").unwrap();
+        // one registry, one file: `Registry` is a read-modify-write of `sessions.json` with no lock, so a test
+        // that loaded a second copy would clobber the first one's rows on `save` (see the decision's ceiling note)
+        let working = registry.new_session("working").unwrap();
+        registry.archive(&old.id).unwrap();
+        registry.archive(&fresh.id).unwrap();
+        registry.archive(&live.id).unwrap();
+        registry.archive(&undated.id).unwrap();
+        let day = 24 * 60 * 60 * 1000u64;
+        // 40 days old, 2 days old, 40 days old but marked as evidence, and one with no archive time recorded
+        for index in 0..registry.sessions.len() {
+            registry.sessions[index].archived_ms = match registry.sessions[index].id.as_str() {
+                id if id == old.id => now_ms() - 40 * day,
+                id if id == fresh.id => now_ms() - 2 * day,
+                id if id == live.id => now_ms() - 40 * day,
+                _ => 0,
+            };
+        }
+        // a file in the archived session that is about to go, so the freed-byte measurement is really exercised
+        // (a named session's directory is empty until a daemon runs in it: measured, the first version of this
+        // test asserted bytes > 0 on an empty directory)
+        let payload = b"history that goes away".to_vec();
+        std::fs::write(scratch.path().join("archive").join(&old.id).join("session.sqlite"), &payload).unwrap();
+        let evidence = scratch.path().join("archive").join(&live.id);
+        std::fs::write(evidence.join(crate::config::EVIDENCE_MARKER), "kept on purpose").unwrap();
+        // the *unarchived* session is not a candidate at all: a prune never touches live work
+
+        let report = registry.prune(30, false).unwrap();
+        let removed: Vec<&str> = report.removed.iter().map(|(id, _, _)| id.as_str()).collect();
+        assert_eq!(removed, vec![old.id.as_str()], "{report:?}");
+        assert_eq!(report.removed[0].2, payload.len() as u64, "the freed bytes are measured: {report:?}");
+        assert!(!scratch.path().join("archive").join(&old.id).exists(), "the directory is gone");
+        let reasons: Vec<(&str, &str)> =
+            report.kept.iter().map(|(id, reason)| (id.as_str(), reason.as_str())).collect();
+        assert!(
+            reasons.iter().any(|(id, reason)| *id == fresh.id && reason.contains("inside the 30-day window")),
+            "{report:?}"
+        );
+        assert!(
+            reasons.iter().any(|(id, reason)| *id == undated.id && reason.contains("no archive time recorded")),
+            "{report:?}"
+        );
+        assert!(
+            reasons.iter().any(|(id, reason)| *id == live.id && reason.contains(crate::config::EVIDENCE_MARKER)),
+            "{report:?}"
+        );
+        assert!(
+            !reasons.iter().any(|(id, _)| *id == working.id),
+            "an unarchived session is not a candidate and needs no reason: {report:?}"
+        );
+        // the removal is durable: a reload from disk has no row and no directory for it, and the others are intact
+        let reloaded = Registry::load(scratch.path()).unwrap();
+        assert!(reloaded.find(&old.id).is_none(), "the record is gone from the registry");
+        for entry in [&fresh, &live, &undated, &working] {
+            assert!(reloaded.find(&entry.id).is_some(), "{} stays", entry.id);
+        }
+        assert!(scratch.path().join("archive").join(&fresh.id).exists());
+    }
+
+    /// D-435: a dry run asks the same question and changes nothing — what it prints is what `--yes` does.
+    #[test]
+    fn a_dry_run_reports_the_same_set_and_deletes_nothing() {
+        let scratch = Scratch::new("prune-dry");
+        let mut registry = Registry::load(scratch.path()).unwrap();
+        let entry = registry.new_session("old").unwrap();
+        registry.archive(&entry.id).unwrap();
+        let index = registry.sessions.iter().position(|session| session.id == entry.id).unwrap();
+        registry.sessions[index].archived_ms = now_ms() - 40 * 24 * 60 * 60 * 1000;
+        registry.save().unwrap();
+
+        let dry = registry.prune(30, true).unwrap();
+        assert_eq!(dry.removed.len(), 1, "{dry:?}");
+        assert!(scratch.path().join("archive").join(&entry.id).exists(), "a dry run deletes nothing");
+        assert!(Registry::load(scratch.path()).unwrap().find(&entry.id).is_some(), "and keeps the row");
+        let wet = registry.prune(30, false).unwrap();
+        assert_eq!(wet.removed, dry.removed, "the same set, measured the same way");
+        assert!(!scratch.path().join("archive").join(&entry.id).exists());
     }
 
     #[test]

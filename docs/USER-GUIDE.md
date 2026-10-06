@@ -274,9 +274,17 @@ api_key_env = "ANYSEARCH_API_KEY"
 deliveries older than N days are dropped from the session database, while the log's head, a pending wait's fact,
 a non-terminal instance's newest lifecycle event and your evaluation evidence are never evicted — the rule is
 `verification/tla/V2Retention.tla`, with four refuted controls. `history_days = 0` (the default) keeps the full
-history. `archived_days` is accepted and **not** applied: this build keeps one session per state root, so there
-is no archived-session set to walk. To keep a session's history whatever the config says, create a file named
-`EVIDENCE` in its state root — `doctor`'s `retention` row reports both cases.
+history. `[retention] archived_days = N` is the same window for **archived sessions**, applied by
+`teamagents sessions prune` (D-435): an archived session is removed — its directory and its record — once it has
+been archived for more than N days, and `sessions prune --dry-run` shows exactly what `--yes` would remove, with a
+line per archived session that stays and the reason (`inside the N-day window`, `no archive time recorded` for a
+row archived before that field existed, `carries the EVIDENCE marker`). It is deliberately narrow: only
+**archived** sessions are candidates at all (the state root you are working in is never one), a session a daemon
+is still serving is kept with the lever to stop it, and the `EVIDENCE` marker wins over the window. `sessions
+prune --days N` overrides the configured window; it refuses `--days 0` (a window of nothing keeps everything, as
+`history_days = 0` does) and without `--yes` it only tells you what to add. To keep a session's history whatever
+the config says, create a file named `EVIDENCE` in its state root — `doctor`'s `retention` row reports both
+cases.
 
 ### 2.1 Acceptance checks (`[[checks]]`)
 
@@ -597,6 +605,8 @@ teamagents sessions search --query "tests failed"   # search every session's con
 teamagents --session refactor           # attach the TUI to it (`exec --session refactor "…"` for one turn)
 teamagents sessions archive --id refactor       # move it aside (refused while a daemon runs it)
 teamagents sessions delete --id refactor --yes  # remove its directory and history
+teamagents sessions prune --dry-run      # what `[retention] archived_days` would remove, and why the rest stays
+teamagents sessions prune --yes          # do it (needs the window from the config, or `--days N`)
 teamagents automations add --every 60 --prompt "summarize the changelog"   # a schedule the daemon runs (D-367)
 teamagents automations                  # id, state, next run, last goal
 teamagents automations pause|resume --id ID    # stop it, or re-arm it one period out

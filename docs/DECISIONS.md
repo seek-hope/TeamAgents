@@ -20,6 +20,61 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-435 `[retention] archived_days` is applied: `sessions prune` (2026-10-06)
+
+**The gap this closes has been in the record since D-245.** `[retention] archived_days` was accepted and never
+applied, because this build kept one session per state root and there was no archived set to walk; `doctor` said
+so, `docs/CONFIG.md` said so, and `review/config_keys.py` listed the key as known-unserved. Named sessions
+(D-364, D-429) gave the key a meaning at last: an **archived** session whose archive time is older than the window
+can go.
+
+**The rule is deliberately narrower than "delete what is old".** `Registry::prune` takes a session only when all
+five hold, and `teamagents sessions prune` is the lever:
+
+* the row is **archived** — the state root a user works in is the base itself, which is not a registry row, so it
+  cannot be chosen at all;
+* its archive time is **recorded** (`archived_ms` — a new, additive field written by `sessions archive`): a row
+  from before that field existed reads as 0 and is **kept**, because the rule deletes only what it can date;
+* the window has **passed**;
+* no daemon is **serving** it (the same `is_live` the archive and delete verbs refuse on);
+* its state root carries no **`EVIDENCE`** marker (D-245's rule, which existed for history and now also guards the
+  whole directory).
+
+Every archived session that stays is reported with the reason (`inside the N-day window`, `no archive time
+recorded`, `a daemon is still serving … stop it first with …`, `carries the EVIDENCE marker`), and the verb
+refuses to guess: with no window in the config and no `--days N` it says so, `--days 0` is refused (a window of
+nothing keeps everything, exactly as `history_days = 0` does), and without `--yes` it only says what to add.
+`--dry-run` asks the *same* question through the same function and deletes nothing, which is why that is one code
+path and not two.
+
+**Formal material.** `verification/tla/V2Prune.tla`: one safety property, `NothingThatShouldStayLeaves` (a monitor
+records a removal the intended rule would have kept), plus `TakenIsGone`; four counterfactuals — one per guard —
+are each refuted by it. Two configuration defects the modelling caught are recorded rather than smoothed over:
+the first draft put `served` and `marked` on the *same* session, so neither counterfactual could fire (the other
+guard always masked it — the same "a control must break exactly the rule it names" discipline D-434's round
+learned), and the session meant to exercise the window guard had to carry a recorded archive time or the dating
+guard caught it first.
+
+**Evidence.** `sessions::tests::prune_takes_only_archived_sessions_past_the_window_and_says_why_the_rest_stay`
+(the four guards, the freed-byte measurement, and that the removal is durable in the registry),
+`...::a_dry_run_reports_the_same_set_and_deletes_nothing`, `cli::tests::sessions_prune_needs_a_window_and_a_
+confirmation_and_its_dry_run_deletes_nothing` (the contract, with the real binary), and the live half
+`review/dogfood/sessions_prune.py` — it backdates an archive by rewriting `archived_ms` in `sessions.json`, which
+is the file the verb reads, and then checks the directory *and* the registry record after `--yes` (1 KiB freed,
+the marked and fresh sessions intact). Also in this round: `doctor`'s retention row stopped warning about
+`archived_days` (it is a supported setting now) and names the lever, `docs/CONFIG.md`'s row for the key is
+regenerated from the field's own doc comment, and `review/config_keys.py`'s known-unserved entry records the new
+reading site instead of the old gap.
+
+**A test-soundness fix that came out of the same runs.** `v2_supervisor::a_task_driven_worker_turn_sees_a_live_
+user_grant` failed twice today on a loaded machine, with two different assertions. Its second one — "every request
+*recorded* after the grant offers `shell`" — is not a property this product can have: the offered surface is
+resolved when a request is **prepared** (`driver::team_kernel` reads the grants), while its receipt is recorded
+later, so a request already in flight when the grant lands is recorded without it. The assertion now checks the
+**last** request, which is prepared after the grant by construction; three consecutive full runs of that file are
+green. This is D-407's shape (a scheduling outcome does not have a bound) applied to the *offer* rather than the
+wait, and it is recorded because the flake was in the test, not in the grant.
+
 ## D-434 Project trust per repository, and the config is found by walking up (2026-10-06)
 
 **What was missing.** `docs/PRODUCT-COMPARISON.md` §2 item 9 listed the last two halves of the project-config

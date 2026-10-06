@@ -5,6 +5,20 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
+## 0. Gate status (re-run 2026-10-06 at `MATERIAL-COMMIT`)
+
+* **D-435 made `[retention] archived_days` real, and re-ran the targets on this tree (2026-10-06).**
+  `verification/tla/V2Prune.tla` is new: it models what `sessions prune` may take — an archived session whose
+  archive time is recorded, older than the window, unserved and unmarked — with `NothingThatShouldStayLeaves`
+  and `TakenIsGone`, and four counterfactual controls, one per guard (`MC_prune_window.cfg`,
+  `MC_prune_dating.cfg`, `MC_prune_live.cfg`, `MC_prune_evidence.cfg`), each refuted by the safety property.
+  `make verify-model-all`: all **38** configurations `No error has been found` (rc 0). `make
+  verify-model-counterexamples`: all **109** negative controls refuted (rc 0). `make verify-kani` reports
+  `Complete - 3 successfully verified harnesses, 0 failures, 3 total` (rc 0). The modelling caught two
+  configuration defects of its own, both recorded in `verification/README.md`'s row: a first draft's
+  counterfactuals were masked by each other (two guards on one session), and the session meant to test the
+  *window* guard also had to carry a recorded archive time or the dating guard caught it first.
+
 ## 0. Gate status (re-run 2026-10-06 at `833b8576`)
 
 * **D-434 added per-repository project trust and the walk up, and re-ran all three targets on this tree

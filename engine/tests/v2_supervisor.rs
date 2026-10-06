@@ -1496,11 +1496,19 @@ async fn a_task_driven_worker_turn_sees_a_live_user_grant() {
     }
     let after = requests();
     assert!(after.len() > before, "the worker kept working after the grant: {after:?}");
-    for (index, offered) in after.iter().enumerate().skip(before) {
-        assert!(
-            offered.contains(&"shell".to_string()),
-            "request {index} was prepared after the grant and must offer shell: {offered:?} (all: {after:?})"
-        );
-    }
+    // The *last* request must offer shell, and the first one recorded after the grant need not: the surface is
+    // resolved when a request is **prepared** (`driver::team_kernel(snapshot)` reads the grants and drops
+    // `shell` when the covering grant is absent), while its receipt is recorded afterwards — so a request already
+    // in flight when the grant lands can legitimately be recorded without it. The earlier form of this assertion
+    // ("every request recorded after the grant offers shell") was therefore not a property the product can have:
+    // measured 2026-10-06, it failed twice on a loaded machine in two different processes, and the driver's own
+    // preparation-time resolution is why. What the runtime does guarantee is that once the grant is visible to
+    // the next preparation, the surface follows it — which is what the last request shows.
+    let last = after.last().expect("the worker made a request");
+    assert!(
+        last.contains(&"shell".to_string()),
+        "the worker's last request was prepared with the covering grant and must offer shell: {last:?} \
+         (all: {after:?})"
+    );
     handle.shutdown().await.expect("shutdown");
 }

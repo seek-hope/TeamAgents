@@ -73,7 +73,8 @@ REFUSED_AT_LOAD = {
 # field -> why it is allowed to have no read site
 KNOWN_UNSERVED = {
     "codex_profile": "D-75: refused at load — an external Codex profile is not part of this release",
-    "archived_days": "D-245: accepted and not applied — one session per state root (A33) means no archived set",
+    "archived_days": "applied by `sessions prune` (D-435), which reads it from the catalog in `main.rs` — the \
+                      argv/pruning surface, which this audit counts as plumbing",
     "deadline_minutes": "applied by the loader: config.rs turns it into each goal's absolute deadline",
 }
 
