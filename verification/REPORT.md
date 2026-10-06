@@ -5,7 +5,7 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
-## 0. Gate status (re-run 2026-10-06 at `MATERIAL-COMMIT`)
+## 0. Gate status (re-run 2026-10-06 at `f1e7429f`)
 
 * **D-437 added the ssh sandbox backend, and re-ran the targets on this tree (2026-10-06).** `V2Isolation.tla` was
   already parametric over `Backends`, so the third backend needed configurations, not a specification: the
