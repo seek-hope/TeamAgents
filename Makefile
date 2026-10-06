@@ -4,7 +4,7 @@ CRATES := core engine tui
 CARGO_FLAGS ?= --offline --locked
 
 .PHONY: help check fmt fmt-check lint test build pty probe-offline probe-models hygiene language-check \
-        check-nobwrap check-broken-sandbox verify-tools verify-model verify-model-all \
+        check-nobwrap check-broken-sandbox benchmark-receipts verify-tools verify-model verify-model-all \
         verify-model-counterexamples verify-model-wide verify-model-sim verify-kani release-rehearsal
 
 help:
@@ -28,6 +28,7 @@ help:
 	@echo 'make verify-model-counterexamples  the negative controls, every one of which must be refuted'
 	@echo 'make verify-model-wide  the wide control-plane configuration (slow, best effort)'
 	@echo 'make verify-model-sim  any configuration by random simulation (minutes; invariants only)'
+	@echo 'make benchmark-receipts JOBS=DIR [BENCH=swebench|tau3|tb]  a benchmark run's receipts (D-421)'
 	@echo 'make verify-kani  the Kani proofs of the paging arithmetic'
 	@echo 'first run with downloads: make check CARGO_FLAGS=--locked'
 
@@ -107,6 +108,14 @@ probe-offline: build
 probe-models: build
 	python3 review/dogfood/probes.py --self-check
 	python3 -u review/dogfood/probes.py --set models
+
+# D-419/D-420/D-421: read a benchmark run's receipts before believing its number — the trajectory it kept, a second
+# reading of its verdict, and (SWE-bench) whether the guard against fetching a published fix was actually exercised.
+# Not part of `make check`: it needs a run directory, passed as `JOBS=<dir>` (`BENCH=tau3` for a tau3-bench run,
+# `BENCH=tb` for Terminal-Bench).
+benchmark-receipts:
+	@test -n "$(JOBS)" || { echo 'set JOBS=<run directory> (e.g. make benchmark-receipts JOBS=/tmp/swebench-final)'; exit 2; }
+	python3 review/benchmark/harness_health.py --$(if $(BENCH),$(BENCH),swebench) "$(JOBS)"
 
 # Formal verification (TLA+/TLC; not part of make check; the first run downloads the pinned tla2tools.jar)
 TLA_TOOLS_DIR ?= $(HOME)/.local/share/teamagents-verify

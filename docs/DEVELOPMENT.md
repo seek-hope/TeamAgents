@@ -185,6 +185,10 @@ make verify-model-all   # small configurations for all twenty-five modules (~1 m
 make verify-model-counterexamples  # every negative control: each must be *refuted*
 make verify-model-wide  # wide control-plane configuration (hundreds of millions of states, slow)
 make verify-kani        # Kani proofs for the paging arithmetic (needs the Kani toolchain)
+make benchmark-receipts JOBS=<dir> [BENCH=swebench|tau3|tb]
+                        # read a benchmark run's receipts before believing its number (D-421/D-430):
+                        # did every attempt keep its trajectory, does its verdict have a second
+                        # reading, and (SWE-bench) was the retrieval guard actually exercised?
 cargo test --offline --locked --manifest-path core/Cargo.toml --test v2_invariants
 ```
 

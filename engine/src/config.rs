@@ -729,6 +729,46 @@ mod tests {
     /// the merge path's refusal); D-244 dissolved it when the merge path became the product's path, because that
     /// difference would have refused to boot on the shipped config's `~/.agents/skills` — the case D-66/D-168
     /// designed a `doctor` warning for (`doctor_reports_the_skills_registry_and_missing_configured_paths`).
+    /// D-428: a `-c` override and the same value written into the file are the *same* configuration — which is what
+    /// lets the benchmark adapter move its arms from a rewritten file to CLI overrides without changing what an arm
+    /// means (and why the numbers from the file-based arms still describe the CLI-based ones).
+    #[test]
+    fn a_config_override_and_the_same_file_value_load_to_the_same_catalog() {
+        let dir = std::env::temp_dir().join(format!("ta-override-equiv-{}", uuid::Uuid::new_v4()));
+        let cfg = dir.join("teamagents");
+        std::fs::create_dir_all(&cfg).unwrap();
+        let base = "[models.m]\nprovider = \"compatible\"\nmodel = \"x\"\n";
+        let file_with_limits =
+            format!("{base}\n[limits]\ntool_output_chars = 8000\ncontext_keep_chars = 64000\ndeadline_minutes = 15\n");
+        // A: the values in the file
+        std::fs::write(cfg.join("config.toml"), file_with_limits).unwrap();
+        let previous = std::env::var("XDG_CONFIG_HOME").ok();
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
+        let from_file = load_user_config_for_with(&dir, &[]).expect("file load").0.limits;
+        // B: the values as `-c` overrides on a file that has none
+        std::fs::write(cfg.join("config.toml"), base).unwrap();
+        let from_overrides = load_user_config_for_with(
+            &dir,
+            &[
+                "limits.tool_output_chars=8000".to_string(),
+                "limits.context_keep_chars=64000".to_string(),
+                "limits.deadline_minutes=15".to_string(),
+            ],
+        )
+        .expect("override load")
+        .0
+        .limits;
+        match previous {
+            Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+        assert_eq!(from_overrides, from_file, "an override is not a second, weaker path");
+        assert_eq!(from_file.tool_output_chars, Some(8000));
+        assert_eq!(from_file.context_keep_chars, Some(64000));
+        assert_eq!(from_file.deadline_minutes, Some(15));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// D-428: `-c key=value` walks dotted keys, takes TOML values where they parse and strings where they do not,
     /// and refuses a key this build does not serve (a typo must not be a silent no-op).
     #[test]

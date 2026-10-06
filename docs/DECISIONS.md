@@ -20,6 +20,41 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-430 The benchmark harness reads its receipts as a make target, and its arms are `-c` overrides (2026-10-05)
+
+**Two small changes to the tooling the evidence rests on.**
+
+* **`make benchmark-receipts JOBS=<run dir> [BENCH=swebench|tau3|tb]`** wraps `review/benchmark/harness_health.py`
+  (D-421), so the three questions that caught D-382/D-419/D-420 are one command a reader can run against any run
+  directory instead of a script they have to know about. It is not part of `make check` (it needs a run directory),
+  and it fails a run whose attempts kept no trajectory or whose verdict has no second reading — live: the guarded
+  SWE-bench run passes and reports the fetch attempts its trajectories contain.
+* **The Terminal-Bench adapter's arms are now `-c key=value` overrides** instead of a rewritten config file per
+  arm: `TEAMAGENTS_DEADLINE_MINUTES`, `TEAMAGENTS_MAX_TOOL_SECONDS`, `TEAMAGENTS_TOOL_OUTPUT_CHARS` and
+  `TEAMAGENTS_CONTEXT_KEEP_CHARS` travel on the command line (D-428 was added because of exactly this workflow),
+  and the config the adapter uploads holds only the model profile.
+
+**The equivalence that makes the second change safe, written as a test.** The arms' *numbers* (D-425/D-426) came
+from the file-based path, so the CLI path had to be shown to be the same configuration rather than a second, weaker
+one: `config::a_config_override_and_the_same_file_value_load_to_the_same_catalog` loads a config with
+`[limits] tool_output_chars = 8000 …` and an empty one with the equivalent `-c` overrides and asserts the two
+`GoalLimits` are equal.
+
+**Two defects the change's own smoke test found, both in the harness.** `exec -c …` is refused — the overrides are
+**global** flags and must precede the verb — so the first run exited 2 with the product's own usage error; and the
+second run failed because the **container's binary predated `-c`** (the same staleness the D-416 and D-427 rounds
+hit: a string probe on the binary is the check, and it belongs in the smoke test). After both, the run completed
+with reward 1.0 and collected its state.
+
+**And one thing that is explicitly *not* a receipt.** The first attempt to show the overrides took effect queried
+`instances.profile_json` — which records only `model/instructions/options/context_window`, so `None` there proves
+nothing about the effective limits (they are resolved from the catalog when the driver builds its request, D-428's
+own path) — and a single-run prompt comparison is confounded, because two runs of the same task take different
+trajectories (measured here: a plain run converged in 11 requests at a 5 197-token median while the override run
+took 62 requests at 33 692, which is a statement about the runs, not about the limits, and is exactly the confound
+D-424 documented). The effect of these values is established by D-426's controlled arms, and the *mechanism* by the
+equivalence test above.
+
 ## D-429 The TUI offers the sessions under this base, and switching is one command (2026-10-05)
 
 **Why.** `docs/PRODUCT-COMPARISON.md` §2 item 1 has listed "the TUI has no picker" as the remaining half of the

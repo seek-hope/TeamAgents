@@ -60,12 +60,21 @@ INDEPENDENT_VERIFICATION = os.environ.get("TEAMAGENTS_INDEPENDENT_VERIFICATION")
 # D-410: `TEAMAGENTS_DEADLINE_MINUTES` gives every goal a deadline (the config's `[limits] deadline_minutes`),
 # which is what makes the runtime's wrap-up note reach the model before the wall.
 DEADLINE_MINUTES = os.environ.get("TEAMAGENTS_DEADLINE_MINUTES", "")
-# D-415: `TEAMAGENTS_MAX_TOOL_SECONDS` writes `[limits] max_tool_seconds` — the ceiling on what one model
+# D-415: `TEAMAGENTS_MAX_TOOL_SECONDS` sets `limits.max_tool_seconds` — the ceiling on what one model
 # tool call may ask for. Unset means the product's own behaviour (no ceiling).
 MAX_TOOL_SECONDS = os.environ.get("TEAMAGENTS_MAX_TOOL_SECONDS", "")
-# D-426: the two context-cost limits (`[limits]`), so an arm can run lean without a config rewrite.
+# D-426: the two context-cost limits, so an arm can run lean.
 TOOL_OUTPUT_CHARS = os.environ.get("TEAMAGENTS_TOOL_OUTPUT_CHARS", "")
 CONTEXT_KEEP_CHARS = os.environ.get("TEAMAGENTS_CONTEXT_KEEP_CHARS", "")
+
+# The arm's `[limits]` values, as `-c` overrides (D-428): `key=value` strings, TOML-typed by the CLI.
+OVERRIDES = [f"limits.{key}={value}" for key, value in (
+    ("independent_verification", "true" if INDEPENDENT_VERIFICATION else ""),
+    ("deadline_minutes", DEADLINE_MINUTES),
+    ("max_tool_seconds", MAX_TOOL_SECONDS),
+    ("tool_output_chars", TOOL_OUTPUT_CHARS),
+    ("context_keep_chars", CONTEXT_KEEP_CHARS),
+) if value]
 # D-385 `--accept` checks for the A/B (see `run`); empty keeps every trial a bare goal.
 ACCEPT = json.loads(os.environ.get("TEAMAGENTS_ACCEPT", "[]"))
 
@@ -84,7 +93,7 @@ timeout = 300
 max_retries = 3
 generation_options = {{ reasoning_effort = "{effort}" }}
 {images}
-{limits}"""
+"""
 
 
 class TeamAgentsAgent(BaseInstalledAgent):
@@ -123,12 +132,6 @@ class TeamAgentsAgent(BaseInstalledAgent):
                     key_env=API_KEY_ENV,
                     effort=REASONING_EFFORT,
                     images="images = true\n" if IMAGES else "",
-                    limits=("[limits]\n"
-                            + ("independent_verification = true\n" if INDEPENDENT_VERIFICATION else "")
-                            + (f"deadline_minutes = {DEADLINE_MINUTES}\n" if DEADLINE_MINUTES else "")
-                            + (f"max_tool_seconds = {MAX_TOOL_SECONDS}\n" if MAX_TOOL_SECONDS else "")
-                            + (f"tool_output_chars = {TOOL_OUTPUT_CHARS}\n" if TOOL_OUTPUT_CHARS else "")
-                            + (f"context_keep_chars = {CONTEXT_KEEP_CHARS}\n" if CONTEXT_KEEP_CHARS else "")),
                 )
             )
             local_config = handle.name
@@ -159,6 +162,10 @@ class TeamAgentsAgent(BaseInstalledAgent):
                 f"--cwd {shlex.quote(WORKDIR)}",
                 f"--state-root {shlex.quote(STATE_DIR + '/v2')}",
                 "--full-auto",
+                # D-428: the arm's knobs travel as `-c` overrides, so a run needs no per-arm config file (and the
+                # adapter exercises the feature added for exactly this). They are **global** flags, so they go
+                # before the verb: `exec -c …` is refused by the parser (measured, first smoke of this change).
+                *[f"-c {shlex.quote(override)}" for override in OVERRIDES],
                 "exec",
                 "--json",
                 f"--timeout {TURN_TIMEOUT_SEC}",
