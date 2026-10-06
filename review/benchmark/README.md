@@ -415,6 +415,19 @@ the open internet. That number sits in the range published agentic harnesses rep
 unguarded 97 % never did. N = 12 and one shot at the raw statement, so it is a floor-shaped data point, not a
 leaderboard row; the pipeline can be pointed at the full 500 if a longer run is wanted.
 
+## `tb_silence.py` — the same question asked of Terminal-Bench (D-431)
+
+```bash
+python3 review/benchmark/tb_silence.py /tmp/ta-harbor
+```
+
+The Terminal-Bench adapter does not keep per-turn `exec` reports, so this asks the product's own collected state
+instead: for every settled goal in every `session.sqlite` under the given job directories, was there any
+**assistant text**, and did the settlement carry a **summary**? Measured 2026-10-06 over every trial still on
+disk: **0 of 40 settled trials** without text and none without a summary, against 10.5 % of tau3-bench's retail
+dialogues. Those 40 are six tasks repeated rather than a random sample, so this is an observation about the
+*dialogue* shape, not a Terminal-Bench rate.
+
 ## `tau3_silence.py` — dialogues that ended in silence (D-431)
 
 ```bash

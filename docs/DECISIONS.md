@@ -75,6 +75,15 @@ goal's row keeps its summary while the checkpoint moves to the new ACTIVE goal),
 an active goal and for a whitespace summary), and the two real runs above, read with
 `review/benchmark/tau3_silence.py`.
 
+**The pattern is the dialogue shape, not the product's reporting.** The same question asked of every
+Terminal-Bench trial still on disk (`review/benchmark/tb_silence.py`, a proxy over the collected state: did the settled
+goal's run leave assistant text, and did it carry a summary) sees **0 of 40 settled trials** with no text and none
+with an empty summary, while tau3-bench's dialogues produced it in 10.5 %. Those 40 trials are six tasks repeated
+rather than a random sample, so this is an observation and not a rate for Terminal-Bench; what it does say is that
+the shape that produces silence is a *conversation* — the user says "yes, go ahead", the model does the work and
+settles with `finish`, and nobody asked it for a sentence — where a one-shot instruction ends with a report
+because the task itself asks for one.
+
 **No formal material, and why.** Nothing here adds or changes a protocol transition: the checkpoint's and the
 `goals` read's summary are projections of an event that already exists, and the reply fallback is a read-only
 client rule over data the runtime already committed. There is no new state to reach, so there is nothing for a
@@ -89,7 +98,13 @@ scratch directory (`/tmp/ta-config-selfgrant-<pid>`), and a later one failed
 existing). Two tests then repointed the same variable at the same time — one read the other's directory, and a
 panic mid-test left its scratch root behind. The test takes the lock now; two consecutive full `make check` runs
 are green. The lesson is the same shape as this session's others: a gate that fails once and passes on a re-run is
-not evidence of a flake until it is explained, and the explanation was in the change's own neighbourhood. (the fallback and its four
+not evidence of a flake until it is explained, and the explanation was in the change's own neighbourhood.
+
+A third flake had no such explanation and is the machine's: `a_task_driven_worker_turn_sees_a_live_user_grant`
+failed under `make check` while a tau3-bench run was using the host, and passed in isolation in 0.11 s. That is
+D-407's own bound ("20 s was enough on an idle machine and not under `make check`") recurring under a heavier
+load, which is worth knowing rather than fixing: the test waits for a *scheduling* outcome, so any bound is a
+guess about the machine. (the fallback and its four
 boundaries), `v2_daemon::the_checkpoint_carries_the_completion_summary_of_the_goal_it_reports` (null before the
 settlement, the summary after, over the real socket), `v2app_tests::a_settled_goal_shows_the_models_own_completion_summary`
 (collapsed onto the status line, absent for an active goal and for a whitespace summary), and the re-run of the
