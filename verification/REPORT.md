@@ -5,6 +5,23 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
+## 0. Gate status (re-run 2026-10-06 at `MATERIAL-COMMIT`)
+
+* **D-434 added per-repository project trust and the walk up, and re-ran all three targets on this tree
+  (2026-10-06).** `verification/tla/V2ProjectTrust.tla` is new: it models the decision *under* `V2Trust` — which
+  repository's config a session may read — over an equivalence class of locations, and its configuration set
+  landed in both targets (`MC_projecttrust.cfg` positive, `MC_projecttrust_raw.cfg`,
+  `MC_projecttrust_project_grants.cfg` and `MC_projecttrust_stale.cfg` as negative controls, each refuted by the
+  property it should be: canonicalization's equivalence, the safety property when a repository's own
+  `[permissions]` table answers, and the same safety property for a grant that outlives its entry). `make
+  verify-model-all`: all **37** configurations `No error has been found` (rc 0). `make
+  verify-model-counterexamples`: all **105** negative controls refuted (rc 0). `make verify-kani` reports
+  `Complete - 3 successfully verified harnesses, 0 failures, 3 total` (rc 0). The JVM's own reasoning in the
+  round: the first draft of the module let the user edit the config while a session was live and TLC refuted the
+  safety invariant on a state the product cannot be in, and the staleness property first carried a monitor
+  variable of its own that fired in the *positive* configuration on the states safety already covers — so the
+  monitor was deleted as redundant and staleness is checked through the safety property.
+
 ## 0. Gate status (re-run 2026-10-05 at `3f9fec94`)
 
 * **D-425/D-426/D-427 changed the wire view and re-ran all three targets on this tree (2026-10-05).** The context

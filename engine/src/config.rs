@@ -1127,8 +1127,48 @@ provider = "anysearch"
 
 // -- project config + permissions --------------------------------------------------
 
+/// The project config a session at `cwd` reads: the nearest ancestor (or `cwd` itself) that carries
+/// `.teamagents/config.toml` (D-434).
+///
+/// It used to be exactly `<cwd>/.teamagents/config.toml`, so running from a subdirectory of a repository — the
+/// normal case for a task that touches one package — silently used no project config at all, which
+/// `docs/PRODUCT-COMPARISON.md` §2 listed as a remaining gap. The walk stops at the filesystem root, and a `cwd`
+/// with no project config still answers `<cwd>/.teamagents/config.toml` so every message about "the project
+/// config" names the same path it always did.
 pub fn project_config_path(cwd: &Path) -> PathBuf {
+    let mut at = Some(cwd);
+    while let Some(directory) = at {
+        let candidate = directory.join(".teamagents").join("config.toml");
+        if candidate.is_file() {
+            return candidate;
+        }
+        at = directory.parent();
+    }
     cwd.join(".teamagents").join("config.toml")
+}
+
+/// The trust decision (D-434): which repository's config a session may read, and why.
+///
+/// `trusted_projects` is a list of directories in the user's own config, and the comparison is between
+/// **canonical** paths on both sides — so listing a symlink and opening its target is the same decision, a
+/// missing entry matches nothing (fail closed), and `/repo` does not trust `/repo/sub` or `/repo-two`. The older
+/// `trust_project = true` still means "any repository", which is what it always meant; the list is the precise
+/// version of the same opt-in.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Permissions {
+    pub trust_all: bool,
+    pub mode: String,
+    pub trusted_projects: Vec<PathBuf>,
+}
+
+/// The project root a session at `cwd` is judged by: the directory the config was found in, canonicalized when
+/// the filesystem will say so (a bind mount or a symlinked checkout then compares like any other path).
+pub fn project_root_of(cwd: &Path) -> PathBuf {
+    let configured = project_config_path(cwd);
+    // `<root>/.teamagents/config.toml` → `<root>`; the fallback path keeps the last two components off
+    let root =
+        configured.parent().and_then(|dir| dir.parent()).map(Path::to_path_buf).unwrap_or_else(|| cwd.to_path_buf());
+    std::fs::canonicalize(&root).unwrap_or(root)
 }
 
 /// What the project-config merge decided (D-244).
@@ -1139,12 +1179,17 @@ pub fn project_config_path(cwd: &Path) -> PathBuf {
 /// prints it into its own log and `doctor` shows the same facts where the user looks.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProjectMerge {
-    /// The file the merge looked for: `<cwd>/.teamagents/config.toml`.
+    /// The file the merge read: the nearest ancestor's `.teamagents/config.toml` (D-434).
     pub path: PathBuf,
+    /// The directory that file belongs to, canonicalized — what the trust decision was made about.
+    pub root: PathBuf,
     /// Was there a non-empty file?
     pub present: bool,
-    /// The user's `[permissions] trust_project` answered true — the only source of this decision.
+    /// Did the user trust this repository: `[permissions] trusted_projects` containing `root`, or
+    /// `trust_project = true` for any repository.
     pub trusted: bool,
+    /// Why: `trusted_projects:<canonical path>`, `trust_project`, or `none` when nothing granted it.
+    pub trust_source: String,
     /// Project entries that landed, as `<class>:<name>` (`model:fast`, `tool:web`, `skills_paths`, …).
     pub accepted: Vec<String>,
     /// Project entries that did not, each with the rule that refused it.
@@ -1204,6 +1249,24 @@ pub fn apply_overrides(config: &mut toml::Value, overrides: &[String]) -> Result
     Ok(applied)
 }
 
+/// The trust decision itself (D-434): canonical paths on both sides, no prefix matching, fail closed.
+///
+/// A `trusted_projects` entry is compared after `canonicalize`, so a symlinked checkout and its target are the
+/// same repository, and an entry that resolves nowhere matches nothing rather than everything. `trust_project =
+/// true` keeps its old meaning ("any repository") and is reported as such so a user can tell the coarse opt-in
+/// from a listed one.
+pub fn trust_decision(root: &Path, permissions: &Permissions) -> (bool, String) {
+    if permissions.trust_all {
+        return (true, "trust_project".to_string());
+    }
+    for entry in &permissions.trusted_projects {
+        if std::fs::canonicalize(entry).map(|listed| listed == root).unwrap_or(false) {
+            return (true, format!("trusted_projects:{}", root.display()));
+        }
+    }
+    (false, "none".to_string())
+}
+
 pub fn load_user_config_for(cwd: &Path) -> Result<(UserConfig, ProjectMerge), String> {
     load_user_config_for_with(cwd, &[])
 }
@@ -1240,10 +1303,18 @@ pub fn load_user_config_for_with(cwd: &Path, overrides: &[String]) -> Result<(Us
         }
     }
     project_permissions(&project)?;
-    let (trusted, _mode) = project_permissions(&user)?;
+    let permissions = project_permissions(&user)?;
     outcome.present = !project_text.trim().is_empty();
+    let root = project_root_of(cwd);
+    outcome.root = root.clone();
+    let (trusted, source) = trust_decision(&root, &permissions);
     outcome.trusted = trusted;
-    let untrusted = "the project config is untrusted: set [permissions] trust_project = true in your own config";
+    outcome.trust_source = source.clone();
+    let untrusted = format!(
+        "the project config is untrusted: add {} to [permissions] trusted_projects in your own config, or set \
+         trust_project = true to trust any repository",
+        root.display()
+    );
     let mut merged = toml::map::Map::new();
     let table = |v: &toml::Value, key: &str| -> toml::map::Map<String, toml::Value> {
         v.get(key).and_then(|t| t.as_table()).cloned().unwrap_or_default()
@@ -1307,7 +1378,9 @@ pub fn load_user_config_for_with(cwd: &Path, overrides: &[String]) -> Result<(Us
         }
     }
     if project.get("permissions").is_some() {
-        outcome.refused.push("permissions (mode and trust_project are your own settings)".to_string());
+        outcome
+            .refused
+            .push("permissions (mode, trust_project and trusted_projects are your own settings)".to_string());
     }
     let catalog: UserConfig = toml::Value::Table(merged).try_into().map_err(|e| format!("bad config: {e}"))?;
     // the rules both loaders share — and, since D-244 wired this loader, *only* those: the one rule this path
@@ -1320,21 +1393,43 @@ pub fn load_user_config_for_with(cwd: &Path, overrides: &[String]) -> Result<(Us
     Ok((catalog, outcome))
 }
 
-fn project_permissions(user: &toml::Value) -> Result<(bool, String), String> {
+fn project_permissions(user: &toml::Value) -> Result<Permissions, String> {
     let Some(permissions) = user.get("permissions") else {
-        return Ok((false, "approved_scope".into()));
+        return Ok(Permissions { trust_all: false, mode: "approved_scope".into(), trusted_projects: Vec::new() });
     };
     let table = permissions.as_table().ok_or_else(|| "[permissions] must be a table in user config".to_string())?;
     // the same rule as the top level: `mod = "full_auto"` (a typo of `mode`, a *safety* setting) used to leave
     // `doctor` green and the session in `approved_scope` (measured 2026-09-27, D-161)
     for key in table.keys() {
-        if key != "mode" && key != "trust_project" && key != "sandbox" && key != "sandbox_image" {
+        if key != "mode"
+            && key != "trust_project"
+            && key != "trusted_projects"
+            && key != "sandbox"
+            && key != "sandbox_image"
+        {
             return Err(format!(
-                "{} ([permissions] takes mode, trust_project, sandbox and sandbox_image)",
+                "{} ([permissions] takes mode, trust_project, trusted_projects, sandbox and sandbox_image)",
                 unknown_key(key)
             ));
         }
     }
+    let trusted_projects = match table.get("trusted_projects") {
+        None => Vec::new(),
+        Some(value) => {
+            let list = value
+                .as_array()
+                .ok_or_else(|| format!("permissions.trusted_projects must be an array of paths, got {value}"))?;
+            list.iter()
+                .map(|entry| {
+                    entry
+                        .as_str()
+                        .filter(|path| !path.trim().is_empty())
+                        .map(PathBuf::from)
+                        .ok_or_else(|| format!("permissions.trusted_projects takes paths, got {entry}"))
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        }
+    };
     let trusted = match table.get("trust_project") {
         None => false,
         Some(value) => {
@@ -1351,7 +1446,7 @@ fn project_permissions(user: &toml::Value) -> Result<(bool, String), String> {
     if mode != "approved_scope" && mode != "full_auto" {
         return Err(format!("invalid permission mode {mode:?} in user config"));
     }
-    Ok((trusted, mode))
+    Ok(Permissions { trust_all: trusted, mode, trusted_projects })
 }
 
 /// Full-auto must be user-chosen in config or CLI; never from a project file.
@@ -1361,7 +1456,7 @@ pub fn permission_mode_from_config() -> Result<String, String> {
         return Ok("approved_scope".into());
     }
     let user: toml::Value = text.parse().map_err(|e| format!("bad TOML: {e}"))?;
-    Ok(project_permissions(&user)?.1)
+    Ok(project_permissions(&user)?.mode)
 }
 
 /// The sandbox backend the user's own config selects (D-369), or bubblewrap. It is a *safety* setting, so a typo
@@ -1664,6 +1759,90 @@ deadline_minutes = 5
 
     /// D-244: `[permissions]` is the user's own — a project cannot set the session mode, and it cannot grant
     /// itself the trust the gate is built on. Both are refused with a note; the mode stays the user's.
+    /// D-434: the project config is found by walking up from the working directory, and it is merged only when
+    /// the user trusted *that* repository. The comparison is between canonical paths, so a symlinked checkout and
+    /// its target are the same decision, a missing entry matches nothing, and a sibling whose path merely starts
+    /// with a listed one is a different repository.
+    #[test]
+    fn project_trust_is_the_canonical_root_the_user_listed() {
+        let _env = crate::env_lock();
+        let root = std::env::temp_dir().join(format!("ta-config-trust-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (home, repo, other) = (root.join("home"), root.join("repo"), root.join("repo-two"));
+        std::fs::create_dir_all(repo.join("pkg/src")).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", home.join(".config"));
+        write(&user_config_path(), &format!("[permissions]\ntrusted_projects = [\"{}\"]\n", repo.display()));
+        write(&project_config_path(&repo), "[skills_paths]\n");
+        write(&project_config_path(&repo), "skills_paths = [\"/project/skills\"]\n");
+        write(&project_config_path(&other), "skills_paths = [\"/other/skills\"]\n");
+
+        // a subdirectory finds the repository's config, and the listed repository is trusted
+        let (catalog, outcome) = load_user_config_for(&repo.join("pkg/src")).expect("load from a subdirectory");
+        assert_eq!(outcome.root, std::fs::canonicalize(&repo).unwrap(), "the root is the repository, not the cwd");
+        assert!(outcome.trusted, "{outcome:?}");
+        assert!(outcome.trust_source.starts_with("trusted_projects:"), "{outcome:?}");
+        assert_eq!(catalog.skills_paths, vec!["/project/skills".to_string()], "the project's entry landed");
+
+        // a sibling whose path starts with the listed one is *not* the listed repository
+        let (_, other_outcome) = load_user_config_for(&other).expect("load the sibling");
+        assert!(!other_outcome.trusted, "no prefix matching: {other_outcome:?}");
+        assert_eq!(other_outcome.trust_source, "none");
+        assert!(other_outcome.refused.iter().any(|entry| entry.starts_with("skills_paths")), "{other_outcome:?}");
+
+        // listing the symlink and opening the target is the same decision: `canonicalize` on both sides
+        let link = root.join("checkout");
+        std::os::unix::fs::symlink(&repo, &link).unwrap();
+        write(&user_config_path(), &format!("[permissions]\ntrusted_projects = [\"{}\"]\n", link.display()));
+        let (catalog, via_link) = load_user_config_for(&repo).expect("load through the listed symlink");
+        assert!(via_link.trusted && via_link.trust_source.starts_with("trusted_projects:"), "{via_link:?}");
+        assert_eq!(catalog.skills_paths, vec!["/project/skills".to_string()]);
+
+        // an entry that resolves nowhere matches nothing — fail closed, not open
+        write(
+            &user_config_path(),
+            &format!("[permissions]\ntrusted_projects = [\"{}\"]\n", root.join("ghost").display()),
+        );
+        let (_, ghost) = load_user_config_for(&repo).expect("load with a dangling entry");
+        assert!(!ghost.trusted, "a dangling entry must not trust anything: {ghost:?}");
+
+        // the coarse opt-in keeps its meaning, and says which source granted it
+        write(&user_config_path(), "[permissions]\ntrust_project = true\n");
+        let (_, coarse) = load_user_config_for(&other).expect("load with trust_project");
+        assert!(coarse.trusted && coarse.trust_source == "trust_project", "{coarse:?}");
+
+        // a project cannot add itself (or anything else) to the list: its `[permissions]` is the user's
+        write(&user_config_path(), &format!("[permissions]\ntrusted_projects = [\"{}\"]\n", repo.display()));
+        write(&project_config_path(&other), &format!("[permissions]\ntrusted_projects = [\"{}\"]\n", other.display()));
+        let (_, self_grant) = load_user_config_for(&other).expect("load the self-granting project");
+        assert!(!self_grant.trusted, "a project cannot grant itself trust: {self_grant:?}");
+        assert!(self_grant.refused.iter().any(|entry| entry.starts_with("permissions (")), "{self_grant:?}");
+
+        // and a non-string entry is a config error, never a silent skip
+        write(&user_config_path(), "[permissions]\ntrusted_projects = [1]\n");
+        let error = load_user_config_for(&repo).expect_err("a non-string entry is refused");
+        assert!(error.contains("trusted_projects") && error.contains("paths"), "{error}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// D-434: with no project config anywhere, the loader still answers the historical path and refuses nothing —
+    /// a session in a plain directory must not depend on the walk finding something.
+    #[test]
+    fn no_project_config_anywhere_keeps_the_old_path_and_trusts_nothing() {
+        let _env = crate::env_lock();
+        let root = std::env::temp_dir().join(format!("ta-config-noproject-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (home, nested) = (root.join("home"), root.join("plain/deep/er"));
+        std::fs::create_dir_all(&nested).unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", home.join(".config"));
+        write(&user_config_path(), "[permissions]\ntrust_project = true\n");
+        let (_, outcome) = load_user_config_for(&nested).expect("load");
+        assert!(!outcome.present, "no project file to merge: {outcome:?}");
+        assert_eq!(outcome.path, nested.join(".teamagents/config.toml"), "the path names the cwd as before");
+        assert!(outcome.trusted, "trust_project is coarse and still applies");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn a_project_cannot_set_the_mode_or_grant_itself_trust() {
         let _env = crate::env_lock();

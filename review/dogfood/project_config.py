@@ -10,9 +10,14 @@ stack, credential-free:
 * a local chat-completions server answers one `finish` call, so a turn settles without a model;
 * the project file declares `[tools.repo_tool] kind = "web_search"`, and the probe reads the **surface witness**
   `TEAMAGENTS_LOG_SURFACE=1` writes into the daemon log — the offered tool list, per instance;
-* three runs: untrusted (the tool must be absent, the refusal named), trusted (the tool must be offered), and a
+* seven runs: untrusted (the tool must be absent, the refusal named), trusted (`trust_project = true`), a
   *self-granting* project that sets `[permissions] trust_project = true` in its own file (the user's answer, not
-  the repository's, is what counts, so the tool stays absent).
+  the repository's, is what counts, so the tool stays absent), and D-434's four: `trusted_projects = [<repo>]`
+  (the tool must be offered and the merge line must say *which source* trusted it), a listed **sibling** whose
+  path starts with the repository's (`<repo>-two`: the tool must stay absent — the list is not a prefix), the
+  repository listed while the session **starts in a subdirectory** (the walk up finds the config), and the
+  repository listed **as a symlink** while the session starts in its target (`canonicalize` on both sides makes
+  that one decision).
 
 The offered-surface line is the same witness `authority.py` uses (D-143/D-157): what the model was offered, not
 what it chose.
@@ -66,13 +71,14 @@ class FakeChat(BaseHTTPRequestHandler):
         pass
 
 
-def user_config(port: int, trust: bool) -> str:
-    return f"""# Project-config probe (D-244): a local chat-completions server, no credentials, no network.
+def user_config(port: int, trust: bool, listed: str = "") -> str:
+    """The user's own config. `listed` is the `[permissions] trusted_projects` array (D-434), already rendered."""
+    return f"""# Project-config probe (D-244, D-434): a local chat-completions server, no credentials, no network.
 skills_paths = []
 
 [permissions]
 trust_project = {str(trust).lower()}
-
+{listed}
 [models.leader_main]
 provider = "openai"
 protocol = "openai"
@@ -110,22 +116,43 @@ def offered_tools(state_root: pathlib.Path) -> str:
     return ""
 
 
-def run_once(root: pathlib.Path, port: int, trust: bool, self_grant: bool) -> tuple[int, str, str]:
-    """One session in the project directory; returns (exit, surface line, the merge line from the daemon log)."""
+def run_once(
+    root: pathlib.Path,
+    port: int,
+    trust: bool,
+    self_grant: bool,
+    listed: str = "",
+    from_subdirectory: bool = False,
+    via_symlink: bool = False,
+) -> tuple[int, str, str]:
+    """One session in the project directory; returns (exit, surface line, the merge line from the daemon log).
+
+    D-434's three shapes are `listed` (a `trusted_projects` entry), `from_subdirectory` (the walk up finds the
+    repository's config) and `via_symlink` (the *link* is listed and the session starts in its target, so the
+    decision has to compare canonical paths).
+    """
     state_root = root / "session"
     shutil.rmtree(root, ignore_errors=True)
     workspace = root / "repo"
     (workspace / ".teamagents").mkdir(parents=True)
     config_home = root / "config/teamagents"
     config_home.mkdir(parents=True)
-    (config_home / "config.toml").write_text(user_config(port, trust))
+    (config_home / "config.toml").write_text(user_config(port, trust, listed))
     (workspace / ".teamagents/config.toml").write_text(project_config(self_grant))
+    start = workspace
+    if from_subdirectory:
+        start = workspace / "pkg/src"
+        start.mkdir(parents=True)
+    elif via_symlink:
+        link = root / "checkout"
+        link.symlink_to(workspace)
+        start = workspace  # started in the target; the *link* is what the user listed
     env = {"XDG_CONFIG_HOME": str(root / "config"), "XDG_STATE_HOME": str(root / "state"),
            "PATH": "/usr/bin:/bin", KEY_VAR: "not-a-key", "HOME": str(root),
            "TEAMAGENTS_LOG_SURFACE": "1"}
     run = subprocess.run(
         [str(BIN), "exec", "--state-root", str(state_root), "--full-auto", "--json", "--timeout", "60",
-         "--cwd", str(workspace), "Do the work."],
+         "--cwd", str(start), "Do the work."],
         capture_output=True, text=True, env=env, timeout=180,
     )
     atexit.register(stop_daemon, state_root)
@@ -142,7 +169,7 @@ def stop_daemon(state_root: pathlib.Path) -> None:
 def judgement(runs: list) -> list:
     """The probe's rule, as a function of what it measured — separate so `--self-check` can exercise it."""
     failures = []
-    for label, exit_code, surface, merge, want_tool in runs:
+    for label, exit_code, surface, merge, want_tool, want_source in runs:
         if exit_code != 0:
             failures.append(f"{label}: the session should settle, exit={exit_code} ({merge or surface})")
         if want_tool and PROJECT_TOOL not in surface:
@@ -151,6 +178,8 @@ def judgement(runs: list) -> list:
             failures.append(f"{label}: the project's tool IS offered although it was refused: {surface}")
         if not merge:
             failures.append(f"{label}: the daemon log does not say what the project config contributed")
+        elif want_source not in merge:
+            failures.append(f"{label}: the merge line must say how it was trusted ({want_source!r}): {merge}")
     return failures
 
 
@@ -159,16 +188,20 @@ def self_check() -> int:
     findings = []
     trusted = "driver: surface i-leader shell=yes tools=ls,read_file," + PROJECT_TOOL + ",skill"
     untrusted = "driver: surface i-leader shell=yes tools=ls,read_file,skill"
-    merge = "teamagents: project config /repo/.teamagents/config.toml (untrusted): accepted nothing"
-    if judgement([("trusted", 0, trusted, merge, True), ("untrusted", 0, untrusted, merge, False)]):
+    refused = "teamagents: project config /repo/.teamagents/config.toml (untrusted): accepted nothing"
+    accepted = "teamagents: project config /repo/.teamagents/config.toml (trusted via trust_project): accepted tool:repo_tool"
+    if judgement([("trusted", 0, trusted, accepted, True, "trust_project"),
+                  ("untrusted", 0, untrusted, refused, False, "untrusted")]):
         findings.append("the shapes this run produces must pass")
-    if not judgement([("untrusted", 0, trusted, merge, False)]):
+    if not judgement([("untrusted", 0, trusted, refused, False, "untrusted")]):
         findings.append("a gate that lets the untrusted project's tool through must be reported")
-    if not judgement([("trusted", 0, untrusted, merge, True)]):
+    if not judgement([("trusted", 0, untrusted, accepted, True, "trust_project")]):
         findings.append("a trusted project whose tool never arrives must be reported")
-    if not judgement([("trusted", 0, trusted, "", True)]):
+    if not judgement([("trusted", 0, trusted, "", True, "trust_project")]):
         findings.append("a run the daemon log says nothing about must be reported")
-    if not judgement([("trusted", 1, trusted, merge, True)]):
+    if not judgement([("listed", 0, trusted, refused, True, "trusted via trusted_projects:")]):
+        findings.append("a merge line that does not name the source must be reported")
+    if not judgement([("trusted", 1, trusted, accepted, True, "trust_project")]):
         findings.append("a turn that did not settle must be reported")
     for finding in findings:
         print(f"FAIL: {finding}")
@@ -198,15 +231,40 @@ def main() -> int:
     runs = []
     failures: list[str] = []
     try:
-        for label, trust, self_grant, want_tool in [
-            ("untrusted", False, False, False),
-            ("trusted", True, False, True),
-            ("self-granting project", False, True, False),
+        listed_repo = f'trusted_projects = ["{{repo}}"]\n'
+        want_source_of = {
+            "untrusted": "untrusted",
+            "trusted": "trusted via trust_project",
+            "self-granting project": "untrusted",
+            "listed repository": "trusted via trusted_projects:",
+            "listed sibling": "untrusted",
+            "listed, started in a subdirectory": "trusted via trusted_projects:",
+            "listed as a symlink, started in the target": "trusted via trusted_projects:",
+        }
+        # Each arm gets a *short* directory name: the probe harness's own root plus a long label pushes the
+        # session's `daemon.sock` past Linux's `sun_path`, which the product refuses by design (D-227) — measured
+        # under `make probe-offline`, where the arm failed with exit 2 while passing from a shorter root.
+        for label, slug, trust, self_grant, want_tool, kwargs in [
+            ("untrusted", "untrusted", False, False, False, {}),
+            ("trusted", "trusted", True, False, True, {}),
+            ("self-granting project", "selfgrant", False, True, False, {}),
+            # D-434: the list grants exactly one repository, the walk up finds its config from a subdirectory, a
+            # sibling whose path merely starts with the listed one is a different repository, and listing the link
+            # while starting in its target is the same decision.
+            ("listed repository", "listed", False, False, True, {"listed": listed_repo}),
+            ("listed sibling", "sibling", False, False, False, {"listed": f'trusted_projects = ["{{repo}}-two"]\n'}),
+            ("listed, started in a subdirectory", "subdir", False, False, True,
+             {"listed": listed_repo, "from_subdirectory": True}),
+            ("listed as a symlink, started in the target", "symlink", False, False, True,
+             {"listed": f'trusted_projects = ["{{link}}"]\n', "via_symlink": True}),
         ]:
-            exit_code, surface, merge = run_once(root / label.replace(" ", "-"), port, trust, self_grant)
+            paths = {"repo": str(root / slug / "repo"), "link": str(root / slug / "checkout")}
+            kwargs = {key: (value.format(**paths) if isinstance(value, str) else value)
+                      for key, value in kwargs.items()}
+            exit_code, surface, merge = run_once(root / slug, port, trust, self_grant, **kwargs)
             print(f"{label}: exit={exit_code} {surface or '(no surface line)'}")
             print(f"   {merge or '(the daemon log says nothing about the project config)'}")
-            runs.append((label, exit_code, surface, merge, want_tool))
+            runs.append((label, exit_code, surface, merge, want_tool, want_source_of[label]))
             if label == "self-granting project" and "permissions (" not in merge:
                 failures.append("the project's own [permissions] table must be refused *by name*: the trust "
                                 "decision is the user's, so a repository cannot grant itself the gate")

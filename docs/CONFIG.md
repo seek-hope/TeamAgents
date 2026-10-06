@@ -10,7 +10,9 @@ Two rules decide whether a key is *honoured*, and both are part of the trust sto
 * **Your own config is read, and the repository's is read under one gate.** A repository-local
   `<cwd>/.teamagents/config.toml` is read by the product now — `daemon`, `doctor` and the client all load through
   `config::load_user_config_for` (D-244). It contributes **nothing** until you opt in with
-  `[permissions] trust_project = true` in your own config; with the opt-in its `models`, `tools`,
+  `[permissions] trust_project = true` (any repository) or `[permissions] trusted_projects = ["/path/to/repo"]`
+  (exactly those repositories, compared by canonical path) in your own config; the loader looks for the project
+  file in the working directory and then up through its parents (D-434). With the opt-in its `models`, `tools`,
   `skills_paths` and `instruction_files` merge in, and your own definitions of the same name always win.
   `[permissions]` (both `mode` and the trust flag), `hooks`, `checks`, `retention` and `limits` may only ever
   come from your config, trusted or not. `docs/USER-GUIDE.md` §2 says the same in prose, and

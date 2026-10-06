@@ -153,7 +153,7 @@ fn report_project_merge(merge: &crate::config::ProjectMerge) {
     eprintln!(
         "teamagents: project config {} ({}): accepted {}{}",
         merge.path.display(),
-        if merge.trusted { "trusted" } else { "untrusted" },
+        if merge.trusted { format!("trusted via {}", merge.trust_source) } else { "untrusted".to_string() },
         if merge.accepted.is_empty() { "nothing".to_string() } else { merge.accepted.join(", ") },
         if merge.refused.is_empty() { String::new() } else { format!("; refused {}", merge.refused.join("; ")) }
     );
@@ -218,7 +218,11 @@ pub fn doctor(state_root: Option<PathBuf>, overrides: &[String]) -> i32 {
                     format!(
                         "{} ({}): accepted {}{}",
                         merge.path.display(),
-                        if merge.trusted { "trusted" } else { "untrusted" },
+                        if merge.trusted {
+                            format!("trusted via {}", merge.trust_source)
+                        } else {
+                            "untrusted".to_string()
+                        },
                         if merge.accepted.is_empty() { "nothing".to_string() } else { merge.accepted.join(", ") },
                         if merge.refused.is_empty() {
                             String::new()
@@ -1000,7 +1004,8 @@ fn daemon_boot(
     if !available.contains(&model_key) {
         return Err(format!(
             "model {model_key:?} is not in the catalog (available: {}); `teamagents doctor` reports what {} resolves \
-             to, and a repository-local {} needs [permissions] trust_project = true",
+             to, and a repository-local {} needs its directory in [permissions] trusted_projects (or \
+             trust_project = true)",
             available.join(", "),
             user_config_path().display(),
             project_config_path(&workspace).display()

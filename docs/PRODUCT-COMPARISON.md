@@ -90,10 +90,11 @@ what their projects claim. Codex was run on 2026-09-27 (its help output is the e
    file, dotted keys, unknown keys refused with a pointer to `docs/CONFIG.md`), and D-430 moved the arms onto it.
    The lesson is recorded rather than erased: a comparison drawn from the two CLIs' surfaces can miss which one's
    *missing* flag is a load-bearing convenience elsewhere.
-9. **Project config**: done since D-244 — the product reads repository-local configuration
-   (`<cwd>/.teamagents/config.toml`) under the user's `[permissions] trust_project` opt-in, which is what Codex
-   and Pi do. What remains is what `docs/ACCEPTANCE.md` records: no walk up to a parent directory, and one
-   opt-in for every repository rather than a per-project trust list.
+9. **Project config**: done since D-244 — the product reads repository-local configuration under the user's
+   `[permissions]` opt-in, which is what Codex and Pi do — and **both remaining halves are done since D-434**: the
+   loader walks up from the working directory to the nearest `.teamagents/config.toml`, and `trusted_projects`
+   grants trust per repository by canonical path (with `trust_project = true` kept as the coarse form), so a
+   subdirectory of a repository uses its config and listing one repository does not trust another.
 
 ## 3. What this product already does that the comparators do not (or state they do not)
 

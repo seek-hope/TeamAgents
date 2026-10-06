@@ -212,15 +212,28 @@ The user config is `$XDG_CONFIG_HOME/teamagents/config.toml` (default
 `~/.config/teamagents/config.toml`). Credentials are referenced by environment-variable name and never
 written into the file:
 
-A repository-local `<cwd>/.teamagents/config.toml` is read too — the daemon, `doctor` and the client all load
-it, for the directory the session works in — and **it contributes nothing until you opt in** with
-`[permissions] trust_project = true` in your own config. With the opt-in the repository's model profiles, tool
-bindings, `skills_paths` and `instruction_files` merge in, and your own definitions of the same name win;
-`[permissions]` (both `mode` and the trust flag), `[hooks]`, `[[checks]]`, `[retention]` and `[limits]` can only
-ever come from your config, so a cloned repository cannot install a command that runs without an approval
-prompt, delete data or raise a ceiling you set. `doctor`'s `project config` row says what the merge did — a
-`[WARN]` with one reason per refused entry when nothing landed — and the daemon writes the same line into
-`<state root>/daemon.log`. The rest of this section describes your own config.
+A repository-local `.teamagents/config.toml` is read too — the daemon, `doctor` and the client all load it —
+and the loader looks for it in the working directory and then **up** through its parents, so running from a
+package inside a repository uses that repository's config (D-434). As since D-244, it contributes nothing until
+you opt in — in one of two ways in your own config:
+
+```toml
+[permissions]
+trusted_projects = ["/home/you/work/that-repo"]   # exactly these repositories
+# or the coarse version, unchanged since D-244:
+trust_project = true                              # any repository
+```
+
+A `trusted_projects` entry is matched against the repository's **canonical** path, so a symlinked checkout and
+its target are the same decision, `/repo` does not trust `/repo/sub` or `/repo-two`, and an entry that resolves
+nowhere trusts nothing. With the opt-in the repository's model profiles, tool bindings, `skills_paths` and
+`instruction_files` merge in, and your own definitions of the same name win; `[permissions]` (the mode and both
+trust keys), `[hooks]`, `[[checks]]`, `[retention]` and `[limits]` can only ever come from your config, so a
+cloned repository cannot install a command that runs without an approval prompt, delete data, raise a ceiling
+you set or grant itself trust. `doctor`'s `project config` row says what the merge did **and which source
+trusted it** (`trusted via trusted_projects:/path`), with a `[WARN]` and one reason per refused entry when
+nothing landed; the daemon writes the same line into `<state root>/daemon.log`. The rest of this section
+describes your own config.
 
 ```toml
 [models.leader_main]

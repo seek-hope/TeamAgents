@@ -20,6 +20,60 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-434 Project trust per repository, and the config is found by walking up (2026-10-06)
+
+**What was missing.** `docs/PRODUCT-COMPARISON.md` §2 item 9 listed the last two halves of the project-config
+row: the loader read `<cwd>/.teamagents/config.toml` and nothing else, so a session started in a package inside
+a repository used *no* project config at all, and the only opt-in was `[permissions] trust_project = true`, one
+switch for every repository on the machine. A user who wanted one repository's config had to trust all of them.
+
+**What changed.** Two things, both in `engine/src/config.rs`:
+
+* `project_config_path` now walks up from the working directory to the nearest ancestor (or the directory
+  itself) that carries `.teamagents/config.toml`; `project_root_of` answers the *canonical* directory that file
+  belongs to. A `cwd` with no project config still answers the historical `<cwd>/.teamagents/config.toml`, so
+  every message about "the project config" names what it always did.
+* `[permissions] trusted_projects = ["/path", …]` (user config only) grants trust **per repository**, compared
+  after `canonicalize` on both sides. `trust_project = true` keeps its D-244 meaning ("any repository"), and
+  `trust_decision` reports *which* source granted it (`trusted_projects:<canonical root>`, `trust_project`,
+  `none`) so `doctor` and the daemon's log line say why rather than only whether. A listed path that resolves
+  nowhere grants nothing — fail closed, not open — and the repository's own `[permissions]` table still cannot
+  touch either key.
+
+**The four rules the model checks, and the three wrong implementations it rejects.** A new module,
+`verification/tla/V2ProjectTrust.tla` (D-244's `V2Trust` is the layer above it: what a *trusted* project may put
+into a session — this is which repository counts as trusted), models the decision over an equivalence class of
+locations. Positive `MC_projecttrust.cfg` (verified); and each control is refuted by exactly the property it
+should be:
+
+| control | refutes |
+|---|---|
+| `MC_projecttrust_raw.cfg` (compare the typed path, not the canonical class) | `ListedTrustIsCanonical` |
+| `MC_projecttrust_project_grants.cfg` (the repository's own table answers) | `TrustIsForTheRootTheUserListed` |
+| `MC_projecttrust_stale.cfg` (a grant outlives the entry that made it) | `TrustIsForTheRootTheUserListed` |
+
+Two things the modelling itself taught, both recorded rather than smoothed over: the first draft gave the user
+two actions without a "the session reads the config once" guard, and TLC refuted the safety invariant on a state
+the product cannot be in (a merge that happened *before* the entry was withdrawn); and the staleness property
+first got a monitor variable of its own, which fired in the *positive* configuration on exactly the states the
+safety invariant already covers — so the monitor was deleted as redundant and staleness is checked through the
+safety property. A third hazard — "a listed repository is not its neighbours or its children" — is a prefix
+question that a TLC configuration cannot express (its `CONSTANTS` are plain set enumerations; `\X` and `\cup`
+are refused, measured), so it is the filesystem test's job, and the module's header states that division.
+
+**Evidence.** `config::project_config_tests::project_trust_is_the_canonical_root_the_user_listed` (a
+subdirectory finds the repository's config; the listed repository is trusted with its source named; a sibling
+whose path merely *starts* with the listed one is not; listing a symlink and opening its target is one decision;
+an entry that resolves nowhere trusts nothing; `trust_project` still trusts any repository; a project's own
+`[permissions]` is refused and grants nothing; a non-string entry is a load error) and
+`...::no_project_config_anywhere_keeps_the_old_path_and_trusts_nothing`. The first of those was checked against
+its own negation: with the comparison replaced by a raw path equality, the symlink assertion fails (measured).
+
+**No user-facing surface was left behind.** `docs/USER-GUIDE.md` §2, `docs/CONFIG.md`'s project-config paragraph
+and `docs/PRODUCT-COMPARISON.md` §2 item 9 say the new rules; `review/config_keys.py`'s hand-read key set (the
+extension path its own comment documents) gained `trusted_projects`, so a document may name it without the audit
+calling it an error; `doctor`'s row and the daemon's log line now name the trust *source*.
+
 ## D-433 The TUI can list the session's goals and close one (2026-10-06)
 
 **Why, and where it came from.** The tau3-bench harness opens one goal per user turn and never settles them, which
