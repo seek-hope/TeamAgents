@@ -428,6 +428,11 @@ disk: **0 of 40 settled trials** without text and none without a summary, agains
 dialogues. Those 40 are six tasks repeated rather than a random sample, so this is an observation about the
 *dialogue* shape, not a Terminal-Bench rate.
 
+Each dialogue now **stops its own daemon** when it ends (D-432): `exec` starts one per state root and nothing
+stopped it before, so the first long run of this harness left **348 daemons** on the host, one per dialogue. The
+stop is `teamagents daemon --stop --state-root …` (SIGTERM, the product's documented lever, whose identity is the
+socket).
+
 ## `tau3_silence.py` — dialogues that ended in silence (D-431)
 
 ```bash

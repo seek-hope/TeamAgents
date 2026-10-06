@@ -120,6 +120,14 @@ class TeamAgentsAgent:
     def get_init_state(self, message_history=None):
         return {"messages": list(message_history or [])}
 
+    def stop_daemon(self, state_root: str) -> None:
+        """Stop the session's daemon if one is running, quietly: a leaked daemon per dialogue is a resource leak
+        in the harness, not a product defect, and a stop that fails must not fail the trial."""
+        try:
+            self._run(["daemon", "--stop", "--state-root", state_root])
+        except Exception:  # noqa: BLE001 — a dialogue's evidence matters more than its cleanup
+            pass
+
     def attach_environment(self, environment, out: pathlib.Path) -> None:
         self.environment = environment
         self.out = out
@@ -282,6 +290,7 @@ def main() -> int:
             max_steps=12,
         )
         started = time.time()
+        orchestrator = None
         try:
             orchestrator = build_orchestrator(config, task)
             orchestrator.agent.attach_environment(orchestrator.environment, run_dir)
@@ -296,6 +305,15 @@ def main() -> int:
 
             reward = None
             (run_dir / "error.txt").write_text(f"{type(error).__name__}: {error}\n\n{traceback.format_exc()}")
+        finally:
+            # Each dialogue starts its own daemon (`exec` starts one when the state root has none) and nothing
+            # stopped it: measured 2026-10-06, **348 daemons** were alive from this session's tau3 runs, one per
+            # dialogue, each holding a socket and a state root. The product's own documented stop (SIGTERM, which
+            # `daemon --stop` sends) is the lever, and it is safe to call whenever a dialogue ends — the state is
+            # committed, and the DB check below runs against a *fresh* environment, not this session.
+            agent = getattr(orchestrator, "agent", None) if orchestrator is not None else None
+            if agent is not None and getattr(agent, "work", None) is not None:
+                agent.stop_daemon(str(agent.work / "state" / "teamagents" / "v2"))
         # The trajectory is evidence, not decoration (D-419's lesson): the tool calls the bridge really served, the
         # conversation, and the reward. A run with zero tool calls did not test the product's tool path at all.
         reward_detail = None

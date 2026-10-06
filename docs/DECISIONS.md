@@ -20,6 +20,34 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-432 The tau3 adapter stops the daemons it starts (2026-10-06)
+
+**Found by counting processes, not by reading output.** After this session's tau3-bench runs the host had **385
+`teamagents` processes**, of which **348 were daemons**, one per dialogue: `exec` starts a daemon when its state
+root has none, and the adapter never stopped it. Each holds a socket, a state root and its resident memory, so a
+500-dialogue run of this harness would leave 500 daemons behind — a harness defect, not a product one, and exactly
+what the Rust suite's own leak guard (D-111/D-131/D-143) exists to catch on the other side of the line.
+
+**The fix is the product's own documented lever.** `run_task`'s `try`/`except` grew a `finally` that calls
+`agent.stop_daemon(<the dialogue's state root>)`, which runs `teamagents daemon --stop --state-root …` and stays
+quiet when it fails (a dialogue's evidence matters more than its cleanup). The lever's identity is the **socket**
+(`engine/src/cli.rs::daemon_stop`: no socket → "no daemon is running", exit 0), so it needs no pid file.
+
+**The guard was tested, because an untested guard is not one.** Started on a scratch root, the daemon process was
+alive before `daemon --stop --state-root …` and gone after; a three-dialogue run under an isolated `TMPDIR` left
+**one** daemon instead of three. The two that stayed were the ones whose … and here the third case matters: the
+first dialogue's work directory had been **removed under its daemon** by something in the tau3 stack, so its socket
+was already gone, `daemon --stop` correctly reported that nothing was listening, and the process kept sleeping with
+its deleted files open. That is recorded, not fixed: a watchdog that shuts a daemon down when its state root
+vanishes is a design question of its own, and the observation is what a future reader needs in order not to
+diagnose it as a product defect. What *was* checked is that a stop never destroys state: after a verified stop the
+state root still holds `session.sqlite` and its WAL (only the socket is removed, as `daemon_stop`'s own doc says).
+
+**Housekeeping.** The 348 leftovers were stopped with SIGTERM — the daemon's own documented stop, and prompt (six
+seconds for 253 of them) — leaving the two daemons this machine's user runs, and the one dialogue that was live at
+the time. Recorded because `make check` is sensitive to a loaded host: D-407's scheduling bound failed under
+`make check` while these runs were using the machine and passed alone in 0.11 s.
+
 ## D-431 A silent settlement now reports the model's own summary (2026-10-06)
 
 **The measurement that opened this.** The full tau3-bench retail split (114 dialogues, one dialogue per task, the
