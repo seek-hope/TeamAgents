@@ -20,6 +20,46 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-427 The run says what it cost — and the word `usage:` was already taken (2026-10-05)
+
+**Why.** D-425 and D-426 cut prompt tokens by a third, but only a user reading the raw events could see the
+number; the CLI reported outcome, verification and workspace, and nothing about tokens. A cost lever a user cannot
+observe is a lever nobody pulls, and the two `[limits]` keys D-426 added are exactly the ones a user would set after
+seeing the bill.
+
+**What was added.** Every `exec` report now carries `usage`:
+
+```
+"usage": {"prompt_tokens": 3391, "completion_tokens": 222, "total_tokens": 3613,
+          "requests": 1, "unpriced_attempts": 0}
+```
+
+and plain mode prints one line (`tokens: 3391 prompt + 135 completion over 1 request(s)`). The numbers are the
+provider's own reported usage, summed **for this run** — not the goal's settled total, which may cover other runs —
+from the `attempt_recorded` events the client already reads. Two things make it honest rather than decorative: an
+attempt the provider never priced increments `unpriced_attempts` (a run whose cost is partly unknown says so
+instead of reading as free), and `requests` counts every attempt, so the line cannot quietly under-report.
+
+**Two defects the work exposed, both caught by running it.**
+
+* The client's own event loop summed nothing at first: the `attempt_recorded` event the *control plane* emits
+  carried `attempt_id`, `status`, `selected` and (since D-416) `stream`, but **not** `usage` — the driver passed it
+  and the core dropped it. The live smoke printed `requests: 1, unpriced_attempts: 1` for a run that had plainly
+  been priced, which is how it was found. The event now carries the provider's `usage` (or `null`), and
+  `command_params`/the event catalogue keep that mapping honest.
+* The plain line first read `usage: …`, and one `make check` test asserts that a plain run never prints `usage:`
+  — because that prefix is the CLI's own usage-error marker (`exec_takes_the_prompt_from_stdin_and_runs_the_acceptance_check`
+  was the test, and it failed immediately). The line says `tokens:` now; the collision is the kind of thing only a
+  test that already existed could catch.
+
+**Formal re-run, required by D-202.** D-425/D-426 touched `core/src/kernel/types.rs` — Kani's material — after the
+previous report heading, so the audit refused the stale pin and all three targets were re-run at this tree:
+`verify-model-all` **36/36**, `verify-model-counterexamples` **102/102**, `verify-kani` **3/3**.
+
+**Evidence.** `exec::tests::run_usage_sums_what_the_provider_reported_and_counts_what_it_did_not` (the summation and
+the unpriced counter), the live smoke against the real endpoint (3391 + 222 tokens over one request, printed in both
+modes), and the cli test that had been asserting the absence of the old prefix.
+
 ## D-426 The context limits are the session's: two `[limits]` keys that cut the wire by a third (2026-10-05)
 
 **Where this came from.** D-424 measured the context as a *cost* question and attributed the wire view: after

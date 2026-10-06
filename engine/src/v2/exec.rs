@@ -493,6 +493,11 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
     let queued = submitted["queued"] == json!(true);
     let deadline = Instant::now() + Duration::from_secs(options.timeout_s);
     let mut goal_status: Option<String> = None;
+    // D-427: what *this run* cost, summed from the provider's own reported usage on each recorded attempt (the
+    // goal's settled total lives elsewhere; a run is what a user is looking at when they wonder about the bill).
+    // An attempt the provider never priced is counted, not hidden: `unpriced_attempts` says how many.
+    let mut usage = json!({"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "requests": 0,
+                           "unpriced_attempts": 0});
     let mut turn_failure: Option<String> = None;
     let mut reply: Option<String> = None;
     let mut pending_approval: Option<String> = None;
@@ -536,6 +541,9 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
                     // of this run: report it instead of waiting out the deadline.
                     // Failures of *other* instances belong to the leader's turn,
                     // not to this client.
+                    if event["kind"] == json!("attempt_recorded") {
+                        add_attempt_usage(&mut usage, &event["payload"]);
+                    }
                     if event["kind"] == json!("request_failed") && event["scope"] == json!(instance) {
                         turn_failure =
                             Some(event["payload"]["reason"].as_str().unwrap_or("the model request failed").to_string());
@@ -704,8 +712,26 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
         "acceptance": options.accept,
         "acceptance_goal": accept_goal,
         "watermark": client.watermark,
+        // D-427: the tokens this run spent, as the provider reported them
+        "usage": usage,
     });
     Ok(ExecRun { report, end, checks_ok })
+}
+
+/// D-427: fold one recorded attempt into the run's usage. The provider's own numbers are summed; an attempt it
+/// never priced is **counted** (`unpriced_attempts`), because a run whose cost is partly unknown must say so
+/// rather than read as free.
+fn add_attempt_usage(usage: &mut Json, payload: &Json) {
+    usage["requests"] = json!(usage["requests"].as_u64().unwrap_or(0) + 1);
+    let reported = &payload["usage"];
+    if reported.is_object() {
+        for key in ["prompt_tokens", "completion_tokens", "total_tokens"] {
+            let sum = usage[key].as_u64().unwrap_or(0) + reported[key].as_u64().unwrap_or(0);
+            usage[key] = json!(sum);
+        }
+    } else {
+        usage["unpriced_attempts"] = json!(usage["unpriced_attempts"].as_u64().unwrap_or(0) + 1);
+    }
 }
 
 /// The daemon's socket died under a run — say what that means for the user.
@@ -827,6 +853,29 @@ fn print_human(report: &Json, options: &ExecOptions) {
         }
     }
     print_checks(report);
+    print_usage(report);
+}
+
+/// D-427: what the run cost, as the provider reported it. A user paying per prompt token has no other way to see
+/// this from the CLI, and the two context limits (D-425/D-426) are the levers for it — so the line states the
+/// number, the request count and, when any attempt went unpriced, that the total is incomplete.
+fn print_usage(report: &Json) {
+    let usage = &report["usage"];
+    let Some(requests) = usage["requests"].as_u64() else { return };
+    if requests == 0 {
+        return;
+    }
+    let prompt = usage["prompt_tokens"].as_u64().unwrap_or(0);
+    let completion = usage["completion_tokens"].as_u64().unwrap_or(0);
+    let unpriced = usage["unpriced_attempts"].as_u64().unwrap_or(0);
+    let note = if unpriced > 0 {
+        format!(" ({unpriced} attempt(s) the provider did not price are not counted)")
+    } else {
+        String::new()
+    };
+    // "tokens:", not "usage:": the bare `usage:` prefix is what the CLI prints for a usage error, and one
+    // `make check` test asserts a plain run never prints it (the collision was caught by that test).
+    println!("tokens: {prompt} prompt + {completion} completion over {requests} request(s){note}");
 }
 
 /// Human-readable check verdicts on stdout (the verdict is product output); a
@@ -991,8 +1040,8 @@ fn leader_instance(checkpoint: &Json) -> Option<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::{
-        capped, leader_instance, parked_fate, parse_check_result, resolve_prefix, run_checks, run_fate, socket_lost,
-        timeout_line, unchargeable_goal_advisory, Attribution, End,
+        add_attempt_usage, capped, leader_instance, parked_fate, parse_check_result, resolve_prefix, run_checks,
+        run_fate, socket_lost, timeout_line, unchargeable_goal_advisory, Attribution, End,
     };
     use serde_json::json;
     use std::path::Path;
@@ -1295,5 +1344,26 @@ mod tests {
         );
         let empty = resolve_prefix(&rows, "id", "  ", "approval", "teamagents approvals").unwrap_err();
         assert!(empty.1.contains("needs an id"), "{empty:?}");
+    }
+
+    /// D-427: the run's usage sums the provider's own numbers and counts what it never priced.
+    #[test]
+    fn run_usage_sums_what_the_provider_reported_and_counts_what_it_did_not() {
+        let mut usage = json!({"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "requests": 0,
+                               "unpriced_attempts": 0});
+        add_attempt_usage(
+            &mut usage,
+            &json!({"usage": {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14}}),
+        );
+        add_attempt_usage(
+            &mut usage,
+            &json!({"usage": {"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6}}),
+        );
+        add_attempt_usage(&mut usage, &json!({"status": "FAILED"}));
+        assert_eq!(usage["requests"], json!(3));
+        assert_eq!(usage["prompt_tokens"], json!(15));
+        assert_eq!(usage["completion_tokens"], json!(5));
+        assert_eq!(usage["total_tokens"], json!(20));
+        assert_eq!(usage["unpriced_attempts"], json!(1), "an unpriced attempt is counted, not hidden: {usage}");
     }
 }

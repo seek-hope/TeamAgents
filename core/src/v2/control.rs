@@ -1904,12 +1904,16 @@ fn record_attempt(tx: &Connection, session_id: &str, params: &Json) -> Result<Js
     // silent are distinguishable afterwards. It is deliberately not a column: this is evidence about a transport,
     // and the event log is where the rest of a turn's evidence already lives.
     let stream = params.get("stream").cloned().unwrap_or(Json::Null);
+    // D-427: the provider's usage rides the event too, so a client can report what a *run* cost without reading
+    // the goal's settled total (which may cover other runs). `null` means the provider never priced the attempt —
+    // the executor counts those rather than showing a free run.
     event(
         tx,
         session_id,
         "attempt_recorded",
         request_id,
-        &json!({"attempt_id": attempt_id, "status": status, "selected": selected, "stream": stream}),
+        &json!({"attempt_id": attempt_id, "status": status, "selected": selected, "stream": stream,
+                "usage": if usage.is_null() { Json::Null } else { usage.clone() }}),
     )?;
     Ok(json!({"attempt_id": attempt_id, "selected": selected}))
 }

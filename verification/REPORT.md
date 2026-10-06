@@ -5,6 +5,17 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
+## 0. Gate status (re-run 2026-10-05 at `MATERIAL-COMMIT`)
+
+* **D-425/D-426/D-427 changed the wire view and re-ran all three targets on this tree (2026-10-05).** The context
+  work touched `core/src/kernel/types.rs` (the per-call output cap and the view budget), which is the material the
+  Kani paging proofs and the kernel tests rest on, so the previously pinned heading was refused and the targets were
+  re-run: `make verify-model-all` **36/36** `No error has been found` (rc 0), `make verify-model-counterexamples`
+  **102/102** negative controls refuted (rc 0), `make verify-kani` `Complete - 3 successfully verified harnesses, 0
+  failures, 3 total` (rc 0). No specification changed: the limits are view-time only
+  (`core::kernel::the_cost_limits_change_the_wire_view_and_not_the_store` pins that the stored text survives), and
+  the run-cost reporting is a client-side summation over existing events plus one payload key the core now forwards.
+
 ## 0. Gate status (re-run 2026-10-05 at `609c15c3`)
 
 * **D-418 added the check briefing and its two claims, and re-ran all three targets on this tree (2026-10-05).**
