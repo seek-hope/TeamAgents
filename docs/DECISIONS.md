@@ -20,6 +20,35 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-440 The scope sentence is a null: the pre-registered A/B read (2026-10-06)
+
+**D-439 pre-registered this and commits it before the data; this is its result.** Both arms were run fresh on the same 50 airline dialogues, same model and endpoint, one
+attempt each, with the design above fixed and committed before either arm started (`aa493089`):
+**A (current instructions) 43/50**, **B (+ the scope sentence) 42/50** — a difference of **−1**, far inside the
+pre-registered bar of five, so the sentence is **not adopted** and the product's own instructions are unchanged.
+The failure sets say the same thing: 7 dialogues failed in both arms, **none** failed only in A, and one
+(task 24) failed only in B.
+
+**The one extra failure is not the sentence's mechanism.** Task 24 asks to remove a passenger *and* to find a
+cheap round trip. Arm A solved it in 27 calls; arm B spent **110** calls on it and mismatched the graded state —
+the treatment arm acted *more*, not less, and a sentence asking for less scope cannot be the cause of that. It is
+the model's own variance on a two-part request, which is the same class the retail failures showed (D-422's
+shape), and it is recorded rather than smoothed into "the sentence hurt".
+
+**A noise datum worth keeping.** Arm A's own instructions also produced **41/50** in the full-split run recorded
+in D-431 and **43/50** here: the same instructions, the same 50 dialogues, a difference of two. That is a direct
+measurement of this split's run-to-run variation and it is why the bar was five, not one.
+
+**Two things about the run itself, recorded because they cost time and one of them is a real trap.** The first
+attempt at arm A was killed in the middle: I ran `make check` while the benchmark was live, and the leak guard —
+which cannot tell a test's daemon from another run's, and whose remedy is SIGKILL — took down the daemon that arm
+was using, leaving that arm stuck at 7/50. The guard is right by its own rule (a daemon appeared during the test
+run) and wrong in intent, so the trap is worth stating: **do not run `make check` (or `make probe-offline`) while
+a benchmark harness is using this machine**; `make hygiene` is safe because it starts nothing. Both arms were then
+restarted from scratch and the numbers above are from those clean runs. The second cost was smaller: the wrapper
+script ran arm A and then stopped instead of proceeding to B, so B was launched on its own — the pre-registered
+design survives that, because the design (not the wrapper) is what was fixed in advance.
+
 ## D-439 The airline failures read, and a pre-registered scope-discipline arm (2026-10-06)
 
 **Why the full splits were worth reading.** The tau3-bench airline split is 41/50 in the run recorded in D-431,
