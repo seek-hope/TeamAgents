@@ -42,7 +42,7 @@ exemption is stated with its reason rather than left implicit: `.github/release-
 `--notes-file` body, is a build input and not a document for a reader.
 
 **Measured.** Twenty-four documents are tracked outside the exceptions — 23,943 lines before the map lines and
-23,978 after, with no file deleted — listed by four maps: seven in `README.md`, four in `docs/DEVELOPMENT.md`
+24,059 after the whole change, with no file deleted — listed by four maps: seven in `README.md`, four in `docs/DEVELOPMENT.md`
 (the generated references), one in `verification/README.md` and six in `review/README.md`. Readers: four `user`,
 four `developer`, ten `evidence`. Zero findings.
 
