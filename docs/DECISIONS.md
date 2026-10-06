@@ -75,6 +75,11 @@ goal's row keeps its summary while the checkpoint moves to the new ACTIVE goal),
 an active goal and for a whitespace summary), and the two real runs above, read with
 `review/benchmark/tau3_silence.py`.
 
+**No formal material, and why.** Nothing here adds or changes a protocol transition: the checkpoint's and the
+`goals` read's summary are projections of an event that already exists, and the reply fallback is a read-only
+client rule over data the runtime already committed. There is no new state to reach, so there is nothing for a
+model to certify — the same reason D-429 recorded none.
+
 **Two flakes, one of them a real defect in D-430's own test.** A `make check` of this change reported a leaked
 scratch directory (`/tmp/ta-config-selfgrant-<pid>`), and a later one failed
 `config::project_config_tests::the_two_loaders_agree_on_a_user_only_config` — whose *other* loader read D-430's
