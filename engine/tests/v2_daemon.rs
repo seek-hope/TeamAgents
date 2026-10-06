@@ -592,6 +592,26 @@ async fn the_checkpoint_carries_the_completion_summary_of_the_goal_it_reports() 
         json!("cancelled order W1 and refunded the other card"),
         "{after}"
     );
+    // …and the same summary rides on the goal's own row, which is what a run reads when the goal it settled is
+    // not the one the checkpoint reports. This is the tau3 harness's shape (`goals open` per user turn, left
+    // ACTIVE, beside the boot goal that settles) and the reason the *first* version of D-431's fallback — which
+    // read the checkpoint — changed nothing for 12 of 114 dialogues: the checkpoint reports the newest ACTIVE
+    // goal, whose summary is necessarily empty.
+    let opened = client.command("cmd-open-second", "create_goal", json!({"id": "turn-2"})).await;
+    assert_eq!(opened["ok"], json!(true), "{opened}");
+    let listed = client.call("goals", json!({})).await;
+    let rows = listed["result"]["goals"].as_array().unwrap();
+    let settled = rows
+        .iter()
+        .find(|row| row["status"] == json!("SUCCEEDED"))
+        .unwrap_or_else(|| panic!("the settled goal is listed: {listed}"));
+    assert_eq!(settled["summary"], json!("cancelled order W1 and refunded the other card"), "{listed}");
+    let active = rows.iter().find(|row| row["id"] == json!("turn-2")).expect("the new goal is listed");
+    assert_eq!(active["summary"], Json::Null, "a goal that never settled has no summary: {listed}");
+    // the checkpoint now reports the *new* goal (newest ACTIVE), so its summary is empty while the settled
+    // goal's row keeps its own — which is exactly why the fallback reads the row and not the checkpoint
+    let after_second = client.call("checkpoint", json!({})).await;
+    assert_eq!(after_second["result"]["snapshot"]["goal"]["summary"], Json::Null, "{after_second}");
 }
 
 #[tokio::test]

@@ -727,7 +727,10 @@ fn read_method(
             let mut stmt = conn
                 .prepare(
                     "SELECT g.id, g.status, g.deadline, g.limits_json, g.known_usage_json, g.unknown_usage,
-                            (SELECT GROUP_CONCAT(i.id, ',') FROM instances i WHERE i.active_goal_id = g.id)
+                            (SELECT GROUP_CONCAT(i.id, ',') FROM instances i WHERE i.active_goal_id = g.id),
+                            (SELECT e.payload_json FROM events e
+                              WHERE e.kind = 'goal_completed' AND e.scope = g.id
+                              ORDER BY e.sequence DESC LIMIT 1)
                      FROM goals g
                      -- the goal the session is *working on* is the one an instance is attached to (D-266: a
                      -- user-opened goal attaches to the leader); then the active ones, newest first
@@ -738,8 +741,16 @@ fn read_method(
             let rows = stmt
                 .query_map([], |row| {
                     let attached: Option<String> = row.get(6)?;
+                    // D-431: each goal's own completion summary, so a client can report what the model said when
+                    // it settled *that* goal — the checkpoint reports one goal, a session can carry several (D-266).
+                    let completed: Option<String> = row.get(7)?;
+                    let summary = completed
+                        .and_then(|payload| serde_json::from_str::<Json>(&payload).ok())
+                        .and_then(|payload| payload["completion"]["summary"].as_str().map(str::to_string))
+                        .filter(|text| !text.trim().is_empty());
                     Ok(json!({
                         "id": row.get::<_, String>(0)?,
+                        "summary": summary,
                         "status": row.get::<_, String>(1)?,
                         "deadline": row.get::<_, Option<f64>>(2)?,
                         "limits": serde_json::from_str::<Json>(&row.get::<_, String>(3)?).unwrap_or(json!({})),

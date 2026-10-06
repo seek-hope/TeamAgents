@@ -734,6 +734,10 @@ mod tests {
     /// means (and why the numbers from the file-based arms still describe the CLI-based ones).
     #[test]
     fn a_config_override_and_the_same_file_value_load_to_the_same_catalog() {
+        // The process environment is global: this test sets `XDG_CONFIG_HOME`, so it takes the same lock every
+        // other config test takes (D-244's rule). Without it the two tests raced — measured 2026-10-06, an
+        // `engine/src/config.rs` run where the *other* loader test read this test's override values and failed.
+        let _env = crate::env_lock();
         let dir = std::env::temp_dir().join(format!("ta-override-equiv-{}", uuid::Uuid::new_v4()));
         let cfg = dir.join("teamagents");
         std::fs::create_dir_all(&cfg).unwrap();

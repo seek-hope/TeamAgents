@@ -210,8 +210,10 @@ const CHECK_OUTPUT_CAP: usize = 8000;
 /// answer, and everything else is somebody else's.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Attribution {
-    /// The entry that ends the turn which started at this input: the goal settled.
-    Settled(String),
+    /// The entry that ends the turn which started at this input: the goal settled, and *which* goal — a session
+    /// can carry several (D-266) and the one a run settled is not necessarily the one the checkpoint reports, so
+    /// the id is what lets a client read that goal's own completion summary (D-431).
+    Settled(String, String),
     /// The entry that ends that turn: the member's own text.
     Reply(String),
     /// The entry that ends that turn: the runtime's closing word, nothing settled.
@@ -270,7 +272,9 @@ impl Attribution {
             // that still reads ACTIVE has simply not caught up: decide on the next pass instead of guessing one
             let status = Attribution::closing_goal(end).and_then(|goal_id| status_of_goal(goals, goal_id));
             return match status {
-                Some(status) if status != "ACTIVE" => Attribution::Settled(status),
+                Some(status) if status != "ACTIVE" => {
+                    Attribution::Settled(status, Attribution::closing_goal(end).unwrap_or_default().to_string())
+                }
                 _ => Attribution::Pending,
             };
         }
@@ -501,6 +505,9 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
     let mut turn_failure: Option<String> = None;
     let mut reply: Option<String> = None;
     let mut pending_approval: Option<String> = None;
+    // D-431: the goal this run settled, so the reply fallback reads *that* goal's completion summary rather
+    // than the checkpoint's goal (which is the session's active one, D-266).
+    let mut settled_goal: Option<String> = None;
     // set when the runtime refused a request before it began (budget ceiling, passed goal deadline)
     let mut refused: Option<String> = None;
     // the lifecycle as the loop last saw it: a run that ends on its deadline has to say *what* the instance
@@ -614,7 +621,10 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
             }
         }
         match &attribution {
-            Attribution::Settled(status) => goal_status = Some(status.clone()),
+            Attribution::Settled(status, goal_id) => {
+                goal_status = Some(status.clone());
+                settled_goal = Some(goal_id.clone());
+            }
             Attribution::Reply(text) => reply = Some(text.clone()),
             _ => {}
         }
@@ -654,7 +664,7 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
             refused.get_or_insert_with(|| "the leader parked before this run's turn started".to_string());
         }
         let terminal = match &attribution {
-            Attribution::Settled(status) => Some(if status == "SUCCEEDED" { End::Completed } else { End::Failed }),
+            Attribution::Settled(status, _) => Some(if status == "SUCCEEDED" { End::Completed } else { End::Failed }),
             Attribution::Reply(_) => Some(End::Reply),
             Attribution::Closed => Some(End::Unsettled),
             Attribution::Pending if undelivered => Some(End::Undelivered),
@@ -695,12 +705,11 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
     // say what it did, in the completion candidate it settled with, and the checkpoint carries that summary for
     // the goal it reports; so a silent settlement reports the summary and says where the words came from. This
     // is the last read of the run, and only when there is no reply to report.
-    let snapshot_for_reply = if reply.is_none() && goal_status.is_some() {
-        client.call("checkpoint", json!({})).unwrap_or(Json::Null)
-    } else {
-        Json::Null
+    let goals_for_reply = match (&reply, &settled_goal) {
+        (None, Some(_)) => client.call("goals", json!({})).unwrap_or(Json::Null),
+        _ => Json::Null,
     };
-    let (reply, reply_source) = reply_for_report(reply, goal_status.as_deref(), &snapshot_for_reply);
+    let (reply, reply_source) = reply_for_report(reply, settled_goal.as_deref(), &goals_for_reply);
     let report = json!({
         "session_id": client.session_id,
         "state_root": client.state_root,
@@ -834,20 +843,26 @@ fn run_streaming(options: &ExecOptions) -> Result<ExecRun, (i32, String)> {
 /// The member's own last text wins whenever there is one. A goal that settled without any text — the model
 /// called `finish` and stopped — has nothing of its own to report, but its completion summary *is* its own
 /// account of the work, so it stands in; `reply_source` says so, and plain mode says it in words. Neither a
-/// missing summary nor a still-active goal invents anything: an empty reply stays empty.
-fn reply_for_report(
-    reply: Option<String>,
-    goal_status: Option<&str>,
-    snapshot: &Json,
-) -> (Option<String>, &'static str) {
+/// missing summary nor a goal that never settled invents anything: an empty reply stays empty.
+///
+/// `goal_id` is the goal **this run settled**, not the checkpoint's goal: a session can carry several (D-266),
+/// and in the tau3 harness's shape (one goal per user turn, left ACTIVE, beside the boot goal that settles) the
+/// checkpoint reports a different goal whose summary is necessarily empty — measured 2026-10-06, where the first
+/// version of this fallback read the checkpoint and changed nothing for 12 of 114 dialogues (D-431).
+fn reply_for_report(reply: Option<String>, goal_id: Option<&str>, goals: &Json) -> (Option<String>, &'static str) {
     // a model that emitted only whitespace wrote nothing a user can read, which is the case this whole
     // function exists for: it must not be reported as `model` text, and it must not hide a summary either.
     let reply = reply.filter(|text| !text.trim().is_empty());
     if reply.is_some() {
         return (reply, "model");
     }
-    if goal_status.is_some() {
-        if let Some(summary) = snapshot["goal"]["summary"].as_str().filter(|text| !text.trim().is_empty()) {
+    if let Some(goal_id) = goal_id {
+        let summary = goals["goals"]
+            .as_array()
+            .and_then(|rows| rows.iter().find(|row| row["id"] == json!(goal_id)))
+            .and_then(|row| row["summary"].as_str())
+            .filter(|text| !text.trim().is_empty());
+        if let Some(summary) = summary {
             return (Some(summary.to_string()), "summary");
         }
     }
@@ -1237,33 +1252,35 @@ mod tests {
         assert_eq!(End::Timeout.exit_code(true), 124);
     }
 
-    /// D-431: a settled goal with no text reports the model's own completion summary, and says that is what it
-    /// is; a run with the member's text keeps it; a settled goal with no summary reports nothing.
+    /// D-431: a goal that settled with no text reports *that goal's* own completion summary, and says that is
+    /// what it is; a run with the member's text keeps it; a settled goal with no summary reports nothing. The
+    /// goal is looked up by the id the closing entry named, never by "the" goal of the checkpoint (measured: the
+    /// checkpoint's goal is another, still-active one in a session that opens a goal per user turn).
     #[test]
-    fn a_silent_settlement_reports_the_summary_and_names_it() {
-        let snapshot = json!({"goal": {"status": "SUCCEEDED", "summary": "cancelled order W1 and refunded"}});
+    fn a_silent_settlement_reports_that_goals_summary_and_names_it() {
+        let goals = json!({"goals": [
+            {"id": "turn-5", "status": "ACTIVE"},
+            {"id": "goal-s-main", "status": "SUCCEEDED", "summary": "cancelled order W1 and refunded it"}
+        ]});
         assert_eq!(
-            reply_for_report(None, Some("SUCCEEDED"), &snapshot),
-            (Some("cancelled order W1 and refunded".to_string()), "summary")
+            reply_for_report(None, Some("goal-s-main"), &goals),
+            (Some("cancelled order W1 and refunded it".to_string()), "summary")
         );
         assert_eq!(
-            reply_for_report(Some("all done".to_string()), Some("SUCCEEDED"), &snapshot),
+            reply_for_report(Some("all done".to_string()), Some("goal-s-main"), &goals),
             (Some("all done".to_string()), "model")
         );
         // whitespace is not text: it neither counts as the model's words nor hides a summary
         assert_eq!(
-            reply_for_report(Some("   \n".to_string()), Some("SUCCEEDED"), &snapshot),
-            (Some("cancelled order W1 and refunded".to_string()), "summary")
+            reply_for_report(Some("   \n".to_string()), Some("goal-s-main"), &goals),
+            (Some("cancelled order W1 and refunded it".to_string()), "summary")
         );
-        assert_eq!(reply_for_report(Some("  ".to_string()), None, &snapshot), (None, ""), "nothing to report");
-        // an active goal never had a settlement to summarise, and a whitespace summary is not one
-        assert_eq!(reply_for_report(None, None, &snapshot), (None, ""));
-        assert_eq!(reply_for_report(None, Some("FAILED"), &json!({"goal": {"summary": "   "}})), (None, ""));
-        assert_eq!(
-            reply_for_report(None, Some("FAILED"), &Json::Null),
-            (None, ""),
-            "an unreadable snapshot invents nothing"
-        );
+        // the goal the checkpoint would report has no summary, and a run that settled nothing has no goal
+        assert_eq!(reply_for_report(None, Some("turn-5"), &goals), (None, ""));
+        assert_eq!(reply_for_report(None, None, &goals), (None, ""));
+        assert_eq!(reply_for_report(Some("  ".to_string()), None, &goals), (None, ""), "nothing to report");
+        // an unreadable goals list invents nothing
+        assert_eq!(reply_for_report(None, Some("goal-s-main"), &Json::Null), (None, ""));
     }
 
     /// D-72: the client reports what *its own* input produced. The conversation
@@ -1324,14 +1341,17 @@ mod tests {
         let settled = vec![user("env-old", "first"), reply("first answer"), user("env-mine", "second"), close.clone()];
         assert_eq!(
             Attribution::read("env-mine", &goals("SUCCEEDED"), &settled),
-            Attribution::Settled("SUCCEEDED".into())
+            Attribution::Settled("SUCCEEDED".into(), "g1".into())
         );
         assert_eq!(Attribution::read("env-mine", &goals("ACTIVE"), &settled), Attribution::Pending);
         assert_eq!(Attribution::read("env-mine", &json!({"goals": []}), &settled), Attribution::Pending);
         // D-275, the state that made the run wait out its deadline: a session carrying an older ACTIVE goal
         // beside this run's own. The closing note names its own goal, so the settlement is read…
         let two_goals = json!({"goals": [{"id": "g-old", "status": "ACTIVE"}, {"id": "g1", "status": "SUCCEEDED"}]});
-        assert_eq!(Attribution::read("env-mine", &two_goals, &settled), Attribution::Settled("SUCCEEDED".into()));
+        assert_eq!(
+            Attribution::read("env-mine", &two_goals, &settled),
+            Attribution::Settled("SUCCEEDED".into(), "g1".into())
+        );
         // …and a *blocked* goal's note is read the same way, from the goal it names
         let blocked = json!({"kind": "runtime", "envelope_id": "goal-block-g1",
                              "message": {"role": "user", "content": "runtime: goal g1 blocked: checks"}});
@@ -1339,7 +1359,7 @@ mod tests {
         let blocked_goals = json!({"goals": [{"id": "g-old", "status": "ACTIVE"}, {"id": "g1", "status": "BLOCKED"}]});
         assert_eq!(
             Attribution::read("env-mine", &blocked_goals, &block_history),
-            Attribution::Settled("BLOCKED".into())
+            Attribution::Settled("BLOCKED".into(), "g1".into())
         );
         // a closed turn is the runtime's word too, but it settles nothing
         let closed = vec![user("env-mine", "second"), turn_close];

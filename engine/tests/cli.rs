@@ -2900,10 +2900,13 @@ fn a_goal_that_cannot_accept_work_is_not_presented_as_in_force() {
     for row in json(&out)["goals"].as_array().cloned().unwrap_or_default() {
         let mut keys: Vec<&str> = row.as_object().expect("a goal row").keys().map(String::as_str).collect();
         keys.sort();
+        // `summary` is the model's own account of the work when it settled that goal (D-431): null for a goal
+        // that never settled, and the completion summary once it has — per goal, because a session can carry
+        // several (D-266).
         assert_eq!(
             keys,
-            ["attached_instances", "deadline", "id", "known_usage", "limits", "status", "unknown_usage"],
-            "the goal row's shape is unchanged: {row}"
+            ["attached_instances", "deadline", "id", "known_usage", "limits", "status", "summary", "unknown_usage"],
+            "the goal row's shape is unchanged apart from D-431's summary: {row}"
         );
     }
 }

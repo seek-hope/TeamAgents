@@ -49,7 +49,42 @@ already the model's own account of the work, recorded in the same call that sett
 nothing and invents nothing. An empty or whitespace-only model reply is treated as no reply (it is not `model`
 text, and it does not hide a summary either), and a goal that never settled has no summary to fall back to.
 
-**Evidence.** `exec::tests::a_silent_settlement_reports_the_summary_and_names_it` (the fallback and its four
+**The first version of the fallback was inert, and the re-run is what showed it.** It read the *checkpoint's* goal
+— and a session can carry several goals (D-266). In the tau3 harness's shape (one goal opened per user turn,
+left ACTIVE, beside the boot goal that settles) the checkpoint reports the newest ACTIVE goal, whose summary is
+necessarily empty: the same 114 dialogues re-ran with the fix in place and `tau3_silence.py` reported **12 of 114
+again**, while the two silences that *did* have a summary available in the checkpoint's goal were reported
+(`reply_source: summary`). The fix now reads the summary of the goal **this run settled**, by the id its own
+closing entry names (the D-275 rule), off the `goals` read — which carries each goal's own summary — and the
+targeted re-run of the **11 tasks that were silent before** reports **0 silent dialogues and 0 empty turns of 43**
+(2 of the 11 final turns settled silently and now report the model's summary; the rest answered in text this
+time). The daemon test grew the multi-goal shape that would have caught the first version, and the goal row's
+shape guard in `engine/tests/cli.rs` names the new field.
+
+**What the two full runs say about the benchmark itself.** The same 114 dialogues, one with a treatment that
+provably could not change the outcome (the inert fallback), scored **96/114 = 84.2 %** and then **98/114 = 86.0 %**
+— 12 failures in common, 6 that passed only in the second run, 4 that failed only there, and the silence count
+identical at 12. That is what a 2-point difference at n=114 means here, measured rather than assumed, and it is
+the same lesson D-418 drew at n=9 with its own control arm.
+
+**Evidence.** `exec::tests::a_silent_settlement_reports_that_goals_summary_and_names_it` (the fallback, the goal
+lookup by id, and five boundaries), `v2_daemon::the_checkpoint_carries_the_completion_summary_of_the_goal_it_reports`
+(null before the settlement, the summary after, both over the real socket, plus the multi-goal shape: the settled
+goal's row keeps its summary while the checkpoint moves to the new ACTIVE goal),
+`v2app_tests::a_settled_goal_shows_the_models_own_completion_summary` (collapsed onto the status line, absent for
+an active goal and for a whitespace summary), and the two real runs above, read with
+`review/benchmark/tau3_silence.py`.
+
+**Two flakes, one of them a real defect in D-430's own test.** A `make check` of this change reported a leaked
+scratch directory (`/tmp/ta-config-selfgrant-<pid>`), and a later one failed
+`config::project_config_tests::the_two_loaders_agree_on_a_user_only_config` — whose *other* loader read D-430's
+`-c` override values. Both have the same cause and it was mine: D-430's
+`a_config_override_and_the_same_file_value_load_to_the_same_catalog` sets the process-global `XDG_CONFIG_HOME`
+**without** taking `engine::env_lock()`, which every other config test takes (D-244's rule, enforced by that lock
+existing). Two tests then repointed the same variable at the same time — one read the other's directory, and a
+panic mid-test left its scratch root behind. The test takes the lock now; two consecutive full `make check` runs
+are green. The lesson is the same shape as this session's others: a gate that fails once and passes on a re-run is
+not evidence of a flake until it is explained, and the explanation was in the change's own neighbourhood. (the fallback and its four
 boundaries), `v2_daemon::the_checkpoint_carries_the_completion_summary_of_the_goal_it_reports` (null before the
 settlement, the summary after, over the real socket), `v2app_tests::a_settled_goal_shows_the_models_own_completion_summary`
 (collapsed onto the status line, absent for an active goal and for a whitespace summary), and the re-run of the
