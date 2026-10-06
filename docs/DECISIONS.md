@@ -20,6 +20,47 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-438 Withdrawn: the conversation does not reference the artifacts after all (2026-10-06)
+
+**What this was going to be.** D-253's remaining policy question — may the conversation's own reference expire, so
+a tool output's *full* blob goes while the capped text a reader sees stays? — read as the natural counterpart to
+D-436: §9 calls artifacts ordinary history, `[retention] history_days` already sweeps the events under exactly that
+window, and `artifact_gc_claim` (and `artifact_collect`'s re-check) both treat
+`context_entries.payload_ref` as a live reference. A command was written —
+`artifact_release_aged_references`, clearing that pointer for an artifact older than the window, leaving the entry
+and its text — wired into both sweep paths beside D-436's owner release, with a control test, an extension of
+`V2Artifact.tla` (`DropReference`, `ReferencesAreDroppedOnlyWhenAged`, `MC_artifact_release_fresh_ref.cfg`), and the
+documentation. All of it was green: the test passed, the five artifact configurations behaved, the claim collected
+the blob afterwards.
+
+**Then the measurement, and it is why none of it is here.** `context_entries.payload_ref` is written by **nothing
+in the product** — `core`/`engine`/`tui` declare the field and the column, `artifact_gc_claim` and
+`artifact_collect` *consult* it, and the only writers in the tree are two tests. The command therefore had no
+subject to act on: it would have been a rule about a state this build cannot reach, which is the shape this
+repository's own audits reject ("a guard that was never tested is not a guard", and a claim whose subject never
+occurs is a claim nothing checks). The whole change was reverted rather than kept with a caveat.
+
+**The finding that is worth keeping.** The artifacts feature has two halves and only one is wired: bytes are
+staged, published, censused and collected (D-191/D-253/D-351, and D-436 released the stale owner's hold), but
+**nothing points at a published artifact from the conversation** — a large tool output's full text is reachable by
+its artifact id (the `artifacts` census, the operation receipt) and not by the entry it belongs to. The claim's
+reference clauses are therefore defensive rather than load-bearing today.
+
+**The decision this round makes.** Wiring that half — setting `payload_ref` on a `ToolResult` entry when its output
+was published as an artifact — is a **disk-versus-retrieval** trade-off and it goes the *other* way from every
+change in this series: with no retention configured (the default, `history_days = 0`) the blob would then be held
+for ever, where today a tool output's blob is collectable as soon as its owner is spent (measured by D-436's probe:
+1 of 3 collected, 300 KB freed). So it stays unwired, deliberately, and the retry shape is recorded here for
+whoever asks for it: set the pointer on the entry, bring D-438's rule back as its counterpart, and accept that a
+default-config session keeps its large outputs instead of dropping them. Until then, D-253's policy question is
+answered for the *owner* half (D-436) and open for the conversation half with the reason stated.
+
+**Process note.** This is the second time in this series that a measurement stopped work I had already made green
+— D-436's first release, which the probe caught deleting data eagerly, and now this, which a grep caught having no
+subject. Both are recorded because the habit is the point: the cheapest way to be wrong here is to build a rule
+for a state that does not occur, and the cheapest way to find out is to look for the writer before writing the
+rule.
+
 ## D-437 The ssh sandbox backend: the command runs on another host, or it does not run (2026-10-06)
 
 **Why.** `docs/PRODUCT-COMPARISON.md` §2 item 4 has listed the sandbox backends as partly done since D-369: this
