@@ -472,6 +472,24 @@ fn read_snapshot(conn: &rusqlite::Connection, mcp: &Json, sessions: &Json) -> Re
             }
         }
     }
+    // D-442: whether an instance may run commands in the shared workspace — the one asymmetrical capability a
+    // user is surprised by (D-441), so a panel can say it before the user wonders why a member is idle. The
+    // covering rule is `capability::scope_covers`, the same function the dispatch gate uses.
+    let mut shells: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
+    {
+        let mut stmt = conn
+            .prepare("SELECT subject, resource_scope FROM grants WHERE action = 'shell' AND revoked_at IS NULL")
+            .map_err(|e| format!("snapshot shells prepare: {e}"))?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            .map_err(|e| format!("snapshot shells query: {e}"))?;
+        for row in rows {
+            let (subject, scope) = row.map_err(|e| format!("snapshot shells row: {e}"))?;
+            if teamagents_core::v2::capability::scope_covers(&scope, "workspace") {
+                shells.insert(subject, true);
+            }
+        }
+    }
     let mut stmt = conn
         .prepare("SELECT id, lifecycle, phase, profile_json FROM instances ORDER BY id")
         .map_err(|e| format!("snapshot prepare: {e}"))?;
@@ -480,8 +498,10 @@ fn read_snapshot(conn: &rusqlite::Connection, mcp: &Json, sessions: &Json) -> Re
             let profile: Json = serde_json::from_str(&row.get::<_, String>(3)?).unwrap_or(Json::Null);
             let id = row.get::<_, String>(0)?;
             let reason = reasons.get(&id);
+            let can_shell = shells.get(&id).copied().unwrap_or(false);
             Ok(json!({"id": id, "lifecycle": row.get::<_, String>(1)?,
-                      "phase": row.get::<_, String>(2)?, "model": profile["model"], "reason": reason}))
+                      "phase": row.get::<_, String>(2)?, "model": profile["model"], "reason": reason,
+                      "can_run_shell": can_shell}))
         })
         .map_err(|e| format!("snapshot query: {e}"))?;
     let mut instances = Vec::new();

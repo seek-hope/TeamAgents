@@ -419,6 +419,11 @@ pre_tool = ["/home/you/bin/policy.sh"]            # policy hook before tool call
   reason (its task stays open for you to cancel). A tool the instance cannot dispatch is not offered at all: a
   worker the Leader spawned holds `shell` only after you grant it `shell@workspace` (§5.1's boundary, D-60), so
   it works with the file/web/skill tools (they need their binding, not a grant) until then.
+- **Who may run commands**: a member the Leader spawns does not inherit `shell@workspace` (D-61), so the tool
+  surface hides `shell` from it (D-60) and it simply never runs anything — which is why the instances panel marks
+  such a member `· no shell` and `teamagents authority` prints the command that would fix it (D-441/D-442).
+  The panel reads the flag from the daemon's checkpoint, computed with the same covering rule the dispatch gate
+  uses, so the marker and a refusal can never disagree.
 - **Who runs on what**: every member's model is recorded when it is created and shown in the instances panel
   and in `teamagents instances` (`i-worker · ACTIVE · READY · k3-256k`), which is what makes a team spanning
   two providers (`spawn` with `model = "…"`) readable instead of guesswork (D-69).

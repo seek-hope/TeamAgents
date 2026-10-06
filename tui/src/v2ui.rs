@@ -136,6 +136,11 @@ fn render_instances(frame: &mut Frame, app: &V2App, area: Rect) {
             if !instance.model.is_empty() {
                 spans.push(Span::styled(format!(" · {}", instance.model), Style::default().fg(GREY)));
             }
+            // D-442: a member that cannot run commands says so where the user looks, instead of leaving them to
+            // wonder why it is idle. The lever is one CLI command away and the guide names it.
+            if !instance.can_run_shell && instance.lifecycle == "ACTIVE" {
+                spans.push(Span::styled(" · no shell", Style::default().fg(WARNING)));
+            }
             // why it is not running, in the runtime's own words (D-165): the panel said `PARKED` and left the
             // user to open a log. An ACTIVE member's last transition carries nothing worth a column.
             if instance.lifecycle != "ACTIVE" && !instance.reason.is_empty() {

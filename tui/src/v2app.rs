@@ -107,6 +107,12 @@ pub struct InstanceInfo {
     /// running — a park reason, or the user's own pause. Empty for an ACTIVE member
     /// and for a transition recorded without words.
     pub reason: String,
+    /// Whether this member may run commands in the shared workspace (D-442). A member the Leader *spawns* does
+    /// not inherit it (D-61), and the tool surface hides `shell` from it (D-60) — so nothing is refused and the
+    /// member simply never runs anything, which is exactly what D-256 measured. The daemon computes it with the
+    /// runtime's own covering rule; an older daemon that does not report it reads as `true`, so the panel only
+    /// ever adds a marker it can justify.
+    pub can_run_shell: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -399,6 +405,7 @@ impl V2App {
                 phase: i["phase"].as_str().unwrap_or("").to_string(),
                 model: i["model"].as_str().unwrap_or("").to_string(),
                 reason: i["reason"].as_str().unwrap_or("").to_string(),
+                can_run_shell: i["can_run_shell"].as_bool().unwrap_or(true),
             })
             .collect();
         self.active = previous

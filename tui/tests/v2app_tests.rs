@@ -486,6 +486,33 @@ fn scroll_clamps_to_the_wrapped_conversation() {
     assert_eq!(app.chat_scroll, 0);
 }
 
+/// D-442: a member that cannot run commands says so where the user looks. The daemon computes the flag with the
+/// runtime's own covering rule; the panel only renders it, and an older daemon that does not report it reads as
+/// able (so the marker is only ever added when the checkpoint justifies it).
+#[test]
+fn a_member_that_cannot_run_commands_says_so_in_the_instances_panel_and_the_gap_names_its_lever() {
+    let mut app = V2App::new("s-test");
+    let mut with_gap = checkpoint();
+    with_gap["instances"][1]["can_run_shell"] = Json::Bool(false);
+    app.apply_checkpoint(with_gap, 5);
+    assert!(app.instances[0].can_run_shell, "the leader holds shell@workspace");
+    assert!(!app.instances[1].can_run_shell, "the spawned member does not");
+    app.view = View::Instances;
+    let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+    terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
+    let all = frame_lines(&terminal).join("\n");
+    let worker = all.lines().find(|line| line.contains("i-worker")).unwrap_or_default().to_string();
+    let leader = all.lines().find(|line| line.contains("i-leader")).unwrap_or_default().to_string();
+    assert!(worker.contains("no shell"), "the member is marked: {worker}");
+    assert!(!leader.contains("no shell"), "the leader is not marked: {leader}");
+    // a checkpoint from a daemon that does not report the flag leaves the panel quiet
+    let mut older = V2App::new("s-test");
+    let mut unreported = checkpoint();
+    unreported["instances"][1].as_object_mut().unwrap().remove("can_run_shell");
+    older.apply_checkpoint(unreported, 5);
+    assert!(older.instances[1].can_run_shell, "an unreported flag reads as able: {:?}", older.instances[1]);
+}
+
 fn frame_lines(terminal: &Terminal<TestBackend>) -> Vec<String> {
     // wide chars occupy two cells; the continuation cell holds a space and
     // must be skipped when reading frame text

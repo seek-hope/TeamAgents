@@ -569,6 +569,41 @@ fn input_params(text: &str) -> Json {
     json!({"instance_id": "i-leader", "envelope_id": format!("env-{}", uuid::Uuid::new_v4()), "text": text})
 }
 
+/// D-442: the checkpoint says which instances may run commands in the shared workspace, computed with the
+/// runtime's own covering rule — so the TUI can show what the dispatch gate would refuse instead of leaving a
+/// user to wonder why a member is idle.
+#[tokio::test]
+async fn the_checkpoint_says_which_instances_may_run_commands() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let (root, _handle) = boot("can-shell", HashMap::new()).await;
+    let mut client = Client::connect(&root.dir.join("state/daemon.sock")).await;
+    let can_shell = |snapshot: &Json, id: &str| -> bool {
+        snapshot["instances"]
+            .as_array()
+            .and_then(|rows| rows.iter().find(|row| row["id"] == json!(id)).cloned())
+            .unwrap_or_else(|| panic!("{id} is listed: {snapshot}"))["can_run_shell"]
+            .as_bool()
+            .unwrap_or(false)
+    };
+    // the bootstrap's leader was created by the user, so the control plane gave it shell@workspace
+    let before = client.call("checkpoint", json!({})).await;
+    assert!(can_shell(&before["result"]["snapshot"], "i-leader"), "{before}");
+    let grants = client.call("grants", json!({})).await;
+    let shell_grant = grants["result"]["grants"]
+        .as_array()
+        .and_then(|rows| {
+            rows.iter().find(|row| row["action"] == json!("shell") && row["subject"] == json!("i-leader")).cloned()
+        })
+        .unwrap_or_else(|| panic!("the leader's shell grant: {grants}"));
+    // the user revokes it, and the checkpoint stops saying the instance may run commands
+    let revoked = client
+        .command("revoke-shell", "revoke_grant", json!({"grant_id": shell_grant["id"], "replacement": null}))
+        .await;
+    assert_eq!(revoked["ok"], json!(true), "{revoked}");
+    let after = client.call("checkpoint", json!({})).await;
+    assert!(!can_shell(&after["result"]["snapshot"], "i-leader"), "{after}");
+}
+
 /// D-433: `cancel_goal` closes a goal, and the `goals` read says so. The command had **no test at all** until this
 /// one — the TUI's new `/goals cancel <id>` is what exposed it — and it is the lever that keeps a session from
 /// accumulating ACTIVE goals (D-266), which is the shape the tau3 harness produced.

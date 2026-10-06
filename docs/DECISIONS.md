@@ -20,6 +20,30 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-442 The TUI's instances panel marks a member that cannot run commands (2026-10-06)
+
+**Why, straight out of D-441.** `teamagents authority` states the capability gap, but a TUI user does not run that
+command; they look at the instances panel, where a member that holds no `shell@workspace` is indistinguishable
+from one that does — and because the tool surface *hides* `shell` from it (D-60) there is no refusal to notice
+either. D-256's anatomy ("no member executes anything") is what that silence costs.
+
+**What was added.** The daemon's checkpoint carries `can_run_shell` on every instance row, computed from the
+session's live `shell` grants with `capability::scope_covers` — the same function the dispatch gate calls, so the
+marker and a refusal cannot disagree — and the instances panel renders `· no shell` for an ACTIVE member that
+cannot. The flag is computed where the grants are (the daemon), not in the TUI, for the reason D-413 and D-429
+recorded: the TUI is a client with no config, no registry and no runtime vocabulary of its own. A checkpoint from
+an older daemon carries no flag, and `apply_checkpoint` reads that as *able*, so the panel only ever adds a marker
+it can justify.
+
+**Evidence.** `v2_daemon::the_checkpoint_says_which_instances_may_run_commands` — the bootstrap's leader reads
+true, and after the user **revokes** its shell grant through the control plane the same checkpoint reads false (a
+real path, not a fixture) — and
+`v2app_tests::a_member_that_cannot_run_commands_says_so_in_the_instances_panel_and_the_gap_names_its_lever`, which
+renders a real frame on ratatui's `TestBackend` and checks the marker is on the member's line and not the
+leader's, plus the older-daemon default. No formal material: the flag is a projection over grants the control
+plane already owns, with no new transition or state, and its covering rule is the one `V2Authority` and the
+dispatch tests already pin.
+
 ## D-441 The authority surface says what an instance cannot do (2026-10-06)
 
 **Why.** D-61's rule is deliberate: the bootstrap grants the Leader `manage`/`delegate`/`message` and — because the
