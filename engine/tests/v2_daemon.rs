@@ -569,6 +569,36 @@ fn input_params(text: &str) -> Json {
     json!({"instance_id": "i-leader", "envelope_id": format!("env-{}", uuid::Uuid::new_v4()), "text": text})
 }
 
+/// D-433: `cancel_goal` closes a goal, and the `goals` read says so. The command had **no test at all** until this
+/// one — the TUI's new `/goals cancel <id>` is what exposed it — and it is the lever that keeps a session from
+/// accumulating ACTIVE goals (D-266), which is the shape the tau3 harness produced.
+#[tokio::test]
+async fn cancel_goal_closes_a_goal_and_the_list_says_which() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let (root, _handle) = boot("cancel-goal", HashMap::new()).await;
+    let mut client = Client::connect(&root.dir.join("state/daemon.sock")).await;
+    let opened = client.command("cmd-open", "create_goal", json!({"id": "turn-2"})).await;
+    assert_eq!(opened["ok"], json!(true), "{opened}");
+    let open_row = |reply: &Json, id: &str| {
+        reply["result"]["goals"]
+            .as_array()
+            .and_then(|rows| rows.iter().find(|row| row["id"] == json!(id)).cloned())
+            .unwrap_or_else(|| panic!("{id} is listed: {reply}"))
+    };
+    let before = client.call("goals", json!({})).await;
+    assert_eq!(open_row(&before, "turn-2")["status"], json!("ACTIVE"), "{before}");
+    // the command is idempotent by command id (§6.3): a replay returns the same receipt
+    let cancelled = client.command("cmd-cancel", "cancel_goal", json!({"goal_id": "turn-2"})).await;
+    assert_eq!(cancelled["ok"], json!(true), "{cancelled}");
+    let replayed = client.command("cmd-cancel", "cancel_goal", json!({"goal_id": "turn-2"})).await;
+    assert_eq!(replayed["result"], cancelled["result"], "replay dedups by command id");
+    let after = client.call("goals", json!({})).await;
+    assert_eq!(open_row(&after, "turn-2")["status"], json!("CANCELLED"), "{after}");
+    // and a goal that does not exist is refused, not invented
+    let missing = client.command("cmd-cancel-missing", "cancel_goal", json!({"goal_id": "nope"})).await;
+    assert_eq!(missing["ok"], json!(false), "{missing}");
+}
+
 /// D-431: the checkpoint carries the completion summary of the goal it reports, because a model can settle a goal
 /// by calling `finish` without writing a word of prose — and then the summary it recorded *is* the only account of
 /// the work a user can read. Measured on the tau3 retail split: 12 of 114 dialogues ended that way.

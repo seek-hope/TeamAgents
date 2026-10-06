@@ -21,6 +21,15 @@ TASKS = [{"id": "t-smoke", "goal_id": "g1", "assignee": "i-worker", "status": "R
 GRANTS = [{"subject": "i-leader", "action": "manage", "resource_scope": "session", "revoked": False}]
 GOAL = {"status": "ACTIVE", "known_usage": {"prompt": 7, "completion": 3, "total": 10},
         "unknown_usage": 0, "limits": {"max_total_tokens": 1000}}
+# D-433: the goal *list* (the `goals` read), which is what `/goals` prints — one settled goal whose model wrote no
+# prose (so its summary is the only account of the work, D-431) and one ACTIVE goal the user closes.
+GOALS = [
+    {"id": "goal-s-main", "status": "SUCCEEDED", "known_usage": {"total": 41},
+     "limits": {"max_total_tokens": 1000}, "attached_instances": [],
+     "summary": "answered the question and wrote the report"},
+    {"id": "turn-2", "status": "ACTIVE", "known_usage": {"total": 0}, "limits": {},
+     "attached_instances": ["i-leader"], "summary": None},
+]
 
 
 class FakeDaemon:
@@ -33,6 +42,7 @@ class FakeDaemon:
         self.history = []
         self.instances = [dict(i) for i in INSTANCES]
         self.tasks = [dict(t) for t in TASKS]
+        self.goals = [dict(g) for g in GOALS]
         self.frames = []
         self.error = None
         self.thread = threading.Thread(target=self.serve, daemon=True)
@@ -87,6 +97,18 @@ class FakeDaemon:
                     out = {"approvals": []}
                 elif method == "tasks":
                     out = {"tasks": list(self.tasks)}
+                elif method == "goals":
+                    out = {"goals": list(self.goals)}
+                elif method == "cancel_goal" and frame.get("command_id"):
+                    goal_id = params.get("goal_id", "")
+                    for goal in self.goals:
+                        if goal["id"] == goal_id:
+                            goal["status"] = "CANCELLED"
+                    if goal_id not in [goal["id"] for goal in self.goals]:
+                        f.write(self.reply(request_id, False, f"no such goal: {goal_id}"))
+                        f.flush()
+                        continue
+                    out = {"goal_id": goal_id, "status": "CANCELLED"}
                 elif method == "grants":
                     out = {"grants": list(GRANTS)}
                 elif method == "events":
@@ -267,6 +289,33 @@ def main():
     os.write(fd, b"\x1b")
     scr.feed(read_all(fd, 3.0).decode("utf-8", "replace"))
     expect("to i-leader", "composer back after Esc")
+
+    # D-433: `/goals` asks the session for its goal list and prints it; `/goals cancel <id>` closes one, and the
+    # command id carries the goal so a retry after a lost reply dedups at the control plane. Typed through the
+    # composer's own keys, like every other step here.
+    # `/goals` prints the list; `/goals cancel turn-2` closes one and confirms it; the second `/goals` is what shows
+    # the daemon's state actually changed (the cancel prints a confirmation, not a list, like the CLI's verb).
+    for text in ("/goals", "/goals cancel turn-2", "/goals"):
+        os.write(fd, text.encode())
+        time.sleep(0.3)
+        os.write(fd, b"\r")
+        scr.feed(read_all(fd, 3.0).decode("utf-8", "replace"))
+    expect("goals in this session", "/goals printed the list")
+    expect("goal-s-main  SUCCEEDED  usage 41/1000", "the settled goal's row")
+    expect("settled: answered the question and wrote the report", "its summary is the only account (D-431)")
+    expect("cancelled goal turn-2", "the cancel confirmed on screen")
+    expect("turn-2  CANCELLED", "and the re-read list shows the daemon's new state")
+    listed = [f for f in daemon.frames if f.get("method") == "goals"]
+    if not listed:
+        failures.append("no goals frame reached the daemon")
+    cancelled = [f for f in daemon.frames if f.get("method") == "cancel_goal"]
+    if not cancelled:
+        failures.append("no cancel_goal frame reached the daemon")
+    elif cancelled[0].get("command_id") != "goal-cancel-turn-2":
+        failures.append(f"cancel_goal command_id: {cancelled[0].get('command_id')!r}")
+    elif cancelled[0].get("params", {}).get("goal_id") != "turn-2":
+        failures.append(f"cancel_goal targeted {cancelled[0].get('params', {}).get('goal_id')!r}")
+
 
     # Ctrl+C quits
     os.write(fd, b"\x03")

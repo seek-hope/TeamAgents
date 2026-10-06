@@ -257,6 +257,26 @@ fn run_v2_effect(effect: V2Effect, client: &mut DaemonClient, app: &mut V2App) {
                 Err(e) => app.decide_failed(&e),
             }
         }
+        // D-433: the session's goals, read on demand because the checkpoint reports only one of them (D-266).
+        V2Effect::RefreshGoals => match client.call("goals", json!({})) {
+            Ok(reply) => {
+                let report = app.goals_report(&reply["goals"]);
+                app.command_note(report);
+            }
+            Err(e) => app.command_failed(&e),
+        },
+        // D-433: closing a goal is the missing half of the `g` key that opens one — the CLI's `goals cancel`, with
+        // a command id derived from the goal so a retry after a lost reply dedups at the control plane.
+        V2Effect::CancelGoal { id } => {
+            let result = client.command(&format!("goal-cancel-{id}"), "cancel_goal", json!({"goal_id": id}));
+            match result {
+                Ok(_) => {
+                    app.command_note(format!("cancelled goal {id}"));
+                    v2_sync_checkpoint(client, app);
+                }
+                Err(e) => app.command_failed(&e),
+            }
+        }
         // panel interventions are business commands with fresh command ids;
         // the user can retry after a disconnect without duplicating an effect
         V2Effect::SetLifecycle { instance, lifecycle } => {

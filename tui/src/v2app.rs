@@ -12,7 +12,7 @@ use crate::text::Composer;
 /// The slash commands the composer understands (D-370), shown while a `/` draft is open and by `/help`.
 const SLASH_HELP: &str =
     "commands: /help · /status · /chat · /instances · /tasks · /topology · /approvals · /mcp · /sessions · \
-     /switch · /interrupt · /quit";
+     /switch · /goals · /interrupt · /quit";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Focus {
@@ -55,6 +55,12 @@ pub enum ChatKind {
     Summary,
     System,
     Error,
+    /// Output a **command** produced (`/status`, `/mcp`, `/sessions`, `/goals`): the user asked for it, so it is
+    /// not transient runtime chatter and a checkpoint refresh must not wipe it before it is read. Measured
+    /// 2026-10-06 with the pty smoke: notes lived in `System`, and `apply_checkpoint`'s "a fresh checkpoint
+    /// supersedes earlier UI-level notes" removed them within one poll — so `/mcp` (D-413) and `/sessions`
+    /// (D-429) printed a report that nobody could read, which is how the `/goals` step found it (D-433).
+    Command,
 }
 
 #[derive(Clone, Debug)]
@@ -204,6 +210,14 @@ pub enum V2Effect {
     OpenGoal {
         attach: String,
     },
+    /// D-433: read the session's goals (`goals`), because the checkpoint reports only one of them (D-266) — the
+    /// same reason `/sessions` reads the registry (D-429). The handler prints them through `goals_report`.
+    RefreshGoals,
+    /// D-433: close a goal by id (`cancel_goal`), which is the TUI's missing half of the `g` key that opens one:
+    /// without it a session accumulates ACTIVE goals and the status line keeps showing the newest of them.
+    CancelGoal {
+        id: String,
+    },
     Quit,
 }
 
@@ -322,6 +336,16 @@ impl V2App {
         self.note(text);
     }
 
+    /// A command's output: it survives a checkpoint refresh, unlike a `System` note, because the user asked a
+    /// question and the answer must stay on screen until they scroll away from it (D-433).
+    pub fn command_note(&mut self, text: impl Into<String>) {
+        self.entries.push(ChatEntry { kind: ChatKind::Command, who: "note".into(), text: text.into() });
+        if self.entries.len() > NOTE_CAP * 4 {
+            let drop = self.entries.len() - NOTE_CAP * 4;
+            self.entries.drain(..drop);
+        }
+    }
+
     fn note(&mut self, text: impl Into<String>) {
         self.entries.push(ChatEntry { kind: ChatKind::System, who: "system".into(), text: text.into() });
         if self.entries.len() > NOTE_CAP * 4 {
@@ -403,7 +427,8 @@ impl V2App {
             self.instance_sel = self.instances.len().saturating_sub(1);
         }
         self.watermark = self.watermark.max(watermark);
-        // a fresh checkpoint supersedes earlier UI-level notes
+        // a fresh checkpoint supersedes earlier UI-level notes — runtime chatter, not a command's answer
+        // (D-433: `Command` entries are what a user asked for and stay until they scroll away)
         self.entries.retain(|e| e.kind != ChatKind::System && e.kind != ChatKind::Error);
     }
 
@@ -458,8 +483,11 @@ impl V2App {
                 _ => {}
             }
         }
-        let notes: Vec<ChatEntry> =
-            self.entries.drain(..).filter(|e| e.kind == ChatKind::System || e.kind == ChatKind::Error).collect();
+        let notes: Vec<ChatEntry> = self
+            .entries
+            .drain(..)
+            .filter(|e| matches!(e.kind, ChatKind::System | ChatKind::Error | ChatKind::Command))
+            .collect();
         self.entries = rebuilt;
         self.entries.extend(notes);
         if self.chat_scroll == 0 {
@@ -915,7 +943,7 @@ impl V2App {
         let command = text.split_whitespace().next().unwrap_or(text);
         match command {
             "/help" => {
-                self.note(SLASH_HELP);
+                self.command_note(SLASH_HELP);
                 None
             }
             "/quit" | "/exit" => {
@@ -946,11 +974,11 @@ impl V2App {
             }
             "/status" => {
                 let status = self.status_line();
-                self.note(status);
+                self.command_note(status);
                 None
             }
             "/sessions" => {
-                self.note(self.sessions_report());
+                self.command_note(self.sessions_report());
                 None
             }
             "/switch" => {
@@ -959,28 +987,43 @@ impl V2App {
                 match self.sessions.iter().find(|session| session.id == id) {
                     Some(session) if !session.active => Some(V2Effect::SwitchSession { id: session.id.clone() }),
                     Some(_) => {
-                        self.note(format!("/switch {id}: this is the session already attached"));
+                        self.command_note(format!("/switch {id}: this is the session already attached"));
                         None
                     }
                     None => {
-                        self.note(format!("/switch {id}: no such session; /sessions lists them"));
+                        self.command_note(format!("/switch {id}: no such session; /sessions lists them"));
                         None
                     }
                 }
             }
+            "/goals" => {
+                let id = text.split_whitespace().nth(2).unwrap_or("").to_string();
+                if let Some(verb) = text.split_whitespace().nth(1) {
+                    if verb != "cancel" {
+                        self.command_note(format!("/goals {verb}: the only verb is `cancel`; /goals lists them"));
+                        return None;
+                    }
+                    if id.is_empty() {
+                        self.command_note("/goals cancel needs a goal id; /goals lists them");
+                        return None;
+                    }
+                    return Some(V2Effect::CancelGoal { id });
+                }
+                Some(V2Effect::RefreshGoals)
+            }
             "/mcp" => {
-                self.note(self.mcp_report());
+                self.command_note(self.mcp_report());
                 None
             }
             "/interrupt" => match self.active_instance() {
                 Some(instance) => Some(V2Effect::Interrupt { instance: instance.id.clone() }),
                 None => {
-                    self.note("/interrupt: no instance is selected");
+                    self.command_note("/interrupt: no instance is selected");
                     None
                 }
             },
             _ => {
-                self.note(format!("unknown command {command:?}; /help lists them"));
+                self.command_note(format!("unknown command {command:?}; /help lists them"));
                 None
             }
         }
@@ -999,6 +1042,46 @@ impl V2App {
             out.push_str(&format!("  {}{marker}  name: {name}\n", session.id));
         }
         out.push_str("`/switch <id>` attaches this client to another session (its own daemon, started if needed)");
+        out
+    }
+
+    /// What `/goals` prints (D-433): one line per goal the session carries, with the ones a user acts on named —
+    /// the budget it has left, whether an instance is working on it, and what the model said when it settled
+    /// (D-431's summary). The checkpoint reports a single goal (D-266), which is why this reads the list.
+    pub fn goals_report(&self, rows: &Json) -> String {
+        let Some(rows) = rows.as_array().filter(|rows| !rows.is_empty()) else {
+            return "this session carries no goals: press `g` on an instance (or run `teamagents goals open \
+                    --id NAME`) to open one"
+                .to_string();
+        };
+        let mut out = String::from("goals in this session (newest the runtime is working on first):\n");
+        for row in rows {
+            let id = row["id"].as_str().unwrap_or("");
+            let status = row["status"].as_str().unwrap_or("");
+            let attached = row["attached_instances"]
+                .as_array()
+                .map(|list| list.iter().filter_map(|i| i.as_str()).collect::<Vec<_>>().join(", "))
+                .unwrap_or_default();
+            let usage = &row["known_usage"];
+            let mut line = format!(
+                "  {id}  {status}  usage {}{}",
+                usage["total"].as_i64().unwrap_or(0),
+                row["limits"]["max_total_tokens"].as_i64().map(|limit| format!("/{limit}")).unwrap_or_default()
+            );
+            if !attached.is_empty() {
+                line.push_str(&format!("  attached: {attached}"));
+            }
+            out.push_str(&line);
+            if let Some(summary) = row["summary"].as_str().filter(|text| !text.trim().is_empty()) {
+                let collapsed = summary.split_whitespace().collect::<Vec<_>>().join(" ");
+                out.push_str(&format!("\n      settled: {}", collapsed.chars().take(100).collect::<String>()));
+            }
+            out.push('\n');
+        }
+        out.push_str(
+            "`/goals cancel <id>` closes a goal (`g` on an instance opens one); a settled goal's own summary is \
+             shown when the model wrote none (D-431)",
+        );
         out
     }
 

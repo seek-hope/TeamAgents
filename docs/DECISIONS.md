@@ -20,6 +20,44 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-433 The TUI can list the session's goals and close one (2026-10-06)
+
+**Why, and where it came from.** The tau3-bench harness opens one goal per user turn and never settles them, which
+is how the D-431 investigation found a session with six goals, five of them ACTIVE. That is the harness's shape,
+but it is a shape the product permits and the TUI could not undo: `g` on an instance opens a goal (`create_goal`,
+D-269), the checkpoint reports one goal (D-266), and **nothing in the TUI closed one** — the CLI's `goals cancel`
+(D-267) was the only way, outside the surface a user is looking at. A session that accumulates ACTIVE goals is
+also what makes the status line's goal one of several, which is the wart D-266 recorded.
+
+**What was added.** `/goals` reads the session's goal list (`goals`, on demand — the same choice D-429 made for the
+registry and D-413 for the MCP rows, since the checkpoint carries one goal) and prints each row: status, usage
+against its ceiling, the instances attached to it, and the summary the model settled it with (D-431's field, so a
+silent settlement is readable here too). `/goals cancel <id>` produces a `CancelGoal` effect the loop turns into
+`cancel_goal` with a command id derived from the goal, so a retry after a lost reply dedups at the control plane.
+A verb that is not `cancel`, and `cancel` without an id, only say so; an id the session does not carry is answered
+by the control plane's own refusal rather than a local guess.
+
+**Found on the way: `cancel_goal` had no test.** `engine/tests/v2_daemon.rs` had none for that command at all, so
+the new `cancel_goal_closes_a_goal_and_the_list_says_which` is also its first: create a goal, cancel it (with a
+replayed command id returning the stored receipt), read the row back as `CANCELLED`, and check that a goal the
+session does not carry is refused rather than invented.
+
+**Two defects the real-terminal smoke found, and neither was visible in the unit tests.** The pty smoke
+(`make pty`) drives the actual TUI in a pty against a fake daemon, and the new step failed twice: first because
+command output was invisible — `/mcp` (D-413), `/sessions` (D-429) and `/goals` printed into `ChatKind::System`
+entries, and `apply_checkpoint`'s "a fresh checkpoint supersedes earlier UI-level notes" wipes those within one
+poll, so **three decisions' surfaces printed reports nobody could read**; the fix is an explicit
+`ChatKind::Command` that a refresh spares (a command's answer is not chatter) with the renderer styling it apart.
+Second because the handler unwrapped `reply["result"]["goals"]` while `DaemonClient::call` already returns the
+reply's `result` (its own `checkpoint` helper reads `result["snapshot"]`), so the report was always "this session
+carries no goals". Both are recorded because the unit tests were green through both: only driving the real
+keyboard in a real terminal in front of a real socket saw them.
+
+**Evidence.** `v2app_tests::goals_lists_them_and_cancel_is_an_effect` (the report's rows, the summary line, the
+empty list, and the four `/goals` forms) and the daemon test above. No formal material: every transition here
+already exists in the control plane (`create_goal`/`cancel_goal`, D-267) and this change adds a client-side read
+and an effect, so there is no new state for a model to certify — the same reason D-429 and D-431 recorded none.
+
 ## D-432 The tau3 adapter stops the daemons it starts (2026-10-06)
 
 **Found by counting processes, not by reading output.** After this session's tau3-bench runs the host had **385

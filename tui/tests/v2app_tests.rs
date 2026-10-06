@@ -139,6 +139,64 @@ fn the_instances_hint_stops_offering_lifecycle_keys_for_a_terminated_member() {
     assert!(hint.contains("Enter set conversation target") && hint.contains("up/down select"), "{hint}");
 }
 
+/// D-433: a command's answer survives a checkpoint refresh, a runtime note does not. The pty smoke found this the
+/// hard way: `/mcp`, `/sessions` and `/goals` printed into entries that `apply_checkpoint` wipes within one poll,
+/// so the commands looked like they did nothing. The distinction is the *kind*: a note is chatter, an answer is
+/// what the user asked for.
+#[test]
+fn a_command_answer_survives_a_checkpoint_and_a_note_does_not() {
+    let mut app = V2App::new("s-test");
+    app.command_note("goals in this session: turn-2 ACTIVE");
+    app.system_note("a transient runtime note");
+    app.apply_checkpoint(checkpoint(), 6);
+    let text: String = app.entries.iter().map(|entry| entry.text.as_str()).collect::<Vec<_>>().join("\n");
+    assert!(text.contains("goals in this session: turn-2 ACTIVE"), "the answer must stay: {text}");
+    assert!(!text.contains("transient runtime note"), "a note is superseded by a checkpoint: {text}");
+}
+
+/// D-433: the TUI can list the session's goals and close one. The checkpoint reports a single goal (D-266), so
+/// `/goals` asks for the list; `g` could open a goal and nothing could close it, which is how a session
+/// accumulates ACTIVE goals.
+#[test]
+fn goals_lists_them_and_cancel_is_an_effect() {
+    // the report is a pure function of the `goals` reply, so it is tested without a daemon
+    let app = app();
+    let rows = serde_json::json!([
+        {"id": "goal-s-main", "status": "SUCCEEDED", "known_usage": {"total": 41},
+         "limits": {"max_total_tokens": 1000}, "attached_instances": [],
+         "summary": "cancelled order W1\nand refunded the other card"},
+        {"id": "turn-2", "status": "ACTIVE", "known_usage": {"total": 0}, "limits": {},
+         "attached_instances": ["i-leader"], "summary": null}
+    ]);
+    let report = app.goals_report(&rows);
+    assert!(report.contains("goal-s-main  SUCCEEDED  usage 41/1000"), "{report}");
+    assert!(report.contains("settled: cancelled order W1 and refunded the other card"), "{report}");
+    assert!(report.contains("turn-2  ACTIVE  usage 0"), "{report}");
+    assert!(report.contains("attached: i-leader"), "{report}");
+    assert!(report.contains("/goals cancel <id>"), "{report}");
+    assert!(app.goals_report(&serde_json::json!([])).contains("no goals"), "an empty list says what to do");
+
+    // `/goals` asks the loop for the list; `/goals cancel <id>` closes one; anything else only says so
+    let mut app = V2App::new("s-test");
+    for (text, expect) in [
+        ("/goals", None),
+        ("/goals cancel turn-2", Some("turn-2")),
+        ("/goals cancel", None),
+        ("/goals stop turn-2", None),
+    ] {
+        for c in text.chars() {
+            app.handle_key(key(KeyCode::Char(c)));
+        }
+        let effect = app.handle_key(key(KeyCode::Enter));
+        match (expect, effect) {
+            (Some(id), Some(V2Effect::CancelGoal { id: got })) => assert_eq!(got, id),
+            (None, None) => {}
+            (None, Some(V2Effect::RefreshGoals)) => assert_eq!(text, "/goals"),
+            (expect, effect) => panic!("{text}: expected {expect:?}, got {effect:?}"),
+        }
+    }
+}
+
 /// D-431: a model can settle a goal by calling `finish` without writing any prose (measured on the tau3 retail
 /// split: 12 of 114 dialogues ended that way, and the user read nothing). The checkpoint carries the completion
 /// summary, and the status line shows it, so a settled goal is not just a bare `goal SUCCEEDED`.

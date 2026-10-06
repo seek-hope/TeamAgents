@@ -717,6 +717,10 @@ teamagents goals cancel --id g-spent    # close a goal nothing can spend (its ce
   retry, and a credential that cannot be renewed is a refusal that names the verb to run
   (`teamagents mcp login --name <service>`). `teamagents mcp list` prints each OAuth binding's state
   (`signed in` / `expired (will refresh)` / `not signed in`) before the tools it offers, and
+  **In the TUI**, `/goals` lists the goals the session carries (status, budget, what an instance is attached to,
+  and the summary the model settled one with) and `/goals cancel <id>` closes one — the missing half of the `g`
+  key that opens one, without which a session accumulates ACTIVE goals and the status line keeps showing the
+  newest of them (D-433). The list is read on demand, because the checkpoint reports a single goal (D-266).
   **In the TUI**, `/sessions` lists the named sessions under this base with the attached one marked, and
   `/switch <id>` attaches this client to another one (its daemon is started if it is not running) — the sessions
   and their roots arrive in the daemon's checkpoint, because a TUI is a client with no registry loader of its own

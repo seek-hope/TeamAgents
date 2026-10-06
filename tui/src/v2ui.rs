@@ -256,11 +256,14 @@ fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
             ChatKind::Runtime => (entry.who.clone(), Style::default().fg(GREY)),
             ChatKind::Summary => (entry.who.clone(), Style::default().fg(ACCENT)),
             ChatKind::System => (entry.who.clone(), Style::default().fg(GREY)),
+            // D-433: a command's answer stands out from runtime chatter (grey bold label) and stays on screen
+            ChatKind::Command => (entry.who.clone(), Style::default().fg(NOTICE).add_modifier(Modifier::BOLD)),
             ChatKind::Error => (entry.who.clone(), Style::default().fg(ERROR).add_modifier(Modifier::BOLD)),
         };
         let head = Line::from(vec![Span::styled(prefix, style), Span::styled(" ", Style::default().fg(GREY))]);
         let body_style = match entry.kind {
             ChatKind::System => Style::default().fg(NOTICE),
+            ChatKind::Command => Style::default().fg(FG),
             ChatKind::Error => Style::default().fg(ERROR),
             ChatKind::Tool => Style::default().fg(NOTICE),
             ChatKind::Runtime => Style::default().fg(NOTICE),
