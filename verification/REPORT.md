@@ -5,7 +5,7 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
-## 0. Gate status (re-run 2026-10-06 at `MATERIAL-COMMIT`)
+## 0. Gate status (re-run 2026-10-06 at `833b8576`)
 
 * **D-434 added per-repository project trust and the walk up, and re-ran all three targets on this tree
   (2026-10-06).** `verification/tla/V2ProjectTrust.tla` is new: it models the decision *under* `V2Trust` — which
