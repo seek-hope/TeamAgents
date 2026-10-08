@@ -1,0 +1,5 @@
+cargo build --offline --locked --manifest-path engine/Cargo.toml --bin teamagents
+cargo build --offline --locked --manifest-path tui/Cargo.toml --bin teamagents-tui
+pty v2 smoke: ok
+graphics PTY (blocks): diagrams, image bytes, source toggle, draft, resize, bounds, cleanup: ok
+graphics PTY (kitty): diagrams, image bytes, source toggle, draft, resize, bounds, cleanup: ok

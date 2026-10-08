@@ -19,6 +19,8 @@ teamagents                           # open the TUI (starts the per-user daemon 
   the composer and a short hint. There are no member, task or topology panels and no recipient switching.
   Enter sends; Ctrl+J or Shift+Enter inserts a newline. Up/Down recalls input; PageUp/PageDown and the
   wheel read history. Drafts soft-wrap and survive resizing. Kitty's native Shift-drag copies text.
+  A slash prefix shows local commands: Up/Down selects, Tab or Enter fills, Esc cancels without clearing
+  the draft. Press Enter to submit the filled command. An exact typed command needs only its ordinary Enter.
 - **Interrupt and exit**: Ctrl+C or /interrupt cancels the Leader's in-flight model request. The receipt
   says whether anything was interrupted. Running tools and delegated work continue; developer controls are
   listed below. Ctrl+D or /quit detaches the TUI while the daemon keeps running.
@@ -26,7 +28,10 @@ teamagents                           # open the TUI (starts the per-user daemon 
   Esc returns to the draft. Approval arrival never steals typing focus, and a click only selects a row.
 - **Readable conversations (D-447)**: shaded user messages, Leader Markdown, headings, lists, quotes, links,
   fenced code and tables. Code retains indentation; narrow tables become labelled records. Diff lines have
-  addition/removal colors. Live streaming uses the same layout, remains transient and is replaced by history.
+  addition/removal colors. Completed fenced code uses language syntax colors (D-450), including Rust, Python,
+  JavaScript/TypeScript, JSON, TOML and Shell. Unknown languages, incomplete fences or parser failures stay
+  plain; coloring also falls back above 64 KiB/500 lines or 4096 bytes in one line. Live streaming uses
+  the same layout, remains transient and is replaced by history.
   Tool calls and results share a block; received output does not by itself establish success.
   Ctrl+O expands tool previews from four to forty wrapped lines or folds them again. Live tool text is capped
   at 20,000 characters with a notice; full stored results and arguments remain in /sessions.
@@ -43,7 +48,8 @@ teamagents                           # open the TUI (starts the per-user daemon 
   Image paths belong to the message author's workspace; /artifacts references belong to that member. Remote
   URLs stay as links, and SVG external/embedded resources are not loaded. Inputs are limited to 8 MiB; graph
   source to 64 KiB/500 lines, with graph complexity limits. Up to sixteen cached previews and eight queued
-  renders keep the UI bounded. Images fit at most 120 columns and 36 rows; larger images scale down, and
+  renders keep the UI bounded. Only visible previews request decoding; scrolling back reloads evicted
+  images without discarding their known layout heights. Images fit at most 120 columns and 36 rows; larger images scale down, and
   scrolling clips them to the conversation. Display limits never rewrite the saved message.
 - **Sessions (D-446)**: Ctrl+S or /sessions opens all sessions under this base, including idle and archived
   ones. Up/Down or a click selects a session and reads its stored history without starting it; [ reads an

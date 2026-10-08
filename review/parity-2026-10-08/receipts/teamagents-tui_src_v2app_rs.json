@@ -1,0 +1,401 @@
+{
+  "product": "teamagents",
+  "revision_or_version": "a76722da",
+  "url": "git:a76722da:tui/src/v2app.rs",
+  "retrieved_at": "2026-10-08T13:49:31.041225+00:00",
+  "source_sha256": "ada2a8a2abd9bc0d59346a49964129eb8225624345c990999608f34b46753a78",
+  "source_bytes": 33164,
+  "source_lines": 812,
+  "evidence_class": "source or documentation, not executed product behavior",
+  "reproduce": "git show a76722da:tui/src/v2app.rs",
+  "excerpts": [
+    {
+      "line": 4,
+      "text": "//! is testable without a terminal. Tools and models run in the engine;"
+    },
+    {
+      "line": 8,
+      "text": "use serde_json::Value as Json;"
+    },
+    {
+      "line": 13,
+      "text": "const SLASH_HELP: &str = \"commands: /help \u00b7 /sessions \u00b7 /interrupt \u00b7 /quit\";"
+    },
+    {
+      "line": 18,
+      "text": "    Approvals,"
+    },
+    {
+      "line": 29,
+      "text": "    /// A runtime compaction summary (R22/A20): the model's view is covered by"
+    },
+    {
+      "line": 30,
+      "text": "    /// it, so the user must see where the conversation was compacted."
+    },
+    {
+      "line": 36,
+      "text": "    /// Client help and receipts survive checkpoint refreshes (D-433/D-445)."
+    },
+    {
+      "line": 73,
+      "text": "pub struct ApprovalInfo {"
+    },
+    {
+      "line": 86,
+      "text": "    /// The goal's absolute deadline in epoch seconds (`[limits] deadline_minutes`,"
+    },
+    {
+      "line": 87,
+      "text": "    /// D-64): shown as the time left, so a configured ceiling is visible."
+    },
+    {
+      "line": 88,
+      "text": "    pub deadline: Option<f64>,"
+    },
+    {
+      "line": 107,
+      "text": "        approval_id: String,"
+    },
+    {
+      "line": 110,
+      "text": "    /// Interrupt the Leader at the runtime boundary; leaving the TUI is independent."
+    },
+    {
+      "line": 111,
+      "text": "    Interrupt {"
+    },
+    {
+      "line": 121,
+      "text": "    pub approvals: bool,"
+    },
+    {
+      "line": 122,
+      "text": "    pub checkpoint: bool,"
+    },
+    {
+      "line": 141,
+      "text": "    pub approvals: Vec<ApprovalInfo>,"
+    },
+    {
+      "line": 142,
+      "text": "    pub approval_sel: usize,"
+    },
+    {
+      "line": 153,
+      "text": "    /// \u00a79: the transient text each instance is streaming, newest read only. Never an authoritative fact."
+    },
+    {
+      "line": 173,
+      "text": "            approvals: vec![],"
+    },
+    {
+      "line": 174,
+      "text": "            approval_sel: 0,"
+    },
+    {
+      "line": 192,
+      "text": "    /// Replace the transient streaming previews from the daemon's `previews` read (\u00a79). Empty text is not stored,"
+    },
+    {
+      "line": 194,
+      "text": "    pub fn apply_previews(&mut self, rows: &Json) {"
+    },
+    {
+      "line": 206,
+      "text": "    /// The active instance's streaming text, if it has an attempt in flight."
+    },
+    {
+      "line": 212,
+      "text": "    /// A command's output: it survives a checkpoint refresh, unlike a `System` note, because the user asked a"
+    },
+    {
+      "line": 257,
+      "text": "    /// Checkpoint (connect/reconnect): snapshot state and the watermark the"
+    },
+    {
+      "line": 258,
+      "text": "    /// event stream resumes from \u2014 one consistent read (\u00a79)."
+    },
+    {
+      "line": 259,
+      "text": "    pub fn apply_checkpoint(&mut self, snapshot: Json, watermark: i64) {"
+    },
+    {
+      "line": 261,
+      "text": "            if let Some(row) = snapshot[\"sessions\"].as_array().into_iter().flatten().find(|row| row[\"active\"] == true) {"
+    },
+    {
+      "line": 269,
+      "text": "        self.instances = snapshot[\"instances\"]"
+    },
+    {
+      "line": 282,
+      "text": "        self.goal = snapshot.get(\"goal\").and_then(|g| {"
+    },
+    {
+      "line": 291,
+      "text": "                limit_total: g[\"limits\"][\"max_total_tokens\"].as_i64(),"
+    },
+    {
+      "line": 292,
+      "text": "                deadline: g[\"deadline\"].as_f64(),"
+    },
+    {
+      "line": 300,
+      "text": "        // a fresh checkpoint supersedes earlier UI-level notes \u2014 runtime chatter, not a command's answer"
+    },
+    {
+      "line": 307,
+      "text": "    pub fn apply_history(&mut self, history: Json) {"
+    },
+    {
+      "line": 327,
+      "text": "    pub fn apply_events(&mut self, events: &[Json]) -> Refresh {"
+    },
+    {
+      "line": 336,
+      "text": "                \"input\" | \"response_imported\" | \"decision_consumed\" | \"completion_closed\" => {"
+    },
+    {
+      "line": 338,
+      "text": "                    refresh.checkpoint = true;"
+    },
+    {
+      "line": 343,
+      "text": "                | \"operation_completed\""
+    },
+    {
+      "line": 347,
+      "text": "                    refresh.checkpoint = true;"
+    },
+    {
+      "line": 349,
+      "text": "                \"goal_completed\" => {"
+    },
+    {
+      "line": 351,
+      "text": "                    refresh.checkpoint = true;"
+    },
+    {
+      "line": 360,
+      "text": "                    refresh.checkpoint = true;"
+    },
+    {
+      "line": 374,
+      "text": "                        \"completion check round {} started: {what}\","
+    },
+    {
+      "line": 378,
+      "text": "                \"completion_repair\" => {"
+    },
+    {
+      "line": 399,
+      "text": "                        \"completion check round {} failed{why}, entering a repair turn\","
+    },
+    {
+      "line": 404,
+      "text": "                    refresh.checkpoint = true;"
+    },
+    {
+      "line": 412,
+      "text": "                    refresh.checkpoint = true;"
+    },
+    {
+      "line": 414,
+      "text": "                    // instance (a required MCP service that cannot start, a driver that failed to boot), and"
+    },
+    {
+      "line": 432,
+      "text": "                    refresh.checkpoint = true;"
+    },
+    {
+      "line": 435,
+      "text": "                \"task_delegated\" | \"task_started\" | \"task_completed\" => {"
+    },
+    {
+      "line": 436,
+      "text": "                    refresh.checkpoint = true;"
+    },
+    {
+      "line": 439,
+      "text": "                    refresh.checkpoint = true;"
+    },
+    {
+      "line": 447,
+      "text": "                    refresh.checkpoint = true;"
+    },
+    {
+      "line": 454,
+      "text": "                \"approval_requested\" | \"approval_granted\" | \"approval_denied\" => {"
+    },
+    {
+      "line": 455,
+      "text": "                    refresh.approvals = true;"
+    },
+    {
+      "line": 457,
+      "text": "                \"operation_completed\" if payload[\"status\"].as_str() == Some(\"OUTCOME_UNKNOWN\") => {"
+    },
+    {
+      "line": 469,
+      "text": "    pub fn apply_approvals(&mut self, result: Json) {"
+    },
+    {
+      "line": 470,
+      "text": "        self.approvals = result[\"approvals\"]"
+    },
+    {
+      "line": 475,
+      "text": "            .map(|a| ApprovalInfo {"
+    },
+    {
+      "line": 482,
+      "text": "        if self.approval_sel >= self.approvals.len() {"
+    },
+    {
+      "line": 483,
+      "text": "            self.approval_sel = self.approvals.len().saturating_sub(1);"
+    },
+    {
+      "line": 485,
+      "text": "        if self.approvals.is_empty() && self.focus == Focus::Approvals {"
+    },
+    {
+      "line": 522,
+      "text": "        self.note_error(format!(\"the approval decision failed: {error}\"));"
+    },
+    {
+      "line": 550,
+      "text": "                KeyCode::Char('c') => return self.interrupt(),"
+    },
+    {
+      "line": 556,
+      "text": "                    if !self.approvals.is_empty() {"
+    },
+    {
+      "line": 557,
+      "text": "                        self.focus = Focus::Approvals;"
+    },
+    {
+      "line": 565,
+      "text": "            Focus::Approvals => self.approval_key(key),"
+    },
+    {
+      "line": 575,
+      "text": "    fn interrupt(&mut self) -> Option<V2Effect> {"
+    },
+    {
+      "line": 577,
+      "text": "            self.command_note(\"Disconnected: interrupt was not sent. Reconnect before retrying.\");"
+    },
+    {
+      "line": 581,
+      "text": "        Some(V2Effect::Interrupt { instance })"
+    },
+    {
+      "line": 584,
+      "text": "    fn approval_key(&mut self, key: crossterm::event::KeyEvent) -> Option<V2Effect> {"
+    },
+    {
+      "line": 592,
+      "text": "                self.approval_sel = self.approval_sel.saturating_sub(1);"
+    },
+    {
+      "line": 596,
+      "text": "                if self.approval_sel + 1 < self.approvals.len() {"
+    },
+    {
+      "line": 597,
+      "text": "                    self.approval_sel += 1;"
+    },
+    {
+      "line": 608,
+      "text": "        let approval = self.approvals.get(self.approval_sel)?;"
+    },
+    {
+      "line": 609,
+      "text": "        Some(V2Effect::Decide { approval_id: approval.id.clone(), decision })"
+    },
+    {
+      "line": 619,
+      "text": "Ctrl+C or /interrupt cancels the Leader's model request; running tools and delegated work continue."
+    },
+    {
+      "line": 620,
+      "text": "Ctrl+A focuses pending approvals; a approves once, d denies, Esc returns."
+    },
+    {
+      "line": 625,
+      "text": "Developer tools: teamagents --help; teamagents status --json; teamagents history --id ID.\","
+    },
+    {
+      "line": 630,
+      "text": "            \"/interrupt\" => return self.interrupt(),"
+    },
+    {
+      "line": 635,
+      "text": "            _ => self.command_note(format!(\"Unknown command {text:?}. {SLASH_HELP}. Management: teamagents --help.\")),"
+    },
+    {
+      "line": 761,
+      "text": "        if !self.approvals.is_empty() {"
+    },
+    {
+      "line": 762,
+      "text": "            return format!(\"Approval needed ({}) \u00b7 Ctrl+A review\", self.approvals.len());"
+    },
+    {
+      "line": 766,
+      "text": "            return format!(\"{} \u00b7 {} \u00b7 teamagents instances\", leader.lifecycle, leader.reason);"
+    },
+    {
+      "line": 772,
+      "text": "            \"COMPLETION_PENDING\" => \"Checking\","
+    },
+    {
+      "line": 781,
+      "text": "                format!(\" \u00b7 {}{limit} tokens{}\", g.known_total, if g.unknown { \" + unknown\" } else { \"\" })"
+    },
+    {
+      "line": 784,
+      "text": "        let deadline = self"
+    },
+    {
+      "line": 787,
+      "text": "            .and_then(|g| g.deadline)"
+    },
+    {
+      "line": 788,
+      "text": "            .map(|deadline| {"
+    },
+    {
+      "line": 789,
+      "text": "                let left = deadline - crate::now_epoch();"
+    },
+    {
+      "line": 793,
+      "text": "                    \" \u00b7 past its deadline\".into()"
+    },
+    {
+      "line": 797,
+      "text": "        format!(\"{state}{usage}{deadline}\")"
+    },
+    {
+      "line": 801,
+      "text": "        if self.focus == Focus::Approvals {"
+    },
+    {
+      "line": 807,
+      "text": "        if !self.approvals.is_empty() {"
+    },
+    {
+      "line": 808,
+      "text": "            return \"Ctrl+A review \u00b7 Enter send \u00b7 Ctrl+C interrupt \u00b7 Ctrl+D exit\".into();"
+    },
+    {
+      "line": 810,
+      "text": "        \"Enter send \u00b7 Ctrl+S sessions \u00b7 Ctrl+C interrupt \u00b7 Ctrl+D exit \u00b7 /help\".into()"
+    }
+  ]
+}

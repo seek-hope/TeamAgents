@@ -1,0 +1,250 @@
+== MC_tui_target.cfg (must be refuted) ==
+Error: Invariant LeaderOnly is violated.
+== MC_tui_approval.cfg (must be refuted) ==
+Error: Invariant ExplicitDecision is violated.
+== MC_tui_exit.cfg (must be refuted) ==
+Error: Invariant ExitOnlyDetaches is violated.
+== MC_presentation_dispatch.cfg (must be refuted) ==
+Error: Invariant CompletionOnlyEdits is violated.
+== MC_presentation_erase.cfg (must be refuted) ==
+Error: Invariant CancelKeepsDraft is violated.
+== MC_presentation_eager.cfg (must be refuted) ==
+Error: Invariant OnlyVisibleAdmitted is violated.
+== MC_presentation_overflow.cfg (must be refuted) ==
+Error: Invariant CacheIsBounded is violated.
+== MC_presentation_stale.cfg (must be refuted) ==
+Error: Invariant StaleResultIgnored is violated.
+== MC_sessionui_confirm.cfg (must be refuted) ==
+Error: Invariant ConfirmedDelete is violated.
+== MC_sessionui_switch.cfg (must be refuted) ==
+Error: Invariant SwitchAfterSuccess is violated.
+== MC_sessionui_earlyexit.cfg (must be refuted) ==
+Error: Invariant ExitAfterSuccess is violated.
+== MC_sessionui_keepopen.cfg (must be refuted) ==
+Error: Invariant DeletedCurrentExits is violated.
+== MC_authority_badview.cfg (must be refuted) ==
+Error: Temporal properties were violated.
+== MC_authority_trustsurface.cfg (must be refuted) ==
+Error: Action property AuthorizedEffectsOnly is violated.
+== MC_authority_stalesurface.cfg (must be refuted) ==
+Error: Temporal properties were violated.
+== MC_control_cancel.cfg (must be refuted) ==
+Error: Action property CancelledGoalReleasesParkedInstances is violated.
+== MC_control_midturninput.cfg (must be refuted) ==
+Error: Invariant InputLandsAtTheBoundary is violated.
+== MC_control_two_disjunction.cfg (must be refuted) ==
+Error: Temporal properties were violated.
+== MC_control_deadline.cfg (must be refuted) ==
+Error: Action property NoRequestAfterDeadline is violated.
+== MC_control_reask.cfg (must be refuted) ==
+Error: Invariant NoTurnWithoutWork is violated.
+== MC_control_runtimeTail.cfg (must be refuted) ==
+Error: Invariant NoTurnWithoutWork is violated.
+== MC_control_warn_late.cfg (must be refuted) ==
+Error: Action property WarnIsTimely is violated.
+== MC_control_warn_repeat.cfg (must be refuted) ==
+Error: Invariant AtMostOneWarning is violated.
+== MC_checks_brief_without.cfg (must be refuted) ==
+Error: Action property BriefingIsForAGoalWithChecks is violated.
+== MC_oauth_wrong_resource.cfg (must be refuted) ==
+Error: Invariant TokenOnlyToItsResource is violated.
+== MC_oauth_reuses_code.cfg (must be refuted) ==
+Error: Invariant CodesAreSingleUse is violated.
+== MC_oauth_verifier_leaks.cfg (must be refuted) ==
+Error: Invariant VerifierNeverLeavesTheClient is violated.
+== MC_oauth_uses_expired.cfg (must be refuted) ==
+Error: Invariant NoRequestWithAnExpiredToken is violated.
+== MC_oauth_logout_ignored.cfg (must be refuted) ==
+Error: Action property LogoutIsEffective is violated.
+== MC_control_landing.cfg (must be refuted) ==
+Error: Invariant SettlementFollowsATurnAfterTheLanding is violated.
+== MC_store_adopt.cfg (must be refuted) ==
+Error: Invariant NoForeignAdoption is violated.
+== MC_retention_evicts_live.cfg (must be refuted) ==
+Error: Invariant NoReferenceToEvictedFact is violated.
+== MC_retention_evicts_evidence.cfg (must be refuted) ==
+Error: Invariant EvidenceIsNeverEvicted is violated.
+== MC_retention_evicts_young.cfg (must be refuted) ==
+Error: Invariant OnlyOldFactsAreEvicted is violated.
+== MC_retention_runs_disabled.cfg (must be refuted) ==
+Error: Invariant OnlyOldFactsAreEvicted is violated.
+== MC_history_leaks.cfg (must be refuted) ==
+Error: Invariant InstancesReadOnlyTheirOwn is violated.
+== MC_history_system_reads.cfg (must be refuted) ==
+Error: Invariant SystemNeverReads is violated.
+== MC_sessions_shared_path.cfg (must be refuted) ==
+Error: Invariant RegistryIsInjective is violated.
+== MC_sessions_archive_held.cfg (must be refuted) ==
+Error: Invariant NoCoordinatorForAnArchivedSession is violated.
+== MC_sessions_archive_default.cfg (must be refuted) ==
+Error: Invariant DefaultIsNeverArchived is violated.
+== MC_schedule_duplicate.cfg (must be refuted) ==
+Error: Invariant NoDuplicateRun is violated.
+== MC_schedule_overlap.cfg (must be refuted) ==
+Error: Invariant AtMostOneRunPerAutomation is violated.
+== MC_schedule_disabled.cfg (must be refuted) ==
+Error: Invariant DisabledNeverRuns is violated.
+== MC_schedule_early.cfg (must be refuted) ==
+Error: Invariant OnlyDueSlotsRun is violated.
+== MC_isolation_fallback.cfg (must be refuted) ==
+Error: Invariant RunsOnlyUnderTheConfiguredBackend is violated.
+== MC_isolation_unavailable.cfg (must be refuted) ==
+Error: Invariant UnavailableBackendNeverRuns is violated.
+== MC_isolation_ssh_unreachable.cfg (must be refuted) ==
+Error: Invariant UnavailableBackendNeverRuns is violated.
+== MC_isolation_ssh_fallback.cfg (must be refuted) ==
+Error: Invariant RunsOnlyUnderTheConfiguredBackend is violated.
+== MC_codemode_leak.cfg (must be refuted) ==
+Error: Invariant OnlyScriptOutputEnters is violated.
+== MC_codemode_veto.cfg (must be refuted) ==
+Error: Invariant VetoedNeverCalled is violated.
+== MC_jobs_guess_notrun.cfg (must be refuted) ==
+Error: Invariant UnverifiableStartIsNeverGuessedNotRun is violated.
+== MC_jobs_double_go.cfg (must be refuted) ==
+Error: Invariant AtMostOneExecutor is violated.
+== MC_jobs_late_go.cfg (must be refuted) ==
+Error: Invariant LateGoIsRejected is violated.
+== MC_jobs_spawn_first.cfg (must be refuted) ==
+Error: Invariant NoEffectBeforeAccept is violated.
+== MC_jobs_retires_a_running_command.cfg (must be refuted) ==
+Error: Invariant NothingInFlightWasRetired is violated.
+== MC_jobs_service_signals_a_stranger.cfg (must be refuted) ==
+Error: Invariant OnlyTheJobsOwnGroupIsSignalled is violated.
+== MC_jobs_service_signals_a_live_command.cfg (must be refuted) ==
+Error: Invariant NoLiveCommandWasSignalled is violated.
+== MC_workspace_merges_a_dirty_checkout.cfg (must be refuted) ==
+Error: Invariant UncommittedWorkIsNeverMerged is violated.
+== MC_workspace_merges_mid_turn.cfg (must be refuted) ==
+Error: Invariant NoMergeWhileATurnRuns is violated.
+== MC_workspace_retires_with_work.cfg (must be refuted) ==
+Error: Invariant RetirementNeverBuriesWork is violated.
+== MC_inbox_no_dedup.cfg (must be refuted) ==
+Error: Invariant AtMostOncePerEnvelope is violated.
+== MC_inbox_drop_when_full.cfg (must be refuted) ==
+Error: Invariant NoSilentLoss is violated.
+== MC_inbox_unbounded.cfg (must be refuted) ==
+Error: Invariant BoundedInbox is violated.
+== MC_inbox_stale_applied.cfg (must be refuted) ==
+Error: Invariant NoStaleApplication is violated.
+== MC_inbox_foreign_drain.cfg (must be refuted) ==
+Error: Invariant DrainIsOwned is violated.
+== MC_diskfull_keep_driving.cfg (must be refuted) ==
+Error: Invariant NoStepRunsWhileLatched is violated.
+== MC_diskfull_fake_success.cfg (must be refuted) ==
+Error: Invariant NoFakedSuccess is violated.
+== MC_diskfull_park_silently.cfg (must be refuted) ==
+Error: Invariant LossIsReported is violated.
+== MC_diskfull_clear_anyway.cfg (must be refuted) ==
+Error: Invariant LatchClearsOnlyWhenWritable is violated.
+== MC_coordinator_report.cfg (must be refuted) ==
+Error: Invariant TheWindowIsNotMistakenForAHolder is violated.
+== MC_coordinator_inherit.cfg (must be refuted) ==
+Error: Invariant NoHeldLockWithoutAHolder is violated.
+== MC_coordinator_shared.cfg (must be refuted) ==
+Error: Invariant AtMostOneCoordinator is violated.
+== MC_coordinator_sweep_beside_a_session.cfg (must be refuted) ==
+Error: Invariant SweepWaitsForTheSession is violated.
+== MC_task_delegates_to_settled.cfg (must be refuted) ==
+Error: Invariant RegisteredWorkNeedsAnActiveGoal is violated.
+== MC_task_bills_settled.cfg (must be refuted) ==
+Error: Invariant RequestsResolveToActiveGoals is violated.
+== MC_task_unordered_dependency.cfg (must be refuted) ==
+Error: Invariant DependenciesPointBackwards is violated.
+== MC_task_terminate_leaves_tasks.cfg (must be refuted) ==
+Error: Invariant NoOpenTaskOnDeadAssignee is violated.
+== MC_compress_deletes_originals.cfg (must be refuted) ==
+Error: Invariant NoEntryIsEverLost is violated.
+== MC_compress_lifts_coverage.cfg (must be refuted) ==
+Error: Invariant CoverageNeverLifted is violated.
+== MC_compress_rewrites_closed.cfg (must be refuted) ==
+Error: Invariant RequestClosesOnce is violated.
+== MC_daemon_rewrites_receipt.cfg (must be refuted) ==
+Error: Invariant ReceiptsAreStable is violated.
+== MC_daemon_rolls_back_log.cfg (must be refuted) ==
+Error: Invariant LogMonotone is violated.
+== MC_daemon_reclaims_events.cfg (must be refuted) ==
+Error: Invariant NoResyncInThisVersion is violated.
+== MC_daemon_stop_before_receipt.cfg (must be refuted) ==
+Error: Invariant StopsOnlyAfterAnswering is violated.
+== MC_daemon_keeps_serving_after_receipt.cfg (must be refuted) ==
+Error: Temporal properties were violated.
+== MC_daemon_skips_an_event.cfg (must be refuted) ==
+Error: Action property HandoversAreTheFullRange is violated.
+== MC_daemon_delivers_twice.cfg (must be refuted) ==
+Error: Invariant NothingIsServedTwice is violated.
+== MC_checks_rewinds_rounds.cfg (must be refuted) ==
+Error: Invariant RoundsAreMonotone is violated.
+== MC_checks_late_require.cfg (must be refuted) ==
+Error: Invariant EveryRequiredCheckWasVerified is violated.
+== MC_images_blind_parts.cfg (must be refuted) ==
+Error: Invariant NoImagesWithoutSupport is violated.
+== MC_checks_self_verified.cfg (must be refuted) ==
+Error: Invariant IndependenceIsNotSelfVerified is violated.
+== MC_memory_evicts.cfg (must be refuted) ==
+Error: Invariant NotesAreAppendOnly is violated.
+== MC_approval_drops_the_expiry.cfg (must be refuted) ==
+Error: Invariant NoLateEffect is violated.
+== MC_approval_rewrites_a_decision.cfg (must be refuted) ==
+Error: Invariant ApprovalDecisionIsFinal is violated.
+== MC_approval_keeps_pending_on_close.cfg (must be refuted) ==
+Error: Invariant TerminalOperationHasNoPendingApproval is violated.
+== MC_approval_parks_without_a_row.cfg (must be refuted) ==
+Error: Invariant ParkedHasAnApprovalRow is violated.
+== MC_artifact_gc_ignores_references.cfg (must be refuted) ==
+Error: Invariant GcClaimsOnlyUnreferencedLive is violated.
+== MC_wait_closes_without_answering.cfg (must be refuted) ==
+Error: Invariant ResolvedWaitIsAnswered is violated.
+== MC_wait_widens_a_message.cfg (must be refuted) ==
+Error: Action property MessageStaysAMessage is violated.
+== MC_wait_wakes_on_report.cfg (must be refuted) ==
+Error: Action property ReportsAreNotSettlements is violated.
+== MC_wait_wakes_on_idle.cfg (must be refuted) ==
+Error: Action property IdleIsNotASettlement is violated.
+== MC_grants_stale_offered_surface.cfg (must be refuted) ==
+Error: Invariant OfferedToolsAreAuthorized is violated.
+== MC_trust_models_always_merge.cfg (must be refuted) ==
+Error: Invariant NothingFromTheProjectUntrusted is violated.
+== MC_trust_project_overrides_user.cfg (must be refuted) ==
+Error: Invariant UserDefinitionsNeverOverridden is violated.
+== MC_trust_project_sets_policy.cfg (must be refuted) ==
+Error: Invariant PolicyClassesStayTheUsers is violated.
+== MC_trust_project_grants_itself.cfg (must be refuted) ==
+Error: Invariant TrustOnlyFromTheUser is violated.
+== MC_trust_refuses_silently.cfg (must be refuted) ==
+Error: Invariant RefusalsAreNamed is violated.
+== MC_projecttrust_raw.cfg (must be refuted) ==
+Error: Invariant ListedTrustIsCanonical is violated.
+== MC_projecttrust_project_grants.cfg (must be refuted) ==
+Error: Invariant TrustIsForTheRootTheUserListed is violated.
+== MC_projecttrust_stale.cfg (must be refuted) ==
+Error: Invariant TrustIsForTheRootTheUserListed is violated.
+== MC_prune_window.cfg (must be refuted) ==
+Error: Invariant NothingThatShouldStayLeaves is violated.
+== MC_prune_dating.cfg (must be refuted) ==
+Error: Invariant NothingThatShouldStayLeaves is violated.
+== MC_prune_live.cfg (must be refuted) ==
+Error: Invariant NothingThatShouldStayLeaves is violated.
+== MC_prune_evidence.cfg (must be refuted) ==
+Error: Invariant NothingThatShouldStayLeaves is violated.
+== MC_artifact_release_live_owner.cfg (must be refuted) ==
+Error: Invariant OwnerHoldsUntilItsSubjectIsFinished is violated.
+== MC_artifact_release_fresh.cfg (must be refuted) ==
+Error: Invariant NothingIsReleasedInsideTheWindow is violated.
+== MC_prompt_members_use_their_profile.cfg (must be refuted) ==
+Error: Invariant EverybodyHasTheRules is violated.
+== MC_prompt_rules_frozen_at_start.cfg (must be refuted) ==
+Error: Invariant PromptsFollowTheCurrentRules is violated.
+== MC_prompt_ignore_unreadable.cfg (must be refuted) ==
+Error: Invariant UnreadableRulesAreNoted is violated.
+== MC_concurrency_writer_waits.cfg (must be refuted) ==
+Error: Temporal properties were violated.
+== MC_concurrency_skips_an_event.cfg (must be refuted) ==
+Error: Invariant ReadersSeeTheCommittedPrefix is violated.
+== MC_concurrency_reads_ahead.cfg (must be refuted) ==
+Error: Invariant NoReaderSeesUncommitted is violated.
+== MC_retry_session_constant.cfg (must be refuted) ==
+Error: Invariant ResolvedIsTheInstancesOwn is violated.
+== MC_retry_off_by_one.cfg (must be refuted) ==
+Error: Invariant NoAttemptBeyondTheBudget is violated.
+== MC_retry_parks_early.cfg (must be refuted) ==
+Error: Invariant ParkOnlyAfterTheBudget is violated.

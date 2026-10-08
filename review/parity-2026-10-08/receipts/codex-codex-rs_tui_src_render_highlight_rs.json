@@ -1,0 +1,413 @@
+{
+  "product": "codex",
+  "revision_or_version": "9b738582b13c2cdbeff54af0afd04c50c3e7ba09",
+  "url": "https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/codex-rs/tui/src/render/highlight.rs",
+  "retrieved_at": "2026-10-08T13:49:30.353124+00:00",
+  "source_sha256": "3a5eab87e7d2df77b45cb4687d14d3b0a8cf64e09419a07bd70ee5f10bc513fc",
+  "source_bytes": 62881,
+  "source_lines": 1688,
+  "evidence_class": "source or documentation, not executed product behavior",
+  "reproduce": "curl --fail --silent --show-error https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/codex-rs/tui/src/render/highlight.rs",
+  "excerpts": [
+    {
+      "line": 1,
+      "text": "//! Syntax highlighting engine for the TUI."
+    },
+    {
+      "line": 4,
+      "text": "//! ~250-language syntax highlighting and bundled color themes.  The module"
+    },
+    {
+      "line": 16,
+      "text": "//! config is resolved) to persist the user preference and seed the `THEME`"
+    },
+    {
+      "line": 18,
+      "text": "//! swap/snapshot the theme for live preview.  All highlighting functions read"
+    },
+    {
+      "line": 19,
+      "text": "//! the theme via `theme_lock()`. Unit tests isolate the active theme and its"
+    },
+    {
+      "line": 20,
+      "text": "//! revision per thread so parallel tests cannot change each other\u2019s rendering."
+    },
+    {
+      "line": 21,
+      "text": "//! Generic renderers preserve configured theme foregrounds because callers may paint them on"
+    },
+    {
+      "line": 40,
+      "text": "#[cfg(not(test))]"
+    },
+    {
+      "line": 42,
+      "text": "#[cfg(not(test))]"
+    },
+    {
+      "line": 44,
+      "text": "use syntect::easy::HighlightLines;"
+    },
+    {
+      "line": 45,
+      "text": "use syntect::highlighting::Color as SyntectColor;"
+    },
+    {
+      "line": 46,
+      "text": "use syntect::highlighting::FontStyle;"
+    },
+    {
+      "line": 47,
+      "text": "use syntect::highlighting::Highlighter;"
+    },
+    {
+      "line": 48,
+      "text": "use syntect::highlighting::Style as SyntectStyle;"
+    },
+    {
+      "line": 49,
+      "text": "use syntect::highlighting::Theme;"
+    },
+    {
+      "line": 50,
+      "text": "use syntect::highlighting::ThemeSet;"
+    },
+    {
+      "line": 57,
+      "text": "#[path = \"highlight_streaming.rs\"]"
+    },
+    {
+      "line": 58,
+      "text": "mod streaming;"
+    },
+    {
+      "line": 60,
+      "text": "pub(crate) use streaming::StreamingCodeHighlighter;"
+    },
+    {
+      "line": 65,
+      "text": "#[cfg(not(test))]"
+    },
+    {
+      "line": 67,
+      "text": "#[cfg(not(test))]"
+    },
+    {
+      "line": 72,
+      "text": "#[cfg(test)]"
+    },
+    {
+      "line": 74,
+      "text": "    static TEST_THEME: std::cell::OnceCell<std::sync::Arc<RwLock<Theme>>> = const { std::cell::OnceCell::new() };"
+    },
+    {
+      "line": 75,
+      "text": "    static TEST_THEME_REVISION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };"
+    },
+    {
+      "line": 90,
+      "text": "// encoding.  If the upstream two_face/syntect theme format changes, the"
+    },
+    {
+      "line": 91,
+      "text": "// `ansi_themes_use_only_ansi_palette_colors` test will catch it at build"
+    },
+    {
+      "line": 93,
+      "text": "// unactionable noise since users can't fix upstream themes."
+    },
+    {
+      "line": 95,
+      "text": "/// Set the user-configured syntax theme override and codex home path."
+    },
+    {
+      "line": 97,
+      "text": "/// Call this with the **final resolved config** (after onboarding, resume, and"
+    },
+    {
+      "line": 98,
+      "text": "/// fork reloads complete). The first call persists `name` and `codex_home` in"
+    },
+    {
+      "line": 104,
+      "text": "/// Returns user-facing warnings for actionable configuration issues, such as"
+    },
+    {
+      "line": 113,
+      "text": "    #[cfg(not(test))]"
+    },
+    {
+      "line": 115,
+      "text": "    #[cfg(test)]"
+    },
+    {
+      "line": 116,
+      "text": "    let initialized = TEST_THEME.with(|theme| theme.get().is_some());"
+    },
+    {
+      "line": 143,
+      "text": "    // still surface a startup warning so users can diagnose configuration issues."
+    },
+    {
+      "line": 233,
+      "text": "    // Honor user-configured theme if valid."
+    },
+    {
+      "line": 255,
+      "text": "    #[cfg(not(test))]"
+    },
+    {
+      "line": 259,
+      "text": "    #[cfg(test)]"
+    },
+    {
+      "line": 260,
+      "text": "    TEST_THEME.with(|theme| {"
+    },
+    {
+      "line": 275,
+      "text": "    #[cfg(not(test))]"
+    },
+    {
+      "line": 276,
+      "text": "    THEME_REVISION.fetch_add(1, Ordering::Release);"
+    },
+    {
+      "line": 277,
+      "text": "    #[cfg(test)]"
+    },
+    {
+      "line": 278,
+      "text": "    TEST_THEME_REVISION.with(|revision| revision.set(revision.get().wrapping_add(1)));"
+    },
+    {
+      "line": 283,
+      "text": "    #[cfg(not(test))]"
+    },
+    {
+      "line": 287,
+      "text": "    #[cfg(test)]"
+    },
+    {
+      "line": 288,
+      "text": "    TEST_THEME_REVISION.with(std::cell::Cell::get)"
+    },
+    {
+      "line": 333,
+      "text": "/// Pure extraction helper, separated from the global theme singleton so tests"
+    },
+    {
+      "line": 336,
+      "text": "    let highlighter = Highlighter::new(theme);"
+    },
+    {
+      "line": 337,
+      "text": "    let inserted = scope_background(&highlighter, \"markup.inserted\")"
+    },
+    {
+      "line": 338,
+      "text": "        .or_else(|| scope_background(&highlighter, \"diff.inserted\"));"
+    },
+    {
+      "line": 339,
+      "text": "    let deleted = scope_background(&highlighter, \"markup.deleted\")"
+    },
+    {
+      "line": 340,
+      "text": "        .or_else(|| scope_background(&highlighter, \"diff.deleted\"));"
+    },
+    {
+      "line": 346,
+      "text": "    highlighter: &Highlighter<'_>,"
+    },
+    {
+      "line": 350,
+      "text": "    let bg = highlighter.style_mod_for_stack(&[scope]).background?;"
+    },
+    {
+      "line": 369,
+      "text": "    let highlighter = Highlighter::new(theme);"
+    },
+    {
+      "line": 372,
+      "text": "        let fg = highlighter.style_mod_for_stack(&[scope]).foreground?;"
+    },
+    {
+      "line": 377,
+      "text": "/// Return the configured kebab-case theme name when it resolves; otherwise"
+    },
+    {
+      "line": 380,
+      "text": "/// This intentionally reflects persisted configuration/default selection, not"
+    },
+    {
+      "line": 382,
+      "text": "pub(crate) fn configured_theme_name() -> String {"
+    },
+    {
+      "line": 415,
+      "text": "    /// Kebab-case identifier used for config persistence and theme resolution."
+    },
+    {
+      "line": 439,
+      "text": "                if path.extension().and_then(|e| e.to_str()) == Some(\"tmTheme\")"
+    },
+    {
+      "line": 529,
+      "text": "        0x05 => RtColor::Magenta,"
+    },
+    {
+      "line": 595,
+      "text": "/// extensions directly.  We only patch the few aliases it cannot handle."
+    },
+    {
+      "line": 603,
+      "text": "        // CUDA source (.cu) and header (.cuh) files use C++ highlighting as a fallback."
+    },
+    {
+      "line": 612,
+      "text": "    // Try by token (matches file_extensions case-insensitively)."
+    },
+    {
+      "line": 613,
+      "text": "    if let Some(s) = ss.find_syntax_by_token(patched) {"
+    },
+    {
+      "line": 629,
+      "text": "    // Try raw input as file extension."
+    },
+    {
+      "line": 630,
+      "text": "    if let Some(s) = ss.find_syntax_by_extension(lang) {"
+    },
+    {
+      "line": 638,
+      "text": "/// Skip highlighting for inputs larger than 512 KB to avoid excessive memory"
+    },
+    {
+      "line": 640,
+      "text": "const MAX_HIGHLIGHT_BYTES: usize = 512 * 1024;"
+    },
+    {
+      "line": 642,
+      "text": "/// Skip highlighting for inputs with more than 10,000 lines."
+    },
+    {
+      "line": 643,
+      "text": "const MAX_HIGHLIGHT_LINES: usize = 10_000;"
+    },
+    {
+      "line": 645,
+      "text": "/// Skip highlighting when an individual line is longer than 4 KiB."
+    },
+    {
+      "line": 646,
+      "text": "pub(crate) const MAX_HIGHLIGHT_LINE_BYTES: usize = 4 * 1024;"
+    },
+    {
+      "line": 648,
+      "text": "/// Check whether an input exceeds the safe highlighting limits."
+    },
+    {
+      "line": 650,
+      "text": "/// Callers that highlight content in a loop (e.g. per diff-line) should"
+    },
+    {
+      "line": 651,
+      "text": "/// pre-check the aggregate size with this function and skip highlighting"
+    },
+    {
+      "line": 653,
+      "text": "pub(crate) fn exceeds_highlight_limits(total_bytes: usize, total_lines: usize) -> bool {"
+    },
+    {
+      "line": 654,
+      "text": "    total_bytes > MAX_HIGHLIGHT_BYTES || total_lines > MAX_HIGHLIGHT_LINES"
+    },
+    {
+      "line": 657,
+      "text": "// -- Core highlighting --------------------------------------------------------"
+    },
+    {
+      "line": 659,
+      "text": "/// Core highlighter that accepts an explicit theme reference."
+    },
+    {
+      "line": 661,
+      "text": "/// This keeps production behavior and test behavior on the same code path:"
+    },
+    {
+      "line": 662,
+      "text": "/// production callers pass the global theme lock, while tests can pass a"
+    },
+    {
+      "line": 664,
+      "text": "fn highlight_to_line_spans_with_theme("
+    },
+    {
+      "line": 669,
+      "text": "    // Empty input has nothing to highlight; fall back to the plain text path"
+    },
+    {
+      "line": 678,
+      "text": "    if code.len() > MAX_HIGHLIGHT_BYTES"
+    },
+    {
+      "line": 679,
+      "text": "        || code.lines().count() > MAX_HIGHLIGHT_LINES"
+    },
+    {
+      "line": 682,
+      "text": "            .any(|line| line.len() > MAX_HIGHLIGHT_LINE_BYTES)"
+    },
+    {
+      "line": 688,
+      "text": "    let mut h = HighlightLines::new(syntax, theme);"
+    },
+    {
+      "line": 692,
+      "text": "        let ranges = h.highlight_line(line, syntax_set()).ok()?;"
+    },
+    {
+      "line": 693,
+      "text": "        lines.push(highlighted_line_spans(ranges));"
+    },
+    {
+      "line": 699,
+      "text": "/// Convert one highlighted line into the spans shared by full and streaming renders."
+    },
+    {
+      "line": 702,
+      "text": "fn highlighted_line_spans(ranges: Vec<(SyntectStyle, &str)>) -> Vec<Span<'static>> {"
+    },
+    {
+      "line": 720,
+      "text": "fn highlight_to_line_spans(code: &str, lang: &str) -> Option<Vec<Vec<Span<'static>>>> {"
+    },
+    {
+      "line": 726,
+      "text": "    highlight_to_line_spans_with_theme(code, lang, &theme_guard)"
+    },
+    {
+      "line": 731,
+      "text": "/// Highlight code in any supported language, returning styled ratatui `Line`s."
+    },
+    {
+      "line": 739,
+      "text": "/// command highlighting."
+    },
+    {
+      "line": 740,
+      "text": "pub(crate) fn highlight_code_to_lines(code: &str, lang: &str) -> Vec<Line<'static>> {"
+    },
+    {
+      "line": 741,
+      "text": "    if let Some(line_spans) = highlight_to_line_spans(code, lang) {"
+    },
+    {
+      "line": 756,
+      "text": "/// Backward-compatible wrapper for bash highlighting used by exec cells."
+    }
+  ]
+}

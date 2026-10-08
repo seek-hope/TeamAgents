@@ -1,0 +1,432 @@
+{
+  "sources": [
+    {
+      "product": "codex",
+      "revision_or_version": "9b738582b13c2cdbeff54af0afd04c50c3e7ba09",
+      "url": "https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/README.md",
+      "retrieved_at": "2026-10-08T13:49:30.229992+00:00",
+      "source_sha256": "ba4e1f69ff48386e72a9c5e1edaf76aad64a475c2d51af79ccba6d1128261ba7",
+      "reproduce": "curl --fail --silent --show-error https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/README.md",
+      "receipt": "review/parity-2026-10-08/receipts/codex-README_md.json",
+      "receipt_sha256": "2450a7c73275e71ec19e3bbee23106f0697878f498fc95bb245f6e3fc2391929"
+    },
+    {
+      "product": "codex",
+      "revision_or_version": "9b738582b13c2cdbeff54af0afd04c50c3e7ba09",
+      "url": "https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/codex-rs/cli/src/main.rs",
+      "retrieved_at": "2026-10-08T13:49:30.331089+00:00",
+      "source_sha256": "9eb1067f5a4c270baf677537dc2ef4603ffda186c918ad65ce454177f95dd785",
+      "reproduce": "curl --fail --silent --show-error https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/codex-rs/cli/src/main.rs",
+      "receipt": "review/parity-2026-10-08/receipts/codex-codex-rs_cli_src_main_rs.json",
+      "receipt_sha256": "992d2cb493daf18b76f9df2b24994c80e5591006a82cf4eaf3d1ef00d43697c5"
+    },
+    {
+      "product": "codex",
+      "revision_or_version": "9b738582b13c2cdbeff54af0afd04c50c3e7ba09",
+      "url": "https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/codex-rs/app-server/README.md",
+      "retrieved_at": "2026-10-08T13:49:30.279368+00:00",
+      "source_sha256": "7b5ae91d818bfcfc19d9503a3d6850584bb5ad07c1299fbe68a339cbd289ff12",
+      "reproduce": "curl --fail --silent --show-error https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/codex-rs/app-server/README.md",
+      "receipt": "review/parity-2026-10-08/receipts/codex-codex-rs_app-server_README_md.json",
+      "receipt_sha256": "348afc983000ef8a065aee619663256f0c493d0e0f7617ff40ff69ff93d48068"
+    },
+    {
+      "product": "codex",
+      "revision_or_version": "9b738582b13c2cdbeff54af0afd04c50c3e7ba09",
+      "url": "https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/codex-rs/tui/src/bottom_pane/command_popup.rs",
+      "retrieved_at": "2026-10-08T13:49:30.337812+00:00",
+      "source_sha256": "807d0301c7ffa244612db6500352e2bab162bcfd9851b6484ac0f2ab5cc9d49a",
+      "reproduce": "curl --fail --silent --show-error https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/codex-rs/tui/src/bottom_pane/command_popup.rs",
+      "receipt": "review/parity-2026-10-08/receipts/codex-codex-rs_tui_src_bottom_pane_command_popup_rs.json",
+      "receipt_sha256": "4bedce586ec64b234172503fa77636bf87876eab2b996fb6b2659addc21476e1"
+    },
+    {
+      "product": "codex",
+      "revision_or_version": "9b738582b13c2cdbeff54af0afd04c50c3e7ba09",
+      "url": "https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/codex-rs/tui/src/render/highlight.rs",
+      "retrieved_at": "2026-10-08T13:49:30.353124+00:00",
+      "source_sha256": "3a5eab87e7d2df77b45cb4687d14d3b0a8cf64e09419a07bd70ee5f10bc513fc",
+      "reproduce": "curl --fail --silent --show-error https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/codex-rs/tui/src/render/highlight.rs",
+      "receipt": "review/parity-2026-10-08/receipts/codex-codex-rs_tui_src_render_highlight_rs.json",
+      "receipt_sha256": "4125da8d9c851b22a56de81c9b5101ad324c17e210465722fb15c2c594a5e74f"
+    },
+    {
+      "product": "codex",
+      "revision_or_version": "9b738582b13c2cdbeff54af0afd04c50c3e7ba09",
+      "url": "https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/docs/agents_md.md",
+      "retrieved_at": "2026-10-08T13:49:30.234043+00:00",
+      "source_sha256": "56f5b6026b15fad40fe8b1f6f8910b9fccdf66da3b39dd943c91877e2299619e",
+      "reproduce": "curl --fail --silent --show-error https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/docs/agents_md.md",
+      "receipt": "review/parity-2026-10-08/receipts/codex-docs_agents_md_md.json",
+      "receipt_sha256": "39d4ce6a58bed8676cf4908cba88754671f33e09730df638bfa0d2c11c685be2"
+    },
+    {
+      "product": "codex",
+      "revision_or_version": "9b738582b13c2cdbeff54af0afd04c50c3e7ba09",
+      "url": "https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/docs/config.md",
+      "retrieved_at": "2026-10-08T13:49:30.927836+00:00",
+      "source_sha256": "745768b4da6cd73e414fc49c5c6ef3d6bf8a0c08289fab23a7dd79776ab31d9d",
+      "reproduce": "curl --fail --silent --show-error https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/docs/config.md",
+      "receipt": "review/parity-2026-10-08/receipts/codex-docs_config_md.json",
+      "receipt_sha256": "6e34a4bbd8bc5d4119d86abb01ef0933f9e3fdfe85882c82ae0859c12710519c"
+    },
+    {
+      "product": "codex",
+      "revision_or_version": "9b738582b13c2cdbeff54af0afd04c50c3e7ba09",
+      "url": "https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/docs/sandbox.md",
+      "retrieved_at": "2026-10-08T13:49:30.952758+00:00",
+      "source_sha256": "61d4dd0ccda2a0cbbde78832e752cdf56b1eb8cf7a54f1d46b52a2824c911249",
+      "reproduce": "curl --fail --silent --show-error https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/docs/sandbox.md",
+      "receipt": "review/parity-2026-10-08/receipts/codex-docs_sandbox_md.json",
+      "receipt_sha256": "e5d97beb9487d98608310f1b77fc81941a15252fc5cd886394648d8eef48e2a7"
+    },
+    {
+      "product": "codex",
+      "revision_or_version": "9b738582b13c2cdbeff54af0afd04c50c3e7ba09",
+      "url": "https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/docs/exec.md",
+      "retrieved_at": "2026-10-08T13:49:31.020882+00:00",
+      "source_sha256": "49eac6fd452d21763683c9f224075d6c5c74ffa28217fbe50c279fa6a543200b",
+      "reproduce": "curl --fail --silent --show-error https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/docs/exec.md",
+      "receipt": "review/parity-2026-10-08/receipts/codex-docs_exec_md.json",
+      "receipt_sha256": "c791bef92ae3a4d3b0a06ee5a8fea0ce8fe8b1dc2c79580fab631deb5844ec2e"
+    },
+    {
+      "product": "codex",
+      "revision_or_version": "9b738582b13c2cdbeff54af0afd04c50c3e7ba09",
+      "url": "https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/docs/skills.md",
+      "retrieved_at": "2026-10-08T13:49:31.020977+00:00",
+      "source_sha256": "e59789d09692310bbf94e2ef8db0aaf00d97f2226982c8c5330d2d260583a97d",
+      "reproduce": "curl --fail --silent --show-error https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/docs/skills.md",
+      "receipt": "review/parity-2026-10-08/receipts/codex-docs_skills_md.json",
+      "receipt_sha256": "465aed42c4725386620a4e446cf90ea1d3d922bd01906e9088e7ccd3b5dc532e"
+    },
+    {
+      "product": "codex",
+      "revision_or_version": "9b738582b13c2cdbeff54af0afd04c50c3e7ba09",
+      "url": "https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/codex-rs/core/src/config/mod.rs",
+      "retrieved_at": "2026-10-08T13:49:31.123021+00:00",
+      "source_sha256": "ae6a1407aea741e254d108ad7ff22417290692d6be806bcc1eeb72388c08f9bc",
+      "reproduce": "curl --fail --silent --show-error https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/codex-rs/core/src/config/mod.rs",
+      "receipt": "review/parity-2026-10-08/receipts/codex-codex-rs_core_src_config_mod_rs.json",
+      "receipt_sha256": "3ac47537f4f1d2f9b2ae498ed73022f6b5fd100d7467b923150a3dca9be99828"
+    },
+    {
+      "product": "codex",
+      "revision_or_version": "9b738582b13c2cdbeff54af0afd04c50c3e7ba09",
+      "url": "https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/codex-rs/core/src/tools/handlers/multi_agents.rs",
+      "retrieved_at": "2026-10-08T13:49:31.070587+00:00",
+      "source_sha256": "1f1e4e6d4d075d3387e1b63237730c7e48326ced095fef30a548482ecebb3b04",
+      "reproduce": "curl --fail --silent --show-error https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/codex-rs/core/src/tools/handlers/multi_agents.rs",
+      "receipt": "review/parity-2026-10-08/receipts/codex-codex-rs_core_src_tools_handlers_multi_agents_rs.json",
+      "receipt_sha256": "e93d19da5615890f26ad743b254162764b33b618e52863fede22b40c77e8211d"
+    },
+    {
+      "product": "pi",
+      "revision_or_version": "1.1.0",
+      "url": "file:///home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/%40earendil-works/pi-coding-agent/README.md",
+      "retrieved_at": "2026-10-08T13:49:30.941785+00:00",
+      "source_sha256": "fbc7abec7d0829ac8bc4b217e950794e1ba4d8d1b3e0850f970da318ad72e863",
+      "reproduce": "Read /home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/@earendil-works/pi-coding-agent/README.md; pi --version must report 1.1.0. Compare the source_sha256 before using these excerpts.",
+      "receipt": "review/parity-2026-10-08/receipts/pi-pi-coding-agent_README_md.json",
+      "receipt_sha256": "a8c791af2dbe968fff139c3f8a2941daa32142d67ef4b1960399b639bf9aa230"
+    },
+    {
+      "product": "pi",
+      "revision_or_version": "1.1.0",
+      "url": "file:///home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/%40earendil-works/pi-coding-agent/docs/cli.md",
+      "retrieved_at": "2026-10-08T13:49:30.944321+00:00",
+      "source_sha256": "33e1f4483d1b124eb45c910787b15b68b83c15d9ef0a0652d3310b3d78a6e6d6",
+      "reproduce": "Read /home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/@earendil-works/pi-coding-agent/docs/cli.md; pi --version must report 1.1.0. Compare the source_sha256 before using these excerpts.",
+      "receipt": "review/parity-2026-10-08/receipts/pi-pi-coding-agent_docs_cli_md.json",
+      "receipt_sha256": "f03c9f72c573eedb40989247efad296267aadaa384683f69131a563f0efe54ba"
+    },
+    {
+      "product": "pi",
+      "revision_or_version": "1.1.0",
+      "url": "file:///home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/%40earendil-works/pi-coding-agent/docs/usage.md",
+      "retrieved_at": "2026-10-08T13:49:30.946164+00:00",
+      "source_sha256": "88f22eb38ff9cf980d4d5c6af2376d08d683db20073c57fa8b10e752fee322d6",
+      "reproduce": "Read /home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/@earendil-works/pi-coding-agent/docs/usage.md; pi --version must report 1.1.0. Compare the source_sha256 before using these excerpts.",
+      "receipt": "review/parity-2026-10-08/receipts/pi-pi-coding-agent_docs_usage_md.json",
+      "receipt_sha256": "b7eec13cbd34fbe849e6cf47f8f15586b9bcb11cbf53c2440c4a29b9b9952aaa"
+    },
+    {
+      "product": "pi",
+      "revision_or_version": "1.1.0",
+      "url": "file:///home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/%40earendil-works/pi-coding-agent/docs/configuration.md",
+      "retrieved_at": "2026-10-08T13:49:30.948582+00:00",
+      "source_sha256": "fc48d1ce7d885c5253222415fb7a4b46d75f80e6431eb924174657ff775099eb",
+      "reproduce": "Read /home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/@earendil-works/pi-coding-agent/docs/configuration.md; pi --version must report 1.1.0. Compare the source_sha256 before using these excerpts.",
+      "receipt": "review/parity-2026-10-08/receipts/pi-pi-coding-agent_docs_configuration_md.json",
+      "receipt_sha256": "01c459f34c1f4169a475a81c43991f135516c0169e38549d56c55dd23fa6356f"
+    },
+    {
+      "product": "pi",
+      "revision_or_version": "1.1.0",
+      "url": "file:///home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/%40earendil-works/pi-coding-agent/docs/security.md",
+      "retrieved_at": "2026-10-08T13:49:30.950463+00:00",
+      "source_sha256": "3b1e40a8d28b17c9eb7e496a7ba88fbe04665e3e6ae02873a58b943e325ad504",
+      "reproduce": "Read /home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/@earendil-works/pi-coding-agent/docs/security.md; pi --version must report 1.1.0. Compare the source_sha256 before using these excerpts.",
+      "receipt": "review/parity-2026-10-08/receipts/pi-pi-coding-agent_docs_security_md.json",
+      "receipt_sha256": "be7751b8f647abcb48b767c86754af507e6d27aa1a8f3f77ed8c433b6e0a5790"
+    },
+    {
+      "product": "pi",
+      "revision_or_version": "1.1.0",
+      "url": "file:///home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/%40earendil-works/pi-coding-agent/docs/sessions.md",
+      "retrieved_at": "2026-10-08T13:49:30.952271+00:00",
+      "source_sha256": "5ad5bda19caaa0794bb44f86c85c8e66be6f493c52bb5e6a4d127b58cd8c2c1e",
+      "reproduce": "Read /home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/@earendil-works/pi-coding-agent/docs/sessions.md; pi --version must report 1.1.0. Compare the source_sha256 before using these excerpts.",
+      "receipt": "review/parity-2026-10-08/receipts/pi-pi-coding-agent_docs_sessions_md.json",
+      "receipt_sha256": "8d895d4050e2679dcb07503d4c8dbdf6281c416dcc4ee719f4ca8554fdc72547"
+    },
+    {
+      "product": "pi",
+      "revision_or_version": "1.1.0",
+      "url": "file:///home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/%40earendil-works/pi-coding-agent/docs/compaction.md",
+      "retrieved_at": "2026-10-08T13:49:30.958598+00:00",
+      "source_sha256": "190b8c651148504613aea98b0637807c536ed0362948fda1bcd1ae137d75ff4a",
+      "reproduce": "Read /home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/@earendil-works/pi-coding-agent/docs/compaction.md; pi --version must report 1.1.0. Compare the source_sha256 before using these excerpts.",
+      "receipt": "review/parity-2026-10-08/receipts/pi-pi-coding-agent_docs_compaction_md.json",
+      "receipt_sha256": "a9edcf1a8744d555cc7f95fbe8f421963328134921f22b7b53f00d56de404790"
+    },
+    {
+      "product": "pi",
+      "revision_or_version": "1.1.0",
+      "url": "file:///home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/%40earendil-works/pi-coding-agent/docs/mcp.md",
+      "retrieved_at": "2026-10-08T13:49:30.961530+00:00",
+      "source_sha256": "a635d721e58b0cbf43f7443a29fd43b8201b62602c62763c1f5fdb3910d7d938",
+      "reproduce": "Read /home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/@earendil-works/pi-coding-agent/docs/mcp.md; pi --version must report 1.1.0. Compare the source_sha256 before using these excerpts.",
+      "receipt": "review/parity-2026-10-08/receipts/pi-pi-coding-agent_docs_mcp_md.json",
+      "receipt_sha256": "1a52951faec5e31c8634a179e949e9736db7bc4e7a50340e21ce9e2e14defa61"
+    },
+    {
+      "product": "pi",
+      "revision_or_version": "1.1.0",
+      "url": "file:///home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/%40earendil-works/pi-coding-agent/docs/extensions.md",
+      "retrieved_at": "2026-10-08T13:49:30.967692+00:00",
+      "source_sha256": "bd2ed1f728173c1defc035e90c3894c308ae153fa08575c12b4a9988e11f8108",
+      "reproduce": "Read /home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/@earendil-works/pi-coding-agent/docs/extensions.md; pi --version must report 1.1.0. Compare the source_sha256 before using these excerpts.",
+      "receipt": "review/parity-2026-10-08/receipts/pi-pi-coding-agent_docs_extensions_md.json",
+      "receipt_sha256": "0618b0df9ef61bee673cd3c62cfdad586bc6fc88937c35edf71cc7a22902c7e8"
+    },
+    {
+      "product": "pi",
+      "revision_or_version": "1.1.0",
+      "url": "file:///home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/%40earendil-works/pi-coding-agent/docs/skills.md",
+      "retrieved_at": "2026-10-08T13:49:30.968483+00:00",
+      "source_sha256": "5b9805525b194474ef1fe5455a0917ef15ed7f710aa9bec2eee11879556469e5",
+      "reproduce": "Read /home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/@earendil-works/pi-coding-agent/docs/skills.md; pi --version must report 1.1.0. Compare the source_sha256 before using these excerpts.",
+      "receipt": "review/parity-2026-10-08/receipts/pi-pi-coding-agent_docs_skills_md.json",
+      "receipt_sha256": "1b1fe061aaeb9715c0a56b3ec041430e0c33c32a130340d3309c1b6ac8633a28"
+    },
+    {
+      "product": "pi",
+      "revision_or_version": "1.1.0",
+      "url": "file:///home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/%40earendil-works/pi-coding-agent/docs/rpc.md",
+      "retrieved_at": "2026-10-08T13:49:30.972475+00:00",
+      "source_sha256": "37a03d180115460a0a275022f4aeabef1e5345458df6a9b6e8a6de18474de720",
+      "reproduce": "Read /home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/@earendil-works/pi-coding-agent/docs/rpc.md; pi --version must report 1.1.0. Compare the source_sha256 before using these excerpts.",
+      "receipt": "review/parity-2026-10-08/receipts/pi-pi-coding-agent_docs_rpc_md.json",
+      "receipt_sha256": "16f4d4f3ce7cfa00ad6d6778cd4b6744c7efd65b642b60f1efc2a58b70002538"
+    },
+    {
+      "product": "pi",
+      "revision_or_version": "1.1.0",
+      "url": "file:///home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/%40earendil-works/pi-coding-agent/docs/packages.md",
+      "retrieved_at": "2026-10-08T13:49:30.969840+00:00",
+      "source_sha256": "5fe4a3009d7260fe1e2f54b64086fc3c8b4d678232bfa2dbc7e91fe588fc9ea5",
+      "reproduce": "Read /home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/@earendil-works/pi-coding-agent/docs/packages.md; pi --version must report 1.1.0. Compare the source_sha256 before using these excerpts.",
+      "receipt": "review/parity-2026-10-08/receipts/pi-pi-coding-agent_docs_packages_md.json",
+      "receipt_sha256": "44aef0999b044a04dff2ce894b17b35ee959236f2bd5b756d0592eff1480ca47"
+    },
+    {
+      "product": "pi",
+      "revision_or_version": "1.1.0",
+      "url": "file:///home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/%40earendil-works/pi-tui/dist/autocomplete.js",
+      "retrieved_at": "2026-10-08T13:49:30.979521+00:00",
+      "source_sha256": "ae2966443cdea6f65445f181f5ef159abb362388afed69afd344b728b5dafb55",
+      "reproduce": "Read /home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/@earendil-works/pi-tui/dist/autocomplete.js; pi --version must report 1.1.0. Compare the source_sha256 before using these excerpts.",
+      "receipt": "review/parity-2026-10-08/receipts/pi-pi-tui_dist_autocomplete_js.json",
+      "receipt_sha256": "6bf3d82dd98bb4df02262cb65aaafb7399731eb177309a5c5525e6c0365bfd7b"
+    },
+    {
+      "product": "pi",
+      "revision_or_version": "1.1.0",
+      "url": "file:///home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/%40earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js",
+      "retrieved_at": "2026-10-08T13:49:30.988548+00:00",
+      "source_sha256": "3fe13a2a0e06ffdbed1354b1f5c53a1207d2273bbf2d4917e4f8d1a2bf200a81",
+      "reproduce": "Read /home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js; pi --version must report 1.1.0. Compare the source_sha256 before using these excerpts.",
+      "receipt": "review/parity-2026-10-08/receipts/pi-pi-coding-agent_dist_modes_interactive_theme_theme_js.json",
+      "receipt_sha256": "b4488705487011a8b44aca0e3dabbbdbdf305a57902589620e71e1ef4a652d8a"
+    },
+    {
+      "product": "teamagents",
+      "revision_or_version": "a76722da",
+      "url": "git:a76722da:docs/DESIGN.md",
+      "retrieved_at": "2026-10-08T13:49:31.010199+00:00",
+      "source_sha256": "feabf534e9bff24e8802900d17a41440f677b1e523387c251cb8f074d010ad2b",
+      "reproduce": "git show a76722da:docs/DESIGN.md",
+      "receipt": "review/parity-2026-10-08/receipts/teamagents-docs_DESIGN_md.json",
+      "receipt_sha256": "67bddc08764a56bacc6e18cb9e1f3d01cf268cf59af322f54393ecaa73e260ee"
+    },
+    {
+      "product": "teamagents",
+      "revision_or_version": "a76722da",
+      "url": "git:a76722da:docs/USER-GUIDE.md",
+      "retrieved_at": "2026-10-08T13:49:31.020404+00:00",
+      "source_sha256": "877a339a06c23cd6c2df32e589b28e45066d8923696695226d54a8fa7cb046e7",
+      "reproduce": "git show a76722da:docs/USER-GUIDE.md",
+      "receipt": "review/parity-2026-10-08/receipts/teamagents-docs_USER-GUIDE_md.json",
+      "receipt_sha256": "0b5d69fed6212d3b5f08d4493a58f426117910e969c345e19be6330d7724d9a4"
+    },
+    {
+      "product": "teamagents",
+      "revision_or_version": "a76722da",
+      "url": "git:a76722da:docs/CAPABILITIES.md",
+      "retrieved_at": "2026-10-08T13:49:31.026111+00:00",
+      "source_sha256": "5f36133f1ded446289c50ff9b469a7fe8bf1184eba976d756dfc0f62e0440e9b",
+      "reproduce": "git show a76722da:docs/CAPABILITIES.md",
+      "receipt": "review/parity-2026-10-08/receipts/teamagents-docs_CAPABILITIES_md.json",
+      "receipt_sha256": "213ca2a8e685573c33bfc7d16a9fbde12ceb95f41f4200c59ba18e1f7e4b3292"
+    },
+    {
+      "product": "teamagents",
+      "revision_or_version": "a76722da",
+      "url": "git:a76722da:tui/src/v2app.rs",
+      "retrieved_at": "2026-10-08T13:49:31.041225+00:00",
+      "source_sha256": "ada2a8a2abd9bc0d59346a49964129eb8225624345c990999608f34b46753a78",
+      "reproduce": "git show a76722da:tui/src/v2app.rs",
+      "receipt": "review/parity-2026-10-08/receipts/teamagents-tui_src_v2app_rs.json",
+      "receipt_sha256": "b37d9b5bfdab4f883180d44a376c0d91b26390e3c21494e18c485a73df0fa846"
+    },
+    {
+      "product": "teamagents",
+      "revision_or_version": "a76722da",
+      "url": "git:a76722da:tui/src/graphics.rs",
+      "retrieved_at": "2026-10-08T13:49:31.047194+00:00",
+      "source_sha256": "0a15824ce519e0485a8e8f8cb266f9147e125c84a9674323cab1a33c32ae5006",
+      "reproduce": "git show a76722da:tui/src/graphics.rs",
+      "receipt": "review/parity-2026-10-08/receipts/teamagents-tui_src_graphics_rs.json",
+      "receipt_sha256": "0659d13b236ce78e12b80ed09213e8350e5d443547031a1f8cd12aa347f5c4d2"
+    },
+    {
+      "product": "teamagents",
+      "revision_or_version": "a76722da",
+      "url": "git:a76722da:tui/src/markdown.rs",
+      "retrieved_at": "2026-10-08T13:49:31.031529+00:00",
+      "source_sha256": "1918c2cb701ea7d05297b1f317e924173929ffb5c5ca4ff2d8cd2f2dfdc742ae",
+      "reproduce": "git show a76722da:tui/src/markdown.rs",
+      "receipt": "review/parity-2026-10-08/receipts/teamagents-tui_src_markdown_rs.json",
+      "receipt_sha256": "7ed00dcbb46ccbc7cb464d84a3688202b8052a99bb5b7530999e8582eb7674c0"
+    },
+    {
+      "product": "codex",
+      "revision_or_version": "9b738582b13c2cdbeff54af0afd04c50c3e7ba09",
+      "url": "https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/codex-rs/exec/src/cli.rs",
+      "retrieved_at": "2026-10-08T14:15:09.670916+00:00",
+      "source_sha256": "66643e8b3d5964b70cb8f231fb309312376272fb3ea87bcb6849f44cf112f8f6",
+      "reproduce": "curl --fail --silent --show-error https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/codex-rs/exec/src/cli.rs",
+      "receipt": "review/parity-2026-10-08/receipts/codex-codex-rs_exec_src_cli_rs.json",
+      "receipt_sha256": "0e591861ef3e4f0b428073064e990af5283e7e2b5b9aaf84e8497cc378988d92"
+    },
+    {
+      "product": "codex",
+      "revision_or_version": "9b738582b13c2cdbeff54af0afd04c50c3e7ba09",
+      "url": "https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/codex-rs/core/src/compact.rs",
+      "retrieved_at": "2026-10-08T14:15:10.372907+00:00",
+      "source_sha256": "8f05bb7d0bd2456ecc635cf90ed39c0088ff472e618c35ced7859a1f6ee3b2e8",
+      "reproduce": "curl --fail --silent --show-error https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/codex-rs/core/src/compact.rs",
+      "receipt": "review/parity-2026-10-08/receipts/codex-codex-rs_core_src_compact_rs.json",
+      "receipt_sha256": "e2ab282387bdc85b008d99952a013d73e8c23b7a1a281aaf7be1d66913abd854"
+    },
+    {
+      "product": "codex",
+      "revision_or_version": "9b738582b13c2cdbeff54af0afd04c50c3e7ba09",
+      "url": "https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/codex-rs/core/src/tools/handlers/multi_agents/spawn.rs",
+      "retrieved_at": "2026-10-08T14:15:11.107029+00:00",
+      "source_sha256": "747067d7999938bd792500903e6592b29533ff104ecf9df2fade37e7604e96dd",
+      "reproduce": "curl --fail --silent --show-error https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/codex-rs/core/src/tools/handlers/multi_agents/spawn.rs",
+      "receipt": "review/parity-2026-10-08/receipts/codex-codex-rs_core_src_tools_handlers_multi_agents_spawn_rs.json",
+      "receipt_sha256": "4952932ae34d0c9bd51fd93077fec84fa5d7fd14b3520df4e4a6ea6c9ab7c9c7"
+    }
+  ],
+  "runs": [
+  {
+    "name": "formal-all",
+    "receipt": "review/parity-2026-10-08/receipts/formal-all.json",
+    "receipt_sha256": "e28c05cd6733a518414b0c36b5316c98118a0f0dc6659f272d1123e32a90674e"
+  },
+  {
+    "name": "formal-final",
+    "receipt": "review/parity-2026-10-08/receipts/formal-final.json",
+    "receipt_sha256": "f261a671eb76c3b850f2d773720ee986066593a75ab2ddb249a9d58ef6a40099"
+  },
+  {
+    "name": "formal-controls",
+    "receipt": "review/parity-2026-10-08/receipts/formal-controls.json",
+    "receipt_sha256": "a19615af2993dddd9309754e65a3255011ed23029a8775a60a84237064f31ad1"
+  },
+  {
+    "name": "formal-kani",
+    "receipt": "review/parity-2026-10-08/receipts/formal-kani.json",
+    "receipt_sha256": "6e10f17d01fa0d5a41e6b381b88f08513dc828d6d500cd38e2cc6201eda0257d"
+  },
+  {
+    "name": "check",
+    "receipt": "review/parity-2026-10-08/receipts/check.json",
+    "receipt_sha256": "7668c8010c6c142d91dda1af591d8746b33b0a8d65e9dc8d63e0c61407bbf16e"
+  },
+  {
+    "name": "pty",
+    "receipt": "review/parity-2026-10-08/receipts/pty.json",
+    "receipt_sha256": "4c2b1ebcca2f6502d54fec2eb157ecbeba0ffe633884a41967332f1c117fd017"
+  },
+  {
+    "name": "sessions",
+    "receipt": "review/parity-2026-10-08/receipts/sessions.json",
+    "receipt_sha256": "bbaa7dee5f174ecabe8b41abf201a3f32bd192cef95f482e3902d6d4caf1f2ce"
+  },
+  {
+    "name": "reconnect",
+    "receipt": "review/parity-2026-10-08/receipts/reconnect.json",
+    "receipt_sha256": "270af39d1479f873849732cbb873aebc91b8fcfdb5e79ee1dacf5ffd42d6695a"
+  },
+  {
+    "name": "input-latency",
+    "receipt": "review/parity-2026-10-08/receipts/input-latency.json",
+    "receipt_sha256": "4cb3472b6eb079fb3c0cc9537e0140c4720dad7b58a93714c6e954ea89fe8c4a"
+  },
+  {
+    "name": "pi-version",
+    "receipt": "review/parity-2026-10-08/receipts/pi-version.json",
+    "receipt_sha256": "f8b9f43a211b1ae00c7a4823d69947fc6b4830fdc8c101732b602a49c46a8710"
+  },
+  {
+    "name": "release-tag",
+    "receipt": "review/parity-2026-10-08/receipts/release-tag.json",
+    "receipt_sha256": "b79a481c973259044adc14c4ce57ceade62dee3f9fd4f32e428e6d79dbced74d"
+  },
+  {
+    "name": "before-visible",
+    "receipt": "review/parity-2026-10-08/receipts/before-visible.json",
+    "receipt_sha256": "1d97187c33e66506537f9534d10d7638d6e73b647724cc801c43cb1bb3a5d7b7"
+  },
+  {
+    "name": "after-visible",
+    "receipt": "review/parity-2026-10-08/receipts/after-visible.json",
+    "receipt_sha256": "8995a7f3be8e3acfb1f293e5c89a88961a0ad6543375b7189c226e8546d1766c"
+  },
+  {
+    "name": "before-bounded",
+    "receipt": "review/parity-2026-10-08/receipts/before-bounded.json",
+    "receipt_sha256": "2b5aedb239ef7d73e80dd23acc614b9644c6ed5df2ece368c2c86bbd41380f9a"
+  },
+  {
+    "name": "after-bounded",
+    "receipt": "review/parity-2026-10-08/receipts/after-bounded.json",
+    "receipt_sha256": "a5ae26dadc68d359033ba5d31bf4e31cc4083b1e359f32941c3acd58bbbe2a1c"
+  }
+],
+  "retrieval_failures": []
+}

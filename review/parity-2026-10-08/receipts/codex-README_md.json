@@ -1,0 +1,41 @@
+{
+  "product": "codex",
+  "revision_or_version": "9b738582b13c2cdbeff54af0afd04c50c3e7ba09",
+  "url": "https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/README.md",
+  "retrieved_at": "2026-10-08T13:49:30.229992+00:00",
+  "source_sha256": "ba4e1f69ff48386e72a9c5e1edaf76aad64a475c2d51af79ccba6d1128261ba7",
+  "source_bytes": 3334,
+  "source_lines": 81,
+  "evidence_class": "source or documentation, not executed product behavior",
+  "reproduce": "curl --fail --silent --show-error https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/README.md",
+  "excerpts": [
+    {
+      "line": 1,
+      "text": "<p align=\"center\"><strong>Codex CLI</strong> is a coding agent from OpenAI that runs locally on your computer."
+    },
+    {
+      "line": 8,
+      "text": "</br>If you are looking for the <em>cloud-based agent</em> from OpenAI, <strong>Codex Web</strong>, go to <a href=\"https://chatgpt.com/codex\">chatgpt.com/codex</a>.</p>"
+    },
+    {
+      "line": 28,
+      "text": "The standalone installers download from `https://releases.openai.com/codex` by default and fall back to GitHub Releases if a metadata or asset download is unavailable. To force GitHub Releases, set `CODEX_INSTALLER_USE_RELEASES_OPENAI_COM` to `false` (`0` and `no` are also accepted):"
+    },
+    {
+      "line": 31,
+      "text": "curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_INSTALLER_USE_RELEASES_OPENAI_COM=false sh"
+    },
+    {
+      "line": 35,
+      "text": "$env:CODEX_INSTALLER_USE_RELEASES_OPENAI_COM='false'; irm https://chatgpt.com/codex/install.ps1 | iex"
+    },
+    {
+      "line": 53,
+      "text": "<summary>You can also go to the <a href=\"https://github.com/openai/codex/releases/latest\">latest GitHub Release</a> and download the appropriate binary for your platform.</summary>"
+    },
+    {
+      "line": 55,
+      "text": "Each GitHub Release contains many executables, but in practice, you likely want one of these:"
+    }
+  ]
+}

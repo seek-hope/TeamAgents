@@ -1,0 +1,233 @@
+{
+  "product": "pi",
+  "revision_or_version": "1.1.0",
+  "url": "file:///home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/%40earendil-works/pi-coding-agent/docs/rpc.md",
+  "retrieved_at": "2026-10-08T13:49:30.972475+00:00",
+  "source_sha256": "37a03d180115460a0a275022f4aeabef1e5345458df6a9b6e8a6de18474de720",
+  "source_bytes": 8897,
+  "source_lines": 193,
+  "evidence_class": "source or documentation, not executed product behavior",
+  "reproduce": "Read /home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/@earendil-works/pi-coding-agent/docs/rpc.md; pi --version must report 1.1.0. Compare the source_sha256 before using these excerpts.",
+  "excerpts": [
+    {
+      "line": 1,
+      "text": "# RPC Mode"
+    },
+    {
+      "line": 3,
+      "text": "RPC mode runs Pi as a long-lived subprocess controlled through JSON records on stdin and stdout. Use it for language-independent integrations, process isolation, IDEs, and custom user interfaces."
+    },
+    {
+      "line": 5,
+      "text": "For an in-process Node.js or Bun integration, prefer the [SDK](sdk.md). For a subprocess-based TypeScript integration, prefer the exported `RpcClient`, which starts Pi, correlates responses, exposes typed command methods, and delivers events to listeners."
+    },
+    {
+      "line": 9,
+      "text": "| [SDK](sdk.md) | In process | Direct TypeScript methods and events | Node.js or Bun hosts that want complete API access |"
+    },
+    {
+      "line": 10,
+      "text": "| RPC | Child process | JSONL commands, responses, and events | Other languages, isolated processes, IDEs, or custom clients |"
+    },
+    {
+      "line": 12,
+      "text": "## Start RPC mode"
+    },
+    {
+      "line": 15,
+      "text": "pi --mode rpc --no-session"
+    },
+    {
+      "line": 18,
+      "text": "Normal CLI options still select the working folder, model, tools, resources, and session behavior. Common choices include `--provider`, `--model`, `--name`, `--no-session`, and `--session-dir`. See [Command Line](cli.md) for the complete, version-specific interface; `pi --help` is authoritative for the installed version."
+    },
+    {
+      "line": 20,
+      "text": "RPC mode rejects `@file` prompt arguments. Send prompts through the [`prompt`](rpc-commands.md#prompt) command instead."
+    },
+    {
+      "line": 28,
+      "text": "| stdin | Command | Ask Pi to prompt, inspect state, change configuration, or manage the session |"
+    },
+    {
+      "line": 30,
+      "text": "| stdout | Session event | Stream run, message, tool, queue, compaction, and retry activity |"
+    },
+    {
+      "line": 31,
+      "text": "| Both | Extension UI record | Forward supported extension interactions between Pi and the client |"
+    },
+    {
+      "line": 33,
+      "text": "See [RPC Commands](rpc-commands.md), [JSON Event Stream](json.md), and [RPC Extension UI](rpc-extension-ui.md) for the canonical record definitions."
+    },
+    {
+      "line": 39,
+      "text": "```json"
+    },
+    {
+      "line": 46,
+      "text": "Session events generally have no command ID because they describe session activity. `bash_execution_update` is the exception: when the originating [`bash`](rpc-commands.md#bash) command has an ID, its output events repeat that ID."
+    },
+    {
+      "line": 48,
+      "text": "An `extension_ui_response` uses the ID supplied by its `extension_ui_request`. It does not produce a normal command response."
+    },
+    {
+      "line": 52,
+      "text": "RPC uses strict JSONL framing. Write one complete JSON object per record and terminate it with LF (`\\n`). Read stdout as a byte or UTF-8 stream and split records only on LF. Strip an optional preceding carriage return to accept CRLF input."
+    },
+    {
+      "line": 54,
+      "text": "Do not use a generic line reader that treats Unicode line or paragraph separators as record boundaries. In particular, Node.js `readline` also splits on `U+2028` and `U+2029`, which are valid inside JSON strings."
+    },
+    {
+      "line": 60,
+      "text": "A successful `prompt` response means the prompt was accepted, queued, or handled. It does not mean model work completed:"
+    },
+    {
+      "line": 62,
+      "text": "```json"
+    },
+    {
+      "line": 67,
+      "text": "`data.disposition` reports what happened to the prompt. If it is `\"handled\"`, no run started for this prompt, so don't wait for `agent_settled`. See [RPC Commands](rpc-commands.md#prompt) for all values."
+    },
+    {
+      "line": 69,
+      "text": "Continue consuming [events](json.md) after that response. `agent_end` marks the end of one low-level agent run, but retries, overflow recovery, compaction, steering, or follow-up work can still follow. Wait for `agent_settled` when the client needs to know Pi will not continue automatically."
+    },
+    {
+      "line": 71,
+      "text": "Subscribe before sending a prompt to avoid missing a fast completion. `RpcClient.promptAndWait()` does this internally. If using separate `RpcClient` calls, install the event listener before `prompt()` and call `waitForIdle()` only while a run is active."
+    },
+    {
+      "line": 77,
+      "text": "```json"
+    },
+    {
+      "line": 81,
+      "text": "Malformed JSON produces a parse response without a request ID:"
+    },
+    {
+      "line": 83,
+      "text": "```json"
+    },
+    {
+      "line": 84,
+      "text": "{\"type\":\"response\",\"command\":\"parse\",\"success\":false,\"error\":\"Failed to parse command: Unexpected token...\"}"
+    },
+    {
+      "line": 87,
+      "text": "A success response only covers command handling. Provider failures and aborts after a prompt is accepted appear in the message and event stream."
+    },
+    {
+      "line": 89,
+      "text": "Clients must also handle child-process startup failures, unexpected exits, stderr diagnostics, cancellation, and their own deadlines. Do not parse stderr as protocol data."
+    },
+    {
+      "line": 95,
+      "text": "An extension can also request shutdown through its extension context. Pi completes shutdown after the current command or after the active run emits `agent_settled`."
+    },
+    {
+      "line": 102,
+      "text": "import json"
+    },
+    {
+      "line": 106,
+      "text": "    [\"pi\", \"--mode\", \"rpc\", \"--no-session\"],"
+    },
+    {
+      "line": 115,
+      "text": "process.stdin.write(json.dumps(command).encode(\"utf-8\") + b\"\\n\")"
+    },
+    {
+      "line": 119,
+      "text": "    record = json.loads(line)"
+    },
+    {
+      "line": 124,
+      "text": "    elif record.get(\"type\") == \"agent_settled\":"
+    },
+    {
+      "line": 132,
+      "text": "For maintained TypeScript clients, use the checked [RPC client example](../examples/rpc-client.ts). It requires a built Pi CLI because the repository example points to `dist/cli.js`."
+    },
+    {
+      "line": 136,
+      "text": "- [RPC Commands](rpc-commands.md): every stdin command and response"
+    },
+    {
+      "line": 137,
+      "text": "- [JSON Event Stream](json.md): shared stdout session events and streaming reconstruction"
+    },
+    {
+      "line": 138,
+      "text": "- [RPC Extension UI](rpc-extension-ui.md): dialogs, notifications, responses, and limitations"
+    },
+    {
+      "line": 141,
+      "text": "- [`rpc-types.ts`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/modes/rpc/rpc-types.ts): exported TypeScript protocol definitions"
+    },
+    {
+      "line": 142,
+      "text": "- [`RpcClient`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/modes/rpc/rpc-client.ts): subprocess client implementation"
+    },
+    {
+      "line": 149,
+      "text": "<a id=\"steer\"></a>"
+    },
+    {
+      "line": 150,
+      "text": "<a id=\"follow_up\"></a>"
+    },
+    {
+      "line": 162,
+      "text": "<a id=\"set_steering_mode\"></a>"
+    },
+    {
+      "line": 163,
+      "text": "<a id=\"set_follow_up_mode\"></a>"
+    },
+    {
+      "line": 164,
+      "text": "<a id=\"compact\"></a>"
+    },
+    {
+      "line": 165,
+      "text": "<a id=\"set_auto_compaction\"></a>"
+    },
+    {
+      "line": 173,
+      "text": "<a id=\"fork\"></a>"
+    },
+    {
+      "line": 175,
+      "text": "<a id=\"get_fork_messages\"></a>"
+    },
+    {
+      "line": 182,
+      "text": "Command details moved to [RPC Commands](rpc-commands.md)."
+    },
+    {
+      "line": 184,
+      "text": "<a id=\"message_update-streaming\"></a>"
+    },
+    {
+      "line": 186,
+      "text": "<a id=\"compaction_start--compaction_end\"></a>"
+    },
+    {
+      "line": 189,
+      "text": "Event details moved to [JSON Event Stream](json.md)."
+    },
+    {
+      "line": 191,
+      "text": "<a id=\"extension-ui-protocol\"></a>"
+    },
+    {
+      "line": 193,
+      "text": "Extension interaction details moved to [RPC Extension UI](rpc-extension-ui.md)."
+    }
+  ]
+}

@@ -5,6 +5,18 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
+## 0. Gate status (re-run 2026-10-08 at `5848f8d2`)
+
+* **D-450 models completion effects and viewport media admission.** `V2Presentation.tla` verifies
+  430,312 generated / 25,545 distinct states. `CompletionOnlyEdits`, `CancelKeepsDraft`,
+  `OnlyVisibleAdmitted`, `CacheIsBounded` and `StaleResultIgnored` each have an independently refuted
+  control. The full regression verifies all **42** configurations and refutes all **125** negative controls.
+  Kani reports `Complete - 7 successfully verified harnesses, 0 failures, 7 total`; its sources are unchanged.
+  Material commits precede this pin; the second only splits an assignment for the catalogue scanner.
+  Concrete bridges are `tui/tests/parity.rs`, `tui/src/graphics_tests.rs` and the PTY smoke. This is an abstract
+  safety model, not Rust refinement, worker liveness, parser termination or graphical correctness.
+  Commands, source hashes and raw receipts are in [the comparison report](../review/parity-2026-10-08/REPORT.md).
+
 ## 0. Gate status (re-run 2026-10-08 at `87ed6bfe`)
 
 * **D-448 verifies the published media clipping arithmetic.** Kani reports

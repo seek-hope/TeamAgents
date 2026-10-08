@@ -1,0 +1,178 @@
+{
+  "fixture": "20 distinct SVGs, 80x28 cells, native Kitty documents, two 40-step sweeps then 24 individual visits (2 seconds each)",
+  "model_calls": 0,
+  "elapsed_seconds": 21.57898994,
+  "logical_cpus": 20,
+  "load_average": "7.88 10.52 10.62 14/2144 1576391",
+  "sweep_media_seen": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15
+  ],
+  "media_seen": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15
+  ],
+  "visits": [
+    {
+      "target": 0,
+      "preview": true,
+      "wait_ms": 2.8350910000000002
+    },
+    {
+      "target": 1,
+      "preview": true,
+      "wait_ms": 2.31554
+    },
+    {
+      "target": 2,
+      "preview": true,
+      "wait_ms": 3.483968
+    },
+    {
+      "target": 3,
+      "preview": true,
+      "wait_ms": 2.761569
+    },
+    {
+      "target": 4,
+      "preview": true,
+      "wait_ms": 2.438288
+    },
+    {
+      "target": 5,
+      "preview": true,
+      "wait_ms": 2.676057
+    },
+    {
+      "target": 6,
+      "preview": true,
+      "wait_ms": 2.402855
+    },
+    {
+      "target": 7,
+      "preview": true,
+      "wait_ms": 2.625646
+    },
+    {
+      "target": 8,
+      "preview": true,
+      "wait_ms": 2.444502
+    },
+    {
+      "target": 9,
+      "preview": true,
+      "wait_ms": 2.366388
+    },
+    {
+      "target": 10,
+      "preview": true,
+      "wait_ms": 2.651717
+    },
+    {
+      "target": 11,
+      "preview": true,
+      "wait_ms": 2.2780270000000002
+    },
+    {
+      "target": 12,
+      "preview": true,
+      "wait_ms": 2.45868
+    },
+    {
+      "target": 13,
+      "preview": true,
+      "wait_ms": 2.433052
+    },
+    {
+      "target": 14,
+      "preview": true,
+      "wait_ms": 2.577038
+    },
+    {
+      "target": 15,
+      "preview": true,
+      "wait_ms": 2.7261699999999998
+    },
+    {
+      "target": 16,
+      "preview": false,
+      "wait_ms": 2005.698939
+    },
+    {
+      "target": 17,
+      "preview": false,
+      "wait_ms": 2008.816835
+    },
+    {
+      "target": 18,
+      "preview": false,
+      "wait_ms": 2007.8604480000001
+    },
+    {
+      "target": 19,
+      "preview": false,
+      "wait_ms": 2012.225473
+    },
+    {
+      "target": 0,
+      "preview": true,
+      "wait_ms": 3.8315620000000004
+    },
+    {
+      "target": 19,
+      "preview": false,
+      "wait_ms": 2010.986762
+    },
+    {
+      "target": 1,
+      "preview": true,
+      "wait_ms": 4.551915
+    },
+    {
+      "target": 18,
+      "preview": false,
+      "wait_ms": 2004.826323
+    }
+  ],
+  "media_missing": [
+    16,
+    17,
+    18,
+    19
+  ],
+  "key_and_frame_ms_p50": 1.630561,
+  "key_and_frame_ms_p95": 2.354007,
+  "key_and_frame_ms_max": 6.3534180000000005,
+  "tab_draft": "/hel",
+  "tab_effect": "None",
+  "rust_body_color_count": 2,
+  "draft_preserved": true
+}

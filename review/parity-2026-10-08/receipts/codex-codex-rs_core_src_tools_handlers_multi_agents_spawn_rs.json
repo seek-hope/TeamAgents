@@ -1,0 +1,353 @@
+{
+  "product": "codex",
+  "revision_or_version": "9b738582b13c2cdbeff54af0afd04c50c3e7ba09",
+  "url": "https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/codex-rs/core/src/tools/handlers/multi_agents/spawn.rs",
+  "retrieved_at": "2026-10-08T14:15:11.107029+00:00",
+  "source_sha256": "747067d7999938bd792500903e6592b29533ff104ecf9df2fade37e7604e96dd",
+  "source_bytes": 8957,
+  "source_lines": 251,
+  "evidence_class": "source or documentation, not executed product behavior",
+  "reproduce": "curl --fail --silent --show-error https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/codex-rs/core/src/tools/handlers/multi_agents/spawn.rs",
+  "excerpts": [
+    {
+      "line": 2,
+      "text": "use crate::agent::api::AgentInput;"
+    },
+    {
+      "line": 3,
+      "text": "use crate::agent::api::SpawnRequest;"
+    },
+    {
+      "line": 4,
+      "text": "use crate::agent::child_config::SpawnConfigOptions;"
+    },
+    {
+      "line": 5,
+      "text": "use crate::agent::child_config::SpawnConfigVersion;"
+    },
+    {
+      "line": 6,
+      "text": "use crate::agent::child_config::prepare_agent_spawn_config;"
+    },
+    {
+      "line": 7,
+      "text": "use crate::agent::control::render_input_preview;"
+    },
+    {
+      "line": 8,
+      "text": "use crate::agent::exceeds_thread_spawn_depth_limit;"
+    },
+    {
+      "line": 9,
+      "text": "use crate::agent::next_thread_spawn_depth;"
+    },
+    {
+      "line": 10,
+      "text": "use crate::agent::role::DEFAULT_ROLE_NAME;"
+    },
+    {
+      "line": 11,
+      "text": "use crate::agent::types::SpawnAgentForkMode;"
+    },
+    {
+      "line": 12,
+      "text": "use crate::agent::types::SpawnAgentOptions;"
+    },
+    {
+      "line": 13,
+      "text": "use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;"
+    },
+    {
+      "line": 14,
+      "text": "use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v1;"
+    },
+    {
+      "line": 15,
+      "text": "use codex_protocol::protocol::MultiAgentVersion;"
+    },
+    {
+      "line": 20,
+      "text": "    options: SpawnAgentToolOptions,"
+    },
+    {
+      "line": 24,
+      "text": "    pub(crate) fn new(options: SpawnAgentToolOptions) -> Self {"
+    },
+    {
+      "line": 31,
+      "text": "        ToolName::namespaced(MULTI_AGENT_V1_NAMESPACE, \"spawn_agent\")"
+    },
+    {
+      "line": 35,
+      "text": "        create_spawn_agent_tool_v1(self.options.clone())"
+    },
+    {
+      "line": 39,
+      "text": "        multi_agent_tool_search_info("
+    },
+    {
+      "line": 40,
+      "text": "            \"spawn_agent spawn agent subagent sub-agent delegate delegation parallel work worker explorer no-apps fork model reasoning\","
+    },
+    {
+      "line": 49,
+      "text": "        Box::pin(async move { handle_spawn_agent(invocation).await.map(boxed_tool_output) })"
+    },
+    {
+      "line": 53,
+      "text": "async fn handle_spawn_agent("
+    },
+    {
+      "line": 55,
+      "text": ") -> Result<SpawnAgentResult, FunctionCallError> {"
+    },
+    {
+      "line": 65,
+      "text": "    let args: SpawnAgentArgs = parse_arguments(&arguments)?;"
+    },
+    {
+      "line": 67,
+      "text": "        .agent_type"
+    },
+    {
+      "line": 75,
+      "text": "    let max_depth = turn.config.agent_max_depth;"
+    },
+    {
+      "line": 78,
+      "text": "            \"Agent depth limit reached. Solve the task yourself.\".to_string(),"
+    },
+    {
+      "line": 84,
+      "text": "            &TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {"
+    },
+    {
+      "line": 86,
+      "text": "                tool: CollabAgentTool::SpawnAgent,"
+    },
+    {
+      "line": 87,
+      "text": "                status: CollabAgentToolCallStatus::InProgress,"
+    },
+    {
+      "line": 90,
+      "text": "                receiver_agents: Vec::new(),"
+    },
+    {
+      "line": 94,
+      "text": "                agents_states: Default::default(),"
+    },
+    {
+      "line": 98,
+      "text": "    let prepared = prepare_agent_spawn_config("
+    },
+    {
+      "line": 101,
+      "text": "        SpawnConfigOptions {"
+    },
+    {
+      "line": 102,
+      "text": "            version: SpawnConfigVersion::V1,"
+    },
+    {
+      "line": 103,
+      "text": "            full_history_fork: args.fork_context,"
+    },
+    {
+      "line": 111,
+      "text": "    let config = prepared.config;"
+    },
+    {
+      "line": 112,
+      "text": "    let fork_mode = args.fork_context.then_some(SpawnAgentForkMode::FullHistory);"
+    },
+    {
+      "line": 115,
+      "text": "        .agent_control"
+    },
+    {
+      "line": 118,
+      "text": "            config,"
+    },
+    {
+      "line": 119,
+      "text": "            input: AgentInput::UserInput(input_items),"
+    },
+    {
+      "line": 127,
+      "text": "            options: SpawnAgentOptions {"
+    },
+    {
+      "line": 128,
+      "text": "                fork_parent_spawn_call_id: fork_mode.as_ref().map(|_| call_id.clone()),"
+    },
+    {
+      "line": 129,
+      "text": "                fork_mode: fork_mode.clone(),"
+    },
+    {
+      "line": 135,
+      "text": "                multi_agent_v2_usage_hints: None,"
+    },
+    {
+      "line": 143,
+      "text": "                turn.config.apps_mcp_product_sku.as_deref(),"
+    },
+    {
+      "line": 147,
+      "text": "                fork_mode.as_ref(),"
+    },
+    {
+      "line": 148,
+      "text": "                MultiAgentVersion::V1,"
+    },
+    {
+      "line": 153,
+      "text": "        Ok((spawned_agent, _)) => (Some(spawned_agent.thread_id), spawned_agent.status.clone()),"
+    },
+    {
+      "line": 154,
+      "text": "        Err(_) => (None, AgentStatus::NotFound),"
+    },
+    {
+      "line": 156,
+      "text": "    let agent_snapshot = result.as_ref().ok().map(|(_, config)| config);"
+    },
+    {
+      "line": 157,
+      "text": "    let new_agent_nickname ="
+    },
+    {
+      "line": 158,
+      "text": "        agent_snapshot.and_then(|snapshot| snapshot.session_source.get_nickname());"
+    },
+    {
+      "line": 159,
+      "text": "    let new_agent_role ="
+    },
+    {
+      "line": 160,
+      "text": "        agent_snapshot.and_then(|snapshot| snapshot.session_source.get_agent_role());"
+    },
+    {
+      "line": 161,
+      "text": "    let effective_model = agent_snapshot"
+    },
+    {
+      "line": 162,
+      "text": "        .map(|snapshot| snapshot.model.clone())"
+    },
+    {
+      "line": 164,
+      "text": "    let effective_reasoning_effort = agent_snapshot"
+    },
+    {
+      "line": 165,
+      "text": "        .and_then(|snapshot| snapshot.reasoning_effort.clone())"
+    },
+    {
+      "line": 167,
+      "text": "    let nickname = new_agent_nickname.clone();"
+    },
+    {
+      "line": 169,
+      "text": "    let receiver_agents = new_thread_id"
+    },
+    {
+      "line": 170,
+      "text": "        .map(|thread_id| CollabAgentRef {"
+    },
+    {
+      "line": 172,
+      "text": "            agent_nickname: new_agent_nickname,"
+    },
+    {
+      "line": 173,
+      "text": "            agent_role: new_agent_role,"
+    },
+    {
+      "line": 177,
+      "text": "    let agents_states = new_thread_id"
+    },
+    {
+      "line": 181,
+      "text": "        .emit_turn_item_completed("
+    },
+    {
+      "line": 183,
+      "text": "            TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {"
+    },
+    {
+      "line": 185,
+      "text": "                tool: CollabAgentTool::SpawnAgent,"
+    },
+    {
+      "line": 189,
+      "text": "                receiver_agents,"
+    },
+    {
+      "line": 193,
+      "text": "                agents_states,"
+    },
+    {
+      "line": 197,
+      "text": "    let (spawned_agent, _) = result?;"
+    },
+    {
+      "line": 198,
+      "text": "    let new_thread_id = spawned_agent.thread_id;"
+    },
+    {
+      "line": 201,
+      "text": "        \"codex.multi_agent.spawn\","
+    },
+    {
+      "line": 206,
+      "text": "    Ok(SpawnAgentResult {"
+    },
+    {
+      "line": 207,
+      "text": "        agent_id: new_thread_id.to_string(),"
+    },
+    {
+      "line": 219,
+      "text": "struct SpawnAgentArgs {"
+    },
+    {
+      "line": 222,
+      "text": "    agent_type: Option<String>,"
+    },
+    {
+      "line": 226,
+      "text": "    fork_context: bool,"
+    },
+    {
+      "line": 230,
+      "text": "pub(crate) struct SpawnAgentResult {"
+    },
+    {
+      "line": 231,
+      "text": "    agent_id: String,"
+    },
+    {
+      "line": 235,
+      "text": "impl ToolOutput for SpawnAgentResult {"
+    },
+    {
+      "line": 237,
+      "text": "        tool_output_json_text(self, \"spawn_agent\")"
+    },
+    {
+      "line": 245,
+      "text": "        tool_output_response_item(call_id, payload, self, Some(true), \"spawn_agent\")"
+    },
+    {
+      "line": 248,
+      "text": "    fn code_mode_result(&self, _payload: &ToolPayload) -> JsonValue {"
+    },
+    {
+      "line": 249,
+      "text": "        tool_output_code_mode_result(self, \"spawn_agent\")"
+    }
+  ]
+}

@@ -1,0 +1,413 @@
+{
+  "product": "pi",
+  "revision_or_version": "1.1.0",
+  "url": "file:///home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/%40earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js",
+  "retrieved_at": "2026-10-08T13:49:30.988548+00:00",
+  "source_sha256": "3fe13a2a0e06ffdbed1354b1f5c53a1207d2273bbf2d4917e4f8d1a2bf200a81",
+  "source_bytes": 34728,
+  "source_lines": 913,
+  "evidence_class": "source or documentation, not executed product behavior",
+  "reproduce": "Read /home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js; pi --version must report 1.1.0. Compare the source_sha256 before using these excerpts.",
+  "excerpts": [
+    {
+      "line": 5,
+      "text": "import { getCustomThemesDir, getThemesDir } from \"../../../config.js\";"
+    },
+    {
+      "line": 7,
+      "text": "import { highlight, supportsLanguage } from \"../../../utils/syntax-highlight.js\";"
+    },
+    {
+      "line": 11,
+      "text": "let themeJsonValidator;"
+    },
+    {
+      "line": 14,
+      "text": " * themes already do: validating user-authored JSON needs typebox, and a presentation that only uses"
+    },
+    {
+      "line": 17,
+      "text": "export function setThemeJsonValidator(validator) {"
+    },
+    {
+      "line": 18,
+      "text": "    themeJsonValidator = validator;"
+    },
+    {
+      "line": 24,
+      "text": "    if (typeof value === \"number\" || value === \"\" || value.startsWith(\"#\") || /^ok(lch|hsl)\\(/i.test(value)) {"
+    },
+    {
+      "line": 61,
+      "text": " * Record the terminal's reported colors. Themes use the default colors for tokens set to \"\" (terminal"
+    },
+    {
+      "line": 111,
+      "text": "    // Tokens set to \"\" have no color of their own; `colors` fills them from the terminal defaults."
+    },
+    {
+      "line": 113,
+      "text": "    defaultForegroundTokens = [];"
+    },
+    {
+      "line": 114,
+      "text": "    defaultBackgroundTokens = [];"
+    },
+    {
+      "line": 115,
+      "text": "    // Foreground tokens rendered faint (SGR 2) on top of their color."
+    },
+    {
+      "line": 116,
+      "text": "    dimTokens;"
+    },
+    {
+      "line": 124,
+      "text": "        this.dimTokens = new Set(options.dim);"
+    },
+    {
+      "line": 135,
+      "text": "        // Returns the escape sequence for the token's own slot."
+    },
+    {
+      "line": 136,
+      "text": "        const addToken = (token, value, isBackground) => {"
+    },
+    {
+      "line": 138,
+      "text": "                (isBackground ? this.defaultBackgroundTokens : this.defaultForegroundTokens).push(token);"
+    },
+    {
+      "line": 142,
+      "text": "            this.concreteColors[token] = color;"
+    },
+    {
+      "line": 146,
+      "text": "        for (const [token, value] of Object.entries(foregrounds)) {"
+    },
+    {
+      "line": 147,
+      "text": "            this.fgAnsi.set(token, addToken(token, value, false));"
+    },
+    {
+      "line": 149,
+      "text": "        for (const [token, value] of Object.entries(backgrounds)) {"
+    },
+    {
+      "line": 150,
+      "text": "            this.bgAnsi.set(token, addToken(token, value, true));"
+    },
+    {
+      "line": 155,
+      "text": "     * The background the theme is designed for: declared in the theme JSON, detected from its colors,"
+    },
+    {
+      "line": 162,
+      "text": "     * Concrete colors for all tokens. Tokens set to \"\" (terminal default) use the terminal's reported"
+    },
+    {
+      "line": 164,
+      "text": "     * tokens are approximated by mixing their color toward the background."
+    },
+    {
+      "line": 174,
+      "text": "            for (const token of this.defaultForegroundTokens)"
+    },
+    {
+      "line": 175,
+      "text": "                colors[token] = foreground;"
+    },
+    {
+      "line": 176,
+      "text": "            for (const token of this.defaultBackgroundTokens)"
+    },
+    {
+      "line": 177,
+      "text": "                colors[token] = background;"
+    },
+    {
+      "line": 178,
+      "text": "            for (const token of this.dimTokens) {"
+    },
+    {
+      "line": 179,
+      "text": "                const color = colors[token];"
+    },
+    {
+      "line": 181,
+      "text": "                    colors[token] = mixColors(color, background, 0.4);"
+    },
+    {
+      "line": 189,
+      "text": "        if (typeof fg === \"string\" && this.dimTokens.has(fg))"
+    },
+    {
+      "line": 194,
+      "text": "                ? this.tokenAnsi(this.fgAnsi, fg)"
+    },
+    {
+      "line": 198,
+      "text": "                ? this.tokenAnsi(this.bgAnsi, bg)"
+    },
+    {
+      "line": 202,
+      "text": "        const ansi = this.tokenAnsi(this.fgAnsi, color);"
+    },
+    {
+      "line": 203,
+      "text": "        if (this.dimTokens.has(color))"
+    },
+    {
+      "line": 208,
+      "text": "        const ansi = this.tokenAnsi(this.bgAnsi, color);"
+    },
+    {
+      "line": 211,
+      "text": "    tokenAnsi(ansi, token) {"
+    },
+    {
+      "line": 212,
+      "text": "        const value = ansi.get(token);"
+    },
+    {
+      "line": 214,
+      "text": "            throw new Error(`Unknown theme color: ${token}`);"
+    },
+    {
+      "line": 232,
+      "text": "    /** Opening escape sequence for a foreground token. Faint tokens include SGR 2, which `\\x1b[22m` closes. */"
+    },
+    {
+      "line": 234,
+      "text": "        const ansi = this.tokenAnsi(this.fgAnsi, color);"
+    },
+    {
+      "line": 235,
+      "text": "        return this.dimTokens.has(color) ? `${ansi}\\x1b[2m` : ansi;"
+    },
+    {
+      "line": 238,
+      "text": "        return this.tokenAnsi(this.bgAnsi, color);"
+    },
+    {
+      "line": 275,
+      "text": "        const darkPath = path.join(themesDir, \"dark.json\");"
+    },
+    {
+      "line": 276,
+      "text": "        const lightPath = path.join(themesDir, \"light.json\");"
+    },
+    {
+      "line": 278,
+      "text": "            dark: JSON.parse(stripBom(fs.readFileSync(darkPath, \"utf-8\"))),"
+    },
+    {
+      "line": 279,
+      "text": "            light: JSON.parse(stripBom(fs.readFileSync(lightPath, \"utf-8\"))),"
+    },
+    {
+      "line": 301,
+      "text": "        addTheme({ name, path: path.join(themesDir, `${name}.json`) });"
+    },
+    {
+      "line": 320,
+      "text": "        if (!file.endsWith(\".json\")) {"
+    },
+    {
+      "line": 342,
+      "text": "function parseThemeJson(label, json) {"
+    },
+    {
+      "line": 343,
+      "text": "    if (themeJsonValidator)"
+    },
+    {
+      "line": 344,
+      "text": "        return themeJsonValidator(label, json);"
+    },
+    {
+      "line": 345,
+      "text": "    if (typeof json !== \"object\" || json === null || !(\"colors\" in json)) {"
+    },
+    {
+      "line": 348,
+      "text": "    return json;"
+    },
+    {
+      "line": 350,
+      "text": "function parseThemeJsonContent(label, content) {"
+    },
+    {
+      "line": 351,
+      "text": "    let json;"
+    },
+    {
+      "line": 353,
+      "text": "        json = JSON.parse(stripBom(content));"
+    },
+    {
+      "line": 358,
+      "text": "    return parseThemeJson(label, json);"
+    },
+    {
+      "line": 360,
+      "text": "function loadThemeJson(name) {"
+    },
+    {
+      "line": 368,
+      "text": "        return parseThemeJsonContent(registeredTheme.sourcePath, content);"
+    },
+    {
+      "line": 374,
+      "text": "    const themePath = path.join(customThemesDir, `${name}.json`);"
+    },
+    {
+      "line": 379,
+      "text": "    return parseThemeJsonContent(name, content);"
+    },
+    {
+      "line": 381,
+      "text": "const BACKGROUND_TOKENS = new Set(["
+    },
+    {
+      "line": 394,
+      "text": "        if (BACKGROUND_TOKENS.has(key)) {"
+    },
+    {
+      "line": 403,
+      "text": "function createTheme(themeJson, mode, sourcePath) {"
+    },
+    {
+      "line": 405,
+      "text": "    const resolvedColors = resolveThemeColors(withThemeColorFallbacks(themeJson.colors), themeJson.vars);"
+    },
+    {
+      "line": 408,
+      "text": "        name: themeJson.name,"
+    },
+    {
+      "line": 410,
+      "text": "        appearance: themeJson.appearance,"
+    },
+    {
+      "line": 429,
+      "text": "    const themeJson = parseThemeJsonContent(themePath, content);"
+    },
+    {
+      "line": 430,
+      "text": "    return createTheme(themeJson, mode, themePath);"
+    },
+    {
+      "line": 440,
+      "text": "    const themeJson = loadThemeJson(name);"
+    },
+    {
+      "line": 441,
+      "text": "    return createTheme(themeJson, mode);"
+    },
+    {
+      "line": 485,
+      "text": "    if (!bg || !/^\\d{1,2}$/.test(bg))"
+    },
+    {
+      "line": 511,
+      "text": "const THEME_KEY = Symbol.for(\"@earendil-works/pi-coding-agent:theme\");"
+    },
+    {
+      "line": 512,
+      "text": "const THEME_KEY_OLD = Symbol.for(\"@mariozechner/pi-coding-agent:theme\");"
+    },
+    {
+      "line": 602,
+      "text": "    const watchedFileName = `${watchedThemeName}.json`;"
+    },
+    {
+      "line": 672,
+      "text": "    return Object.fromEntries(Object.entries(colors).map(([token, color]) => [token, colorToHex(color)]));"
+    },
+    {
+      "line": 681,
+      "text": " * Get explicit export colors from theme JSON, if specified."
+    },
+    {
+      "line": 689,
+      "text": "        const themeJson = loadThemeJson(name);"
+    },
+    {
+      "line": 690,
+      "text": "        const exportSection = themeJson.export;"
+    },
+    {
+      "line": 693,
+      "text": "        const vars = themeJson.vars ?? {};"
+    },
+    {
+      "line": 703,
+      "text": "            if (/^okhsl\\(/i.test(resolved))"
+    },
+    {
+      "line": 717,
+      "text": "let cachedHighlightThemeFor;"
+    },
+    {
+      "line": 718,
+      "text": "let cachedCliHighlightTheme;"
+    },
+    {
+      "line": 719,
+      "text": "function buildCliHighlightTheme(t) {"
+    },
+    {
+      "line": 749,
+      "text": "function getCliHighlightTheme(t) {"
+    },
+    {
+      "line": 750,
+      "text": "    if (cachedHighlightThemeFor !== t || !cachedCliHighlightTheme) {"
+    },
+    {
+      "line": 751,
+      "text": "        cachedHighlightThemeFor = t;"
+    },
+    {
+      "line": 752,
+      "text": "        cachedCliHighlightTheme = buildCliHighlightTheme(t);"
+    },
+    {
+      "line": 754,
+      "text": "    return cachedCliHighlightTheme;"
+    },
+    {
+      "line": 757,
+      "text": " * Highlight code with syntax coloring based on file extension or language."
+    },
+    {
+      "line": 758,
+      "text": " * Returns array of highlighted lines."
+    },
+    {
+      "line": 760,
+      "text": "export function highlightCode(code, lang) {"
+    },
+    {
+      "line": 761,
+      "text": "    // Validate language before highlighting to avoid stderr spam from cli-highlight"
+    },
+    {
+      "line": 763,
+      "text": "    // Skip highlighting when no valid language is specified. cli-highlight's"
+    },
+    {
+      "line": 772,
+      "text": "        theme: getCliHighlightTheme(theme),"
+    },
+    {
+      "line": 775,
+      "text": "        return highlight(code, opts).split(\"\\n\");"
+    },
+    {
+      "line": 782,
+      "text": " * Get language identifier from file path extension."
+    }
+  ]
+}

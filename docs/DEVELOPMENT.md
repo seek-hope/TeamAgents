@@ -165,6 +165,8 @@ cargo test --offline --locked --manifest-path engine/Cargo.toml --test install
 cargo test --offline --locked --manifest-path tui/Cargo.toml --test v2app_tests
 cargo test --offline --locked --manifest-path tui/Cargo.toml --test conversation
 cargo test --offline --locked --manifest-path tui/Cargo.toml --test graphics
+cargo test --offline --locked --manifest-path tui/Cargo.toml --test parity
+cargo run --offline --locked --manifest-path tui/Cargo.toml --example parity_probe
 cargo test --offline --locked --manifest-path tui/Cargo.toml --test sessions
 cargo test --offline --locked --manifest-path engine/Cargo.toml --test session_browser
 ```

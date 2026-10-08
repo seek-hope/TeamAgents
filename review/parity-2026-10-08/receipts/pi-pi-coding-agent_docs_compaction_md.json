@@ -1,0 +1,397 @@
+{
+  "product": "pi",
+  "revision_or_version": "1.1.0",
+  "url": "file:///home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/%40earendil-works/pi-coding-agent/docs/compaction.md",
+  "retrieved_at": "2026-10-08T13:49:30.958598+00:00",
+  "source_sha256": "190b8c651148504613aea98b0637807c536ed0362948fda1bcd1ae137d75ff4a",
+  "source_bytes": 23951,
+  "source_lines": 463,
+  "evidence_class": "source or documentation, not executed product behavior",
+  "reproduce": "Read /home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/@earendil-works/pi-coding-agent/docs/compaction.md; pi --version must report 1.1.0. Compare the source_sha256 before using these excerpts.",
+  "excerpts": [
+    {
+      "line": 1,
+      "text": "# Compaction Reference"
+    },
+    {
+      "line": 3,
+      "text": "This reference describes automatic compaction, branch summarization, persisted entries, and extension hooks. For the user workflow, see [Sessions and Context](sessions.md#manage-conversation-context)."
+    },
+    {
+      "line": 6,
+      "text": "- [`packages/coding-agent/src/core/compaction/compaction.ts`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/compaction/compaction.ts) - Auto-compaction logic"
+    },
+    {
+      "line": 7,
+      "text": "- [`packages/coding-agent/src/core/compaction/branch-summarization.ts`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/compaction/branch-summarization.ts) - Branch summarization"
+    },
+    {
+      "line": 8,
+      "text": "- [`packages/coding-agent/src/core/compaction/utils.ts`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/compaction/utils.ts) - Shared utilities (file tracking, serialization)"
+    },
+    {
+      "line": 9,
+      "text": "- [`packages/coding-agent/src/core/session-manager.ts`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/session-manager.ts) - Entry types (`CompactionEntry`, `BranchSummaryEntry`)"
+    },
+    {
+      "line": 10,
+      "text": "- [`packages/coding-agent/src/core/extensions/types.ts`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/extensions/types.ts) - Extension event types"
+    },
+    {
+      "line": 12,
+      "text": "For TypeScript definitions in your project, inspect `node_modules/@earendil-works/pi-coding-agent/dist/`."
+    },
+    {
+      "line": 20,
+      "text": "| Compaction | Context exceeds threshold, or `/compact` | Summarize old messages to free up context |"
+    },
+    {
+      "line": 25,
+      "text": "## Compaction"
+    },
+    {
+      "line": 29,
+      "text": "Auto-compaction triggers when:"
+    },
+    {
+      "line": 32,
+      "text": "contextTokens > contextWindow - reserveTokens"
+    },
+    {
+      "line": 35,
+      "text": "By default, `reserveTokens` is 16384 tokens (configurable in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settings.json`). This leaves room for the LLM's response."
+    },
+    {
+      "line": 37,
+      "text": "During a multi-turn agent run, Pi checks the canonical projected context after tools finish and their results are appended, before starting the next assistant response. If the threshold is crossed, Pi compacts during `prepareNextTurn`, then performs the existing catch-up steering poll before `turn_start`. It skips this between-turn check when the completed tool batch terminates the run and no queued message requires another response. Pi also checks before a new user prompt and performs final-attempt overflow recovery after the low-level run ends."
+    },
+    {
+      "line": 39,
+      "text": "A provider context-overflow error or an early final `stopReason: \"length\"` can select one compact-and-retry recovery attempt. Length responses with tool calls retain their synthetic failed tool results and follow the ordinary tool/queue scheduler rather than forcing the run to end."
+    },
+    {
+      "line": 41,
+      "text": "You can also trigger manually with `/compact [instructions]`, where optional instructions focus the summary."
+    },
+    {
+      "line": 45,
+      "text": "1. **Find cut point**: Walk backwards through the finalized session projection, accumulating token estimates until `keepRecentTokens` (default 20k, configurable in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settings.json`) is reached"
+    },
+    {
+      "line": 48,
+      "text": "4. **Append entry**: Save `CompactionEntry` with summary and `firstKeptEntryId`"
+    },
+    {
+      "line": 52,
+      "text": "Before compaction:"
+    },
+    {
+      "line": 63,
+      "text": "After compaction (new entry appended):"
+    },
+    {
+      "line": 83,
+      "text": "On repeated compactions, the summarized span starts at the previous compaction's kept boundary (`firstKeptEntryId`), not at the compaction entry itself, falling back to the entry after the previous compaction if that kept entry cannot be found in the path. A retain-none compaction records its own ID as `firstKeptEntryId`; repeated compaction starts after that entry. This preserves messages that survived the earlier compaction by including them in the next summarization pass as well. Pi also recalculates `tokensBefore` from the rebuilt, context-edited session projection before writing the new `CompactionEntry`, so the token count reflects the actual pre-compaction context being replaced. Omitted raw entries remain stored but do not affect cut selection, summaries, checkpoints, or token estimates."
+    },
+    {
+      "line": 87,
+      "text": "Recovery preserves the existing lifecycle and queue order. The completed attempt remains visible to `turn_end` and `agent_end`; post-run recovery then repairs persisted model context before a fresh retry:"
+    },
+    {
+      "line": 91,
+      "text": "\u2192 extension/public turn_end"
+    },
+    {
+      "line": 92,
+      "text": "\u2192 extension/public agent_end"
+    },
+    {
+      "line": 94,
+      "text": "\u2192 for overflow/length: run session_before_compact and append compaction on success"
+    },
+    {
+      "line": 98,
+      "text": "If recovery compaction fails or is cancelled, Pi keeps the omission edits, appends no compaction, and schedules no internal retry. Existing queued work remains governed by ordinary steering and follow-up rules. `agent_before_settle` sees the repaired projection after recovery processing. Raw transcript history, exports, billing totals, and history-search extensions can still inspect the omitted attempt."
+    },
+    {
+      "line": 102,
+      "text": "A user-message span starts with a user message and includes all turns until the next user message. Normally, compaction cuts at user-message boundaries."
+    },
+    {
+      "line": 104,
+      "text": "When one user-message span exceeds `keepRecentTokens`, the cut point lands within that span at an assistant message. This is a split user-message span:"
+    },
+    {
+      "line": 107,
+      "text": "Split user-message span (one span exceeds budget):"
+    },
+    {
+      "line": 138,
+      "text": "Preparation advances the kept boundary into a context-invisible suffix only when that suffix contains an omitted assistant attempt and no unomitted context-producing entries. Recovery `context_edit` omissions satisfy this rule; intrinsically context-invisible metadata may coexist with them. Metadata alone and newly appended custom messages do not move the cut. A replacement edit affecting the candidate input or summarized prefix also blocks advancement because the omitted assistant answered the pre-edit input; replacements of suffix entries that are ultimately omitted remain safe. This allows an over-budget recovered input to be summarized while retaining the edits that keep the abandoned attempt omitted, without making bookkeeping change whether new model input is preserved verbatim."
+    },
+    {
+      "line": 140,
+      "text": "### CompactionEntry Structure"
+    },
+    {
+      "line": 142,
+      "text": "Defined in [`session-manager.ts`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/session-manager.ts):"
+    },
+    {
+      "line": 145,
+      "text": "interface CompactionEntry<T = unknown> {"
+    },
+    {
+      "line": 146,
+      "text": "  type: \"compaction\";"
+    },
+    {
+      "line": 152,
+      "text": "  tokensBefore: number;"
+    },
+    {
+      "line": 154,
+      "text": "  fromHook?: boolean;  // true if provided by extension (legacy field name)"
+    },
+    {
+      "line": 158,
+      "text": "// Default compaction uses this for details (from compaction.ts):"
+    },
+    {
+      "line": 159,
+      "text": "interface CompactionDetails {"
+    },
+    {
+      "line": 165,
+      "text": "Extensions can store any JSON-serializable data in `details`. The default compaction tracks file operations, but custom extension implementations can use their own structure. Generated and extension-provided summaries store their LLM `usage` when available so session totals include summarization work."
+    },
+    {
+      "line": 167,
+      "text": "See [`prepareCompaction()`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/compaction/compaction.ts) and [`compact()`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/compaction/compaction.ts) for the implementation. For direct programmatic summarization, `generateSummary()` returns the summary text and `generateSummaryWithUsage()` returns `{ text, usage }`."
+    },
+    {
+      "line": 179,
+      "text": "3. **Prepare with budget**: Include messages up to token budget (newest first)"
+    },
+    {
+      "line": 202,
+      "text": "Default compaction and branch summarization track files cumulatively. Both extract file operations from tool calls in the messages being summarized. Compaction also carries file lists from the previous Pi-generated compaction. Branch summarization carries file lists from Pi-generated branch summaries in the entries it summarizes."
+    },
+    {
+      "line": 204,
+      "text": "File tracking therefore accumulates across default compactions and nested default branch summaries. Pi does not automatically carry file lists from extension-generated summaries whose `fromHook` field is `true`; extensions manage their own `details` format."
+    },
+    {
+      "line": 208,
+      "text": "Defined in [`session-manager.ts`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/session-manager.ts):"
+    },
+    {
+      "line": 219,
+      "text": "  fromHook?: boolean;  // true if provided by extension (legacy field name)"
+    },
+    {
+      "line": 230,
+      "text": "Same as compaction, extensions can store custom data in `details`."
+    },
+    {
+      "line": 232,
+      "text": "See [`collectEntriesForBranchSummary()`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/compaction/branch-summarization.ts), [`prepareBranchEntries()`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/compaction/branch-summarization.ts), and [`generateBranchSummary()`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/compaction/branch-summarization.ts) for the implementation."
+    },
+    {
+      "line": 236,
+      "text": "Both formats include Goal, Constraints & Preferences, Progress, Key Decisions, and Next Steps. Compaction summaries also include Critical Context. Branch summaries stop after Next Steps. Pi appends file lists to either format when relevant."
+    },
+    {
+      "line": 238,
+      "text": "Compaction summaries use this format:"
+    },
+    {
+      "line": 249,
+      "text": "- [x] [Completed tasks]"
+    },
+    {
+      "line": 278,
+      "text": "Before summarization, messages are serialized to text via [`serializeConversation()`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/compaction/utils.ts):"
+    },
+    {
+      "line": 290,
+      "text": "Tool results are truncated to 2000 characters during serialization. Content beyond that limit is replaced with a marker indicating how many characters were truncated. This keeps summarization requests within reasonable token budgets, since tool results (especially from `read` and `bash`) are typically the largest contributors to context size."
+    },
+    {
+      "line": 292,
+      "text": "## Custom Summarization via Extensions"
+    },
+    {
+      "line": 294,
+      "text": "Extensions can intercept and customize both compaction and branch summarization. See [`extensions/types.ts`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/extensions/types.ts) for event type definitions."
+    },
+    {
+      "line": 296,
+      "text": "### session_before_compact"
+    },
+    {
+      "line": 298,
+      "text": "Fired before auto-compaction or `/compact`. Can cancel or provide custom summary. See `SessionBeforeCompactEvent` and `CompactionPreparation` in the types file."
+    },
+    {
+      "line": 301,
+      "text": "pi.on(\"session_before_compact\", async (event, ctx) => {"
+    },
+    {
+      "line": 306,
+      "text": "  // preparation.previousSummary - previous compaction summary"
+    },
+    {
+      "line": 308,
+      "text": "  // preparation.tokensBefore - context tokens before compaction"
+    },
+    {
+      "line": 313,
+      "text": "  // reason - \"manual\" (/compact), \"threshold\", or \"overflow\""
+    },
+    {
+      "line": 314,
+      "text": "  // willRetry - whether the aborted turn is retried after compaction (overflow recovery)"
+    },
+    {
+      "line": 322,
+      "text": "    compaction: {"
+    },
+    {
+      "line": 325,
+      "text": "      tokensBefore: preparation.tokensBefore,"
+    },
+    {
+      "line": 338,
+      "text": "import { convertToLlm, serializeConversation } from \"@earendil-works/pi-coding-agent\";"
+    },
+    {
+      "line": 340,
+      "text": "pi.on(\"session_before_compact\", async (event, ctx) => {"
+    },
+    {
+      "line": 343,
+      "text": "  // Convert AgentMessage[] to Message[], then serialize to text"
+    },
+    {
+      "line": 358,
+      "text": "    compaction: {"
+    },
+    {
+      "line": 361,
+      "text": "      tokensBefore: preparation.tokensBefore,"
+    },
+    {
+      "line": 368,
+      "text": "See [custom-compaction.ts](../examples/extensions/custom-compaction.ts) for a complete example using a different model."
+    },
+    {
+      "line": 370,
+      "text": "### session_compact_failed"
+    },
+    {
+      "line": 372,
+      "text": "Fired when manual or automatic compaction fails or is aborted. This is useful for telemetry extensions that need to pair `session_before_compact` attempts with terminal outcomes."
+    },
+    {
+      "line": 375,
+      "text": "pi.on(\"session_compact_failed\", async (event, ctx) => {"
+    },
+    {
+      "line": 376,
+      "text": "  const { reason, errorMessage, aborted, willRetry, fromExtension } = event;"
+    },
+    {
+      "line": 377,
+      "text": "  // reason - \"manual\" (/compact), \"threshold\", or \"overflow\""
+    },
+    {
+      "line": 379,
+      "text": "  // aborted - true for canceled/aborted compactions"
+    },
+    {
+      "line": 380,
+      "text": "  // willRetry - whether the aborted turn would have retried after compaction"
+    },
+    {
+      "line": 381,
+      "text": "  // fromExtension - whether extension-provided compaction content was being used"
+    },
+    {
+      "line": 419,
+      "text": "Configure compaction in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settings.json`:"
+    },
+    {
+      "line": 421,
+      "text": "```json"
+    },
+    {
+      "line": 423,
+      "text": "  \"compaction\": {"
+    },
+    {
+      "line": 425,
+      "text": "    \"reserveTokens\": 16384,"
+    },
+    {
+      "line": 426,
+      "text": "    \"keepRecentTokens\": 20000"
+    },
+    {
+      "line": 433,
+      "text": "| `enabled` | `true` | Enable auto-compaction |"
+    },
+    {
+      "line": 434,
+      "text": "| `reserveTokens` | `16384` | Tokens to reserve for LLM response |"
+    },
+    {
+      "line": 435,
+      "text": "| `keepRecentTokens` | `20000` | Recent tokens to keep (not summarized) |"
+    },
+    {
+      "line": 437,
+      "text": "Disable auto-compaction with `\"enabled\": false`. You can still compact manually with `/compact`."
+    },
+    {
+      "line": 441,
+      "text": "Use `compaction.modelOverrides` to tune token budgets for different models:"
+    },
+    {
+      "line": 443,
+      "text": "```json"
+    },
+    {
+      "line": 445,
+      "text": "  \"compaction\": {"
+    },
+    {
+      "line": 446,
+      "text": "    \"reserveTokens\": 16384,"
+    },
+    {
+      "line": 447,
+      "text": "    \"keepRecentTokens\": 20000,"
+    },
+    {
+      "line": 450,
+      "text": "        \"reserveTokens\": 400000"
+    },
+    {
+      "line": 457,
+      "text": "For a model with a 1M context window, this override triggers compaction above 600K tokens and keeps the ordinary 20000 recent tokens. Other models retain the ordinary 16384-token reserve. `reserveTokens` also influences summarization output limits, capped by the model's maximum output tokens; it is not solely a trigger threshold."
+    },
+    {
+      "line": 459,
+      "text": "Keys are exact, case-sensitive `provider/modelId` values, including any slashes within the model ID. Each `reserveTokens` and `keepRecentTokens` value falls back independently from the model override to the ordinary setting to the built-in default. Values must be non-negative safe integers. Invalid values in the matching model override produce an error when read; only omitted fields fall back to the ordinary setting. Model override entries must be objects. Invalid ordinary token settings produce an error when read, even if the active model has a valid override. Only omitted ordinary values use built-in defaults. `enabled` remains global, not model-specific."
+    },
+    {
+      "line": 461,
+      "text": "These resolved values are used for manual compaction, all automatic threshold checks, overflow recovery, and extension-visible `preparation.settings`. Model switches affect subsequent checks and compactions without changing ordinary settings. Compaction already in progress uses the model and settings captured for that operation. Branch summarization settings are unaffected."
+    },
+    {
+      "line": 463,
+      "text": "Overrides work in both global and project settings. The files merge recursively before lookup, so a global model-specific value beats a project-wide fallback; a project must override that model entry to change it. See [Settings](settings.md#per-model-compaction-overrides) for details."
+    }
+  ]
+}

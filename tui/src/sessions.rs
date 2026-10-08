@@ -296,7 +296,7 @@ pub fn render(
     frame.render_widget(history, chunks[2]);
     let entries = crate::transcript::project(&browser.entries, "", false);
     let root = browser.rows.get(browser.selected).map(|r| r.path.as_str()).unwrap_or("");
-    let document = browser.transcript.document(&entries, inner.width as usize, None, Some(graphics), root);
+    let mut document = browser.transcript.document(&entries, inner.width as usize, None, Some(graphics), root).clone();
     let mut lines = document.lines.clone();
     if lines.is_empty() {
         lines.push(Line::from(if browser.busy { "Loading..." } else { "No stored messages." }));
@@ -304,6 +304,10 @@ pub fn render(
     browser.last_height = (inner.height as usize).max(1);
     browser.last_lines = lines.len();
     browser.scroll = browser.scroll.min(lines.len().saturating_sub(browser.last_height));
+    document.resolve(graphics, browser.scroll, inner);
+    if !document.lines.is_empty() {
+        lines = document.lines.clone();
+    }
     let pictures = document.visible(browser.scroll, inner);
     frame.render_widget(
         Paragraph::new(lines.into_iter().skip(browser.scroll).take(browser.last_height).collect::<Vec<_>>()),

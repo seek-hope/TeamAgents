@@ -1,0 +1,201 @@
+{
+  "product": "pi",
+  "revision_or_version": "1.1.0",
+  "url": "file:///home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/%40earendil-works/pi-tui/dist/autocomplete.js",
+  "retrieved_at": "2026-10-08T13:49:30.979521+00:00",
+  "source_sha256": "ae2966443cdea6f65445f181f5ef159abb362388afed69afd344b728b5dafb55",
+  "source_bytes": 28606,
+  "source_lines": 693,
+  "evidence_class": "source or documentation, not executed product behavior",
+  "reproduce": "Read /home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/@earendil-works/pi-tui/dist/autocomplete.js; pi --version must report 1.1.0. Compare the source_sha256 before using these excerpts.",
+  "excerpts": [
+    {
+      "line": 6,
+      "text": "import { autocompleteBoundaryRegex, autocompleteSeparatorRegex } from \"./utils.js\";"
+    },
+    {
+      "line": 8,
+      "text": "const tokenStartRegex = new RegExp(`${autocompleteBoundaryRegex.source}$`, \"u\");"
+    },
+    {
+      "line": 46,
+      "text": "        if (PATH_DELIMITERS.has(character) || autocompleteSeparatorRegex.test(character)) {"
+    },
+    {
+      "line": 53,
+      "text": "// Keep a wrapper if the token also contains its closer, e.g. \"app/[slug]/pa\" or \"(group)/pa\"."
+    },
+    {
+      "line": 54,
+      "text": "function stripLeadingWrappers(token) {"
+    },
+    {
+      "line": 55,
+      "text": "    let result = token;"
+    },
+    {
+      "line": 65,
+      "text": "function findUnclosedQuoteStart(text) {"
+    },
+    {
+      "line": 67,
+      "text": "    let quoteStart = -1;"
+    },
+    {
+      "line": 72,
+      "text": "                quoteStart = i;"
+    },
+    {
+      "line": 76,
+      "text": "    return inQuotes ? quoteStart : null;"
+    },
+    {
+      "line": 78,
+      "text": "function isTokenStart(text, index) {"
+    },
+    {
+      "line": 83,
+      "text": "    return PATH_DELIMITERS.has(text[start - 1] ?? \"\") || tokenStartRegex.test(text.slice(0, start));"
+    },
+    {
+      "line": 86,
+      "text": "    const quoteStart = findUnclosedQuoteStart(text);"
+    },
+    {
+      "line": 87,
+      "text": "    if (quoteStart === null) {"
+    },
+    {
+      "line": 90,
+      "text": "    if (quoteStart > 0 && text[quoteStart - 1] === \"@\") {"
+    },
+    {
+      "line": 91,
+      "text": "        if (!isTokenStart(text, quoteStart - 1)) {"
+    },
+    {
+      "line": 94,
+      "text": "        return text.slice(quoteStart - 1);"
+    },
+    {
+      "line": 96,
+      "text": "    if (!isTokenStart(text, quoteStart)) {"
+    },
+    {
+      "line": 99,
+      "text": "    return text.slice(quoteStart);"
+    },
+    {
+      "line": 113,
+      "text": "function buildCompletionValue(path, options) {"
+    },
+    {
+      "line": 114,
+      "text": "    const needsQuotes = options.isQuotedPrefix || autocompleteSeparatorRegex.test(path);"
+    },
+    {
+      "line": 206,
+      "text": "export class CombinedAutocompleteProvider {"
+    },
+    {
+      "line": 248,
+      "text": "                const bareNameMatches = fuzzyFilter(commandItems, prefix, (item) => item.name.startsWith(\"skill:\") ? item.name.slice(\"skill:\".length) : item.name);"
+    },
+    {
+      "line": 250,
+      "text": "                const fullNameOnlyMatches = fuzzyFilter(commandItems.filter((item) => item.name.startsWith(\"skill:\") && !bareNameMatchSet.has(item)), prefix, (item) => item.name);"
+    },
+    {
+      "line": 269,
+      "text": "            if (!command || !(\"getArgumentCompletions\" in command) || !command.getArgumentCompletions) {"
+    },
+    {
+      "line": 272,
+      "text": "            const argumentSuggestions = await command.getArgumentCompletions(argumentText);"
+    },
+    {
+      "line": 293,
+      "text": "    applyCompletion(lines, cursorLine, cursorCol, item, prefix) {"
+    },
+    {
+      "line": 301,
+      "text": "        // Check if we're completing a slash command (prefix starts with \"/\" but NOT a file path)"
+    },
+    {
+      "line": 305,
+      "text": "            // This is a command name completion"
+    },
+    {
+      "line": 315,
+      "text": "        // Check if we're completing a file attachment (prefix starts with \"@\")"
+    },
+    {
+      "line": 317,
+      "text": "            // This is a file attachment completion"
+    },
+    {
+      "line": 318,
+      "text": "            // Don't add space after directories so user can continue autocompleting"
+    },
+    {
+      "line": 335,
+      "text": "            // This is likely a command argument completion"
+    },
+    {
+      "line": 348,
+      "text": "        // For file paths, complete the path"
+    },
+    {
+      "line": 368,
+      "text": "        const token = stripLeadingWrappers(lastDelimiterIndex === -1 ? text : text.slice(lastDelimiterIndex + 1));"
+    },
+    {
+      "line": 369,
+      "text": "        if (token.startsWith(\"@\")) {"
+    },
+    {
+      "line": 370,
+      "text": "            return token;"
+    },
+    {
+      "line": 392,
+      "text": "        // Empty text should not trigger file suggestions - that's for forced Tab completion"
+    },
+    {
+      "line": 393,
+      "text": "        if (pathPrefix === \"\" && text !== \"\" && tokenStartRegex.test(text)) {"
+    },
+    {
+      "line": 464,
+      "text": "                // Complete from specified position"
+    },
+    {
+      "line": 509,
+      "text": "                        // Broken symlink or permission error - treat as file"
+    },
+    {
+      "line": 555,
+      "text": "                const value = buildCompletionValue(pathValue, {"
+    },
+    {
+      "line": 664,
+      "text": "                const completionPath = isDirectory ? `${displayPath}/` : displayPath;"
+    },
+    {
+      "line": 665,
+      "text": "                const value = buildCompletionValue(completionPath, {"
+    },
+    {
+      "line": 682,
+      "text": "    // Check if we should trigger file completion (called on Tab key)"
+    },
+    {
+      "line": 683,
+      "text": "    shouldTriggerFileCompletion(lines, cursorLine, cursorCol) {"
+    },
+    {
+      "line": 693,
+      "text": "//# sourceMappingURL=autocomplete.js.map"
+    }
+  ]
+}

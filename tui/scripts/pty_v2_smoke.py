@@ -324,6 +324,24 @@ def main():
     if commands != sum("command_id" in f for f in daemon.frames):
         failures.append("tool expansion sent a business command")
 
+    # D-450: completion fills a local command; it cannot submit or interrupt by itself.
+    os.write(fd, b"\x17/inte")
+    scr.feed(read_all(fd, 0.4).decode("utf-8", "replace"))
+    expect("/interrupt", "local completion candidate")
+    commands_before_completion = sum("command_id" in f for f in daemon.frames)
+    os.write(fd, b"\t")
+    scr.feed(read_all(fd, 0.4).decode("utf-8", "replace"))
+    expect("/interrupt", "filled local command")
+    if commands_before_completion != sum("command_id" in f for f in daemon.frames):
+        failures.append("completion dispatched a command")
+    os.write(fd, b"\r")
+    scr.feed(read_all(fd, 0.5).decode("utf-8", "replace"))
+    if commands_before_completion + 1 != sum("command_id" in f for f in daemon.frames):
+        failures.append("explicit submit did not dispatch the completed command exactly once")
+    os.write(fd, b"/s\x1b")
+    scr.feed(read_all(fd, 0.4).decode("utf-8", "replace"))
+    expect("/s", "cancelled completion keeps the draft")
+
     # Exit detaches only; it sends no daemon-side business command.
     before_exit = sum("command_id" in f for f in daemon.frames)
     os.write(fd, b"\x04")

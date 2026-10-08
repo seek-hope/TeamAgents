@@ -1,0 +1,73 @@
+{
+  "product": "pi",
+  "revision_or_version": "1.1.0",
+  "url": "file:///home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/%40earendil-works/pi-coding-agent/docs/sessions.md",
+  "retrieved_at": "2026-10-08T13:49:30.952271+00:00",
+  "source_sha256": "5ad5bda19caaa0794bb44f86c85c8e66be6f493c52bb5e6a4d127b58cd8c2c1e",
+  "source_bytes": 4692,
+  "source_lines": 66,
+  "evidence_class": "source or documentation, not executed product behavior",
+  "reproduce": "Read /home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/@earendil-works/pi-coding-agent/docs/sessions.md; pi --version must report 1.1.0. Compare the source_sha256 before using these excerpts.",
+  "excerpts": [
+    {
+      "line": 11,
+      "text": "pi --resume"
+    },
+    {
+      "line": 14,
+      "text": "`--continue` opens the most recent session for the current working directory. `--resume` opens the session picker. In interactive mode, `/resume` opens the same picker and `/new` starts a new session."
+    },
+    {
+      "line": 16,
+      "text": "Use `/name` or `--name` to assign a recognizable session name. Run `/session` to verify the current session file, ID, message count, token usage, and cost."
+    },
+    {
+      "line": 27,
+      "text": "| `/fork` | Creates a new session from an earlier user message | The alternative should become separate work |"
+    },
+    {
+      "line": 38,
+      "text": "The model receives the active branch, not every branch in the session file. Pi combines that history with the system prompt, discovered context files, available tools, and loaded skill descriptions. [How Pi Works](how-pi-works.md#context) describes how those inputs are assembled."
+    },
+    {
+      "line": 40,
+      "text": "The footer shows current context usage. When the active context approaches the model's limit, Pi normally compacts older history automatically. Compaction adds a summary and keeps recent messages. It does not delete the original session entries."
+    },
+    {
+      "line": 42,
+      "text": "Run `/compact` to compact manually. You can add instructions when the summary should preserve a particular topic or decision. Configure automatic compaction and retained history through [Settings](settings.md#compaction)."
+    },
+    {
+      "line": 44,
+      "text": "Compaction can fail if the provider is unavailable or cannot accept the summarization request. Correct the provider problem and run `/compact` again. Disabling automatic compaction does not disable the manual command."
+    },
+    {
+      "line": 46,
+      "text": "See [Compaction Reference](compaction.md) for thresholds, retained boundaries, branch-summary behavior, and extension hooks."
+    },
+    {
+      "line": 50,
+      "text": "By default, Pi stores sessions under `~/.pi/agent/sessions/`, grouped by working directory. Use `--session-dir`, `PI_CODING_AGENT_SESSION_DIR`, or the `sessionDir` setting to choose another location. The CLI option has highest precedence."
+    },
+    {
+      "line": 52,
+      "text": "Use `--no-session` for an ephemeral run. An ephemeral session cannot be resumed after Pi exits."
+    },
+    {
+      "line": 54,
+      "text": "Use `--session` when you already know the session path or ID. Use `--fork` to create a new session from an existing session before interactive mode starts."
+    },
+    {
+      "line": 58,
+      "text": "Use `/export` to write the current session as HTML or JSONL. Use `/share` to upload it and get a viewer link. Pi uses a Radius artifact when Radius authentication is configured; otherwise, it uses a private GitHub gist."
+    },
+    {
+      "line": 60,
+      "text": "Review exported or shared sessions first. They can contain prompts, model responses, tool arguments, command output, file contents, and extension messages."
+    },
+    {
+      "line": 66,
+      "text": "The report includes environment and provider configuration without credential values, plus recorded error diagnostics. Upload it through `radius.pi.dev` or export the same report as a zip to inspect and share yourself. Uploads do not require a login; Radius authentication attributes the report to your account so the developers can follow up. If an upload fails, Pi offers to export the zip."
+    }
+  ]
+}

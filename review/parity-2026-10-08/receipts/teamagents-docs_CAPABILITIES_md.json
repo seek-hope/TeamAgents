@@ -1,0 +1,217 @@
+{
+  "product": "teamagents",
+  "revision_or_version": "a76722da",
+  "url": "git:a76722da:docs/CAPABILITIES.md",
+  "retrieved_at": "2026-10-08T13:49:31.026111+00:00",
+  "source_sha256": "5f36133f1ded446289c50ff9b469a7fe8bf1184eba976d756dfc0f62e0440e9b",
+  "source_bytes": 21900,
+  "source_lines": 153,
+  "evidence_class": "source or documentation, not executed product behavior",
+  "reproduce": "git show a76722da:docs/CAPABILITIES.md",
+  "excerpts": [
+    {
+      "line": 9,
+      "text": "| what the product must do and whether it does it | [ACCEPTANCE.md](ACCEPTANCE.md) \u2014 the A01\u2013A36 matrix, item by item, with the test, probe or measurement that drove it |"
+    },
+    {
+      "line": 15,
+      "text": "**Evidence classes.** A *test* runs in `make check` (offline, no credentials). A *probe* is a re-runnable script"
+    },
+    {
+      "line": 21,
+      "text": "## 1. The kernel: one writer, one transaction, durable answers"
+    },
+    {
+      "line": 25,
+      "text": "| One entry point per team transaction (ingest \u2192 validate \u2192 reduce \u2192 persist, one SQLite transaction per session) | the `core` suite; `V2Control.tla` (`NoTurnWithoutWork`, `AdmissionGate`, `StaleExecutorRejected`) | identity, operation ids and permission revisions are never taken from a model or a client field, by construction | \u2014 |"
+    },
+    {
+      "line": 26,
+      "text": "| Durable state with a format stamp, and migration across versions | `store::open_refuses_unstamped_foreign_and_wrong_version`, `open_migrates_the_previous_schema_version`; `V2Store.tla` (`NoForeignAdoption`) | a foreign database is refused, never adopted (the pre-D-87 adoption is a refuted control); `synchronous = FULL` costs wall clock, which the large-history probe prices | \u2014 |"
+    },
+    {
+      "line": 28,
+      "text": "| Disk full stops new dispatch, reports the loss and parks | `v2_driver::disk_full_stops_dispatch_reports_and_resumes_after_parking`; `V2DiskFull.tla` with its four refuted controls | **no live evidence by construction**: filling a filesystem needs mount privileges this repository does not assume, and the product deliberately exposes no store-level fault hook | \u2014 |"
+    },
+    {
+      "line": 29,
+      "text": "| A very large history stays workable | `cargo run --offline --manifest-path engine/Cargo.toml --example load_probe` re-measured 2026-10-03: 1.26M-token history, append p50 6.1 ms, request build p50 279 ms, peak RSS 102 MiB | the history is synthetic text, so the numbers describe local overhead and never model capability | \u2014 |"
+    },
+    {
+      "line": 35,
+      "text": "| Isolation by default, and a refusal instead of a host fallback | `V2Isolation.tla` (`UnavailableBackendNeverRuns`); `make check-nobwrap`, `make check-broken-sandbox`; `review/nobwrap_path.py` | the Docker backend is selectable and fail-closed (D-369) but has no dogfood probe of the weight the bubblewrap ones carry | an end-to-end Docker probe |"
+    },
+    {
+      "line": 37,
+      "text": "| A call runs because a *binding* authorizes it | `v2_mcp::skill_call_without_the_binding_fails_honestly`; `V2Grants.tla`, `V2Authority.tla` | the binding gate's own refusal message is pinned by a test, so it cannot be reworded for convenience | \u2014 |"
+    },
+    {
+      "line": 38,
+      "text": "| An approval binds one concrete operation, argument hash and permission revision | `review/dogfood/approval.py` (real TUI, approve and deny); `V2Approval.tla` (`NoLateEffect`, `ApprovalDecisionIsFinal`) | an approval is used up by that single dispatch; a leftover is expired automatically or denied by hand | \u2014 |"
+    },
+    {
+      "line": 39,
+      "text": "| Required checks gate *settlement* | `review/dogfood/checks.py` (three rounds, then the goal parks `BLOCKED` with the failing check named); `V2Checks.tla` | **the gate cannot stop a turn that never claims to be done** (D-400) and is inert where the agent never calls `finish` (D-403); a **wrong** check is worse than none (D-400: `winning-avg-corewars` 3/3 at 966 s became 1/3 at 3,649 s because the check named a path the agent did not use) | a check the agent can run before declaring done; a stall detector |"
+    },
+    {
+      "line": 40,
+      "text": "| Independent verification of a claim | `v2_daemon::an_independent_goal_does_not_settle_on_its_producers_own_passing_round`; `V2Checks.tla` (`IndependenceIsNotSelfVerified`) with `MC_checks_self_verified.cfg` refuted (D-393) | **provenance, not strength**: producer and verifier run the same commands under the same authority (D-398), and no second agent can recover a criterion the environment does not reveal (D-401: 0/3, all failing the same unobservable convention) | \u2014 |"
+    },
+    {
+      "line": 46,
+      "text": "| The phase machine, and recovery driven by persisted location | the `engine` suite; `v2_driver::long_context_compacts_before_the_turn_and_survives_a_restart`; `V2Control.tla` | model and tool waits happen outside transactions, by design | \u2014 |"
+    },
+    {
+      "line": 48,
+      "text": "| A ceiling on one model tool call (`[limits] max_tool_seconds`) | `v2_driver::the_configured_ceiling_bounds_a_model_picked_tool_timeout` (the job's own `deadline_ms`: a 3600 s ask capped to 60 s, an uncapped arm left at 3600 s, a 30 s ask untouched), `tools::bounded_timeout_tests` | it is a ceiling on what a **model** may ask for, not a shorter default: a long legitimate command is cut at the ceiling and must be split by the model; a user's own `[[checks]]` timeout is never clamped (D-415) | a measurement of whether the cut helps |"
+    },
+    {
+      "line": 51,
+      "text": "| A wrap-up note when a goal's deadline is close | `control::the_deadline_warning_is_sent_once_and_only_before_a_live_deadline`, `v2_driver::a_goal_close_to_its_deadline_is_told_once_to_wrap_up`; `V2Control.tla` (`AtMostOneWarning`, `WarnIsTimely`) with two refuted controls; `review/benchmark/deadline_wrapup_ab.py` | **delivered only at a step boundary**: on the 12 timeout-prone tasks, bare 0/12 against 1/12 with a 13-minute deadline, and the runs that miss it are inside one long tool call \u2014 the same wall D-381's 12-hour budget and D-400's gate hit from other sides (D-410) | bound a single tool call's wall clock so a goal near its deadline returns to the model more often |"
+    },
+    {
+      "line": 52,
+      "text": "| A deadline is a cut, not a verdict | D-397: **10 of the 33 deadline trials were graded 1.0 anyway**; `review/benchmark/verifier_health.py` separates a verifier that never ran | more time does not convert the rest: a 12-hour budget did not raise the score (D-381) | \u2014 |"
+    },
+    {
+      "line": 58,
+      "text": "| Compaction that survives a restart, and never blocks a turn | `V2Compress.tla` (eight claims); `v2_driver::failed_summaries_fall_back_uncompressed_and_break_after_three` | a summary that cannot be written leaves the originals in the view and trips a breaker after three attempts | \u2014 |"
+    },
+    {
+      "line": 59,
+      "text": "| codemode: one tool, a QuickJS sandbox, only the script's own output in context | `review/codemode` tests in the `engine` suite; `V2Codemode.tla` with a refuted leak control; the `pre_tool` veto, structured results and the persistent store (D-374, D-376) | the frequently quoted \"\u224840 % fewer prompt tokens\" is **Pi's own measurement of Pi's codemode**, not measured here | a product-side token measurement on a fixed task |"
+    },
+    {
+      "line": 60,
+      "text": "| An image reaches a vision model, and a model without support is told so | `v2_daemon::view_image_reaches_the_wire_as_a_part_only_for_a_model_that_declares_images`; `V2Images.tla` (`NoImagesWithoutSupport`, `PartsOnlyFromLoadedBytes`) with a blind-model control refuted; live: a red square answered, 228 against 44 prompt tokens | priced at ~184 / 177 / 645 prompt tokens for 16\u00b2 / 256\u00b2 / 1024\u00b2 pixels (measured); on its motivating task the structural barrier is gone but the capability gap remains (0/3 at 1,800 s, D-394) | \u2014 |"
+    },
+    {
+      "line": 61,
+      "text": "| Durable memory for facts that exist nowhere on disk | `V2Memory.tla` (`NotesAreAppendOnly`, `TheStoreRefusesAtTheCap`, `RecallIsBounded`) with an eviction control refuted; the fixture measurement **0/3 \u2192 3/3** (D-406), whose control twice wrote an explicit \"choosing one would be an unverifiable guess\" | **no measurable gain when the state is already on disk**: on a real task a second session went 2/3 with memory and 2/3 without (D-409), so a note pays only for what artifacts do not carry | a long project whose facts never become files |"
+    },
+    {
+      "line": 62,
+      "text": "| Skills and MCP services, over both transports | `review/dogfood/skills.py`, `mcp.py`, `mcp_http.py`; `cli::mcp_list_names_the_services_and_their_tools`; `mcp add`/`mcp remove` edit exactly one binding block (D-399, D-408); `mcp login`/`logout` sign in to an OAuth HTTP service (discovery, dynamic registration, PKCE with a state, loopback or pasted redirect, a 0600 credential file, refresh on expiry or a 401) with `V2Oauth.tla`'s five claims verified, five controls refuted and `engine/tests/mcp_oauth.rs` driving the real binary against a fake authorization server (D-412) | the project-level config file is not read (D-133); **no vendor's OAuth server was exercised**, so the sign-in is accepted against the specifications and a fake, not against a live service | MCP management lives in the developer CLI; `status --json` reports the running session's bindings (D-445) |"
+    },
+    {
+      "line": 63,
+      "text": "| User hooks: a `pre_tool` veto and a `notify` stream | `review/dogfood/hooks.py`, with a broken-hook negative control | a veto stops that call; it does not stop the turn | \u2014 |"
+    },
+    {
+      "line": 69,
+      "text": "| One daemon per state root, a headless client, and a TUI | `review/dogfood/tui.py`, `tui_panels.py`, `tui_reconnect.py`, `input_latency.py`; `make pty`; `V2Coordinator.tla`, `V2Concurrency.tla` | rendering and mouse hit-testing share one geometry module, so a panel that draws must be the panel that is clicked | \u2014 |"
+    },
+    {
+      "line": 70,
+      "text": "| Readable conversation Markdown and compact tool results | `tui/tests/conversation.rs`, PTY smoke; Kani transcript-window proof | shared live/history renderer, explicit streaming, Unicode-cell wrapping, four/forty-line previews | no language-grammar highlighting |"
+    },
+    {
+      "line": 71,
+      "text": "| Mermaid, SVG, DOT and local image previews | `tui/tests/graphics.rs`, `tui/scripts/pty_graphics_smoke.py`; Kani media-clipping proof | native Kitty PNG placement, Unicode/block fallback, author-scoped local references, Ctrl+G source toggle | bounded static previews; remote URLs remain links; no universal diagram-language parity |"
+    },
+    {
+      "line": 72,
+      "text": "| Sessions: registry, fork, rename, restore, search, TUI history/switch/delete | `V2Sessions.tla` (`RegistryIsInjective`, `ArchiveOnlyWhenIdle`) with three refuted controls; `V2SessionUi.tla` with four refuted controls; `engine/tests/session_browser.rs`, `tui/tests/sessions.rs`, `review/dogfood/tui_sessions.py` | the memory store belongs to the **base**, not to one named session (D-405) | \u2014 |"
+    },
+    {
+      "line": 73,
+      "text": "| Interventions: pause, resume, terminate, cancel a task | `review/dogfood/lifecycle_run.py`, `cancel.py`; D-68's headless path | **cancelling a task is not stopping its work**: the assignee's command runs until its own timeout unless the instance is terminated (D-88) | \u2014 |"
+    },
+    {
+      "line": 75,
+      "text": "| Workspace policies: shared, isolated, git worktree | `workspace::tests::shared_and_isolated_roots`, `worktree_lifecycle_and_guards`; `review/dogfood/workspace.py` | retirement refuses anything with uncommitted or unmerged work, and says why | \u2014 |"
+    },
+    {
+      "line": 76,
+      "text": "| Install, init, doctor, cleanup, reopen | `engine/tests/install.rs`; `review/dogfood/boundary.py`; `make release-rehearsal`; `review/install_check.py` | **the published release tag is an earlier implementation**, so the install guide describes more than the newest release contains (A36's open gap) | a release of this tree |"
+    },
+    {
+      "line": 86,
+      "text": "| Terminal-Bench 2.1 | container tasks, the task's own tests | 89 tasks \u00d7 3, per-task budgets (D-389/D-390) | **210/267 = 78.7 %** [0.733, 0.831]; 210/258 = 81.4 % over the 86 evaluable tasks |"
+    },
+    {
+      "line": 87,
+      "text": "| SWE-bench Verified | real GitHub issues, the **repository's own tests**, official harness | seeded random 12, retrieval **blocked** (D-419) | **8/12 = 66.7 %** [0.39, 0.86] |"
+    },
+    {
+      "line": 91,
+      "text": "receipt read.** SWE-bench's first three runs (13/14, 12/12, 12/12) were void: near-verbatim copies of the upstream"
+    },
+    {
+      "line": 95,
+      "text": "**Rule 2: read the check's own receipt before attributing a result to it** (D-395: an acceptance check that never"
+    },
+    {
+      "line": 100,
+      "text": "a 12-hour budget changed nothing) but throughput and cadence, and the window's composition is task-dependent \u2014"
+    },
+    {
+      "line": 103,
+      "text": "streaming slowly, never a stalled connection (D-416: frame gaps \u2264 1.1 s across 232 requests). SWE-bench: four of"
+    },
+    {
+      "line": 109,
+      "text": "**own** authored budget (48 \u00d7 900 s, 17 \u00d7 1,800 s, 13 \u00d7 3,600 s, plus three longer) because harbor does; the"
+    },
+    {
+      "line": 111,
+      "text": "built-in harbor agent does (D-382). Three tasks are **excluded from the headline denominator** and listed beside"
+    },
+    {
+      "line": 113,
+      "text": "0 is not the agent's), and `pytorch-model-cli` (an under-determined specification: it grades the reference"
+    },
+    {
+      "line": 118,
+      "text": "**Read a check's own receipt before attributing a result to it** (D-395: an acceptance check that never ran"
+    },
+    {
+      "line": 122,
+      "text": "(15 %) ended in an exception (33 deadline cuts, 7 non-zero exits). The surviving pattern is not reasoning depth \u2014"
+    },
+    {
+      "line": 123,
+      "text": "lower reasoning effort scored *better* than higher (D-380) and a 12-hour budget changed nothing (D-381) \u2014 but"
+    },
+    {
+      "line": 125,
+      "text": "wrap-up note, a deadline) is observable only where the model comes up for air (D-400, D-403, D-410)."
+    },
+    {
+      "line": 131,
+      "text": "context \u2014 was measured and refuted: prompts are large (median 49.7 k tokens, p90 114.8 k, and compaction never fires"
+    },
+    {
+      "line": 132,
+      "text": "under a 1 M window) but a 200 k-token prompt costs only ~0.5 s of prefill, while latency tracks the model's own"
+    },
+    {
+      "line": 133,
+      "text": "completion (301 \u2192 903 tokens across the same buckets); so large prompts are a **billing** fact, not a throughput one"
+    },
+    {
+      "line": 135,
+      "text": "measured to its end: a long model request is the model **streaming slowly** \u2014 frame gaps of at most 1.1 s and a"
+    },
+    {
+      "line": 141,
+      "text": "- **MCP lives in the developer CLI (D-445).** `status --json` reads the running session's binding and"
+    },
+    {
+      "line": 142,
+      "text": "  credential state; `mcp list` queries configured services. The sign-in flow stays a separate process."
+    },
+    {
+      "line": 143,
+      "text": "- **A tool call's wall clock** \u2014 the upgrade path D-410 records and does not take: bound one call, or interrupt it"
+    },
+    {
+      "line": 144,
+      "text": "  as a deadline nears, so a goal near its deadline reaches the model more often. It is the only lever in that"
+    },
+    {
+      "line": 150,
+      "text": "- **The published release** \u2014 the newest tag is an earlier implementation, which is A36's open gap and what"
+    }
+  ]
+}

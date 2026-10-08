@@ -1,0 +1,21 @@
+{
+  "product": "codex",
+  "revision_or_version": "9b738582b13c2cdbeff54af0afd04c50c3e7ba09",
+  "url": "https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/docs/agents_md.md",
+  "retrieved_at": "2026-10-08T13:49:30.234043+00:00",
+  "source_sha256": "56f5b6026b15fad40fe8b1f6f8910b9fccdf66da3b39dd943c91877e2299619e",
+  "source_bytes": 126,
+  "source_lines": 3,
+  "evidence_class": "source or documentation, not executed product behavior",
+  "reproduce": "curl --fail --silent --show-error https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/docs/agents_md.md",
+  "excerpts": [
+    {
+      "line": 1,
+      "text": "# AGENTS.md"
+    },
+    {
+      "line": 3,
+      "text": "For information about AGENTS.md, see [this documentation](https://developers.openai.com/codex/guides/agents-md)."
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "product": "codex",
+  "revision_or_version": "9b738582b13c2cdbeff54af0afd04c50c3e7ba09",
+  "url": "https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/docs/skills.md",
+  "retrieved_at": "2026-10-08T13:49:31.020977+00:00",
+  "source_sha256": "e59789d09692310bbf94e2ef8db0aaf00d97f2226982c8c5330d2d260583a97d",
+  "source_bytes": 115,
+  "source_lines": 3,
+  "evidence_class": "source or documentation, not executed product behavior",
+  "reproduce": "curl --fail --silent --show-error https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/docs/skills.md",
+  "excerpts": [
+    {
+      "line": 1,
+      "text": "# Skills"
+    },
+    {
+      "line": 3,
+      "text": "For information about skills, refer to [this documentation](https://developers.openai.com/codex/skills)."
+    }
+  ]
+}

@@ -1,0 +1,41 @@
+{
+  "product": "codex",
+  "revision_or_version": "9b738582b13c2cdbeff54af0afd04c50c3e7ba09",
+  "url": "https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/docs/config.md",
+  "retrieved_at": "2026-10-08T13:49:30.927836+00:00",
+  "source_sha256": "745768b4da6cd73e414fc49c5c6ef3d6bf8a0c08289fab23a7dd79776ab31d9d",
+  "source_bytes": 726,
+  "source_lines": 15,
+  "evidence_class": "source or documentation, not executed product behavior",
+  "reproduce": "curl --fail --silent --show-error https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/docs/config.md",
+  "excerpts": [
+    {
+      "line": 1,
+      "text": "# Configuration"
+    },
+    {
+      "line": 3,
+      "text": "For basic configuration instructions, see [this documentation](https://developers.openai.com/codex/config-basic)."
+    },
+    {
+      "line": 5,
+      "text": "For advanced configuration instructions, see [this documentation](https://developers.openai.com/codex/config-advanced)."
+    },
+    {
+      "line": 7,
+      "text": "For a full configuration reference, see [this documentation](https://developers.openai.com/codex/config-reference)."
+    },
+    {
+      "line": 12,
+      "text": "`requirements.toml` to ignore user, project, and session hook configs while"
+    },
+    {
+      "line": 13,
+      "text": "still allowing managed hooks from requirements and managed config layers. This"
+    },
+    {
+      "line": 14,
+      "text": "setting is only supported in `requirements.toml`; putting it in `config.toml`"
+    }
+  ]
+}

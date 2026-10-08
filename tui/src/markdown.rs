@@ -143,7 +143,6 @@ impl Writer {
 }
 
 /// Parse complete and partially streamed Markdown with the same renderer.
-/// ponytail: language grammar highlighting remains separate from graphics previews.
 pub fn render(text: &str, width: usize) -> Vec<Line<'static>> {
     render_media(text, width, None, &Origin::default()).lines
 }
@@ -155,6 +154,7 @@ pub fn render_media(text: &str, width: usize, mut graphics: Option<&mut Graphics
     }
     let text = clean(text);
     let mut pictures = vec![];
+    let mut media = vec![];
     let mut events =
         Parser::new_ext(&text, Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS)
             .into_offset_iter()
@@ -247,11 +247,9 @@ pub fn render_media(text: &str, width: usize, mut graphics: Option<&mut Graphics
                         let indent =
                             unicode_width::UnicodeWidthStr::width(prefix.as_str()).min(width.saturating_sub(1));
                         let mut doc = graphics.block(Source::Diagram { language: lang, code }, origin, width - indent);
-                        for p in &mut doc.pictures {
-                            p.row += w.out.len();
-                            p.column += indent;
-                        }
+                        doc.offset(w.out.len(), indent);
                         pictures.extend(doc.pictures);
+                        media.extend(doc.media);
                         for mut line in doc.lines {
                             line.spans.insert(0, Span::raw(prefix.chars().take(indent).collect::<String>()));
                             w.out.push(line);
@@ -263,18 +261,10 @@ pub fn render_media(text: &str, width: usize, mut graphics: Option<&mut Graphics
                 w.text(format!("╭─ {lang}"));
                 w.flush();
                 w.indents.push(Indent { first: "│ ".into(), rest: "│ ".into() });
-                for line in code.strip_suffix('\n').unwrap_or(&code).split('\n') {
-                    let color = if matches!(lang.as_str(), "diff" | "patch") {
-                        match line.chars().next() {
-                            Some('+') => ADDED,
-                            Some('-') => ERROR,
-                            Some('@') => ACCENT,
-                            _ => FG,
-                        }
-                    } else {
-                        CODE
-                    };
-                    w.spans.push(Span::styled(line.to_string(), Style::default().fg(color).bg(PANEL_BG)));
+                for line in
+                    crate::highlight::code_lines(&code, &lang, closing_fence(&text, range.start, content_end, end))
+                {
+                    w.spans.extend(line.spans);
                     w.flush();
                 }
                 w.indents.pop();
@@ -303,11 +293,9 @@ pub fn render_media(text: &str, width: usize, mut graphics: Option<&mut Graphics
                     origin,
                     width - indent,
                 );
-                for p in &mut doc.pictures {
-                    p.row += w.out.len();
-                    p.column += indent;
-                }
+                doc.offset(w.out.len(), indent);
                 pictures.extend(doc.pictures);
+                media.extend(doc.media);
                 for mut line in doc.lines {
                     line.spans.insert(0, Span::raw(prefix.chars().take(indent).collect::<String>()));
                     w.out.push(line);
@@ -353,11 +341,9 @@ pub fn render_media(text: &str, width: usize, mut graphics: Option<&mut Graphics
                 }
                 for source in table_images {
                     let mut doc = graphics.as_deref_mut().unwrap().block(source, origin, width - indent);
-                    for p in &mut doc.pictures {
-                        p.row += w.out.len();
-                        p.column += indent;
-                    }
+                    doc.offset(w.out.len(), indent);
                     pictures.extend(doc.pictures);
+                    media.extend(doc.media);
                     for mut line in doc.lines {
                         line.spans.insert(0, Span::raw(prefix.chars().take(indent).collect::<String>()));
                         w.out.push(line);
@@ -378,7 +364,7 @@ pub fn render_media(text: &str, width: usize, mut graphics: Option<&mut Graphics
     while w.out.last().is_some_and(|l| l.width() == 0) {
         w.out.pop();
     }
-    Document { lines: w.out, pictures }
+    Document { lines: w.out, pictures, media }
 }
 
 fn closing_fence(text: &str, start: usize, content_end: usize, end: usize) -> bool {

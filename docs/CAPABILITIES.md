@@ -1,4 +1,4 @@
-# Capabilities and their evidence (2026-10-04)
+# Capabilities and their evidence (2026-10-08)
 
 This page is the **map, not the ledger**: one row per capability, the strongest check behind it, what that check
 measured as the capability's *boundary*, and what still has no evidence. Every row points into a ledger that
@@ -59,7 +59,7 @@ no more than a decision's own wording, the row says so.
 | codemode: one tool, a QuickJS sandbox, only the script's own output in context | `review/codemode` tests in the `engine` suite; `V2Codemode.tla` with a refuted leak control; the `pre_tool` veto, structured results and the persistent store (D-374, D-376) | the frequently quoted "≈40 % fewer prompt tokens" is **Pi's own measurement of Pi's codemode**, not measured here | a product-side token measurement on a fixed task |
 | An image reaches a vision model, and a model without support is told so | `v2_daemon::view_image_reaches_the_wire_as_a_part_only_for_a_model_that_declares_images`; `V2Images.tla` (`NoImagesWithoutSupport`, `PartsOnlyFromLoadedBytes`) with a blind-model control refuted; live: a red square answered, 228 against 44 prompt tokens | priced at ~184 / 177 / 645 prompt tokens for 16² / 256² / 1024² pixels (measured); on its motivating task the structural barrier is gone but the capability gap remains (0/3 at 1,800 s, D-394) | — |
 | Durable memory for facts that exist nowhere on disk | `V2Memory.tla` (`NotesAreAppendOnly`, `TheStoreRefusesAtTheCap`, `RecallIsBounded`) with an eviction control refuted; the fixture measurement **0/3 → 3/3** (D-406), whose control twice wrote an explicit "choosing one would be an unverifiable guess" | **no measurable gain when the state is already on disk**: on a real task a second session went 2/3 with memory and 2/3 without (D-409), so a note pays only for what artifacts do not carry | a long project whose facts never become files |
-| Skills and MCP services, over both transports | `review/dogfood/skills.py`, `mcp.py`, `mcp_http.py`; `cli::mcp_list_names_the_services_and_their_tools`; `mcp add`/`mcp remove` edit exactly one binding block (D-399, D-408); `mcp login`/`logout` sign in to an OAuth HTTP service (discovery, dynamic registration, PKCE with a state, loopback or pasted redirect, a 0600 credential file, refresh on expiry or a 401) with `V2Oauth.tla`'s five claims verified, five controls refuted and `engine/tests/mcp_oauth.rs` driving the real binary against a fake authorization server (D-412) | the project-level config file is not read (D-133); **no vendor's OAuth server was exercised**, so the sign-in is accepted against the specifications and a fake, not against a live service | MCP management lives in the developer CLI; `status --json` reports the running session's bindings (D-445) |
+| Skills and MCP services, over both transports | `review/dogfood/skills.py`, `mcp.py`, `mcp_http.py`; `cli::mcp_list_names_the_services_and_their_tools`; `mcp add`/`mcp remove` edit exactly one binding block (D-399, D-408); `mcp login`/`logout` sign in to an OAuth HTTP service (discovery, dynamic registration, PKCE with a state, loopback or pasted redirect, a 0600 credential file, refresh on expiry or a 401) with `V2Oauth.tla`'s five claims verified, five controls refuted and `engine/tests/mcp_oauth.rs` driving the real binary against a fake authorization server (D-412) | the nearest trusted project config is read (D-434); **no vendor's OAuth server was exercised**, so the sign-in is accepted against the specifications and a fake, not against a live service | MCP management lives in the developer CLI; `status --json` reports the running session's bindings (D-445) |
 | User hooks: a `pre_tool` veto and a `notify` stream | `review/dogfood/hooks.py`, with a broken-hook negative control | a veto stops that call; it does not stop the turn | — |
 
 ## 5. The product surface
@@ -69,6 +69,7 @@ no more than a decision's own wording, the row says so.
 | One daemon per state root, a headless client, and a TUI | `review/dogfood/tui.py`, `tui_panels.py`, `tui_reconnect.py`, `input_latency.py`; `make pty`; `V2Coordinator.tla`, `V2Concurrency.tla` | rendering and mouse hit-testing share one geometry module, so a panel that draws must be the panel that is clicked | — |
 | Readable conversation Markdown and compact tool results | `tui/tests/conversation.rs`, PTY smoke; Kani transcript-window proof | shared live/history renderer, explicit streaming, Unicode-cell wrapping, four/forty-line previews | no language-grammar highlighting |
 | Mermaid, SVG, DOT and local image previews | `tui/tests/graphics.rs`, `tui/scripts/pty_graphics_smoke.py`; Kani media-clipping proof | native Kitty PNG placement, Unicode/block fallback, author-scoped local references, Ctrl+G source toggle | bounded static previews; remote URLs remain links; no universal diagram-language parity |
+| Conversation completion, code colors and long-history media | `tui/tests/parity.rs`, `tui/src/graphics_tests.rs`, `tui/scripts/pty_v2_smoke.py`; `V2Presentation.tla` with five refuted controls; [comparison report](../review/parity-2026-10-08/REPORT.md) | four local commands; seven grammar families and diff; twenty distinct images, including eviction/revisit; tests are synthetic, not model-success evidence | adversarial-parser deadlines, file/image input and wider terminal coverage |
 | Sessions: registry, fork, rename, restore, search, TUI history/switch/delete | `V2Sessions.tla` (`RegistryIsInjective`, `ArchiveOnlyWhenIdle`) with three refuted controls; `V2SessionUi.tla` with four refuted controls; `engine/tests/session_browser.rs`, `tui/tests/sessions.rs`, `review/dogfood/tui_sessions.py` | the memory store belongs to the **base**, not to one named session (D-405) | — |
 | Interventions: pause, resume, terminate, cancel a task | `review/dogfood/lifecycle_run.py`, `cancel.py`; D-68's headless path | **cancelling a task is not stopping its work**: the assignee's command runs until its own timeout unless the instance is terminated (D-88) | — |
 | Automations: a schedule that starts a goal on its own | `V2Schedule.tla` (`NoDuplicateRun`, `AtMostOneRunPerAutomation`, `DisabledNeverRuns`, `OnlyDueSlotsRun`) with four refuted controls | safety only: a run need not ever happen | — |
@@ -140,14 +141,17 @@ family (D-416).
 
 - **MCP lives in the developer CLI (D-445).** `status --json` reads the running session's binding and
   credential state; `mcp list` queries configured services. The sign-in flow stays a separate process.
-- **A tool call's wall clock** — the upgrade path D-410 records and does not take: bound one call, or interrupt it
-  as a deadline nears, so a goal near its deadline reaches the model more often. It is the only lever in that
-  family that does not depend on the model's cadence.
-- **The briefing's own measurement** — the one capability in this map whose *benefit* has no number yet: the
-  pre-registered A/B (both arms carry the same check; the control is the binary from before D-418) is running.
+- **A tool call's wall clock** — D-415 implements the optional duration ceiling. Its benefit still needs
+  task-specific measurement; it cannot accelerate a model-dominated turn.
+- **The briefing's own measurement** — completed with a null result (D-418), as recorded above.
+  It remains information, not evidence of a task-success improvement.
+- **Current product comparison and follow-up** — the [D-450 report](../review/parity-2026-10-08/REPORT.md)
+  retains evidence, priorities and next acceptance methods across input, sessions, sandbox services,
+  ecosystem interfaces, collaboration and release. The three completed presentation changes do not close it.
 - **Memory on a longer horizon** — D-406 measures the isolated case and D-409 the real-task case; what neither
   speaks to is a project over many sessions whose facts never became files.
-- **The published release** — the newest tag is an earlier implementation, which is A36's open gap and what
-  `review/install_check.py` fails on.
+- **Release freshness** — v0.2.0 already delivers the v2 product (D-343); the older-generation caveat
+  is closed. The 2026-09-29 tag predates later runtime and TUI changes. Packaging and live installation of
+  this iteration still require a fresh rehearsal and a separately authorized release.
 - **The collaboration gain's success form** — Q16's latency form is confirmed (D-264, the paired metric); the
   end-to-end success form is not, and whether the narrower gain satisfies Q16's wording is the user's call.

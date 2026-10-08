@@ -1,0 +1,93 @@
+{
+  "product": "teamagents",
+  "revision_or_version": "a76722da",
+  "url": "git:a76722da:tui/src/graphics.rs",
+  "retrieved_at": "2026-10-08T13:49:31.047194+00:00",
+  "source_sha256": "0a15824ce519e0485a8e8f8cb266f9147e125c84a9674323cab1a33c32ae5006",
+  "source_bytes": 28287,
+  "source_lines": 711,
+  "evidence_class": "source or documentation, not executed product behavior",
+  "reproduce": "git show a76722da:tui/src/graphics.rs",
+  "excerpts": [
+    {
+      "line": 11,
+      "text": "use serde_json::Value as Json;"
+    },
+    {
+      "line": 151,
+      "text": "        let mode = std::env::var(\"TEAMAGENTS_GRAPHICS\").unwrap_or_else(|_| \"auto\".into());"
+    },
+    {
+      "line": 160,
+      "text": "            _ => return Err(\"TEAMAGENTS_GRAPHICS must be auto, kitty, blocks or off\".into()),"
+    },
+    {
+      "line": 250,
+      "text": "            let (results, completed) = mpsc::sync_channel(8);"
+    },
+    {
+      "line": 252,
+      "text": "                .name(\"teamagents-graphics\".into())"
+    },
+    {
+      "line": 263,
+      "text": "            Worker { send, receive: completed }"
+    },
+    {
+      "line": 645,
+      "text": "pub fn content(value: &Json) -> (String, Vec<Source>) {"
+    },
+    {
+      "line": 646,
+      "text": "    fn parts(value: &Json, images: &mut Vec<Source>, depth: usize) -> Json {"
+    },
+    {
+      "line": 648,
+      "text": "            return Json::String(\"[nested content exceeds display depth]\".into());"
+    },
+    {
+      "line": 673,
+      "text": "                    return Json::String(\"[image preview capacity reached]\".into());"
+    },
+    {
+      "line": 677,
+      "text": "                    return Json::String(\"[image preview]\".into());"
+    },
+    {
+      "line": 679,
+      "text": "                return Json::String(\"[image exceeds display limit]\".into());"
+    },
+    {
+      "line": 683,
+      "text": "            Json::Array(values) => Json::Array(values.iter().map(|v| parts(v, images, depth + 1)).collect()),"
+    },
+    {
+      "line": 684,
+      "text": "            Json::Object(values) => {"
+    },
+    {
+      "line": 685,
+      "text": "                Json::Object(values.iter().map(|(k, v)| (k.clone(), parts(v, images, depth + 1))).collect())"
+    },
+    {
+      "line": 691,
+      "text": "    let parsed = value.as_str().and_then(|s| serde_json::from_str::<Json>(s).ok());"
+    },
+    {
+      "line": 699,
+      "text": "        Json::String(s) => s.clone(),"
+    },
+    {
+      "line": 700,
+      "text": "        Json::Null => String::new(),"
+    },
+    {
+      "line": 701,
+      "text": "        Json::Array(values)"
+    },
+    {
+      "line": 708,
+      "text": "        _ => serde_json::to_string_pretty(&cleaned).unwrap_or_default(),"
+    }
+  ]
+}

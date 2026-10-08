@@ -1,0 +1,233 @@
+{
+  "product": "codex",
+  "revision_or_version": "9b738582b13c2cdbeff54af0afd04c50c3e7ba09",
+  "url": "https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/codex-rs/tui/src/bottom_pane/command_popup.rs",
+  "retrieved_at": "2026-10-08T13:49:30.337812+00:00",
+  "source_sha256": "807d0301c7ffa244612db6500352e2bab162bcfd9851b6484ac0f2ab5cc9d49a",
+  "source_bytes": 26588,
+  "source_lines": 713,
+  "evidence_class": "source or documentation, not executed product behavior",
+  "reproduce": "curl --fail --silent --show-error https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/codex-rs/tui/src/bottom_pane/command_popup.rs",
+  "excerpts": [
+    {
+      "line": 8,
+      "text": "use super::selection_popup_common::ColumnWidthConfig;"
+    },
+    {
+      "line": 23,
+      "text": "const COMMAND_COLUMN_WIDTH: ColumnWidthConfig = ColumnWidthConfig::new("
+    },
+    {
+      "line": 47,
+      "text": "    pub(crate) plugins_command_enabled: bool,"
+    },
+    {
+      "line": 48,
+      "text": "    pub(crate) token_activity_command_enabled: bool,"
+    },
+    {
+      "line": 53,
+      "text": "    pub(crate) worktrees_enabled: bool,"
+    },
+    {
+      "line": 54,
+      "text": "    pub(crate) windows_degraded_sandbox_active: bool,"
+    },
+    {
+      "line": 63,
+      "text": "            plugins_command_enabled: value.plugins_command_enabled,"
+    },
+    {
+      "line": 64,
+      "text": "            token_activity_command_enabled: value.token_activity_command_enabled,"
+    },
+    {
+      "line": 69,
+      "text": "            worktrees_enabled: value.worktrees_enabled,"
+    },
+    {
+      "line": 70,
+      "text": "            allow_elevate_sandbox: value.windows_degraded_sandbox_active,"
+    },
+    {
+      "line": 115,
+      "text": "            // Extract the *first* token (sequence of non-whitespace"
+    },
+    {
+      "line": 118,
+      "text": "            let token = stripped.trim_start();"
+    },
+    {
+      "line": 119,
+      "text": "            let cmd_token = token.split_whitespace().next().unwrap_or(\"\");"
+    },
+    {
+      "line": 123,
+      "text": "            self.command_filter = cmd_token.to_string();"
+    },
+    {
+      "line": 157,
+      "text": "    /// paired with optional highlight indices. Preserves the original"
+    },
+    {
+      "line": 333,
+      "text": "#[cfg(test)]"
+    },
+    {
+      "line": 334,
+      "text": "mod tests {"
+    },
+    {
+      "line": 338,
+      "text": "    #[test]"
+    },
+    {
+      "line": 370,
+      "text": "        insta::assert_snapshot!(\"side_conversation_unavailable_command\", format!(\"{buf:?}\"));"
+    },
+    {
+      "line": 376,
+      "text": "    #[test]"
+    },
+    {
+      "line": 396,
+      "text": "    #[test]"
+    },
+    {
+      "line": 413,
+      "text": "    #[test]"
+    },
+    {
+      "line": 427,
+      "text": "    #[test]"
+    },
+    {
+      "line": 437,
+      "text": "                description: \"Fastest inference with increased plan usage\".to_string(),"
+    },
+    {
+      "line": 448,
+      "text": "                    description: \"Fastest inference with increased plan usage\".to_string(),"
+    },
+    {
+      "line": 456,
+      "text": "            Some(\"Fastest inference with increased plan usage\")"
+    },
+    {
+      "line": 460,
+      "text": "    #[test]"
+    },
+    {
+      "line": 485,
+      "text": "        let mut snapshots = Vec::new();"
+    },
+    {
+      "line": 496,
+      "text": "            let snapshot = format!(\"{buf:?}\");"
+    },
+    {
+      "line": 497,
+      "text": "            assert!(snapshot.contains(\"/tier-two\"));"
+    },
+    {
+      "line": 498,
+      "text": "            assert!(snapshot.contains(\"Keep default speed\"));"
+    },
+    {
+      "line": 499,
+      "text": "            snapshots.push(format!(\"width {width}\\n{snapshot}\"));"
+    },
+    {
+      "line": 502,
+      "text": "        insta::assert_snapshot!(\"command_popup_wrap_boundary\", snapshots.join(\"\\n\\n\"));"
+    },
+    {
+      "line": 505,
+      "text": "    #[test]"
+    },
+    {
+      "line": 524,
+      "text": "                \"mcp\".to_string()"
+    },
+    {
+      "line": 530,
+      "text": "    #[test]"
+    },
+    {
+      "line": 531,
+      "text": "    fn app_command_popup_snapshot() {"
+    },
+    {
+      "line": 545,
+      "text": "        insta::assert_snapshot!(\"command_popup_app\", format!(\"{buf:?}\"));"
+    },
+    {
+      "line": 549,
+      "text": "    #[test]"
+    },
+    {
+      "line": 550,
+      "text": "    fn voice_command_popup_snapshot() {"
+    },
+    {
+      "line": 570,
+      "text": "        insta::assert_snapshot!(\"command_popup_voice\", format!(\"{buf:?}\"));"
+    },
+    {
+      "line": 573,
+      "text": "    #[test]"
+    },
+    {
+      "line": 587,
+      "text": "            !cmds.iter().any(|cmd| cmd == \"compact\"),"
+    },
+    {
+      "line": 588,
+      "text": "            \"expected prefix search for '/ac' to exclude 'compact', got {cmds:?}\""
+    },
+    {
+      "line": 592,
+      "text": "    #[test]"
+    },
+    {
+      "line": 618,
+      "text": "        insta::assert_snapshot!("
+    },
+    {
+      "line": 624,
+      "text": "    #[test]"
+    },
+    {
+      "line": 636,
+      "text": "    #[test]"
+    },
+    {
+      "line": 648,
+      "text": "    #[test]"
+    },
+    {
+      "line": 667,
+      "text": "    #[test]"
+    },
+    {
+      "line": 673,
+      "text": "                plugins_command_enabled: false,"
+    },
+    {
+      "line": 674,
+      "text": "                token_activity_command_enabled: false,"
+    },
+    {
+      "line": 679,
+      "text": "                worktrees_enabled: true,"
+    },
+    {
+      "line": 680,
+      "text": "                windows_degraded_sandbox_active: false,"
+    },
+    {
+      "line": 696,
+      "text": "    #[test]"
+    }
+  ]
+}

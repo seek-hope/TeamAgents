@@ -1,0 +1,189 @@
+{
+  "product": "codex",
+  "revision_or_version": "9b738582b13c2cdbeff54af0afd04c50c3e7ba09",
+  "url": "https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/codex-rs/exec/src/cli.rs",
+  "retrieved_at": "2026-10-08T14:15:09.670916+00:00",
+  "source_sha256": "66643e8b3d5964b70cb8f231fb309312376272fb3ea87bcb6849f44cf112f8f6",
+  "source_bytes": 10751,
+  "source_lines": 342,
+  "evidence_class": "source or documentation, not executed product behavior",
+  "reproduce": "curl --fail --silent --show-error https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/codex-rs/exec/src/cli.rs",
+  "excerpts": [
+    {
+      "line": 6,
+      "text": "use codex_utils_cli::CliConfigOverrides;"
+    },
+    {
+      "line": 20,
+      "text": "    /// Error out when config.toml contains fields that are not recognized by this version of Codex."
+    },
+    {
+      "line": 21,
+      "text": "    #[arg(long = \"strict-config\", global = true, default_value_t = false)]"
+    },
+    {
+      "line": 22,
+      "text": "    pub strict_config: bool,"
+    },
+    {
+      "line": 27,
+      "text": "    /// Source classification for newly created or forked threads."
+    },
+    {
+      "line": 32,
+      "text": "    /// Omit to use server defaults. Not supported with review; fork requires a prompt."
+    },
+    {
+      "line": 44,
+      "text": "    /// Do not load `$CODEX_HOME/config.toml`; auth still uses `CODEX_HOME`."
+    },
+    {
+      "line": 45,
+      "text": "    #[arg(long = \"ignore-user-config\", global = true, default_value_t = false)]"
+    },
+    {
+      "line": 46,
+      "text": "    pub ignore_user_config: bool,"
+    },
+    {
+      "line": 52,
+      "text": "    /// Path to a JSON Schema file describing the model's final response shape."
+    },
+    {
+      "line": 57,
+      "text": "    pub config_overrides: CliConfigOverrides,"
+    },
+    {
+      "line": 63,
+      "text": "    /// Print events to stdout as JSONL."
+    },
+    {
+      "line": 65,
+      "text": "        long = \"json\","
+    },
+    {
+      "line": 66,
+      "text": "        alias = \"experimental-json\","
+    },
+    {
+      "line": 70,
+      "text": "    pub json: bool,"
+    },
+    {
+      "line": 72,
+      "text": "    /// Specifies file where the last message from the agent should be written."
+    },
+    {
+      "line": 81,
+      "text": "    /// Initial instructions for the agent. If not provided as an argument (or"
+    },
+    {
+      "line": 165,
+      "text": "        .mut_arg(\"dangerously_bypass_approvals_and_sandbox\", |arg| {"
+    },
+    {
+      "line": 168,
+      "text": "        .mut_arg(\"bypass_hook_trust\", |arg| arg.global(true))"
+    },
+    {
+      "line": 169,
+      "text": "        .mut_arg(\"worktree\", |arg| arg.global(true))"
+    },
+    {
+      "line": 174,
+      "text": "    /// Resume a previous session by id or pick the most recent with --last."
+    },
+    {
+      "line": 175,
+      "text": "    Resume(ResumeArgs),"
+    },
+    {
+      "line": 177,
+      "text": "    /// Fork a previous session by id into a new session."
+    },
+    {
+      "line": 178,
+      "text": "    Fork(ForkArgs),"
+    },
+    {
+      "line": 185,
+      "text": "pub struct ForkArgs {"
+    },
+    {
+      "line": 186,
+      "text": "    /// Conversation/session id (UUID) or thread name to fork."
+    },
+    {
+      "line": 190,
+      "text": "    /// Optional image(s) to attach to the prompt sent after forking."
+    },
+    {
+      "line": 200,
+      "text": "    /// Optional prompt to send after forking. If `-` is used, read from stdin."
+    },
+    {
+      "line": 206,
+      "text": "struct ResumeArgsRaw {"
+    },
+    {
+      "line": 208,
+      "text": "    // so \"codex resume --last <prompt>\" treats the positional as a prompt, not a session id."
+    },
+    {
+      "line": 214,
+      "text": "    /// Resume the most recent recorded session (newest) without specifying an id."
+    },
+    {
+      "line": 238,
+      "text": "pub struct ResumeArgs {"
+    },
+    {
+      "line": 243,
+      "text": "    /// Resume the most recent recorded session (newest) without specifying an id."
+    },
+    {
+      "line": 256,
+      "text": "impl From<ResumeArgsRaw> for ResumeArgs {"
+    },
+    {
+      "line": 257,
+      "text": "    fn from(raw: ResumeArgsRaw) -> Self {"
+    },
+    {
+      "line": 275,
+      "text": "impl Args for ResumeArgs {"
+    },
+    {
+      "line": 277,
+      "text": "        ResumeArgsRaw::augment_args(cmd)"
+    },
+    {
+      "line": 281,
+      "text": "        ResumeArgsRaw::augment_args_for_update(cmd)"
+    },
+    {
+      "line": 285,
+      "text": "impl FromArgMatches for ResumeArgs {"
+    },
+    {
+      "line": 287,
+      "text": "        ResumeArgsRaw::from_arg_matches(matches).map(Self::from)"
+    },
+    {
+      "line": 291,
+      "text": "        *self = ResumeArgsRaw::from_arg_matches(matches).map(Self::from)?;"
+    },
+    {
+      "line": 340,
+      "text": "#[cfg(test)]"
+    },
+    {
+      "line": 341,
+      "text": "#[path = \"cli_tests.rs\"]"
+    },
+    {
+      "line": 342,
+      "text": "mod tests;"
+    }
+  ]
+}

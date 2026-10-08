@@ -1,0 +1,69 @@
+{
+  "product": "pi",
+  "revision_or_version": "1.1.0",
+  "url": "file:///home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/%40earendil-works/pi-coding-agent/docs/usage.md",
+  "retrieved_at": "2026-10-08T13:49:30.946164+00:00",
+  "source_sha256": "88f22eb38ff9cf980d4d5c6af2376d08d683db20073c57fa8b10e752fee322d6",
+  "source_bytes": 5268,
+  "source_lines": 94,
+  "evidence_class": "source or documentation, not executed product behavior",
+  "reproduce": "Read /home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/@earendil-works/pi-coding-agent/docs/usage.md; pi --version must report 1.1.0. Compare the source_sha256 before using these excerpts.",
+  "excerpts": [
+    {
+      "line": 3,
+      "text": "Run `pi` from the folder you want to work in. Pi uses that folder to discover files, instructions, and configuration, and to group saved sessions. If you have not installed Pi or chosen a model yet, follow the [Quickstart](quickstart.md)."
+    },
+    {
+      "line": 5,
+      "text": "Pi may ask whether you trust the working folder before loading its project resources. See [Project trust](security.md#understand-project-trust)."
+    },
+    {
+      "line": 13,
+      "text": "Type a request and press `Enter` to send it. Use `Shift+Enter` to add a line, or press `Ctrl+G` to work on a longer prompt in your configured external editor."
+    },
+    {
+      "line": 18,
+      "text": "- Press `Tab` to complete a path."
+    },
+    {
+      "line": 27,
+      "text": "Pi does not ask before every tool call. Review commands and changed files, and use a sandbox for untrusted or unattended work. See [Security](security.md)."
+    },
+    {
+      "line": 40,
+      "text": "A message sent with `Enter` waits until the current response and its tool calls finish, then guides the next response. A follow-up sent with `Alt+Enter` waits until Pi finishes the current task. Aborting returns queued messages to the editor."
+    },
+    {
+      "line": 53,
+      "text": "Prompt templates, skills, and extensions can add more commands to the same menu. See [Choose a Model](models.md), [Configuration](configuration.md), or the complete [Slash Commands reference](slash-commands.md)."
+    },
+    {
+      "line": 60,
+      "text": "- `/resume` opens another saved session."
+    },
+    {
+      "line": 62,
+      "text": "- `/session` shows its file, ID, message count, token usage, and cost."
+    },
+    {
+      "line": 64,
+      "text": "Use `/tree`, `/fork`, or `/clone` when you want to explore another approach without losing existing work. Use `/compact` to reduce the conversation history sent to the model. See [Sessions and Context](sessions.md) for these workflows."
+    },
+    {
+      "line": 66,
+      "text": "After leaving Pi, run `pi --continue` from the same folder to resume its most recent session."
+    },
+    {
+      "line": 80,
+      "text": "Press `Ctrl+X` or run `/copy` to copy the last assistant response. Use `/export` to save the session as HTML or JSONL."
+    },
+    {
+      "line": 88,
+      "text": "Terminal support for mouse input, keyboard shortcuts, and inline images varies. See [Terminal Setup](terminal-setup.md) for platform-specific configuration and [Keybindings](keybindings.md) for every configurable shortcut. Run `/hotkeys` to inspect the shortcuts active in your current session."
+    },
+    {
+      "line": 92,
+      "text": "When troubleshooting terminal rendering or conversation state, run `/debug`. Pi writes the rendered terminal lines and current session messages to `pi-debug.log` in your [agent directory](configuration.md#agent-directory)."
+    }
+  ]
+}

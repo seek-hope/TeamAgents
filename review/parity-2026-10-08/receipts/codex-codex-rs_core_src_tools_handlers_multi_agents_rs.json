@@ -1,0 +1,165 @@
+{
+  "product": "codex",
+  "revision_or_version": "9b738582b13c2cdbeff54af0afd04c50c3e7ba09",
+  "url": "https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/codex-rs/core/src/tools/handlers/multi_agents.rs",
+  "retrieved_at": "2026-10-08T13:49:31.070587+00:00",
+  "source_sha256": "1f1e4e6d4d075d3387e1b63237730c7e48326ced095fef30a548482ecebb3b04",
+  "source_bytes": 3594,
+  "source_lines": 99,
+  "evidence_class": "source or documentation, not executed product behavior",
+  "reproduce": "curl --fail --silent --show-error https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/codex-rs/core/src/tools/handlers/multi_agents.rs",
+  "excerpts": [
+    {
+      "line": 1,
+      "text": "//! Implements the collaboration tool surface for spawning and managing sub-agents."
+    },
+    {
+      "line": 3,
+      "text": "//! This handler translates model tool calls into `AgentControl` operations and keeps spawned"
+    },
+    {
+      "line": 4,
+      "text": "//! agents aligned with the live turn that created them. Sub-agents start from the turn's effective"
+    },
+    {
+      "line": 5,
+      "text": "//! config, inherit runtime-only state such as provider, approval policy, sandbox, and cwd, and"
+    },
+    {
+      "line": 6,
+      "text": "//! then optionally layer role-specific config on top."
+    },
+    {
+      "line": 8,
+      "text": "use crate::agent::AgentStatus;"
+    },
+    {
+      "line": 9,
+      "text": "use crate::agent::exceeds_thread_spawn_depth_limit;"
+    },
+    {
+      "line": 15,
+      "text": "pub(crate) use crate::tools::handlers::multi_agents_common::*;"
+    },
+    {
+      "line": 16,
+      "text": "use crate::tools::handlers::multi_agents_spec::MULTI_AGENT_V1_NAMESPACE;"
+    },
+    {
+      "line": 21,
+      "text": "use codex_protocol::items::CollabAgentTool;"
+    },
+    {
+      "line": 22,
+      "text": "use codex_protocol::items::CollabAgentToolCallItem;"
+    },
+    {
+      "line": 23,
+      "text": "use codex_protocol::items::CollabAgentToolCallStatus;"
+    },
+    {
+      "line": 27,
+      "text": "use codex_protocol::protocol::CollabAgentRef;"
+    },
+    {
+      "line": 34,
+      "text": "use serde_json::Value as JsonValue;"
+    },
+    {
+      "line": 36,
+      "text": "const MULTI_AGENT_TOOL_SEARCH_SOURCE_NAME: &str = \"Multi-agent tools\";"
+    },
+    {
+      "line": 37,
+      "text": "const MULTI_AGENT_TOOL_SEARCH_SOURCE_DESCRIPTION: &str = \"Spawn and manage sub-agents.\";"
+    },
+    {
+      "line": 39,
+      "text": "pub(crate) fn parse_agent_id_target(target: &str) -> Result<ThreadId, FunctionCallError> {"
+    },
+    {
+      "line": 41,
+      "text": "        FunctionCallError::RespondToModel(format!(\"invalid agent id {target}: {err:?}\"))"
+    },
+    {
+      "line": 45,
+      "text": "pub(crate) fn parse_agent_id_targets("
+    },
+    {
+      "line": 50,
+      "text": "            \"agent ids must be non-empty\".to_string(),"
+    },
+    {
+      "line": 56,
+      "text": "        .map(|target| parse_agent_id_target(&target))"
+    },
+    {
+      "line": 60,
+      "text": "fn multi_agent_tool_search_info("
+    },
+    {
+      "line": 68,
+      "text": "            name: MULTI_AGENT_TOOL_SEARCH_SOURCE_NAME.to_string(),"
+    },
+    {
+      "line": 69,
+      "text": "            description: Some(MULTI_AGENT_TOOL_SEARCH_SOURCE_DESCRIPTION.to_string()),"
+    },
+    {
+      "line": 74,
+      "text": "pub(crate) use close_agent::Handler as CloseAgentHandler;"
+    },
+    {
+      "line": 75,
+      "text": "pub(crate) use resume_agent::Handler as ResumeAgentHandler;"
+    },
+    {
+      "line": 77,
+      "text": "pub(crate) use spawn::Handler as SpawnAgentHandler;"
+    },
+    {
+      "line": 78,
+      "text": "pub(crate) use wait::Handler as WaitAgentHandler;"
+    },
+    {
+      "line": 80,
+      "text": "pub(crate) mod close_agent;"
+    },
+    {
+      "line": 81,
+      "text": "mod resume_agent;"
+    },
+    {
+      "line": 87,
+      "text": "    status: &AgentStatus,"
+    },
+    {
+      "line": 89,
+      "text": ") -> CollabAgentToolCallStatus {"
+    },
+    {
+      "line": 91,
+      "text": "        AgentStatus::Errored(_) | AgentStatus::NotFound => CollabAgentToolCallStatus::Failed,"
+    },
+    {
+      "line": 92,
+      "text": "        _ if receiver_thread_id.is_some() => CollabAgentToolCallStatus::Completed,"
+    },
+    {
+      "line": 93,
+      "text": "        _ => CollabAgentToolCallStatus::Failed,"
+    },
+    {
+      "line": 97,
+      "text": "#[cfg(test)]"
+    },
+    {
+      "line": 98,
+      "text": "#[path = \"multi_agents_tests.rs\"]"
+    },
+    {
+      "line": 99,
+      "text": "mod tests;"
+    }
+  ]
+}

@@ -1,0 +1,904 @@
+
+running 121 tests
+test kernel::tests::usage_parses_openai_and_anthropic_shapes ... ok
+test kernel::tests::the_wait_and_delegate_descriptions_name_the_condition_that_wakes_a_delegator ... ok
+test kernel::tests::the_cancel_description_states_who_may_close_and_what_it_releases ... ok
+test kernel::tests::collaboration_schemas_follow_the_requested_actions ... ok
+test v2::capability::tests::the_grantable_pairs_are_exactly_the_asked_ones ... ok
+test v2::capability::tests::the_scope_shapes_are_the_codes_own ... ok
+test kernel::tests::interpret_plain_reply_does_not_complete ... ok
+test kernel::tests::a_sole_wait_call_is_the_wait_output ... ok
+test kernel::tests::sole_finish_is_completion_candidate ... ok
+test kernel::tests::page_output_contract ... ok
+test kernel::tests::a_combined_wait_is_ignored_with_a_note ... ok
+test kernel::tests::interpret_tool_calls_assigns_index_and_hash ... ok
+test kernel::tests::a_finish_without_a_usable_status_is_not_a_completion ... ok
+test kernel::tests::wire_view_pairs_an_answer_that_landed_after_other_entries ... ok
+test kernel::tests::finish_with_other_calls_is_ignored_with_note ... ok
+test kernel::tests::invalid_arguments_are_preserved_not_dropped ... ok
+test kernel::tests::prepare_request_builds_system_plus_entries_and_builtins ... ok
+test kernel::tests::a_reused_call_id_keeps_each_answer_with_its_own_call ... ok
+test kernel::types::image_accounting_tests::an_image_is_priced_by_an_allowance_not_by_its_base64_length ... ok
+test kernel::tests::masking_hides_old_outputs_and_keeps_readback_recipe ... ok
+test kernel::tests::the_cost_limits_change_the_wire_view_and_not_the_store ... ok
+test v2::control::tests::a_call_whose_operation_is_still_open_is_not_answered_by_the_synthetic_boundary ... ok
+test v2::control::tests::artifact_abandon_only_marks_staging_orphans ... ok
+test v2::control::tests::a_verification_round_rides_the_goal_owners_authority_not_the_triggers ... ok
+test v2::control::tests::an_input_inside_a_turn_waits_for_the_boundary ... ok
+test v2::control::tests::an_envelope_condition_can_be_satisfied_at_registration ... ok
+test v2::control::tests::an_all_wait_is_blocked_by_any_dead_condition ... ok
+test v2::control::tests::a_blocked_settlement_does_not_satisfy_a_task_condition_but_cancelling_does ... ok
+test v2::control::tests::approval_flow_blocks_then_allows_dispatch ... ok
+test v2::control::tests::a_blocked_goal_states_the_block_and_frees_the_instance ... ok
+test v2::control::tests::a_due_timer_closes_the_wait ... ok
+test v2::control::tests::a_relative_timer_closes_the_wait ... ok
+test v2::control::tests::an_operation_condition_can_be_satisfied_at_registration ... ok
+test v2::control::tests::a_worker_shares_the_budget_of_the_goal_its_queue_serves ... ok
+test v2::control::tests::a_delegated_result_does_not_satisfy_a_message_condition ... ok
+test v2::control::tests::an_idle_assignee_leaves_the_wait_pending ... ok
+test v2::control::tests::a_message_condition_without_a_sender_takes_any_chat_message_and_still_not_a_task_result ... ok
+test v2::control::tests::a_closed_goal_states_its_close_and_settles_a_late_finish ... ok
+test v2::control::tests::an_owner_that_has_finished_releases_its_artifact_and_an_open_one_does_not ... ok
+test v2::control::tests::an_all_wait_needs_every_condition ... ok
+test v2::control::tests::a_settled_goal_takes_no_new_work ... ok
+test v2::control::tests::cancel_goal_closes_a_spent_goal_and_releases_the_instance_it_parked ... ok
+test v2::control::tests::artifact_staging_gc_and_publication_ordering ... ok
+test v2::control::tests::attempt_selection_is_atomic_and_every_complete_is_billed ... ok
+test v2::control::tests::attempts_for_closed_requests_are_refused_and_unknown_usage_is_visible ... ok
+test v2::control::tests::budget_gate_reserves_settles_and_releases ... ok
+test v2::control::tests::begin_request_requires_ready_phase_and_current_revision ... ok
+test v2::control::tests::cancel_task_severs_the_return_path ... ok
+test v2::control::tests::cancel_before_dispatch_is_terminal_and_persisted_first ... ok
+test v2::control::tests::command_replay_returns_stored_receipt_and_rejects_conflict ... ok
+test v2::control::tests::begin_request_rejects_instances_of_other_sessions ... ok
+test v2::control::tests::close_completion_returns_to_ready_without_a_settlement ... ok
+test v2::control::tests::cancel_goal_refuses_running_work_a_settled_goal_and_an_unknown_id ... ok
+test v2::control::tests::collaboration_intents_are_rechecked_at_dispatch ... ok
+test v2::control::tests::closing_a_turn_answers_its_finish_call ... ok
+test v2::control::tests::blocked_report_flags_dead_waits_not_cycles ... ok
+test v2::control::tests::check_consumption_feeds_context_without_flipping_completion_phase ... ok
+test v2::control::tests::complete_operation_is_terminal_and_wakes_the_decision ... ok
+test v2::control::tests::complete_goal_uses_the_stored_candidate_and_checks_open_operations ... ok
+test v2::control::tests::complete_operation_replay_returns_stored_state ... ok
+test v2::control::tests::compression_covers_the_view_and_keeps_the_originals ... ok
+test v2::control::tests::create_goal_attaches_to_instance ... ok
+test v2::control::tests::create_goal_required_checks_are_user_defined_machine_contracts ... ok
+test v2::control::tests::compression_shares_the_goal_gates_and_fails_honestly ... ok
+test v2::control::tests::deny_cancels_the_operation_and_consumes_the_decision ... ok
+test v2::control::tests::delegate_and_complete_task_uses_the_narrow_return_path ... ok
+test v2::control::tests::dispatch_is_the_authorization_linearization_point ... ok
+test v2::control::tests::dispatch_rechecks_permission_revision ... ok
+test v2::control::tests::fail_request_closes_and_parks_without_losing_input ... ok
+test v2::control::tests::goal_deadline_refuses_new_requests_and_dispatches ... ok
+test v2::control::tests::grants_narrow_only_and_parent_revocation_cascades ... ok
+test v2::control::tests::lifecycle_changes_need_the_user_or_a_manage_grant ... ok
+test v2::control::tests::import_response_requires_selection_and_is_single_shot ... ok
+test v2::control::tests::interrupt_instance_cancels_the_running_request_and_leaves_the_instance_ready ... ok
+test v2::control::tests::import_response_phases_for_reply_and_completion ... ok
+test v2::control::tests::fork_reset_keeps_the_conversation_and_drops_the_execution_state ... ok
+test v2::control::tests::import_response_refuses_a_compression_request ... ok
+test v2::control::tests::independent_verification_refuses_the_producers_own_round_and_accepts_another_instances ... ok
+test v2::control::tests::late_receipt_after_reset_lands_on_the_old_epoch_only ... ok
+test v2::control::tests::messages_flow_across_an_authorized_ring ... ok
+test v2::control::tests::publish_list_inside_commands_is_atomic ... ok
+test v2::control::tests::pending_approvals_expire_when_the_operation_closes ... ok
+test v2::control::tests::pending_wait_wakes_in_the_same_transaction_as_the_fact ... ok
+test v2::control::tests::read_history_is_user_or_self_only ... ok
+test v2::control::tests::protocol_notes_reach_the_model_after_the_receipts ... ok
+test v2::control::tests::register_check_runs_commits_the_round_atomically ... ok
+test v2::control::tests::reset_closes_epoch_and_releases_reservations ... ok
+test v2::control::tests::repair_completion_and_block_goal_settle_honestly ... ok
+test v2::control::tests::disk_full_is_classified_at_the_submit_boundary ... ok
+test v2::control::tests::send_message_requires_grant_and_backpressure_is_explicit ... ok
+test v2::control::tests::require_checks_attaches_the_users_acceptance_before_the_round_then_freezes_it ... ok
+test v2::control::tests::spawn_requires_a_manage_grant ... ok
+test v2::control::tests::spawn_registers_everything_in_one_transaction ... ok
+test v2::control::tests::settling_a_task_mid_turn_leaves_the_live_phase_alone ... ok
+test v2::control::tests::revocation_blocks_queued_dispatch_until_reauthorized ... ok
+test v2::control::tests::submit_input_applies_context_once_per_envelope ... ok
+test v2::control::tests::system_may_park_but_never_resume_or_terminate ... ok
+test v2::control::tests::retention_sweep_keeps_the_models_invariants ... ok
+test v2::control::tests::task_completion_wakes_the_waiter ... ok
+test v2::control::tests::submit_input_keeps_the_envelope_dedup_across_a_reopen ... ok
+test v2::control::tests::task_settlement_closes_the_turn_and_notes_queue_continuation ... ok
+test v2::store::tests::the_linked_sqlite_carries_the_wal_reset_fix ... ok
+test v2::control::tests::the_check_briefing_names_the_required_checks_once_and_only_for_a_live_goal ... ok
+test v2::control::tests::terminate_closes_tasks_grants_and_execution ... ok
+test v2::control::tests::the_deadline_warning_is_sent_once_and_only_before_a_live_deadline ... ok
+test v2::control::tests::terminating_an_instance_normalizes_its_execution_pointer ... ok
+test v2::store::tests::open_never_adopts_an_unstamped_file_that_holds_foreign_tables ... ok
+test v2::control::tests::unknown_outcome_parks_running_tasks_and_notifies ... ok
+test v2::control::tests::unknown_usage_does_not_charge_the_ceiling ... ok
+test v2::control::tests::user_input_supersedes_a_pending_wait ... ok
+test v2::control::tests::the_wake_reason_joins_the_context ... ok
+test v2::control::tests::the_wake_answers_the_wait_tool_call ... ok
+test v2::control::tests::wait_for_an_arrived_result_is_satisfied_at_registration ... ok
+test v2::control::tests::wait_call_answered_outside_the_drain_path ... ok
+test v2::store::tests::open_completes_a_session_database_that_lost_its_stamp_to_a_crash ... ok
+test v2::store::tests::open_creates_stamps_and_reopens ... ok
+test v2::store::tests::open_refuses_unstamped_foreign_and_wrong_version ... ok
+test v2::store::tests::fork_database_snapshots_a_database_without_writing_the_source ... ok
+test v2::store::tests::a_read_only_open_reads_a_foreign_or_old_root_without_touching_it ... ok
+test v2::store::tests::migrate_rewrites_the_runtimes_closing_notes ... ok
+test v2::store::tests::open_migrates_the_previous_schema_version ... ok
+
+test result: ok. 121 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.55s
+
+
+running 6 tests
+test args_hash_is_deterministic ... ok
+test response_classification_is_exhaustive ... ok
+test the_wire_answers_every_call_it_carries ... ok
+test paging_reconstructs_the_original_without_gaps ... ok
+test tool_output_cap_keeps_head_and_tail_within_bounds ... ok
+test wire_view_is_a_paired_permutation ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+
+running 3 tests
+test the_invariant_checker_detects_broken_states ... ok
+test spec_invariants_hold_over_short_command_sequences ... ok
+test spec_invariants_hold_over_random_walks ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 20.38s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 137 tests
+test cli::tests::the_socket_path_limit_is_one_byte_under_the_kernels ... ok
+test cli::tests::the_state_root_row_names_the_linked_sqlite_and_refuses_an_old_one ... ok
+test codemode::tests::the_identifier_rule_matches_pis_normalization ... ok
+test config::project_config_tests::a_project_cannot_set_the_mode_or_grant_itself_trust ... ok
+test codemode::tests::the_schema_declares_each_tool_with_its_identifier ... ok
+test codemode::tests::a_script_that_calls_an_unbound_tool_rejects_and_logs_the_call ... ok
+test config::tests::a_broken_check_is_rejected_when_the_config_loads ... ok
+test codemode::tests::a_script_emits_its_text_and_its_return_value ... ok
+test config::project_config_tests::an_untrusted_project_contributes_nothing_and_says_so ... ok
+test codemode::tests::a_nested_call_obeys_the_users_pre_tool_veto ... ok
+test config::tests::a_negative_retry_budget_is_refused_at_load ... ok
+test config::tests::a_key_the_build_does_not_serve_is_refused_with_a_pointer ... ok
+test config::project_config_tests::project_config_merges_with_user_priority_and_trust ... ok
+test config::tests::a_malformed_endpoint_or_a_zero_window_is_refused_at_load ... ok
+test codemode::tests::image_accepts_a_data_url_and_refuses_a_remote_url ... ok
+test config::tests::every_user_config_field_is_accepted ... ok
+test config::tests::config_overrides_walk_dotted_keys_and_refuse_what_the_build_does_not_serve ... ok
+test config::tests::parses_model_context_window ... ok
+test config::project_config_tests::the_sandbox_backend_is_read_and_refused_when_unusable ... ok
+test config::tests::parses_retention_and_hooks ... ok
+test config::tests::a_value_the_build_does_not_serve_is_refused ... ok
+test codemode::tests::a_script_cannot_reach_the_host_beyond_the_registered_functions ... ok
+test config::tests::the_image_capability_is_declared_per_model_and_defaults_to_false ... ok
+test config::tests::user_checks_become_goal_limits ... ok
+test codemode::tests::a_script_that_names_a_tool_that_does_not_exist_is_told_what_does ... ok
+test config::tests::parses_models_and_validates_the_permissions_section ... ok
+test config::tests::user_hooks_and_retention_survive_loading_and_project_ones_are_ignored ... ok
+test config::tests::user_limits_bound_every_goal ... ok
+test config::tests::a_tool_binding_is_appended_and_removed_without_touching_the_rest ... ok
+test config::project_config_tests::instruction_text_names_each_file_and_reports_what_it_cannot_read ... ok
+test config::project_config_tests::no_project_config_anywhere_keeps_the_old_path_and_trusts_nothing ... ok
+test codemode::tests::search_describe_and_namespace_expose_the_catalogue_to_scripts ... ok
+test jobs::tests::an_idle_runner_checks_rarely_but_never_waits_forever ... ok
+test jobs::tests::the_default_wait_is_bounded ... ok
+test jobs::tests::the_runner_tick_trades_cpu_for_a_bounded_latency ... ok
+test mcp::tests::roots_list_is_answered_and_other_requests_are_declined ... ok
+test config::project_config_tests::project_trust_is_the_canonical_root_the_user_listed ... ok
+test mcp_auth::tests::a_callback_is_only_read_for_the_code_it_brought ... ok
+test mcp::tests::http_rejects_credentials_and_never_follows_redirects ... ok
+test mcp_auth::tests::a_signed_in_url_knows_its_resource_and_never_leaks_the_verifier ... ok
+test providers::tests::a_catalog_entry_resolves_by_key_or_by_model_name ... ok
+test config::tests::a_config_override_and_the_same_file_value_load_to_the_same_catalog ... ok
+test config::tests::a_codex_profile_is_refused_instead_of_ignored ... ok
+test mcp_auth::tests::the_token_file_is_private_and_round_trips ... ok
+test providers::tests::the_stream_stall_bound_clamps_between_floor_and_ceiling ... ok
+test tools::bounded_timeout_tests::a_model_picked_timeout_is_bounded_by_the_sessions_ceiling ... ok
+test tools::tests::a_lock_directory_that_cannot_be_created_names_the_path ... ok
+test tools::tests::a_required_web_search_without_a_credential_fails_the_member_load ... ok
+test reference::tests::the_web_half_of_the_surface_follows_the_declared_bindings ... ok
+test tools::tests::artifact_paths_are_per_member_not_session_shared ... ok
+test tools::tests::artifacts_are_pruned_to_the_directory_budget ... ok
+test tools::tests::batch_commit_rolls_back_when_a_later_rename_fails ... ok
+test config::tests::both_loaders_refuse_the_same_shapes ... ok
+test config::project_config_tests::the_two_loaders_agree_on_a_user_only_config ... ok
+test tools::tests::fallback_glob_never_follows_directory_links_and_checks_cancellation ... ok
+test tools::tests::guard_url_blocks_private_targets ... ok
+test tools::tests::images_are_classified_by_magic_bytes_and_bounded ... ok
+test providers::chat_completions::image_wire_tests::the_body_carries_an_image_part_verbatim ... ok
+test tools::tests::output_capture_spools_bounded_previews_and_reports_storage_errors ... ok
+test tools::tests::redirect_chain_is_guarded_at_every_hop ... ok
+test tools::tests::resolver_connects_to_the_vetted_answer ... ok
+test codemode::tests::store_and_load_survive_inside_one_store_exit_ends_cleanly_and_limits_are_enforced ... ok
+test tools::tests::resolver_refuses_dns_answers_the_guard_rejects ... ok
+test hooks::tests::hooks_receive_the_event_name_and_json_on_stdin ... ok
+test tools::tests::skill_candidates_reject_symlink_escapes ... ok
+test tools::tests::shell_artifact_stops_at_the_size_cap ... ok
+test tools::tests::ssh_argv_sends_the_command_to_the_remote_under_the_products_own_options ... ok
+test tools::tests::the_address_guard_matches_the_reference_at_every_block_edge ... ok
+test tools::tests::the_memory_tool_is_bound_and_recalls_across_sessions ... ok
+test tools::tests::skill_tool_searches_and_reads_registry ... ok
+test tools::tests::view_image_reference_becomes_a_part_for_a_vision_model_and_a_placeholder_otherwise ... ok
+test tools::tests::web_fetch_guards_every_redirect_hop ... ok
+test tools::tests::web_fetch_follows_guarded_redirect_chain ... ok
+test tools::tests::web_shapes_are_stable_and_bindings_are_required ... ok
+test jobs::tests::a_group_whose_members_are_newer_than_the_job_is_never_signalled ... ok
+test v2::approvals::tests::the_commands_are_distinct ... ok
+test v2::authority::tests::a_revocation_takes_the_full_id_or_an_unambiguous_prefix ... ok
+test v2::authority::tests::the_authority_view_names_what_an_instance_cannot_do_and_the_hand_that_would_help ... ok
+test v2::authority::tests::the_commands_are_distinct ... ok
+test v2::automations::tests::a_malformed_schedule_is_refused_rather_than_partially_applied ... ok
+test v2::automations::tests::a_run_advances_the_slot_so_a_missed_backlog_is_coalesced ... ok
+test tools::tests::web_fetch_stops_after_ten_redirects ... ok
+test v2::automations::tests::an_automation_round_trips_and_is_neither_due_nor_runnable_while_disabled ... ok
+test v2::driver::cadence::the_job_poll_is_coarse_but_prompt ... ok
+test v2::daemon::tests::mcp_rows_name_the_credential_state ... ok
+test v2::driver::unknown_tool::an_unknown_tool_is_answered_with_the_surface_and_a_typo_hint ... ok
+test v2::exec::tests::a_deadline_says_what_the_instance_was_doing ... ok
+test v2::exec::tests::a_park_the_run_observed_says_why_and_what_to_do ... ok
+test v2::exec::tests::a_lost_socket_is_reported_as_what_it_means ... ok
+test v2::exec::tests::a_silent_settlement_reports_that_goals_summary_and_names_it ... ok
+test v2::exec::tests::an_id_resolves_by_a_unique_prefix_and_refuses_an_ambiguous_one ... ok
+test v2::exec::tests::an_outcome_before_the_runs_own_input_is_not_its_outcome ... ok
+test v2::exec::tests::exit_codes_follow_the_documented_contract ... ok
+test v2::exec::tests::long_check_output_is_capped ... ok
+test v2::exec::tests::run_usage_sums_what_the_provider_reported_and_counts_what_it_did_not ... ok
+test v2::exec::tests::the_check_verdict_reads_the_wrapper_marker ... ok
+test v2::exec::tests::the_facts_that_end_a_run_are_named_in_the_runtimes_words ... ok
+test v2::exec::tests::the_leader_instance_prefers_the_conventional_id ... ok
+test v2::exec::tests::the_unchargeable_advisory_follows_the_leaders_own_attachment ... ok
+test v2::goals::tests::the_record_decides_which_goals_cannot_accept_work ... ok
+test providers::tests::frames_measure_the_first_wait_and_the_longest_silence ... ok
+test v2::intervene::tests::the_commands_are_distinct ... ok
+test v2::memory::tests::notes_survive_a_reload_with_their_provenance ... ok
+test v2::memory::tests::recall_filters_by_text_and_tag_newest_first_and_is_bounded ... ok
+test v2::sessions::base_tests::a_named_sessions_root_resolves_to_the_base_and_the_default_to_itself ... ok
+test v2::sessions::tests::a_dry_run_reports_the_same_set_and_deletes_nothing ... ok
+test v2::sessions::tests::a_new_session_round_trips_and_is_injective ... ok
+test v2::sessions::tests::a_session_can_be_renamed_and_restored_from_the_archive ... ok
+test v2::sessions::tests::a_shared_path_or_escaping_path_is_refused_at_load ... ok
+test v2::sessions::tests::an_unknown_registry_version_is_refused_not_reinterpreted ... ok
+test v2::sessions::tests::archiving_and_deleting_move_the_directory_and_refuse_the_default ... ok
+test v2::sessions::tests::prune_takes_only_archived_sessions_past_the_window_and_says_why_the_rest_stay ... ok
+test jobs::tests::a_momentarily_held_lock_is_absorbed ... ok
+test v2::sessions::tests::search_finds_a_snippet_across_sessions_and_never_writes ... ok
+test v2::supervisor::tests::a_workspace_refusal_is_reported_once_per_reason ... ok
+test workspace::tests::shared_and_isolated_roots ... ok
+test jobs::tests::a_live_holder_is_refused_after_the_wait ... ok
+test tools::tests::bwrap_argv_is_stable_and_runs_isolated ... ok
+test tools::tests::cancelled_shell_keeps_partial_output_and_its_artifact ... ok
+test workspace::tests::dirty_or_unversioned_projects_fall_back_to_shared ... ok
+test bound::tests::a_declared_mcp_service_is_bound_without_naming_it_in_the_bindings ... ok
+test hooks::tests::a_transiently_busy_hook_script_is_retried_not_dropped ... ok
+test tools::tests::workspace_paths_stay_inside_root ... ok
+test workspace::tests::the_record_survives_and_retirement_cleans_up_the_right_thing ... ok
+test tools::tests::a_web_search_without_a_credential_answers_with_the_capability_and_never_calls_out ... ok
+test v2::exec::tests::acceptance_commands_run_in_order_and_stop_at_the_first_failure ... ok
+test tools::tests::a_docker_backend_without_its_image_refuses_instead_of_running_on_the_host ... ok
+test codemode::tests::the_options_line_sets_the_deadline_and_the_output_budget_and_refuses_unknown_fields ... ok
+test bound::tests::unknown_and_unsupported_bindings_are_reported ... ok
+test workspace::tests::worktree_lifecycle_and_guards ... ok
+test tools::tests::path_lock_serializes_two_writers ... ok
+test bound::tests::filtered_and_failed_services_reap_started_processes ... ok
+test mcp::tests::stdio_workspace_isolates_files_network_and_preserves_argv ... ok
+test tools::tests::docker_argv_is_stable_and_runs_isolated ... ok
+test tools::tests::sandbox_builds_with_the_host_toolchain ... ok
+test v2::memory::tests::a_note_is_capped_and_the_store_never_evicts ... ok
+test hooks::tests::pre_tool_policy_decides_by_exit_code ... ok
+
+test result: ok. 137 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11.10s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 3 tests
+test tests::exec_refuses_a_missing_or_empty_prompt ... ok
+test tests::exec_takes_the_prompt_from_the_argument_or_from_stdin ... ok
+test tests::tui_search_roots_exclude_cwd ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 49 tests
+test an_unopenable_daemon_log_names_the_file_and_the_lever ... ok
+test an_uncreatable_config_directory_names_the_variable ... ok
+test a_teamagents_tui_that_names_nothing_is_refused_with_the_path ... ok
+test a_bare_word_and_verbose_are_refused_without_starting_a_session ... ok
+test a_rejected_argument_says_which_one_and_why ... ok
+test a_daemon_stops_gracefully_on_sigterm ... ok
+test a_socket_path_past_the_kernel_limit_is_refused_before_anything_starts ... ok
+test a_daemon_stops_gracefully_on_sigint ... ok
+test a_directory_where_the_database_or_socket_belongs_is_refused_with_the_shape_named ... ok
+test a_goal_that_cannot_accept_work_is_not_presented_as_in_force ... ok
+test doctor_fresh_install_reports_the_missing_requirements ... ok
+test an_uncreatable_state_root_names_the_flag_from_every_entry_point ... ok
+test daemon_stop_stops_the_session_by_its_socket ... ok
+test a_prompt_that_starts_with_a_dash_needs_the_end_of_flags_marker ... ok
+test an_unbootable_instance_parks_itself_and_the_session_survives ... ok
+test configured_limits_reach_the_goal_and_really_bound_the_session ... ok
+test doctor_reports_the_artifact_footprint ... ok
+test init_notes_a_root_named_like_the_session_database ... ok
+test init_creates_private_config_and_never_overwrites_existing_paths ... ok
+test a_config_override_reaches_the_config_and_a_bad_one_is_refused ... ok
+test mcp_add_and_remove_edit_only_that_binding ... ok
+test doctor_reports_which_retention_keys_apply ... ok
+test doctor_reports_the_skills_registry_and_missing_configured_paths ... ok
+test named_sessions_are_created_resolved_and_retired ... ok
+test sessions_rename_restore_and_search_wire_through_the_cli ... ok
+test sessions_prune_needs_a_window_and_a_confirmation_and_its_dry_run_deletes_nothing ... ok
+test goals_cancel_closes_a_spent_goal_and_the_parked_leader_works_again ... ok
+test the_daemon_grants_the_leader_the_team_authority ... ok
+test doctor_predicts_whether_an_mcp_service_can_start ... ok
+test mcp_list_names_the_services_and_their_tools ... ok
+test a_state_root_that_is_a_file_is_refused_by_every_entry_point ... ok
+test the_daemon_carries_configured_checks_into_the_goal ... ok
+test init_prepares_the_v2_root_and_doctor_verifies_it ... ok
+test the_authority_surface_grants_and_revokes_through_the_daemon ... ok
+test sessions_fork_snapshots_a_session_and_refuses_a_live_source ... ok
+test doctor_probes_isolation_and_config_errors ... ok
+test the_instances_list_says_why_an_instance_is_parked ... ok
+test a_due_automation_opens_one_goal_and_does_not_overlap_itself ... ok
+test the_tui_knob_decides_which_front_end_the_engine_launches ... ok
+test artifacts_census_and_gc_free_what_nothing_references ... ok
+test exec_takes_the_prompt_from_stdin_and_runs_the_acceptance_check ... ok
+test cwd_reaches_a_started_daemon_and_is_reported_against_a_live_one ... ok
+test a_cwd_that_is_not_a_directory_is_refused_before_a_session_starts ... ok
+test the_goal_surface_lists_and_opens_goals_through_the_daemon ... ok
+test the_surface_verb_reads_back_what_a_request_was_offered ... ok
+test a_leader_parked_under_a_waiting_run_reports_the_park_instead_of_timing_out ... ok
+test an_unisolated_shell_refuses_instead_of_running_on_the_host ... ok
+test a_tiny_configured_ceiling_parks_the_session_instead_of_running_it ... ok
+test full_auto_reaches_a_started_daemon_and_is_reported_against_a_live_one ... ok
+
+test result: ok. 49 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.81s
+
+
+running 6 tests
+test the_bin_dir_knob_decides_where_the_installer_puts_the_binaries ... ok
+test authenticated_download_resolves_latest_and_installs ... ok
+test public_download_works_without_github_login_and_rejects_unsupported_os ... ok
+test failed_second_replacement_restores_both_old_programs ... ok
+test corrupt_or_incomplete_download_never_changes_installed_pair ... ok
+test local_install_and_legacy_config_preservation ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.40s
+
+
+running 18 tests
+test a_journal_whose_process_identity_moved_is_refused_not_signalled ... ok
+test cancel_before_start_persists_and_rejects_late_go ... ok
+test second_runner_over_a_live_job_is_refused ... ok
+test go_past_the_deadline_is_refused_and_runs_nothing ... ok
+test runner_crash_after_accept_recovers_as_outcome_unknown ... ok
+test a_cancel_after_the_command_settled_never_overwrites_the_outcome ... ok
+test a_successful_commands_service_outlives_the_job ... ok
+test cancel_running_stops_the_process_group ... ok
+test happy_path_ready_go_success_with_output ... ok
+test duplicate_go_starts_exactly_one_command ... ok
+test a_write_fault_is_never_reported_as_a_saved_receipt ... ok
+test deleting_a_session_stops_its_jobs_before_removing_their_records ... ok
+test daemon_crash_reconnects_the_same_job_without_restart ... ok
+test the_runners_verb_stops_the_service_a_settled_command_left_behind ... ok
+test a_runner_waits_while_its_job_is_reachable_and_unsettled_and_exits_otherwise ... ok
+test deadline_cancels_a_stuck_command ... ok
+test the_runners_verb_lists_a_state_roots_jobs_and_never_breaks_a_running_command ... ok
+test a_service_stop_refuses_a_job_that_is_not_settled ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.11s
+
+
+running 4 tests
+test mcp_add_writes_an_oauth_binding_and_refuses_a_stdio_one ... ok
+test oauth_and_a_bearer_token_are_one_credential_too_many ... ok
+test an_oauth_binding_signs_in_lists_its_tools_and_logs_out ... ok
+test an_expired_credential_is_refreshed_without_asking_the_user_again ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+
+running 30 tests
+test effort_normalizes_at_the_config_boundary ... ok
+test anthropic_request_body_translates_history_tools_and_options ... ok
+test anthropic_sse_assembles_blocks_usage_and_native ... ok
+test anthropic_thinking_blocks_stay_verbatim ... ok
+test responses_empty_output_is_rejected ... ok
+test anthropic_protocol_violations_are_permanent ... ok
+test anthropic_incomplete_stop_reasons_are_permanent ... ok
+test a_lost_connection_is_transient ... ok
+test responses_request_body_translates_history_tools_and_options ... ok
+test responses_non_sse_json_body ... ok
+test anthropic_non_sse_json_body_and_empty_content ... ok
+test sse_assembles_reasoning_tool_calls_and_usage ... ok
+test responses_text_only_stream_synthesizes_a_message_item ... ok
+test truncated_stream_before_output_is_transient ... ok
+test anthropic_max_tokens_clamps_to_the_remaining_context_window ... ok
+test non_sse_json_body_is_accepted ... ok
+test chat_completions_max_tokens_clamps_to_the_remaining_context_window ... ok
+test responses_sse_assembles_items_usage_and_native ... ok
+test responses_max_output_tokens_clamps_to_the_remaining_context_window ... ok
+test tool_call_ids_normalize_for_cross_protocol_continuation ... ok
+test chat_completions_body_strips_native_continuation_fields ... ok
+test text_deltas_arrive_as_preview_events ... ok
+test anthropic_truncated_stream_classes ... ok
+test truncated_stream_after_visible_output_is_permanent ... ok
+test responses_truncated_stream_classes ... ok
+test the_thinking_wire_sends_an_empty_reasoning_field_for_assistant_tool_calls ... ok
+test responses_incomplete_and_failed_events_are_permanent ... ok
+test responses_status_classes_drive_retry_decisions ... ok
+test cancellation_abandons_the_read ... ok
+test status_classes_drive_retry_decisions ... ok
+
+test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s
+
+
+running 2 tests
+test a_keep_alive_only_stream_stalls ... ok
+test events_reset_the_stall_clock ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.77s
+
+
+running 5 tests
+test plain_reply_terminates_without_completion ... ok
+test tool_intents_execute_and_finish_completes ... ok
+test readback_pages_masked_outputs ... ok
+test step_budget_is_bounded ... ok
+test transient_attempt_retries_once_owned_then_permanent_fails ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.15s
+
+
+running 3 tests
+test all_history_pages_include_archived_members_and_survive_new_appends ... ok
+test deleting_a_live_default_requires_confirmation_and_preserves_its_siblings ... ok
+test failed_deletion_keeps_history_and_refuses_path_aliases_and_workspaces ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.02s
+
+
+running 43 tests
+test a_daemon_stop_does_not_wait_out_a_provider_backoff ... ok
+test a_terminated_leader_is_reported_as_final_not_resumable ... ok
+test a_paused_leader_refusal_names_the_cli_lever ... ok
+test cancel_goal_closes_a_goal_and_the_list_says_which ... ok
+test a_second_resume_is_a_new_operation_not_the_first_ones_recorded_reply ... ok
+test approvals_surface_lists_and_decides_pending_operations ... ok
+test handshake_checkpoint_command_and_goal_completion ... ok
+test a_budget_refusal_ends_the_headless_run_instead_of_timing_out ... ok
+test a_failed_turn_ends_the_headless_run_instead_of_timing_out ... ok
+test a_failed_goal_is_not_reported_as_a_success ... ok
+test a_parked_approval_ends_the_headless_run_at_once ... ok
+test a_blocked_goal_is_not_reported_as_a_success ... ok
+test a_settlement_is_read_against_the_runs_own_goal_not_the_sessions_active_one ... ok
+test a_failing_acceptance_command_fails_the_run ... ok
+test exec_accept_lets_a_passing_check_settle_the_goal ... ok
+test reconnect_backfills_events_after_the_watermark ... ok
+test the_checkpoint_lists_the_bases_sessions_and_marks_the_one_it_serves ... ok
+test the_checkpoint_says_which_instances_may_run_commands ... ok
+test the_checkpoint_lists_the_sessions_mcp_services ... ok
+test headless_runs_verify_the_acceptance_commands_and_gate_the_exit_code ... ok
+test the_checkpoint_carries_the_completion_summary_of_the_goal_it_reports ... ok
+test an_independent_goal_does_not_settle_on_its_producers_own_passing_round ... ok
+test the_daemon_sweeps_the_artifact_root_once_at_startup ... ok
+test the_snapshot_reports_each_members_model ... ok
+test a_runtime_blocked_goal_is_not_reported_as_a_reply ... ok
+test exec_accept_makes_a_failing_check_repair_the_turn_then_block_the_goal ... ok
+test the_stop_lever_answers_before_the_daemon_goes ... ok
+test a_turn_closed_by_the_runtime_without_a_settlement_is_not_a_reply ... ok
+test the_approvals_cli_lists_and_decides_a_parked_operation ... ok
+test the_surface_record_follows_the_grants_and_is_written_once_per_request ... ok
+test headless_runs_report_their_own_outcome_not_an_earlier_settlement ... ok
+test terminating_the_leader_mid_run_ends_the_headless_run_at_once ... ok
+test the_intervention_cli_cancels_a_task_and_pauses_and_resumes_an_instance ... ok
+test a_queued_input_is_not_answered_by_the_previous_turns_reply ... ok
+test a_queued_input_is_not_answered_by_the_previous_turns_settlement ... ok
+test the_streaming_headless_mode_prints_the_events_then_the_report ... ok
+test a_run_that_times_out_verifies_nothing ... ok
+test view_image_reaches_the_wire_as_a_part_only_for_a_model_that_declares_images ... ok
+test the_instances_merge_lever_brings_a_worktree_members_branch_into_the_session_tree ... ok
+test a_reset_mid_run_ends_the_headless_run_with_the_reason ... ok
+test pausing_the_leader_mid_run_lets_the_turn_finish ... ok
+test a_queued_input_a_reset_sealed_is_reported_undelivered ... ok
+test second_daemon_is_refused_and_shutdown_releases_the_lock ... ok
+
+test result: ok. 43 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 33.43s
+
+
+running 43 tests
+test a_goal_with_required_checks_is_told_them_before_the_first_request ... ok
+test a_shutdown_does_not_wait_out_a_retry_backoff ... ok
+test blocked_candidate_never_runs_the_checks ... ok
+test budget_exhaustion_parks_the_instance ... ok
+test a_boot_collects_claimed_artifacts_and_leaves_protected_ones ... ok
+test a_failed_candidate_closes_the_goal_failed_and_never_runs_the_checks ... ok
+test check_dispatch_refused_parks_without_burning_repair_rounds ... ok
+test a_goal_close_to_its_deadline_is_told_once_to_wrap_up ... ok
+test an_invented_tool_name_is_answered_with_what_the_instance_can_call ... ok
+test a_crashed_driver_releases_its_coordinator_lock ... ok
+test a_pre_tool_hook_vetoes_a_tool_call_and_the_turn_continues ... ok
+test an_ignored_finish_reaches_the_model_as_a_note ... ok
+test goal_deadline_parks_the_instance ... ok
+test a_finish_without_a_status_is_corrected_in_the_same_turn ... ok
+test crash_before_model_response_recovers_with_honest_billing ... ok
+test a_settled_shell_job_leaves_no_runner_behind ... ok
+test end_to_end_shell_then_finish ... ok
+test check_inputs_must_still_hold_at_completion ... ok
+test a_repair_round_names_the_failed_check_and_its_reason ... ok
+test send_executes_through_the_control_plane_with_a_grant ... ok
+test notify_hooks_receive_tool_call_and_run_completed ... ok
+test runner_crash_mid_job_is_outcome_unknown ... ok
+test the_leader_is_authorized_to_build_the_team_by_default ... ok
+test failed_summaries_fall_back_uncompressed_and_break_after_three ... ok
+test shell_approval_blocks_then_allows_and_denial_cancels ... ok
+test long_context_compacts_before_the_turn_and_survives_a_restart ... ok
+test configured_checks_gate_the_goal_through_the_config_edge ... ok
+test worker_finish_settles_the_delegated_task_from_the_stored_candidate ... ok
+test a_reused_check_call_id_keeps_every_request_wire_valid ... ok
+test required_checks_exhausted_parks_the_goal_blocked ... ok
+test spawn_resolves_the_requested_workspace_policy ... ok
+test worker_finish_with_an_empty_queue_just_closes_the_turn ... ok
+test worker_queue_continues_after_a_settlement_until_empty ... ok
+test required_checks_failure_repairs_then_passes ... ok
+test tool_result_is_reused_after_crash_not_reexecuted ... ok
+test the_check_repair_path_keeps_the_transcript_wire_valid ... ok
+test required_checks_pass_settles_the_goal ... ok
+test the_configured_ceiling_bounds_a_model_picked_tool_timeout ... ok
+test user_cancel_stops_a_running_job ... ok
+test a_transient_model_failure_is_retried_inside_the_turn ... ok
+test disk_full_stops_dispatch_reports_and_resumes_after_parking ... ok
+test wait_parks_and_the_timer_wake_lets_the_model_continue ... ok
+test transient_retries_exhausted_parks_with_the_reason ... ok
+
+test result: ok. 43 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.56s
+
+
+running 14 tests
+test required_mcp_service_failure_fails_driver_boot ... ok
+test optional_mcp_service_failure_only_drops_the_capability ... ok
+test skill_tool_searches_and_reads_through_the_same_contract ... ok
+test skill_call_without_the_binding_fails_honestly ... ok
+test mcp_tool_round_trips_through_the_same_receipt_contract ... ok
+test codemode_runs_mcp_tools_and_only_its_output_reaches_the_context ... ok
+test mcp_host_execution_is_not_sandboxed ... ok
+test codemode_returns_structured_content_for_a_tool_that_declares_an_output_schema ... ok
+test mcp_workspace_execution_is_sandboxed ... ok
+test a_pre_tool_hook_vetoes_a_nested_mcp_call_inside_codemode ... ok
+test mcp_workspace_network_follows_the_config_key ... ok
+test tool_timeout_s_bounds_a_slow_call ... ok
+test recovered_mcp_dispatch_is_not_replayed ... ok
+test startup_timeout_s_bounds_a_silent_handshake ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.20s
+
+
+running 1 test
+test runner_spawn_failure_fails_the_op_and_the_driver_survives ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.41s
+
+
+running 18 tests
+test terminating_every_instance_lets_the_supervisor_exit ... ok
+test shutdown_with_an_active_instance_still_exits ... ok
+test interrupting_a_turn_cancels_it_and_the_queued_input_takes_over ... ok
+test a_user_opened_goal_lets_a_later_delegation_charge_somewhere ... ok
+test terminating_an_instance_retires_its_workspace ... ok
+test heterogeneous_instances_run_different_protocols_in_one_session ... ok
+test the_offered_surface_follows_the_grants ... ok
+test a_waiting_leader_wakes_when_the_peers_message_is_applied ... ok
+test a_users_grant_reaches_the_workers_surface_at_the_next_request ... ok
+test the_delegator_cancels_its_own_abandoned_task_and_its_wait_resolves ... ok
+test a_configured_mcp_service_reaches_the_members_surface ... ok
+test spawned_worker_settles_and_the_leader_completes ... ok
+test a_task_driven_worker_turn_sees_a_live_user_grant ... ok
+test a_driver_that_cannot_boot_parks_the_instance_with_the_reason ... ok
+test a_running_turn_exposes_a_transient_preview_and_clears_it ... ok
+test an_input_arriving_during_a_turn_enters_at_the_next_boundary ... ok
+test a_prose_reply_leaves_one_turn_and_the_delegator_resolves_the_task ... ok
+test a_settled_goal_leaves_a_later_delegation_without_an_active_goal ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 20.27s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 8 tests
+test graphics::tests::old_generation_results_wake_retries_without_repopulating_the_cache ... ok
+test text::tests::widget_height_bounds ... ok
+test daemon_client::tests::checkpoint_and_commands_round_trip ... ok
+test text::tests::history_recall_restores_draft_and_skips_dupes ... ok
+test text::tests::editing_multiline ... ok
+test daemon_client::tests::greeting_mismatch_is_refused ... ok
+test daemon_client::tests::lost_connection_marks_disconnected_and_reconnect_resumes ... ok
+test graphics::tests::viewport_admission_and_eviction_keep_cache_and_queue_bounded ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 1 test
+test the_tui_refuses_the_flags_it_cannot_honour ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+
+running 6 tests
+test tables_keep_cells_and_links_at_wide_and_narrow_widths ... ok
+test tool_results_pair_by_member_epoch_and_id_without_guessing_success ... ok
+test tool_expansion_preserves_draft_and_refresh_invalidates_cached_output ... ok
+test rendering_bounds_graphemes_controls_and_unfinished_markdown ... ok
+test stream_keeps_its_beginning_and_settlement_replaces_it_once ... ok
+test markdown_renders_structure_without_losing_destinations_or_code ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.30s
+
+
+running 6 tests
+test kitty_crops_to_the_viewport_reuses_data_and_deletes_only_owned_images ... ok
+test text_diagrams_keep_relationships_and_fallback_keeps_source ... ok
+test raster_formats_and_svg_have_bounded_real_previews ... ok
+test native_content_and_tool_images_survive_projection_without_base64_text ... ok
+test local_references_use_their_member_and_refuse_escape_and_special_files ... ok
+test mermaid_families_and_dot_render_without_a_browser ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.75s
+
+
+running 4 tests
+test interruption_and_exit_are_distinct_and_keep_the_draft ... ok
+test missing_leader_or_connection_never_redirects_or_discards_input ... ok
+test retired_commands_are_local_and_approval_arrival_does_not_steal_typing ... ok
+test every_size_keeps_one_nonoverlapping_conversation_and_conditional_approvals ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s
+
+
+running 5 tests
+test completion_edits_only_until_an_explicit_submit_and_keeps_input_ownership ... ok
+test completion_layout_preserves_regions_and_selected_candidate_at_small_sizes ... ok
+test highlighting_fallback_and_control_filtering_preserve_safe_text ... ok
+test grammars_preserve_source_and_color_tokens_in_the_shared_renderer ... ok
+test every_media_item_in_long_history_can_be_revisited_after_eviction ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.67s
+
+
+running 1 test
+test the_client_reconnects_after_the_daemon_restarts ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 3 tests
+test failed_paging_keeps_its_cursor_and_a_successful_page_can_return ... ok
+test session_actions_are_modal_and_confirmation_binds_one_identity ... ok
+test long_session_lists_render_and_click_the_same_visible_rows_at_every_size ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+
+running 23 tests
+test a_command_answer_survives_a_checkpoint_and_a_note_does_not ... ok
+test a_compaction_summary_is_shown_and_does_not_duplicate_notes ... ok
+test history_rebuilds_the_conversation_and_keeps_system_notes ... ok
+test checkpoint_defaults_to_the_leader_and_tracks_budget ... ok
+test a_queued_input_is_visible_in_the_conversation ... ok
+test a_lifecycle_note_carries_the_runtime_reason ... ok
+test approvals_focus_decides_and_leaves ... ok
+test goal_events_mark_checkpoint_refresh ... ok
+test composer_submit_targets_the_active_instance ... ok
+test scroll_clamps_to_the_wrapped_conversation ... ok
+test disconnect_marks_once_and_reconnect_notes_once ... ok
+test events_drive_refreshes_and_notes ... ok
+test the_arrows_walk_a_multi_line_draft_before_recalling ... ok
+test the_runtimes_closing_note_is_not_the_members_message ... ok
+test word_wise_editing_is_wired ... ok
+test a_streaming_preview_is_shown_for_the_active_instance_and_replaced ... ok
+test the_arrows_recall_what_was_submitted ... ok
+test composer_inserts_newlines_and_submits_the_whole_text ... ok
+test a_settled_goal_shows_the_models_own_completion_summary ... ok
+test frame_shows_status_chat_approvals_composer_and_footer ... ok
+test approvals_beyond_the_first_three_are_visible_and_decide_the_clicked_id ... ok
+test appended_output_does_not_pull_a_reader_away_from_history ... ok
+test composer_wrap_and_caret_survive_resize_and_long_multiline_drafts ... ok
+
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+no leak: 0 daemon(s), 0 runner(s) and 0 scratch directory(ies) present before the run are still all there is
+the ledger's counts match the suites: core 130 / engine 376 / tui 57
+git diff --check
+git submodule status
+sh -n install.sh
+python3 review/build_references.py
+45 script reference(s) across 3 surface(s): every one exists and is tracked
+7 file(s) the surfaces copy: every one exists and is tracked
+1 file(s) the surfaces read: every one exists and is tracked
+the Makefile's 23 `.PHONY` target(s) and its help text name each other
+python3 review/hygiene_catalogue.py
+note: review/codex_surface.py is run by hand: asks the local `codex` binary what it offers (D-209): the comparison's Codex column is a statement about that binary, and CI has no Codex to ask
+note: review/comparison_sources.py is run by hand: re-derives the comparison's Pi and Hermes halves from their upstream READMEs, docs index, file tree and docs page (D-209): it needs the network
+note: review/host_cleanup.py is run by hand: reads the host's own process table (D-189): it reports nothing from a sandbox and changes nothing, so there is no gate result to check
+note: review/install_check.py is run by hand: downloads the published release and installs it (A36): network and an external artifact, run by hand and dated in the acceptance row
+note: review/runner_cost.py is run by hand: a one-off cost meter (D-153) whose numbers A12 records; it measures a process, it does not assert a product property
+33 script(s) invoked by make hygiene/test: every one is named in docs/DEVELOPMENT.md
+note: 6 script(s) the page names are run by hand (no target): review/dogfood/authority.py, review/dogfood/checks.py, review/dogfood/run.py, review/eval/r2-p6/run.py, review/host_cleanup.py, review/install_check.py
+python3 review/flag_fields.py
+49 parsed flag field(s) across 2 parser(s): every one is read somewhere
+python3 review/config_keys.py
+56 config fields scanned; 0 unserved, 3 known
+83 key mention(s) across 3 user-facing surface(s) (docs/USER-GUIDE.md, examples/config.minimal.toml, examples/config.toml)
+python3 review/decisions_log.py
+docs/DECISIONS.md: 409 entries, all unique, newest-first, each with a body
+python3 review/decision_queue.py
+15 decision(s) ask for the user's word; every one is in the queue or names what closed it
+python3 review/citations.py
+note: docs/DECISIONS.md:430: `v2app_tests::a_member_that_cannot_run_commands_says_so_in_the_instances_panel_and_the_gap_names_its_lever` names nothing in the tree
+note: docs/DECISIONS.md:538: `MC_artifact_release_fresh_ref.cfg` does not exist
+note: docs/DECISIONS.md:827: `v2app_tests::goals_lists_them_and_cancel_is_an_effect` names nothing in the tree
+note: docs/DECISIONS.md:1020: `v2app_tests::sessions_lists_the_named_sessions_and_switching_is_an_effect` names nothing in the tree
+note: docs/DECISIONS.md:1940: `v2app_tests::mcp_lists_the_sessions_services_and_their_credential_state` names nothing in the tree
+note: docs/DECISIONS.md:7461: `engine/tests/process_leaks.rs` does not exist
+note: docs/DECISIONS.md:8763: `workspace::member_worktrees` names nothing in the tree
+note: docs/DECISIONS.md:9851: §12.1 is not a section of any numbered document here (docs/DESIGN.md, docs/USER-GUIDE.md, docs/INSTALL.md, verification/REPORT.md)
+note: docs/DECISIONS.md:9851: §12.3 is not a section of any numbered document here (docs/DESIGN.md, docs/USER-GUIDE.md, docs/INSTALL.md, verification/REPORT.md)
+note: docs/DECISIONS.md:9851: §14 is not a section of any numbered document here (docs/DESIGN.md, docs/USER-GUIDE.md, docs/INSTALL.md, verification/REPORT.md)
+note: docs/DECISIONS.md:9859: §12.3 is not a section of any numbered document here (docs/DESIGN.md, docs/USER-GUIDE.md, docs/INSTALL.md, verification/REPORT.md)
+note: docs/DECISIONS.md:9859: §12.1 is not a section of any numbered document here (docs/DESIGN.md, docs/USER-GUIDE.md, docs/INSTALL.md, verification/REPORT.md)
+note: docs/DECISIONS.md:9867: §12.1 is not a section of any numbered document here (docs/DESIGN.md, docs/USER-GUIDE.md, docs/INSTALL.md, verification/REPORT.md)
+note: docs/DECISIONS.md:9868: §12.2 is not a section of any numbered document here (docs/DESIGN.md, docs/USER-GUIDE.md, docs/INSTALL.md, verification/REPORT.md)
+note: docs/DECISIONS.md:9869: §12.3 is not a section of any numbered document here (docs/DESIGN.md, docs/USER-GUIDE.md, docs/INSTALL.md, verification/REPORT.md)
+note: docs/DECISIONS.md:9870: §14 is not a section of any numbered document here (docs/DESIGN.md, docs/USER-GUIDE.md, docs/INSTALL.md, verification/REPORT.md)
+note: docs/DECISIONS.md:9882: §12.9 is not a section of any numbered document here (docs/DESIGN.md, docs/USER-GUIDE.md, docs/INSTALL.md, verification/REPORT.md)
+note: docs/DECISIONS.md:9966: `MC_wait_contract.cfg` does not exist
+note: docs/DECISIONS.md:10049: `MC_task_contract.cfg` does not exist
+note: docs/DECISIONS.md:10195: `MC_ghost.cfg` does not exist
+note: docs/DECISIONS.md:10258: `MC_wait_contract.cfg` does not exist
+note: docs/DECISIONS.md:10258: `MC_task_contract.cfg` does not exist
+note: docs/DECISIONS.md:10260: `V2Control::NoSuchInvariant` is not defined in verification/tla/V2Control.tla
+note: docs/DECISIONS.md:10262: `MC_ghost_control.cfg` does not exist
+note: docs/DECISIONS.md:11198: `verification/tla/MC_orphan_probe.cfg` does not exist
+note: docs/DECISIONS.md:11320: `rebuild_p6.rs` does not exist
+note: docs/DECISIONS.md:11934: `v2app_tests::the_instances_panel_says_why_an_instance_is_parked` names nothing in the tree
+note: docs/DECISIONS.md:13380: `workspace::is_dirty` names nothing in the tree
+note: docs/DECISIONS.md:13381: `theme::SELECT_BG` names nothing in the tree
+note: docs/DECISIONS.md:13381: `theme::HOVER_BG` names nothing in the tree
+note: docs/DECISIONS.md:14132: `v2_driver::no_such_test_exists_at_all` names nothing in the tree
+note: docs/DECISIONS.md:14132: `engine/tests/ghost_suite.rs` does not exist
+note: docs/DECISIONS.md:14135: `mcp_tools.rs` does not exist
+note: docs/DECISIONS.md:14163: `docs/loops.md` does not exist
+note: docs/DECISIONS.md:14774: `tui::the_instances_hint_stops_offering_lifecycle_keys_for_a_terminated_member` names nothing in the tree
+note: docs/DECISIONS.md:15125: `workspace::is_dirty` names nothing in the tree
+note: docs/DECISIONS.md:15128: `theme::ZEBRA_BG` names nothing in the tree
+note: docs/DECISIONS.md:15142: `workspace::member_worktrees` names nothing in the tree
+note: docs/DECISIONS.md:15298: `tui::the_instances_hint_stops_offering_lifecycle_keys_for_a_terminated_member` names nothing in the tree
+note: docs/DECISIONS.md:15386: `tools::validate_web_bindings` names nothing in the tree
+note: docs/DECISIONS.md:15387: `config::save_custom_provider` names nothing in the tree
+note: docs/DECISIONS.md:15388: `tools::shell_run_host` names nothing in the tree
+note: docs/DECISIONS.md:15847: `tui::frame_shows_the_panels_and_panel_hit_testing` names nothing in the tree
+note: docs/DECISIONS.md:15925: `config::validate_configured_paths` names nothing in the tree
+note: docs/DECISIONS.md:10315: `make verify-model-wide-sim` names no `.PHONY` target
+note: docs/DECISIONS.md:10663: `make deploy` names no `.PHONY` target
+note: docs/DECISIONS.md:10667: `make verify-model-contract` names no `.PHONY` target
+note: docs/DECISIONS.md:10667: `make ghost-target` names no `.PHONY` target
+note: docs/DECISIONS.md:10823: `make deploy` names no `.PHONY` target
+note: docs/DESIGN.md:40: §14 is not a section of any numbered document here (docs/DESIGN.md, docs/USER-GUIDE.md, docs/INSTALL.md, verification/REPORT.md)
+note: engine/src/cli.rs:271: §14 is not a section of any numbered document here (docs/DESIGN.md, docs/USER-GUIDE.md, docs/INSTALL.md, verification/REPORT.md)
+note: engine/tests/v2_mcp.rs:160: `mcp_tools.rs` does not exist
+note: review/README.md:17: §12.1 is not a section of any numbered document here (docs/DESIGN.md, docs/USER-GUIDE.md, docs/INSTALL.md, verification/REPORT.md)
+note: review/README.md:17: §12.2 is not a section of any numbered document here (docs/DESIGN.md, docs/USER-GUIDE.md, docs/INSTALL.md, verification/REPORT.md)
+note: review/README.md:17: §12.3 is not a section of any numbered document here (docs/DESIGN.md, docs/USER-GUIDE.md, docs/INSTALL.md, verification/REPORT.md)
+note: review/README.md:17: §14 is not a section of any numbered document here (docs/DESIGN.md, docs/USER-GUIDE.md, docs/INSTALL.md, verification/REPORT.md)
+note: review/README.md:17: §12.3 is not a section of any numbered document here (docs/DESIGN.md, docs/USER-GUIDE.md, docs/INSTALL.md, verification/REPORT.md)
+note: review/README.md:17: §12.1 is not a section of any numbered document here (docs/DESIGN.md, docs/USER-GUIDE.md, docs/INSTALL.md, verification/REPORT.md)
+note: review/fix-notes-verification-2026-09-24.md:14: `MC_wait_contract.cfg` does not exist
+note: review/fix-notes-verification-2026-09-24.md:42: `MC_task_contract.cfg` does not exist
+note: review/fix-notes-verification-2026-09-24.md:109: `make verify-model-contract` names no `.PHONY` target
+note: verification/README.md:87: `MC_wait_contract.cfg` does not exist
+note: verification/README.md:98: §12.3 is not a section of any numbered document here (docs/DESIGN.md, docs/USER-GUIDE.md, docs/INSTALL.md, verification/REPORT.md)
+note: verification/REPORT.md:722: `MC_wait_contract.cfg` does not exist
+
+1372 citations checked against 4632 files, 425 tests and 2100 items, plus 113 relative link(s), 761 `make` command(s) over 26 distinct target(s) and 1071 `§`-section reference(s): 0 unexplained, 64 recorded as removed
+python3 review/decision_citations.py
+35 markdown file(s), 409 live decisions and 12 earlier rules indexed: 0 unexplained citation(s)
+python3 review/silent_skips.py
+no test returns early without saying why
+python3 review/command_params.py
+26 commands, 79 payload fields, every one read by core/src/v2/control.rs
+python3 review/event_catalogue.py
+54 event kinds documented and in sync; 16 with no reader in this tree (artifact_abandoned, artifact_collected, artifact_owners_released, artifacts_gc_claimed, goal_cancelled, goal_checks_required, goal_created, grant_issued, grant_revoked, history_pruned, inbox_drained, instance_interrupted, instance_terminated, operation_cancel_requested, operation_cancelled, operation_unauthorized)
+python3 review/protocol_catalogue.py
+9 read methods and 50 commands documented and in sync
+python3 review/tool_catalogue.py
+21 tools documented and in sync: finish, read_history, send, verify_goal, delegate, spawn, cancel_task, wait, ls, read_file, write_file, edit_file, delete, glob, grep, shell, web_search, web_fetch, skill, view_image, memory
+python3 review/config_reference.py
+56 config keys documented and in sync
+python3 review/dead_code.py
+577 public items scanned (1 skipped as cfg(test)-gated); 0 uncalled, 14 known and allowed
+python3 review/doc_inventory.py
+25 documents tracked, 24636 lines; 5 entry points, 2 exempt (excluding 1 frozen prefixes); readers: user 4, developer 4, agent 0, evidence 11
+python3 review/eval_manifests.py
+11 manifests checked: tasks, fixtures, checks, the analysis and the driver
+note: manifest-r2.json: analyze.py's digest differs from the recorded one (its text was translated), and its rule is identical to 27d7529d3b82
+note: manifest-r2.json: run.py differs from the pre-registered 27d7529d3b82 by decision D-182: run-header.json also names the manifest the batch ran, and hashes it — the recorded verdicts were produced by the frozen bytes, this change is afterwards
+note: manifest-r3.json: analyze.py's digest differs from the recorded one (its text was translated), and its rule is identical to 27d7529d3b82
+note: manifest-r3.json: run.py differs from the pre-registered 27d7529d3b82 by decision D-182: run-header.json also names the manifest the batch ran, and hashes it — the recorded verdicts were produced by the frozen bytes, this change is afterwards
+note: manifest-r4.json: analyze.py's digest differs from the recorded one (its text was translated), and its rule is identical to 27d7529d3b82
+note: manifest-r4.json: run.py differs from the pre-registered 27d7529d3b82 by decision D-182: run-header.json also names the manifest the batch ran, and hashes it — the recorded verdicts were produced by the frozen bytes, this change is afterwards
+note: manifest-r5-calib12.json: run.py differs from the pre-registered 478d67914698 by decision D-182: run-header.json also names the manifest the batch ran, and hashes it — the recorded verdicts were produced by the frozen bytes, this change is afterwards
+note: manifest-r5-recon.json: run.py differs from the pre-registered 478d67914698 by decision D-182: run-header.json also names the manifest the batch ran, and hashes it — the recorded verdicts were produced by the frozen bytes, this change is afterwards
+note: manifest-r6.json: run.py differs from the pre-registered 478d67914698 by decision D-182: run-header.json also names the manifest the batch ran, and hashes it — the recorded verdicts were produced by the frozen bytes, this change is afterwards
+note: manifest-r7.json: run.py differs from the pre-registered 478d67914698 by decision D-182: run-header.json also names the manifest the batch ran, and hashes it — the recorded verdicts were produced by the frozen bytes, this change is afterwards
+note: manifest-r8-4096.json: run.py differs from the pre-registered 478d67914698 by decision D-182: run-header.json also names the manifest the batch ran, and hashes it — the recorded verdicts were produced by the frozen bytes, this change is afterwards
+note: manifest-r8.json: run.py differs from the pre-registered 478d67914698 by decision D-182: run-header.json also names the manifest the batch ran, and hashes it — the recorded verdicts were produced by the frozen bytes, this change is afterwards
+note: manifest-r9-paratera.json: run.py differs from the pre-registered 478d67914698 by decision D-182: run-header.json also names the manifest the batch ran, and hashes it — the recorded verdicts were produced by the frozen bytes, this change is afterwards
+note: manifest.json: analyze.py's digest differs from the recorded one (its text was translated), and its rule is identical to 27d7529d3b82
+note: manifest.json: run.py differs from the pre-registered 27d7529d3b82 by decision D-182: run-header.json also names the manifest the batch ran, and hashes it — the recorded verdicts were produced by the frozen bytes, this change is afterwards
+python3 review/eval_surface.py
+12 harness revision(s) and 11 manifest(s) carry one surface; 17 recorded batch(es):
+  2026-09-24-formal: 72 trial(s); 0 self-report the pin, 72 predate it (the harness history covers the text they ran); 0/72 committed checkpoints still hold the product's persisted profile and 0 of those carry the pinned prompt
+  2026-09-24-pilot: 18 trial(s); 0 self-report the pin, 18 predate it (the harness history covers the text they ran); 0/18 committed checkpoints still hold the product's persisted profile and 0 of those carry the pinned prompt
+  2026-09-24-round2: 27 trial(s); 0 self-report the pin, 27 predate it (the harness history covers the text they ran); 0/27 committed checkpoints still hold the product's persisted profile and 0 of those carry the pinned prompt
+  2026-09-24-round3: 18 trial(s); 0 self-report the pin, 18 predate it (the harness history covers the text they ran); 0/18 committed checkpoints still hold the product's persisted profile and 0 of those carry the pinned prompt
+  2026-09-27-pilot-bc: 16 trial(s); 16 self-report the pin; 11/16 committed checkpoints still hold the product's persisted profile and 11 of those carry the pinned prompt
+  2026-09-27-r4-pilot: 6 trial(s); 6 self-report the pin; 6/6 committed checkpoints still hold the product's persisted profile and 6 of those carry the pinned prompt
+  2026-09-28-grant-pilot: 4 trial(s); 4 self-report the pin; 4/4 committed checkpoints still hold the product's persisted profile and 4 of those carry the pinned prompt
+  2026-09-28-r5-calib12: 6 trial(s); 6 self-report the pin; 6/6 committed checkpoints still hold the product's persisted profile and 6 of those carry the pinned prompt
+  2026-09-28-r5-recon: 8 trial(s); 8 self-report the pin; 8/8 committed checkpoints still hold the product's persisted profile and 8 of those carry the pinned prompt
+  2026-09-28-r5-recon2: 8 trial(s); 8 self-report the pin; 8/8 committed checkpoints still hold the product's persisted profile and 8 of those carry the pinned prompt
+  2026-09-28-r6-formal: 6 trial(s); 6 self-report the pin; 6/6 committed checkpoints still hold the product's persisted profile and 6 of those carry the pinned prompt
+  2026-09-28-r7-formal: 6 trial(s); 6 self-report the pin; 6/6 committed checkpoints still hold the product's persisted profile and 6 of those carry the pinned prompt
+  2026-09-29-r8-formal: 6 trial(s); 3 self-report the pin, 3 predate it (the harness history covers the text they ran); 5/6 committed checkpoints still hold the product's persisted profile and 5 of those carry the pinned prompt
+  2026-09-29-r8-formal-4096: 6 trial(s); 6 self-report the pin; 6/6 committed checkpoints still hold the product's persisted profile and 6 of those carry the pinned prompt
+  2026-09-29-r8-pilot: 2 trial(s); 1 self-report the pin, 1 predate it (the harness history covers the text they ran); 2/2 committed checkpoints still hold the product's persisted profile and 2 of those carry the pinned prompt
+  2026-09-30-paratera-capability: 16 trial(s); 16 self-report the pin; 4/16 committed checkpoints still hold the product's persisted profile and 4 of those carry the pinned prompt
+  2026-09-30-paratera-team: 2 trial(s); 2 self-report the pin; 2/2 committed checkpoints still hold the product's persisted profile and 2 of those carry the pinned prompt
+note: 2026-09-27-pilot-bc: manifest.json has been re-frozen since this batch (the pins below still have to agree with it)
+note: 2026-09-28-r5-calib12: manifest-r5-calib12.json has been re-frozen since this batch (the pins below still have to agree with it)
+python3 review/eval/r2-p6/anatomy.py --self-check
+anatomy self-check: 0 finding(s)
+python3 review/verification_catalogue.py
+168 configuration(s) and 34 module(s) are driven by 5 verify-model target(s); 168 configuration(s) on disk, all named
+note: verify-model-all: 42 configurations, as the report says
+note: verify-model-counterexamples: 125 controls, as the report says
+note: verify-kani: 7 harness(es), as the report says
+note: the re-run heading names `5848f8d2`, at or after the newest change to the verification material (`5848f8d251a4`)
+python3 review/exec_report.py
+56 report fields, 56 catalogued names: 0 unexplained
+python3 review/tui_keys.py
+17 advertised and 20 documented key(s) checked against v2app.rs: 0 unexplained
+python3 review/env_knobs.py
+9 knob(s) read by the code, 9 named by the documents: 0 unexplained
+python3 review/dogfood/probes.py --self-check
+self-check ok: selection, budgets, the stray guard, the documented set sizes, the citation of every probe by an acceptance row or a decision, and the no-kill-by-pattern rule over 3 sets
+python3 review/project_config_claim.py
+the project-config loader (load_user_config_for) is called by the product's own code (6 production call site(s))
+python3 review/release_artifact.py
+the newest release tag `v0.2.0` is built on core/src/v2: the published artifact is the product the documents describe
+  next: the release is this product now, so the caveats and this script's list must be rewritten together
+python3 review/readme_zh.py
+README.md ↔ README.zh-CN.md: 12 headings, 19 in-repo links and 9 verbs / 29 flags on each side
+python3 review/doc_flags.py
+265 flag mentions in README.md, docs/USER-GUIDE.md, docs/INSTALL.md; the CLI's help lists 41 flags and 9 belong to the toolchain
+69 verb mention(s) in the same documents name 21 served verb(s) and 43 pair(s)
+the parser accepts 45 flags; 41 of them are advertised, 0 are accepted silently
+python3 review/requirement_trace.py
+19 confirmed requirements and 36 acceptance items in the baseline; 19 requirement rows and 36 matrix rows in ACCEPTANCE.md
+python3 review/markdown_tables.py
+238 markdown table(s) across 26 file(s): every row matches its header's column count

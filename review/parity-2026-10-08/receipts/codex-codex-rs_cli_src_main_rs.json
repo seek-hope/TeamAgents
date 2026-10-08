@@ -1,0 +1,413 @@
+{
+  "product": "codex",
+  "revision_or_version": "9b738582b13c2cdbeff54af0afd04c50c3e7ba09",
+  "url": "https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/codex-rs/cli/src/main.rs",
+  "retrieved_at": "2026-10-08T13:49:30.331089+00:00",
+  "source_sha256": "9eb1067f5a4c270baf677537dc2ef4603ffda186c918ad65ce454177f95dd785",
+  "source_bytes": 178985,
+  "source_lines": 4966,
+  "evidence_class": "source or documentation, not executed product behavior",
+  "reproduce": "curl --fail --silent --show-error https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/codex-rs/cli/src/main.rs",
+  "excerpts": [
+    {
+      "line": 4,
+      "text": "use clap_complete::Shell;"
+    },
+    {
+      "line": 5,
+      "text": "use clap_complete::generate;"
+    },
+    {
+      "line": 13,
+      "text": "use codex_cli::read_access_token_from_stdin;"
+    },
+    {
+      "line": 16,
+      "text": "use codex_cli::run_login_with_access_token;"
+    },
+    {
+      "line": 35,
+      "text": "use codex_utils_cli::CliConfigOverrides;"
+    },
+    {
+      "line": 43,
+      "text": "use supports_color::Stream;"
+    },
+    {
+      "line": 55,
+      "text": "mod cloud_config;"
+    },
+    {
+      "line": 61,
+      "text": "#[cfg(test)]"
+    },
+    {
+      "line": 62,
+      "text": "#[path = \"exec_args_tests.rs\"]"
+    },
+    {
+      "line": 63,
+      "text": "mod exec_args_tests;"
+    },
+    {
+      "line": 64,
+      "text": "#[cfg(test)]"
+    },
+    {
+      "line": 65,
+      "text": "#[path = \"exec_server_args_tests.rs\"]"
+    },
+    {
+      "line": 66,
+      "text": "mod exec_server_args_tests;"
+    },
+    {
+      "line": 71,
+      "text": "mod mcp_cmd;"
+    },
+    {
+      "line": 72,
+      "text": "mod mcp_login;"
+    },
+    {
+      "line": 74,
+      "text": "mod plugin_cmd;"
+    },
+    {
+      "line": 78,
+      "text": "mod sandbox_setup;"
+    },
+    {
+      "line": 79,
+      "text": "mod sandbox_uninstall;"
+    },
+    {
+      "line": 85,
+      "text": "use crate::mcp_cmd::McpCli;"
+    },
+    {
+      "line": 86,
+      "text": "use crate::plugin_cmd::PluginCli;"
+    },
+    {
+      "line": 87,
+      "text": "use crate::plugin_cmd::PluginSubcommand;"
+    },
+    {
+      "line": 93,
+      "text": "use codex_config::LoaderOverrides;"
+    },
+    {
+      "line": 95,
+      "text": "use codex_core::config::Config;"
+    },
+    {
+      "line": 96,
+      "text": "use codex_core::config::ConfigBuilder;"
+    },
+    {
+      "line": 97,
+      "text": "use codex_core::config::ConfigOverrides;"
+    },
+    {
+      "line": 98,
+      "text": "use codex_core::config::edit::ConfigEditsBuilder;"
+    },
+    {
+      "line": 99,
+      "text": "use codex_core::config::find_codex_home;"
+    },
+    {
+      "line": 100,
+      "text": "use codex_core::config::resolve_profile_v2_config_path;"
+    },
+    {
+      "line": 110,
+      "text": "use codex_protocol::protocol::AskForApproval;"
+    },
+    {
+      "line": 131,
+      "text": "    pub config_overrides: CliConfigOverrides,"
+    },
+    {
+      "line": 148,
+      "text": "    /// Browse all agent sessions on the shared local app-server daemon."
+    },
+    {
+      "line": 149,
+      "text": "    Agents(AgentsCommand),"
+    },
+    {
+      "line": 167,
+      "text": "    /// Manage external MCP servers for Codex."
+    },
+    {
+      "line": 168,
+      "text": "    Mcp(McpCli),"
+    },
+    {
+      "line": 170,
+      "text": "    /// Manage Codex plugins."
+    },
+    {
+      "line": 171,
+      "text": "    Plugin(PluginCli),"
+    },
+    {
+      "line": 183,
+      "text": "    /// Generate shell completion scripts."
+    },
+    {
+      "line": 184,
+      "text": "    Completion(CompletionCommand),"
+    },
+    {
+      "line": 186,
+      "text": "    /// Update Codex to the latest version."
+    },
+    {
+      "line": 189,
+      "text": "    /// Diagnose local Codex installation, config, auth, and runtime health."
+    },
+    {
+      "line": 192,
+      "text": "    /// Run commands within a Codex-provided sandbox."
+    },
+    {
+      "line": 193,
+      "text": "    Sandbox(SandboxCommand),"
+    },
+    {
+      "line": 202,
+      "text": "    /// Apply the latest diff produced by Codex agent as a `git apply` to your local working tree."
+    },
+    {
+      "line": 206,
+      "text": "    /// Resume a previous interactive session (picker by default; use --last to continue the most recent)."
+    },
+    {
+      "line": 207,
+      "text": "    Resume(ResumeCommand),"
+    },
+    {
+      "line": 224,
+      "text": "    /// Fork a previous interactive session (picker by default; use --last to fork the most recent)."
+    },
+    {
+      "line": 225,
+      "text": "    Fork(ForkCommand),"
+    },
+    {
+      "line": 247,
+      "text": "struct CompletionCommand {"
+    },
+    {
+      "line": 248,
+      "text": "    /// Shell to generate completions for"
+    },
+    {
+      "line": 261,
+      "text": "    /// Render the raw model catalog as JSON."
+    },
+    {
+      "line": 267,
+      "text": "    /// Render the model-visible prompt input list as JSON."
+    },
+    {
+      "line": 270,
+      "text": "    /// Replay a rollout trace bundle and write reduced state JSON."
+    },
+    {
+      "line": 317,
+      "text": "    /// Error out when config.toml contains fields that are not recognized by this version of Codex."
+    },
+    {
+      "line": 318,
+      "text": "    #[arg(long = \"strict-config\", default_value_t = false)]"
+    },
+    {
+      "line": 319,
+      "text": "    strict_config: bool,"
+    },
+    {
+      "line": 327,
+      "text": "    /// Trace bundle directory containing manifest.json and trace.jsonl."
+    },
+    {
+      "line": 331,
+      "text": "    /// Output path for reduced RolloutTrace JSON. Defaults to TRACE_BUNDLE/state.json."
+    },
+    {
+      "line": 337,
+      "text": "struct AgentsCommand {"
+    },
+    {
+      "line": 338,
+      "text": "    /// The agents overview requires a shared server; this option is rejected."
+    },
+    {
+      "line": 354,
+      "text": "struct ResumeCommand {"
+    },
+    {
+      "line": 368,
+      "text": "    /// Include non-interactive sessions in the resume picker and --last selection."
+    },
+    {
+      "line": 376,
+      "text": "    config_overrides: SessionTuiCli,"
+    },
+    {
+      "line": 389,
+      "text": "    config_overrides: SessionArchiveConfigOverrides,"
+    },
+    {
+      "line": 393,
+      "text": "struct SessionArchiveConfigOverrides {"
+    },
+    {
+      "line": 397,
+      "text": "    /// Error out when config.toml contains fields that are not recognized by this version of Codex."
+    },
+    {
+      "line": 398,
+      "text": "    #[arg(long = \"strict-config\", default_value_t = false)]"
+    },
+    {
+      "line": 399,
+      "text": "    strict_config: bool,"
+    },
+    {
+      "line": 402,
+      "text": "    config_overrides: CliConfigOverrides,"
+    },
+    {
+      "line": 416,
+      "text": "struct ForkCommand {"
+    },
+    {
+      "line": 417,
+      "text": "    /// Conversation/session id (UUID). When provided, forks this session."
+    },
+    {
+      "line": 422,
+      "text": "    /// Fork the most recent session without showing the picker."
+    },
+    {
+      "line": 434,
+      "text": "    config_overrides: SessionTuiCli,"
+    },
+    {
+      "line": 464,
+      "text": "struct SandboxCommand {"
+    },
+    {
+      "line": 466,
+      "text": "    host: HostSandboxArgs,"
+    },
+    {
+      "line": 469,
+      "text": "    subcommand: Option<SandboxSubcommand>,"
+    },
+    {
+      "line": 473,
+      "text": "enum SandboxSubcommand {"
+    },
+    {
+      "line": 474,
+      "text": "    Uninstall(sandbox_uninstall::SandboxUninstallCommand),"
+    },
+    {
+      "line": 478,
+      "text": "type HostSandboxArgs = codex_cli::SeatbeltCommand;"
+    },
+    {
+      "line": 480,
+      "text": "type HostSandboxArgs = codex_cli::LandlockCommand;"
+    },
+    {
+      "line": 482,
+      "text": "type HostSandboxArgs = codex_cli::WindowsCommand;"
+    },
+    {
+      "line": 485,
+      "text": "type HostSandboxArgs = UnsupportedSandboxArgs;"
+    },
+    {
+      "line": 489,
+      "text": "struct UnsupportedSandboxArgs {"
+    },
+    {
+      "line": 490,
+      "text": "    /// Layer $CODEX_HOME/<name>.config.toml on top of the base user config."
+    },
+    {
+      "line": 492,
+      "text": "    pub config_profile: Option<ProfileV2Name>,"
+    },
+    {
+      "line": 495,
+      "text": "    pub config_overrides: CliConfigOverrides,"
+    },
+    {
+      "line": 497,
+      "text": "    /// Full command args to run under the host sandbox."
+    },
+    {
+      "line": 518,
+      "text": "    config_overrides: CliConfigOverrides,"
+    },
+    {
+      "line": 527,
+      "text": "        long = \"with-access-token\","
+    },
+    {
+      "line": 528,
+      "text": "        help = \"Read the access token from stdin (e.g. `printenv CODEX_ACCESS_TOKEN | codex login --with-access-token`)\""
+    },
+    {
+      "line": 530,
+      "text": "    with_access_token: bool,"
+    },
+    {
+      "line": 567,
+      "text": "    config_overrides: CliConfigOverrides,"
+    },
+    {
+      "line": 579,
+      "text": "    /// Error out when config.toml contains fields that are not recognized by this version of Codex."
+    },
+    {
+      "line": 580,
+      "text": "    #[arg(long = \"strict-config\", default_value_t = false)]"
+    },
+    {
+      "line": 581,
+      "text": "    strict_config: bool,"
+    },
+    {
+      "line": 607,
+      "text": "    /// via the `analytics` section in the config.toml file."
+    },
+    {
+      "line": 609,
+      "text": "    /// However, for first-party use cases like the VSCode IDE extension, we default analytics"
+    },
+    {
+      "line": 611,
+      "text": "    /// in their config.toml:"
+    },
+    {
+      "line": 618,
+      "text": "    /// See https://developers.openai.com/codex/config-advanced/#metrics for more details."
+    },
+    {
+      "line": 638,
+      "text": "    /// [experimental] Generate JSON Schema for the app server protocol."
+    },
+    {
+      "line": 639,
+      "text": "    GenerateJsonSchema(GenerateJsonSchemaCommand),"
+    }
+  ]
+}

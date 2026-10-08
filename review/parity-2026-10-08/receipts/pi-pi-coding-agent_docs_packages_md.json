@@ -1,0 +1,117 @@
+{
+  "product": "pi",
+  "revision_or_version": "1.1.0",
+  "url": "file:///home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/%40earendil-works/pi-coding-agent/docs/packages.md",
+  "retrieved_at": "2026-10-08T13:49:30.969840+00:00",
+  "source_sha256": "5fe4a3009d7260fe1e2f54b64086fc3c8b4d678232bfa2dbc7e91fe588fc9ea5",
+  "source_bytes": 6106,
+  "source_lines": 129,
+  "evidence_class": "source or documentation, not executed product behavior",
+  "reproduce": "Read /home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/@earendil-works/pi-coding-agent/docs/packages.md; pi --version must report 1.1.0. Compare the source_sha256 before using these excerpts.",
+  "excerpts": [
+    {
+      "line": 3,
+      "text": "Pi packages install and distribute extensions, skills, prompt templates, and themes as one unit. Use a package when a customization should be shared through npm or git, or when several resources belong together."
+    },
+    {
+      "line": 5,
+      "text": "A package is an ordinary directory or npm package. It can expose conventional resource directories, declare explicit paths under the `pi` key in `package.json`, and carry its own runtime dependencies."
+    },
+    {
+      "line": 17,
+      "text": "`pi list` shows configured packages. Use `pi remove <source>` to remove one and `pi update --extensions` to reconcile package installations. See [Command Line](cli.md#package-commands) for every package command and option."
+    },
+    {
+      "line": 19,
+      "text": "Personal installs are written to `~/.pi/agent/settings.json`. Add `--local` or `-l` to write the package declaration to `.pi/settings.json`. Pi reads declarations from that file only after project trust is granted."
+    },
+    {
+      "line": 21,
+      "text": "Project packages are installed and loaded only after project trust is resolved. Packages can execute extension code and can include skills that instruct the model to run programs. Review third-party package source before installing it. Review project package declarations before granting project trust."
+    },
+    {
+      "line": 23,
+      "text": "Use `--extension` or `-e` to try a package for one invocation without adding it to settings:"
+    },
+    {
+      "line": 38,
+      "text": "Versioned npm specifications are pinned. Git tags and commits are also pinned; package updates reconcile the checkout but do not move a configured ref."
+    },
+    {
+      "line": 40,
+      "text": "Relative local paths resolve from the settings file that contains them. A file path loads one extension. A directory follows normal package discovery rules."
+    },
+    {
+      "line": 48,
+      "text": "\u251c\u2500\u2500 package.json"
+    },
+    {
+      "line": 49,
+      "text": "\u251c\u2500\u2500 extensions/"
+    },
+    {
+      "line": 50,
+      "text": "\u251c\u2500\u2500 skills/"
+    },
+    {
+      "line": 55,
+      "text": "Without a `pi` manifest, Pi discovers TypeScript and JavaScript extensions, skill directories, Markdown prompts, and JSON themes from those directories."
+    },
+    {
+      "line": 59,
+      "text": "```json"
+    },
+    {
+      "line": 64,
+      "text": "    \"extensions\": [\"./src/extension.ts\"],"
+    },
+    {
+      "line": 65,
+      "text": "    \"skills\": [\"./resources/skills\"],"
+    },
+    {
+      "line": 67,
+      "text": "    \"themes\": [\"./resources/themes/*.json\"]"
+    },
+    {
+      "line": 78,
+      "text": "Put runtime packages imported by extensions in `dependencies`. Pi installs package dependencies when it installs an npm or git source."
+    },
+    {
+      "line": 80,
+      "text": "Pi supplies these packages to extensions and skills:"
+    },
+    {
+      "line": 83,
+      "text": "- `@earendil-works/pi-agent-core`"
+    },
+    {
+      "line": 84,
+      "text": "- `@earendil-works/pi-coding-agent`"
+    },
+    {
+      "line": 90,
+      "text": "Do not list host-provided packages in `dependencies`. A physical copy can bypass Pi's extension module mapping in compiled ESM and create duplicate classes, registries, and initialization work. Pi reports an extension warning when it detects this manifest configuration. Other Pi packages used as dependencies must be included in the published tarball and referenced through their `node_modules` resource paths."
+    },
+    {
+      "line": 98,
+      "text": "```json"
+    },
+    {
+      "line": 103,
+      "text": "      \"extensions\": [\"extensions/*.ts\", \"!extensions/legacy.ts\"],"
+    },
+    {
+      "line": 104,
+      "text": "      \"skills\": [],"
+    },
+    {
+      "line": 121,
+      "text": "Run `pi config` to enable or disable discovered resources and pi's built-in extensions. It starts with personal configuration; press Tab to switch scope, or run `pi config --local` to start with project overrides."
+    },
+    {
+      "line": 129,
+      "text": "Use [Extensions](extensions.md), [Skills](skills.md), [Prompt Templates](prompt-templates.md), and [Themes](themes.md) to design each resource before packaging it."
+    }
+  ]
+}

@@ -1,0 +1,77 @@
+{
+  "product": "pi",
+  "revision_or_version": "1.1.0",
+  "url": "file:///home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/%40earendil-works/pi-coding-agent/README.md",
+  "retrieved_at": "2026-10-08T13:49:30.941785+00:00",
+  "source_sha256": "fbc7abec7d0829ac8bc4b217e950794e1ba4d8d1b3e0850f970da318ad72e863",
+  "source_bytes": 4080,
+  "source_lines": 95,
+  "evidence_class": "source or documentation, not executed product behavior",
+  "reproduce": "Read /home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/@earendil-works/pi-coding-agent/README.md; pi --version must report 1.1.0. Compare the source_sha256 before using these excerpts.",
+  "excerpts": [
+    {
+      "line": 8,
+      "text": "  <a href=\"https://www.npmjs.com/package/@earendil-works/pi-coding-agent\"><img alt=\"npm\" src=\"https://img.shields.io/npm/v/@earendil-works/pi-coding-agent?style=flat-square&logo=npm&logoColor=white\" /></a>"
+    },
+    {
+      "line": 15,
+      "text": "Pi is a minimal, extensible agent harness that you can make your own."
+    },
+    {
+      "line": 17,
+      "text": "Adapt Pi to your workflows, not the other way around. Customize Pi with [extensions](docs/extensions.md), [skills](docs/skills.md), [prompt templates](docs/prompt-templates.md), and [themes](docs/themes.md). Bundle them as [Pi packages](docs/packages.md) and share via npm or git."
+    },
+    {
+      "line": 19,
+      "text": "Pi ships with powerful defaults but skips features like sub-agents and plan mode. Ask Pi to build what you want, or install a package that does it your way."
+    },
+    {
+      "line": 21,
+      "text": "Use Pi [interactively](docs/usage.md), automate it in [print or JSON mode](docs/cli.md), control it over [RPC](docs/rpc.md), or build apps with the [Pi TypeScript SDK](docs/sdk.md). See [OpenClaw](https://github.com/OpenClaw/OpenClaw) for a real-world integration."
+    },
+    {
+      "line": 40,
+      "text": "npm install -g --ignore-scripts @earendil-works/pi-coding-agent"
+    },
+    {
+      "line": 45,
+      "text": "On macOS and Linux, Nix users can install the latest release with `nix profile add github:earendil-works/pi/stable`. See the [quickstart](docs/quickstart.md#1-install-pi) for updating and pinning releases."
+    },
+    {
+      "line": 58,
+      "text": "## Share your OSS coding agent sessions"
+    },
+    {
+      "line": 60,
+      "text": "If you use Pi for open source work, please share your coding agent sessions."
+    },
+    {
+      "line": 66,
+      "text": "To publish sessions, use [`badlogic/pi-share-hf`](https://github.com/badlogic/pi-share-hf) using a Hugging Face account and the Hugging Face CLI."
+    },
+    {
+      "line": 68,
+      "text": "- [Demo video](https://x.com/badlogicgames/status/2041151967695634619) on how to publish Pi sessions"
+    },
+    {
+      "line": 69,
+      "text": "- Published Pi development sessions: [`badlogicgames/pi-mono` on Hugging Face](https://huggingface.co/datasets/badlogicgames/pi-mono)."
+    },
+    {
+      "line": 79,
+      "text": "./pi-test.sh"
+    },
+    {
+      "line": 82,
+      "text": "`pi-test.sh` can be called from any directory and preserves the caller's working directory."
+    },
+    {
+      "line": 88,
+      "text": "./test.sh"
+    },
+    {
+      "line": 91,
+      "text": "Read [CONTRIBUTING.md](https://github.com/earendil-works/pi/blob/main/CONTRIBUTING.md) before opening an issue or pull request. It defines the contribution gate, issue quality bar, and required checks. Read [AGENTS.md](https://github.com/earendil-works/pi/blob/main/AGENTS.md) for repository-specific implementation, testing, dependency, and release rules."
+    }
+  ]
+}

@@ -1,0 +1,309 @@
+{
+  "product": "pi",
+  "revision_or_version": "1.1.0",
+  "url": "file:///home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/%40earendil-works/pi-coding-agent/docs/cli.md",
+  "retrieved_at": "2026-10-08T13:49:30.944321+00:00",
+  "source_sha256": "33e1f4483d1b124eb45c910787b15b68b83c15d9ef0a0652d3310b3d78a6e6d6",
+  "source_bytes": 16865,
+  "source_lines": 333,
+  "evidence_class": "source or documentation, not executed product behavior",
+  "reproduce": "Read /home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/@earendil-works/pi-coding-agent/docs/cli.md; pi --version must report 1.1.0. Compare the source_sha256 before using these excerpts.",
+  "excerpts": [
+    {
+      "line": 5,
+      "text": "This page documents Pi's built-in command-line commands and options. Run `pi --help` or append `--help` to a command for the exact interface in your installed version. The top-level help also includes options registered by loaded extensions."
+    },
+    {
+      "line": 14,
+      "text": "pi config [options]"
+    },
+    {
+      "line": 15,
+      "text": "pi auth <check|print-api-key|print-bearer-token> [options]"
+    },
+    {
+      "line": 16,
+      "text": "pi mcp <list|login|logout> [options]"
+    },
+    {
+      "line": 27,
+      "text": "pi --mode json \"Inspect this repository\" > events.jsonl"
+    },
+    {
+      "line": 30,
+      "text": "With terminal stdin and stdout, Pi opens the terminal UI unless `--print`, `--mode json`, or `--mode rpc` selects another interface. When either stream is redirected and neither JSON nor RPC mode is selected, Pi uses print mode. See [CLI Integration](cli-integration.md) for choosing between interactive, print, JSON, RPC, and SDK integration."
+    },
+    {
+      "line": 39,
+      "text": "Pi resolves `@path` from the current working directory. The working directory also controls project configuration, resource discovery, and session grouping."
+    },
+    {
+      "line": 47,
+      "text": "| `--mode json` | Run the supplied prompts, write JSONL events to stdout, then exit |"
+    },
+    {
+      "line": 48,
+      "text": "| `--mode rpc` | Read JSONL commands from stdin and write responses and events to stdout until shutdown |"
+    },
+    {
+      "line": 51,
+      "text": "RPC mode rejects `@file` arguments. JSON and RPC modes reserve stdout for protocol records. See [JSON Event Stream](json.md) and [RPC Protocol](rpc.md)."
+    },
+    {
+      "line": 84,
+      "text": "See [Sessions and Context](sessions.md) for resuming, forking, naming, and storing sessions."
+    },
+    {
+      "line": 88,
+      "text": "- `-r`, `--resume`<br>"
+    },
+    {
+      "line": 91,
+      "text": "  Opens by file path, exact ID, or partial ID. Pi searches the current project first and offers to fork a cross-project match."
+    },
+    {
+      "line": 94,
+      "text": "- `--fork <path|id>`<br>"
+    },
+    {
+      "line": 95,
+      "text": "  Forks an existing session into a new session for the current project."
+    },
+    {
+      "line": 97,
+      "text": "  Overrides storage and lookup. It takes precedence over `PI_CODING_AGENT_SESSION_DIR` and the `sessionDir` setting."
+    },
+    {
+      "line": 106,
+      "text": "- `--fork` cannot be combined with `--session`, `--continue`, `--resume`, or `--no-session`."
+    },
+    {
+      "line": 107,
+      "text": "- `--session-id` cannot be combined with `--session`, `--continue`, or `--resume`. Combine it with `--fork` to choose the new ID."
+    },
+    {
+      "line": 117,
+      "text": "See [Settings](settings.md#tools) for configuring the default tool selection."
+    },
+    {
+      "line": 120,
+      "text": "  Replaces the default selection with a comma-separated allowlist of built-in, extension, or custom tools. Entries are tool names or patterns where `*` matches any characters. MCP tools are kept unless an entry starts with `mcp__` (see [MCP tools](#mcp-tools)). A list of only `+name` and `-name` entries is not an allowlist; it changes the default selection instead."
+    },
+    {
+      "line": 122,
+      "text": "  Disables comma-separated tool names or patterns after all other selection options, MCP tools included."
+    },
+    {
+      "line": 124,
+      "text": "  Disables default built-in tools while retaining extension and custom tools."
+    },
+    {
+      "line": 126,
+      "text": "  Starts with all built-in, extension, custom, and MCP tools disabled."
+    },
+    {
+      "line": 130,
+      "text": "<a id=\"mcp-tools\"></a>"
+    },
+    {
+      "line": 132,
+      "text": "`--tools` selects the tools declared to the model. It does not remove MCP tools, whose reach is set by their [exposure](mcp.md#control-tool-exposure): `pi --tools read,codemode` keeps every MCP tool callable from codemode scripts. An MCP tool that no entry names or matches is never declared directly, whatever its exposure; only `tool_search`, if listed, can load it. Once an entry starts with `mcp__`, `--tools` filters MCP tools too, so this keeps only the tools of the `radius` server:"
+    },
+    {
+      "line": 135,
+      "text": "pi --tools read,bash,codemode,'mcp__radius__*'"
+    },
+    {
+      "line": 138,
+      "text": "The MCP resource tools (`list_mcp_resources`, `list_mcp_resource_templates`, `read_mcp_resource`) count as MCP tools. To remove MCP tools, use `--exclude-tools 'mcp__*'` or [`--no-mcp`](#resource-options)."
+    },
+    {
+      "line": 151,
+      "text": "Built-in extensions add two more tools. They are off by default; the MCP extension turns them on when an MCP server needs them (see [MCP](mcp.md#exposure)). To enable them yourself, name them in `--tools` or `defaultTools`."
+    },
+    {
+      "line": 153,
+      "text": "| Built-in extension | Purpose |"
+    },
+    {
+      "line": 156,
+      "text": "| `tool_search` | Search tools that are not declared to the model (`codemode` and `deferred` exposure, such as MCP tools) and declare the matches for the next call |"
+    },
+    {
+      "line": 160,
+      "text": "To turn on `codemode` for every session, add it to the default tools in `~/.pi/agent/settings.json` or a project's `.pi/settings.json`:"
+    },
+    {
+      "line": 162,
+      "text": "```json"
+    },
+    {
+      "line": 174,
+      "text": "Codemode is useful without MCP: scripts can run several tool calls in parallel, filter large output before it reaches the model, call classifier models such as TypeSafe's Jev through `models.classify()` (see [Classifier models](models.md#use-classifier-models)), and generate images through `models.generateImages()` (see [Image models](models.md#use-image-models))."
+    },
+    {
+      "line": 178,
+      "text": "Scripts run in a QuickJS sandbox and reach the other tools through `tools.<name>(args)`. [Codemode](codemode.md) describes the script API, how tools are listed and found, the `store()` and `models` globals, and the limits."
+    },
+    {
+      "line": 189,
+      "text": "pi --extension ./review.ts"
+    },
+    {
+      "line": 192,
+      "text": "See [Configuration](configuration.md) for conventional directories and project trust, [Settings](settings.md#resources) for configured paths, and [Pi Packages](packages.md) for package sources."
+    },
+    {
+      "line": 194,
+      "text": "- `-e`, `--extension <path>`<br>"
+    },
+    {
+      "line": 195,
+      "text": "  Loads an extension file or directory, or a built-in extension such as `builtin:mcp`, and is repeatable."
+    },
+    {
+      "line": 196,
+      "text": "- `-ne`, `--no-extensions`<br>"
+    },
+    {
+      "line": 197,
+      "text": "  Disables discovered, configured, and built-in extensions. Explicit `-e` paths still load, so `pi -ne -e builtin:mcp` keeps only the built-in MCP support."
+    },
+    {
+      "line": 198,
+      "text": "- `--no-mcp`<br>"
+    },
+    {
+      "line": 199,
+      "text": "  Disables the built-in MCP support for this run: no servers connect, and there are no MCP tools or `/mcp`. It does not affect an extension that replaces the built-in MCP support."
+    },
+    {
+      "line": 200,
+      "text": "- `--skill <path>`<br>"
+    },
+    {
+      "line": 201,
+      "text": "  Loads a skill file or directory and is repeatable."
+    },
+    {
+      "line": 202,
+      "text": "- `-ns`, `--no-skills`<br>"
+    },
+    {
+      "line": 203,
+      "text": "  Disables discovered and configured skills. Explicit `--skill` paths still load."
+    },
+    {
+      "line": 207,
+      "text": "  Disables discovered and configured templates. Explicit `--prompt-template` paths still load."
+    },
+    {
+      "line": 213,
+      "text": "  Disables discovered and configured themes. Explicit `--theme` paths still load."
+    },
+    {
+      "line": 215,
+      "text": "  Disables `AGENTS.md` and `CLAUDE.md` discovery."
+    },
+    {
+      "line": 227,
+      "text": "See [Configuration](configuration.md) for saved configuration, [Security](security.md#understand-project-trust) for project trust, and [Environment Variables](environment-variables.md) for process controls."
+    },
+    {
+      "line": 238,
+      "text": "  Trusts project-local configuration and resources for this process."
+    },
+    {
+      "line": 240,
+      "text": "  Ignores trust-gated project-local configuration and resources for this process."
+    },
+    {
+      "line": 244,
+      "text": "  Shows help, including flags registered by loaded extensions, then exits."
+    },
+    {
+      "line": 248,
+      "text": "Extensions may register additional long-form options. Unknown short options are rejected."
+    },
+    {
+      "line": 263,
+      "text": "| List configured packages | `pi list` |"
+    },
+    {
+      "line": 265,
+      "text": "| Configure which package resources load | `pi config` |"
+    },
+    {
+      "line": 267,
+      "text": "Add `--local` or `-l` to `install`, `remove`, `uninstall`, or `config` to use project settings instead of global settings."
+    },
+    {
+      "line": 276,
+      "text": "| Update all installed packages | `pi update --extensions` |"
+    },
+    {
+      "line": 289,
+      "text": "- `pi update --extension <source>` is an alias for `pi update <source>`."
+    },
+    {
+      "line": 290,
+      "text": "- `-a`, `--approve` trusts project-local files for one command. `-na`, `--no-approve` ignores trust-gated project-local files."
+    },
+    {
+      "line": 296,
+      "text": "pi auth check --provider openai --json"
+    },
+    {
+      "line": 305,
+      "text": "| `pi auth print-bearer-token` | Print a resolved OAuth bearer token |"
+    },
+    {
+      "line": 311,
+      "text": "| `--json` | `auth check` | Write the structured result as JSON |"
+    },
+    {
+      "line": 314,
+      "text": "| `--min-expiry <duration>` | `print-bearer-token` | Require remaining token lifetime using `ms`, `s`, `m`, or `h`, such as `30m` |"
+    },
+    {
+      "line": 318,
+      "text": "## MCP commands"
+    },
+    {
+      "line": 320,
+      "text": "These commands work outside a session, so agents can run them through `bash`. See [MCP Servers](mcp.md)."
+    },
+    {
+      "line": 324,
+      "text": "| `pi mcp add <server> [options] -- <command> [args...]` | Add or replace a stdio server in `mcp.json`; `--env KEY=VALUE` (repeatable) and `--cwd <dir>` set its environment and working directory. Arguments after the command are passed to it |"
+    },
+    {
+      "line": 325,
+      "text": "| `pi mcp add <server> [options] --url <url>` | Add or replace a streamable HTTP server; `--header KEY=VALUE` (repeatable), `--bearer-token-env-var <NAME>` (sends `Authorization: Bearer ${NAME}`), `--oauth-client-id`, `--oauth-client-secret`, `--oauth-callback-port`, and `--oauth-client-name` configure authentication |"
+    },
+    {
+      "line": 326,
+      "text": "| `pi mcp remove <server>` | Remove a server from `mcp.json`; stored OAuth credentials are kept |"
+    },
+    {
+      "line": 327,
+      "text": "| `pi mcp list [--json]` | Connect to every enabled server and print its state, tools, and errors; exit with `1` when a config entry is invalid or an enabled server is not connected |"
+    },
+    {
+      "line": 328,
+      "text": "| `pi mcp login <server> [--timeout <seconds>]` | Sign in to an OAuth server: open the authorization page and wait for the browser (default 300 seconds); a terminal also accepts the pasted redirect URL |"
+    },
+    {
+      "line": 329,
+      "text": "| `pi mcp logout <server>` | Delete the stored OAuth credentials of a server |"
+    },
+    {
+      "line": 331,
+      "text": "`add` and `remove` change `~/.pi/agent/mcp.json`, or `.pi/mcp.json` in the current directory with `--local` (`-l`). `add` also takes `--exposure <mode>` (see [Exposure](mcp.md#exposure)) and `--description <text>` and does not connect; run `pi mcp list` to check the server."
+    },
+    {
+      "line": 333,
+      "text": "Project `.pi/mcp.json` files are only read for projects that are already trusted."
+    }
+  ]
+}

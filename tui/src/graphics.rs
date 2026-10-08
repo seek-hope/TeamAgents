@@ -16,6 +16,10 @@ use std::{
     sync::{mpsc, Arc},
 };
 
+#[cfg(test)]
+#[path = "graphics_tests.rs"]
+mod tests;
+
 const MAX_BYTES: usize = 8 * 1024 * 1024;
 const MAX_SOURCE_BYTES: usize = 64 * 1024;
 const MAX_SOURCE_LINES: usize = 500;
@@ -53,17 +57,61 @@ pub struct Origin {
 pub struct Document {
     pub lines: Vec<Line<'static>>,
     pub pictures: Vec<Picture>,
+    pub(crate) media: Vec<MediaBlock>,
+}
+#[derive(Clone)]
+pub(crate) struct MediaBlock {
+    row: usize,
+    column: usize,
+    rows: usize,
+    width: usize,
+    request: Request,
 }
 impl Document {
     pub fn text(lines: Vec<Line<'static>>) -> Self {
-        Self { lines, pictures: vec![] }
+        Self { lines, pictures: vec![], media: vec![] }
     }
     pub fn append(&mut self, mut other: Self) {
-        for picture in &mut other.pictures {
-            picture.row += self.lines.len();
-        }
+        other.offset(self.lines.len(), 0);
         self.lines.extend(other.lines);
         self.pictures.extend(other.pictures);
+        self.media.extend(other.media);
+    }
+    pub(crate) fn offset(&mut self, rows: usize, columns: usize) {
+        for picture in &mut self.pictures {
+            picture.row += rows;
+            picture.column += columns;
+        }
+        for media in &mut self.media {
+            media.row += rows;
+            media.column += columns;
+        }
+    }
+    /// Resolve only media intersecting the viewport. Geometry survives eviction of decoded images.
+    pub fn resolve(&mut self, graphics: &mut Graphics, start: usize, area: Rect) {
+        let layout: HashSet<&Request> = self.media.iter().map(|m| &m.request).collect();
+        graphics.sizes.retain(|request, _| layout.contains(request));
+        let visible: Vec<_> =
+            self.media.iter().filter(|m| clip_rows(m.row, m.rows, start, area.height as usize).is_some()).collect();
+        graphics.touched = visible.iter().map(|m| m.request.clone()).collect();
+        for media in visible {
+            let mut rendered = graphics.render_request(media.request.clone(), media.width);
+            // A result may have just changed the layout. The next revision supplies its full height;
+            // never let a larger image cover the following message in the current frame.
+            if rendered.lines.len() <= media.rows {
+                rendered.offset(media.row, media.column);
+                self.pictures.extend(rendered.pictures);
+            }
+            for (index, mut line) in rendered.lines.into_iter().take(media.rows).enumerate() {
+                let prefix = self.lines[media.row + index].spans.first().cloned();
+                if media.column > 0 {
+                    if let Some(prefix) = prefix {
+                        line.spans.insert(0, prefix);
+                    }
+                }
+                self.lines[media.row + index] = line;
+            }
+        }
     }
     /// Images intersect the same row viewport as their surrounding text.
     pub fn visible(&self, start: usize, area: Rect) -> Vec<Placement> {
@@ -128,6 +176,9 @@ pub struct Graphics {
     pub revision: u64,
     worker: Option<Worker>,
     cache: Vec<Cached>,
+    // Layout metadata belongs to the current document, not the decoded-image cache.
+    sizes: HashMap<Request, usize>,
+    pub(crate) deferred: bool,
     touched: HashSet<Request>,
     generation: u64,
 }
@@ -140,6 +191,8 @@ impl Default for Graphics {
             revision: 0,
             worker: None,
             cache: vec![],
+            sizes: HashMap::new(),
+            deferred: false,
             touched: HashSet::new(),
             generation: 0,
         }
@@ -179,6 +232,7 @@ impl Graphics {
         self.revision = self.revision.wrapping_add(1);
         if self.enabled {
             self.cache.clear();
+            self.sizes.clear();
             self.generation = self.generation.wrapping_add(1);
         }
     }
@@ -189,9 +243,18 @@ impl Graphics {
         let mut changed = false;
         if let Some(worker) = &self.worker {
             while let Ok((request, result)) = worker.receive.try_recv() {
+                // A discarded generation also frees queue space; retry a visible request after reload.
+                changed = true;
                 if let Some(cached) = self.cache.iter_mut().find(|c| c.request == request) {
+                    let rows = match &result {
+                        Ok(doc) => doc.lines.len(),
+                        Err(reason) => {
+                            source_fallback(&request.source, request.width, &format!("Preview unavailable: {reason}"))
+                                .len()
+                        }
+                    };
+                    self.sizes.insert(request, rows);
                     cached.result = Some(result);
-                    changed = true;
                 }
             }
         }
@@ -212,6 +275,17 @@ impl Graphics {
             cell: self.cell,
             generation: self.generation,
         };
+        if self.deferred && self.enabled {
+            let mut doc = Document::text(markdown::plain(&request.source.label(), width, Style::default().fg(ACCENT)));
+            let rows = self.sizes.get(&request).copied().unwrap_or(1).max(1);
+            doc.lines.push(Line::styled("Preview pending", Style::default().fg(GREY)));
+            doc.lines.extend((1..rows).map(|_| Line::raw(" ")));
+            doc.media.push(MediaBlock { row: 0, column: 0, rows: doc.lines.len(), width, request });
+            return doc;
+        }
+        self.render_request(request, width)
+    }
+    fn render_request(&mut self, request: Request, width: usize) -> Document {
         let label = request.source.label();
         let mut doc = Document::text(markdown::plain(&label, width, Style::default().fg(ACCENT)));
         if !self.enabled {
@@ -574,7 +648,11 @@ fn picture(image: DynamicImage, request: &Request) -> Result<Document, String> {
     DynamicImage::ImageRgba8(canvas).write_to(&mut png, image::ImageFormat::Png).map_err(|e| e.to_string())?;
     let id = (uuid::Uuid::new_v4().as_u128() as u32).max(1);
     let image = Arc::new(PreviewImage { png: STANDARD.encode(png.into_inner()), pixels, columns, rows, id });
-    Ok(Document { lines: vec![Line::raw(" "); rows as usize], pictures: vec![Picture { row: 0, column: 0, image }] })
+    Ok(Document {
+        lines: vec![Line::raw(" "); rows as usize],
+        pictures: vec![Picture { row: 0, column: 0, image }],
+        media: vec![],
+    })
 }
 
 /// Only these application's image IDs are erased. Image placements never enter Ratatui's text buffer.

@@ -1,0 +1,113 @@
+{
+  "product": "pi",
+  "revision_or_version": "1.1.0",
+  "url": "file:///home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/%40earendil-works/pi-coding-agent/docs/configuration.md",
+  "retrieved_at": "2026-10-08T13:49:30.948582+00:00",
+  "source_sha256": "fc48d1ce7d885c5253222415fb7a4b46d75f80e6431eb924174657ff775099eb",
+  "source_bytes": 3239,
+  "source_lines": 47,
+  "evidence_class": "source or documentation, not executed product behavior",
+  "reproduce": "Read /home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/@earendil-works/pi-coding-agent/docs/configuration.md; pi --version must report 1.1.0. Compare the source_sha256 before using these excerpts.",
+  "excerpts": [
+    {
+      "line": 1,
+      "text": "# Configuration"
+    },
+    {
+      "line": 3,
+      "text": "Pi supports user-level and project configuration. User-level configuration lives in the agent directory, which defaults to `~/.pi/agent`. Project configuration lives in `.pi` under the working directory and loads after [project trust](security.md#understand-project-trust) is granted. The only exception is `sessionDir`, which Pi reads before resolving trust so it can locate sessions."
+    },
+    {
+      "line": 5,
+      "text": "In interactive mode, use `/settings` to change common preferences. For other options, ask Pi to update the configuration or edit the relevant files directly. Run `/reload` after manually changing settings, keybindings, instructions, or resources."
+    },
+    {
+      "line": 7,
+      "text": "## Agent directory"
+    },
+    {
+      "line": 9,
+      "text": "The agent directory is shown as `<agent-dir>` below. Set its location with the `PI_CODING_AGENT_DIR` environment variable or the SDK's [`agentDir`](sdk.md) option."
+    },
+    {
+      "line": 13,
+      "text": "| `<agent-dir>/settings.json` | User-level [settings](settings.md), including preferences, defaults, resource paths, and Pi package declarations. |"
+    },
+    {
+      "line": 14,
+      "text": "| `<agent-dir>/keybindings.json` | Custom terminal UI and application [keybindings](keybindings.md). |"
+    },
+    {
+      "line": 15,
+      "text": "| `<agent-dir>/mcp.json` | [MCP servers](mcp.md) available in every project. |"
+    },
+    {
+      "line": 16,
+      "text": "| `<agent-dir>/models.json` | [Compatible endpoints, models, and model overrides](models.md#configure-a-compatible-endpoint). |"
+    },
+    {
+      "line": 17,
+      "text": "| `<agent-dir>/auth.json` | Saved API keys and OAuth credentials. |"
+    },
+    {
+      "line": 18,
+      "text": "| `<agent-dir>/AGENTS.override.md`, `AGENTS.md`, `AGENTS.MD`, `CLAUDE.md`, or `CLAUDE.MD` | User instructions applied across working directories. |"
+    },
+    {
+      "line": 19,
+      "text": "| `<agent-dir>/SYSTEM.md` | Replaces Pi\u2019s default system prompt. |"
+    },
+    {
+      "line": 20,
+      "text": "| `<agent-dir>/APPEND_SYSTEM.md` | Adds instructions to Pi\u2019s system prompt. |"
+    },
+    {
+      "line": 21,
+      "text": "| `<agent-dir>/extensions/` | User [extensions](extensions.md). |"
+    },
+    {
+      "line": 22,
+      "text": "| `<agent-dir>/skills/` | User [skills](skills.md) and supporting files. |"
+    },
+    {
+      "line": 23,
+      "text": "| `<agent-dir>/prompts/` | User [prompt templates](prompt-templates.md) exposed as slash commands. |"
+    },
+    {
+      "line": 24,
+      "text": "| `<agent-dir>/themes/` | User [theme](themes.md) files. |"
+    },
+    {
+      "line": 30,
+      "text": "| `.pi/settings.json` | Project-level [settings](settings.md), resource paths, and Pi package declarations. |"
+    },
+    {
+      "line": 31,
+      "text": "| `.pi/mcp.json` | Project [MCP servers](mcp.md). |"
+    },
+    {
+      "line": 34,
+      "text": "| `.pi/extensions/` | Project extensions. |"
+    },
+    {
+      "line": 35,
+      "text": "| `.pi/skills/` | Project skills and supporting files. |"
+    },
+    {
+      "line": 39,
+      "text": "For `SYSTEM.md` and `APPEND_SYSTEM.md`, the trusted project file takes precedence over the corresponding agent-directory file. Files with the same name are not combined."
+    },
+    {
+      "line": 43,
+      "text": "Context files are separate from project `.pi` configuration. Pi loads them from the agent directory, the working directory, and its parent directories. A context file applies whenever Pi runs in its directory or anywhere below it."
+    },
+    {
+      "line": 45,
+      "text": "An `AGENTS.override.md` replaces `AGENTS.md` or `CLAUDE.md` only in the same directory. It does not suppress context files from the agent directory or other directories."
+    },
+    {
+      "line": 47,
+      "text": "Context-file discovery does not require project trust."
+    }
+  ]
+}

@@ -14,7 +14,7 @@
 | 文档 | 内容 |
 |---|---|
 | [使用指南](docs/USER-GUIDE.md) | 上手、配置、权限、Skills/MCP、恢复与清理 |
-| [与 Codex CLI、Pi、Hermes 的对比](docs/PRODUCT-COMPARISON.md) | 带日期与出处的对比快照，以及它引出的决策 |
+| [与 Codex CLI、Pi 的对比](docs/PRODUCT-COMPARISON.md) | 带日期与出处的对比快照，以及它引出的决策 |
 | [验收对照表](docs/ACCEPTANCE.md) | A01–A36 逐项证据与已知缺口 |
 | [能力与证据](docs/CAPABILITIES.md) | 每项能力一行：背后的检查、该检查量出的边界、以及仍未决的部分 |
 | [开发与维护](docs/DEVELOPMENT.md) | 工具链、门禁、目录约定、复跑命令 |
@@ -185,6 +185,9 @@ teamagents authority revoke --grant g-1a2b3c4d          # 撤销是终局的，�
 Mermaid、SVG、DOT 图表和本地 PNG/JPEG/GIF/WebP/BMP/TIFF/ICO 图片也可在对话与会话历史中显示。
 `Ctrl+G` 切换预览与源码。Kitty 显示图片，其他终端使用字符图或彩色块预览；
 `TEAMAGENTS_GRAPHICS=auto|kitty|blocks|off` 可选择显示模式（D-448）。
+D-450 增加语言语法高亮，并仅解码可见媒体，使长历史中后面的图片也能加载。
+输入斜杠前缀显示本地命令候选：上下键选择，`Tab` 或 Enter 填入，`Esc` 保留草稿并关闭候选。
+填入后按 Enter 才执行命令。
 
 TUI 键位：`Enter` 发送给 Leader，`Ctrl+J` 或 `Shift+Enter` 换行，`↑`/`↓` 回顾输入，
 `PageUp`/`PageDown` 和滚轮浏览对话。`Ctrl+A` 聚焦待批准请求，`a` 批准本次，`d` 拒绝，

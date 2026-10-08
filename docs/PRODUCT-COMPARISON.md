@@ -1,149 +1,71 @@
-# How this product compares with Codex CLI, Pi and Hermes
+# How this product compares with Codex CLI and Pi
 
-Snapshot taken **2026-09-30** for the product direction the user set ("reference Codex CLI, pi and hermes").
-It exists to make the *decisions* explicit, not to declare parity: every row says where its fact comes from,
-and the last section lists what follows for this repository. It is a **surface comparison, not a quality or
-capability benchmark** — §4 says what that excludes, and no comparator has been benchmarked here.
+Updated **2026-10-08** from fixed Codex source and installed Pi 1.1.0. This is a capability-surface
+comparison, not evidence of equivalent task success, performance or reliability. The detailed twelve-dimension
+matrix, inspected source receipts and ranked next-cycle acceptance plans are in the
+[comparison report](../review/parity-2026-10-08/REPORT.md).
 
-The first version was dated 2026-09-26/27. This refresh re-derived Pi and Hermes from their upstream (the Pi
-row changed: it has MCP now) and re-read the TeamAgents column against this tree after D-362…D-371. The Codex
-column was **not** re-derived this time (there is no `codex` binary on the machine that did the refresh), so it
-keeps the 2026-09-27 check named below.
+The previous 2026-09-30 comparison also discussed Hermes. That dated snapshot remains in Git history;
+Hermes was not re-investigated in this Codex/Pi cycle and is not silently treated as current evidence.
 
-**Sources, and how strong they are**
+## 1. Evidence and current differences
 
-| Reference | Source | Strength |
+| Product | Reference | What was actually checked |
 |---|---|---|
-| Codex CLI | the installed binary, `codex-cli 0.156.1` (`codex --help`, `codex exec --help`, `codex mcp --help`, `codex sandbox --help`, `codex debug --help`, `codex app-server --help`) | **re-checked 2026-09-27 by `review/codex_surface.py`** (run by hand — it needs the local binary): every command/flag token the Codex column claims appears in those six help outputs. Not re-derived on 2026-09-30 (no binary present); an upgraded Codex CLI is a finding until the row is re-dated |
-| Pi | the upstream README, its docs index (`packages/coding-agent/docs/docs.json`) and its file tree (GitHub API, `truncated:false`) | **re-derived 2026-09-30 by `review/comparison_sources.py`**: the tree holds **65** paths containing `mcp` (`packages/coding-agent/docs/mcp.md`, `src/extensions/mcp/`, `packages/mcp`), the docs index lists "Connect MCP Servers", and **no** path contains `worktree`; the subagent example still says "max 8, 4 concurrent" and "a separate `pi` process". The tree held 2,376 paths on that date (2,168 on 2026-09-26) — it grows, so the count is a snapshot and the script reports the drift rather than chasing it |
-| Hermes | the upstream README (`NousResearch/hermes-agent`) plus the features/tools page of its docs site | **re-derived 2026-09-30 by `review/comparison_sources.py`**: the seven backends, cron, the TUI's interrupt-and-redirect, MCP toolsets, memory providers, session search and trajectory export are all still named there |
-| TeamAgents | this repository: `docs/USER-GUIDE.md`, `docs/DECISIONS.md`, `docs/ACCEPTANCE.md`, `review/dogfood/*` | the evidence in this tree, re-read 2026-09-30 |
+| Codex CLI | official commit `9b738582b13c2cdbeff54af0afd04c50c3e7ba09` | CLI/exec parsers, command popup, highlighting, config, compaction, subagent code and app-server documentation; no installed binary or live comparator trial |
+| Pi | installed 1.1.0 | installed version, bundled CLI/session/security/MCP/extension documentation, distributed autocomplete and highlighting; no comparator model-success or crash trial |
+| TeamAgents | baseline `a76722da`, D-450 candidate | repository source, before/after fixed fixtures, Rust tests, terminal probes and formal safety models; per-capability limits remain in [ACCEPTANCE.md](ACCEPTANCE.md) |
 
-The two scripts above are the re-runnable halves of this table: `review/codex_surface.py` asks the installed
-binary, and `review/comparison_sources.py` re-derives the upstream halves from the network. Both are run by
-hand (a local binary, the network) and both are listed in the hygiene catalogue for that reason; the dates in
-the table are theirs.
+[The source manifest](../review/parity-2026-10-08/manifest.json) records dates, hashes, selected line receipts
+and reproduction instructions. The report explicitly labels source-confirmed, documented, executed,
+unknown and intentional differences. A missing file name does not establish a missing capability.
 
-Pi and Hermes are documented here from their READMEs and docs — they were **not** run, so their rows describe
-what their projects claim. Codex was run on 2026-09-27 (its help output is the evidence above).
+| Dimension | Codex / Pi reference | TeamAgents position |
+|---|---|---|
+| Input | Codex has a selectable command popup; Pi documents slash/path completion, file references, external editor and two queue types | D-450 completes the four local commands. File/image input convenience and editable queue visibility remain gaps |
+| Code/media | Codex uses grammar highlighting with size/line guards; Pi uses explicit-language coloring with fallback | D-447/D-448 provide Markdown, Mermaid/SVG/DOT and local images. D-450 adds grammar coloring and schedules long-history previews from the viewport; no universal language/terminal parity claim |
+| Sessions | Codex resume/fork/archive/delete; Pi picker, branch tree, fork/clone and export | Registry and CLI fork/search; optional TUI history/switch/delete. Message-level branches and local HTML export remain gaps |
+| Tools | File/shell/tool providers, with different extension and review surfaces | Files/shell/web/MCP/skills/codemode pass through control-plane operations and receipts. Tool names alone do not compare coding quality |
+| Headless/protocol | Codex exec JSON/schema plus app-server; Pi print, JSONL, RPC and SDK | Exec JSON/stream-JSON and local Unix protocol exist. No general embedding SDK |
+| Config/instructions | Both support user/project configuration and instruction discovery | Validated CLI overrides (D-428); reads repository-local configuration at the nearest trusted project (D-434), plus instruction files. Project config requires user opt-in and cannot supply permissions, hooks, checks, retention or limits. CLI management is deliberate; the user TUI stays minimal |
+| MCP/Skills/extensions | Both have MCP; Pi additionally exposes executable TypeScript extensions, packages and resource tools | MCP transports/OAuth, Skills and hooks exist. Resource browsing and programmable UI/provider extension APIs remain distinct gaps |
+| Permissions/sandbox | Codex has configured sandbox/approval policy; Pi documents direct process permissions plus external isolation | Bound grants/approvals; bubblewrap, Docker and SSH. Micro-VM support is absent; Docker live evidence is less complete than bubblewrap evidence |
+| Teams | Codex source has spawn/send/wait/resume/close subagent operations; Pi leaves subagents to packages | Persistent governed teams and shared/isolated/worktree policies. No measured cross-product collaboration-success ranking |
+| Persistence/recovery | Codex stores threads; Pi stores resumable branches and compaction entries | SQLite state, independent daemon and recovery by durable location. Existing crash probes establish local behavior, not superiority over untested comparators |
+| Context/usage | Both have compaction; Pi documents context/cost and branch summaries | Native context windows, compaction, usage/deadline/check accounting and explicit memory tools. Automatic cross-session injection remains outside the design |
+| Acceptance/release | Codex has review; Pi offers extensible settlement hooks; both publish installation paths | Required checks gate settlement, independent verification is available. v0.2.0 delivers v2 (D-343), but its 2026-09-29 tag predates subsequent changes; this iteration is not released |
 
-## 1. By dimension
+## 2. Implemented this cycle and remaining decisions
 
-| Dimension | Codex CLI | Pi | Hermes | TeamAgents (2026-09-30) |
-|---|---|---|---|---|
-| Session / resume | `resume` (picker / `--last`), `fork`, `archive`, `delete`, `migrate-rollouts`, and `agents` to browse sessions on a *shared local app-server daemon* | resumable sessions, session history | conversation continuity across platforms, platform gateway | named sessions under one base (D-364/D-365/D-368): a registry at `<base>/sessions.json` and `teamagents sessions list`/`new`/`archive`/`delete`/`rename`/`restore`/`fork`/`search`, with `--session ID`; the base directory itself is the default session (A33), owned by one daemon the TUI and `exec` attach to. `fork` copies a session read-only (`VACUUM INTO`, D-365) and `search` reads across sessions read-only; the TUI offers paged session history, switching and confirmed deletion (D-446); there is no shared app-server across sessions |
-| Permissions | config + `-c` overrides, `sandbox` subcommand | **none built in** ("runs with the permissions of the user and process that launched it"; containerize it for boundaries) | platform/sandbox backends | `approved_scope` (bubblewrap, or a locally present Docker image since D-369, approvals bound to the operation and its argument hash, D-67) or `full_auto` (host shell, D-41); capability grants with a user-facing surface (`teamagents authority`, D-61); the mode and the backend both come from the user config (D-75/D-369) |
-| Sandbox backends | Linux sandbox + config | micro-VM / Docker / OpenShell patterns | seven terminal backends (local, Docker, SSH, Singularity, Modal, Daytona, Vercel Sandbox) | bubblewrap (default) or Docker (`[permissions] sandbox`/`sandbox_image`, D-369, refusing an image that is not present locally), for every command the product *executes*: the shell tool — which also runs the `[[checks]]`, the client's `--check` and the job runner's commands, all from one spec builder (`tools::shell_command_spec` → `tools::bwrap_argv` / `tools::docker_argv`) — and MCP servers with `mcp_execution = "workspace"` (the default). `mcp_execution = "host"` and `full_auto` are the explicit opt-outs, and a workspace MCP server under Docker is refused at config load. A missing or unusable backend is a classified failure, never a silent host fallback (A14); the choice is modelled by `V2Isolation` (`RunsOnlyUnderTheConfiguredBackend`, `UnavailableBackendNeverRuns`). Micro-VM/remote backends are **not** implemented |
-| Tools | files, shell, apply (`codex apply`), review | files, shell, `!` commands, extensions | files, shell, scripts calling tools over RPC | files, shell (isolated or host), web (fetch/search — offered only for the kinds the config *declares*, D-168, and search needs a credential, D-167), MCP, skills; every tool call is an operation with a durable receipt (A08/A30) |
-| Extensions | `mcp add/remove/login`, `plugin`, `features` | skills, prompt templates and extensions, **and MCP over stdio and streamable HTTP** (`pi mcp add`/`list`, an in-session `/mcp`, OAuth, resources, tool exposure) — upstream `packages/coding-agent/docs/mcp.md` and `src/extensions/mcp/`, present on 2026-09-30 and absent from the 2026-09-26 snapshot | MCP, skills (agentskills.io compatible), memory providers | MCP over stdio + streamable HTTP, declared in `[tools.*]` (D-74); skills from `~/.agents/skills` and configured roots (A26, D-34/D-66); user hooks `pre_tool`/`notify` (D-45, live evidence D-92). Pi's MCP management verbs are matched now: `teamagents mcp list`/`add`/`remove` (D-399, D-408) show and edit the bindings, and `teamagents mcp login`/`logout` (D-412) sign in to an OAuth HTTP service — discovery, dynamic client registration, PKCE (S256) with a `state`, a loopback callback or a pasted redirect for a browser on another machine, the credential in `mcp-auth.json` (mode 0600, outside the repository, never printed) and a refresh on expiry or a 401; and `status --json` shows the running session's MCP state (D-445); signing in stays a separate `teamagents mcp login` process (a browser callback does not belong in a TUI event loop) |
-| Teams / subagents | (single agent per session; `fork` for branches) | one subagent extension example (one process per subagent, isolated context windows; ≤8 tasks, 4 concurrent); **no worktree isolation** — no path in the upstream tree contains "worktree" (still true on 2026-09-30) | subagents for parallel workstreams | the product's centre: one Leader per session, `spawn`/`delegate`/`send`/`wait`, per-member models (D-69), workspace policies shared/isolated/git worktree (D-46/D-76) |
-| Headless / CI | `exec` (resume/fork/review), `review`, `cloud` | (interactive CLI) | (gateway + CLI) | `teamagents exec` with `--json`, `--stream-json` (the session's events as NDJSON while it waits, then the report; D-249), `--timeout` and `--check` (client-side acceptance), and documented exit codes (D-49, restoring the v1 D-32 contract that lives in Git history); one JSON report at the end |
-| Config | `~/.codex/config.toml`, `-c key=value` overrides | provider keys/`/login`, plus `~/.pi/agent/mcp.json` and a trusted `.pi/mcp.json` | `hermes model` picker, per-platform integration config | `~/.config/teamagents/config.toml`: models, tools, skills, hooks, checks, limits and permissions (including the sandbox backend, D-369) — plus `instruction_files` and `[retention]`, which load and are reported as declared-but-not-applied (D-102/D-75); a repository-local project file is read under one opt-in (`[permissions] trust_project = true`, D-244), from the session's own directory only. No `-c` overrides |
-| TUI | interactive CLI | pi-tui (differential rendering) | full TUI: multiline editing, slash autocomplete, history, **interrupt-and-redirect**, streaming tool output | minimal ratatui TUI (D-445): one Leader conversation, compact status, conditional approvals, composer history/word editing, streaming previews and model-request interrupt (Ctrl+C); Ctrl+D detaches. Four commands: `/help`, `/sessions`, `/interrupt`, `/quit`. The optional session page browses history, switches and deletes; other developer management is CLI-only. D-447 adds Markdown, tables, fenced code/diff colors, grouped tool results and Ctrl+O previews; D-448 adds Mermaid/SVG/DOT, local images, Kitty placement and Unicode/block fallback with Ctrl+G source view; no slash autocomplete or language-grammar highlighting |
-| Durability | local sessions, app-server daemon | `pi-durable` (durable conversation/task/document runtime) | serverless persistence for hibernating environments | SQLite per session (WAL + `synchronous=FULL`), one coordinator per state root, receipts consumed rather than replayed — verified live by killing the daemon mid-tool (`review/dogfood/crash.py`, A08/A11) |
-| Automations | — | automation and workflows live in a separate project (`earendil-works/pi-chat`, linked from the README); the agent itself has no scheduled triggers | built-in cron scheduler with platform delivery | a config-declared scheduler the daemon runs on its own (`<state root>/automations.json`, `teamagents automations list`/`add`/`pause`/`resume`/`remove`, D-367); a due automation opens one goal and does not overlap itself, modelled by `V2Schedule` |
-| Observability | `doctor`, `debug` (model catalog, prompt input, app-server) | telemetry package (vendor-neutral contracts) | session search, trajectory export for research | `doctor` (config/credentials/state/skills/isolation/tools rows, now naming the selected sandbox backend), `daemon.log`, per-session artifacts, events + receipts in SQLite, `sessions search` (D-368); evaluation evidence under `review/` |
+D-450 implements local completion, code highlighting and the media-cache repair. In the baseline fixture,
+figures 16 through 19 of twenty never received previews. The same fixture now checks every visible placement,
+including revisiting an evicted image; its receipt and timing conditions live in the report.
 
-## 2. What this comparison suggested, and where it stands now
+The next priorities are a release rehearsal/publication decision, input attachments, local session export and
+navigation, editable queued input, stronger adversarial-renderer isolation, and live sandbox/provider evidence.
+MCP resources, embedding interfaces, long-context observability and controlled collaboration evaluation remain
+separate work. Each item in the report names evidence, user impact, dependencies and a next acceptance method.
 
-1. **Sessions beyond one-per-state-root** (Codex: `resume`/`fork`/`archive`; Hermes: continuity across
-   surfaces). **Done** in the registry sense since D-364/D-365/D-368 — named sessions under one base, with
-   list/new/archive/delete/rename/restore/fork/search and `--session`. D-446 adds an optional TUI session
-   page with paged history, switching and confirmed deletion; deleting the current session exits the TUI. One state root remains owned by one daemon;
-   there is no shared app-server across sessions.
-2. **Interrupt-and-redirect** (Hermes documents it; Codex has queueing). **Done** since D-363: a user-only
-   `interrupt_instance` command performs the existing `V2Control.CancelRequest`, the supervisor aborts the
-   provider stream, and the input queued behind the turn takes over (`instances interrupt --id`, TUI Ctrl+C). Running tools continue.
-3. **Streaming output for headless runs** (Codex `exec --json` streams events; Hermes streams tool output in
-   the TUI) — **done since D-249**: `teamagents exec --stream-json` writes the session's committed events as
-   they are observed (one `{"type":"event","event":{…}}` line each, in log order, flushed per line) and then
-   the report as `{"type":"report","report":{…}}`; the TUI shows a transient live preview (D-366). It adds no
-   protocol surface — it is a client of the `events(since)` read the daemon already serves — and the exit-code
-   contract is unchanged (`review/dogfood/stream_json.py` measures it without a credential).
-4. **Sandbox backends** (Pi: micro-VM/Docker/OpenShell; Hermes: seven backends). **Partly done since D-369**:
-   the shell tool (and everything dispatched through its one spec builder, plus MCP `workspace` execution) now
-   runs under bubblewrap **or** Docker, chosen in the user config, failing closed. **D-437 added the ssh
-   backend**: `sandbox = "ssh"` runs the session's shell on another host, under the same two rules the
-   `V2Isolation` model already carried (the configured backend or nothing — an unreachable host is a refusal,
-   never a local run), with a real `sshd` in `review/dogfood/sandbox_ssh.py` as its live half and the three
-   configurations `MC_isolation_ssh*.cfg`. A **micro-VM** (KVM, root, its own image story) is still not
-   implemented, and cannot be measured on a host without those; it is the remaining half of this item.
-5. **Automations** (Pi: a separate project, `pi-chat`; Hermes: built-in cron + delivery). **Done since D-367**:
-   `<state root>/automations.json` declares periodic prompts, the daemon's scheduler opens one goal per due
-   automation and does not overlap itself, and the schedule is modelled by `V2Schedule`.
-6. **Memory/learning loop** (Hermes: self-created skills, session search, user modeling). **Still open, and
-   deliberately so**: this product has no cross-session memory beyond the session database and the skills
-   registry. That is an information-flow question here (`audience` vs `push`, §5.1), not a missing feature;
-   the read-only half — `sessions search` across sessions — landed with D-368. **Needs the user's word** for
-   anything stronger (injecting other sessions into a model's context).
-7. **MCP management surface** (Codex: `mcp add/remove/login/list`; Pi: `mcp add/list` plus an in-session
-   `/mcp`, OAuth, resources). **Mostly closed**: the verbs landed with D-399/D-408 (`mcp list`/`add`/`remove`,
-   editing exactly one binding block) and the sign-in with D-412 (`mcp login`/`logout`: discovery, dynamic
-   registration, PKCE with a state, a loopback callback or a pasted redirect, the credential in
-   `mcp-auth.json` mode 0600, refreshed on expiry or a 401), and `status --json` shows the running session's services and
-   credential state from its checkpoint (D-445). What stays headless is *signing in from inside the TUI*: a loopback callback plus a
-   browser is a separate process's job, and Pi's advantage there is convenience, not capability. D-74/D-78 are the
-   entries this item was opened from.
-8. **Config overrides** (Codex: `-c key=value`). This snapshot judged it **low value** (the flags covered the
-   session-shaping keys and everything else was the config file) — and that judgement was wrong for the workflow
-   that mattered: the benchmark harness had to rewrite a config file per arm, which is both a step to get wrong
-   and a copy of the config that can drift from the tree. D-428 added `-c key=value` (validated exactly like a
-   file, dotted keys, unknown keys refused with a pointer to `docs/CONFIG.md`), and D-430 moved the arms onto it.
-   The lesson is recorded rather than erased: a comparison drawn from the two CLIs' surfaces can miss which one's
-   *missing* flag is a load-bearing convenience elsewhere.
-9. **Project config**: done since D-244 — the product reads repository-local configuration under the user's
-   `[permissions]` opt-in, which is what Codex and Pi do — and **both remaining halves are done since D-434**: the
-   loader walks up from the working directory to the nearest `.teamagents/config.toml`, and `trusted_projects`
-   grants trust per repository by canonical path (with `trust_project = true` kept as the coarse form), so a
-   subdirectory of a repository uses its config and listing one repository does not trust another.
+Automatic cross-session context injection, distributed/multi-tenant execution and a plugin marketplace remain
+explicit design exclusions; they need a user-confirmed design change. Explicit append-only memory and session
+search already exist and are not the same as automatic injection. A release requires its own publication
+authorization. No optional backlog item is silently bundled into this iteration.
 
-## 3. What this product already does that the comparators do not (or state they do not)
+## 3. Product choices preserved
 
-- **A permission model with approvals bound to the operation and its argument hash** (D-67). Pi states it has
-  none built in; Hermes' README does not describe one.
-- **Verified durability**: the site's exactly-once behaviour across a daemon crash is a test-and-probe-backed
-  claim here (`review/dogfood/crash.py`), not a marketing line.
-- **Machine-checked acceptance**: a goal cannot be reported done while a user-defined `[[checks]]` command
-  fails (D-50/A16), and a runtime block is not a success (D-71).
-- **Teams as the default**: a persistent Leader with delegated tasks, per-member models and workspace
-  policies, with the delegation contract (waits, task settlement) in the protocol rather than in prompts.
-- **Formal verification of the protocol surfaces** (`verification/`, `make verify-model-all`,
-  `make verify-model-counterexamples`): named sessions (`V2Sessions`), the scheduler (`V2Schedule`) and the
-  sandbox-backend choice (`V2Isolation`) each carry a model plus refuted negative controls, which none of the
-  three READMEs claims.
+TeamAgents retains a Rust-native control plane, one authoritative database per session, an independent daemon,
+permission-scoped collaboration and required acceptance checks. The minimal Leader conversation and optional
+session page remain the user interface; comprehensive developer controls stay in the CLI. Interrupting a model
+request, detaching the TUI and deleting a session remain different operations.
 
-## 4. Honest limits of this snapshot
+These choices have tests and bounded formal evidence. They do not justify claiming that other products lack
+formal methods, durability, multi-agent capability or equivalent outcomes without investigating those claims.
 
-- Pi and Hermes rows come from the sources named above, fetched on the date above; both projects evolve.
-  Pi's deeper site (pi.dev/docs) is a JavaScript application and was not read, so the Pi row rests on the
-  repository itself; for Hermes one docs page (features/tools) was read in addition to the README.
-- **A Pi cell was wrong and is corrected here** (2026-09-30): the Extensions cell had said Pi has **no MCP**
-  (a claim the 2026-09-26 snapshot drew from the upstream tree and docs index, where it was true then). The
-  upstream now holds 65 `mcp` paths and an MCP docs page, so the cell says Pi has MCP and the MCP-management
-  row is no longer a Codex-only difference. The negative *worktree* claim still re-derives (no `worktree`
-  path). `review/comparison_sources.py` was updated in the same change: it now requires the `mcp` paths and
-  the MCP docs entry to be present, so a future removal is the finding instead.
-- **Three earlier Pi cells were wrong and were corrected on 2026-09-26**: the row had claimed MCP support,
-  git-worktree isolation and a scheduled-automation document; the first of those is true again as of
-  2026-09-30, the second is still false, and the cited `docs/loops.md` 404s and appears nowhere in the tree.
-- **Nine TeamAgents cells were stale and are refreshed here** (2026-09-30, re-read against the tree):
-  *Session/resume* (sessions registry, D-364/365/368), *Permissions* and *Sandbox backends* (the Docker
-  backend, D-369), *Headless/CI* (`--stream-json`, D-249), *TUI* (slash commands D-370, live preview D-366,
-  interrupt D-363), *Automations* (the daemon scheduler, D-367) and *Observability* (the isolation row now
-  names the backend, and `sessions search` exists). The §2 list is re-labelled from "needs the user's word" to
-  what each item's status actually is.
-- Codex rows come from the installed binary's help output (`codex-cli 0.156.1`), not from its documentation
-  site, and were **not** re-derived on 2026-09-30 (no `codex` binary on the refreshing machine).
-- No comparator was benchmarked: this is a surface comparison, not a capability or quality comparison. Surface
-  parity is not parity of outcome; a real-model evaluation of task success is a separate exercise
-  (`review/eval/r2-p6/`).
+## 4. Limits and rechecking
 
-Re-check the two upstream rows (network only; nothing here is part of `make check`):
-
-```bash
-curl -sS "https://api.github.com/repos/earendil-works/pi/git/trees/main?recursive=1"   # 2,376 paths, truncated:false
-curl -sS "https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/docs/docs.json"  # the docs index
-curl -sS "https://raw.githubusercontent.com/earendil-works/pi/main/README.md"          # automation -> pi-chat
-curl -sS "https://api.github.com/repos/earendil-works/pi/contents/docs"                # 404: pi has no docs/ directory
-curl -sSL "https://hermes-agent.nousresearch.com/docs/user-guide/features/tools"       # Hermes MCP toolsets
-```
+The report and manifest are the current evidence. The older `review/codex_surface.py` and
+`review/comparison_sources.py` are hand-run historical surface probes; their earlier dates/counts are not the
+source of the refreshed table. Use the pinned capture script and manifest to reproduce this snapshot.
+Uninspected package ecosystems, live vendor OAuth behavior, arbitrary graphical terminals and relative task
+success remain unmeasured. Existing benchmark results are in [CAPABILITIES.md](CAPABILITIES.md) and were not
+rerun, regraded or improved by this UI comparison.

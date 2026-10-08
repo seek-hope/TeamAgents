@@ -1,0 +1,43 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.17s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.36s
+    Checking teamagents-tui v0.2.0 (/home/rimuru/Projects/Code/for_fun/TeamAgents/tui)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.50s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.10s
+     Running unittests src/lib.rs (core/target/debug/deps/teamagents_core-4589427bbfa48b10)
+     Running tests/kernel_properties.rs (core/target/debug/deps/kernel_properties-b040da62daf62978)
+     Running tests/v2_invariants.rs (core/target/debug/deps/v2_invariants-505de3f0a271c000)
+   Doc-tests teamagents_core
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.21s
+     Running unittests src/lib.rs (engine/target/debug/deps/teamagents_engine-679f99d4f263b5f3)
+bwrap: execvp /nonexistent/mcp: No such file or directory
+bwrap: execvp /nonexistent/mcp: No such file or directory
+     Running unittests src/bin/fake-mcp-server.rs (engine/target/debug/deps/fake_mcp_server-77d9de447da3efe2)
+     Running unittests src/main.rs (engine/target/debug/deps/teamagents-f10a446d56e61a56)
+     Running tests/cli.rs (engine/target/debug/deps/cli-95a9b6b05c6a166f)
+     Running tests/install.rs (engine/target/debug/deps/install-425dc4a16742dbdc)
+     Running tests/jobs_runner.rs (engine/target/debug/deps/jobs_runner-563a78ffc481ab4e)
+     Running tests/mcp_oauth.rs (engine/target/debug/deps/mcp_oauth-105a3e9d81bea9f3)
+     Running tests/providers_fake.rs (engine/target/debug/deps/providers_fake-8ff684188b16b4d7)
+     Running tests/providers_stall.rs (engine/target/debug/deps/providers_stall-ec53b3fa2f5ebf10)
+     Running tests/reference_loop.rs (engine/target/debug/deps/reference_loop-32add4918d3fddf3)
+     Running tests/session_browser.rs (engine/target/debug/deps/session_browser-5a2595482eb2b858)
+     Running tests/v2_daemon.rs (engine/target/debug/deps/v2_daemon-d1842db6388b2fa6)
+     Running tests/v2_driver.rs (engine/target/debug/deps/v2_driver-b9ee8d933ece69c3)
+     Running tests/v2_mcp.rs (engine/target/debug/deps/v2_mcp-51705d2d44e5395e)
+     Running tests/v2_spawn_failure.rs (engine/target/debug/deps/v2_spawn_failure-3dccf86870a7724c)
+     Running tests/v2_supervisor.rs (engine/target/debug/deps/v2_supervisor-719ce0970ea285ca)
+   Doc-tests teamagents_engine
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.15s
+     Running unittests src/lib.rs (tui/target/debug/deps/teamagents_tui-5b3d63cdfb919220)
+     Running unittests src/main.rs (tui/target/debug/deps/teamagents_tui-3828578e8757bc2e)
+     Running tests/cli_flags.rs (tui/target/debug/deps/cli_flags-73a4a79c3cff3d28)
+     Running tests/conversation.rs (tui/target/debug/deps/conversation-3d6f9a4c1cb29dfe)
+     Running tests/graphics.rs (tui/target/debug/deps/graphics-0d711816cbaaf628)
+     Running tests/minimal.rs (tui/target/debug/deps/minimal-09849e7c6e1682b9)
+     Running tests/parity.rs (tui/target/debug/deps/parity-1c9dd9fe75bb6d89)
+     Running tests/reconnect.rs (tui/target/debug/deps/reconnect-443f41e371ef2402)
+     Running tests/sessions.rs (tui/target/debug/deps/sessions-2c5878bee0c02c68)
+     Running tests/v2app_tests.rs (tui/target/debug/deps/v2app_tests-f28f08f5847c07a7)
+   Doc-tests teamagents_tui
+/nonexistent-batch/results.jsonl does not exist: that directory is not a recorded batch
+/nonexistent-batch/results.jsonl does not exist: that directory is not a recorded batch

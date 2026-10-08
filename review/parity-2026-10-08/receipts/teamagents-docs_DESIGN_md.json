@@ -1,0 +1,413 @@
+{
+  "product": "teamagents",
+  "revision_or_version": "a76722da",
+  "url": "git:a76722da:docs/DESIGN.md",
+  "retrieved_at": "2026-10-08T13:49:31.010199+00:00",
+  "source_sha256": "feabf534e9bff24e8802900d17a41440f677b1e523387c251cb8f074d010ad2b",
+  "source_bytes": 58916,
+  "source_lines": 709,
+  "evidence_class": "source or documentation, not executed product behavior",
+  "reproduce": "git show a76722da:docs/DESIGN.md",
+  "excerpts": [
+    {
+      "line": 1,
+      "text": "# TeamAgents design and acceptance baseline"
+    },
+    {
+      "line": 7,
+      "text": "and [AGENTS](../AGENTS.md)."
+    },
+    {
+      "line": 22,
+      "text": "| Q1 | Task success rate and long-horizon reliability at the same model and budget matter equally | Success rate, wrong completions, recovery correctness, cost and duration all count |"
+    },
+    {
+      "line": 24,
+      "text": "| Q3 | Scope may be re-cut; deliver the kernel and the runtime first | Capabilities added to the first release are listed in Q6, Q12 and Q13 |"
+    },
+    {
+      "line": 25,
+      "text": "| Q4 | Context, message and tool access are isolated by default; full_auto shell may bypass the logical boundary | Permissions are enforced at runtime; context isolation is never advertised as a security boundary between host processes of the same user |"
+    },
+    {
+      "line": 27,
+      "text": "| Q6 | Ship a minimal user TUI for Leader conversation, progress, approvals, interruption and session history/switch/delete; the developer CLI owns comprehensive management (D-445/D-446) | One conversation, conditional approvals, distinct interrupt/exit and an optional session browser; member, task, goal, session and diagnostic controls remain scriptable |"
+    },
+    {
+      "line": 29,
+      "text": "| Q8 | The user talks to the Leader by default and may read other instances' history, talk to them directly, pause or cancel | The user has a global view; agents stay isolated from each other by permissions |"
+    },
+    {
+      "line": 31,
+      "text": "| Q10 | Work continues by default; the user may set a goal budget; permanent failures and repeated failures are handled in a bounded way | No short implicit goal timeout; retries, concurrency and resource use are still bounded |"
+    },
+    {
+      "line": 33,
+      "text": "| Q12 | The first release ships basic tools, MCP and Skills; no external Codex adaptation | Basic tools mean files, terminal, web search and fetch; the new execution core keeps no external Codex backend |"
+    },
+    {
+      "line": 35,
+      "text": "| Q14 | The project workspace is shared by default; isolated directories or Git worktrees on demand | The shared project is an explicitly granted resource; private conversations are not shared with it |"
+    },
+    {
+      "line": 36,
+      "text": "| Q15 | Authorized work resumes after a restart; an unknown outcome is verified first and parked with a notification if it stays unknown | Operations that may already have had an effect are never replayed blindly |"
+    },
+    {
+      "line": 37,
+      "text": "| Q16 | Single-instance behaviour must not regress and collaboration must show a reproducible gain on a pre-defined task set; official scores are a reference | Controlled ablations and complete new runs, never a splice of historical bests |"
+    },
+    {
+      "line": 38,
+      "text": "| Q17 | Estimate usage cost on a small scale before setting the full multi-round budget | The pilot diagnoses and estimates cost; it never justifies a statistically significant claim |"
+    },
+    {
+      "line": 39,
+      "text": "| Q18 | No compatibility with old configs or sessions is required, and old data may be cleaned up | The new format and directory layout are designed directly, with no migration duty |"
+    },
+    {
+      "line": 40,
+      "text": "| Q19 | Clean up old sessions, state, caches and configs; keep credentials, raw evaluation records, review evidence and Git history | Cleanup follows an explicit inventory of TeamAgents-owned data (see \u00a714 of the archived plan) |"
+    },
+    {
+      "line": 48,
+      "text": "The first release targets a single machine and a single system user; the TUI, basic tools, MCP, Skills,"
+    },
+    {
+      "line": 50,
+      "text": "multi-tenancy, cross-session automatic memory, an external Codex backend and a plugin marketplace are out of"
+    },
+    {
+      "line": 51,
+      "text": "scope. The user may read any instance's history; that grants no equivalent permission to other agents."
+    },
+    {
+      "line": 57,
+      "text": "| Language and framework | Rust for the product; no LangGraph or another agent harness | Confirmed by the user; avoids maintaining a second execution and storage semantics, and any performance gain still has to be measured |"
+    },
+    {
+      "line": 58,
+      "text": "| Kernel | a small, I/O-free state-transition module | Models see tools and instructions directly; network, persistence and permissions never enter model decision logic |"
+    },
+    {
+      "line": 60,
+      "text": "| Concurrent I/O | Tokio with an async HTTP transport; blocking work isolated with a bound | Service connections, model streams, timers and cancellation share one model; Tokio is the I/O executor and never owns business state |"
+    },
+    {
+      "line": 61,
+      "text": "| Persistence | one SQLite database per session owning tasks, execution position, message consumption and operation receipts | Removes the old two-database coordination; a session is the default isolation and cleanup unit, with no cross-session transactions in the first release |"
+    },
+    {
+      "line": 64,
+      "text": "| TUI and protocol | Rust/ratatui plus versioned JSON over a Unix socket | The existing interface and single-machine deployment fit this boundary; no network RPC, microservices or per-instance sockets |"
+    },
+    {
+      "line": 65,
+      "text": "| Project structure | three crates (`core`, `engine`, `tui`) with responsibility-based boundaries | Modules express responsibility well enough; no crate or generic plugin interface per concept yet |"
+    },
+    {
+      "line": 69,
+      "text": "and a reconnect resumes events from the watermark. The shell contract, the UI geometry and the protocol-parsing"
+    },
+    {
+      "line": 70,
+      "text": "tests all follow that same convention."
+    },
+    {
+      "line": 75,
+      "text": "[Tokio docs](https://docs.rs/tokio/latest/tokio/task/fn.spawn_blocking.html)"
+    },
+    {
+      "line": 85,
+      "text": "    I --> C[\"control transaction: permissions / tasks / messages / budget\"]"
+    },
+    {
+      "line": 89,
+      "text": "    X --> J[\"shell runner / files / web / MCP\"]"
+    },
+    {
+      "line": 95,
+      "text": "capabilities. A short-lived helper may report only to its creator but still uses the same execution, receipt"
+    },
+    {
+      "line": 96,
+      "text": "and budget machinery."
+    },
+    {
+      "line": 99,
+      "text": "execution control flow of any instance. There is no single completion barrier across instances, and a retained"
+    },
+    {
+      "line": 102,
+      "text": "reassigns the budget attribution of an in-flight request."
+    },
+    {
+      "line": 105,
+      "text": "`apply_observation(Observation)`, producing `ModelRequest / ToolIntents / Reply / Wait / CompletionCandidate`."
+    },
+    {
+      "line": 107,
+      "text": "permission revision and delivery sequence is filled in by the runtime."
+    },
+    {
+      "line": 111,
+      "text": "| `READY` | consume admitted input or the last tool result and build the request | after fixing the request and reserving budget, enter `MODEL_PENDING` |"
+    },
+    {
+      "line": 112,
+      "text": "| `MODEL_PENDING` | issue or verify one model attempt | a complete response enters the context and atomically registers tool intents, a wait or a completion request |"
+    },
+    {
+      "line": 113,
+      "text": "| `TOOLS_PENDING` | dispatch or collect tool results for the fixed intents | back to `READY` once the required receipts are in |"
+    },
+    {
+      "line": 114,
+      "text": "| `WAITING` | wait for a task, job, approval, user input or timer | when the condition holds, atomically register a ready intent |"
+    },
+    {
+      "line": 115,
+      "text": "| `COMPLETION_PENDING` | verify the completion request and the required checks | pass \u2192 finish the goal/task, otherwise return to `READY` with a reason or park |"
+    },
+    {
+      "line": 125,
+      "text": "task; only a `CompletionCandidate` starts the completion checks."
+    },
+    {
+      "line": 132,
+      "text": "capabilities, approvals, budgets, model attempts, tool operations and the event outbox in `session.sqlite`; the"
+    },
+    {
+      "line": 133,
+      "text": "separate `checkpoints.sqlite` is gone. Configuration files hold deployment settings and credential references"
+    },
+    {
+      "line": 136,
+      "text": "The control entry `submit(command, trusted_identity)` runs a short transaction. Network calls, model requests,"
+    },
+    {
+      "line": 138,
+      "text": "permissions are checked inside. Only one instance driver may write a given context at a time. Write requests"
+    },
+    {
+      "line": 139,
+      "text": "for one session are serialized and reads use bounded snapshots; no database connection holds a transaction"
+    },
+    {
+      "line": 148,
+      "text": "transaction. [SQLite WAL](https://sqlite.org/wal.html) The first release keeps the single writer and the"
+    },
+    {
+      "line": 159,
+      "text": "| Goal / Budget | `id, original_request_ref, requirement_revision, status, deadline, limits, known_usage, reservations, unknown_usage`; every child task references the same goal |"
+    },
+    {
+      "line": 164,
+      "text": "| Decision / Operation | `decision_id, request_id`; an operation carries `operation_id, decision_id, tool_index, goal_id, epoch, args_hash, grant_revision, status, receipt_ref`; unique by `(decision_id, tool_index)` |"
+    },
+    {
+      "line": 165,
+      "text": "| Approval / Wait | an approval binds a concrete operation, its argument hash, the permission revision and a validity window; a wait binds an instance epoch, ALL/ANY conditions and an optional timer, and both have terminal states |"
+    },
+    {
+      "line": 166,
+      "text": "| ToolReceipt / Verification | a receipt binds the operation to its environment, output and real outcome; a check binds its declared sources/versions, the checker, the input artifact versions, the observation time and the evidence |"
+    },
+    {
+      "line": 167,
+      "text": "| CommandReceipt / Event | commands deduplicate by `command_id` and validate the payload hash; events carry a per-session increasing sequence plus permission scope and a payload reference |"
+    },
+    {
+      "line": 168,
+      "text": "| Artifact | `id, digest, size, kind, owner_scope, storage_ref, completeness`; file bytes are persisted before the database reference |"
+    },
+    {
+      "line": 170,
+      "text": "Each model attempt stores the effective configuration snapshot or an immutable version reference, and"
+    },
+    {
+      "line": 179,
+      "text": "| Admit a complete model response | the unique response reference, the conversation append, the `decision_id`, the tool intents or completion request, and the settlement of known usage |"
+    },
+    {
+      "line": 180,
+      "text": "| Admit a tool terminal state | the unique operation receipt, the event for the instance to consume and the related task facts; the later consumption of the receipt and the context advance commit in the same database |"
+    },
+    {
+      "line": 181,
+      "text": "| Send a message / delegate | the business change, the message/task, the recipient's ready intent and the sender's action receipt |"
+    },
+    {
+      "line": 182,
+      "text": "| Register a wait | the wait conditions, the current completion check and any immediate wakeup intent |"
+    },
+    {
+      "line": 183,
+      "text": "| Complete a goal | the acceptance references, the open-operation check and the goal/task outcome plus external events |"
+    },
+    {
+      "line": 185,
+      "text": "That removes the earlier cross-database recovery branch of \"the checkpoint advanced but the business database"
+    },
+    {
+      "line": 191,
+      "text": "The conversation appends in order and an execution checkpoint stores the current phase, active request, open"
+    },
+    {
+      "line": 193,
+      "text": "demand and a compaction result carries a reference to its originals; each model request is built from the real"
+    },
+    {
+      "line": 196,
+      "text": "Large outputs and complete responses become immutable artifacts, while small structured receipts stay in the"
+    },
+    {
+      "line": 197,
+      "text": "database. An artifact is written to a temporary file, verified, synced and atomically published before the"
+    },
+    {
+      "line": 199,
+      "text": "unpersisted bytes is forbidden. A streaming partial response has its own partial state and is never disguised"
+    },
+    {
+      "line": 200,
+      "text": "as complete. Hashes serve integrity and deduplication, never access control: reading across instances still"
+    },
+    {
+      "line": 211,
+      "text": "### 4.4 Durability strength and versions"
+    },
+    {
+      "line": 214,
+      "text": "difference concerns durability across a system crash, so claiming a speed-up by weakening the sync strategy is"
+    },
+    {
+      "line": 215,
+      "text": "not allowed. [SQLite synchronous](https://sqlite.org/pragma.html#pragma_synchronous) UI token fragments may be"
+    },
+    {
+      "line": 235,
+      "text": "nor blanket file permissions. The user manages and reads every instance, while the Leader cannot read another"
+    },
+    {
+      "line": 239,
+      "text": "a grant ACL. A `channel_id`, when needed, references a grant and creates no second source of permission."
+    },
+    {
+      "line": 244,
+      "text": "worktrees are created on demand. Files in the shared project are readable by authorized instances anyway, so"
+    },
+    {
+      "line": 253,
+      "text": "edges, dispatch\". Advanced management appears per permission, and large MCP catalogs and Skills are discovered"
+    },
+    {
+      "line": 256,
+      "text": "No fixed tool count is treated as a KPI and no giant JSON router swallows every tool. Evaluation records the"
+    },
+    {
+      "line": 257,
+      "text": "initial schema tokens, invalid calls and redundant management turns, and uses them to judge whether a"
+    },
+    {
+      "line": 266,
+      "text": "messages are never silently overwritten. A message receipt does not, by itself, trigger a model reply."
+    },
+    {
+      "line": 293,
+      "text": "receipt of a terminated instance still counts against the original operation and budget and is never injected"
+    },
+    {
+      "line": 306,
+      "text": "instance epoch and the permission revision. States distinguish PREPARED, DISPATCH_COMMITTED, RUNNING, terminal"
+    },
+    {
+      "line": 313,
+      "text": "results. The first release adds no distributed lease, no clock-based takeover and no forced takeover at an"
+    },
+    {
+      "line": 321,
+      "text": "no runner, and an external MCP request gains no recoverable remote semantics merely because it passes through a"
+    },
+    {
+      "line": 332,
+      "text": "real side effect and the stop confirmation are recorded separately. Recovery reads the latest control state for"
+    },
+    {
+      "line": 336,
+      "text": "The runner stores the job token, PID, start time and system boot identity; while alive it may use Linux process"
+    },
+    {
+      "line": 338,
+      "text": "The terminal receipt is saved atomically first and imported into SQLite by the daemon afterwards; the runner"
+    },
+    {
+      "line": 344,
+      "text": "instance and permission mode, and recovery takes the state from verified receipts instead of mixing another"
+    },
+    {
+      "line": 357,
+      "text": "| A user command was recorded but the client saw no reply | return the same receipt by `command_id`; do not resubmit |"
+    },
+    {
+      "line": 358,
+      "text": "| A model request was registered without a complete response | record that double billing and unknown usage are possible; re-request under the unified retry policy |"
+    },
+    {
+      "line": 359,
+      "text": "| A complete model response was published as an artifact but not imported | verify by `request_id` and import once with the same `decision_id` |"
+    },
+    {
+      "line": 360,
+      "text": "| A tool is PREPARED with no dispatch commit | re-check the current permission/budget and allow the first dispatch |"
+    },
+    {
+      "line": 363,
+      "text": "| A result is in the database but the instance has not consumed it | atomically append the receipt reference and advance the execution position without calling the tool again |"
+    },
+    {
+      "line": 364,
+      "text": "| A permanent error such as a missing executor | keep the input, park and deduplicate the notification; resume only on a fix or an explicit retry |"
+    },
+    {
+      "line": 365,
+      "text": "| A system restart made the original process disappear | verify receipts and external state; a vanished process does not prove that no side effect happened |"
+    },
+    {
+      "line": 367,
+      "text": "Same-database transactions settle internal consistency and cannot pull shell commands, MCP or external APIs"
+    },
+    {
+      "line": 383,
+      "text": "receipts, and when all persistent storage is gone it states plainly that unsaved cancellations cannot be"
+    },
+    {
+      "line": 395,
+      "text": "Completions, DeepSeek extensions, Anthropic and Responses are kept, and each is accepted with a real service"
+    },
+    {
+      "line": 400,
+      "text": "Only a complete model response yields executable tool intents, and half a stream remains an unfinished attempt."
+    },
+    {
+      "line": 406,
+      "text": "late after a retry, the atomically selected response advances the request, while other complete or partial"
+    },
+    {
+      "line": 412,
+      "text": "reliable configuration and never defaults to 16K or 64K. Compaction follows real occupancy rather than an"
+    },
+    {
+      "line": 414,
+      "text": "receipt references. The gain of a compaction algorithm is measured separately, and reducing the real window is"
+    },
+    {
+      "line": 417,
+      "text": "A shell receipt carries whether the command actually started, the execution mode, cwd, exit code or signal,"
+    },
+    {
+      "line": 423,
+      "text": "MCP executes through the same permission, approval, budget, cancellation and receipt entry points; a server's"
+    }
+  ]
+}

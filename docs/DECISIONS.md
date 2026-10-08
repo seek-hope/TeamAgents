@@ -20,6 +20,39 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-450 Compare current Codex/Pi sources and improve conversation usability (2026-10-08)
+
+**Approved scope.** Refresh the twelve-dimension comparison and implement local command completion,
+fenced-code grammar coloring and viewport-driven media scheduling. The report and provenance are in
+`review/parity-2026-10-08/REPORT.md` and its manifest; Codex source is pinned to
+`9b738582b13c2cdbeff54af0afd04c50c3e7ba09`, Pi is installed 1.1.0, and the product baseline is `a76722da`.
+No paid model run or task-success parity claim is part of this cycle.
+
+**Interaction.** Only the four existing local commands are completed. A slash prefix opens candidates;
+Up/Down selects, Tab/Enter fills, Esc preserves the draft and hides the menu. Filling has no business effect;
+a subsequent Enter submits. Exact commands keep ordinary submission. Approval focus, drafts, Leader-only
+input and distinct interrupt/exit/delete semantics remain unchanged. Reported Enter-repeat events are ignored.
+
+**Code.** The shared Markdown renderer uses explicit-language syntect/two-face grammars and a dark theme.
+Seven requested language families and diff colors are covered. Unknown languages, incomplete fences, parser
+errors and input above 64 KiB/500 lines or 4096 bytes per line fall back to plain source. Terminal controls
+are removed before parsing; original stored text is unchanged. These are input limits, not a hard deadline
+inside a regex call. Worker isolation for adversarial parsers remains a documented next-cycle item.
+
+**Media.** The fixed baseline fixture displays only the first sixteen of twenty images. Eager transcript
+layout protected every visited cache item, starving later images. Layout now keeps deferred descriptors
+and retained height metadata, while actual viewport intersections request work. The decoded cache stays at
+sixteen entries and its queue at eight; evicted visible images reload, and stale results cannot repopulate
+a new generation. Old completions still wake retries when queue space becomes available. D-449 limits and
+author-workspace confinement remain in force.
+
+**Evidence boundary.** The new presentation model verifies completion-only editing, cancelled-draft
+preservation, visible-only admission, cache bounds and stale-result rejection in 25,545 distinct states;
+five controls each refute their named property. It does not prove parser termination or Rust refinement.
+Five integration tests and two cache unit tests bridge concrete behavior, and the PTY smoke checks filling
+without dispatch and explicit submission exactly once. Final whole-repository and terminal receipts belong
+to the comparison report. Its ranked remaining gaps are retained, not silently treated as completed.
+
 ## D-449 Raise the diagram source limit to 64 KiB and 500 lines (2026-10-08)
 
 The user requested raising the D-448 diagram-code limit from 32 KiB/300 lines to 64 KiB/500 lines.

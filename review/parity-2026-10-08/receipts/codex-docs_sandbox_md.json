@@ -1,0 +1,21 @@
+{
+  "product": "codex",
+  "revision_or_version": "9b738582b13c2cdbeff54af0afd04c50c3e7ba09",
+  "url": "https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/docs/sandbox.md",
+  "retrieved_at": "2026-10-08T13:49:30.952758+00:00",
+  "source_sha256": "61d4dd0ccda2a0cbbde78832e752cdf56b1eb8cf7a54f1d46b52a2824c911249",
+  "source_bytes": 150,
+  "source_lines": 3,
+  "evidence_class": "source or documentation, not executed product behavior",
+  "reproduce": "curl --fail --silent --show-error https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/docs/sandbox.md",
+  "excerpts": [
+    {
+      "line": 1,
+      "text": "## Sandbox & approvals"
+    },
+    {
+      "line": 3,
+      "text": "For information about Codex sandboxing and approvals, see [this documentation](https://developers.openai.com/codex/security)."
+    }
+  ]
+}

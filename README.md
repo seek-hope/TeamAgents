@@ -19,7 +19,7 @@ and reports back; you watch progress and approve anything that leaves the sandbo
 | Document | Contents |
 |---|---|
 | [User guide](docs/USER-GUIDE.md) | Getting started, configuration, permissions, Skills/MCP, recovery and cleanup |
-| [Comparison with Codex CLI, Pi and Hermes](docs/PRODUCT-COMPARISON.md) | a dated, sourced snapshot of how this product compares, and the decisions it surfaces |
+| [Comparison with Codex CLI and Pi](docs/PRODUCT-COMPARISON.md) | a dated, sourced snapshot of how this product compares, and the decisions it surfaces |
 | [Acceptance](docs/ACCEPTANCE.md) | Per-item evidence for the A01–A36 acceptance matrix, plus known gaps |
 | [Capabilities](docs/CAPABILITIES.md) | One row per capability: the check behind it, the boundary that check measured, and what is still open |
 | [Design baseline](docs/DESIGN.md) | Confirmed requirements, architecture and protocol constraints, A01–A36, definition of done |
@@ -233,6 +233,9 @@ tool results. `Ctrl+O` expands or folds tool previews; full stored content remai
 Mermaid, SVG and DOT diagrams and local PNG/JPEG/GIF/WebP/BMP/TIFF/ICO images also render in the conversation
 and session history. `Ctrl+G` switches previews/source. Kitty displays images; other terminals use text diagrams
 or colored blocks. `TEAMAGENTS_GRAPHICS=auto|kitty|blocks|off` selects the display mode (D-448).
+D-450 adds language syntax colors and decodes only visible media, so later images in long histories can load.
+A slash prefix opens local completion: Up/Down selects, `Tab` or Enter fills, and `Esc` keeps the draft.
+Press Enter to submit the filled command.
 
 TUI keys: `Enter` sends to the Leader; `Ctrl+J` or `Shift+Enter` inserts a newline. `↑`/`↓` recalls
 input and walks multiline drafts; `PageUp`/`PageDown` and the wheel scroll history. `Ctrl+W` deletes a word;

@@ -34,6 +34,7 @@ pub struct V2Geometry {
     pub approvals: Rect,
     /// Composer box (chat view only).
     pub composer: Rect,
+    pub completion: Rect,
     pub footer: Rect,
 }
 
@@ -47,10 +48,27 @@ pub fn geometry(app: &V2App, area: Rect) -> V2Geometry {
     } else {
         (app.approvals.len().min(3) as u16 + 2).min(content.height.saturating_sub(composer_h).saturating_sub(1))
     };
-    let chunks =
-        Layout::vertical([Constraint::Min(0), Constraint::Length(approvals_h), Constraint::Length(composer_h)])
-            .split(content);
-    V2Geometry { status: rows[0], chat: chunks[0], approvals: chunks[1], composer: chunks[2], footer: rows[2] }
+    let completion_h = if app.focus == Focus::Composer {
+        (app.completion.candidates(&app.composer).len() as u16)
+            .min(content.height.saturating_sub(composer_h + approvals_h).saturating_sub(1))
+    } else {
+        0
+    };
+    let chunks = Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length(approvals_h),
+        Constraint::Length(completion_h),
+        Constraint::Length(composer_h),
+    ])
+    .split(content);
+    V2Geometry {
+        status: rows[0],
+        chat: chunks[0],
+        approvals: chunks[1],
+        completion: chunks[2],
+        composer: chunks[3],
+        footer: rows[2],
+    }
 }
 
 /// Row inside the approvals box a click maps to (border + padding), or None.
@@ -105,6 +123,7 @@ pub fn handle_mouse(app: &mut V2App, area: Rect, mouse: crossterm::event::MouseE
 pub fn render(frame: &mut Frame, app: &mut V2App) {
     app.pictures.clear();
     app.graphics.begin_frame();
+    app.graphics.deferred = true;
     let area = frame.area();
     if area.width == 0 || area.height == 0 {
         return;
@@ -121,6 +140,7 @@ pub fn render(frame: &mut Frame, app: &mut V2App) {
         render_chat(frame, app, geo.chat);
     }
     render_approvals(frame, app, geo.approvals);
+    render_completion(frame, app, geo.completion);
     render_composer(frame, app, geo.composer);
     render_footer(frame, app, geo.footer);
 }
@@ -201,6 +221,7 @@ fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
     app.last_chat_width = width;
     app.last_chat_height = height.max(1);
     let max_scroll = total.saturating_sub(height);
+    document.resolve(&mut app.graphics, start, area);
     app.pictures = document.visible(start, area);
     let visible: Vec<Line<'static>> = document.lines.into_iter().skip(start).take(height).collect();
     frame.render_widget(Paragraph::new(visible), area);
@@ -242,6 +263,25 @@ fn render_approvals(frame: &mut Frame, app: &V2App, area: Rect) {
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn render_completion(frame: &mut Frame, app: &V2App, area: Rect) {
+    let candidates = app.completion.candidates(&app.composer);
+    let selected = app.completion.selected(&app.composer).min(candidates.len().saturating_sub(1));
+    let (start, count) = window(candidates.len(), selected, area.height as usize);
+    let lines = candidates
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(count)
+        .map(|(index, (name, description))| {
+            Line::styled(
+                format!("{name}  {description}"),
+                if index == selected { selection() } else { Style::default().fg(GREY) },
+            )
+        })
+        .collect::<Vec<_>>();
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 fn render_composer(frame: &mut Frame, app: &V2App, area: Rect) {

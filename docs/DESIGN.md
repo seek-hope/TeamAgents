@@ -504,6 +504,10 @@ uses the same layout and remains explicitly transient. Ctrl+O changes presentati
 D-448 adds bounded asynchronous diagram/image previews and Ctrl+G source fallback. History reads carry
 the author's workspace for local references. Image placement shares transcript row clipping; Kitty image
 IDs are local client resources and are cleaned up independently of session lifetime.
+D-450 adds completion for the existing four local commands; filling edits the draft and only explicit
+submission executes. The shared code renderer adds bounded explicit-language highlighting with plain-source
+fallback. Media layout retains descriptors/heights while only visible blocks request the bounded cache/queue.
+These presentation changes preserve approval input ownership and session/interrupt/exit semantics.
 
 Traces are complete but organised by reference and increment: every request/response, tool argument/receipt,
 retry, compaction, control action and usage record carries a stable identifier and a timestamp, and the

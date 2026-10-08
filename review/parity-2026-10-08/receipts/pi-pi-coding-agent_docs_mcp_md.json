@@ -1,0 +1,365 @@
+{
+  "product": "pi",
+  "revision_or_version": "1.1.0",
+  "url": "file:///home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/%40earendil-works/pi-coding-agent/docs/mcp.md",
+  "retrieved_at": "2026-10-08T13:49:30.961530+00:00",
+  "source_sha256": "a635d721e58b0cbf43f7443a29fd43b8201b62602c62763c1f5fdb3910d7d938",
+  "source_bytes": 19715,
+  "source_lines": 272,
+  "evidence_class": "source or documentation, not executed product behavior",
+  "reproduce": "Read /home/rimuru/.pi/agent/install/releases/1.1.0/node_modules/@earendil-works/pi-coding-agent/docs/mcp.md; pi --version must report 1.1.0. Compare the source_sha256 before using these excerpts.",
+  "excerpts": [
+    {
+      "line": 1,
+      "text": "# MCP Servers"
+    },
+    {
+      "line": 3,
+      "text": "Pi connects to [Model Context Protocol](https://modelcontextprotocol.io) servers over stdio or streamable HTTP and makes their tools and resources available to the model."
+    },
+    {
+      "line": 10,
+      "text": "pi mcp add filesystem -- npx -y @modelcontextprotocol/server-filesystem ."
+    },
+    {
+      "line": 11,
+      "text": "pi mcp list"
+    },
+    {
+      "line": 18,
+      "text": "pi mcp add docs --url https://example.com/mcp --bearer-token-env-var DOCS_TOKEN"
+    },
+    {
+      "line": 19,
+      "text": "pi mcp list"
+    },
+    {
+      "line": 22,
+      "text": "These commands add user-level servers by default. Add `--local` or `-l` to write the project configuration instead:"
+    },
+    {
+      "line": 25,
+      "text": "pi mcp add -l tools --env API_KEY='${TOOLS_KEY}' -- uvx tools-mcp"
+    },
+    {
+      "line": 28,
+      "text": "Use `/mcp` inside an interactive session to inspect connections, sign in, reconnect, change exposure, or enable and disable servers. Run `/reload` after adding, removing, or changing a server outside the session."
+    },
+    {
+      "line": 30,
+      "text": "## Configure servers"
+    },
+    {
+      "line": 32,
+      "text": "Pi reads user-level servers from `~/.pi/agent/mcp.json` and project servers from `.pi/mcp.json`. Project configuration is read only after [project trust](security.md#understand-project-trust) is granted. A project entry replaces a user-level entry with the same name."
+    },
+    {
+      "line": 36,
+      "text": "```json"
+    },
+    {
+      "line": 38,
+      "text": "  \"mcpServers\": {"
+    },
+    {
+      "line": 44,
+      "text": "The format matches other MCP clients:"
+    },
+    {
+      "line": 46,
+      "text": "```json"
+    },
+    {
+      "line": 48,
+      "text": "  \"mcpServers\": {"
+    },
+    {
+      "line": 54,
+      "text": "      \"url\": \"https://example.com/mcp\","
+    },
+    {
+      "line": 55,
+      "text": "      \"headers\": { \"Authorization\": \"Bearer ${DOCS_TOKEN}\" },"
+    },
+    {
+      "line": 73,
+      "text": "Keep personal servers and servers with credentials in the user-level file. Use the project file only for servers the project requires, and only in trusted projects."
+    },
+    {
+      "line": 75,
+      "text": "### Configuration rules"
+    },
+    {
+      "line": 77,
+      "text": "- Server names may contain only letters, digits, `_`, and `-`. Tools are named `mcp__<server>__<tool>`, with every character other than letters, digits, and `_` replaced by `_`; tools of a server whose names then collide all get a hash suffix. Server names that differ only in `-` and `_` count as the same server: a second one is rejected, and a `mcp.json` server overrides a registered one."
+    },
+    {
+      "line": 78,
+      "text": "- `type` is optional. A `command` selects stdio and a `url` selects streamable HTTP. When present, `type` must be `stdio`, `http`, or `streamable-http`."
+    },
+    {
+      "line": 79,
+      "text": "- `sse` is rejected. Servers that document an SSE endpoint often also provide streamable HTTP, commonly at `/mcp` instead of `/sse`."
+    },
+    {
+      "line": 81,
+      "text": "- `env` and `headers` values can use environment variables such as `${GITHUB_TOKEN}`. They can also run a command with `!command`, but the command must make up the whole value, for example `\"Authorization\": \"!echo Bearer $(gh auth token)\"`."
+    },
+    {
+      "line": 84,
+      "text": "`pi mcp add` and `pi mcp remove` cover common changes from a shell. See [MCP commands](cli.md#mcp-commands) for their options."
+    },
+    {
+      "line": 88,
+      "text": "`/mcp` lists configured servers with their state, tool count, exposure, and configuration source. Servers that need attention appear first. Select a server to inspect its tools and connection details, reconnect, sign in or out, change exposure, or enable and disable it."
+    },
+    {
+      "line": 90,
+      "text": "Exposure and enabled-state changes are saved to the file that defines the server without replacing unrelated content. In a trusted project, \"Enable in this project\" and \"Disable in this project\" add a project override for a user-level server; later changes to that server are saved to the override. Disabled servers remain listed. Outside the interactive TUI, `/mcp` prints server status; `/mcp login <server>`, `/mcp logout <server>`, and `/mcp reconnect <server>` perform those actions directly."
+    },
+    {
+      "line": 92,
+      "text": "Shell commands work without a session: `pi mcp add`, `pi mcp remove`, `pi mcp list`, `pi mcp login`, and `pi mcp logout`. Shell commands do not load extensions."
+    },
+    {
+      "line": 96,
+      "text": "Run `pi mcp list` to connect to every enabled server and print its state, tools, and errors. It exits with status 1 when an entry is invalid or an enabled server is not connected. `/mcp` shows the full connection error and the tail of stderr from a failed stdio server."
+    },
+    {
+      "line": 98,
+      "text": "Pi reports configuration errors, failed connections, and required sign-ins once after startup. Server logging notifications are appended to `~/.pi/agent/mcp.log` as `<time> [<server>] <level> <logger>: <message>`. The file moves to `mcp.log.1` after it grows past 5 MB."
+    },
+    {
+      "line": 100,
+      "text": "Pi connects every enabled server in the background when a session starts. A server's tools appear once it connects; the `codemode` description does not list them, so it does not change when servers connect. The first prompt waits up to 10 seconds only for servers with `direct` tools, which must be declared in its request. Other servers are waited for when they are needed: a codemode script waits for the servers it names (`mcp__<server>`) and, when it calls `searchTools()` or reads `ALL_TOOLS`, for all of them; `tool_search` and the resource tools also wait for all of them. HTTP network errors and transient statuses (408, 429, and 5xx) are retried twice. A dropped connection is shown as disconnected and reconnects on the next call. When a server announces a changed tool list, new tools are added and withdrawn tools become unreachable."
+    },
+    {
+      "line": 104,
+      "text": "## Migrate configuration from another client"
+    },
+    {
+      "line": 106,
+      "text": "Move the converted entry under `mcpServers` in `mcp.json`, then run `pi mcp list` to validate it."
+    },
+    {
+      "line": 110,
+      "text": "| Claude Desktop, Claude Code, or Cursor | Copy the existing `mcpServers` entry. |"
+    },
+    {
+      "line": 112,
+      "text": "| Codex | Convert `[mcp_servers.<name>]` TOML fields such as `command`, `args`, `env`, and `url` to JSON. |"
+    },
+    {
+      "line": 117,
+      "text": "Remote servers that use OAuth, such as Sentry, need no credentials in `mcp.json`:"
+    },
+    {
+      "line": 119,
+      "text": "```json"
+    },
+    {
+      "line": 121,
+      "text": "  \"mcpServers\": {"
+    },
+    {
+      "line": 122,
+      "text": "    \"sentry\": { \"url\": \"https://mcp.sentry.dev/mcp\" }"
+    },
+    {
+      "line": 127,
+      "text": "When the server rejects an unauthenticated connection, `/mcp` shows that it needs sign-in. Select \"Sign in\", run `/mcp login sentry`, or run `pi mcp login sentry`. Pi opens the authorization page and waits for approval. If the browser runs on another machine, such as over SSH, paste its redirected URL into the sign-in screen. A running session uses the new credentials on its next turn."
+    },
+    {
+      "line": 129,
+      "text": "Pi registers itself with the authorization server, stores tokens in `~/.pi/agent/mcp-auth.json`, and refreshes access tokens when they expire or the server rejects them. If a server later requests additional scope, Pi asks for sign-in again. Signing out deletes the stored credentials."
+    },
+    {
+      "line": 131,
+      "text": "Credentials belong to a server name and URL. Servers with the same URL under different names, such as one per account, sign in separately; servers with the same name and URL in different `mcp.json` files share one sign-in."
+    },
+    {
+      "line": 133,
+      "text": "OAuth applies to HTTP servers without an `Authorization` header. For a server that does not support dynamic client registration, configure a registered client:"
+    },
+    {
+      "line": 135,
+      "text": "```json"
+    },
+    {
+      "line": 137,
+      "text": "  \"mcpServers\": {"
+    },
+    {
+      "line": 139,
+      "text": "      \"url\": \"https://mcp.example.com/mcp\","
+    },
+    {
+      "line": 148,
+      "text": "Set `scope` to a space-separated list for servers that do not advertise their required scopes. Otherwise, Pi requests the advertised scopes. Later scope requests are added to the configured value."
+    },
+    {
+      "line": 152,
+      "text": "```json"
+    },
+    {
+      "line": 154,
+      "text": "  \"mcpServers\": {"
+    },
+    {
+      "line": 155,
+      "text": "    \"figma\": { \"url\": \"https://mcp.figma.com/mcp\", \"oauth\": { \"clientName\": \"Claude Code\" } }"
+    },
+    {
+      "line": 164,
+      "text": "```json"
+    },
+    {
+      "line": 166,
+      "text": "  \"mcpServers\": {"
+    },
+    {
+      "line": 167,
+      "text": "    \"example\": { \"url\": \"https://mcp.example.com/mcp\", \"oauth\": { \"clientRegistration\": \"cimd\" } }"
+    },
+    {
+      "line": 172,
+      "text": "The client ID is `https://pi.dev/oauth/client.json` with the redirect URI `http://127.0.0.1:<port>/callback`. If the authorization server does not send the `iss` parameter in authorization responses (RFC 9207), Pi uses a document and redirect path specific to the MCP server instead: `https://pi.dev/oauth/<id>/client.json` with `http://127.0.0.1:<port>/callback/<id>`. The authorization server must advertise Client ID Metadata Document support and public clients, or sign-in fails. `cimd` cannot be combined with `clientId` or `clientName`, and a `callbackUrl` must use `localhost` or `127.0.0.1` with the path `/callback`."
+    },
+    {
+      "line": 176,
+      "text": "```json"
+    },
+    {
+      "line": 178,
+      "text": "  \"mcpServers\": {"
+    },
+    {
+      "line": 180,
+      "text": "      \"url\": \"https://mcp.example.com/mcp\","
+    },
+    {
+      "line": 181,
+      "text": "      \"oauth\": { \"authServerMetadataUrl\": \"https://example.okta.com/.well-known/openid-configuration\" }"
+    },
+    {
+      "line": 187,
+      "text": "Pi uses that document instead of discovery and trusts it as configured, so only point it at a document you trust. The URL must use HTTPS, except on `localhost`, `127.0.0.1`, or `[::1]`."
+    },
+    {
+      "line": 191,
+      "text": "Each server tool is registered as `mcp__<server>__<tool>`. The server's `exposure` determines how the model reaches it:"
+    },
+    {
+      "line": 195,
+      "text": "| `codemode` (default) | Callable from [`codemode`](cli.md#tools) scripts, but neither declared to the model nor listed in the codemode description. Scripts find tools with `searchTools()`, `describeTool()`, or `ALL_TOOLS`. | General MCP servers, especially when scripts should combine or filter calls. |"
+    },
+    {
+      "line": 202,
+      "text": "Servers with `codemode` or `deferred` tools are listed in the `mcp_servers` section of the system prompt, with how their tools are reached and one line from the configured `description` or, once connected, from the server instructions. Pi updates the section when a prompt starts, after waiting for servers with `direct` tools. When it changed, for example because a server connected and its summary became available, Pi appends the new section to the conversation instead of changing tool declarations, so earlier messages stay cached. `describeNamespace()` and the `namespace` option of `searchTools()` accept `mcp__dev-radius`, `mcp__dev_radius`, `dev-radius`, or `dev_radius`."
+    },
+    {
+      "line": 208,
+      "text": "```json"
+    },
+    {
+      "line": 210,
+      "text": "  \"mcpServers\": {"
+    },
+    {
+      "line": 212,
+      "text": "      \"url\": \"https://api.githubcopilot.com/mcp/\","
+    },
+    {
+      "line": 224,
+      "text": "`pi mcp list` marks tools whose exposure differs from their server. The Tools view in `/mcp` also shows the effective exposure."
+    },
+    {
+      "line": 226,
+      "text": "Tools with `codemode` or `deferred` exposure can be reached through either indirect mechanism: codemode scripts can call them, and `tool_search` can load them. Codemode calls do not depend on the active tool set, so they remain available after `/tree`, resume, and fork. Tools loaded by `tool_search` are recorded in the transcript and remain declared on that branch."
+    },
+    {
+      "line": 228,
+      "text": "`--tools` does not remove MCP tools unless one of its entries starts with `mcp__`; `pi --tools read,codemode,'mcp__radius__*'` keeps only the tools of `radius`. `--exclude-tools` accepts the same patterns, and `--no-mcp` disables MCP for one run (see [Tools](cli.md#mcp-tools))."
+    },
+    {
+      "line": 230,
+      "text": "To keep `codemode` active without MCP servers, add `\"defaultTools\": [\"+codemode\"]` to [settings](settings.md#tools). To prevent automatic codemode activation, set `\"autoEnableCodemode\": false` beside `mcpServers`. A project value overrides the user-level value. Pi warns once when neither `codemode` nor `tool_search` is active and non-direct tools cannot be called."
+    },
+    {
+      "line": 232,
+      "text": "Text results over 20 KB reach the model with their middle removed around a `\u2026N chars truncated\u2026` marker. The full text is saved to a temporary file named in the result. Codemode scripts receive the complete result and can reduce it before returning output to the model."
+    },
+    {
+      "line": 234,
+      "text": "Codemode scripts receive the complete MCP `CallToolResult`, including `content`, `structuredContent`, and `isError`. A result with `isError` resolves inside scripts but is reported as an error for direct calls. `image(result.content[0])` forwards an image block. Server instructions are not part of any tool description; scripts read them with `describeNamespace(\"mcp__<server>\")`, which also returns the server's tool names."
+    },
+    {
+      "line": 240,
+      "text": "- `list_mcp_resources` lists resources as JSON: `{ server?, resources: [{ server, uri, name, ... }], nextCursor? }`. With `server`, it lists one page; `cursor` continues with the next page. Without `server`, it lists every resource from every server."
+    },
+    {
+      "line": 241,
+      "text": "- `list_mcp_resource_templates` lists URI templates for resources the servers do not list directly."
+    },
+    {
+      "line": 242,
+      "text": "- `read_mcp_resource` reads a resource by `server` and `uri`. Text reaches the model as text and images as images. Other binary resources are saved to temporary files, and the model receives the path. Scripts receive `{ server, uri, contents }`."
+    },
+    {
+      "line": 244,
+      "text": "These tools reach every enabled, non-hidden server with resources. Their exposure is the widest exposure among those servers: `direct`, then `codemode` or `deferred`. Resource links in tool results identify `read_mcp_resource` and the server."
+    },
+    {
+      "line": 246,
+      "text": "Resources for MCP Apps, identified by `ui://` URIs or `text/html;profile=mcp-app`, are omitted because Pi does not render them. Resource icons are also omitted."
+    },
+    {
+      "line": 250,
+      "text": "## Permissions"
+    },
+    {
+      "line": 252,
+      "text": "Every MCP call passes through Pi's tool pipeline. Extension `tool_call` and `tool_result` handlers, including permission gates, therefore apply to MCP tools. Calls made from codemode scripts carry the codemode call ID as `parentToolCallId`."
+    },
+    {
+      "line": 254,
+      "text": "`pi.getAllTools()` reports the annotations declared by each server: `readOnlyHint`, `destructiveHint`, `idempotentHint`, and `openWorldHint`. Permission extensions can use these hints to decide which calls require confirmation (see [Tool exposure](extensions.md#tool-exposure)). Resource tools are marked read-only."
+    },
+    {
+      "line": 256,
+      "text": "## Extensions and SDK"
+    },
+    {
+      "line": 258,
+      "text": "### Add servers from extensions"
+    },
+    {
+      "line": 260,
+      "text": "Extensions can add servers for the current session with `pi.registerMcpServer(name, config)`, using the same shape as an `mcpServers` entry (see [MCP servers in extensions](extensions.md#mcp-servers)). Registered servers connect like configured servers and appear in `/mcp` with the extension as their source."
+    },
+    {
+      "line": 262,
+      "text": "Changes to enabled state or exposure apply only to the current session. A file-configured server with the same name takes precedence, and `/mcp` lists the overridden registration. `pi mcp` shell commands do not load extensions and only see file-configured servers."
+    },
+    {
+      "line": 264,
+      "text": "### Replace the built-in MCP support"
+    },
+    {
+      "line": 266,
+      "text": "An installed extension that registers `/mcp`, such as `pi-mcp-adapter`, replaces the built-in MCP support for sessions. Pi then does not read `mcp.json` or connect its servers in a session, and `/mcp` belongs to the extension. Remove the extension to restore the built-in behavior. To disable built-in MCP support without a replacement, disable `mcp` under Built-in in `pi config`, or set `\"extensions\": [\"-builtin:mcp\"]` in [settings](settings.md#resources). `--no-mcp` disables it for one run."
+    },
+    {
+      "line": 268,
+      "text": "An extension that registers `codemode` or `tool_search` similarly replaces the built-in tool with that name. Shell-level `pi mcp` commands always use the built-in implementation."
+    },
+    {
+      "line": 270,
+      "text": "### Use MCP from the SDK"
+    },
+    {
+      "line": 272,
+      "text": "SDK sessions do not load built-in extensions. Add the MCP extension, the codemode extension for `codemode` servers, and the tool-search extension for `deferred` servers to the resource loader. See [Codemode and MCP](sdk.md#codemode-mcp)."
+    }
+  ]
+}

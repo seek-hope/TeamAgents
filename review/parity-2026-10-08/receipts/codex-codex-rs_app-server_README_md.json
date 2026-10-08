@@ -1,0 +1,413 @@
+{
+  "product": "codex",
+  "revision_or_version": "9b738582b13c2cdbeff54af0afd04c50c3e7ba09",
+  "url": "https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/codex-rs/app-server/README.md",
+  "retrieved_at": "2026-10-08T13:49:30.279368+00:00",
+  "source_sha256": "7b5ae91d818bfcfc19d9503a3d6850584bb5ad07c1299fbe68a339cbd289ff12",
+  "source_bytes": 35732,
+  "source_lines": 556,
+  "evidence_class": "source or documentation, not executed product behavior",
+  "reproduce": "curl --fail --silent --show-error https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/codex-rs/app-server/README.md",
+  "excerpts": [
+    {
+      "line": 5,
+      "text": "Invalid IDs or more than 100 entries return JSON-RPC error `-32602`;"
+    },
+    {
+      "line": 15,
+      "text": "DB-only requests (`useStateDbOnly: true`) return JSON-RPC error `-32603`"
+    },
+    {
+      "line": 29,
+      "text": "denial limit, and interrupted status; neither emits a separate `Error` event."
+    },
+    {
+      "line": 35,
+      "text": "complies, `model/list` returns JSON-RPC error `-32600` asking the client to restart Codex,"
+    },
+    {
+      "line": 40,
+      "text": "# MCP App UI"
+    },
+    {
+      "line": 42,
+      "text": "`mcpToolCall.mcpAppUi` records the invoked descriptor's `resourceUri`"
+    },
+    {
+      "line": 44,
+      "text": "unsupported preferences leave `mcpAppUi` unset; `mcpAppResourceUri` retains the URI"
+    },
+    {
+      "line": 47,
+      "text": "render without waiting for the full MCP catalog."
+    },
+    {
+      "line": 67,
+      "text": "config/account reloads. Local requirements-file edits take effect on"
+    },
+    {
+      "line": 74,
+      "text": "connections. TUI worktree cloud loaders retain that shared policy on reload."
+    },
+    {
+      "line": 78,
+      "text": "Local UI clients can cancel a native user-verification RPC by sending"
+    },
+    {
+      "line": 83,
+      "text": "`requestId` is the original status, enroll, delete, or verify RPC's string or"
+    },
+    {
+      "line": 85,
+      "text": "for each operation and a distinct ID for the cancel RPC. Unknown, finished,"
+    },
+    {
+      "line": 89,
+      "text": "prompt to close. The original RPC completes independently, with"
+    },
+    {
+      "line": 90,
+      "text": "`cancelled/interrupted` when cancellation prevents completion. Cancellation"
+    },
+    {
+      "line": 91,
+      "text": "cannot roll back completed effects. It remains effective while a proof waits for"
+    },
+    {
+      "line": 95,
+      "text": "`userVerification/verify` RPC. Clients must cancel that RPC separately and discard"
+    },
+    {
+      "line": 96,
+      "text": "late proofs after the approval is canceled or resolved. Only one native worker"
+    },
+    {
+      "line": 100,
+      "text": "# Hosted Codex Apps MCP protocol"
+    },
+    {
+      "line": 104,
+      "text": "`codex_apps_mcp_2026_07_28 = true` under `[features]`, or send a true runtime"
+    },
+    {
+      "line": 106,
+      "text": "when the server does not support it. Explicit config takes precedence."
+    },
+    {
+      "line": 108,
+      "text": "stdio servers. The existing `mcp_2026_07_28` flag still governs eligible other"
+    },
+    {
+      "line": 114,
+      "text": "`mcpServer/resource/read` accepts `target: {connectorId, linkId}` for direct hosted app reads without tool discovery. A string `linkId` selects that account; `null` explicitly requests no-auth access subject to backend policy. Do not infer no-auth access from unknown or synthetic links."
+    },
+    {
+      "line": 118,
+      "text": "# Project trust"
+    },
+    {
+      "line": 120,
+      "text": "`thread/start` does not persist project trust for a directory where configuration"
+    },
+    {
+      "line": 122,
+      "text": "directory. Starting a task there does not preapprove project configuration added"
+    },
+    {
+      "line": 123,
+      "text": "later. Existing trust decisions and permission checks for projects are unchanged."
+    },
+    {
+      "line": 128,
+      "text": "worker with JSON-RPC error `-32600`. The worker's owner controls its shutdown."
+    },
+    {
+      "line": 132,
+      "text": "After the owner releases the worker, its saved conversation can be archived or"
+    },
+    {
+      "line": 137,
+      "text": "`environment/info` connects to a configured environment by `environmentId` and"
+    },
+    {
+      "line": 147,
+      "text": "host-owned plugin service for bundled, in-process TUI sessions (`codex-tui`) and"
+    },
+    {
+      "line": 150,
+      "text": "independent of whether a key exists; TUI/Desktop/mobile do not advertise this MCP"
+    },
+    {
+      "line": 158,
+      "text": "JSON through MCP transport and `mcpServer/elicitation/request`. Clients may use"
+    },
+    {
+      "line": 159,
+      "text": "this metadata for extension-specific presentation and must continue to accept"
+    },
+    {
+      "line": 185,
+      "text": "The trusted UI host owns backend registration: obtain an enrollment challenge,"
+    },
+    {
+      "line": 197,
+      "text": "description is at most 4096 bytes. The UI obtains approval for that display"
+    },
+    {
+      "line": 203,
+      "text": "status remains available for local readiness. Dropping an embedded RPC, disconnecting,"
+    },
+    {
+      "line": 207,
+      "text": "`userVerification/verify` RPC. The GUI must use `userVerification/cancel` to"
+    },
+    {
+      "line": 208,
+      "text": "cancel that RPC and discard late proofs when an approval is canceled or resolved."
+    },
+    {
+      "line": 215,
+      "text": "Failures use the normal JSON-RPC error envelope with closed `{type, reason}` data:"
+    },
+    {
+      "line": 228,
+      "text": "concurrency limit, and cooldown. Acknowledgement does not imply completion or that"
+    },
+    {
+      "line": 235,
+      "text": "`configRequirements/read` reports `supportsIndependentSpeedModes: true` when"
+    },
+    {
+      "line": 241,
+      "text": "Existing threads retain their provider configuration. Input RPCs reject requests when managed"
+    },
+    {
+      "line": 242,
+      "text": "`model_provider` or `model_providers` requirements no longer match that configuration, or cannot"
+    },
+    {
+      "line": 243,
+      "text": "be loaded. This covers turn start/steer, review, compaction, manual queue start, and active goal"
+    },
+    {
+      "line": 244,
+      "text": "updates. Realtime connections use separate routing configuration and are not checked here."
+    },
+    {
+      "line": 245,
+      "text": "Interrupt, realtime stop, and goal pause/clear remain available. User and project"
+    },
+    {
+      "line": 246,
+      "text": "configuration changes alone do not invalidate existing threads."
+    },
+    {
+      "line": 250,
+      "text": "If `model_providers.amazon-bedrock.aws.credential_export` is configured, Bedrock setup and"
+    },
+    {
+      "line": 251,
+      "text": "Bedrock login return an error without changing configuration or saved credentials. Remove the"
+    },
+    {
+      "line": 252,
+      "text": "exporter configuration before selecting another credential source. `aws.credential_export` and"
+    },
+    {
+      "line": 253,
+      "text": "`aws.profile` cannot be configured together."
+    },
+    {
+      "line": 258,
+      "text": "the application's HTTP policy. Configured credential exporters and AWS reauthentication commands"
+    },
+    {
+      "line": 262,
+      "text": "`account/bedrock/checkGovCloudRequirements` with `{}`. The server reloads configuration and"
+    },
+    {
+      "line": 263,
+      "text": "requirements and returns `{ isGovCloud, shouldWarn }`. An explicitly configured official"
+    },
+    {
+      "line": 269,
+      "text": "Non-Bedrock providers and commercial regions return both fields as `false`. Configuration or"
+    },
+    {
+      "line": 270,
+      "text": "region resolution failures return an RPC error. This check does not block login or certify"
+    },
+    {
+      "line": 271,
+      "text": "the entire network configuration."
+    },
+    {
+      "line": 275,
+      "text": "- `thread/attachment/add` \u2014 add a durable resource reference to a stored thread without loading it. Repeated writes with the same attachment type and identity key return the existing attachment."
+    },
+    {
+      "line": 282,
+      "text": "Attachments record the resources currently associated with a thread, independently of conversation history. Clients can add, remove, and list attachments for one stored thread at a time without resuming those threads. Adding or removing an attachment does not create or delete the underlying resource or rewrite history. An attachment is idempotently identified by its thread, `attachmentType`, and `identityKey`. For pull requests, clients should reuse the canonical application identity `JSON.stringify([canonicalHostname, lowercaseOwner, lowercaseRepository, pullRequestNumber])` so addition and removal agree across surfaces."
+    },
+    {
+      "line": 284,
+      "text": "```json"
+    },
+    {
+      "line": 335,
+      "text": "`thread/attachmentOwner/list` performs the reverse lookup: pass `attachmentType` and `identityKey` to get `data: [{threadId, archived}]` and `nextCursor`. Omit `archived` (or pass `null`) to include both active and archived threads; `false` selects active threads and `true` selects archived threads. Use the same identity and archive filter on subsequent cursor pages. The lookup covers only this app-server's configured thread store, not other hosts or stores. Results describe current membership and are not an atomic resource-cleanup check: attachments can change after a lookup."
+    },
+    {
+      "line": 337,
+      "text": "A non-ephemeral fork copies the source thread's current attachments, even when forking at an earlier turn. The copies have new attachment IDs and creation timestamps, but retain the same resource identities and payloads. Clients use `forkedFromId` on `thread/started` to detect forks and call `thread/attachment/list` with the new thread ID to load their attachments. Fork copying does not emit per-attachment updates; explicit add/remove operations still do. Copying is awaited before publishing the fork, but is best effort: a copy failure is logged and the conversation fork succeeds without attachments. Membership can then change independently on either thread; the referenced resources themselves are not copied. Resuming a fork does not repeat the copy."
+    },
+    {
+      "line": 339,
+      "text": "Attachment creation and deletion requests using the same thread ID are serialized across connections. The requesting client receives its response before the compact update is broadcast, and duplicate creates or absent deletes do not emit updates. Deleting the owning thread removes its attachments under the same lifecycle exclusion; queued attachment mutations then report that the thread was not found."
+    },
+    {
+      "line": 341,
+      "text": "# Thread plugin settings"
+    },
+    {
+      "line": 343,
+      "text": "`thread/settings/update` and `turn/start` accept `disabledPluginIds`, a list of"
+    },
+    {
+      "line": 344,
+      "text": "`PluginSummary.id` values from `plugin/list`, in the"
+    },
+    {
+      "line": 345,
+      "text": "`<plugin-name>@<marketplace-name>` format. A supplied list replaces the selection;"
+    },
+    {
+      "line": 347,
+      "text": "not yet filter plugin capabilities."
+    },
+    {
+      "line": 349,
+      "text": "Read the selection from `threadSettings.disabledPluginIds` in"
+    },
+    {
+      "line": 350,
+      "text": "`thread/settings/updated` notifications, or from `disabledPluginIds` in"
+    },
+    {
+      "line": 351,
+      "text": "`thread/start`, `thread/resume`, and `thread/fork` responses. Selections persist"
+    },
+    {
+      "line": 352,
+      "text": "across resume. Forks restore the selection from the history retained at the"
+    },
+    {
+      "line": 353,
+      "text": "requested fork boundary."
+    },
+    {
+      "line": 357,
+      "text": "`thread/start`, `thread/resume`, `thread/settings/update`, and `turn/start` still"
+    },
+    {
+      "line": 368,
+      "text": "# MCP server capabilities"
+    },
+    {
+      "line": 370,
+      "text": "`mcpServerStatus/list` returns `serverCapabilities` for each initialized MCP server"
+    },
+    {
+      "line": 372,
+      "text": "This is the server's advertised MCP capabilities object, including its `extensions`"
+    },
+    {
+      "line": 377,
+      "text": "reuses the thread's current MCP connection and tool catalog after any pending"
+    },
+    {
+      "line": 382,
+      "text": "# MCP OAuth login"
+    },
+    {
+      "line": 384,
+      "text": "`mcpServer/oauth/login` only returns HTTP(S) authorization URLs. Authorization"
+    },
+    {
+      "line": 394,
+      "text": "and migration remain supported so resuming, reading, and forking those threads"
+    },
+    {
+      "line": 398,
+      "text": "# MCP configuration reload"
+    },
+    {
+      "line": 400,
+      "text": "`config/mcpServer/reload` returns an error when a loaded thread rejects the"
+    },
+    {
+      "line": 401,
+      "text": "refreshed enterprise policy. The rejected thread retains its previous configuration"
+    },
+    {
+      "line": 402,
+      "text": "layers with enterprise MCP disabled. Other planned thread refreshes are processed"
+    },
+    {
+      "line": 408,
+      "text": "Call `mcpServer/oauth/login` with a directly configured server's `name` and its"
+    },
+    {
+      "line": 410,
+      "text": "`mcpServer/oauthLogin/completed` by `loginId`. Starting another enterprise sign-in"
+    },
+    {
+      "line": 423,
+      "text": "configured base URL."
+    },
+    {
+      "line": 425,
+      "text": "Responses HTTP (including compaction) and WebSockets wait for discovery and preserve API paths."
+    },
+    {
+      "line": 434,
+      "text": "## Windows sandbox implementation selection"
+    },
+    {
+      "line": 436,
+      "text": "`windowsSandbox/setupStart` applies only to the legacy `elevated` and"
+    },
+    {
+      "line": 437,
+      "text": "`unelevated` backends. `windowsSandbox/readiness` reports `ready` when MXC is"
+    },
+    {
+      "line": 439,
+      "text": "`allowedWindowsSandboxImplementations` requirement governs only the legacy"
+    },
+    {
+      "line": 441,
+      "text": "compatibility but is not emitted. Non-Windows hosts report `notConfigured`."
+    },
+    {
+      "line": 443,
+      "text": "MXC uses the standard `command/exec` streaming and process-control path, including"
+    },
+    {
+      "line": 444,
+      "text": "ConPTY when `tty` is enabled. The buffered legacy Windows sandbox restrictions on"
+    },
+    {
+      "line": 449,
+      "text": "Providers configured with `gateway_oauth` require a secondary OAuth credential in"
+    },
+    {
+      "line": 451,
+      "text": "`initialize.capabilities.explicitGatewayOauth: true`, complete initialization, and"
+    },
+    {
+      "line": 466,
+      "text": "`account/gatewayOAuth/login` RPC starts browser authorization. Requests needing"
+    }
+  ]
+}

@@ -1,0 +1,413 @@
+{
+  "product": "codex",
+  "revision_or_version": "9b738582b13c2cdbeff54af0afd04c50c3e7ba09",
+  "url": "https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/codex-rs/core/src/config/mod.rs",
+  "retrieved_at": "2026-10-08T13:49:31.123021+00:00",
+  "source_sha256": "ae6a1407aea741e254d108ad7ff22417290692d6be806bcc1eeb72388c08f9bc",
+  "source_bytes": 203275,
+  "source_lines": 5007,
+  "evidence_class": "source or documentation, not executed product behavior",
+  "reproduce": "curl --fail --silent --show-error https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/codex-rs/core/src/config/mod.rs",
+  "excerpts": [
+    {
+      "line": 1,
+      "text": "use crate::config::edit::ConfigEdit;"
+    },
+    {
+      "line": 2,
+      "text": "use crate::config::edit::ConfigEditsBuilder;"
+    },
+    {
+      "line": 7,
+      "text": "use crate::windows_sandbox::WindowsSandboxLevelExt;"
+    },
+    {
+      "line": 8,
+      "text": "use crate::windows_sandbox::resolve_windows_sandbox_mode;"
+    },
+    {
+      "line": 9,
+      "text": "use crate::windows_sandbox::windows_sandbox_level_for_legacy_checks;"
+    },
+    {
+      "line": 10,
+      "text": "use codex_agent_roles::load_agent_roles;"
+    },
+    {
+      "line": 11,
+      "text": "use codex_config::CloudConfigBundleLoader;"
+    },
+    {
+      "line": 12,
+      "text": "use codex_config::ConfigLayerSource;"
+    },
+    {
+      "line": 13,
+      "text": "use codex_config::ConfigLayerStack;"
+    },
+    {
+      "line": 14,
+      "text": "use codex_config::ConfigPathContext;"
+    },
+    {
+      "line": 15,
+      "text": "use codex_config::ConfigRequirements;"
+    },
+    {
+      "line": 16,
+      "text": "use codex_config::ConfigRequirementsToml;"
+    },
+    {
+      "line": 17,
+      "text": "use codex_config::ConstrainedWithSource;"
+    },
+    {
+      "line": 18,
+      "text": "use codex_config::FeatureRequirementsToml;"
+    },
+    {
+      "line": 19,
+      "text": "use codex_config::ManagedAuthPolicy;"
+    },
+    {
+      "line": 20,
+      "text": "use codex_config::McpEnterpriseManagedAuthConfig;"
+    },
+    {
+      "line": 21,
+      "text": "use codex_config::McpServerRequirement;"
+    },
+    {
+      "line": 22,
+      "text": "use codex_config::PluginRequirementsToml;"
+    },
+    {
+      "line": 23,
+      "text": "use codex_config::ProfileV2Name;"
+    },
+    {
+      "line": 24,
+      "text": "use codex_config::ResidencyRequirement;"
+    },
+    {
+      "line": 25,
+      "text": "use codex_config::SandboxModeRequirement;"
+    },
+    {
+      "line": 26,
+      "text": "use codex_config::Sourced;"
+    },
+    {
+      "line": 27,
+      "text": "use codex_config::ThreadConfigLoader;"
+    },
+    {
+      "line": 28,
+      "text": "use codex_config::config_toml::CircuitBreakAction;"
+    },
+    {
+      "line": 29,
+      "text": "use codex_config::config_toml::ConfigToml;"
+    },
+    {
+      "line": 30,
+      "text": "use codex_config::config_toml::DEFAULT_PROJECT_DOC_MAX_BYTES;"
+    },
+    {
+      "line": 31,
+      "text": "use codex_config::config_toml::ProjectConfig;"
+    },
+    {
+      "line": 32,
+      "text": "use codex_config::config_toml::RealtimeAudioConfig;"
+    },
+    {
+      "line": 33,
+      "text": "use codex_config::config_toml::RealtimeConfig;"
+    },
+    {
+      "line": 34,
+      "text": "use codex_config::config_toml::ThreadStoreToml;"
+    },
+    {
+      "line": 35,
+      "text": "use codex_config::config_toml::validate_model_providers;"
+    },
+    {
+      "line": 36,
+      "text": "use codex_config::loader::load_config_layers_state;"
+    },
+    {
+      "line": 37,
+      "text": "use codex_config::loader::project_trust_key;"
+    },
+    {
+      "line": 38,
+      "text": "use codex_config::permissions_toml::PermissionProfileToml;"
+    },
+    {
+      "line": 39,
+      "text": "use codex_config::permissions_toml::PermissionsToml;"
+    },
+    {
+      "line": 40,
+      "text": "use codex_config::sandbox_mode_requirement_for_permission_profile;"
+    },
+    {
+      "line": 41,
+      "text": "use codex_config::types::ApprovalsReviewer;"
+    },
+    {
+      "line": 42,
+      "text": "use codex_config::types::AuthCredentialsStoreMode;"
+    },
+    {
+      "line": 43,
+      "text": "use codex_config::types::AuthKeyringBackendKind;"
+    },
+    {
+      "line": 44,
+      "text": "use codex_config::types::History;"
+    },
+    {
+      "line": 45,
+      "text": "use codex_config::types::McpServerConfig;"
+    },
+    {
+      "line": 46,
+      "text": "use codex_config::types::McpServerDisabledReason;"
+    },
+    {
+      "line": 47,
+      "text": "use codex_config::types::MemoriesConfig;"
+    },
+    {
+      "line": 48,
+      "text": "use codex_config::types::ModelAvailabilityNuxConfig;"
+    },
+    {
+      "line": 49,
+      "text": "use codex_config::types::Notice;"
+    },
+    {
+      "line": 50,
+      "text": "use codex_config::types::OAuthCredentialsStoreMode;"
+    },
+    {
+      "line": 51,
+      "text": "use codex_config::types::ResumeCwdMode;"
+    },
+    {
+      "line": 52,
+      "text": "use codex_config::types::SessionPickerViewMode;"
+    },
+    {
+      "line": 53,
+      "text": "use codex_config::types::ToolSuggestConfig;"
+    },
+    {
+      "line": 54,
+      "text": "use codex_config::types::ToolSuggestDisabledTool;"
+    },
+    {
+      "line": 55,
+      "text": "use codex_config::types::ToolSuggestDiscoverable;"
+    },
+    {
+      "line": 56,
+      "text": "use codex_config::types::TuiKeymap;"
+    },
+    {
+      "line": 57,
+      "text": "use codex_config::types::TuiNotificationSettings;"
+    },
+    {
+      "line": 58,
+      "text": "use codex_config::types::TuiPetAnchor;"
+    },
+    {
+      "line": 59,
+      "text": "use codex_config::types::UriBasedFileOpener;"
+    },
+    {
+      "line": 60,
+      "text": "use codex_config::types::WindowsSandboxModeToml;"
+    },
+    {
+      "line": 61,
+      "text": "use codex_core_plugins::PluginLoadOutcome;"
+    },
+    {
+      "line": 62,
+      "text": "use codex_core_plugins::PluginsConfigInput;"
+    },
+    {
+      "line": 66,
+      "text": "use codex_features::CodeModeConfigToml;"
+    },
+    {
+      "line": 67,
+      "text": "use codex_features::CurrentTimeReminderConfigToml;"
+    },
+    {
+      "line": 71,
+      "text": "use codex_features::FeatureConfigSource;"
+    },
+    {
+      "line": 76,
+      "text": "use codex_features::MultiAgentV2ConfigToml;"
+    },
+    {
+      "line": 77,
+      "text": "use codex_features::NetworkProxyConfigToml;"
+    },
+    {
+      "line": 79,
+      "text": "use codex_features::TokenBudgetConfigToml;"
+    },
+    {
+      "line": 80,
+      "text": "use codex_git_utils::resolve_root_git_project_for_trust;"
+    },
+    {
+      "line": 84,
+      "text": "use codex_login::AuthManagerConfig;"
+    },
+    {
+      "line": 85,
+      "text": "use codex_login::AuthRouteConfig;"
+    },
+    {
+      "line": 86,
+      "text": "use codex_mcp::DEFAULT_OPTIONAL_MCP_STARTUP_GRACE;"
+    },
+    {
+      "line": 87,
+      "text": "use codex_mcp::McpConfig;"
+    },
+    {
+      "line": 88,
+      "text": "use codex_mcp::McpPluginAttribution;"
+    },
+    {
+      "line": 89,
+      "text": "use codex_mcp::McpProtocolMode;"
+    },
+    {
+      "line": 90,
+      "text": "use codex_mcp::McpServerRegistration;"
+    },
+    {
+      "line": 91,
+      "text": "use codex_mcp::ResolvedMcpCatalog;"
+    },
+    {
+      "line": 97,
+      "text": "use codex_model_provider_info::merge_configured_model_providers;"
+    },
+    {
+      "line": 98,
+      "text": "use codex_models_manager::ModelsManagerConfig;"
+    },
+    {
+      "line": 100,
+      "text": "use codex_protocol::config_types::AltScreenMode;"
+    },
+    {
+      "line": 101,
+      "text": "use codex_protocol::config_types::AutoCompactTokenLimitScope;"
+    },
+    {
+      "line": 102,
+      "text": "use codex_protocol::config_types::ForcedLoginMethod;"
+    },
+    {
+      "line": 103,
+      "text": "use codex_protocol::config_types::Personality;"
+    },
+    {
+      "line": 104,
+      "text": "use codex_protocol::config_types::ReasoningSummary;"
+    },
+    {
+      "line": 105,
+      "text": "use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;"
+    },
+    {
+      "line": 106,
+      "text": "use codex_protocol::config_types::SandboxMode;"
+    },
+    {
+      "line": 107,
+      "text": "use codex_protocol::config_types::ServiceTier;"
+    },
+    {
+      "line": 108,
+      "text": "use codex_protocol::config_types::ShellEnvironmentPolicy;"
+    },
+    {
+      "line": 109,
+      "text": "use codex_protocol::config_types::TrustLevel;"
+    },
+    {
+      "line": 110,
+      "text": "use codex_protocol::config_types::Verbosity;"
+    },
+    {
+      "line": 111,
+      "text": "use codex_protocol::config_types::WebSearchConfig;"
+    },
+    {
+      "line": 112,
+      "text": "use codex_protocol::config_types::WebSearchMode;"
+    },
+    {
+      "line": 113,
+      "text": "use codex_protocol::config_types::WindowsSandboxLevel;"
+    },
+    {
+      "line": 114,
+      "text": "use codex_protocol::models::ActivePermissionProfile;"
+    },
+    {
+      "line": 116,
+      "text": "use codex_protocol::models::PermissionProfile;"
+    },
+    {
+      "line": 117,
+      "text": "pub use codex_protocol::models::PermissionProfileSnapshot;"
+    },
+    {
+      "line": 119,
+      "text": "use codex_protocol::models::SandboxEnforcement;"
+    },
+    {
+      "line": 122,
+      "text": "use codex_protocol::permissions::DenyReadValidator;"
+    },
+    {
+      "line": 123,
+      "text": "use codex_protocol::permissions::DenyReadViolation;"
+    },
+    {
+      "line": 124,
+      "text": "use codex_protocol::permissions::FileSystemPath;"
+    },
+    {
+      "line": 125,
+      "text": "use codex_protocol::permissions::FileSystemSandboxPolicy;"
+    },
+    {
+      "line": 126,
+      "text": "use codex_protocol::permissions::FileSystemSandboxPolicyContext;"
+    },
+    {
+      "line": 127,
+      "text": "use codex_protocol::permissions::NetworkSandboxPolicy;"
+    },
+    {
+      "line": 128,
+      "text": "use codex_protocol::protocol::AskForApproval;"
+    }
+  ]
+}

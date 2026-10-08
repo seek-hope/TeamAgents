@@ -14,9 +14,11 @@
   it runs.
 - Mermaid, SVG and DOT diagrams plus local raster images in the conversation and session history; native
   Kitty graphics, portable Unicode/block previews, and Ctrl+G source fallback.
+- Local command completion with explicit submission, language syntax colors and viewport-driven media
+  previews that remain available beyond sixteen images in long histories (D-450).
 - Installer, `teamagents init`, `doctor` and `exec` as documented in the [install guide](https://github.com/seek-hope/TeamAgents/blob/main/docs/INSTALL.md).
 
-Local regression for this release: `make check` green (core 130 / engine 376 / tui 50) plus `make pty`;
+Local regression for this release: `make check` green (core 130 / engine 376 / tui 57) plus `make pty`;
 real-model acceptance is reported separately in [docs/ACCEPTANCE.md](https://github.com/seek-hope/TeamAgents/blob/main/docs/ACCEPTANCE.md).
 
 ### Install and first run

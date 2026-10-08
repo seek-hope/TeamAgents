@@ -142,6 +142,7 @@ pub struct V2App {
     pub approval_sel: usize,
     pub focus: Focus,
     pub composer: Composer,
+    pub completion: crate::completion::Completion,
     pub disconnected: bool,
     /// Scroll offset in wrapped lines from the bottom (0 = following).
     pub chat_scroll: usize,
@@ -174,6 +175,7 @@ impl V2App {
             approval_sel: 0,
             focus: Focus::Composer,
             composer: Composer::new(vec![]),
+            completion: crate::completion::Completion::default(),
             disconnected: false,
             chat_scroll: 0,
             watermark: 0,
@@ -616,6 +618,7 @@ impl V2App {
                 "Session {} · model {}
 Enter sends to the Leader; Ctrl+J or Shift+Enter adds a newline.
 Up/Down recalls input; PageUp/PageDown or the wheel reads history.
+A slash prefix shows commands: Up/Down selects, Tab/Enter fills, Esc cancels; Enter submits the filled command.
 Ctrl+C or /interrupt cancels the Leader's model request; running tools and delegated work continue.
 Ctrl+A focuses pending approvals; a approves once, d denies, Esc returns.
 Ctrl+D or /quit exits; the session keeps running.
@@ -639,6 +642,12 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
 
     fn composer_key(&mut self, key: crossterm::event::KeyEvent) -> Option<V2Effect> {
         use crossterm::event::{KeyCode, KeyModifiers};
+        if key.code == KeyCode::Enter && key.kind == crossterm::event::KeyEventKind::Repeat {
+            return None;
+        }
+        if self.completion.key(&mut self.composer, key) {
+            return None;
+        }
         match key.code {
             // A newline in the composer, as the footer and `text.rs` promise.
             // Ctrl+J is the universal one: in raw mode the terminal's 0x0A
@@ -800,6 +809,9 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
     pub fn footer_hint(&self) -> String {
         if self.focus == Focus::Approvals {
             return "a approve once · d deny · up/down select · Esc back".into();
+        }
+        if !self.completion.candidates(&self.composer).is_empty() {
+            return "Up/Down select · Tab/Enter fill · Esc cancel · Enter submits after filling".into();
         }
         if self.composer.text().starts_with('/') {
             return SLASH_HELP.into();

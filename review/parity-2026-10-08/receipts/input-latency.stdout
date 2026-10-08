@@ -1,0 +1,4 @@
+  attached to the scripted daemon (/tmp/ta-latency-n_o7lhu0/daemon.sock)
+  conditions: load average 9.49 10.49 10.60 on 20 cpu(s)
+  single keystrokes (10): min 0.10s median 0.10s p95 0.10s max 0.10s
+  burst of 10 characters pasted as one write: 0.12s (12ms per character)

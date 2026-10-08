@@ -1,0 +1,413 @@
+{
+  "product": "codex",
+  "revision_or_version": "9b738582b13c2cdbeff54af0afd04c50c3e7ba09",
+  "url": "https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/codex-rs/core/src/compact.rs",
+  "retrieved_at": "2026-10-08T14:15:10.372907+00:00",
+  "source_sha256": "8f05bb7d0bd2456ecc635cf90ed39c0088ff472e618c35ced7859a1f6ee3b2e8",
+  "source_bytes": 30756,
+  "source_lines": 860,
+  "evidence_class": "source or documentation, not executed product behavior",
+  "reproduce": "curl --fail --silent --show-error https://raw.githubusercontent.com/openai/codex/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/codex-rs/core/src/compact.rs",
+  "excerpts": [
+    {
+      "line": 10,
+      "text": "use crate::context::CompactionSummary;"
+    },
+    {
+      "line": 13,
+      "text": "use crate::context::world_state::WorldStateSnapshot;"
+    },
+    {
+      "line": 16,
+      "text": "use crate::hook_runtime::PostCompactHookOutcome;"
+    },
+    {
+      "line": 17,
+      "text": "use crate::hook_runtime::PreCompactHookOutcome;"
+    },
+    {
+      "line": 18,
+      "text": "use crate::hook_runtime::run_post_compact_hooks;"
+    },
+    {
+      "line": 19,
+      "text": "use crate::hook_runtime::run_pre_compact_hooks;"
+    },
+    {
+      "line": 21,
+      "text": "use crate::responses_metadata::CompactionTurnMetadata;"
+    },
+    {
+      "line": 27,
+      "text": "use crate::state::AutoCompactWindowIds;"
+    },
+    {
+      "line": 29,
+      "text": "use codex_analytics::CodexCompactionEvent;"
+    },
+    {
+      "line": 30,
+      "text": "use codex_analytics::CompactionImplementation;"
+    },
+    {
+      "line": 31,
+      "text": "use codex_analytics::CompactionPhase;"
+    },
+    {
+      "line": 32,
+      "text": "use codex_analytics::CompactionReason;"
+    },
+    {
+      "line": 33,
+      "text": "use codex_analytics::CompactionStatus;"
+    },
+    {
+      "line": 34,
+      "text": "use codex_analytics::CompactionStrategy;"
+    },
+    {
+      "line": 35,
+      "text": "use codex_analytics::CompactionTrigger;"
+    },
+    {
+      "line": 43,
+      "text": "use codex_protocol::items::ContextCompactionItem;"
+    },
+    {
+      "line": 45,
+      "text": "use codex_protocol::models::AgentMessageInputContent;"
+    },
+    {
+      "line": 56,
+      "text": "use codex_utils_output_truncation::approx_token_count;"
+    },
+    {
+      "line": 63,
+      "text": "const COMPACT_USER_MESSAGE_MAX_TOKENS: usize = 20_000;"
+    },
+    {
+      "line": 65,
+      "text": "/// Metadata for a new compaction checkpoint, kept separate from its replacement history."
+    },
+    {
+      "line": 67,
+      "text": "/// `Session::replace_compacted_history` assigns missing item IDs before constructing the persisted"
+    },
+    {
+      "line": 68,
+      "text": "/// `CompactedItem`, ensuring the live and persisted histories remain identical."
+    },
+    {
+      "line": 69,
+      "text": "pub(crate) struct CompactedHistoryMetadata {"
+    },
+    {
+      "line": 73,
+      "text": "    pub(crate) window_ids: AutoCompactWindowIds,"
+    },
+    {
+      "line": 74,
+      "text": "    pub(crate) compaction_response_id: Option<String>,"
+    },
+    {
+      "line": 75,
+      "text": "    pub(crate) compaction_model_hash: Option<String>,"
+    },
+    {
+      "line": 76,
+      "text": "    pub(crate) reviewer_compaction_hash: Option<String>,"
+    },
+    {
+      "line": 80,
+      "text": "pub(crate) async fn build_compaction_replacement_history("
+    },
+    {
+      "line": 84,
+      "text": "    compacted_history: Vec<ResponseItemEnvelope>,"
+    },
+    {
+      "line": 85,
+      "text": ") -> (Vec<ResponseItemEnvelope>, WorldStateSnapshot) {"
+    },
+    {
+      "line": 86,
+      "text": "    let (updates, snapshot) = sess"
+    },
+    {
+      "line": 92,
+      "text": "        assemble_compaction_history(compacted_history, prefix, context),"
+    },
+    {
+      "line": 93,
+      "text": "        snapshot,"
+    },
+    {
+      "line": 97,
+      "text": "fn assemble_compaction_history("
+    },
+    {
+      "line": 98,
+      "text": "    compacted_history: Vec<ResponseItemEnvelope>,"
+    },
+    {
+      "line": 103,
+      "text": "        compacted_history,"
+    },
+    {
+      "line": 113,
+      "text": "pub(crate) async fn run_inline_auto_compact_task("
+    },
+    {
+      "line": 118,
+      "text": "    reason: CompactionReason,"
+    },
+    {
+      "line": 119,
+      "text": "    phase: CompactionPhase,"
+    },
+    {
+      "line": 122,
+      "text": "        .config"
+    },
+    {
+      "line": 123,
+      "text": "        .compact_prompt"
+    },
+    {
+      "line": 129,
+      "text": "        // Compaction prompt is synthesized; no UI element ranges to preserve."
+    },
+    {
+      "line": 133,
+      "text": "    run_compact_task_inner("
+    },
+    {
+      "line": 139,
+      "text": "        CompactionTurnMetadata::new("
+    },
+    {
+      "line": 140,
+      "text": "            CompactionTrigger::Auto,"
+    },
+    {
+      "line": 142,
+      "text": "            CompactionImplementation::Responses,"
+    },
+    {
+      "line": 150,
+      "text": "pub(crate) async fn run_compact_task("
+    },
+    {
+      "line": 156,
+      "text": "    run_compact_task_inner("
+    },
+    {
+      "line": 162,
+      "text": "        CompactionTurnMetadata::new("
+    },
+    {
+      "line": 163,
+      "text": "            CompactionTrigger::Manual,"
+    },
+    {
+      "line": 164,
+      "text": "            CompactionReason::UserRequested,"
+    },
+    {
+      "line": 165,
+      "text": "            CompactionImplementation::Responses,"
+    },
+    {
+      "line": 166,
+      "text": "            CompactionPhase::StandaloneTurn,"
+    },
+    {
+      "line": 173,
+      "text": "async fn run_compact_task_inner("
+    },
+    {
+      "line": 179,
+      "text": "    compaction_metadata: CompactionTurnMetadata,"
+    },
+    {
+      "line": 181,
+      "text": "    let trigger = compaction_metadata.trigger();"
+    },
+    {
+      "line": 182,
+      "text": "    let reason = compaction_metadata.reason();"
+    },
+    {
+      "line": 183,
+      "text": "    let phase = compaction_metadata.phase();"
+    },
+    {
+      "line": 184,
+      "text": "    let attempt = CompactionAnalyticsAttempt::begin("
+    },
+    {
+      "line": 189,
+      "text": "        CompactionImplementation::Responses,"
+    },
+    {
+      "line": 193,
+      "text": "    let pre_compact_outcome = run_pre_compact_hooks(&sess, &turn_context, trigger).await;"
+    },
+    {
+      "line": 194,
+      "text": "    match pre_compact_outcome {"
+    },
+    {
+      "line": 195,
+      "text": "        PreCompactHookOutcome::Continue => {}"
+    },
+    {
+      "line": 196,
+      "text": "        PreCompactHookOutcome::Stopped => {"
+    },
+    {
+      "line": 201,
+      "text": "                    CompactionStatus::Interrupted,"
+    },
+    {
+      "line": 203,
+      "text": "                    CompactionAnalyticsDetails::default(),"
+    },
+    {
+      "line": 209,
+      "text": "    let result = run_compact_task_inner_impl("
+    },
+    {
+      "line": 215,
+      "text": "        compaction_metadata,"
+    },
+    {
+      "line": 218,
+      "text": "    let status = compaction_status_from_result(&result);"
+    },
+    {
+      "line": 221,
+      "text": "        let post_compact_outcome = run_post_compact_hooks(&sess, &turn_context, trigger).await;"
+    },
+    {
+      "line": 222,
+      "text": "        if let PostCompactHookOutcome::Stopped = post_compact_outcome {"
+    },
+    {
+      "line": 228,
+      "text": "                    CompactionAnalyticsDetails::default(),"
+    },
+    {
+      "line": 239,
+      "text": "            CompactionAnalyticsDetails::default(),"
+    },
+    {
+      "line": 243,
+      "text": "        && !matches!(phase, CompactionPhase::PostTurn)"
+    },
+    {
+      "line": 246,
+      "text": "            CodexErrorDetails::Interrupted | CodexErrorDetails::TurnAborted"
+    },
+    {
+      "line": 251,
+      "text": "        if !matches!(phase, CompactionPhase::PreTurn) {"
+    },
+    {
+      "line": 259,
+      "text": "async fn run_compact_task_inner_impl("
+    },
+    {
+      "line": 265,
+      "text": "    compaction_metadata: CompactionTurnMetadata,"
+    },
+    {
+      "line": 267,
+      "text": "    let compaction_item = TurnItem::ContextCompaction(ContextCompactionItem::new());"
+    },
+    {
+      "line": 268,
+      "text": "    sess.emit_turn_item_started(&turn_context, &compaction_item)"
+    },
+    {
+      "line": 279,
+      "text": "    let max_retries = turn_context.provider.info().stream_max_retries();"
+    },
+    {
+      "line": 282,
+      "text": "    // request tracking) survives retries within this compact turn."
+    },
+    {
+      "line": 284,
+      "text": "    let compaction_response = loop {"
+    },
+    {
+      "line": 291,
+      "text": "            .attach_to_compaction_prompt(&mut turn_input);"
+    },
+    {
+      "line": 311,
+      "text": "            .compaction_responses_metadata(turn_context.as_ref(), compaction_metadata)"
+    },
+    {
+      "line": 313,
+      "text": "        let attempt_result = drain_to_completed("
+    },
+    {
+      "line": 319,
+      "text": "            compaction_metadata.phase(),"
+    },
+    {
+      "line": 330,
+      "text": "                    CodexErrorDetails::Interrupted | CodexErrorDetails::TurnAborted"
+    },
+    {
+      "line": 335,
+      "text": "            Err(e) if matches!(e.details(), CodexErrorDetails::SessionBudgetExceeded) => {"
+    },
+    {
+      "line": 342,
+      "text": "                        \"Context window exceeded while compacting; removing oldest history item. Error: {e}\""
+    },
+    {
+      "line": 348,
+      "text": "                sess.set_total_tokens_full(turn_context.as_ref()).await;"
+    },
+    {
+      "line": 355,
+      "text": "                    sess.notify_stream_error("
+    },
+    {
+      "line": 370,
+      "text": "    let history_snapshot = sess.clone_history().await;"
+    },
+    {
+      "line": 371,
+      "text": "    let history_items = history_snapshot.annotated_items();"
+    },
+    {
+      "line": 372,
+      "text": "    let summary_suffix = if matches!(compaction_metadata.phase(), CompactionPhase::PostTurn) {"
+    },
+    {
+      "line": 373,
+      "text": "        get_last_assistant_message_from_turn(compaction_response.output.iter())"
+    },
+    {
+      "line": 376,
+      "text": "                CodexErr::Stream("
+    },
+    {
+      "line": 377,
+      "text": "                    \"Post-turn compaction completed without an assistant summary\".to_string(),"
+    },
+    {
+      "line": 381,
+      "text": "        get_last_assistant_message_from_turn(history_snapshot.raw_items()).unwrap_or_default()"
+    },
+    {
+      "line": 386,
+      "text": "    let mut new_history = build_compacted_history(Vec::new(), &user_messages, &summary_text);"
+    }
+  ]
+}

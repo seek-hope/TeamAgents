@@ -1,0 +1,413 @@
+{
+  "product": "teamagents",
+  "revision_or_version": "a76722da",
+  "url": "git:a76722da:docs/USER-GUIDE.md",
+  "retrieved_at": "2026-10-08T13:49:31.020404+00:00",
+  "source_sha256": "877a339a06c23cd6c2df32e589b28e45066d8923696695226d54a8fa7cb046e7",
+  "source_bytes": 85132,
+  "source_lines": 920,
+  "evidence_class": "source or documentation, not executed product behavior",
+  "reproduce": "git show a76722da:docs/USER-GUIDE.md",
+  "excerpts": [
+    {
+      "line": 1,
+      "text": "# TeamAgents user guide"
+    },
+    {
+      "line": 3,
+      "text": "This guide describes the current implementation. Notes from earlier releases and the migration material"
+    },
+    {
+      "line": 9,
+      "text": "teamagents init                      # write the config (kept if it exists) and prepare the state root"
+    },
+    {
+      "line": 11,
+      "text": "teamagents doctor                    # config, credentials, state root, skills, bubblewrap and host checks"
+    },
+    {
+      "line": 12,
+      "text": "teamagents                           # open the TUI (starts the per-user daemon when needed)"
+    },
+    {
+      "line": 15,
+      "text": "- **One daemon per session**: `teamagents` probes `$XDG_STATE_HOME/teamagents/v2/daemon.sock` and, when it is"
+    },
+    {
+      "line": 16,
+      "text": "  missing or refuses the connection, starts `teamagents daemon` detached and hands the socket to the TUI."
+    },
+    {
+      "line": 22,
+      "text": "- **Interrupt and exit**: Ctrl+C or /interrupt cancels the Leader's in-flight model request. The receipt"
+    },
+    {
+      "line": 23,
+      "text": "  says whether anything was interrupted. Running tools and delegated work continue; developer controls are"
+    },
+    {
+      "line": 25,
+      "text": "- **Approvals appear only when needed**: Ctrl+A focuses the approval list; a approves once, d denies,"
+    },
+    {
+      "line": 26,
+      "text": "  Esc returns to the draft. Approval arrival never steals typing focus, and a click only selects a row."
+    },
+    {
+      "line": 29,
+      "text": "  addition/removal colors. Live streaming uses the same layout, remains transient and is replaced by history."
+    },
+    {
+      "line": 33,
+      "text": "  `teamagents history --id ID --json` also reads stored messages."
+    },
+    {
+      "line": 34,
+      "text": "- **Graphics and images (D-448)**: completed Mermaid, SVG and DOT/Graphviz fences render as previews."
+    },
+    {
+      "line": 41,
+      "text": "  Set `TEAMAGENTS_GRAPHICS=kitty` to force the Kitty protocol, `blocks` for portable output, `off` to start"
+    },
+    {
+      "line": 56,
+      "text": "- **Four client commands**: /help, /sessions, /interrupt, /quit. Unknown or retired commands remain local and point"
+    },
+    {
+      "line": 57,
+      "text": "  to `teamagents --help`; they are never sent to the model."
+    },
+    {
+      "line": 59,
+      "text": "  `--session ID` to select the session. `status --json` reads the running session's checkpoint, model,"
+    },
+    {
+      "line": 60,
+      "text": "  goal usage/limits/deadline, bound MCP state and known sessions without starting a daemon. The watermark"
+    },
+    {
+      "line": 61,
+      "text": "  describes the database snapshot; MCP credentials and the session registry are external reads."
+    },
+    {
+      "line": 62,
+      "text": "  `history [--id INSTANCE] [--limit N] [--json]` reads the newest N stored entries in chronological order"
+    },
+    {
+      "line": 68,
+      "text": "| Submit work and check results | `exec --json`, `exec --stream-json`, `--check`, `--accept` |"
+    },
+    {
+      "line": 70,
+      "text": "| Inspect/control team members | `instances`: send, pause, resume, interrupt, terminate, merge |"
+    },
+    {
+      "line": 72,
+      "text": "| Inspect/control permissions and approvals | `authority`: list, grant, revoke; `approvals`: list, approve, deny |"
+    },
+    {
+      "line": 73,
+      "text": "| Sessions and recurring work | `sessions`: list, open, history, new, fork, rename, restore, search, archive, delete, prune; `automations` |"
+    },
+    {
+      "line": 74,
+      "text": "| MCP, configuration and diagnostics | `mcp`: list, add, remove, login, logout; `init`, `doctor`, `-c key=value` |"
+    },
+    {
+      "line": 77,
+      "text": "- **Stopping that session** (D-248): `teamagents daemon --stop` stops the session that owns this state root \u2014"
+    },
+    {
+      "line": 85,
+      "text": "  works when the lever is not reachable (`ps -eo pid,args | grep \"[t]eamagents daemon\"`, D-150). The session"
+    },
+    {
+      "line": 86,
+      "text": "  database stays where it is and the next `teamagents`/`exec` on that state root starts a fresh daemon."
+    },
+    {
+      "line": 87,
+      "text": "- **Headless use**: `teamagents exec [--json] [--timeout SEC] [--check CMD] [--accept ID=CMD] \"prompt\"` goes through the same"
+    },
+    {
+      "line": 90,
+      "text": "- **Authority** (D-61): `teamagents authority` lists the session's instances and grants, `teamagents authority"
+    },
+    {
+      "line": 91,
+      "text": "  grant --subject ID --action shell --scope workspace` hands one out and `teamagents authority revoke --grant"
+    },
+    {
+      "line": 94,
+      "text": "- **`-c key=value` overrides a config key for one invocation** (D-428): repeatable, dotted into tables"
+    },
+    {
+      "line": 97,
+      "text": "  cost keys of \u00a72.2 in particular \u2014 without editing `config.toml`; a client that starts the daemon passes its"
+    },
+    {
+      "line": 98,
+      "text": "  overrides on, and a key this build does not serve is refused with the `docs/CONFIG.md` pointer rather than"
+    },
+    {
+      "line": 101,
+      "text": "- **A session owns its workspace and permission mode**: both are fixed when the daemon boots (`--cwd DIR`,"
+    },
+    {
+      "line": 109,
+      "text": "- **State root**: `$XDG_STATE_HOME/teamagents/v2/` (default `~/.local/state/teamagents/v2`), where"
+    },
+    {
+      "line": 118,
+      "text": "### 1.1 Headless runs (`teamagents exec`)"
+    },
+    {
+      "line": 121,
+      "text": "happened. Diagnostics go to stderr, the outcome to stdout (`--json` prints one JSON object with `end`,"
+    },
+    {
+      "line": 126,
+      "text": "| `0` | settled: the goal completed as `SUCCEEDED`, or the leader answered directly |"
+    },
+    {
+      "line": 127,
+      "text": "| `1` | not delivered: the goal settled otherwise, the turn failed permanently, the runtime **refused the request before it began** (a goal budget ceiling, a passed goal deadline \u2014 it says so in `failure`), the leader was **terminated while the run was in flight** (it says so in `failure` too), the instance was **reset** while the run was in flight (the epoch move is named), a `--check` command failed, or the run ended `unsettled` (the turn closed with nothing settled \u2014 the runtime's own closing word, never a reply) or `undelivered` (the input waited for a boundary and a context reset sealed it before it landed) |"
+    },
+    {
+      "line": 128,
+      "text": "| `3` | an approval is pending \u2014 a headless run does not wait for the deadline; decide it with `teamagents approvals` (\u00a74) |"
+    },
+    {
+      "line": 129,
+      "text": "| `124` | the `--timeout` deadline passed with the instance still running (a refusal is not a timeout: it ends the run at once with `1`) |"
+    },
+    {
+      "line": 134,
+      "text": "- **`--stream-json`**: the events while the run waits, then the report (D-249). stdout carries one JSON object"
+    },
+    {
+      "line": 137,
+      "text": "  which wraps exactly the object `--json` prints (\u00a71.2). The exit-code contract below is unchanged, the"
+    },
+    {
+      "line": 138,
+      "text": "  report line is the last line, and the stream carries this run's own events: what the session did before this"
+    },
+    {
+      "line": 139,
+      "text": "  input landed is drained first, never printed. `--json` and `--stream-json` are refused together (two shapes"
+    },
+    {
+      "line": 140,
+      "text": "  of one stdout) and `--stream-json` is an `exec` mode \u2014 the read verbs print one report and have no stream to"
+    },
+    {
+      "line": 141,
+      "text": "  follow. A consumer that closes the pipe (`teamagents exec --stream-json \u2026 | head -3`) ends the stream, not"
+    },
+    {
+      "line": 145,
+      "text": "  stops the list; the verdicts are printed, written to `<state root>/verification.json` and included in the"
+    },
+    {
+      "line": 146,
+      "text": "  `--json` report. A failed check makes the run fail (`1`) even when the goal itself settled. Checks are"
+    },
+    {
+      "line": 147,
+      "text": "  skipped when the turn is not finished \u2014 the run stopped for an approval, your own `--timeout` deadline"
+    },
+    {
+      "line": 148,
+      "text": "  passed, or the runtime refused the request before it began (a goal budget ceiling or a passed goal"
+    },
+    {
+      "line": 149,
+      "text": "  deadline) \u2014 because there is nothing to verify yet, and a check must not stretch the deadline you set: with"
+    },
+    {
+      "line": 151,
+      "text": "- **Both acceptance mechanisms can be configured at once**, and they answer different questions: the"
+    },
+    {
+      "line": 156,
+      "text": "  active goal **before** the input lands, so the runtime runs it at the completion boundary and a failing check"
+    },
+    {
+      "line": 157,
+      "text": "  sends the turn back to work (a bounded repair round) instead of only colouring the exit code; after the budget"
+    },
+    {
+      "line": 159,
+      "text": "  --accept tests=\"pytest -q\" \"Fix the failing tests\"`); `--check` remains the right tool when you only want a"
+    },
+    {
+      "line": 163,
+      "text": "- **Durable memory**: the `memory` tool lets a member `remember` a short note and any later session under"
+    },
+    {
+      "line": 165,
+      "text": "  the directory holding `sessions.json`, so every named session under it shares the store). The file is"
+    },
+    {
+      "line": 166,
+      "text": "  `<base>/memory.json`, a versioned append-only list:"
+    },
+    {
+      "line": 169,
+      "text": "  at most 20 newest-first matches with their provenance. It is bound like `skills` (D-405)."
+    },
+    {
+      "line": 170,
+      "text": "- **Binding an MCP service**: `teamagents mcp add --name stats --command /usr/bin/python3 --arg server.py"
+    },
+    {
+      "line": 171,
+      "text": "  --execution host` writes one `[tools.stats]` table into the user config (stdio, or `--transport http"
+    },
+    {
+      "line": 172,
+      "text": "  --url \u2026`), and `teamagents mcp remove --name stats` takes it back out. The binding is validated before the"
+    },
+    {
+      "line": 174,
+      "text": "  rest of the config \u2014 comments included \u2014 alone (D-408)."
+    },
+    {
+      "line": 175,
+      "text": "- **What the configured MCP services offer**: `teamagents mcp list` connects to each `[tools.<name>]`"
+    },
+    {
+      "line": 176,
+      "text": "  binding with `kind = \"mcp\"` and prints its tools (the model-visible name and the server's one-line"
+    },
+    {
+      "line": 179,
+      "text": "  `doctor` reports the configuration and runs nothing (D-399)."
+    },
+    {
+      "line": 180,
+      "text": "- **`--` ends the option list** (D-390): `teamagents exec -- \"- a prompt that starts with a dash\"`. Without"
+    },
+    {
+      "line": 190,
+      "text": "  the run ends `undelivered` (exit 1) instead of waiting out its deadline. The TUI says the same in its note"
+    },
+    {
+      "line": 192,
+      "text": "- **An approval in a headless run** exits `3` and names the exact call. Decide it with"
+    },
+    {
+      "line": 193,
+      "text": "  `teamagents approvals` / `approvals approve --id \u2026` (D-67, \u00a74.1) and the session goes on \u2014 the decision is"
+    },
+    {
+      "line": 194,
+      "text": "  bound to that operation and its arguments, so the run needs no second prompt; the TUI's approvals box shows"
+    },
+    {
+      "line": 196,
+      "text": "- **A parked or paused leader refuses new input** (`2`) instead of queueing work nobody drains: resume it with"
+    },
+    {
+      "line": 197,
+      "text": "  `teamagents instances resume --id i-leader` (\u00a74.2), or use a fresh state"
+    },
+    {
+      "line": 202,
+      "text": "### 1.2 The JSON reports (`--json`)"
+    },
+    {
+      "line": 204,
+      "text": "Seven verbs print one JSON object instead of human text, and that object is the scripting surface: `exec`,"
+    },
+    {
+      "line": 205,
+      "text": "`authority`, `approvals`, `instances`, `tasks`, `runners` and `artifacts`. The table is the contract \u2014 `review/exec_report.py` reads"
+    },
+    {
+      "line": 207,
+      "text": "`exec --stream-json` (D-249) carries the *same* `exec` object, wrapped as the last line"
+    },
+    {
+      "line": 209,
+      "text": "The arrays inside a report (`instances`, `tasks`, `approvals`, `grants`) are rows of the daemon's own views,"
+    },
+    {
+      "line": 216,
+      "text": "| `status` | `schema_version`, `session_id`, `state_root`, `permissions`, `session_workspace`, `watermark`, `snapshot` |"
+    },
+    {
+      "line": 219,
+      "text": "| `exec` | `permissions`, `session_workspace`, `instance_id`, `instance_lifecycle`, `end`, `goal_status`, `reply`, `reply_source`, `failure`, `approval`, `input_queued`, `workspace`, `verification`, `verification_path`, `acceptance`, `acceptance_goal`, `watermark`, `usage` |"
+    },
+    {
+      "line": 223,
+      "text": "| `approvals list` | `approvals` |"
+    },
+    {
+      "line": 224,
+      "text": "| `approvals approve` / `deny` | `approval_id`, `decision`, `approval`, `result` |"
+    },
+    {
+      "line": 226,
+      "text": "| `instances pause` / `resume` / `interrupt` / `terminate` | `instance_id`, `lifecycle`, `instance`, `result` |"
+    },
+    {
+      "line": 238,
+      "text": "- `artifacts` rows are the state root's catalog (not a daemon view): `id`, `kind`, `size`, `completeness` (`STAGING`, `LIVE`, `DELETING`, `ABANDONED`), `owner_ref` (the fact that owns it, or `null` for an artifact nothing references \u2014 the collector's only candidate), `storage_ref` and `bytes_present` (whether those bytes are really on disk). `collected` names what a sweep removed, `freed_bytes` is the sum of their sizes, and `failed` holds the ones whose file deletion failed \u2014 their rows stay `DELETING` and the next run retries."
+    },
+    {
+      "line": 245,
+      "text": "  the model settled the goal **without writing anything** and the reply is the completion summary it recorded"
+    },
+    {
+      "line": 249,
+      "text": "- `usage` is what *this run* cost, as the provider reported it: `prompt_tokens`, `completion_tokens`,"
+    },
+    {
+      "line": 250,
+      "text": "  `total_tokens`, `requests`, and `unpriced_attempts` (attempts the provider never priced, which are **not**"
+    },
+    {
+      "line": 251,
+      "text": "  counted as free). Plain mode prints the same numbers as one `tokens: \u2026` line. They are the numbers the"
+    },
+    {
+      "line": 254,
+      "text": "- `watermark` is the event cursor the report was built at, which is what a client resumes from after a"
+    },
+    {
+      "line": 256,
+      "text": "- `result` is the daemon's own reply to a command, and `instance`/`task`/`approval`/`grant` is the affected row"
+    },
+    {
+      "line": 259,
+      "text": "A key this build does not serve is **refused at load with a pointer** (`unknown key \u2026 docs/CONFIG.md lists every key this build serves`) rather than ignored, so a typo fails loudly instead of silently leaving its setting at the default (D-161)."
+    },
+    {
+      "line": 261,
+      "text": "## 2. Configuration"
+    },
+    {
+      "line": 264,
+      "text": "[docs/CONFIG.md](CONFIG.md) \u2014 generated from the structs and kept in sync by `make hygiene`; `doctor`"
+    },
+    {
+      "line": 267,
+      "text": "The user config is `$XDG_CONFIG_HOME/teamagents/config.toml` (default"
+    },
+    {
+      "line": 268,
+      "text": "`~/.config/teamagents/config.toml`). Credentials are referenced by environment-variable name and never"
+    },
+    {
+      "line": 271,
+      "text": "A repository-local `.teamagents/config.toml` is read too \u2014 the daemon, `doctor` and the client all load it \u2014"
+    },
+    {
+      "line": 273,
+      "text": "package inside a repository uses that repository's config (D-434). As since D-244, it contributes nothing until"
+    }
+  ]
+}

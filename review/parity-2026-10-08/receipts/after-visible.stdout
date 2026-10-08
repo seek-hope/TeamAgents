@@ -1,0 +1,36 @@
+{
+  "fixture": "20 distinct SVGs, 80x28 cells, native Kitty documents, two 40-step sweeps",
+  "model_calls": 0,
+  "elapsed_seconds": 10.018633785,
+  "media_seen": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19
+  ],
+  "media_missing": [
+    0
+  ],
+  "key_and_frame_ms_p50": 2.003304,
+  "key_and_frame_ms_p95": 2.993745,
+  "key_and_frame_ms_max": 5.558254000000001,
+  "tab_draft": "/help",
+  "tab_effect": "None",
+  "rust_body_color_count": 5,
+  "draft_preserved": true
+}
