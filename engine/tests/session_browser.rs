@@ -57,6 +57,7 @@ fn all_history_pages_include_archived_members_and_survive_new_appends() {
     let entry = registry.new_session("old conversation").unwrap();
     let db = entry.dir(&fixture.root).join("session.sqlite");
     let conn = teamagents_core::v2::store::open(&db, true).unwrap();
+    conn.execute("INSERT INTO instances (id,session_id,profile_revision,workspace_ref,lifecycle,phase,profile_json) VALUES ('i-worker','s-history',1,'/workspace/worker','ACTIVE','READY','{}')", []).unwrap();
     for idx in 1..=450 {
         conn.execute("INSERT INTO context_entries (id,instance_id,epoch,idx,kind,message_json,created) VALUES (?1,?2,?3,?4,'user',?5,0)",
             rusqlite::params![format!("entry-{idx}"), if idx%2==0 {"i-leader"} else {"i-worker"}, idx/200, idx,
@@ -69,6 +70,8 @@ fn all_history_pages_include_archived_members_and_survive_new_appends() {
     let first = fixture.json(&["sessions", "history", "--id", &entry.id, "--json"]);
     assert_eq!(first["entries"].as_array().unwrap().len(), 200);
     assert_eq!(first["entries"][0]["idx"], 251);
+    assert_eq!(first["entries"][0]["workspace"], "/workspace/worker");
+    assert!(first["entries"][1]["workspace"].is_null(), "missing members have no invented workspace");
     assert_eq!(bytes, std::fs::read(&db).unwrap(), "reading does not rewrite the database");
     assert!(!db.parent().unwrap().join("daemon.sock").exists());
     let conn = teamagents_core::v2::store::open(&db, false).unwrap();

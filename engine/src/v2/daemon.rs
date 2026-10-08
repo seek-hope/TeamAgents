@@ -651,14 +651,16 @@ fn read_method(
             // turn's outcome for its own cannot do that by matching text.
             let mut stmt = conn
                 .prepare(
-                    "SELECT epoch, idx, kind, message_json, envelope_id FROM context_entries
-                     WHERE instance_id = ?1 ORDER BY epoch DESC, idx DESC LIMIT ?2",
+                    "SELECT c.epoch, c.idx, c.kind, c.message_json, c.envelope_id, i.workspace_ref
+                     FROM context_entries c LEFT JOIN instances i ON i.id = c.instance_id
+                     WHERE c.instance_id = ?1 ORDER BY c.epoch DESC, c.idx DESC LIMIT ?2",
                 )
                 .map_err(|e| format!("history prepare: {e}"))?;
             let rows = stmt
                 .query_map(rusqlite::params![instance, limit], |row| {
                     Ok(json!({"epoch": row.get::<_, i64>(0)?, "idx": row.get::<_, i64>(1)?,
                               "kind": row.get::<_, String>(2)?, "envelope_id": row.get::<_, Option<String>>(4)?,
+                              "workspace": row.get::<_, Option<String>>(5)?,
                               "message": serde_json::from_str::<Json>(&row.get::<_, String>(3)?).unwrap_or(Json::Null)}))
                 })
                 .map_err(|e| format!("history query: {e}"))?;

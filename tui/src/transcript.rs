@@ -1,5 +1,6 @@
 //! D-447: one transcript projection and presentation for the live conversation and session history.
 use crate::{
+    graphics::{Document, Graphics, Origin},
     markdown,
     theme::*,
     v2app::{ChatEntry, ChatKind, ToolInfo},
@@ -22,11 +23,8 @@ pub fn project(rows: &[Json], member: &str, bounded: bool) -> Vec<ChatEntry> {
     for row in rows {
         let message = &row["message"];
         let who = row["instance_id"].as_str().unwrap_or(member);
-        let content = match &message["content"] {
-            Json::String(text) => text.clone(),
-            Json::Null => String::new(),
-            value => serde_json::to_string_pretty(value).unwrap_or_default(),
-        };
+        let (content, media) = crate::graphics::content(&message["content"]);
+        let workspace = row["workspace"].as_str().unwrap_or("").to_string();
         let kind = match row["kind"].as_str().unwrap_or("") {
             "user" => ChatKind::User,
             "assistant" => ChatKind::Assistant,
@@ -46,8 +44,9 @@ pub fn project(rows: &[Json], member: &str, bounded: bool) -> Vec<ChatEntry> {
             if let Some(index) = pending.remove(&key) {
                 let entry: &mut ChatEntry = &mut entries[index];
                 entry.tool.as_mut().unwrap().output = Some(content);
+                entry.media.extend(media);
             } else {
-                entries.push(ChatEntry { kind, who: "result".into(), text: content, tool: None });
+                entries.push(ChatEntry { kind, who: who.into(), text: content, tool: None, workspace, media });
             }
             continue;
         }
@@ -59,7 +58,14 @@ pub fn project(rows: &[Json], member: &str, bounded: bool) -> Vec<ChatEntry> {
             _ => who,
         };
         if !content.trim().is_empty() {
-            entries.push(ChatEntry { kind: kind.clone(), who: label.into(), text: content, tool: None });
+            entries.push(ChatEntry {
+                kind: kind.clone(),
+                who: label.into(),
+                text: content,
+                tool: None,
+                workspace: workspace.clone(),
+                media,
+            });
         }
         if kind == ChatKind::Assistant {
             for call in message["tool_calls"].as_array().into_iter().flatten() {
@@ -75,6 +81,8 @@ pub fn project(rows: &[Json], member: &str, bounded: bool) -> Vec<ChatEntry> {
                     who: who.into(),
                     text: String::new(),
                     tool: Some(ToolInfo { name: name.into(), arguments: args, output: None }),
+                    workspace: workspace.clone(),
+                    media: vec![],
                 });
             }
         }
@@ -95,24 +103,77 @@ fn preview(text: &str, cap: usize) -> String {
 #[derive(Default)]
 pub struct Transcript {
     key: Option<(u64, usize, Option<usize>)>,
-    lines: Vec<Line<'static>>,
+    document: Document,
 }
 impl Transcript {
     pub fn lines(&mut self, entries: &[ChatEntry], width: usize, tool_limit: Option<usize>) -> &[Line<'static>] {
+        &self.document(entries, width, tool_limit, None, "").lines
+    }
+    pub fn document(
+        &mut self,
+        entries: &[ChatEntry],
+        width: usize,
+        tool_limit: Option<usize>,
+        mut graphics: Option<&mut Graphics>,
+        session: &str,
+    ) -> &Document {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         entries.hash(&mut hasher);
+        session.hash(&mut hasher);
+        graphics.as_ref().map(|g| (g.revision, g.enabled, g.native, g.cell)).hash(&mut hasher);
         let key = (hasher.finish(), width, tool_limit);
         if self.key != Some(key) {
-            self.lines.clear();
-            for entry in entries {
-                if !self.lines.is_empty() {
-                    self.lines.push(Line::default());
+            self.document = Document::default();
+            for (position, entry) in entries.iter().enumerate() {
+                if !self.document.lines.is_empty() {
+                    self.document.lines.push(Line::default());
                 }
-                self.lines.extend(render_entry(entry, width, tool_limit));
+                let origin = Origin {
+                    session: session.into(),
+                    workspace: (&entry.workspace).into(),
+                    position,
+                    member: if entry.who == "you" { "i-leader".into() } else { entry.who.clone() },
+                };
+                if let Some(g) = graphics.as_deref_mut() {
+                    if matches!(entry.kind, ChatKind::Assistant | ChatKind::Summary) {
+                        let label = if entry.kind == ChatKind::Summary {
+                            "Conversation compacted"
+                        } else if entry.who == "i-leader" || entry.who.is_empty() {
+                            "Leader"
+                        } else {
+                            &entry.who
+                        };
+                        self.document.lines.extend(markdown::plain(
+                            label,
+                            width,
+                            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                        ));
+                        self.document.append(markdown::render_media(&entry.text, width, Some(g), &origin));
+                    } else {
+                        self.document.lines.extend(render_entry(entry, width, tool_limit));
+                        if entry.kind == ChatKind::User {
+                            for event in pulldown_cmark::Parser::new(&entry.text) {
+                                if let pulldown_cmark::Event::Start(pulldown_cmark::Tag::Image { dest_url, .. }) = event
+                                {
+                                    self.document.append(g.block(
+                                        crate::graphics::Source::Image(dest_url.into_string()),
+                                        &origin,
+                                        width,
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    for source in &entry.media {
+                        self.document.append(g.block(source.clone(), &origin, width));
+                    }
+                } else {
+                    self.document.lines.extend(render_entry(entry, width, tool_limit));
+                }
             }
             self.key = Some(key);
         }
-        &self.lines
+        &self.document
     }
 }
 

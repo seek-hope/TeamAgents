@@ -715,6 +715,7 @@ async fn handshake_checkpoint_command_and_goal_completion() {
     // the envelope id rides along (D-72), and the page is chronological
     let mine = entries.iter().find(|entry| entry["kind"] == json!("user")).expect("the input");
     assert!(mine["envelope_id"].as_str().is_some_and(|id| id.starts_with("env-")), "{mine}");
+    assert_eq!(mine["workspace"], root.dir.join("ws").to_string_lossy().as_ref());
     assert!(entries.windows(2).all(|pair| pair[0]["idx"].as_i64() <= pair[1]["idx"].as_i64()), "{entries:?}");
     assert!(client.call("tasks", json!({})).await["ok"].as_bool().unwrap());
     assert!(client.call("grants", json!({})).await["ok"].as_bool().unwrap());

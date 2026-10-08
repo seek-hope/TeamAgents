@@ -58,7 +58,7 @@ def chord(letter: str) -> str:
     )
 
 
-for letter in "acdjnopqrstwy":
+for letter in "acdgjnopqrstwy":
     HANDLED[f"Ctrl+{letter.upper()}"] = chord(letter)
 # the `Ctrl+←/→` word jumps and the shift-enter newline are written as guards, not as chords
 HANDLED["Ctrl+Left"] = r"(?s)(?=.{0,400}CONTROL)(?=.{0,400}KeyCode::Left)"

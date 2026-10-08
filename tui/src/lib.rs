@@ -1,6 +1,7 @@
 //! Library surface for tests; the binary is a thin shell over these modules.
 
 pub mod daemon_client;
+pub mod graphics;
 pub mod markdown;
 pub mod session_client;
 pub mod sessions;

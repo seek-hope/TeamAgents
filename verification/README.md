@@ -615,6 +615,7 @@ functions reads), so it proves the **published code**. It needs a local Kani too
 | `paging_covers_the_whole_output_exactly_once` | small lengths within the unwinding bound: page-by-page retrieval has no overlap, no gaps and a bounded page count |
 | `viewport_contains_selection_without_overflow` | every `usize` list length, selection and viewport height: bounded range, no overflowing endpoint, selected item visible when the range is nonempty |
 | `transcript_scroll_is_bounded_and_append_keeps_the_reader` | every `usize` transcript length, height and offset: bounded coordinates, zero offset follows the tail, a valid scrolled top row stays fixed on append; actual `transcript_window` source, D-447 |
+| `media_clipping_stays_inside_both_ranges` | every `usize` image position, length and viewport: visible rows stay inside both ranges with matching source/screen offsets; actual `clip_rows` source, D-448 |
 | `viewport_clicks_only_the_rendered_item` | every `usize` row and list input: a hit maps to the rendered item; blank rows never select an item |
 
 The proven `page_span(total, offset, limit) = min(limit, total - offset)` is the **published function**:
@@ -622,7 +623,11 @@ The proven `page_span(total, offset, limit) = min(limit, total - offset)` is the
 "a page neither overruns nor overflows" covers the shipped code rather than a copied stand-in. `tui/src/viewport.rs` is compiled directly too (D-444), proving the shared list range and hit-testing arithmetic
 used by session rows, approvals and the composer. D-447 adds transcript scrolling. These proofs cover arithmetic for every `usize`, not
 terminal rendering or Unicode shaping. The viewport frame regressions and the PTY smoke cover those concrete
-input and rendering paths. All six harnesses pass; removing the transcript append correction is refuted in a temporary-copy negative control (D-447).
+input and rendering paths. All seven harnesses pass. Temporary-copy controls refute removal of the transcript
+append correction (D-447) and removal of the media viewport-offset correction (D-448). The latter fails
+the screen-bound assertion; `tui/tests/graphics.rs` and `tui/scripts/pty_graphics_smoke.py` exercise the actual
+image placement, source fallback and terminal-protocol paths. Decoders and third-party layouts remain outside
+the proof.
 
 **Honest boundaries** (measured, not guessed):
 

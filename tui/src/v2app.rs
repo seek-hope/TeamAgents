@@ -44,6 +44,8 @@ pub struct ChatEntry {
     pub who: String,
     pub text: String,
     pub tool: Option<ToolInfo>,
+    pub workspace: String,
+    pub media: Vec<crate::graphics::Source>,
 }
 
 #[derive(Clone, Debug, Hash)]
@@ -132,6 +134,8 @@ pub struct V2App {
     pub instances: Vec<InstanceInfo>,
     pub entries: Vec<ChatEntry>,
     pub transcript: crate::transcript::Transcript,
+    pub graphics: crate::graphics::Graphics,
+    pub pictures: Vec<crate::graphics::Placement>,
     pub expanded_tools: bool,
     pub goal: Option<GoalInfo>,
     pub approvals: Vec<ApprovalInfo>,
@@ -162,6 +166,8 @@ impl V2App {
             instances: vec![],
             entries: vec![],
             transcript: crate::transcript::Transcript::default(),
+            graphics: crate::graphics::Graphics::default(),
+            pictures: vec![],
             expanded_tools: false,
             goal: None,
             approvals: vec![],
@@ -206,7 +212,14 @@ impl V2App {
     /// A command's output: it survives a checkpoint refresh, unlike a `System` note, because the user asked a
     /// question and the answer must stay on screen until they scroll away from it (D-433).
     pub fn command_note(&mut self, text: impl Into<String>) {
-        self.entries.push(ChatEntry { kind: ChatKind::Command, who: "note".into(), text: text.into(), tool: None });
+        self.entries.push(ChatEntry {
+            kind: ChatKind::Command,
+            who: "note".into(),
+            text: text.into(),
+            tool: None,
+            workspace: String::new(),
+            media: vec![],
+        });
         if self.entries.len() > NOTE_CAP * 4 {
             let drop = self.entries.len() - NOTE_CAP * 4;
             self.entries.drain(..drop);
@@ -214,7 +227,14 @@ impl V2App {
     }
 
     fn note(&mut self, text: impl Into<String>) {
-        self.entries.push(ChatEntry { kind: ChatKind::System, who: "system".into(), text: text.into(), tool: None });
+        self.entries.push(ChatEntry {
+            kind: ChatKind::System,
+            who: "system".into(),
+            text: text.into(),
+            tool: None,
+            workspace: String::new(),
+            media: vec![],
+        });
         if self.entries.len() > NOTE_CAP * 4 {
             let drop = self.entries.len() - NOTE_CAP * 4;
             self.entries.drain(..drop);
@@ -222,7 +242,14 @@ impl V2App {
     }
 
     fn note_error(&mut self, text: impl Into<String>) {
-        self.entries.push(ChatEntry { kind: ChatKind::Error, who: "error".into(), text: text.into(), tool: None });
+        self.entries.push(ChatEntry {
+            kind: ChatKind::Error,
+            who: "error".into(),
+            text: text.into(),
+            tool: None,
+            workspace: String::new(),
+            media: vec![],
+        });
     }
 
     // ---- daemon → app application points --------------------------------
@@ -500,7 +527,7 @@ impl V2App {
     pub fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> Option<V2Effect> {
         use crossterm::event::{KeyCode, KeyModifiers};
         if self.browser.is_some()
-            && !(key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c' | 'd')))
+            && !(key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c' | 'd' | 'g')))
         {
             let browser = self.browser.as_mut()?;
             if key.code == KeyCode::Esc && !browser.busy && browser.confirmation.is_none() {
@@ -512,6 +539,10 @@ impl V2App {
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
                 KeyCode::Char('s') => return self.open_sessions(),
+                KeyCode::Char('g') => {
+                    self.graphics.toggle();
+                    return None;
+                }
                 KeyCode::Char('o') => {
                     self.expanded_tools = !self.expanded_tools;
                     return None;
@@ -590,6 +621,7 @@ Ctrl+A focuses pending approvals; a approves once, d denies, Esc returns.
 Ctrl+D or /quit exits; the session keeps running.
 Ctrl+S or /sessions opens session history, switching and confirmed deletion.
 Ctrl+O expands or folds tool previews; /sessions shows full stored results.
+Ctrl+G switches graphics previews and source; image files stay unchanged.
 Developer tools: teamagents --help; teamagents status --json; teamagents history --id ID.",
                 self.session_id,
                 self.active_instance().map(|i| i.model.as_str()).unwrap_or("unavailable")

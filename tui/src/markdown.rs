@@ -1,5 +1,9 @@
 //! D-447: terminal-safe CommonMark presentation. The stored text is never rewritten.
-use crate::{theme::*, wrap::wrap_line};
+use crate::{
+    graphics::{Document, Graphics, Origin, Source},
+    theme::*,
+    wrap::wrap_line,
+};
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use ratatui::{
     style::{Modifier, Style},
@@ -139,17 +143,24 @@ impl Writer {
 }
 
 /// Parse complete and partially streamed Markdown with the same renderer.
-/// ponytail: no language grammar highlighter or inline image protocol; fences and diff signs are styled.
+/// ponytail: language grammar highlighting remains separate from graphics previews.
 pub fn render(text: &str, width: usize) -> Vec<Line<'static>> {
+    render_media(text, width, None, &Origin::default()).lines
+}
+
+/// Only completed fences become diagrams; an unfinished stream retains its source.
+pub fn render_media(text: &str, width: usize, mut graphics: Option<&mut Graphics>, origin: &Origin) -> Document {
     if width == 0 {
-        return vec![];
+        return Document::default();
     }
     let text = clean(text);
+    let mut pictures = vec![];
     let mut events =
         Parser::new_ext(&text, Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS)
+            .into_offset_iter()
             .peekable();
     let mut w = Writer::new(width);
-    while let Some(event) = events.next() {
+    while let Some((event, range)) = events.next() {
         match event {
             Event::Start(Tag::Paragraph) => w.flush(),
             Event::End(TagEnd::Paragraph) => {
@@ -211,16 +222,46 @@ pub fn render(text: &str, width: usize) -> Vec<Line<'static>> {
                     }
                     _ => String::new(),
                 };
-                w.text(format!("╭─ {lang}"));
-                w.flush();
                 let mut code = String::new();
-                for event in events.by_ref() {
+                let mut content_end = range.start;
+                let mut end = range.end;
+                for (event, span) in events.by_ref() {
                     match event {
-                        Event::End(TagEnd::CodeBlock) => break,
-                        Event::Text(text) => code.push_str(&text),
+                        Event::End(TagEnd::CodeBlock) => {
+                            end = span.end;
+                            break;
+                        }
+                        Event::Text(text) => {
+                            code.push_str(&text);
+                            content_end = span.end;
+                        }
                         _ => {}
                     }
                 }
+                let lang = lang.to_lowercase();
+                if matches!(lang.as_str(), "mermaid" | "svg" | "dot" | "graphviz")
+                    && closing_fence(&text, range.start, content_end, end)
+                {
+                    if let Some(graphics) = graphics.as_deref_mut() {
+                        let prefix: String = w.indents.iter().map(|p| p.rest.as_str()).collect();
+                        let indent =
+                            unicode_width::UnicodeWidthStr::width(prefix.as_str()).min(width.saturating_sub(1));
+                        let mut doc = graphics.block(Source::Diagram { language: lang, code }, origin, width - indent);
+                        for p in &mut doc.pictures {
+                            p.row += w.out.len();
+                            p.column += indent;
+                        }
+                        pictures.extend(doc.pictures);
+                        for mut line in doc.lines {
+                            line.spans.insert(0, Span::raw(prefix.chars().take(indent).collect::<String>()));
+                            w.out.push(line);
+                        }
+                        w.blank();
+                        continue;
+                    }
+                }
+                w.text(format!("╭─ {lang}"));
+                w.flush();
                 w.indents.push(Indent { first: "│ ".into(), rest: "│ ".into() });
                 for line in code.strip_suffix('\n').unwrap_or(&code).split('\n') {
                     let color = if matches!(lang.as_str(), "diff" | "patch") {
@@ -241,14 +282,56 @@ pub fn render(text: &str, width: usize) -> Vec<Line<'static>> {
                 w.flush();
                 w.blank();
             }
+            Event::Start(Tag::Image { dest_url, .. }) if graphics.is_some() => {
+                w.flush();
+                let mut alt = String::new();
+                for (event, _) in events.by_ref() {
+                    match event {
+                        Event::End(TagEnd::Image) => break,
+                        Event::Text(text) => alt.push_str(&text),
+                        _ => {}
+                    }
+                }
+                if !alt.is_empty() {
+                    w.text(alt);
+                    w.flush();
+                }
+                let prefix: String = w.indents.iter().map(|p| p.rest.as_str()).collect();
+                let indent = unicode_width::UnicodeWidthStr::width(prefix.as_str()).min(width.saturating_sub(1));
+                let mut doc = graphics.as_deref_mut().unwrap().block(
+                    Source::Image(dest_url.into_string()),
+                    origin,
+                    width - indent,
+                );
+                for p in &mut doc.pictures {
+                    p.row += w.out.len();
+                    p.column += indent;
+                }
+                pictures.extend(doc.pictures);
+                for mut line in doc.lines {
+                    line.spans.insert(0, Span::raw(prefix.chars().take(indent).collect::<String>()));
+                    w.out.push(line);
+                }
+                w.blank();
+            }
             Event::Start(Tag::Table(_)) => {
                 w.blank();
                 let mut rows = Vec::new();
+                let mut table_images = Vec::new();
                 let mut row = Vec::new();
                 let mut cell = Writer::new(usize::MAX);
-                for event in events.by_ref() {
+                for (event, _) in events.by_ref() {
                     match event {
                         Event::End(TagEnd::Table) => break,
+                        Event::Start(Tag::Image { link_type, dest_url, title, id }) if graphics.is_some() => {
+                            let display = if dest_url.starts_with("data:") {
+                                "embedded image".into()
+                            } else {
+                                dest_url.chars().take(240).collect::<String>()
+                            };
+                            table_images.push(Source::Image(dest_url.into_string()));
+                            cell.inline(Event::Start(Tag::Image { link_type, dest_url: display.into(), title, id }));
+                        }
                         Event::Start(Tag::TableCell) => cell = Writer::new(usize::MAX),
                         Event::End(TagEnd::TableCell) => {
                             cell.flush();
@@ -268,6 +351,18 @@ pub fn render(text: &str, width: usize) -> Vec<Line<'static>> {
                     );
                     w.out.push(line);
                 }
+                for source in table_images {
+                    let mut doc = graphics.as_deref_mut().unwrap().block(source, origin, width - indent);
+                    for p in &mut doc.pictures {
+                        p.row += w.out.len();
+                        p.column += indent;
+                    }
+                    pictures.extend(doc.pictures);
+                    for mut line in doc.lines {
+                        line.spans.insert(0, Span::raw(prefix.chars().take(indent).collect::<String>()));
+                        w.out.push(line);
+                    }
+                }
                 w.blank();
             }
             Event::Rule => {
@@ -283,7 +378,16 @@ pub fn render(text: &str, width: usize) -> Vec<Line<'static>> {
     while w.out.last().is_some_and(|l| l.width() == 0) {
         w.out.pop();
     }
-    w.out
+    Document { lines: w.out, pictures }
+}
+
+fn closing_fence(text: &str, start: usize, content_end: usize, end: usize) -> bool {
+    let block = &text[start..end];
+    let Some(marker @ (b'`' | b'~')) = block.as_bytes().first().copied() else {
+        return false;
+    };
+    let count = block.bytes().take_while(|b| *b == marker).count();
+    text[content_end..end].trim_end().bytes().rev().take_while(|b| *b == marker).count() >= count
 }
 
 fn table(rows: Vec<Vec<Line<'static>>>, width: usize) -> Vec<Line<'static>> {

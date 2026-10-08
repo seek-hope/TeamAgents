@@ -78,7 +78,7 @@ default (D-239).
 | `mcp_network` | `bool` | false | `engine/src/bound.rs` | Network access for workspace-sandboxed MCP processes. |
 | `command` | `Option<String>` | unset (the reader applies its own) | `core/src/v2/control.rs`, `engine/src/bound.rs` … (17 files) | The `kind = "mcp"` service's argv over stdio (the default transport) — required for that kind and transport, refused at load otherwise (D-232). |
 | `args` | `Vec<String>` | empty | `core/src/kernel/mod.rs`, `core/src/v2/control.rs` … (14 files) | — |
-| `url` | `Option<String>` | unset (the reader applies its own) | `engine/src/bound.rs`, `engine/src/mcp_auth.rs` … (5 files) | The `kind = "mcp"` service's endpoint over the `http` transport — required there, and an absolute http(s) URL (D-232). |
+| `url` | `Option<String>` | unset (the reader applies its own) | `engine/src/bound.rs`, `engine/src/mcp_auth.rs` … (6 files) | The `kind = "mcp"` service's endpoint over the `http` transport — required there, and an absolute http(s) URL (D-232). |
 | `bearer_token_env_var` | `Option<String>` | unset (the reader applies its own) | `engine/src/bound.rs`, `engine/src/mcp_auth.rs` | Bearer token for the http transport: names the environment variable the secret is read from — the token itself never lands in this file. |
 | `oauth` | `bool` | false | `engine/src/bound.rs`, `engine/src/mcp_auth.rs` … (3 files) | D-412: sign in to this HTTP service with OAuth (`teamagents mcp login --name <binding>`) and use the credential stored beside the config (`mcp-auth.json`, mode 0600). Mutually exclusive with `bearer_token_env_var`: one endpoint, one credential. |
 | `oauth_client_id` | `Option<String>` | unset (the reader applies its own) | `engine/src/mcp_auth.rs` | A pre-registered client id. Without it the sign-in registers this client dynamically (RFC 7591), which is what a server with no `registration_endpoint` cannot do — that server needs this key. |
@@ -102,7 +102,7 @@ default (D-239).
 | `retention` | `Retention` | the Retention default | `engine/src/v2/daemon.rs`, `engine/src/v2/driver.rs` … (3 files) | — |
 | `hooks` | `Hooks` | the Hooks default | `engine/src/hooks.rs`, `engine/src/tools.rs` … (3 files) | — |
 | `checks` | `Vec<CheckSpec>` | empty | `core/src/v2/control.rs`, `engine/src/v2/exec.rs` … (4 files) | Acceptance checks the user predefines for every goal (DESIGN §8, Q11): the runtime runs them in the isolated shell at the completion boundary, so a goal cannot be reported as done while a check fails. They are the user's own machine contracts, never conditions a model extracted. |
-| `limits` | `GoalLimits` | the GoalLimits default | `engine/src/providers/mod.rs`, `engine/src/v2/daemon.rs` … (5 files) | Usage and wall-clock ceilings every goal this session creates carries (§8, A18/A35): the goal's `max_total_tokens` refuses a new request once the settled usage would pass it, and its deadline refuses one past that moment. Both are the user's own bounds; a session with neither runs until the user stops it (see `docs/USER-GUIDE.md` §2.2). |
+| `limits` | `GoalLimits` | the GoalLimits default | `engine/src/providers/mod.rs`, `engine/src/v2/daemon.rs` … (6 files) | Usage and wall-clock ceilings every goal this session creates carries (§8, A18/A35): the goal's `max_total_tokens` refuses a new request once the settled usage would pass it, and its deadline refuses one past that moment. Both are the user's own bounds; a session with neither runs until the user stops it (see `docs/USER-GUIDE.md` §2.2). |
 
 ### `[limits]`
 
@@ -119,7 +119,7 @@ default (D-239).
 
 | Key | Type | Absent | Read by | Meaning |
 |---|---|---|---|---|
-| `id` | `String` | empty | `core/src/kernel/instance.rs`, `core/src/v2/control.rs` … (27 files) | Stable id, used in failures, receipts and repair feedback. |
+| `id` | `String` | empty | `core/src/kernel/instance.rs`, `core/src/v2/control.rs` … (29 files) | Stable id, used in failures, receipts and repair feedback. |
 | `command` | `String` | empty | `core/src/v2/control.rs`, `engine/src/bound.rs` … (17 files) | The command, executed through the same shell tool the model uses. |
 | `timeout` | `Option<u64>` | unset (the reader applies its own) | `core/src/v2/control.rs`, `engine/src/mcp.rs` … (9 files) | Seconds; absent means the shell tool's own default. |
 | `network` | `bool` | false | `core/src/v2/control.rs`, `engine/src/mcp.rs` … (3 files) | Run with network access (the sandbox is offline by default). |

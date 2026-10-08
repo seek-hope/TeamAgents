@@ -12,9 +12,11 @@
   with its own model, effort and native context window.
 - User hooks: `[hooks] notify` forwards events to your own program and `pre_tool` can veto a tool call before
   it runs.
+- Mermaid, SVG and DOT diagrams plus local raster images in the conversation and session history; native
+  Kitty graphics, portable Unicode/block previews, and Ctrl+G source fallback.
 - Installer, `teamagents init`, `doctor` and `exec` as documented in the [install guide](https://github.com/seek-hope/TeamAgents/blob/main/docs/INSTALL.md).
 
-Local regression for this release: `make check` green (core 130 / engine 376 / tui 44) plus `make pty`;
+Local regression for this release: `make check` green (core 130 / engine 376 / tui 50) plus `make pty`;
 real-model acceptance is reported separately in [docs/ACCEPTANCE.md](https://github.com/seek-hope/TeamAgents/blob/main/docs/ACCEPTANCE.md).
 
 ### Install and first run

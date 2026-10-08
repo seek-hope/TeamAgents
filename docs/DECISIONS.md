@@ -20,6 +20,53 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-448 Graphics and image presentation in the conversation (2026-10-08)
+
+**Authorization and scope.** The user requested rendering of graphical/image content, with Codex CLI and
+Pi as references. This extends D-447's presentation only: Mermaid, SVG and DOT fences, Markdown images,
+native content parts and `view_image` references. PNG, JPEG, GIF, WebP, BMP, TIFF and ICO use local decoders;
+animated inputs show their first frame. No browser, Node runtime or model/tool execution enters the TUI.
+
+**References.** Installed Pi 1.1.0's `components/mermaid.js` uses grok-mermaid for Unicode diagrams,
+width checks and source fallback. Its terminal-image API separates capability detection, image placement,
+row cropping and cleanup. Codex at `ea27864f99f0b086cec2f9f0251b7190fb9844f1` uses completed-fence detection
+and bounded themed text diagrams in `markdown_render/mermaid.rs`; its image-protocol code explicitly limits
+multiplexer support. These are implementation references, not a claim of complete feature parity.
+
+**Contract.** Ctrl+G switches previews/source without changing drafts or stored content. A bounded background
+queue decodes and lays out graphics. Kitty receives PNG data with placements clipped to the transcript;
+other terminals use Unicode Mermaid previews where supported and colored half-block images otherwise.
+Only this TUI's image IDs are erased during repaint, session changes and exit. Automatic Kitty selection
+requires an explicit Kitty terminal outside tmux/Zellij; `TEAMAGENTS_GRAPHICS=auto|kitty|blocks|off` provides
+an override. Other image protocols are not inferred from inherited environment hints.
+
+**Inputs and limits.** History reads add the member's authoritative workspace to each row; the client never
+uses its own working directory for an image. Local reads stay within that workspace or the member's artifact
+directory, open path components without following symlinks, refuse non-regular files and cap input at 8 MiB.
+Data URLs are bounded. Remote URLs remain visible links and are not fetched during painting. SVG resource
+loading is disabled; the rasterizer is not a script/HTML engine. Display limits and unsupported syntax retain
+a reason and source/reference. Static previews are bounded in dimensions and cache size; this does not claim
+universal Mermaid/Graphviz compatibility or animation playback.
+
+**Formal boundary.** Kani compiles the actual media-row intersection arithmetic in the shared viewport file.
+The proof covers source and screen bounds and matching offsets for all usize inputs. It does not prove image
+decoders, third-party graph layouts, terminal implementations or visual correctness. D-202's material commit
+precedes the report pin. Seven Kani harnesses pass at `87ed6bfe`; deleting the viewport-offset correction in
+a temporary copy specifically refutes the screen-bound assertion. All 41 TLA+ configurations and 120
+negative controls pass unchanged.
+
+**Executed evidence.** Six graphics tests cover seven raster formats, SVG, DOT and thirteen Mermaid families,
+Unicode/source fallback, completed/nested fences and table images, local path confinement, cache reload,
+native content/tool projection, live/session-history frames, clipped Kitty placement and owned-image cleanup.
+The new graphics PTY smoke runs inside the terminal gate in both blocks and forced-Kitty modes; it decodes
+the actual transmitted PNG, checks resize coordinates against the composer, retains drafts through source
+toggling and proves rendering emits no business command. The ordinary PTY smoke, real-daemon session browser
+and reconnect probes also pass. Input latency remains 0.10 s at the sampling step; a ten-character burst
+takes 0.12 s. A separate Kitty 0.49.2 window was visually inspected with a synthetic Mermaid flow and local
+bar-chart image; the screenshot is `/tmp/teamagents-graphics-kitty.png` (temporary, not a repository artifact).
+The full development gate passes core 130 / engine 376 / TUI 50, warnings-denied Clippy and hygiene.
+No paid model call was used. The terminal-protocol probe is not a graphical test of every supported terminal.
+
 ## D-447 Readable conversation presentation, informed by Pi and Codex (2026-10-08)
 
 **Authorization.** The user requested a better conversation display with Pi and Codex CLI as references.

@@ -92,7 +92,8 @@ pty: build
 		printf '%s\n' '[models.leader_main]' 'provider = "openai"' 'model = "test"' \
 			'api_key_env = "TEAMAGENTS_PTY_MISSING_KEY"' 'base_url = "http://127.0.0.1:1/v1"' \
 			> "$$XDG_CONFIG_HOME/teamagents/config.toml"; \
-		python3 tui/scripts/pty_v2_smoke.py
+		python3 tui/scripts/pty_v2_smoke.py; \
+		python3 tui/scripts/pty_graphics_smoke.py
 
 # The credential-free dogfood probes in one command (D-138): the real product driven end to end — the built
 # CLI, real session daemons and the real TUI — with no model and no credential. It guards the two ways a probe

@@ -103,12 +103,14 @@ pub fn handle_mouse(app: &mut V2App, area: Rect, mouse: crossterm::event::MouseE
 }
 
 pub fn render(frame: &mut Frame, app: &mut V2App) {
+    app.pictures.clear();
+    app.graphics.begin_frame();
     let area = frame.area();
     if area.width == 0 || area.height == 0 {
         return;
     }
     if let Some(browser) = app.browser.as_mut() {
-        crate::sessions::render(frame, browser, &app.session_root);
+        app.pictures = crate::sessions::render(frame, browser, &app.session_root, &mut app.graphics);
         return;
     }
     let geo = geometry(app, area);
@@ -134,7 +136,17 @@ fn render_status(frame: &mut Frame, app: &V2App, area: Rect) {
 fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
     let area = Rect::new(area.x + u16::from(area.width > 2), area.y, area.width.saturating_sub(2), area.height);
     let width = area.width as usize;
-    let mut lines = app.transcript.lines(&app.entries, width, Some(if app.expanded_tools { 40 } else { 4 })).to_vec();
+    let mut document = app
+        .transcript
+        .document(
+            &app.entries,
+            width,
+            Some(if app.expanded_tools { 40 } else { 4 }),
+            Some(&mut app.graphics),
+            &app.session_root,
+        )
+        .clone();
+    let lines = &mut document.lines;
     if lines.is_empty() && app.active_preview().is_none() {
         lines.push(Line::from(""));
         lines.push(Line::styled("What would you like to build?", Style::default().fg(FG).add_modifier(Modifier::BOLD)));
@@ -164,9 +176,23 @@ fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
         if !lines.is_empty() {
             lines.push(Line::default());
         }
-        lines.extend(crate::transcript::assistant(preview, "i-leader", width, true));
+        let preview = preview.to_string();
+        let workspace =
+            app.entries.iter().rev().find(|e| !e.workspace.is_empty()).map(|e| e.workspace.clone()).unwrap_or_default();
+        let origin = crate::graphics::Origin {
+            session: app.session_root.clone().into(),
+            workspace: workspace.into(),
+            member: "i-leader".into(),
+            position: usize::MAX,
+        };
+        lines.extend(crate::markdown::plain(
+            "Leader · streaming",
+            width,
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ));
+        document.append(crate::markdown::render_media(&preview, width, Some(&mut app.graphics), &origin));
     }
-    let total = lines.len();
+    let total = document.lines.len();
     let height = area.height as usize;
     let previous = if app.last_chat_width == width { app.last_chat_lines } else { total };
     let (start, offset) = crate::viewport::transcript_window(total, previous, height, app.chat_scroll);
@@ -175,7 +201,8 @@ fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
     app.last_chat_width = width;
     app.last_chat_height = height.max(1);
     let max_scroll = total.saturating_sub(height);
-    let visible: Vec<Line<'static>> = lines.into_iter().skip(start).take(height).collect();
+    app.pictures = document.visible(start, area);
+    let visible: Vec<Line<'static>> = document.lines.into_iter().skip(start).take(height).collect();
     frame.render_widget(Paragraph::new(visible), area);
     if total > height && area.width > 0 {
         let mut state = ScrollbarState::new(max_scroll + 1).position(start);

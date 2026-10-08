@@ -164,6 +164,7 @@ cargo test --offline --locked --manifest-path engine/Cargo.toml --test install
 # tui: conversation state and rendering
 cargo test --offline --locked --manifest-path tui/Cargo.toml --test v2app_tests
 cargo test --offline --locked --manifest-path tui/Cargo.toml --test conversation
+cargo test --offline --locked --manifest-path tui/Cargo.toml --test graphics
 cargo test --offline --locked --manifest-path tui/Cargo.toml --test sessions
 cargo test --offline --locked --manifest-path engine/Cargo.toml --test session_browser
 ```
@@ -181,6 +182,7 @@ nobody uses, and several are what the probes depend on.
 | `TEAMAGENTS_AUTOMATION_TICK_MS` | tests | how often the daemon's automation scheduler ticks (default 30 s): a test cannot wait a period to see a schedule fire (D-367) |
 | `TEAMAGENTS_JOB_TEST_HOOKS` | the runner's own tests | compiles-in fault injection for the job runner, disabled unless the parent opts in; never read from a job file or a model (A31) |
 | `TEAMAGENTS_RUNNER_BIN` | integration tests | the runner image, so the test binary can serve as the runner (production uses the same `teamagents` binary) |
+| `TEAMAGENTS_GRAPHICS` | TUI users and terminal probes | `auto` (default), `kitty`, `blocks`, or `off`; selects local graphics presentation; Ctrl+G toggles previews and reloads files when enabled again (D-448) |
 | `TEAMAGENTS_SESSION_CLI` | the CLI launcher (or a direct TUI caller) | the engine executable used by the session browser for list/history/open/delete; normally the launcher supplies its own path (D-446) |
 | `TEAMAGENTS_TUI` | the CLI, when the TUI is not a sibling of it | where `teamagents` finds `teamagents-tui`; its own error message names this variable (`engine/src/main.rs`) |
 | `TEAMAGENTS_BIN_DIR` | `install.sh` | where the installer puts the binaries; documented for users in `docs/INSTALL.md` |

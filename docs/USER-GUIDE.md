@@ -31,6 +31,20 @@ teamagents                           # open the TUI (starts the per-user daemon 
   Ctrl+O expands tool previews from four to forty wrapped lines or folds them again. Live tool text is capped
   at 20,000 characters with a notice; full stored results and arguments remain in /sessions.
   `teamagents history --id ID --json` also reads stored messages.
+- **Graphics and images (D-448)**: completed Mermaid, SVG and DOT/Graphviz fences render as previews.
+  Mermaid includes flow, sequence, class, state and ER diagrams, pie/XY/quadrant charts, Gantt, journey,
+  timeline, mindmap and Git graphs. Other syntax depends on the bundled renderer; failures retain a reason
+  and source. Markdown images, native image content and view_image results share the same path, including
+  session history. Local PNG/JPEG/GIF/WebP/BMP/TIFF/ICO and SVG files are supported; animations show one frame.
+  Ctrl+G switches previews/source; switching previews back on reloads referenced files. Automatic mode uses
+  Kitty images outside tmux/Zellij; other terminals get Unicode diagrams or colored half-block previews.
+  Set `TEAMAGENTS_GRAPHICS=kitty` to force the Kitty protocol, `blocks` for portable output, `off` to start
+  with source/reference text, or `auto` for detection. Only use the forced protocol with a compatible terminal.
+  Image paths belong to the message author's workspace; /artifacts references belong to that member. Remote
+  URLs stay as links, and SVG external/embedded resources are not loaded. Inputs are limited to 8 MiB; graph
+  source to 32 KiB/300 lines, with graph complexity limits. Up to sixteen cached previews and eight queued
+  renders keep the UI bounded. Images fit at most 120 columns and 36 rows; larger images scale down, and
+  scrolling clips them to the conversation. Display limits never rewrite the saved message.
 - **Sessions (D-446)**: Ctrl+S or /sessions opens all sessions under this base, including idle and archived
   ones. Up/Down or a click selects a session and reads its stored history without starting it; [ reads an
   older page, ] returns to a newer page, and PageUp/PageDown or the wheel scrolls within the page. Enter

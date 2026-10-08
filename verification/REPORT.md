@@ -5,6 +5,16 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
+## 0. Gate status (re-run 2026-10-08 at `87ed6bfe`)
+
+* **D-448 verifies the published media clipping arithmetic.** Kani reports
+  `Complete - 7 successfully verified harnesses, 0 failures, 7 total`, including
+  source/screen bounds and matching offsets for every usize input. A temporary copy without the viewport
+  offset correction fails the screen-bound assertion. The complete TLA+ regression passes **41** positive
+  configurations and refutes **120** negative controls; no TLA+ semantics changed. Rust rendering tests and
+  the graphics PTY smoke bridge placement, scrolling/resize, source toggling and owned-image cleanup.
+  The proof does not establish decoder correctness, graphical quality or terminal implementation behavior.
+
 ## 0. Gate status (re-run 2026-10-08 at `8b1efa00`)
 
 * **D-447 verifies the published transcript scroll arithmetic.** Kani reports
@@ -521,7 +531,7 @@ in [README.md](README.md); the fix ledger is in
 | Protocol model (wide) | `MC_wide.cfg` (2 instances / 2 operations) | 275,004,673 states / 11 min 25 s (historical run of `d37e1b4`, before the 2026-09-25 history rewrite). The spec has changed since (D-63/D-64/D-65/D-71 add instance fields, the deadline flag and the committed-tail rule), so that number is history: re-runs in this round reached about 170M / 250M states, and the D-71 re-run reached **36.5M states generated / 7.6M distinct / 29 min, 4.6M still queued, no violation** before it was stopped under the turn's time bound. The wide configuration stays the slow, best-effort target; the small two-instance configurations carry the per-instance checks in `make verify-model-all` | `make verify-model-wide` |
 | Code-level correspondence | `core/tests/v2_invariants.rs` | 38 commands; 1,482 short sequences plus a 60×24-step walk | `cargo test --offline --manifest-path core/Cargo.toml --test v2_invariants` |
 | Pure functions | `core/tests/kernel_properties.rs` | 258 entry combinations plus a full paging enumeration | `cargo test --offline --manifest-path core/Cargo.toml --test kernel_properties` |
-| Kani proofs | `kani/` (compiles the repository sources, 5 harnesses, 0 failures) | 4 properties for **every `usize`** plus 1 within a bound | `make verify-kani` (re-run 2026-10-08: 5 harnesses, 0 failures; paging and viewport negative controls are refuted, D-132/D-444) |
+| Kani proofs | `kani/` (compiles the repository sources, 7 harnesses, 0 failures) | 6 properties for **every `usize`** plus 1 within a bound | `make verify-kani` (re-run 2026-10-08: 7 harnesses, 0 failures; paging, viewport, transcript and media negative controls are refuted, D-132/D-444/D-447/D-448) |
 | Gate | fmt + clippy `-D warnings` + all tests | 23 suites | `make check` |
 
 Evidence that the checks are neither vacuous nor insensitive ("passing" is not because a check is too weak):

@@ -230,6 +230,9 @@ instead. Details, the full action vocabulary and the exit codes are in
 
 Conversations render Markdown, fenced code, lists and tables, with distinct user messages and compact
 tool results. `Ctrl+O` expands or folds tool previews; full stored content remains in the session page (D-447).
+Mermaid, SVG and DOT diagrams and local PNG/JPEG/GIF/WebP/BMP/TIFF/ICO images also render in the conversation
+and session history. `Ctrl+G` switches previews/source. Kitty displays images; other terminals use text diagrams
+or colored blocks. `TEAMAGENTS_GRAPHICS=auto|kitty|blocks|off` selects the display mode (D-448).
 
 TUI keys: `Enter` sends to the Leader; `Ctrl+J` or `Shift+Enter` inserts a newline. `↑`/`↓` recalls
 input and walks multiline drafts; `PageUp`/`PageDown` and the wheel scroll history. `Ctrl+W` deletes a word;

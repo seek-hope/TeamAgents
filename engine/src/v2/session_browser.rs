@@ -25,17 +25,22 @@ pub fn history(registry: &Registry, id: &str, before: Option<i64>, limit: u64) -
         let conn = teamagents_core::v2::store::open_read_only(&db)?;
         let mut stmt = conn
             .prepare(
-                "SELECT rowid, instance_id, epoch, idx, kind, message_json FROM context_entries
-             WHERE (?1 IS NULL OR rowid < ?1) ORDER BY rowid DESC LIMIT ?2",
+                "SELECT c.rowid, c.instance_id, c.epoch, c.idx, c.kind, c.message_json, i.workspace_ref
+             FROM context_entries c LEFT JOIN instances i ON i.id = c.instance_id
+             WHERE (?1 IS NULL OR c.rowid < ?1) ORDER BY c.rowid DESC LIMIT ?2",
             )
             .map_err(|e| format!("session history: {e}"))?;
-        entries = stmt.query_map(rusqlite::params![before, limit as i64 + 1], |row| {
-            let message: String = row.get(5)?;
-            Ok(json!({"cursor": row.get::<_, i64>(0)?, "instance_id": row.get::<_, String>(1)?,
+        entries = stmt
+            .query_map(rusqlite::params![before, limit as i64 + 1], |row| {
+                let message: String = row.get(5)?;
+                Ok(json!({"cursor": row.get::<_, i64>(0)?, "instance_id": row.get::<_, String>(1)?,
                 "epoch": row.get::<_, i64>(2)?, "idx": row.get::<_, i64>(3)?,
-                "kind": row.get::<_, String>(4)?, "message": serde_json::from_str::<Json>(&message).unwrap_or(Json::Null)}))
-        }).map_err(|e| format!("session history: {e}"))?
-            .collect::<Result<Vec<_>, _>>().map_err(|e| format!("session history: {e}"))?;
+                "kind": row.get::<_, String>(4)?, "workspace": row.get::<_, Option<String>>(6)?,
+                "message": serde_json::from_str::<Json>(&message).unwrap_or(Json::Null)}))
+            })
+            .map_err(|e| format!("session history: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("session history: {e}"))?;
     }
     let more = entries.len() > limit as usize;
     entries.truncate(limit as usize);

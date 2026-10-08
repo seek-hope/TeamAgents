@@ -48,12 +48,12 @@ the handler re-checks who may do this rather than trusting the request.
 | `previews` | — | `previews` | `engine/src/v2/daemon.rs:619` |
 | `checkpoint` | — | `snapshot`, `watermark` | `engine/src/v2/daemon.rs:625` |
 | `events` | `since` | `events`, `resync_required`, `watermark` | `engine/src/v2/daemon.rs:632` |
-| `history` | `instance_id`, `limit` | `entries`, `envelope_id`, `epoch`, `idx`, `instance_id`, `kind`, `message` | `engine/src/v2/daemon.rs:641` |
-| `surfaces` | `instance_id`, `limit` | `epoch`, `goal_id`, `instance_id`, `kind`, `offered_tools`, `request_id`, `status`, `surface_authorized`, `surfaces` | `engine/src/v2/daemon.rs:672` |
-| `tasks` | — | `assignee`, `goal_id`, `id`, `status`, `tasks` | `engine/src/v2/daemon.rs:704` |
-| `approvals` | — | `approvals`, `id`, `operation_id`, `preview`, `tool` | `engine/src/v2/daemon.rs:720` |
-| `goals` | — | `attached_instances`, `deadline`, `goals`, `id`, `known_usage`, `limits`, `status`, `summary`, `unknown_usage` | `engine/src/v2/daemon.rs:749` |
-| `grants` | — | `action`, `grants`, `id`, `issuer`, `parent_grant_id`, `resource_scope`, `revision`, `revoked`, `subject` | `engine/src/v2/daemon.rs:795` |
+| `history` | `instance_id`, `limit` | `entries`, `envelope_id`, `epoch`, `idx`, `instance_id`, `kind`, `message`, `workspace` | `engine/src/v2/daemon.rs:641` |
+| `surfaces` | `instance_id`, `limit` | `epoch`, `goal_id`, `instance_id`, `kind`, `offered_tools`, `request_id`, `status`, `surface_authorized`, `surfaces` | `engine/src/v2/daemon.rs:674` |
+| `tasks` | — | `assignee`, `goal_id`, `id`, `status`, `tasks` | `engine/src/v2/daemon.rs:706` |
+| `approvals` | — | `approvals`, `id`, `operation_id`, `preview`, `tool` | `engine/src/v2/daemon.rs:722` |
+| `goals` | — | `attached_instances`, `deadline`, `goals`, `id`, `known_usage`, `limits`, `status`, `summary`, `unknown_usage` | `engine/src/v2/daemon.rs:751` |
+| `grants` | — | `action`, `grants`, `id`, `issuer`, `parent_grant_id`, `resource_scope`, `revision`, `revoked`, `subject` | `engine/src/v2/daemon.rs:797` |
 
 ### Commands (executed by the control plane)
 
@@ -135,7 +135,7 @@ literals in `engine/src/v2/daemon.rs`; this table is that list. A row is one lit
 | `previews` arm | `previews` |
 | `checkpoint` arm | `snapshot`, `watermark` |
 | `events` arm | `events`, `watermark`, `resync_required` |
-| `history` arm | `epoch`, `idx`, `kind`, `envelope_id`, `message` |
+| `history` arm | `epoch`, `idx`, `kind`, `envelope_id`, `workspace`, `message` |
 | `history` arm | `instance_id`, `entries` |
 | `surfaces` arm | `request_id`, `instance_id`, `epoch`, `goal_id`, `kind`, `status`, `offered_tools`, `surface_authorized` |
 | `surfaces` arm | `surfaces` |

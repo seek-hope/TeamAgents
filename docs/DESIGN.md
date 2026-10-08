@@ -501,6 +501,9 @@ shared between rendering and hit-testing. No management panel or topology canvas
 D-447 presents conversations as Markdown with distinct user/Leader/tool blocks, compact or expanded tool
 previews, and the same renderer in session history. Display limits never change persisted text. Streaming
 uses the same layout and remains explicitly transient. Ctrl+O changes presentation only.
+D-448 adds bounded asynchronous diagram/image previews and Ctrl+G source fallback. History reads carry
+the author's workspace for local references. Image placement shares transcript row clipping; Kitty image
+IDs are local client resources and are cleaned up independently of session lifetime.
 
 Traces are complete but organised by reference and increment: every request/response, tool argument/receipt,
 retry, compaction, control action and usage record carries a stable identifier and a timestamp, and the

@@ -246,7 +246,12 @@ fn geometry(area: Rect) -> std::rc::Rc<[Rect]> {
     .split(area)
 }
 
-pub fn render(frame: &mut Frame, browser: &mut SessionBrowser, current: &str) {
+pub fn render(
+    frame: &mut Frame,
+    browser: &mut SessionBrowser,
+    current: &str,
+    graphics: &mut crate::graphics::Graphics,
+) -> Vec<crate::graphics::Placement> {
     let chunks = geometry(frame.area());
     frame.render_widget(Block::default().style(Style::default().bg(BG).fg(FG)), frame.area());
     frame.render_widget(Paragraph::new(" Sessions").style(Style::default().fg(ACCENT)), chunks[0]);
@@ -290,13 +295,16 @@ pub fn render(frame: &mut Frame, browser: &mut SessionBrowser, current: &str) {
     let inner = history.inner(chunks[2]);
     frame.render_widget(history, chunks[2]);
     let entries = crate::transcript::project(&browser.entries, "", false);
-    let mut lines = browser.transcript.lines(&entries, inner.width as usize, None).to_vec();
+    let root = browser.rows.get(browser.selected).map(|r| r.path.as_str()).unwrap_or("");
+    let document = browser.transcript.document(&entries, inner.width as usize, None, Some(graphics), root);
+    let mut lines = document.lines.clone();
     if lines.is_empty() {
         lines.push(Line::from(if browser.busy { "Loading..." } else { "No stored messages." }));
     }
     browser.last_height = (inner.height as usize).max(1);
     browser.last_lines = lines.len();
     browser.scroll = browser.scroll.min(lines.len().saturating_sub(browser.last_height));
+    let pictures = document.visible(browser.scroll, inner);
     frame.render_widget(
         Paragraph::new(lines.into_iter().skip(browser.scroll).take(browser.last_height).collect::<Vec<_>>()),
         inner,
@@ -324,4 +332,5 @@ pub fn render(frame: &mut Frame, browser: &mut SessionBrowser, current: &str) {
         ),
         chunks[3],
     );
+    pictures
 }

@@ -144,9 +144,17 @@ fn v2_main(socket: &std::path::Path) -> ! {
         .map(|path| path.to_string_lossy().into_owned())
         .unwrap_or_else(|_| client.state_root.clone());
 
+    app.graphics = teamagents_tui::graphics::Graphics::terminal().unwrap_or_else(|e| refuse(&e));
+    let main_thread = std::thread::current().id();
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        restore_terminal();
+        // A caught renderer panic must not restore the main thread's terminal.
+        if std::thread::current().name() == Some("teamagents-graphics") {
+            return;
+        }
+        if std::thread::current().id() == main_thread {
+            restore_terminal();
+        }
         default_hook(info);
     }));
     let mut stdout = std::io::stdout();
@@ -251,6 +259,7 @@ fn run_v2_effect(effect: V2Effect, client: &mut DaemonClient, app: &mut V2App, s
 
 fn run_v2(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, mut client: DaemonClient, mut app: V2App) -> i32 {
     let mut sessions = SessionClient::new(&app.session_root);
+    let mut images = teamagents_tui::graphics::KittyOutput::default();
     v2_sync_checkpoint(&mut client, &mut app);
     v2_refresh_history(&mut client, &mut app);
     v2_refresh_approvals(&mut client, &mut app);
@@ -264,11 +273,15 @@ fn run_v2(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, mut client
     let mut last_disconnected = app.disconnected;
     loop {
         dirty |= sessions.poll(&mut client, &mut app);
+        dirty |= app.graphics.poll();
         if dirty {
+            let _ = images.clear(&mut std::io::stdout());
             let _ = terminal.draw(|f| v2ui::render(f, &mut app));
+            let _ = images.paint(&mut std::io::stdout(), &app.pictures);
             dirty = false;
         }
         if app.quit {
+            let _ = images.finish(&mut std::io::stdout());
             return 0;
         }
         if event::poll(Duration::from_millis(40)).unwrap_or(false) {
@@ -293,7 +306,10 @@ fn run_v2(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, mut client
                     }
                     dirty = true;
                 }
-                Ok(Event::Resize(_, _)) => dirty = true,
+                Ok(Event::Resize(_, _)) => {
+                    app.graphics.resize();
+                    dirty = true;
+                }
                 Ok(Event::Paste(text)) if app.focus == V2Focus::Composer && app.browser.is_none() => {
                     for c in text.chars() {
                         if c == '\n' {
