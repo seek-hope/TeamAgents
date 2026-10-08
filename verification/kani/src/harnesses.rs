@@ -5,6 +5,41 @@
 
 use crate::kernel_types::page_span;
 
+/// Every list size, selection and terminal height, including stale selections:
+/// the viewport fits, and contains the selected item whenever it has any rows.
+#[kani::proof]
+fn viewport_contains_selection_without_overflow() {
+    let len: usize = kani::any();
+    let selected: usize = kani::any();
+    let height: usize = kani::any();
+    let (start, count) = crate::viewport::window(len, selected, height);
+    assert!(count <= height);
+    assert!(count <= len);
+    assert!(start + count <= len);
+    if count > 0 {
+        let selected = selected.min(len - 1);
+        assert!(start <= selected);
+        assert!(selected < start + count);
+    }
+}
+
+/// Hit-testing inverts the rendered range and rejects every blank row.
+#[kani::proof]
+fn viewport_clicks_only_the_rendered_item() {
+    let len: usize = kani::any();
+    let selected: usize = kani::any();
+    let height: usize = kani::any();
+    let row: usize = kani::any();
+    let (start, count) = crate::viewport::window(len, selected, height);
+    let hit = crate::viewport::item_at(len, selected, height, row);
+    if row < count {
+        assert!(hit == Some(start + row));
+        assert!(hit.unwrap() < len);
+    } else {
+        assert!(hit.is_none());
+    }
+}
+
 /// Coordinate contract (no loops, holds for every `usize`): a page is at most
 /// `limit` long, `offset + page` neither overflows nor runs past the end, a full page
 /// is taken unless the tail is reached, and the tail consumes exactly the remainder.

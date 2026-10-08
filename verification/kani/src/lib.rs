@@ -14,4 +14,7 @@ pub mod models {
 #[path = "../../../core/src/kernel/types.rs"]
 pub mod kernel_types;
 
+#[path = "../../../tui/src/viewport.rs"]
+pub mod viewport;
+
 mod harnesses;
