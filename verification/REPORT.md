@@ -5,6 +5,19 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
+## 0. Gate status (re-run 2026-10-08 at `d1eb0522`)
+
+* **D-446 models session switching and confirmed deletion.** `V2SessionUi.tla` verifies 106 distinct states
+  (545 generated). `ConfirmedDelete`, `SwitchAfterSuccess`, `ExitAfterSuccess` and `DeletedCurrentExits`
+  each have a separately refuted control. The regression verifies all **41** configurations and refutes
+  all **120** negative controls. Kani reports `Complete - 5 successfully verified harnesses, 0 failures, 5 total`.
+  The client replaces its attached session only after a successful target sync. A deletion request exits
+  the client only after the current session has been successfully deleted. Concrete bridges: `tui/tests/sessions.rs`,
+  `engine/tests/session_browser.rs` and `review/dogfood/tui_sessions.py`. Filesystem atomicity, process
+  identity and visual rendering remain outside this model. Shared viewport arithmetic is unchanged.
+  The material was committed before this pin; the follow-up material commit only aligned declarations
+  with the catalogue's syntax (D-202).
+
 ## 0. Gate status (re-run 2026-10-08 at `55de54cb`)
 
 * **D-445 models minimal TUI dispatch.** `V2Tui.tla` checks `LeaderOnly`, `ExplicitDecision` and

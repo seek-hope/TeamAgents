@@ -39,7 +39,7 @@ but a member begins no turn: the session's `model_requests` table stays empty). 
 because the sentence had gone stale — it said "seven", named seven, and the set had eight (D-233). `review/dogfood/probes.py` runs a whole set and reports one line per probe:
 
 ```bash
-make probe-offline                     # needs `make build`; the 18 credential-free ones, about two minutes
+make probe-offline                     # needs `make build`; the 19 credential-free ones, about two minutes
 make probe-models                      # the probes that take a model, one after another (~7 min)
 python3 review/dogfood/probes.py --list
 python3 review/dogfood/probes.py --only checks.py --set models
@@ -616,6 +616,13 @@ Measured 2026-09-26, three runs (D-93). That fourth scenario also fixes what the
 verdicts writes no file and reports a null path, so the reliable signal is the path in the run's own report,
 not the presence of `<state root>/verification.json`.
 
+
+## `tui_sessions.py`: session browsing and deletion
+
+D-446, no model call: `python3 review/dogfood/tui_sessions.py` drives a real TUI against real daemons.
+It reads more than two pages of an idle conversation, views an archive, tests failed opening and deletion,
+round-trips per-session drafts, rejects paste/Enter as deletion confirmation, deletes another running session,
+and verifies both named-current and default-current deletion exit the TUI while retaining siblings.
 
 ## `tui_panels.py`: developer management beside the minimal TUI
 

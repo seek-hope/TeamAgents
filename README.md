@@ -232,12 +232,15 @@ TUI keys: `Enter` sends to the Leader; `Ctrl+J` or `Shift+Enter` inserts a newli
 input and walks multiline drafts; `PageUp`/`PageDown` and the wheel scroll history. `Ctrl+W` deletes a word;
 `Ctrl+←`/`Ctrl+→` moves by word. `Ctrl+A` focuses pending approvals: `a` approves once, `d` denies,
 `Esc` returns to the draft. `Ctrl+C` interrupts the Leader's model request (running tools and delegated
-work continue); `Ctrl+D` exits while the session keeps running. The only client commands are `/help`,
-`/interrupt`, `/quit`. Drafts survive resizing, and approval arrival never takes typing focus.
+work continue); `Ctrl+D` exits while the session keeps running. `Ctrl+S` or `/sessions` opens session
+history and switching: select with arrows, Enter switches, brackets page history, and `d` then `y` deletes
+the selected session. Deleting the current session succeeds before the TUI exits. Esc cancels/returns.
+Client commands: `/help`, `/sessions`, `/interrupt`, `/quit`. Drafts survive resizing and session switches;
+approval arrival never takes typing focus.
 
 Developer inspection: `teamagents status --json` reads the running session's checkpoint;
 `teamagents history --id INSTANCE --limit 400 --json` reads a bounded tail of stored messages, including
-tool records. Member/task/goal controls, authority, sessions, MCP and diagnostics remain in the CLI;
+tool records. Member/task/goal controls, authority, session management, MCP and diagnostics are available in the CLI;
 see the [developer command map](docs/USER-GUIDE.md#1-quick-start).
 
 ## Configuration and team

@@ -181,6 +181,52 @@ async fn row(instance: Option<String>, dir: &Path, act: Act, table: &[jobs::Proc
     })
 }
 
+/// Stop the addressed root's runners before removing their journals (D-446).
+/// Identity checks remain the runner token and the existing verified process-group rules.
+pub fn quiesce_for_delete(root: &Path) -> Result<(), String> {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
+    runtime.block_on(async {
+        for (_, dir) in job_dirs(root) {
+            let mut journal = journal_of(&dir);
+            if answers(&dir).await? {
+                journal = Some(
+                    tokio::time::timeout(PROBE_TIMEOUT, jobs::client::cancel(&dir))
+                        .await
+                        .map_err(|_| "runner cancellation timed out")??,
+                );
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+                while journal.as_ref().is_some_and(|j| !j.terminal()) {
+                    if tokio::time::Instant::now() >= deadline {
+                        return Err(format!("job at {} has not stopped; history was kept", dir.display()));
+                    }
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                    journal =
+                        Some(journal_of(&dir).ok_or_else(|| {
+                            format!("job journal disappeared at {}; deletion stopped", dir.display())
+                        })?);
+                }
+            }
+            if let Some(journal) = journal {
+                let group_live = journal.boot_id == jobs::boot_id().unwrap_or_default()
+                    && journal.pid.is_some_and(|pid| !jobs::group_members(&jobs::proc_table(), pid).is_empty());
+                if group_live {
+                    if journal.terminal() {
+                        jobs::stop_leftover_group(&journal, libc::SIGKILL)?;
+                    } else {
+                        jobs::signal_group(&journal, libc::SIGKILL)?;
+                    }
+                }
+            }
+            if answers(&dir).await? {
+                tokio::time::timeout(PROBE_TIMEOUT, jobs::client::shutdown(&dir))
+                    .await
+                    .map_err(|_| "runner shutdown timed out")??;
+            }
+        }
+        Ok(())
+    })
+}
+
 /// One runner command, for the CLI: builds the current-thread runtime the job client needs. Errors are
 /// (exit code, message).
 pub fn execute(options: &RunnersOptions) -> Result<Json, (i32, String)> {

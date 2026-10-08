@@ -24,7 +24,7 @@ is tabulated in [ACCEPTANCE](ACCEPTANCE.md) under "Requirements (Q1–Q19) and t
 | Q3 | Scope may be re-cut; deliver the kernel and the runtime first | Capabilities added to the first release are listed in Q6, Q12 and Q13 |
 | Q4 | Context, message and tool access are isolated by default; full_auto shell may bypass the logical boundary | Permissions are enforced at runtime; context isolation is never advertised as a security boundary between host processes of the same user |
 | Q5 | The Leader manages instances and connections by default and may delegate part of that authority | Authorized instances may communicate directly; instances never chat privately, collaboration goes through control-plane-granted messages and shared space |
-| Q6 | Ship a minimal user TUI for Leader conversation, progress, approvals and interruption; the developer CLI owns comprehensive management (D-445) | One conversation, conditional approvals and distinct interrupt/exit; member, task, goal, session and diagnostic controls remain scriptable |
+| Q6 | Ship a minimal user TUI for Leader conversation, progress, approvals, interruption and session history/switch/delete; the developer CLI owns comprehensive management (D-445/D-446) | One conversation, conditional approvals, distinct interrupt/exit and an optional session browser; member, task, goal, session and diagnostic controls remain scriptable |
 | Q7 | Closing the UI keeps work running, and the user can reconnect and intervene | The background runtime is independent of the front-end lifetime |
 | Q8 | The user talks to the Leader by default and may read other instances' history, talk to them directly, pause or cancel | The user has a global view; agents stay isolated from each other by permissions |
 | Q9 | Instances are reused and retained within a session; they can be terminated or reset; sessions are isolated by default | Instances, tasks and turns have separate lifetimes |
@@ -492,8 +492,11 @@ The TUI is a minimal user surface (D-445): one Leader conversation, streaming/hi
 and usage, conditional approvals, model-request interruption, and disconnect/reconnect. Input never switches
 to a worker. Exiting detaches the client; interrupting cancels only an in-flight Leader model request and
 reports the actual receipt. Running tools and delegated work keep their existing lifecycle. The developer
-CLI owns instance/task/goal lifecycle, grants/channels, session selection, configuration and diagnostics;
-`status` and bounded `history` reads preserve access to the details omitted from the TUI. Geometry remains
+CLI owns instance/task/goal lifecycle, grants/channels, configuration and diagnostics;
+`status` and bounded `history` reads preserve access to the details omitted from the TUI. D-446 adds one optional
+session page for paged history, switching and confirmed deletion, through the engine's session CLI. Only a
+successful target sync replaces the client; only confirmed current-session deletion success exits it. Drafts
+belong to individual state roots. The default session can be deleted without deleting siblings or shared data. Geometry remains
 shared between rendering and hit-testing. No management panel or topology canvas is required.
 
 Traces are complete but organised by reference and increment: every request/response, tool argument/receipt,

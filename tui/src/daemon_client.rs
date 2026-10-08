@@ -1,7 +1,7 @@
 //! Synchronous client of the v2 session daemon (plan §9): one Unix-socket
 //! JSON-lines connection, greeting-verified on connect, request/reply
 //! matched by request id, and a reconnect path that resumes events from the
-//! last watermark — the TUI never executes anything itself.
+//! last watermark. Model and tool execution remain in the engine.
 
 use serde_json::{json, Value as Json};
 use std::io::{BufRead, BufReader, Write};

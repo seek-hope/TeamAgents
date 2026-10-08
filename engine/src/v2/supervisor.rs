@@ -324,6 +324,9 @@ where
     config.state_root = std::fs::canonicalize(&config.state_root)
         .map_err(|e| format!("state root {}: {e}", config.state_root.display()))?;
     let lock = crate::jobs::state_lock(&config.state_root.join("coordinator.lock"))?;
+    if !config.state_root.is_dir() {
+        return Err("session was deleted while waiting for its coordinator lock".into());
+    }
     let storage = Storage::open(&config.session_db, &config.session_id, true, config.storage_queue)?;
     let leader_profile = crate::providers::resolve_profile(config.leader_profile.clone(), &config.catalog);
     bootstrap(

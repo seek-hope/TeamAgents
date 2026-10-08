@@ -34,7 +34,9 @@ usage: teamagents [--cwd DIR] [--state-root PATH] [--session ID] [--model KEY] [
   teamagents sessions restore --id ID           bring an archived session back\n\
   teamagents sessions search --query TEXT [--limit N]  search every session's conversation (read-only, D-368)\n\
   teamagents sessions archive --id ID           move a named session aside (refused while a daemon runs it)\n\
-  teamagents sessions delete --id ID --yes      remove a named session's directory and history\n\
+  teamagents sessions open --id ID [--json]     restore/start or join a session and report its socket\n\
+  teamagents sessions history --id ID [--before N] [--limit N] [--json]  page all stored records without starting it\n\
+  teamagents sessions delete --id ID [--stop] --yes [--json]  delete its history; --stop also stops its daemon and work\n\
   teamagents sessions prune [--days N] [--dry-run] [--yes]  drop archived sessions older than the window\n\
   teamagents automations [list] [--json]        schedules that start a goal on their own (D-367)\n\
   teamagents automations add --every MIN --prompt TEXT [--name NAME]   create one\n\
@@ -76,7 +78,7 @@ teamagents or exec) and exit 0 done, 1 the session refused it, 2 usage. authorit
 spawned worker gets shell@workspace (§5.1) and how a capability is taken back; approvals\n\
 answers the decision that made exec exit 3; instances and tasks are the user-side\n\
 interventions of §5.4 (pause/resume/terminate, cancel a task) without starting the TUI.\n\
-sessions manages the named sessions under one state root; `--session ID` attaches the TUI, exec or daemon to\n\none of them (the default session is the state root itself). A named session is its own state root, so several\n\nrun side by side, and archive/delete refuse a session that still has a daemon.\n\
+sessions manages the named sessions under one state root; `--session ID` attaches the TUI, exec or daemon to\n\none of them (the default session is the state root itself). A named session is its own state root, so several\n\nrun side by side. Archive refuses a running session; delete --stop --yes stops it before deleting its history.\n\
 runners works on a state root rather than a session — it asks each leftover jobs-runner\n\
 process to retire, which is what a state root carries after its session is gone; a runner\n\
 whose command is still running refuses, so this never takes work away.\n\
@@ -184,6 +186,8 @@ pub struct Args {
     pub mcp_execution: Option<String>,
     pub mcp_server: Option<String>,
     pub limit: Option<u64>,
+    /// D-446: exclusive row cursor for paged session history.
+    pub before: Option<i64>,
     /// D-267: `goals open --deadline MINUTES` — a deadline for the new goal, measured from now (§8).
     pub deadline_minutes: Option<u64>,
     /// D-412: `mcp login --paste` — the browser is on another machine, so read the redirected URL from stdin
@@ -254,6 +258,7 @@ fn parse_args() -> Args {
         mcp_execution: None,
         mcp_server: None,
         limit: None,
+        before: None,
         deadline_minutes: None,
         mcp_login_paste: false,
         mcp_login_no_browser: false,
@@ -371,6 +376,10 @@ fn parse_args() -> Args {
                     reject("two entry points were given: pick one (teamagents --help lists them)");
                 }
                 args.command = Some(argv[i].clone());
+                i += 1;
+            }
+            "history" if args.command.as_deref() == Some("sessions") && args.positional.is_none() => {
+                args.positional = Some("history".into());
                 i += 1;
             }
             "serve" | "init" | "doctor" | "validate" | "sessions" | "automations" | "version" | "exec"
@@ -597,6 +606,18 @@ fn parse_args() -> Args {
                 );
                 i += 2;
             }
+            "--before" if args.command.as_deref() == Some("sessions") => {
+                if args.before.is_some() {
+                    given_twice("--before");
+                }
+                args.before = Some(
+                    argv.get(i + 1)
+                        .and_then(|s| s.parse::<i64>().ok())
+                        .filter(|n| *n > 0)
+                        .unwrap_or_else(|| reject("--before needs a positive history cursor")),
+                );
+                i += 2;
+            }
             "--limit" if matches!(args.command.as_deref(), Some("sessions" | "history")) => {
                 if args.limit.is_some() {
                     given_twice("--limit");
@@ -688,7 +709,7 @@ fn parse_args() -> Args {
                 i += 2;
             }
             // D-248: `daemon --stop` is the stop lever; `daemon` alone starts one in the foreground.
-            "--stop" if args.command.as_deref() == Some("daemon") => {
+            "--stop" if matches!(args.command.as_deref(), Some("daemon" | "sessions")) => {
                 args.daemon_stop = true;
                 i += 1;
             }
@@ -845,8 +866,10 @@ fn run_tui(args: &Args) -> i32 {
     // No --cwd here: the workspace belongs to the session the daemon owns, and
     // the client already says so (`note_session_settings`, D-57). Passing a flag
     // the TUI cannot honour was the one thing left of that path (D-73).
-    // D-180: no `TEAMAGENTS_ENGINE` either — the TUI never starts the engine, so the value it used to be handed
-    // was read by nothing (`find_engine_binary` was dead, and `--engine` is now refused).
+    // D-446: session browsing is an engine CLI client; the TUI never reads or deletes databases itself.
+    if let Ok(exe) = std::env::current_exe() {
+        command.env("TEAMAGENTS_SESSION_CLI", exe);
+    }
     match command.status() {
         Ok(status) => status.code().unwrap_or(1),
         Err(e) => {
@@ -1588,7 +1611,35 @@ fn run_automations(args: &Args) -> i32 {
 /// `archive`/`delete` refuse a session whose daemon is live (the socket is the address).
 fn run_sessions(args: &Args) -> i32 {
     use teamagents_engine::v2::sessions::{facts, Registry, DEFAULT_ID};
-    let home = args.state_root.clone().map(PathBuf::from).unwrap_or_else(teamagents_engine::v2_root);
+    let root = args.state_root.clone().map(PathBuf::from).unwrap_or_else(teamagents_engine::v2_root);
+    let home = teamagents_engine::v2::sessions::base_of(&root);
+    let home = home.canonicalize().unwrap_or(home);
+    let verb = args.positional.as_deref().unwrap_or("list");
+    if matches!(verb, "open" | "history")
+        && (args.cwd.is_some() || args.model.is_some() || args.full_auto || !args.overrides.is_empty())
+    {
+        eprintln!("sessions open/history use the selected session; model/workspace/config overrides belong to teamagents --session ID");
+        return 2;
+    }
+    if (args.before.is_some() && verb != "history") || (args.daemon_stop && verb != "delete") {
+        eprintln!("sessions: --before belongs to history; --stop belongs to delete");
+        return 2;
+    }
+    // Serialize registry writers and open/delete across CLI and TUI clients. Reads use atomic registry files.
+    let _registry_lock = if !matches!(verb, "list" | "ls" | "search" | "history") {
+        let lock = std::fs::create_dir_all(&home)
+            .map_err(|e| e.to_string())
+            .and_then(|_| teamagents_engine::jobs::state_lock(&home.join("sessions.lock")));
+        match lock {
+            Ok(lock) => Some(lock),
+            Err(error) => {
+                eprintln!("sessions: {error}");
+                return 1;
+            }
+        }
+    } else {
+        None
+    };
     let mut registry = match Registry::load(&home) {
         Ok(registry) => registry,
         Err(error) => {
@@ -1596,8 +1647,74 @@ fn run_sessions(args: &Args) -> i32 {
             return 1;
         }
     };
-    let verb = args.positional.as_deref().unwrap_or("list");
     match verb {
+        "history" => {
+            let id = args.approval_id.as_deref().unwrap_or("default");
+            match teamagents_engine::v2::session_browser::history(&registry, id, args.before, args.limit.unwrap_or(200))
+            {
+                Ok(report) => {
+                    if args.exec_json {
+                        println!("{report}");
+                    } else {
+                        for entry in report["entries"].as_array().into_iter().flatten() {
+                            println!(
+                                "{} {}: {}",
+                                entry["instance_id"].as_str().unwrap_or(""),
+                                entry["kind"].as_str().unwrap_or(""),
+                                entry["message"]
+                            );
+                        }
+                        if let Some(cursor) = report["next_before"].as_i64() {
+                            println!("Older records: sessions history --id {id} --before {cursor}");
+                        }
+                    }
+                    0
+                }
+                Err(error) => {
+                    eprintln!("sessions history: {error}");
+                    1
+                }
+            }
+        }
+        "open" => {
+            let id = args.approval_id.as_deref().unwrap_or("default");
+            let opened = (|| {
+                if registry.find(id).is_some_and(|entry| entry.archived) {
+                    registry.restore(id)?;
+                }
+                let dir = registry.resolve(id)?;
+                let (mut model, workspace) = teamagents_engine::v2::session_browser::resume_settings(&dir)?;
+                if !teamagents_engine::v2::sessions::is_live(&dir) {
+                    let (catalog, _) = teamagents_engine::config::load_user_config_for(
+                        workspace.as_deref().unwrap_or(Path::new(".")),
+                    )?;
+                    model = model.map(|name| {
+                        teamagents_engine::providers::resolve_model(&catalog, &name)
+                            .map(|(key, _)| key.clone())
+                            .unwrap_or(name)
+                    });
+                }
+                let (socket, _) = ensure_daemon(DaemonRequest {
+                    state_root: &dir,
+                    model,
+                    full_auto: false,
+                    cwd: workspace.as_deref(),
+                    overrides: &[],
+                })?;
+                let client = teamagents_engine::v2::exec::Client::connect(&socket)?;
+                Ok::<_, String>(serde_json::json!({"id": id, "socket": socket, "state_root": client.state_root}))
+            })();
+            match opened {
+                Ok(report) => {
+                    println!("{report}");
+                    0
+                }
+                Err(error) => {
+                    eprintln!("sessions open: {error}");
+                    1
+                }
+            }
+        }
         "list" | "ls" => {
             let rows: Vec<serde_json::Value> = registry
                 .rows()
@@ -1857,16 +1974,22 @@ fn run_sessions(args: &Args) -> i32 {
             0
         }
         "delete" => match args.approval_id.as_deref() {
-            Some(id) if args.confirmed => match registry.delete(id) {
-                Ok(dir) => {
-                    println!("deleted session {id} ({})", dir.display());
-                    0
+            Some(id) if args.confirmed => {
+                match teamagents_engine::v2::session_browser::delete(&mut registry, id, args.daemon_stop) {
+                    Ok(dir) => {
+                        if args.exec_json {
+                            println!("{}", serde_json::json!({"id": id, "deleted": true, "path": dir}));
+                        } else {
+                            println!("deleted session {id} ({})", dir.display());
+                        }
+                        0
+                    }
+                    Err(error) => {
+                        eprintln!("sessions delete: {error}");
+                        1
+                    }
                 }
-                Err(error) => {
-                    eprintln!("sessions delete: {error}");
-                    1
-                }
-            },
+            }
             Some(id) => {
                 eprintln!("deleting session {id} removes its directory and history: add --yes to mean it");
                 2

@@ -12,7 +12,7 @@ teamagents doctor                    # config, credentials, state root, skills, 
 teamagents                           # open the TUI (starts the per-user daemon when needed)
 ```
 
-- **One daemon per user**: `teamagents` probes `$XDG_STATE_HOME/teamagents/v2/daemon.sock` and, when it is
+- **One daemon per session**: `teamagents` probes `$XDG_STATE_HOME/teamagents/v2/daemon.sock` and, when it is
   missing or refuses the connection, starts `teamagents daemon` detached and hands the socket to the TUI.
   Quitting the TUI does not stop the session.
 - **Minimal fullscreen conversation (D-445)**: one conversation with the Leader, a one-line status,
@@ -26,9 +26,17 @@ teamagents                           # open the TUI (starts the per-user daemon 
   Esc returns to the draft. Approval arrival never steals typing focus, and a click only selects a row.
 - **Live output (D-366)**: the Leader's streaming preview is transient and replaced by stored history.
   Tool results are short previews; `teamagents history --id ID --json` reads the stored messages.
-- **Three client commands**: /help, /interrupt, /quit. Unknown or retired commands remain local and point
+- **Sessions (D-446)**: Ctrl+S or /sessions opens all sessions under this base, including idle and archived
+  ones. Up/Down or a click selects a session and reads its stored history without starting it; [ reads an
+  older page, ] returns to a newer page, and PageUp/PageDown or the wheel scrolls within the page. Enter
+  switches (restoring an archive and starting a daemon when needed); Esc returns. Each session keeps its own
+  unsent draft. Press d or Delete, then y to confirm deletion; n or Esc cancels. Deleting the current session
+  successfully exits the TUI. Deleting another leaves the current conversation open. Failure stays visible.
+  Deletion stops that session and its jobs; member workspaces must first be retired or moved. A default
+  session deletion preserves named sessions and shared data. Press r to refresh the list.
+- **Four client commands**: /help, /sessions, /interrupt, /quit. Unknown or retired commands remain local and point
   to `teamagents --help`; they are never sent to the model.
-- **Developer CLI**: all management belongs to scriptable commands, using `--state-root PATH` or
+- **Developer CLI**: all management is also available through scriptable commands, using `--state-root PATH` or
   `--session ID` to select the session. `status --json` reads the running session's checkpoint, model,
   goal usage/limits/deadline, bound MCP state and known sessions without starting a daemon. The watermark
   describes the database snapshot; MCP credentials and the session registry are external reads.
@@ -43,7 +51,7 @@ teamagents                           # open the TUI (starts the per-user daemon 
 | Inspect/control team members | `instances`: send, pause, resume, interrupt, terminate, merge |
 | Inspect/control tasks and goals | `tasks`: list, cancel; `goals`: list, open, cancel |
 | Inspect/control permissions and approvals | `authority`: list, grant, revoke; `approvals`: list, approve, deny |
-| Sessions and recurring work | `sessions`: list, new, fork, rename, restore, search, archive, delete, prune; `automations` |
+| Sessions and recurring work | `sessions`: list, open, history, new, fork, rename, restore, search, archive, delete, prune; `automations` |
 | MCP, configuration and diagnostics | `mcp`: list, add, remove, login, logout; `init`, `doctor`, `-c key=value` |
 | Processes and stored artifacts | `daemon --stop`, `runners`, `artifacts` |
 
@@ -697,7 +705,16 @@ teamagents goals cancel --id g-spent    # close a goal nothing can spend (its ce
   `sessions new` creates named ones under `sessions/<id>/`. Each named session is its own state root with its
   own daemon, so several run side by side; `--session ID` attaches the TUI, `exec`, `daemon`, `init` or `doctor`
   to one. `sessions archive` moves a session's directory to `archive/<id>/`, and `sessions delete --yes` removes
-  it; both refuse while a daemon is serving it. `sessions list --json` prints `state_root` and `sessions` (each
+  it. Both refuse a running daemon unless deletion explicitly uses `--stop --yes` (D-446). Deleting
+  `default` removes only its session data, retaining named sessions and shared memory/configuration.
+  `sessions open --id ID --json` restores/starts or joins a session and reports `id`, `socket`, `state_root`.
+  `sessions history --id ID [--before N] [--limit N] --json` reads all members/epochs, including archived and
+  compaction-covered records, without booting a daemon (default 200 records, limit 1..1000). The response
+  carries `id`, chronological `entries` and `next_before` (null at the beginning); pass that exclusive cursor
+  as `--before` to read older records. Each entry carries `cursor`, `instance_id`, `epoch`, `idx`, `kind`,
+  and the full stored `message`. New appends cannot shift earlier pages. `sessions delete --json` reports
+  `id`, `deleted` and `path` only after success; failure exits nonzero, may already have stopped the session,
+  and does not claim deletion. `sessions list --json` prints `state_root` and `sessions` (each
   row an `id`, `name`, `path`, `live`, `archived`, `database_bytes`), and `sessions new --json` prints
   `state_root`, `id`, `name`, `path`; these two run before a session is attached, so they carry no `session_id`.
   `sessions fork --id ID [--name NAME]` snapshots the session's database (`VACUUM INTO`, read-only on the source),

@@ -14,6 +14,7 @@ use ratatui::Terminal;
 use serde_json::json;
 
 use teamagents_tui::daemon_client::DaemonClient;
+use teamagents_tui::session_client::SessionClient;
 use teamagents_tui::v2app::{Focus as V2Focus, V2App, V2Effect};
 use teamagents_tui::v2ui;
 
@@ -78,13 +79,10 @@ fn parse_args() -> Args {
                  `teamagents exec \"…\"`.",
                 argv[i]
             )),
-            // D-180: `--engine PATH` (and `TEAMAGENTS_ENGINE`) were parsed, documented and never read — this
-            // binary only connects to the socket, so the value had no effect at all. Refused like its
-            // neighbours rather than accepted and ignored.
+            // D-180 retired the unused flag. D-446 gives session operations an explicit CLI locator.
             "--engine" => refuse(
-                "--engine is not a TUI flag: this binary only connects to the session's daemon socket and never \
-                 starts the engine. Start the session with `teamagents` (it boots the daemon) or \
-                 `teamagents daemon`.",
+                "--engine is not a TUI flag. Launch with teamagents, or set TEAMAGENTS_SESSION_CLI \
+                 to locate the engine used for session browsing.",
             ),
             "--daemon" => {
                 a.daemon = argv.get(i + 1).cloned();
@@ -129,7 +127,7 @@ fn restore_terminal() {
 }
 
 /// R19 v2 entry: connect the session daemon and run the conversation
-/// interface (plan §9 — the TUI never executes anything itself).
+/// interface (plan §9 — models and tools execute in the engine).
 fn v2_main(socket: &std::path::Path) -> ! {
     let socket = socket.to_path_buf();
     let client = match DaemonClient::connect(&socket) {
@@ -140,7 +138,11 @@ fn v2_main(socket: &std::path::Path) -> ! {
             std::process::exit(1);
         }
     };
-    let app = V2App::new(&client.session_id.clone());
+    let mut app = V2App::new(&client.session_id);
+    app.session_root = std::path::Path::new(&client.state_root)
+        .canonicalize()
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| client.state_root.clone());
 
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -192,8 +194,9 @@ fn v2_refresh_approvals(client: &mut DaemonClient, app: &mut V2App) {
     }
 }
 
-fn run_v2_effect(effect: V2Effect, client: &mut DaemonClient, app: &mut V2App) {
+fn run_v2_effect(effect: V2Effect, client: &mut DaemonClient, app: &mut V2App, sessions: &mut SessionClient) {
     match effect {
+        V2Effect::Sessions(action) => sessions.start(action, app),
         V2Effect::SubmitInput { instance, envelope, text } => {
             // the envelope id doubles as the command id: a retry after a lost
             // reply dedups at the control plane (§9)
@@ -247,6 +250,7 @@ fn run_v2_effect(effect: V2Effect, client: &mut DaemonClient, app: &mut V2App) {
 }
 
 fn run_v2(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, mut client: DaemonClient, mut app: V2App) -> i32 {
+    let mut sessions = SessionClient::new(&app.session_root);
     v2_sync_checkpoint(&mut client, &mut app);
     v2_refresh_history(&mut client, &mut app);
     v2_refresh_approvals(&mut client, &mut app);
@@ -259,6 +263,7 @@ fn run_v2(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, mut client
     // "disconnected, reconnecting..." on screen while the client was in fact connected again (D-99).
     let mut last_disconnected = app.disconnected;
     loop {
+        dirty |= sessions.poll(&mut client, &mut app);
         if dirty {
             let _ = terminal.draw(|f| v2ui::render(f, &mut app));
             dirty = false;
@@ -270,7 +275,7 @@ fn run_v2(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, mut client
             match event::read() {
                 Ok(Event::Key(key)) if key.kind != KeyEventKind::Release => {
                     if let Some(effect) = app.handle_key(key) {
-                        run_v2_effect(effect, &mut client, &mut app);
+                        run_v2_effect(effect, &mut client, &mut app, &mut sessions);
                     }
                     dirty = true;
                 }
@@ -279,11 +284,17 @@ fn run_v2(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, mut client
                         .size()
                         .map(|s| ratatui::layout::Rect::new(0, 0, s.width, s.height))
                         .unwrap_or_default();
-                    v2ui::handle_mouse(&mut app, size, m);
+                    if let Some(browser) = app.browser.as_mut() {
+                        if let Some(action) = browser.mouse(size, m) {
+                            sessions.start(action, &mut app);
+                        }
+                    } else {
+                        v2ui::handle_mouse(&mut app, size, m);
+                    }
                     dirty = true;
                 }
                 Ok(Event::Resize(_, _)) => dirty = true,
-                Ok(Event::Paste(text)) if app.focus == V2Focus::Composer => {
+                Ok(Event::Paste(text)) if app.focus == V2Focus::Composer && app.browser.is_none() => {
                     for c in text.chars() {
                         if c == '\n' {
                             app.composer.insert_newline();

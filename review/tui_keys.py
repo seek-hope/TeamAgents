@@ -58,7 +58,7 @@ def chord(letter: str) -> str:
     )
 
 
-for letter in "acdjnpqrtwy":
+for letter in "acdjnpqrstwy":
     HANDLED[f"Ctrl+{letter.upper()}"] = chord(letter)
 # the `Ctrl+←/→` word jumps and the shift-enter newline are written as guards, not as chords
 HANDLED["Ctrl+Left"] = r"(?s)(?=.{0,400}CONTROL)(?=.{0,400}KeyCode::Left)"
@@ -69,7 +69,7 @@ HANDLED["Shift+Enter"] = r"(?s)(?=.{0,400}SHIFT)(?=.{0,400}KeyCode::Enter)"
 HINT_WORDS = {
     "enter": "Enter", "esc": "Esc", "tab": "Tab", "up": "Up", "down": "Down", "up/down": "Up",
     "pageup": "PageUp", "pagedown": "PageDown", "ctrl+j": "Ctrl+J", "ctrl+n": "Ctrl+N", "ctrl+a": "Ctrl+A",
-    "ctrl+w": "Ctrl+W", "ctrl+c": "Ctrl+C", "ctrl+d": "Ctrl+D", "ctrl+left": "Ctrl+Left",
+    "ctrl+w": "Ctrl+W", "ctrl+s": "Ctrl+S", "ctrl+c": "Ctrl+C", "ctrl+d": "Ctrl+D", "ctrl+left": "Ctrl+Left",
     "ctrl+right": "Ctrl+Right", "shift+enter": "Shift+Enter",
 }
 PANEL_KEYS = {"p", "r", "t", "c", "a", "d", "y", "n"}
@@ -150,7 +150,7 @@ def documented_keys() -> dict:
 
 
 def main() -> int:
-    source = APP.read_text()
+    source = APP.read_text() + "\n" + (REPO / "tui/src/sessions.rs").read_text()
     findings = []
     advertised = hint_keys(source)
     for key in sorted(advertised - {"Key p", "Key r", "Key t", "Key c", "Key a", "Key d", "Key y", "Key n"}):

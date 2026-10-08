@@ -108,6 +108,10 @@ pub fn render(frame: &mut Frame, app: &mut V2App) {
     if area.width == 0 || area.height == 0 {
         return;
     }
+    if let Some(browser) = app.browser.as_mut() {
+        crate::sessions::render(frame, browser, &app.session_root);
+        return;
+    }
     let geo = geometry(app, area);
     // the palette's screen background, drawn first so every widget sits on it
     frame.render_widget(Block::default().style(Style::default().bg(BG).fg(FG)), area);
@@ -122,7 +126,10 @@ pub fn render(frame: &mut Frame, app: &mut V2App) {
 
 fn render_status(frame: &mut Frame, app: &V2App, area: Rect) {
     let style = Style::default().fg(if app.disconnected { ERROR } else { NOTICE });
-    frame.render_widget(Paragraph::new(format!(" {}", app.status_line())).style(style), area);
+    let name: String = app.session_name.chars().take(32).collect();
+    let text =
+        if name.is_empty() { format!(" {}", app.status_line()) } else { format!(" {name} · {}", app.status_line()) };
+    frame.render_widget(Paragraph::new(text).style(style), area);
 }
 
 fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {

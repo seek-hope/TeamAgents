@@ -17,6 +17,8 @@ enum Step {
     /// Reply after a delay, so a test can act *while* the request is in flight
     /// (the harness logs the request before the delay).
     Slow(u64, Json),
+    /// Hold a reply until the test commits the action the next request must observe.
+    Held(Arc<tokio::sync::Notify>, Json),
     /// Stream text deltas (a transient preview) and then hold the request open for `u64` ms before replying,
     /// so a test can observe the preview while the turn runs (D-366).
     Deltas(Vec<String>, u64, Json),
@@ -47,6 +49,13 @@ impl Provider for ScriptedProvider {
         let (message, delay) = match next {
             Step::Message(message) => (message, 0),
             Step::Slow(ms, message) => (message, ms),
+            Step::Held(release, message) => {
+                tokio::select! {
+                    _ = release.notified() => {}
+                    _ = cancel.cancelled() => return Err(ProviderError::interrupted("interrupted by the test")),
+                }
+                (message, 0)
+            }
             Step::Deltas(deltas, ms, message) => {
                 for delta in deltas {
                     on_event(ProviderEvent::TextDelta(delta));
@@ -74,6 +83,7 @@ impl Provider for ScriptedProvider {
                 timing: teamagents_engine::providers::StreamTimingReport::default(),
             }),
             Step::Slow(..) => unreachable!("the delay was already applied"),
+            Step::Held(..) => unreachable!("the held reply was already released"),
             Step::Deltas(..) => unreachable!("the deltas were already emitted and the delay applied"),
         }
     }
@@ -1450,7 +1460,9 @@ async fn a_task_driven_worker_turn_sees_a_live_user_grant() {
         {"id": "f", "type": "function", "function": {"name": "finish",
          "arguments": json!({"status": "success", "summary": "hello"}).to_string()}}]})
     };
-    let worker = vec![Step::Message(finished()), Step::Message(finished()), Step::Message(finished())];
+    let grant_ready = Arc::new(tokio::sync::Notify::new());
+    let worker =
+        vec![Step::Held(grant_ready.clone(), finished()), Step::Message(finished()), Step::Message(finished())];
     let seen: Seen = Arc::new(Mutex::new(HashMap::new()));
     let root = root("task-driven-grant");
     std::fs::create_dir_all(root.dir.join("ws")).unwrap();
@@ -1484,6 +1496,8 @@ async fn a_task_driven_worker_turn_sees_a_live_user_grant() {
         .await
         .expect("grant");
     let before = requests().len();
+    assert_eq!(before, 1, "the first task cannot finish until the grant is committed");
+    grant_ready.notify_one();
     // D-407: this waits for a *scheduling* outcome (the worker's next request), not for a fact, so the bound is
     // generous and the wait polls: 20 s was enough on an idle machine and not under `make check`, where it failed
     // twice while passing alone three times out of three. The property is that the worker keeps working, not how
@@ -1496,14 +1510,8 @@ async fn a_task_driven_worker_turn_sees_a_live_user_grant() {
     }
     let after = requests();
     assert!(after.len() > before, "the worker kept working after the grant: {after:?}");
-    // The *last* request must offer shell, and the first one recorded after the grant need not: the surface is
-    // resolved when a request is **prepared** (`driver::team_kernel(snapshot)` reads the grants and drops
-    // `shell` when the covering grant is absent), while its receipt is recorded afterwards — so a request already
-    // in flight when the grant lands can legitimately be recorded without it. The earlier form of this assertion
-    // ("every request recorded after the grant offers shell") was therefore not a property the product can have:
-    // measured 2026-10-06, it failed twice on a loaded machine in two different processes, and the driver's own
-    // preparation-time resolution is why. What the runtime does guarantee is that once the grant is visible to
-    // the next preparation, the surface follows it — which is what the last request shows.
+    // D-446: waiting only for a newly recorded request raced with preparation before the grant.
+    // Holding the first task's reply makes every subsequent task request prepare after the grant commits.
     let last = after.last().expect("the worker made a request");
     assert!(
         last.contains(&"shell".to_string()),

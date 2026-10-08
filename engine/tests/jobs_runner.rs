@@ -51,6 +51,51 @@ fn group_len(dir: &Path) -> usize {
     teamagents_engine::jobs::group_members(&teamagents_engine::jobs::proc_table(), group).len()
 }
 
+/// D-446: deleting a session cancels its running child and its settled service group before journals go.
+#[tokio::test]
+async fn deleting_a_session_stops_its_jobs_before_removing_their_records() {
+    runner_bin();
+    let scratch = root("session-delete");
+    let running = scratch.join("jobs/running");
+    let service = scratch.join("jobs/service");
+    client::spawn(&running, &spec("running", "sleep 20", future(30_000))).await.unwrap();
+    client::go(&running).await.unwrap();
+    client::spawn(&service, &spec("service", "sleep 20 & echo started", future(30_000))).await.unwrap();
+    client::go(&service).await.unwrap();
+    assert_eq!(wait_terminal(&service, 10_000).await, "SUCCEEDED");
+    let groups = [
+        client::persisted_journal(&running).unwrap().pid.unwrap(),
+        client::persisted_journal(&service).unwrap().pid.unwrap(),
+    ];
+    assert!(groups.iter().all(|pid| !teamagents_engine::jobs::group_members(
+        &teamagents_engine::jobs::proc_table(),
+        *pid
+    )
+    .is_empty()));
+    let dir = scratch.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let mut registry = teamagents_engine::v2::sessions::Registry::load(&dir).unwrap();
+        teamagents_engine::v2::session_browser::delete(&mut registry, "default", true).unwrap();
+    })
+    .await
+    .unwrap();
+    assert!(!scratch.join("jobs").exists());
+    for _ in 0..100 {
+        if groups
+            .iter()
+            .all(|pid| teamagents_engine::jobs::group_members(&teamagents_engine::jobs::proc_table(), *pid).is_empty())
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(groups.iter().all(|pid| teamagents_engine::jobs::group_members(
+        &teamagents_engine::jobs::proc_table(),
+        *pid
+    )
+    .is_empty()));
+}
+
 /// D-251: the other leftover — the service a settled command left behind (a child started with `&` whose shell
 /// is gone). It cannot be *asked* anything (no runner supervises it any more), so it is a signal, and the
 /// identity rule is the members' birth time rather than A15's child check.

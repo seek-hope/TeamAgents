@@ -184,7 +184,9 @@ teamagents authority revoke --grant g-1a2b3c4d          # 撤销是终局的，�
 TUI 键位：`Enter` 发送给 Leader，`Ctrl+J` 或 `Shift+Enter` 换行，`↑`/`↓` 回顾输入，
 `PageUp`/`PageDown` 和滚轮浏览对话。`Ctrl+A` 聚焦待批准请求，`a` 批准本次，`d` 拒绝，
 `Esc` 返回草稿。`Ctrl+C` 中断 Leader 正在等待的模型请求（已运行的工具和委派工作继续），
-`Ctrl+D` 退出界面，会话继续运行。仅保留 `/help`、`/interrupt`、`/quit` 三个界面命令。
+`Ctrl+D` 退出界面，会话继续运行。`Ctrl+S` 或 `/sessions` 打开会话列表和历史：方向键选择，
+Enter 切换，方括号翻页，`d` 后按 `y` 确认删除，Esc 取消或返回。删除当前会话成功后退出 TUI。
+界面命令为 `/help`、`/sessions`、`/interrupt`、`/quit`。各会话的草稿分别保留，切换后可以继续编辑。
 
 开发者可用 `teamagents status --json` 检查会话，
 `teamagents history --id INSTANCE --limit 400 --json` 读取成员最近的已存储消息和工具记录。

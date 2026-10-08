@@ -65,7 +65,7 @@ fn retired_commands_are_local_and_approval_arrival_does_not_steal_typing() {
         "/switch other",
         "/mcp",
         "/status",
-        "/sessions",
+        "/sessions extra",
         "/help extra",
     ] {
         app.composer.set_text(command);

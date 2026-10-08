@@ -1,8 +1,8 @@
 //! R2-P4 R19-b② v2 conversation interface state and key handling (plan §9).
 //! Pure logic like app.rs: side effects leave as `V2Effect`s executed by the
-//! main loop through the daemon client, so every path is unit-testable
-//! without a terminal or daemon process. The TUI never executes anything
-//! itself — history is the authoritative conversation, events are signals,
+//! main loop through the daemon client or session CLI, so interaction logic
+//! is testable without a terminal. Tools and models run in the engine;
+//! history is the authoritative conversation, events are signals,
 //! and system notes are UI-level annotations on top.
 
 use serde_json::Value as Json;
@@ -10,7 +10,7 @@ use serde_json::Value as Json;
 use crate::text::Composer;
 
 /// The slash commands the composer understands (D-370), shown while a `/` draft is open and by `/help`.
-const SLASH_HELP: &str = "commands: /help · /interrupt · /quit";
+const SLASH_HELP: &str = "commands: /help · /sessions · /interrupt · /quit";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Focus {
@@ -85,6 +85,7 @@ pub struct GoalInfo {
 /// Side effects for the main loop to execute through the daemon client.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum V2Effect {
+    Sessions(crate::sessions::SessionAction),
     SubmitInput {
         instance: String,
         envelope: String,
@@ -116,6 +117,9 @@ const NOTE_CAP: usize = 200;
 const PREVIEW_CHARS: usize = 400;
 
 pub struct V2App {
+    pub session_root: String,
+    pub session_name: String,
+    pub browser: Option<crate::sessions::SessionBrowser>,
     pub session_id: String,
     pub instances: Vec<InstanceInfo>,
     pub entries: Vec<ChatEntry>,
@@ -141,6 +145,9 @@ pub struct V2App {
 impl V2App {
     pub fn new(session_id: &str) -> V2App {
         V2App {
+            session_root: String::new(),
+            session_name: String::new(),
+            browser: None,
             session_id: session_id.to_string(),
             instances: vec![],
             entries: vec![],
@@ -211,6 +218,15 @@ impl V2App {
     /// Checkpoint (connect/reconnect): snapshot state and the watermark the
     /// event stream resumes from — one consistent read (§9).
     pub fn apply_checkpoint(&mut self, snapshot: Json, watermark: i64) {
+        if self.session_name.is_empty() {
+            if let Some(row) = snapshot["sessions"].as_array().into_iter().flatten().find(|row| row["active"] == true) {
+                self.session_name = if row["id"] == "default" {
+                    "default".into()
+                } else {
+                    row["name"].as_str().unwrap_or("").to_string()
+                };
+            }
+        }
         self.instances = snapshot["instances"]
             .as_array()
             .cloned()
@@ -514,8 +530,19 @@ impl V2App {
 
     pub fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> Option<V2Effect> {
         use crossterm::event::{KeyCode, KeyModifiers};
+        if self.browser.is_some()
+            && !(key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c' | 'd')))
+        {
+            let browser = self.browser.as_mut()?;
+            if key.code == KeyCode::Esc && !browser.busy && browser.confirmation.is_none() {
+                self.browser = None;
+                return None;
+            }
+            return browser.key(key).map(V2Effect::Sessions);
+        }
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
+                KeyCode::Char('s') => return self.open_sessions(),
                 KeyCode::Char('c') => return self.interrupt(),
                 KeyCode::Char('d') => {
                     self.quit = true;
@@ -534,6 +561,11 @@ impl V2App {
             Focus::Approvals => self.approval_key(key),
             Focus::Composer => self.composer_key(key),
         }
+    }
+
+    fn open_sessions(&mut self) -> Option<V2Effect> {
+        self.browser = Some(crate::sessions::SessionBrowser::default());
+        Some(V2Effect::Sessions(crate::sessions::SessionAction::List))
     }
 
     fn interrupt(&mut self) -> Option<V2Effect> {
@@ -583,10 +615,12 @@ Up/Down recalls input; PageUp/PageDown or the wheel reads history.
 Ctrl+C or /interrupt cancels the Leader's model request; running tools and delegated work continue.
 Ctrl+A focuses pending approvals; a approves once, d denies, Esc returns.
 Ctrl+D or /quit exits; the session keeps running.
+Ctrl+S or /sessions opens session history, switching and confirmed deletion.
 Developer tools: teamagents --help; teamagents status --json; teamagents history --id ID.",
                 self.session_id,
                 self.active_instance().map(|i| i.model.as_str()).unwrap_or("unavailable")
             )),
+            "/sessions" => return self.open_sessions(),
             "/interrupt" => return self.interrupt(),
             "/quit" => {
                 self.quit = true;
@@ -767,7 +801,7 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
         if !self.approvals.is_empty() {
             return "Ctrl+A review · Enter send · Ctrl+C interrupt · Ctrl+D exit".into();
         }
-        "Enter send · Ctrl+C interrupt · Ctrl+D exit · /help".into()
+        "Enter send · Ctrl+S sessions · Ctrl+C interrupt · Ctrl+D exit · /help".into()
     }
 }
 

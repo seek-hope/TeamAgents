@@ -20,6 +20,56 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-446 Session history, switching and confirmed deletion in the TUI (2026-10-08)
+
+**Authorization.** The user requested all session records, switching, deletion, and exiting after deleting
+the current session. This amends D-445's session exclusion and D-364's default-session deletion ban. Ctrl+S
+or `/sessions` opens one optional page; Esc returns to the conversation. Other management stays in the CLI.
+
+**Contract.** The page lists sessions under the current registry base, including idle and archived records.
+Selection reads all members' stored history without booting a daemon, in pages with exclusive row cursors.
+Brackets page older/newer records; PageUp/PageDown scroll within a page. Enter restores an archived target
+if needed and starts or joins its daemon. The client changes only after handshake, checkpoint, history and
+approvals succeed. Each state root retains its own composer, cursor and recall state across switches.
+
+**Deletion.** `d` or Delete captures one session identity; only an explicit `y` confirms it. The engine stops
+that daemon, takes its coordinator lock, cancels its runners and retires verified leftover groups before
+removing records. Current-session success exits the TUI; other-session success refreshes the list; failure
+stays visible and does not exit. Member workspaces must be retired or moved first, so deletion cannot erase
+uncommitted work. Default deletion removes only session-owned files, keeping named sessions, archives,
+registry, shared memory/configuration and unrelated files. CLI registry mutations and open/delete operations
+serialize through a base lock; direct low-level registry callers still need external serialization.
+
+**Architecture.** The TUI is an asynchronous client of the engine's session CLI for operations that must
+survive or stop its current daemon. The launcher supplies `TEAMAGENTS_SESSION_CLI`; direct TUI launches look
+for a sibling/source-build/PATH engine. Registry, database and deletion logic remain in the engine.
+`sessions history` and `sessions open` are developer entry points; `sessions delete --stop --yes` shares the
+same deletion path. Conversation requests continue over the existing socket protocol.
+
+**Verification boundary.** `verification/tla/V2SessionUi.tla` models `ConfirmedDelete`, `SwitchAfterSuccess`,
+`ExitAfterSuccess` and `DeletedCurrentExits`, each with its own negative control. These are receipt-handling
+properties, not filesystem atomicity or process-identity proofs. A failed delete may already have stopped
+work; an archived target may already have been restored before opening fails. Neither failure is claimed as
+a successful deletion or switch. The browser covers one registry base, not arbitrary roots on the filesystem.
+
+**Concrete checks.** The real-terminal probe covers idle/archive paging, failed opening, a round trip of
+per-session drafts, cancelled/failed/other/current/default deletion and preservation of sibling sessions.
+It caught the stored wire-model name needing catalogue resolution and the archive path changing on restore;
+both are fixed and exercised by the final probe. The CLI tests read 450 records across members/epochs in
+three pages while a new record is appended; lock, workspace and symlink refusals retain history. A real-runner
+test proves deletion stops both an in-flight child and a settled command's leftover service before records go.
+Protection is checked again after shutdown and runner quiescence: a scripted shutdown creates a late workspace
+and deletion must retain it. Conversation status displays the selected session name. A full-gate rerun exposed
+an existing grant-test race: recording a request after a grant did not mean it was prepared after the grant.
+The test now holds the first task's model reply until the grant commits, making the next preparation unambiguous;
+the full supervisor suite passes with that synchronization.
+
+**Final gates (2026-10-08).** `make check` exits 0 in 121.86 s: core 130 / engine 376 / TUI 38,
+formatting, warnings-denied Clippy and hygiene. `make pty` and the real-daemon session-browser probe pass.
+`make verify-model-all` passes 41 configurations; `make verify-model-counterexamples` refutes 120 controls;
+`make verify-kani` passes 5 harnesses. The material pin is `d1eb0522`. No paid model call was used.
+Graphical Kitty rendering was not inspected; the terminal evidence is PTY and Ratatui frames.
+
 ## D-445 Minimal user TUI, comprehensive developer CLI (2026-10-08)
 
 **Authorization and split.** The user asked for a minimal TUI designed from first principles for users,

@@ -15,6 +15,7 @@ pub mod inspect;
 pub mod intervene;
 pub mod memory;
 pub mod runners;
+pub mod session_browser;
 pub mod sessions;
 pub mod storage;
 pub mod supervisor;

@@ -52,6 +52,7 @@ OFFLINE = [
     ("instructions.py", [], "`instruction_files` reach every member's prompt, seen in the requests (D-246)"),
     ("input_latency.py", [], "per-keystroke composer latency against the scripted daemon"),
     ("tui_panels.py", [], "CLI management beside the minimal TUI (D-445)"),
+    ("tui_sessions.py", [], "session history, switching, per-session drafts and confirmed deletion (D-446)"),
     ("geometry.py", [], "the TUI under an extreme terminal size and a mid-run resize (D-233)"),
     ("tui_reconnect.py", [], "the TUI through a daemon kill and restart (A28, D-99)"),
     ("providers.py", ["--self-check"], "the A27 probe's task-result rule, without a model"),
