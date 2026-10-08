@@ -70,7 +70,8 @@ Evict(id) ==
   /\ cached' = cached \ {id} /\ last' = Record("evict", "none", TRUE)
   /\ UNCHANGED <<focus, draft, visible, queued, generation>>
 Reload ==
-  /\ generation = 0 /\ generation' = 1 /\ cached' = {}
+  /\ generation = 0
+  /\ generation' = 1 /\ cached' = {}
   /\ last' = Record("reload", "none", TRUE)
   /\ UNCHANGED <<focus, draft, visible, queued>>
 Next == (\E d \in {"prefix", "plain", "filled"} : Edit(d))
