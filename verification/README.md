@@ -598,7 +598,7 @@ Two boundaries, recorded honestly rather than as defects:
   cannot occur in a real log (the runtime appends the call first), so that path is covered by the permutation
   property alone.
 
-## Kani proofs: paging arithmetic (`make verify-kani`)
+## Kani proofs: paging and viewport arithmetic (`make verify-kani`)
 
 `verification/kani/` is a crate used only by Kani: it compiles **the repository's own
 `core/src/kernel/types.rs`** through `#[path]` (adding only a `models::now` shim that none of the proven
@@ -611,11 +611,15 @@ functions reads), so it proves the **published code**. It needs a local Kani too
 | `page_span_never_overflows_or_overruns` | for **every `usize`** (no assumptions beyond `offset <= total` and `limit >= 1`): a page is at most `limit` long, `offset + page` neither overflows nor runs past the end, a full page is taken unless the tail is reached, the tail consumes exactly the remainder, and the eof test is equivalent to "the remainder fits in limit" |
 | `empty_page_moves_nothing` | for every `usize`: at `offset == total` the page is empty and the cursor does not move |
 | `paging_covers_the_whole_output_exactly_once` | small lengths within the unwinding bound: page-by-page retrieval has no overlap, no gaps and a bounded page count |
+| `viewport_contains_selection_without_overflow` | every `usize` list length, selection and viewport height: bounded range, no overflowing endpoint, selected item visible when the range is nonempty |
+| `viewport_clicks_only_the_rendered_item` | every `usize` row and list input: a hit maps to the rendered item; blank rows never select an item |
 
 The proven `page_span(total, offset, limit) = min(limit, total - offset)` is the **published function**:
 `page_output` takes exactly that many characters per page (`take(page_span(...))`), so the arithmetic property
-"a page neither overruns nor overflows" covers the shipped code rather than a copied stand-in. A measured
-`make verify-kani` run takes about 7 seconds and all three harnesses pass.
+"a page neither overruns nor overflows" covers the shipped code rather than a copied stand-in. `tui/src/viewport.rs` is compiled directly too (D-444), proving the shared list range and hit-testing arithmetic
+used by members, tasks, approvals and the composer. These two proofs cover arithmetic for every `usize`, not
+terminal rendering or Unicode shaping. The viewport frame regressions and the PTY smoke cover those concrete
+input and rendering paths. A measured `make verify-kani` run takes about 4 seconds and all five harnesses pass.
 
 **Honest boundaries** (measured, not guessed):
 

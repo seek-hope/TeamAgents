@@ -15,6 +15,15 @@ teamagents                           # open the TUI (starts the per-user daemon 
 - **One daemon per user**: `teamagents` probes `$XDG_STATE_HOME/teamagents/v2/daemon.sock` and, when it is
   missing or refuses the connection, starts `teamagents daemon` detached and hands the socket to the TUI.
   Quitting the TUI does not stop the session.
+- **Fullscreen layout (D-444)**: conversation is the default. Ctrl+N opens members, tasks and topology;
+  at least 120 columns and 12 rows show the panel in a right sidebar, while smaller windows show it full-page.
+  Esc returns to chat; Enter in the members panel selects the conversation target. Your draft survives panel
+  switches and resizing. Click the composer to return input focus; a panel owns keyboard input until closed.
+  Long drafts soft-wrap and keep the caret visible. The wheel scrolls the pane under the pointer; PageUp and
+  PageDown scroll conversation history, whose scrollbar and footer show when you are above the latest output.
+  Ctrl+A reaches pending approvals from any panel, and long lists keep the selected item visible.
+  On Kitty, Shift+Enter uses the enhanced keyboard protocol; Ctrl+J also inserts a newline. Use Kitty's native
+  Shift-drag selection to copy text. The interface uses dark surfaces with readable secondary text.
 - **Live output (D-366)**: while a member's turn is running, the TUI shows the text the model is streaming as a
   transient dimmed line under the conversation (only for the target you are looking at). It is not an
   authoritative fact — it is replaced as more arrives and removed the moment the complete reply lands.

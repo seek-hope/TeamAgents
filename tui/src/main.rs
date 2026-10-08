@@ -4,7 +4,7 @@
 
 use std::time::{Duration, Instant};
 
-use crossterm::event::{self, Event, KeyEventKind, MouseEventKind};
+use crossterm::event::{self, Event, KeyEventKind};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, supports_keyboard_enhancement, EnterAlternateScreen, LeaveAlternateScreen,
 };
@@ -378,45 +378,17 @@ fn run_v2(
                     dirty = true;
                 }
                 Ok(Event::Mouse(m)) => {
-                    match m.kind {
-                        MouseEventKind::ScrollUp => app.wheel(true),
-                        MouseEventKind::ScrollDown => app.wheel(false),
-                        MouseEventKind::Down(_) => {
-                            let size = terminal
-                                .size()
-                                .map(|s| ratatui::layout::Rect::new(0, 0, s.width, s.height))
-                                .unwrap_or_default();
-                            let geo = v2ui::geometry(&app, size);
-                            match app.view {
-                                V2View::Chat => {
-                                    if let Some(index) = v2ui::approval_at(&geo, &app, m.row, m.column) {
-                                        app.focus = V2Focus::Approvals;
-                                        app.approval_sel = index;
-                                    }
-                                }
-                                V2View::Instances => {
-                                    if let Some(index) = v2ui::panel_row_at(&geo, m.row, m.column) {
-                                        if index < app.instances.len() {
-                                            app.instance_sel = index;
-                                        }
-                                    }
-                                }
-                                V2View::Tasks => {
-                                    if let Some(index) = v2ui::panel_row_at(&geo, m.row, m.column) {
-                                        if index < app.tasks.len() {
-                                            app.task_sel = index;
-                                        }
-                                    }
-                                }
-                                V2View::Topology => {}
-                            }
-                        }
-                        _ => {}
-                    }
+                    let size = terminal
+                        .size()
+                        .map(|s| ratatui::layout::Rect::new(0, 0, s.width, s.height))
+                        .unwrap_or_default();
+                    v2ui::handle_mouse(&mut app, size, m);
                     dirty = true;
                 }
                 Ok(Event::Resize(_, _)) => dirty = true,
-                Ok(Event::Paste(text)) => {
+                Ok(Event::Paste(text))
+                    if app.view == V2View::Chat && app.focus == V2Focus::Composer && app.confirm.is_none() =>
+                {
                     for c in text.chars() {
                         if c == '\n' {
                             app.composer.insert_newline();
@@ -506,7 +478,9 @@ fn run_v2(
                     dirty = true;
                 }
             } else {
+                let before = app.approvals.clone();
                 v2_refresh_approvals(&mut client, &mut app);
+                dirty |= app.approvals != before;
             }
         }
     }

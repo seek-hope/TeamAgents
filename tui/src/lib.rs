@@ -5,6 +5,7 @@ pub mod text;
 pub mod theme;
 pub mod v2app;
 pub mod v2ui;
+pub mod viewport;
 pub mod wrap;
 
 /// Epoch seconds, the unit the daemon reports deadlines in. A small module-level

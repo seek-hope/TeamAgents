@@ -2,7 +2,7 @@
 //! Enter sends, Shift+Enter/Ctrl+J inserts a newline, ↑↓ recall history at the
 //! first/last row. Lines are Vec<char> so multibyte editing stays simple.
 
-use unicode_width::UnicodeWidthStr;
+use unicode_width::UnicodeWidthChar;
 
 /// Input history depth kept for arrow-key recall.
 pub const HISTORY_LIMIT: usize = 500;
@@ -205,18 +205,47 @@ impl Composer {
         self.set_text(&text);
     }
 
-    /// Wrapped visual height at a text width → widget height (3..=8).
+    /// Soft-wrap by terminal cells and locate the caret in those same rows.
+    /// A full row at the caret gets a continuation row so the cursor never
+    /// disappears off the right edge. Combining marks stay with their base.
+    pub fn visual_lines(&self, width: usize) -> (Vec<String>, usize, usize) {
+        let width = width.max(1);
+        let mut rows = vec![String::new()];
+        let mut x = 0;
+        let mut cursor = (0, 0);
+        for (row, line) in self.lines.iter().enumerate() {
+            if row > 0 {
+                rows.push(String::new());
+                x = 0;
+            }
+            for (col, ch) in line.iter().enumerate() {
+                let cells = UnicodeWidthChar::width(*ch).unwrap_or(0);
+                if cells > 0 && x + cells.min(width) > width {
+                    rows.push(String::new());
+                    x = 0;
+                }
+                if row == self.row && col == self.col {
+                    cursor = (rows.len() - 1, x);
+                }
+                // A double-cell glyph cannot fit a one-cell terminal; its
+                // replacement is display-only, never a change to the draft.
+                rows.last_mut().unwrap().push(if cells > width { '\u{fffd}' } else { *ch });
+                x += cells.min(width);
+            }
+            if row == self.row && self.col >= line.len() {
+                if x >= width {
+                    rows.push(String::new());
+                    x = 0;
+                }
+                cursor = (rows.len() - 1, x);
+            }
+        }
+        (rows, cursor.0, cursor.1.min(width - 1))
+    }
+
+    /// Wrapped visual height at a text width, including the two border rows.
     pub fn widget_height(&self, width: usize) -> usize {
-        let wrapped = self
-            .lines
-            .iter()
-            .map(|l| {
-                let w = UnicodeWidthStr::width(l.iter().collect::<String>().as_str());
-                (w.max(1) + width - 1) / width.max(1)
-            })
-            .sum::<usize>()
-            .max(1);
-        (wrapped + 2).clamp(3, 8)
+        (self.visual_lines(width).0.len() + 2).clamp(3, 8)
     }
 }
 
@@ -266,7 +295,7 @@ mod tests {
         let mut c = Composer::new(vec![]);
         assert_eq!(c.widget_height(20), 3);
         c.set_text(&"x".repeat(100));
-        assert_eq!(c.widget_height(20), 7);
+        assert_eq!(c.widget_height(20), 8, "the caret needs a row after five full rows");
         c.set_text(&"x".repeat(500));
         assert_eq!(c.widget_height(20), 8);
     }

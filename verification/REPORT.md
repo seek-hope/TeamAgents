@@ -5,6 +5,20 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
+## 0. Gate status (re-run 2026-10-08 at `8ec6bcc6`)
+
+* **D-444 adds proofs of the TUI's shared viewport arithmetic.** The Kani crate compiles
+  `tui/src/viewport.rs` directly: `viewport_contains_selection_without_overflow` proves bounded ranges and
+  selected-item visibility for every `usize` input, including stale selections and zero-height views;
+  `viewport_clicks_only_the_rendered_item` proves that visible rows map to their rendered items and blank
+  rows never select an item. `make verify-kani` reports
+  `Complete - 5 successfully verified harnesses, 0 failures, 5 total` (rc 0). A copied-source control that
+  drops the viewport offset in hit-testing is refuted (VERIFICATION FAILED, nonzero exit). These proofs do
+  not cover terminal rendering, Unicode shaping, or visual quality; frame and PTY checks cover concrete
+  UI paths. No TLA material changed: the regression run verifies all **39** configurations (rc 0) and
+  refutes all **113** negative controls (rc 0). Historical gate sections below retain their original counts;
+  the catalogue compares the current gate's Kani count with the current proof set.
+
 ## 0. Gate status (re-run 2026-10-06 at `f1e7429f`)
 
 * **D-437 added the ssh sandbox backend, and re-ran the targets on this tree (2026-10-06).** `V2Isolation.tla` was
@@ -474,7 +488,7 @@ in [README.md](README.md); the fix ledger is in
 | Protocol model (wide) | `MC_wide.cfg` (2 instances / 2 operations) | 275,004,673 states / 11 min 25 s (historical run of `d37e1b4`, before the 2026-09-25 history rewrite). The spec has changed since (D-63/D-64/D-65/D-71 add instance fields, the deadline flag and the committed-tail rule), so that number is history: re-runs in this round reached about 170M / 250M states, and the D-71 re-run reached **36.5M states generated / 7.6M distinct / 29 min, 4.6M still queued, no violation** before it was stopped under the turn's time bound. The wide configuration stays the slow, best-effort target; the small two-instance configurations carry the per-instance checks in `make verify-model-all` | `make verify-model-wide` |
 | Code-level correspondence | `core/tests/v2_invariants.rs` | 38 commands; 1,482 short sequences plus a 60×24-step walk | `cargo test --offline --manifest-path core/Cargo.toml --test v2_invariants` |
 | Pure functions | `core/tests/kernel_properties.rs` | 258 entry combinations plus a full paging enumeration | `cargo test --offline --manifest-path core/Cargo.toml --test kernel_properties` |
-| Kani proofs | `kani/` (compiles the repository sources, 3 harnesses, 0 failures) | 2 properties for **every `usize`** plus 1 within a bound | `make verify-kani` (re-run 2026-09-27: 3 harnesses, 0 failures, ~3 s with a cached build, ~16 s cold; the negative control flips it to exit 1 — D-132) |
+| Kani proofs | `kani/` (compiles the repository sources, 5 harnesses, 0 failures) | 4 properties for **every `usize`** plus 1 within a bound | `make verify-kani` (re-run 2026-10-08: 5 harnesses, 0 failures; paging and viewport negative controls are refuted, D-132/D-444) |
 | Gate | fmt + clippy `-D warnings` + all tests | 23 suites | `make check` |
 
 Evidence that the checks are neither vacuous nor insensitive ("passing" is not because a check is too weak):

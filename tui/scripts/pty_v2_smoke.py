@@ -290,6 +290,40 @@ def main():
     scr.feed(read_all(fd, 3.0).decode("utf-8", "replace"))
     expect("to i-leader", "composer back after Esc")
 
+    # D-444: resizing an open panel preserves the conversation and draft on a
+    # wide terminal, switches to a full-page panel on a narrow one, and brings
+    # the same draft back. SGR mouse clicks target the composer's actual region.
+    os.write(fd, b"draft-survives-resize\x0e")
+    scr.feed(read_all(fd, 1.0).decode("utf-8", "replace"))
+    scr = Screen(140, 36)
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 36, 140, 0, 0))
+    scr.feed(read_all(fd, 1.5).decode("utf-8", "replace"))
+    expect("hello-v2", "wide panel keeps conversation")
+    expect("draft-survives-resize", "wide panel keeps draft")
+    expect("instances (", "wide sidebar")
+    # A panel owns keys, so bracketed paste must not alter the inactive draft.
+    os.write(fd, b"\x1b[200~not-in-draft\x1b[201~")
+    scr.feed(read_all(fd, 0.5).decode("utf-8", "replace"))
+    scr = Screen(80, 24)
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+    scr.feed(read_all(fd, 1.5).decode("utf-8", "replace"))
+    expect("instances (", "narrow full-page panel")
+    if "draft-survives-resize" in "\n".join(scr.lines()):
+        failures.append("narrow panel still paints the hidden draft")
+    scr = Screen(140, 36)
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 36, 140, 0, 0))
+    scr.feed(read_all(fd, 1.5).decode("utf-8", "replace"))
+    os.write(fd, b"\x1b[<0;3;34M\x1b[<0;3;34m")
+    scr.feed(read_all(fd, 0.5).decode("utf-8", "replace"))
+    os.write(fd, b"\r")
+    scr.feed(read_all(fd, 1.0).decode("utf-8", "replace"))
+    if not any(f.get("method") == "submit_input" and
+               f.get("params", {}).get("text") == "draft-survives-resize" for f in daemon.frames):
+        failures.append("clicking the wide composer did not restore input ownership and preserve the draft")
+    scr = Screen(96, 36)
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 36, 96, 0, 0))
+    scr.feed(read_all(fd, 1.0).decode("utf-8", "replace"))
+
     # D-433: `/goals` asks the session for its goal list and prints it; `/goals cancel <id>` closes one, and the
     # command id carries the goal so a retry after a lost reply dedups at the control plane. Typed through the
     # composer's own keys, like every other step here.

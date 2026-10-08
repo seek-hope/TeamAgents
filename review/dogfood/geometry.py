@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """The TUI's geometry: an extreme terminal size, and a resize while it runs (product quality, D-233).
 
-`make pty` boots the interface at one size (36×96) and asserts what is on screen; a *user* does two things it
-never does: start the TUI in a pane of unusual proportions, and resize the window while it runs (a split, a
-maximized terminal, a shrink to a sliver). Rendering code is where those become panics — a subtract with a
+`make pty` checks the interface at ordinary narrow and wide sizes, including a resize with a draft (D-444).
+This probe adds unusual proportions and extreme shrinking. Rendering code is where those become panics — a subtract with a
 floor of zero, a layout that assumes more columns than it has — and a panic in the TUI costs the session's
 window, not just a frame.
 
@@ -21,8 +20,8 @@ has to stay true.
 
 Not part of `make check` (it starts a real terminal); the offline probe set runs it with the rest.
 
-Ceiling: it asserts *that* the interface rendered and survived, not the layout — `make pty` checks the text at
-one size, and nothing checks the pixels at another. A resize reaches the TUI as SIGWINCH, so a terminal that
+Ceiling: it asserts *that* the interface rendered and survived, not the layout — `make pty` checks text and
+interaction at ordinary widths; this probe only checks survival at the extremes. A resize reaches the TUI as SIGWINCH, so a terminal that
 changes size without it is not covered. The PTY is Linux's (`pty.fork`), and the sizes are the kernel's.
 """
 import atexit

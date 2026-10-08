@@ -186,7 +186,7 @@ nobody uses, and several are what the probes depend on.
 `verification/` holds formal material that is tied to the implementation: `tla/V2*.tla` with `MC*.cfg` are the
 TLA+ specs of the control plane, artifacts, waits, tasks, compression, the daemon protocol, the required
 check rounds, the authority layer and the user's authority surface; `kani/` is a proof crate that compiles
-`core/src/kernel/types.rs` directly. The results, evidence and the **unproven list** are in the
+`core/src/kernel/types.rs` and `tui/src/viewport.rs` directly. The results, evidence and the **unproven list** are in the
 [verification report](../verification/REPORT.md); the mapping from property to code to acceptance item is in
 the [verification guide](../verification/README.md).
 
@@ -196,7 +196,7 @@ make verify-model       # small control-plane configuration
 make verify-model-all   # small configurations for all twenty-five modules (~1 minute here)
 make verify-model-counterexamples  # every negative control: each must be *refuted*
 make verify-model-wide  # wide control-plane configuration (hundreds of millions of states, slow)
-make verify-kani        # Kani proofs for the paging arithmetic (needs the Kani toolchain)
+make verify-kani        # Kani proofs for paging and viewport arithmetic (needs the Kani toolchain)
 make benchmark-receipts JOBS=<dir> [BENCH=swebench|tau3|tb]
                         # read a benchmark run's receipts before believing its number (D-421/D-430):
                         # did every attempt keep its trajectory, does its verdict have a second

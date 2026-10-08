@@ -115,7 +115,7 @@ pub struct InstanceInfo {
     pub can_run_shell: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ApprovalInfo {
     pub id: String,
     pub operation_id: String,
@@ -275,10 +275,12 @@ pub struct V2App {
     pub quit: bool,
     /// Total wrapped chat lines at the last render (scroll clamping).
     pub last_chat_lines: usize,
+    pub last_chat_width: usize,
     /// §9: the transient text each instance is streaming, newest read only. Never an authoritative fact.
     pub previews: Vec<(String, String)>,
     /// Visible chat height at the last render (page scrolling).
     pub last_chat_height: usize,
+    pub last_topo_height: usize,
 }
 
 impl V2App {
@@ -307,8 +309,10 @@ impl V2App {
             watermark: 0,
             quit: false,
             last_chat_lines: 0,
+            last_chat_width: 0,
             previews: vec![],
             last_chat_height: 1,
+            last_topo_height: 1,
         }
     }
 
@@ -757,16 +761,17 @@ impl V2App {
                         View::Tasks => View::Topology,
                         View::Topology => View::Chat,
                     };
+                    if self.view == View::Chat {
+                        self.focus = Focus::Composer;
+                    }
                     if self.view == View::Instances {
                         self.instance_sel = self.active;
-                    }
-                    if self.view == View::Chat {
-                        self.chat_scroll = 0;
                     }
                     return None;
                 }
                 KeyCode::Char('a') => {
-                    if self.view == View::Chat && !self.approvals.is_empty() {
+                    if !self.approvals.is_empty() {
+                        self.view = View::Chat;
                         self.focus = Focus::Approvals;
                     }
                     return None;
@@ -810,6 +815,7 @@ impl V2App {
         match key.code {
             KeyCode::Esc => {
                 self.view = View::Chat;
+                self.focus = Focus::Composer;
                 None
             }
             KeyCode::Up => {
@@ -828,6 +834,7 @@ impl V2App {
                     self.active = self.instance_sel;
                     self.chat_scroll = 0;
                     self.view = View::Chat;
+                    self.focus = Focus::Composer;
                 }
                 None
             }
@@ -865,6 +872,7 @@ impl V2App {
         match key.code {
             KeyCode::Esc => {
                 self.view = View::Chat;
+                self.focus = Focus::Composer;
                 None
             }
             KeyCode::Up => {
@@ -894,6 +902,7 @@ impl V2App {
         match key.code {
             KeyCode::Esc => {
                 self.view = View::Chat;
+                self.focus = Focus::Composer;
                 None
             }
             KeyCode::Up => {
@@ -905,11 +914,11 @@ impl V2App {
                 None
             }
             KeyCode::PageUp => {
-                self.topo_scroll = self.topo_scroll.saturating_sub(self.last_chat_height.max(1));
+                self.topo_scroll = self.topo_scroll.saturating_sub(self.last_topo_height.max(1));
                 None
             }
             KeyCode::PageDown => {
-                self.topo_scroll += self.last_chat_height.max(1);
+                self.topo_scroll += self.last_topo_height.max(1);
                 None
             }
             _ => None,
@@ -959,6 +968,7 @@ impl V2App {
             }
             "/chat" => {
                 self.view = View::Chat;
+                self.focus = Focus::Composer;
                 None
             }
             "/instances" => {
@@ -1273,12 +1283,8 @@ impl V2App {
         }
     }
 
-    pub fn status_line(&self) -> String {
-        let instance = self.active_instance();
-        let instance_part =
-            instance.map(|i| format!("{} [{}]", i.id, i.phase)).unwrap_or_else(|| "(no instance)".to_string());
-        let goal_part = self
-            .goal
+    pub fn goal_status(&self) -> String {
+        self.goal
             .as_ref()
             .map(|g| {
                 let mut text = format!("goal {}", g.status);
@@ -1304,7 +1310,15 @@ impl V2App {
                 }
                 text
             })
-            .unwrap_or_else(|| "no goal".to_string());
+            .unwrap_or_else(|| "no goal".to_string())
+    }
+
+    pub fn status_line(&self) -> String {
+        let instance_part = self
+            .active_instance()
+            .map(|i| format!("{} [{}]", i.id, i.phase))
+            .unwrap_or_else(|| "(no instance)".to_string());
+        let goal_part = self.goal_status();
         let approvals_part = if self.approvals.is_empty() {
             String::new()
         } else {
@@ -1346,14 +1360,14 @@ impl V2App {
                 let terminated =
                     self.instances.get(self.instance_sel).is_some_and(|info| info.lifecycle == "TERMINATED");
                 if terminated {
-                    "Enter set conversation target · up/down select · Ctrl+N next · Esc back".to_string()
+                    "Esc back · Enter set conversation target · up/down select · Ctrl+N next".to_string()
                 } else {
-                    "Enter set conversation target · p pause · r resume · i interrupt · t terminate · g open the next goal · up/down select · Ctrl+N next · Esc back"
+                    "Esc back · Enter set conversation target · p pause · r resume · i interrupt · t terminate · g open the next goal · up/down select · Ctrl+N next"
                         .to_string()
                 }
             }
-            View::Tasks => "c cancel task · up/down select · Ctrl+N next · Esc back".to_string(),
-            View::Topology => "up/down scroll · Ctrl+N next · Esc back".to_string(),
+            View::Tasks => "Esc back · c cancel task · up/down select · Ctrl+N next".to_string(),
+            View::Topology => "Esc back · up/down scroll · Ctrl+N next".to_string(),
         }
     }
 }

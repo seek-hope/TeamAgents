@@ -20,6 +20,67 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-444 Conversation-first fullscreen UI and shared viewports (2026-10-08)
+
+**Confirmed direction.** The user chose conversation-first, leaning toward Pi's minimal fullscreen layout,
+with optional team panels, responsive sidebars, and Kitty on a dark background. This supersedes D-47's bright
+panel borders and low-contrast labels. The dark surfaces and blue accent remain; secondary text is brighter,
+borders are quiet, and user/assistant/command/error entries have breathing room. The header puts connection
+and pending approvals before the active member; goal usage has its own line so a long session id cannot hide it.
+The complete report and settlement summary remain available through `/status` and `/goals`.
+
+**Layout and ownership.** Chat starts full-width. The existing Ctrl+N cycle and slash commands open the same
+panels; at 120 columns and 12 rows or larger they occupy a 48-column sidebar, retaining the conversation and
+its draft alongside. Smaller terminals show the active panel full-page. Esc closes it and Enter in the member
+list selects the conversation target. The open panel owns keys, and an inactive composer has no caret and
+accepts no paste. Clicking the composer returns to chat; Ctrl+A reaches pending approvals from every view.
+Pointer events use the same geometry as painting: a wheel over chat scrolls chat, over a panel scrolls that
+panel, and over approvals selects an approval. A click selects only; approval/denial still requires a key.
+A pending termination confirmation owns pointer input as well as keys.
+
+**Actual defects repaired.** The composer used wrapped height with unwrapped text and cursor coordinates:
+long lines and drafts taller than the input viewport hid the caret. `tui/src/text.rs` now computes visual rows
+and the caret together, wraps by terminal cells, follows the caret vertically, and preserves the submitted
+bytes. Wide and combining characters have coverage; at a one-cell width a wide glyph is replaced for display
+only. Lists previously painted from item zero regardless of the selected item; selection past the screen
+was invisible. Members, tasks and approvals now share `tui/src/viewport.rs` for rendering and hit-testing.
+Approval polls repaint changed rows even without an event. The chat scrollbar and history indicator expose
+when the user has left the latest output. Empty conversations and task lists say how to proceed.
+
+**Verification.** The seven added frame/interaction regressions in `tui/tests/v2app_tests.rs` cover responsive
+panels and draft ownership, scrolled list clicks and border refusal, approvals beyond the first three,
+long/wide/combining input and resize, pointer routing and confirmation ownership, history reading position under appended output, and all four views over
+224 terminal-size combinations (including zero dimensions). The real-terminal smoke in
+`tui/scripts/pty_v2_smoke.py` adds wide/narrow/wide resize, inactive bracketed paste, and an SGR mouse click
+that restores the draft's input ownership. The existing lifecycle and task commands remain in that smoke.
+Kani compiles the actual viewport source: `viewport_contains_selection_without_overflow` proves bounded
+ranges and selected-item visibility for every `usize`; `viewport_clicks_only_the_rendered_item` proves that
+visible-row hits invert rendering and blank rows refuse. A copied-source negative control that drops the
+viewport offset is refuted by the click proof (nonzero exit, VERIFICATION FAILED); the product source is untouched
+by that probe. These are arithmetic proofs, not proofs of Ratatui,
+Unicode shaping, Kitty rendering, or visual quality. The runtime protocol and store have no changes.
+
+**Gate receipts.** The final full build gate exits 0 (136 s): core 130, engine 372, TUI 51 tests, formatting,
+Clippy with warnings denied, leak checks and hygiene. The real-terminal smoke exits 0 and the extreme-geometry
+probe passes all eight shapes. The formal regression verifies 39 positive configurations, refutes 113 controls,
+and proves all five Kani harnesses. The catalogue's own negative controls reject a wrong current proof count
+and a missing current receipt even when historical receipts remain. The first build attempt was invalidated
+by this work's preview scratch directory appearing during the leak guard; it was moved out before retrying.
+Another attempt hung in the unchanged SIGINT shutdown test and failed its elapsed-time assertion after a
+second signal to that test's own child. The isolated test and final full rerun pass; no engine code was changed.
+
+**The evidence ledger.** Adding two Kani harnesses exposed a catalogue assumption: it compared every historical
+three-harness receipt with today's count. `review/verification_catalogue.py` now compares the newest gate
+section only, just as the positive/negative TLC counts already do. A missing or wrong current count still
+fails; the dated receipts are retained. D-202's material commit and report pin still apply to the added source
+and proofs. No TLA state-machine rule changed.
+
+**Ceilings.** The breakpoint and sidebar width are fixed, not draggable. This iteration keeps plain-text
+message bodies and bounded tool previews, without adding Markdown syntax highlighting, application-managed
+text selection or terminal theme negotiation. Kitty's existing enhanced keyboard protocol remains enabled;
+Ctrl+J remains the portable newline. PTY checks exercise terminal bytes with a virtual screen, not a graphical
+Kitty session. Terminal-native selection (Shift-drag in Kitty) remains the copy path.
+
 ## D-443 The documentation map, and the dead-code allowlists that must justify themselves (2026-10-06)
 
 **Why.** This entry comes out of the tidy-up goal ("keep only the documentation a user and a developer need to

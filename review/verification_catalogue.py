@@ -239,7 +239,11 @@ def main(argv) -> int:
     # are `#[kani::proof]` functions in the crate the target builds.
     harnesses = sum(len(re.findall(r"^\s*#\[kani::proof\]", path.read_text(encoding="utf-8"), re.M))
                     for path in (REPO / KANI_SRC).rglob("*.rs"))
-    quoted = re.findall(r"Complete - (\d+) successfully verified harnesses, 0 failures, (\d+) total", report)
+    # D-444: old gate sections are dated receipts, not claims about today's
+    # harness count. Compare the current gate only; absence must still fail.
+    gate = RERUN.search(report)
+    current = re.split(r"(?m)^## ", report[gate.end():], maxsplit=1)[0] if gate else ""
+    quoted = re.findall(r"Complete - (\d+) successfully verified harnesses, 0 failures, (\d+) total", current)
     if not quoted:
         findings.append(f"{args.report} no longer quotes a green Kani run, so this audit cannot compare the "
                         "harness count with the proofs in the tree")

@@ -851,11 +851,10 @@ fn frame_shows_the_panels_and_panel_hit_testing() {
     assert!(all.contains("t-1 ─→ i-worker  [RUNNING]"), "{all}");
 }
 
-/// The v1 palette stays applied: screen background, accent panel borders, the
-/// accent-surface selection and the panel-surface status line.
+/// Quiet borders and a readable selection share the fullscreen dark palette.
 #[test]
 fn the_palette_drives_panels_selection_and_status() {
-    use teamagents_tui::theme::{ACCENT, BG, PANEL_BG};
+    use teamagents_tui::theme::{ACCENT, BG, GREY, PANEL_BG};
 
     let mut app = app();
     cycle_to(&mut app, View::Instances); // instances panel
@@ -866,7 +865,7 @@ fn the_palette_drives_panels_selection_and_status() {
     let geo = v2ui::geometry(&app, ratatui::layout::Rect::new(0, 0, 72, 18));
 
     assert_eq!(cell(71, 17).bg, BG, "the screen sits on the palette background");
-    assert_eq!(cell(geo.body.x, geo.body.y).fg, ACCENT, "panel borders carry the accent");
+    assert_eq!(cell(geo.body.x, geo.body.y).fg, GREY, "panel borders stay quiet");
     assert_eq!(cell(geo.body.x + 1, geo.body.y + 1).bg, ACCENT, "the selected row is the accent surface");
     assert_eq!(cell(geo.status.x + 1, geo.status.y).bg, PANEL_BG, "the status line sits on the panel surface");
 }
@@ -896,6 +895,233 @@ fn composer_inserts_newlines_and_submits_the_whole_text() {
     assert!(app.composer.text().is_empty(), "the composer clears after sending");
     // the footer advertises the newline chord
     assert!(app.footer_hint().contains("Ctrl+J newline"), "{}", app.footer_hint());
+}
+
+#[test]
+fn responsive_panels_keep_chat_draft_and_keyboard_ownership() {
+    use ratatui::layout::Rect;
+    let mut app = app();
+    app.command_note("conversation stays visible");
+    app.composer.set_text("unfinished draft");
+    let wide = Rect::new(0, 0, 140, 30);
+    assert_eq!(v2ui::geometry(&app, wide).chat.width, 140, "chat starts without a sidebar");
+    app.handle_key(ctrl('n'));
+    let geo = v2ui::geometry(&app, wide);
+    assert!(geo.chat.right() <= geo.body.x);
+    assert!(geo.chat.width >= 72);
+    assert_eq!(geo.body.width, 48);
+    let mut terminal = Terminal::new(TestBackend::new(140, 30)).unwrap();
+    terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
+    let all = frame_lines(&terminal).join("\n");
+    assert!(all.contains("conversation stays visible") && all.contains("unfinished draft"), "{all}");
+    app.handle_key(key(KeyCode::Down));
+    assert_eq!(app.instance_sel, 1);
+    assert_eq!(app.composer.text(), "unfinished draft", "panel keys never edit the draft");
+    let narrow = v2ui::geometry(&app, Rect::new(0, 0, 80, 24));
+    assert_eq!(narrow.chat.height, 0);
+    assert_eq!(narrow.body.width, 80);
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(app.active_instance().unwrap().id, "i-worker");
+    assert_eq!(app.view, View::Chat);
+    assert_eq!(app.composer.text(), "unfinished draft");
+    assert_eq!(v2ui::geometry(&app, wide).chat.width, 140);
+}
+
+#[test]
+fn scrolled_lists_click_the_visible_item_and_ignore_borders() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::layout::Rect;
+    let mut app = app();
+    app.apply_checkpoint(
+        json!({"instances": (0..40).map(|i| json!({
+        "id": format!("member-{i:02}"), "lifecycle": "ACTIVE", "phase": "READY"
+    })).collect::<Vec<_>>()}),
+        1,
+    );
+    app.apply_tasks(json!({"tasks": (0..40).map(|i| json!({
+        "id": format!("task-{i:02}"), "status": "RUNNING", "assignee": "member-00", "goal_id": "goal"
+    })).collect::<Vec<_>>()}));
+    for width in [80, 140] {
+        for view in [View::Instances, View::Tasks] {
+            app.view = view;
+            app.instance_sel = 32;
+            app.task_sel = 32;
+            let area = Rect::new(0, 0, width, 18);
+            let mut terminal = Terminal::new(TestBackend::new(width, 18)).unwrap();
+            terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
+            let all = frame_lines(&terminal).join("\n");
+            let label = if view == View::Instances { "member-32" } else { "task-32" };
+            assert!(all.contains(label), "selected item is visible: {all}");
+            let geo = v2ui::geometry(&app, area);
+            let event = |column| MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column,
+                row: geo.body.y + 1,
+                modifiers: KeyModifiers::NONE,
+            };
+            v2ui::handle_mouse(&mut app, area, event(geo.body.x));
+            assert_eq!(app.instance_sel, 32, "border does not select");
+            assert_eq!(app.task_sel, 32, "border does not select");
+            let first = 33 - usize::from(geo.body.height - 2);
+            let visible_line = &frame_lines(&terminal)[usize::from(geo.body.y + 1)];
+            assert!(visible_line.contains(&format!("{first:02}")), "{visible_line}");
+            v2ui::handle_mouse(&mut app, area, event(geo.body.x + 2));
+            assert_eq!(if view == View::Instances { app.instance_sel } else { app.task_sel }, first);
+        }
+    }
+}
+
+#[test]
+fn approvals_beyond_the_first_three_are_visible_and_decide_the_clicked_id() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::layout::Rect;
+    let mut app = app();
+    app.apply_approvals(json!({"approvals": (0..8).map(|i| json!({
+        "id": format!("ap-{i}"), "operation_id": format!("op-{i}"), "tool": "shell", "preview": format!("command-{i}")
+    })).collect::<Vec<_>>()}));
+    app.view = View::Tasks;
+    app.handle_key(ctrl('a'));
+    assert_eq!(app.view, View::Chat, "approvals are reachable from a team panel");
+    for _ in 0..7 {
+        app.handle_key(key(KeyCode::Down));
+    }
+    let area = Rect::new(0, 0, 80, 24);
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
+    let all = frame_lines(&terminal).join("\n");
+    assert!(all.contains("ap-7 · shell · command-7"), "{all}");
+    let geo = v2ui::geometry(&app, area);
+    assert_eq!(v2ui::approval_at(&geo, &app, geo.approvals.y + 1, 2), Some(5));
+    v2ui::handle_mouse(
+        &mut app,
+        area,
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 2,
+            row: geo.approvals.y + 1,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+    assert_eq!(
+        app.handle_key(key(KeyCode::Char('d'))),
+        Some(V2Effect::Decide { approval_id: "ap-5".into(), decision: "deny" })
+    );
+}
+
+#[test]
+fn composer_wrap_and_caret_survive_resize_and_long_multiline_drafts() {
+    use ratatui::layout::{Position, Rect};
+    let mut app = app();
+    let draft = format!("{}\n{}\nlast", "ab\u{754c}e\u{301}".repeat(35), "row\n".repeat(14));
+    app.composer.set_text(&draft);
+    for (width, height) in [(140, 30), (32, 12), (8, 8)] {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
+        let geo = v2ui::geometry(&app, Rect::new(0, 0, width, height));
+        let inner = Rect::new(geo.composer.x + 1, geo.composer.y + 1, geo.composer.width - 2, geo.composer.height - 2);
+        let cursor = terminal.get_cursor_position().unwrap();
+        assert!(inner.contains(Position::new(cursor.x, cursor.y)), "cursor {cursor:?}, composer {inner:?}");
+        assert!(frame_lines(&terminal).join("\n").contains("last"));
+        assert_eq!(app.composer.text(), draft);
+    }
+    // Move the logical caret back to a soft-wrapped first row, including wide
+    // and combining characters. Both layout and drawing must use cell widths.
+    app.composer.row = 0;
+    app.composer.col = 53;
+    let mut terminal = Terminal::new(TestBackend::new(20, 12)).unwrap();
+    terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
+    let all = frame_lines(&terminal).join("\n");
+    assert!(all.contains("ab\u{754c}e\u{301}"), "{all}");
+    assert!(!all.contains("last"), "the input viewport follows the caret");
+}
+
+#[test]
+fn pointer_scrolls_its_pane_and_confirmation_keeps_ownership() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::layout::Rect;
+    let mut app = app();
+    app.command_note("history\n".repeat(80));
+    app.view = View::Instances;
+    let area = Rect::new(0, 0, 140, 30);
+    let mut terminal = Terminal::new(TestBackend::new(140, 30)).unwrap();
+    terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
+    let geo = v2ui::geometry(&app, area);
+    let mut mouse =
+        MouseEvent { kind: MouseEventKind::ScrollUp, column: 2, row: geo.chat.y + 1, modifiers: KeyModifiers::NONE };
+    v2ui::handle_mouse(&mut app, area, mouse);
+    assert_eq!(app.chat_scroll, 3);
+    assert_eq!(app.instance_sel, 0);
+    mouse.kind = MouseEventKind::ScrollDown;
+    mouse.column = geo.body.x + 2;
+    v2ui::handle_mouse(&mut app, area, mouse);
+    assert_eq!(app.instance_sel, 1);
+    assert_eq!(app.chat_scroll, 3);
+    app.handle_key(key(KeyCode::Char('t')));
+    mouse.kind = MouseEventKind::Down(MouseButton::Left);
+    mouse.column = geo.composer.x + 2;
+    mouse.row = geo.composer.y + 1;
+    v2ui::handle_mouse(&mut app, area, mouse);
+    assert_eq!(app.view, View::Instances, "confirmation swallows pointer input too");
+    app.handle_key(key(KeyCode::Esc));
+    v2ui::handle_mouse(&mut app, area, mouse);
+    assert_eq!(app.view, View::Chat);
+    assert_eq!(app.focus, Focus::Composer);
+}
+
+#[test]
+fn appended_output_does_not_pull_a_reader_away_from_history() {
+    let mut app = app();
+    app.command_note((0..70).map(|i| format!("history-{i:02}\n")).collect::<String>());
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
+    app.scroll_chat(20);
+    terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
+    let before = frame_lines(&terminal)[2].clone();
+    app.command_note("new output\nand another line");
+    terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
+    let after = frame_lines(&terminal)[2].clone();
+    // Ignore the scrollbar cell; the content at the top must stay anchored.
+    assert_eq!(before.chars().take(78).collect::<String>(), after.chars().take(78).collect::<String>());
+    assert!(app.chat_scroll > 20);
+    assert!(frame_lines(&terminal).join("\n").contains("lines above latest"));
+    for _ in 0..4 {
+        app.handle_key(ctrl('n'));
+    }
+    assert!(app.chat_scroll > 20, "opening and closing a panel keeps the reading position");
+    app.scroll_chat_back(usize::MAX);
+    terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
+    assert!(frame_lines(&terminal).join("\n").contains("another line"));
+}
+
+#[test]
+fn every_view_renders_in_tiny_terminals_without_overlapping_regions() {
+    use ratatui::layout::Rect;
+    let mut app = app();
+    app.composer.set_text("long draft\n".repeat(10).as_str());
+    app.apply_approvals(json!({"approvals": [{"id":"ap", "tool":"shell", "preview":"pending"}]}));
+    for view in [View::Chat, View::Instances, View::Tasks, View::Topology] {
+        app.view = view;
+        for width in [0, 1, 2, 3, 40, 119, 120, 180] {
+            for height in [0, 1, 2, 3, 7, 12, 30] {
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
+                let area = Rect::new(0, 0, width, height);
+                let geo = v2ui::geometry(&app, area);
+                let regions = [geo.status, geo.chat, geo.approvals, geo.composer, geo.footer];
+                for (i, region) in regions.iter().enumerate() {
+                    assert_eq!(region.intersection(area), *region);
+                    for other in &regions[i + 1..] {
+                        assert!(region.intersection(*other).is_empty());
+                    }
+                }
+                if view != View::Chat {
+                    for region in regions {
+                        assert!(region.intersection(geo.body).is_empty());
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// D-429: `/sessions` lists the named sessions the daemon reports and marks the one this client is attached to,
