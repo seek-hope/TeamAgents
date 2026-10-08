@@ -25,7 +25,7 @@ shape D-206 was committed in.
 
 ```bash
 make verify-model           # small control-plane configuration (seconds)
-make verify-model-all       # small configurations for all twenty-five modules (control plane, artifacts, waits,
+make verify-model-all       # small configurations for all modules (control plane, artifacts, waits,
                             # tasks, compression, daemon (its protocol and the D-248 stop lever), required
                             # checks, authority, the user's surface,
                             # session-store identity, retention, the job handshake, the inbox, the write-failure
@@ -58,6 +58,7 @@ repository and never enters `make check`. Java is required (this machine uses Op
 
 | File | Contents |
 |---|---|
+| `tla/V2Tui.tla` + `tla/MC_tui.cfg` | D-445 minimal client dispatch: `LeaderOnly` fixes send/interrupt targets; `ExplicitDecision` requires focused, pending approval and an explicit decision key; `ExitOnlyDetaches` separates exit from engine control. The last dispatch records the observed state so later polls cannot change its justification. Negative controls `tla/MC_tui_target.cfg`, `tla/MC_tui_approval.cfg`, `tla/MC_tui_exit.cfg` respectively redirect to a worker, approve while composing, and cancel on exit; each refutes its corresponding claim. Code anchors: `tui/src/v2app.rs`, with concrete bridges in `tui/tests/minimal.rs` and the PTY smoke. No proof of rendering, transport delivery, or stopping tools. |
 | `tla/V2Control.tla` | control-plane abstraction: instance phase machine, requests/attempts, decisions and operations, approvals, the dispatch linearization point, cancel/timeout, epoch resets, goal budget reservations and settlement, crash/recovery, and the inbound boundary (an input that arrives during a turn waits for it, D-63) |
 | `tla/MC.cfg` | small configuration (1 instance / 1 operation / 2 request slots / 1 attempt slot / 1 epoch reset / 1 unknown usage) |
 | `tla/MC_control_midturninput.cfg` | negative control for D-63: the driver applies input *inside* the running turn (the pre-D-63 behaviour). `make verify-model-counterexamples` requires TLC to refute `InputLandsAtTheBoundary` here |

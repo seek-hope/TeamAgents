@@ -142,7 +142,7 @@ def main() -> int:
 
     started = time.time()
     # 1. the TUI attached to a real daemon: the status line names the session and the leader
-    if not wait_for("i-leader", 60, "startup"):
+    if not wait_for("Message", 60, "startup"):
         print(painted()[-800:])
         os.kill(pid, 9)
         for failure in failures:
@@ -185,8 +185,8 @@ def main() -> int:
     if not any(e.get("role") == "assistant" and e.get("content", "").strip() == ANSWER for e in context):
         failures.append(f"the model's answer is not an assistant entry in the session ({roles})")
 
-    # 5. quit the TUI (Ctrl+C) and stop the daemon this run started
-    os.write(fd, b"\x03")
+    # 5. quit the TUI (Ctrl+D) and stop the daemon this run started
+    os.write(fd, b"\x04")
     time.sleep(1.0)
     try:
         os.kill(pid, 9)

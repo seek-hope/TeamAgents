@@ -3,8 +3,8 @@
 daemon (Unix-socket JSON lines, §9 greeting + scripted reads) plus a real
 terminal. Boots teamagents-tui --daemon, types a message, asserts the
 submit_input frame and the event-driven history refresh on screen, then
-drives the R19-b③ panels: instances (pause/resume through real
-set_lifecycle frames), tasks (cancel_task), topology edge list.
+checks Leader-only routing, interrupt versus exit, approval ownership,
+bracketed paste and resizing (D-445).
 
 Requires: built tui binary (tui/target/debug/teamagents-tui).
 """
@@ -43,6 +43,7 @@ class FakeDaemon:
         self.instances = [dict(i) for i in INSTANCES]
         self.tasks = [dict(t) for t in TASKS]
         self.goals = [dict(g) for g in GOALS]
+        self.approvals = []
         self.frames = []
         self.error = None
         self.thread = threading.Thread(target=self.serve, daemon=True)
@@ -94,7 +95,14 @@ class FakeDaemon:
                 elif method == "history":
                     out = {"instance_id": params.get("instance_id", ""), "entries": list(self.history)}
                 elif method == "approvals":
-                    out = {"approvals": []}
+                    out = {"approvals": list(self.approvals)}
+                elif method == "previews":
+                    out = {"previews": []}
+                elif method in ("approve", "deny") and frame.get("command_id"):
+                    self.approvals = [a for a in self.approvals if a["id"] != params.get("approval_id")]
+                    out = {"decided": True}
+                elif method == "interrupt_instance" and frame.get("command_id"):
+                    out = {"interrupted": False, "reason": "no model request is in flight"}
                 elif method == "tasks":
                     out = {"tasks": list(self.tasks)}
                 elif method == "goals":
@@ -181,13 +189,11 @@ def main():
             failures.append(f"{label}: {needle!r} not on screen\n{text[:2000]}")
 
     scr.feed(read_all(fd, 4.0).decode("utf-8", "replace"))
-    expect("s-test", "status session")
-    expect("i-leader [READY]", "status instance phase")
-    expect("ACTIVE", "status goal")
+    expect("Ready", "status phase")
     expect("10/1000", "status budget")
-    expect("i-leader", "composer target")
+    expect("Message", "composer")
     expect("Enter", "footer")
-    expect("Ctrl+J newline", "footer newline hint")
+    expect("Ctrl+C interrupt", "interrupt hint")
 
     # Ctrl+J inserts a newline in the composer (0x0A in raw mode), the composer
     # box grows, and the whole two-line text is what gets submitted
@@ -247,117 +253,66 @@ def main():
         if frame.get("params", {}).get("instance_id") != "i-leader":
             failures.append(f"submit_input targeted {frame.get('params', {}).get('instance_id')!r}")
 
-    # R19-b③ panels: Ctrl+N cycles to the instances panel; p/r send real
-    # set_lifecycle business frames whose events refresh the checkpoint
-    os.write(fd, b"\x0e")  # Ctrl+N: chat -> instances
-    scr.feed(read_all(fd, 3.0).decode("utf-8", "replace"))
-    expect("instances (● conversation target)", "instances panel title")
-    expect("i-leader · ACTIVE · READY", "instance row")
-    os.write(fd, b"p")
-    scr.feed(read_all(fd, 3.0).decode("utf-8", "replace"))
-    expect("PAUSED", "instance paused on screen")
-    pauses = [f for f in daemon.frames if f.get("method") == "set_lifecycle"
-              and f.get("params", {}).get("lifecycle") == "PAUSED"]
-    if not pauses:
-        failures.append("no set_lifecycle PAUSED frame reached the daemon")
-    elif not pauses[0].get("command_id", "").startswith("lc-"):
-        failures.append(f"set_lifecycle command_id: {pauses[0].get('command_id')!r}")
-    os.write(fd, b"r")
-    scr.feed(read_all(fd, 3.0).decode("utf-8", "replace"))
-    expect("i-leader · ACTIVE · READY", "instance resumed on screen")
-
-    # Ctrl+N again reaches the tasks panel: c sends a cancel_task frame; the event
-    # refreshes the list
-    os.write(fd, b"\x0e")  # Ctrl+N: instances -> tasks
-    scr.feed(read_all(fd, 3.0).decode("utf-8", "replace"))
-    expect("t-smoke · RUNNING · assignee i-worker · goal g1", "task row")
-    os.write(fd, b"c")
-    scr.feed(read_all(fd, 3.0).decode("utf-8", "replace"))
-    expect("t-smoke · CANCELLED", "task cancelled on screen")
-    cancels = [f for f in daemon.frames if f.get("method") == "cancel_task"]
-    if not cancels:
-        failures.append("no cancel_task frame reached the daemon")
-
-    # Ctrl+N again reaches the topology panel: grant/channel edges plus task-delegation edges
-    os.write(fd, b"\x0e")  # Ctrl+N: tasks -> topology
-    scr.feed(read_all(fd, 3.0).decode("utf-8", "replace"))
-    expect("topology · active grants 1 · tasks 1", "topology title")
-    expect("i-leader ─manage→ session", "grant edge")
-    expect("t-smoke ─→ i-worker", "task edge")
-
-    # Esc returns to the conversation
-    os.write(fd, b"\x1b")
-    scr.feed(read_all(fd, 3.0).decode("utf-8", "replace"))
-    expect("to i-leader", "composer back after Esc")
-
-    # D-444: resizing an open panel preserves the conversation and draft on a
-    # wide terminal, switches to a full-page panel on a narrow one, and brings
-    # the same draft back. SGR mouse clicks target the composer's actual region.
-    os.write(fd, b"draft-survives-resize\x0e")
+    # Retired navigation cannot redirect input or open a management surface.
+    os.write(fd, b"\x0e\tstill-leader\r")
     scr.feed(read_all(fd, 1.0).decode("utf-8", "replace"))
-    scr = Screen(140, 36)
-    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 36, 140, 0, 0))
+    if any(f["params"]["instance_id"] != "i-leader" for f in daemon.frames if f["method"] == "submit_input"):
+        failures.append("a message was redirected away from the Leader")
+
+    # Approval arrival does not steal typing; focus is explicit, including paste.
+    os.write(fd, b"draft-survives-resize")
+    daemon.approvals = [{"id": "ap-1", "operation_id": "op-1", "tool": "shell", "preview": "make check"}]
     scr.feed(read_all(fd, 1.5).decode("utf-8", "replace"))
-    expect("hello-v2", "wide panel keeps conversation")
-    expect("draft-survives-resize", "wide panel keeps draft")
-    expect("instances (", "wide sidebar")
-    # A panel owns keys, so bracketed paste must not alter the inactive draft.
-    os.write(fd, b"\x1b[200~not-in-draft\x1b[201~")
+    expect("Ctrl+A review", "pending approval hint")
+    os.write(fd, b"\x01\x1b[200~not-in-draft\x1b[201~")
     scr.feed(read_all(fd, 0.5).decode("utf-8", "replace"))
-    scr = Screen(80, 24)
-    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
-    scr.feed(read_all(fd, 1.5).decode("utf-8", "replace"))
-    expect("instances (", "narrow full-page panel")
-    if "draft-survives-resize" in "\n".join(scr.lines()):
-        failures.append("narrow panel still paints the hidden draft")
-    scr = Screen(140, 36)
-    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 36, 140, 0, 0))
-    scr.feed(read_all(fd, 1.5).decode("utf-8", "replace"))
-    os.write(fd, b"\x1b[<0;3;34M\x1b[<0;3;34m")
+    for cols, rows in [(140, 36), (40, 18), (140, 36)]:
+        scr = Screen(cols, rows)
+        fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+        scr.feed(read_all(fd, 0.8).decode("utf-8", "replace"))
+        expect("draft-survives-resize", "resized draft")
+    os.write(fd, b"d")
     scr.feed(read_all(fd, 0.5).decode("utf-8", "replace"))
-    os.write(fd, b"\r")
+    decisions = [f for f in daemon.frames if f["method"] == "deny"]
+    if len(decisions) != 1 or decisions[0]["params"]["approval_id"] != "ap-1":
+        failures.append("approval did not explicitly deny the selected id")
+    os.write(fd, b"\x1b[<0;3;34M\x1b[<0;3;34m\r")
     scr.feed(read_all(fd, 1.0).decode("utf-8", "replace"))
-    if not any(f.get("method") == "submit_input" and
-               f.get("params", {}).get("text") == "draft-survives-resize" for f in daemon.frames):
-        failures.append("clicking the wide composer did not restore input ownership and preserve the draft")
-    scr = Screen(96, 36)
-    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 36, 96, 0, 0))
-    scr.feed(read_all(fd, 1.0).decode("utf-8", "replace"))
+    if not any(f["method"] == "submit_input" and f["params"]["text"] == "draft-survives-resize" for f in daemon.frames):
+        failures.append("approval or resize lost or modified the draft")
 
-    # D-433: `/goals` asks the session for its goal list and prints it; `/goals cancel <id>` closes one, and the
-    # command id carries the goal so a retry after a lost reply dedups at the control plane. Typed through the
-    # composer's own keys, like every other step here.
-    # `/goals` prints the list; `/goals cancel turn-2` closes one and confirms it; the second `/goals` is what shows
-    # the daemon's state actually changed (the cancel prints a confirmation, not a list, like the CLI's verb).
-    for text in ("/goals", "/goals cancel turn-2", "/goals"):
-        os.write(fd, text.encode())
-        time.sleep(0.3)
-        os.write(fd, b"\r")
-        scr.feed(read_all(fd, 3.0).decode("utf-8", "replace"))
-    expect("goals in this session", "/goals printed the list")
-    expect("goal-s-main  SUCCEEDED  usage 41/1000", "the settled goal's row")
-    expect("settled: answered the question and wrote the report", "its summary is the only account (D-431)")
-    expect("cancelled goal turn-2", "the cancel confirmed on screen")
-    expect("turn-2  CANCELLED", "and the re-read list shows the daemon's new state")
-    listed = [f for f in daemon.frames if f.get("method") == "goals"]
-    if not listed:
-        failures.append("no goals frame reached the daemon")
-    cancelled = [f for f in daemon.frames if f.get("method") == "cancel_goal"]
-    if not cancelled:
-        failures.append("no cancel_goal frame reached the daemon")
-    elif cancelled[0].get("command_id") != "goal-cancel-turn-2":
-        failures.append(f"cancel_goal command_id: {cancelled[0].get('command_id')!r}")
-    elif cancelled[0].get("params", {}).get("goal_id") != "turn-2":
-        failures.append(f"cancel_goal targeted {cancelled[0].get('params', {}).get('goal_id')!r}")
-
-
-    # Ctrl+C quits
+    os.write(fd, b"/tasks\r")
+    scr.feed(read_all(fd, 0.5).decode("utf-8", "replace"))
+    expect("Management: teamagents --help", "retired command guidance")
     os.write(fd, b"\x03")
-    scr.feed(read_all(fd, 1.0).decode("utf-8", "replace"))
-    try:
-        os.waitpid(pid, os.WNOHANG)
-    except ChildProcessError:
-        pass
+    scr.feed(read_all(fd, 0.8).decode("utf-8", "replace"))
+    expect("Nothing interrupted", "interrupt receipt is read honestly")
+    if not any(f["method"] == "interrupt_instance" and f["params"]["instance_id"] == "i-leader" for f in daemon.frames):
+        failures.append("Ctrl+C did not interrupt the Leader")
+    if os.waitpid(pid, os.WNOHANG)[0]:
+        failures.append("Ctrl+C exited the TUI")
+    forbidden = {"tasks", "grants", "goals", "set_lifecycle", "cancel_task", "cancel_goal"}
+    if any(f["method"] in forbidden for f in daemon.frames):
+        failures.append("the TUI still accesses management surfaces")
+
+    # Exit detaches only; it sends no daemon-side business command.
+    before_exit = sum("command_id" in f for f in daemon.frames)
+    os.write(fd, b"\x04")
+    scr.feed(read_all(fd, 0.8).decode("utf-8", "replace"))
+    done, status = os.waitpid(pid, os.WNOHANG)
+    for _ in range(40):
+        if done == pid:
+            break
+        time.sleep(0.05)
+        done, status = os.waitpid(pid, os.WNOHANG)
+    if done != pid:
+        os.kill(pid, 15)
+        os.waitpid(pid, 0)
+        failures.append("Ctrl+D did not exit")
+    elif os.waitstatus_to_exitcode(status) != 0:
+        failures.append("TUI exit was not clean")
+    if before_exit != sum("command_id" in f for f in daemon.frames):
+        failures.append("exit sent a business command")
 
     if daemon.error:
         failures.append(daemon.error)

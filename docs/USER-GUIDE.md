@@ -15,21 +15,38 @@ teamagents                           # open the TUI (starts the per-user daemon 
 - **One daemon per user**: `teamagents` probes `$XDG_STATE_HOME/teamagents/v2/daemon.sock` and, when it is
   missing or refuses the connection, starts `teamagents daemon` detached and hands the socket to the TUI.
   Quitting the TUI does not stop the session.
-- **Fullscreen layout (D-444)**: conversation is the default. Ctrl+N opens members, tasks and topology;
-  at least 120 columns and 12 rows show the panel in a right sidebar, while smaller windows show it full-page.
-  Esc returns to chat; Enter in the members panel selects the conversation target. Your draft survives panel
-  switches and resizing. Click the composer to return input focus; a panel owns keyboard input until closed.
-  Long drafts soft-wrap and keep the caret visible. The wheel scrolls the pane under the pointer; PageUp and
-  PageDown scroll conversation history, whose scrollbar and footer show when you are above the latest output.
-  Ctrl+A reaches pending approvals from any panel, and long lists keep the selected item visible.
-  On Kitty, Shift+Enter uses the enhanced keyboard protocol; Ctrl+J also inserts a newline. Use Kitty's native
-  Shift-drag selection to copy text. The interface uses dark surfaces with readable secondary text.
-- **Live output (D-366)**: while a member's turn is running, the TUI shows the text the model is streaming as a
-  transient dimmed line under the conversation (only for the target you are looking at). It is not an
-  authoritative fact — it is replaced as more arrives and removed the moment the complete reply lands.
-- **Slash commands (D-370)**: a composer line that starts with `/` is handled by the client, not sent to the
-  Leader — `/help`, `/status`, `/chat`, `/instances`, `/tasks`, `/topology`, `/approvals`, `/interrupt`, `/quit`
-  — and the footer hint lists them while a `/` draft is open.
+- **Minimal fullscreen conversation (D-445)**: one conversation with the Leader, a one-line status,
+  the composer and a short hint. There are no member, task or topology panels and no recipient switching.
+  Enter sends; Ctrl+J or Shift+Enter inserts a newline. Up/Down recalls input; PageUp/PageDown and the
+  wheel read history. Drafts soft-wrap and survive resizing. Kitty's native Shift-drag copies text.
+- **Interrupt and exit**: Ctrl+C or /interrupt cancels the Leader's in-flight model request. The receipt
+  says whether anything was interrupted. Running tools and delegated work continue; developer controls are
+  listed below. Ctrl+D or /quit detaches the TUI while the daemon keeps running.
+- **Approvals appear only when needed**: Ctrl+A focuses the approval list; a approves once, d denies,
+  Esc returns to the draft. Approval arrival never steals typing focus, and a click only selects a row.
+- **Live output (D-366)**: the Leader's streaming preview is transient and replaced by stored history.
+  Tool results are short previews; `teamagents history --id ID --json` reads the stored messages.
+- **Three client commands**: /help, /interrupt, /quit. Unknown or retired commands remain local and point
+  to `teamagents --help`; they are never sent to the model.
+- **Developer CLI**: all management belongs to scriptable commands, using `--state-root PATH` or
+  `--session ID` to select the session. `status --json` reads the running session's checkpoint, model,
+  goal usage/limits/deadline, bound MCP state and known sessions without starting a daemon. The watermark
+  describes the database snapshot; MCP credentials and the session registry are external reads.
+  `history [--id INSTANCE] [--limit N] [--json]` reads the newest N stored entries in chronological order
+  (default Leader, N=400, range 1..1000); instance ids accept unambiguous prefixes. Messages within that
+  bounded tail retain their stored content; this is not a full-session export.
+
+| Developer need | CLI surface |
+|---|---|
+| Submit work and check results | `exec --json`, `exec --stream-json`, `--check`, `--accept` |
+| Inspect progress and conversations | `status`, `history`, `surface` |
+| Inspect/control team members | `instances`: send, pause, resume, interrupt, terminate, merge |
+| Inspect/control tasks and goals | `tasks`: list, cancel; `goals`: list, open, cancel |
+| Inspect/control permissions and approvals | `authority`: list, grant, revoke; `approvals`: list, approve, deny |
+| Sessions and recurring work | `sessions`: list, new, fork, rename, restore, search, archive, delete, prune; `automations` |
+| MCP, configuration and diagnostics | `mcp`: list, add, remove, login, logout; `init`, `doctor`, `-c key=value` |
+| Processes and stored artifacts | `daemon --stop`, `runners`, `artifacts` |
+
 - **Stopping that session** (D-248): `teamagents daemon --stop` stops the session that owns this state root —
   the socket *is* the address, so there is no pid to look up and no other session to hit by mistake (add
   `--state-root PATH` for a non-default root). It asks the running daemon, waits for its socket to go and says
@@ -150,7 +167,7 @@ happened. Diagnostics go to stderr, the outcome to stdout (`--json` prints one J
   bound to that operation and its arguments, so the run needs no second prompt; the TUI's approvals box shows
   the same call.
 - **A parked or paused leader refuses new input** (`2`) instead of queueing work nobody drains: resume it with
-  `teamagents instances resume --id i-leader` (§4.2) or in the TUI instances panel (`r`), or use a fresh state
+  `teamagents instances resume --id i-leader` (§4.2), or use a fresh state
   root.
 - When `exec` starts the daemon itself, the daemon's output goes to `<state root>/daemon.log`; if the daemon
   exits while starting, the reason is reported immediately together with that path.
@@ -164,11 +181,14 @@ the field names out of the source and out of this table and fails if the two dri
 `{"type":"report","report":{…}}` after the session's event lines; the fields below describe it unchanged.
 The arrays inside a report (`instances`, `tasks`, `approvals`, `grants`) are rows of the daemon's own views,
 whose fields the generated table in `docs/PROTOCOL.md` lists (D-173) — including the `reason` on an instance
-row, which the TUI's panel and `instances` print when a member is not running (D-165).
+row, which `instances` prints when a member is not running (D-165).
 
 | Verb | Fields it adds |
 |---|---|
 | every report | `session_id`, `state_root` |
+| `status` | `schema_version`, `session_id`, `state_root`, `permissions`, `session_workspace`, `watermark`, `snapshot` |
+| `history` | `schema_version`, `session_id`, `state_root`, `instance_id`, `limit`, `entries` |
+| `instances send` | `session_id`, `state_root`, `instance_id`, `envelope_id`, `result` |
 | `exec` | `permissions`, `session_workspace`, `instance_id`, `instance_lifecycle`, `end`, `goal_status`, `reply`, `reply_source`, `failure`, `approval`, `input_queued`, `workspace`, `verification`, `verification_path`, `acceptance`, `acceptance_goal`, `watermark`, `usage` |
 | `authority list` | `revision`, `instances`, `grants` |
 | `authority grant` | `grant_id`, `revision`, `subject`, `action`, `resource_scope`, `parent_grant_id` |
@@ -429,12 +449,10 @@ pre_tool = ["/home/you/bin/policy.sh"]            # policy hook before tool call
   worker the Leader spawned holds `shell` only after you grant it `shell@workspace` (§5.1's boundary, D-60), so
   it works with the file/web/skill tools (they need their binding, not a grant) until then.
 - **Who may run commands**: a member the Leader spawns does not inherit `shell@workspace` (D-61), so the tool
-  surface hides `shell` from it (D-60) and it simply never runs anything — which is why the instances panel marks
-  such a member `· no shell` and `teamagents authority` prints the command that would fix it (D-441/D-442).
-  The panel reads the flag from the daemon's checkpoint, computed with the same covering rule the dispatch gate
-  uses, so the marker and a refusal can never disagree.
-- **Who runs on what**: every member's model is recorded when it is created and shown in the instances panel
-  and in `teamagents instances` (`i-worker · ACTIVE · READY · k3-256k`), which is what makes a team spanning
+  surface hides `shell` from it (D-60). `teamagents authority` prints the command that would fix it, and
+  `teamagents status --json` includes `can_run_shell`, computed using the dispatch gate's covering rule
+  (D-441/D-442/D-445).
+- **Who runs on what**: every member's model is recorded when it is created and shown in `teamagents instances` (`i-worker · ACTIVE · READY · k3-256k`), which is what makes a team spanning
   two providers (`spawn` with `model = "…"`) readable instead of guesswork (D-69).
 - **Workspace policies**: the `workspace` argument of `spawn` decides where a new instance works — `shared`
   (default: the project directory), `isolated` (a private directory under the session state root) or
@@ -457,15 +475,14 @@ pre_tool = ["/home/you/bin/policy.sh"]            # policy hook before tool call
 - A member whose model ends its turn with plain text (no tool call) and does not settle its task goes
   **idle with the task still `RUNNING`** (D-65: the runtime never reads an outcome out of prose, §8, and it
   never asks the same question twice — that was a turn storm). The delegator's wait stays pending, so
-  cancelling the task (`c` in the tasks panel) is what releases it: a cancelled task satisfies the wait and
+  cancelling the task (`teamagents tasks cancel --id ID`) is what releases it: a cancelled task satisfies the wait and
   the delegator wakes to re-delegate or settle honestly. A `BLOCKED` task does *not* satisfy it.
-- User-side intervention: switch instances, pause/resume/cancel and approve or deny tool requests in the
-  TUI — or headlessly with `teamagents instances` / `teamagents tasks` (§4.2), which is what a script or a CI
-  job can use. Budget, task and grant panels all read the same facts.
+- Developer intervention uses `teamagents instances` / `teamagents tasks` (§4.2), with `authority`,
+  `goals` and `approvals` for the other control-plane objects. The TUI retains approval decisions.
   A goal whose ceiling or deadline is gone refuses new work and parks the instance that asked, so the way out
   is `teamagents goals cancel --id …` (D-341/D-344): the goal settles `CANCELLED` and the instance the refusal
-  parked runs again. A goal that has settled cannot be reopened, so the next one is opened from the instances
-  panel (`g`, attached to the selected instance) or headlessly with `teamagents goals open --id … --attach …`
+  parked runs again. A goal that has settled cannot be reopened, so the next one is opened with
+  `teamagents goals open --id … --attach …`
   (D-267/D-269); the
   session's `[limits]`/`[[checks]]` bound it, applied by the daemon (D-268). A headless run whose leader is
   attached to no active goal says so on **stderr before it submits anything** (D-270), because a turn still runs
@@ -535,8 +552,8 @@ surface at its next request.
 Exit codes are `0` done, `1` the session refused the command (for example a `--parent` it does not know) and
 `2` usage or no session to talk to; `--json` prints the raw report. `authority` is a client of the running
 session — it never opens the database — so start the session first (`teamagents`, or any `exec` run) and use
-`--state-root PATH` to point at another one. The TUI topology panel shows the same facts (subject, action,
-scope and the short id); issuing and revoking grants is the CLI's job.
+`--state-root PATH` to point at another one. The CLI lists subject, action, scope
+and the short grant id; task delegation relationships are available through `teamagents tasks`.
 
 ## 4. Permissions and isolation
 
@@ -618,11 +635,14 @@ in a script: a run that exits `3` is not a failure, it is a question — answer 
 
 ### 4.2 Pausing, resuming and cancelling from the CLI (D-68)
 
-The TUI's instance and task actions have headless equivalents, so the recovery paths in the operating notes
-work without a terminal UI:
+The developer CLI owns instance and task management (D-445), including these recovery paths.
+`instances send --id ID --prompt TEXT` preserves direct member input: it returns the accepted/queued
+receipt immediately, uses a fresh envelope per invocation and does not wait for completion. Read
+`history --id ID` to follow the member's stored messages. A rejected target is reported by the daemon:
 
 ```bash
-teamagents instances                    # id, lifecycle, phase — the same rows the TUI panel shows
+teamagents instances                    # id, lifecycle, phase, model and reason
+teamagents instances send --id i-worker --prompt "Review the failure" --json  # accepted/queued input, not completion
 teamagents instances resume --id i-leader      # a parked instance runs again (budget, an unusable model, …)
 teamagents instances pause  --id i-worker-1    # stop driving it at the next safe boundary
 teamagents instances interrupt --id i-leader   # cancel its running turn; a queued instruction enters next
@@ -693,7 +713,7 @@ teamagents goals cancel --id g-spent    # close a goal nothing can spend (its ce
   session's own `[limits]`/`[[checks]]`. `automations` lists id, state, next run and last goal; `pause`/`resume`
   stop or re-arm one (resuming re-arms one period out); `remove --id ID --yes` deletes it. A run never overlaps
   the previous one, and a slot missed while the session was down is coalesced into a single run, not backfilled.
-- **What a pause looks like while it takes effect**: `instances` and the TUI's instances panel print the
+- **What a pause looks like while it takes effect**: `instances` prints the
   lifecycle beside the execution position, which tells "pause requested" from "stopped at a safe boundary" —
   `PAUSED / TOOLS_PENDING` is an in-flight call that will stop at the boundary, `PAUSED / READY` is parked
   there, and the row carries the reason (`PAUSED by the user (teamagents instances)`, D-165). Measured
@@ -739,8 +759,8 @@ teamagents goals cancel --id g-spent    # close a goal nothing can spend (its ce
   …`), the TUI writes the same sentence into its system notes, and `doctor` names a *static* cause before any
   session starts (a command that is missing or not executable, `${VAR}` in a command — nothing expands one —
   an `env` value naming an unset variable, an unset bearer variable). Fix the cause and pull the lever the
-  client names (`teamagents instances resume --id …`, or `r` in the TUI instances panel): `teamagents instances`
-  and the TUI's instances panel both show the park **and its reason** (D-165), so the answer is on the surface a
+  client names (`teamagents instances resume --id …`): `teamagents instances`
+  shows the park **and its reason** (D-165), so the answer is on the surface a
   user looks at first. Measured live over the HTTP
   transport (`python3 review/dogfood/mcp_http.py`, D-104). Calls go through the same permission, approval, budget, cancellation and receipt entry
   points. A remote call dispatched before a crash is recorded as `OUTCOME_UNKNOWN` after recovery and is
@@ -771,17 +791,10 @@ teamagents goals cancel --id g-spent    # close a goal nothing can spend (its ce
   retry, and a credential that cannot be renewed is a refusal that names the verb to run
   (`teamagents mcp login --name <service>`). `teamagents mcp list` prints each OAuth binding's state
   (`signed in` / `expired (will refresh)` / `not signed in`) before the tools it offers, and
-  **In the TUI**, `/goals` lists the goals the session carries (status, budget, what an instance is attached to,
-  and the summary the model settled one with) and `/goals cancel <id>` closes one — the missing half of the `g`
-  key that opens one, without which a session accumulates ACTIVE goals and the status line keeps showing the
-  newest of them (D-433). The list is read on demand, because the checkpoint reports a single goal (D-266).
-  **In the TUI**, `/sessions` lists the named sessions under this base with the attached one marked, and
-  `/switch <id>` attaches this client to another one (its daemon is started if it is not running) — the sessions
-  and their roots arrive in the daemon's checkpoint, because a TUI is a client with no registry loader of its own
-  (D-429). The base's own default session is listed too, so switching back is one command.
-  `teamagents mcp logout --name sentry` deletes the stored credential. **In the TUI**, `/mcp` prints the same
-  services with their credential state (the daemon sends them in its checkpoint, because the TUI is a client with
-  no config loader — and it must not load a service itself, which would start a second copy of it). A service is
+  `teamagents mcp logout --name sentry` deletes the stored credential.
+  `teamagents status --json` reports this running session's bound services without loading another
+  copy. Use `teamagents goals` for goals and `teamagents sessions` for the registry; reconnect with
+  `teamagents --session ID`. A service is
   bound when its instance's driver boots, so a credential stored while a session runs is picked up by
   **pausing and resuming that instance** (`instances pause --id X` then `resume --id X`, or just `resume` when a
   `required` service parked it) — the driver, and with it the toolkit, is rebuilt; the conversation and the goal
@@ -851,16 +864,16 @@ teamagents goals cancel --id g-spent    # close a goal nothing can spend (its ce
 |---|---|
 | `exec: connect ... Connection refused` | Run `teamagents doctor` to inspect the state root; the next `teamagents`/`exec` starts the daemon automatically |
 | `the daemon exited while starting (exit status: 1): …` | The reason is the daemon's own first words; the full log is `<state root>/daemon.log` (usually a missing/broken config or an unset credential) |
-| `exec: the leader instance i-leader is PARKED …` | The leader stopped on a permanent failure and nothing drives it. The client reports the park as soon as it sees it, with the runtime's own reason (D-164; the same sentence is the TUI's system note and a `daemon.log` line): exit 1 when the input was already submitted (it is waiting — resuming the instance runs it) or exit 2 with "nothing was submitted" when the park was visible before submitting. Fix the cause, then `teamagents instances resume --id i-leader` (or `r` in the TUI instances panel), or start a fresh state root. A **TERMINATED** leader is different: termination is final, so `exec` says so and the only way on is a fresh state root (D-82) |
+| `exec: the leader instance i-leader is PARKED …` | The leader stopped on a permanent failure and nothing drives it. The client reports the park as soon as it sees it, with the runtime's own reason (D-164; the same sentence is the TUI's system note and a `daemon.log` line): exit 1 when the input was already submitted (it is waiting — resuming the instance runs it) or exit 2 with "nothing was submitted" when the park was visible before submitting. Fix the cause, then `teamagents instances resume --id i-leader`, or start a fresh state root. A **TERMINATED** leader is different: termination is final, so `exec` says so and the only way on is a fresh state root (D-82) |
 | `exec` reports `check 1: FAILED` | Your own `--check` command failed; its output is on stderr and in `<state root>/verification.json` |
 | `exec` exits 3 | A tool call needs approval and a headless run cannot answer it. Approve it in the TUI and run `exec` again, or start the daemon with `--full-auto` |
 | `doctor` reports the state root as FAIL | That path does not hold a current session database, and the row says which: a path that is a file where a directory belongs (D-166), a file that is not a database, or a format/version stamp mismatch. Use another `--state-root` or follow the message, and never edit the database by hand |
 | The agent worked in the wrong directory | Its session was started with another workspace (or without `--cwd`): the client prints the live one. Stop that daemon (§1: `teamagents daemon --stop`, which needs no pid) or start a fresh `--state-root` with `--cwd DIR` |
 | The model returns 401/402 | Check the environment variable named by the profile's `api_key_env`; `doctor` lists the credential resolution result per profile |
-| A task stays `RUNNING` while its assignee is idle | The assignee's model ended its turn without settling it (D-65): cancel the task — `c` in the tasks panel or `teamagents tasks cancel --id` — which releases the delegator's wait |
+| A task stays `RUNNING` while its assignee is idle | The assignee's model ended its turn without settling it (D-65): cancel the task — `teamagents tasks cancel --id` — which releases the delegator's wait |
 | A worktree member finished and I want its work in my tree | `teamagents instances merge --id <member>` (D-252). It refuses while the member has a turn in flight or its checkout has uncommitted changes, and reports a conflicting merge with git's message, leaving the merge in progress |
 | A member is stuck in a long or endless command and cancelling its task changed nothing | `tasks cancel` is delegation-level and does not touch the assignee's operation (D-88). Stop the work with `teamagents instances terminate --id … --yes` (the process group dies within seconds, and the receipt says `class: cancelled`) or wait for the command's own tool timeout. If it is the *thinking* you want to stop rather than a running command, `teamagents instances interrupt --id …` cancels just the current turn (D-363) |
-| An instance is parked | `teamagents instances` shows which **and why** (the reason rides on the row, D-165); resume it with `instances resume --id` (or `r` in the TUI) once that cause is gone |
+| An instance is parked | `teamagents instances` shows which **and why** (the reason rides on the row, D-165); resume it with `instances resume --id` once that cause is gone |
 | A command under `approved_scope` waits for approval | Decide it with `teamagents approvals` (§4.1) or in the TUI approvals panel; `--full-auto` (host execution, D-41) skips the gate |
 | A command left a service running (`dev-server &`) | By design the session does not manage it (D-41/D-112): it survives the client, the daemon and the member. Stop it yourself with the pid the command printed (`sleep 300 & echo $!`, then `kill <pid>`), or start such work in a command that exits when you are done. `instances terminate` stops an *operation that is still running*, not a service left behind by one that finished |
 | A member says it cannot run shell commands although you granted it | Turn the offer into a witness: start the session with `TEAMAGENTS_LOG_SURFACE=1` and the driver writes one line per request into `<state root>/daemon.log` — `driver: surface <instance> shell=yes\|no tools=…`. `shell=no` after a live `authority grant` is a bug worth reporting; `shell=yes` with no attempt means the model had the tool and did not use it (§3.1, D-143/D-157) |

@@ -173,7 +173,7 @@ def main() -> int:
             failures.append(f"{label}: {needle!r} never appeared on screen")
             return False
 
-        if not wait_for("i-leader", 60, "startup"):
+        if not wait_for("Message", 60, "startup"):
             print(painted()[-800:])
             return 1
         print("  the TUI is attached to the session")
@@ -285,7 +285,7 @@ def main() -> int:
     finally:
         if fd is not None:
             try:
-                os.write(fd, b"\x03")  # Ctrl+C quits the TUI
+                os.write(fd, b"\x04")  # Ctrl+D quits the TUI
                 time.sleep(0.5)
             except OSError:
                 pass

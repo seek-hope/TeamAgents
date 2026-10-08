@@ -10,36 +10,12 @@ use serde_json::Value as Json;
 use crate::text::Composer;
 
 /// The slash commands the composer understands (D-370), shown while a `/` draft is open and by `/help`.
-const SLASH_HELP: &str =
-    "commands: /help · /status · /chat · /instances · /tasks · /topology · /approvals · /mcp · /sessions · \
-     /switch · /goals · /interrupt · /quit";
+const SLASH_HELP: &str = "commands: /help · /interrupt · /quit";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Focus {
     Composer,
     Approvals,
-}
-
-/// Top-level views (§9: conversation, instances, tasks, topology edge list).
-/// `Ctrl+N` cycles through them (no function keys: many keyboards lack them).
-/// switch globally; Esc from a panel returns to the conversation.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum View {
-    Chat,
-    Instances,
-    Tasks,
-    Topology,
-}
-
-impl View {
-    pub fn name(self) -> &'static str {
-        match self {
-            View::Chat => "Chat",
-            View::Instances => "Instances",
-            View::Tasks => "Tasks",
-            View::Topology => "Topology",
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,11 +31,8 @@ pub enum ChatKind {
     Summary,
     System,
     Error,
-    /// Output a **command** produced (`/status`, `/mcp`, `/sessions`, `/goals`): the user asked for it, so it is
-    /// not transient runtime chatter and a checkpoint refresh must not wipe it before it is read. Measured
-    /// 2026-10-06 with the pty smoke: notes lived in `System`, and `apply_checkpoint`'s "a fresh checkpoint
-    /// supersedes earlier UI-level notes" removed them within one poll — so `/mcp` (D-413) and `/sessions`
-    /// (D-429) printed a report that nobody could read, which is how the `/goals` step found it (D-433).
+    /// Client help and receipts survive checkpoint refreshes (D-433/D-445).
+    /// They are requested output, rather than transient runtime chatter.
     Command,
 }
 
@@ -70,49 +43,18 @@ pub struct ChatEntry {
     pub text: String,
 }
 
-/// D-429: one named session under this base, as the daemon reports it. The `root` is what makes switching possible
-/// from a client that has no config loader of its own: it names the directory whose daemon owns that session.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SessionInfo {
-    pub id: String,
-    pub name: String,
-    pub root: String,
-    /// The session *this* daemon serves.
-    pub active: bool,
-}
-
-/// One configured MCP service, as the daemon reports it (D-413). The TUI cannot read the machine's config (it is
-/// a client, not the loader), so this is what lets `/mcp` answer "what did this session bind, and what is the next
-/// step for it?" without starting a second copy of any server.
-#[derive(Debug, Clone, PartialEq)]
-pub struct McpInfo {
-    pub name: String,
-    pub transport: String,
-    pub required: bool,
-    /// `Some(state)` for an OAuth binding (`signed in`, `expired (will refresh)`, `not signed in`), `None` for a
-    /// binding whose credential comes from the environment.
-    pub credential: Option<String>,
-}
-
 #[derive(Clone, Debug)]
 pub struct InstanceInfo {
     pub id: String,
     pub lifecycle: String,
     pub phase: String,
-    /// The model this member runs on (D-69): a team can span providers
-    /// (`spawn(model = …)`), so the panel says which one each member uses. Empty
-    /// for an older daemon that does not report it.
+    /// The model this member runs on (D-69), available in /help for the Leader.
+    /// Empty for an older daemon that does not report it.
     pub model: String,
     /// The last lifecycle transition's own words (D-165): why this instance is not
     /// running — a park reason, or the user's own pause. Empty for an ACTIVE member
     /// and for a transition recorded without words.
     pub reason: String,
-    /// Whether this member may run commands in the shared workspace (D-442). A member the Leader *spawns* does
-    /// not inherit it (D-61), and the tool surface hides `shell` from it (D-60) — so nothing is refused and the
-    /// member simply never runs anything, which is exactly what D-256 measured. The daemon computes it with the
-    /// runtime's own covering rule; an older daemon that does not report it reads as `true`, so the panel only
-    /// ever adds a marker it can justify.
-    pub can_run_shell: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -121,44 +63,6 @@ pub struct ApprovalInfo {
     pub operation_id: String,
     pub tool: String,
     pub preview: String,
-}
-
-#[derive(Clone, Debug)]
-pub struct TaskInfo {
-    pub id: String,
-    pub goal_id: String,
-    pub assignee: String,
-    pub status: String,
-}
-
-#[derive(Clone, Debug)]
-pub struct GrantInfo {
-    /// The grant's id as the daemon reports it (D-61): the topology panel shows
-    /// its short form, and it is what `teamagents authority revoke` takes.
-    pub id: String,
-    /// Who issued it: `user` for a grant the user issued, otherwise the instance
-    /// that narrowed its own authority.
-    pub issuer: String,
-    pub subject: String,
-    pub action: String,
-    pub scope: String,
-    pub revoked: bool,
-}
-
-impl GrantInfo {
-    /// The short form shown in the topology panel: enough to be recognisable and
-    /// to type into `authority revoke` (which takes any unambiguous prefix).
-    pub fn short_id(&self) -> &str {
-        let end = self.id.char_indices().nth(10).map(|(at, _)| at).unwrap_or(self.id.len());
-        &self.id[..end]
-    }
-}
-
-/// Pending destructive confirmation (termination stays deliberate, §5.4):
-/// y confirms, n/Esc cancels; every other key is swallowed meanwhile.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Confirm {
-    TerminateInstance { instance: String },
 }
 
 #[derive(Clone, Debug)]
@@ -190,39 +94,9 @@ pub enum V2Effect {
         approval_id: String,
         decision: &'static str,
     },
-    /// Instance lifecycle intervention from the panel (§5.4): the main loop
-    /// sends set_lifecycle as Identity::User with a fresh command id.
-    SetLifecycle {
-        instance: String,
-        lifecycle: &'static str,
-    },
-    /// Interrupt the selected instance's running turn (D-363): not destructive, so no confirmation. A
-    /// queued instruction enters at the boundary and gets its own turn.
+    /// Interrupt the Leader at the runtime boundary; leaving the TUI is independent.
     Interrupt {
         instance: String,
-    },
-    /// D-429: attach this client to another named session (the main loop connects to that session's own daemon).
-    SwitchSession {
-        id: String,
-    },
-    /// Cancel a non-terminal task from the panel (§5.3).
-    CancelTask {
-        task_id: String,
-    },
-    /// D-269: open the next goal, attached to the selected instance — the panel's own path to the lever the CLI
-    /// got in D-267. A settled goal cannot be reopened, so a session longer than one goal needs this; the
-    /// *session's* `[limits]`/`[[checks]]` bound the new goal, applied by the daemon (D-268), so the panel needs
-    /// no configuration of its own.
-    OpenGoal {
-        attach: String,
-    },
-    /// D-433: read the session's goals (`goals`), because the checkpoint reports only one of them (D-266) — the
-    /// same reason `/sessions` reads the registry (D-429). The handler prints them through `goals_report`.
-    RefreshGoals,
-    /// D-433: close a goal by id (`cancel_goal`), which is the TUI's missing half of the `g` key that opens one:
-    /// without it a session accumulates ACTIVE goals and the status line keeps showing the newest of them.
-    CancelGoal {
-        id: String,
     },
     Quit,
 }
@@ -233,8 +107,6 @@ pub struct Refresh {
     pub history: bool,
     pub approvals: bool,
     pub checkpoint: bool,
-    pub tasks: bool,
-    pub grants: bool,
 }
 
 /// Retained system-note cap: notes are UI signals layered over the
@@ -245,15 +117,7 @@ const PREVIEW_CHARS: usize = 400;
 
 pub struct V2App {
     pub session_id: String,
-    /// Current top-level view (§9 panels); Chat is the default.
-    pub view: View,
     pub instances: Vec<InstanceInfo>,
-    /// D-413: the session's configured MCP services and their credential state.
-    pub mcp: Vec<McpInfo>,
-    /// D-429: the named sessions under this base (this one marked), so `/sessions` can offer them.
-    pub sessions: Vec<SessionInfo>,
-    /// Index into `instances`: the conversation shown and input target.
-    pub active: usize,
     pub entries: Vec<ChatEntry>,
     pub goal: Option<GoalInfo>,
     pub approvals: Vec<ApprovalInfo>,
@@ -261,14 +125,6 @@ pub struct V2App {
     pub focus: Focus,
     pub composer: Composer,
     pub disconnected: bool,
-    /// Selection inside the instances panel (Enter promotes it to `active`).
-    pub instance_sel: usize,
-    pub tasks: Vec<TaskInfo>,
-    pub task_sel: usize,
-    pub grants: Vec<GrantInfo>,
-    /// Topology edge-list scroll offset (§9: the topology panel is an edge list).
-    pub topo_scroll: usize,
-    pub confirm: Option<Confirm>,
     /// Scroll offset in wrapped lines from the bottom (0 = following).
     pub chat_scroll: usize,
     pub watermark: i64,
@@ -280,18 +136,13 @@ pub struct V2App {
     pub previews: Vec<(String, String)>,
     /// Visible chat height at the last render (page scrolling).
     pub last_chat_height: usize,
-    pub last_topo_height: usize,
 }
 
 impl V2App {
     pub fn new(session_id: &str) -> V2App {
         V2App {
             session_id: session_id.to_string(),
-            view: View::Chat,
             instances: vec![],
-            mcp: vec![],
-            sessions: vec![],
-            active: 0,
             entries: vec![],
             goal: None,
             approvals: vec![],
@@ -299,12 +150,6 @@ impl V2App {
             focus: Focus::Composer,
             composer: Composer::new(vec![]),
             disconnected: false,
-            instance_sel: 0,
-            tasks: vec![],
-            task_sel: 0,
-            grants: vec![],
-            topo_scroll: 0,
-            confirm: None,
             chat_scroll: 0,
             watermark: 0,
             quit: false,
@@ -312,12 +157,11 @@ impl V2App {
             last_chat_width: 0,
             previews: vec![],
             last_chat_height: 1,
-            last_topo_height: 1,
         }
     }
 
     pub fn active_instance(&self) -> Option<&InstanceInfo> {
-        self.instances.get(self.active)
+        self.instances.iter().find(|instance| instance.id == "i-leader")
     }
 
     /// Replace the transient streaming previews from the daemon's `previews` read (§9). Empty text is not stored,
@@ -338,12 +182,6 @@ impl V2App {
     pub fn active_preview(&self) -> Option<&str> {
         let id = &self.active_instance()?.id;
         self.previews.iter().find(|(instance, _)| instance == id).map(|(_, text)| text.as_str())
-    }
-
-    /// A runtime note the user reads in the conversation (D-429 uses it for a session switch, which is a client
-    /// event rather than a chat message).
-    pub fn system_note(&mut self, text: impl Into<String>) {
-        self.note(text);
     }
 
     /// A command's output: it survives a checkpoint refresh, unlike a `System` note, because the user asked a
@@ -373,31 +211,6 @@ impl V2App {
     /// Checkpoint (connect/reconnect): snapshot state and the watermark the
     /// event stream resumes from — one consistent read (§9).
     pub fn apply_checkpoint(&mut self, snapshot: Json, watermark: i64) {
-        let previous = self.active_instance().map(|i| i.id.clone());
-        self.mcp = snapshot["mcp"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default()
-            .iter()
-            .map(|row| McpInfo {
-                name: row["name"].as_str().unwrap_or("").to_string(),
-                transport: row["transport"].as_str().unwrap_or("stdio").to_string(),
-                required: row["required"].as_bool().unwrap_or(false),
-                credential: row["credential"].as_str().map(str::to_string),
-            })
-            .collect();
-        self.sessions = snapshot["sessions"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default()
-            .iter()
-            .map(|row| SessionInfo {
-                id: row["id"].as_str().unwrap_or("").to_string(),
-                name: row["name"].as_str().unwrap_or("").to_string(),
-                root: row["root"].as_str().unwrap_or("").to_string(),
-                active: row["active"].as_bool().unwrap_or(false),
-            })
-            .collect();
         self.instances = snapshot["instances"]
             .as_array()
             .cloned()
@@ -409,14 +222,8 @@ impl V2App {
                 phase: i["phase"].as_str().unwrap_or("").to_string(),
                 model: i["model"].as_str().unwrap_or("").to_string(),
                 reason: i["reason"].as_str().unwrap_or("").to_string(),
-                can_run_shell: i["can_run_shell"].as_bool().unwrap_or(true),
             })
             .collect();
-        self.active = previous
-            .and_then(|id| self.instances.iter().position(|i| i.id == id))
-            // the leader is the conversation default (daemon CLI: i-leader)
-            .or_else(|| self.instances.iter().position(|i| i.id == "i-leader"))
-            .unwrap_or(0);
         self.goal = snapshot.get("goal").and_then(|g| {
             if g.is_null() {
                 return None;
@@ -434,9 +241,6 @@ impl V2App {
                 }),
             })
         });
-        if self.instance_sel >= self.instances.len() {
-            self.instance_sel = self.instances.len().saturating_sub(1);
-        }
         self.watermark = self.watermark.max(watermark);
         // a fresh checkpoint supersedes earlier UI-level notes — runtime chatter, not a command's answer
         // (D-433: `Command` entries are what a user asked for and stay until they scroll away)
@@ -474,7 +278,7 @@ impl V2App {
                     rebuilt.push(ChatEntry {
                         kind: ChatKind::Tool,
                         who: "result".into(),
-                        text: truncate(content, PREVIEW_CHARS),
+                        text: truncate(&content.split_whitespace().collect::<Vec<_>>().join(" "), 120),
                     });
                 }
                 // the runtime's own closing word for a turn (§8/D-71): it ends
@@ -519,6 +323,16 @@ impl V2App {
             match kind {
                 "input" | "response_imported" | "decision_consumed" | "completion_closed" => {
                     refresh.history = true;
+                    refresh.checkpoint = true;
+                }
+                "request_began"
+                | "request_failed"
+                | "operation_dispatched"
+                | "operation_completed"
+                | "request_cancelled"
+                    if payload["status"].as_str() != Some("OUTCOME_UNKNOWN") =>
+                {
+                    refresh.checkpoint = true;
                 }
                 "goal_completed" => {
                     refresh.history = true;
@@ -607,10 +421,10 @@ impl V2App {
                     self.note(format!("instance {} created", event["scope"].as_str().unwrap_or("?")));
                 }
                 "task_delegated" | "task_started" | "task_completed" => {
-                    refresh.tasks = true;
+                    refresh.checkpoint = true;
                 }
                 "task_blocked" => {
-                    refresh.tasks = true;
+                    refresh.checkpoint = true;
                     self.note(format!(
                         "task {} parked (BLOCKED): {}",
                         payload["task_id"].as_str().unwrap_or("?"),
@@ -618,15 +432,12 @@ impl V2App {
                     ));
                 }
                 "task_cancelled" => {
-                    refresh.tasks = true;
+                    refresh.checkpoint = true;
                     self.note(format!(
                         "task {} cancelled: {}",
                         payload["task_id"].as_str().unwrap_or("?"),
                         payload["reason"].as_str().unwrap_or("")
                     ));
-                }
-                "grant_issued" | "grant_revoked" => {
-                    refresh.grants = true;
                 }
                 "approval_requested" | "approval_granted" | "approval_denied" => {
                     refresh.approvals = true;
@@ -664,43 +475,6 @@ impl V2App {
         }
     }
 
-    pub fn apply_tasks(&mut self, result: Json) {
-        self.tasks = result["tasks"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default()
-            .iter()
-            .map(|t| TaskInfo {
-                id: t["id"].as_str().unwrap_or("").to_string(),
-                goal_id: t["goal_id"].as_str().unwrap_or("").to_string(),
-                assignee: t["assignee"].as_str().unwrap_or("").to_string(),
-                status: t["status"].as_str().unwrap_or("").to_string(),
-            })
-            .collect();
-        if self.task_sel >= self.tasks.len() {
-            self.task_sel = self.tasks.len().saturating_sub(1);
-        }
-    }
-
-    pub fn apply_grants(&mut self, result: Json) {
-        self.grants = result["grants"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default()
-            .iter()
-            .map(|g| GrantInfo {
-                id: g["id"].as_str().unwrap_or("").to_string(),
-                issuer: g["issuer"].as_str().unwrap_or("").to_string(),
-                subject: g["subject"].as_str().unwrap_or("").to_string(),
-                action: g["action"].as_str().unwrap_or("").to_string(),
-                scope: g["resource_scope"].as_str().unwrap_or("").to_string(),
-                revoked: g["revoked"].as_bool().unwrap_or(false),
-            })
-            .collect();
-        // the topology render clamps topo_scroll against the visible height
-    }
-
-    /// A panel command (lifecycle/task) the daemon refused (write-surface error).
     pub fn command_failed(&mut self, error: &str) {
         self.note_error(format!("command failed: {error}"));
     }
@@ -740,38 +514,15 @@ impl V2App {
 
     pub fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> Option<V2Effect> {
         use crossterm::event::{KeyCode, KeyModifiers};
-        if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('d'))
-        {
-            self.quit = true;
-            return Some(V2Effect::Quit);
-        }
-        // a pending destructive confirmation swallows keys until resolved
-        if self.confirm.is_some() {
-            return self.confirm_key(key);
-        }
-        // View switching is global and uses no function keys (many keyboards lack
-        // them): Ctrl+N cycles chat -> instances -> tasks -> topology, Ctrl+A jumps
-        // into the approvals box and Esc returns to the chat.
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
-                KeyCode::Char('n') => {
-                    self.view = match self.view {
-                        View::Chat => View::Instances,
-                        View::Instances => View::Tasks,
-                        View::Tasks => View::Topology,
-                        View::Topology => View::Chat,
-                    };
-                    if self.view == View::Chat {
-                        self.focus = Focus::Composer;
-                    }
-                    if self.view == View::Instances {
-                        self.instance_sel = self.active;
-                    }
-                    return None;
+                KeyCode::Char('c') => return self.interrupt(),
+                KeyCode::Char('d') => {
+                    self.quit = true;
+                    return Some(V2Effect::Quit);
                 }
                 KeyCode::Char('a') => {
                     if !self.approvals.is_empty() {
-                        self.view = View::Chat;
                         self.focus = Focus::Approvals;
                     }
                     return None;
@@ -779,150 +530,19 @@ impl V2App {
                 _ => {}
             }
         }
-        match self.view {
-            View::Chat => match self.focus {
-                Focus::Approvals => self.approval_key(key),
-                Focus::Composer => self.composer_key(key),
-            },
-            View::Instances => self.instances_key(key),
-            View::Tasks => self.tasks_key(key),
-            View::Topology => self.topology_key(key),
+        match self.focus {
+            Focus::Approvals => self.approval_key(key),
+            Focus::Composer => self.composer_key(key),
         }
     }
 
-    fn confirm_key(&mut self, key: crossterm::event::KeyEvent) -> Option<V2Effect> {
-        use crossterm::event::KeyCode;
-        let pending = self.confirm.clone()?;
-        match key.code {
-            KeyCode::Char('y') => {
-                self.confirm = None;
-                match pending {
-                    Confirm::TerminateInstance { instance } => {
-                        Some(V2Effect::SetLifecycle { instance, lifecycle: "TERMINATED" })
-                    }
-                }
-            }
-            KeyCode::Char('n') | KeyCode::Esc => {
-                self.confirm = None;
-                None
-            }
-            _ => None,
+    fn interrupt(&mut self) -> Option<V2Effect> {
+        if self.disconnected {
+            self.command_note("Disconnected: interrupt was not sent. Reconnect before retrying.");
+            return None;
         }
-    }
-
-    fn instances_key(&mut self, key: crossterm::event::KeyEvent) -> Option<V2Effect> {
-        use crossterm::event::KeyCode;
-        match key.code {
-            KeyCode::Esc => {
-                self.view = View::Chat;
-                self.focus = Focus::Composer;
-                None
-            }
-            KeyCode::Up => {
-                self.instance_sel = self.instance_sel.saturating_sub(1);
-                None
-            }
-            KeyCode::Down => {
-                if self.instance_sel + 1 < self.instances.len() {
-                    self.instance_sel += 1;
-                }
-                None
-            }
-            // choose the conversation target and jump back to the chat
-            KeyCode::Enter => {
-                if self.instance_sel < self.instances.len() {
-                    self.active = self.instance_sel;
-                    self.chat_scroll = 0;
-                    self.view = View::Chat;
-                    self.focus = Focus::Composer;
-                }
-                None
-            }
-            KeyCode::Char('p') => self.lifecycle_selected("PAUSED"),
-            KeyCode::Char('r') => self.lifecycle_selected("ACTIVE"),
-            // D-363: interrupt the running turn; not destructive, so no confirmation
-            KeyCode::Char('i') => {
-                let instance = self.instances.get(self.instance_sel)?.id.clone();
-                Some(V2Effect::Interrupt { instance })
-            }
-            // D-269: opening a goal is not destructive, so it needs no confirmation; it moves the instance's
-            // goal pointer (D-266), which is exactly what makes later delegation charge to the new goal
-            KeyCode::Char('g') => {
-                let attach = self.instances.get(self.instance_sel)?.id.clone();
-                Some(V2Effect::OpenGoal { attach })
-            }
-            // termination is irreversible for the session: confirm first (§5.4)
-            KeyCode::Char('t') => {
-                if let Some(instance) = self.instances.get(self.instance_sel) {
-                    self.confirm = Some(Confirm::TerminateInstance { instance: instance.id.clone() });
-                }
-                None
-            }
-            _ => None,
-        }
-    }
-
-    fn lifecycle_selected(&mut self, lifecycle: &'static str) -> Option<V2Effect> {
-        let instance = self.instances.get(self.instance_sel)?.id.clone();
-        Some(V2Effect::SetLifecycle { instance, lifecycle })
-    }
-
-    fn tasks_key(&mut self, key: crossterm::event::KeyEvent) -> Option<V2Effect> {
-        use crossterm::event::KeyCode;
-        match key.code {
-            KeyCode::Esc => {
-                self.view = View::Chat;
-                self.focus = Focus::Composer;
-                None
-            }
-            KeyCode::Up => {
-                self.task_sel = self.task_sel.saturating_sub(1);
-                None
-            }
-            KeyCode::Down => {
-                if self.task_sel + 1 < self.tasks.len() {
-                    self.task_sel += 1;
-                }
-                None
-            }
-            KeyCode::Char('c') => {
-                let task = self.tasks.get(self.task_sel)?;
-                // terminal tasks have nothing left to cancel
-                if matches!(task.status.as_str(), "SUCCEEDED" | "FAILED" | "CANCELLED") {
-                    return None;
-                }
-                Some(V2Effect::CancelTask { task_id: task.id.clone() })
-            }
-            _ => None,
-        }
-    }
-
-    fn topology_key(&mut self, key: crossterm::event::KeyEvent) -> Option<V2Effect> {
-        use crossterm::event::KeyCode;
-        match key.code {
-            KeyCode::Esc => {
-                self.view = View::Chat;
-                self.focus = Focus::Composer;
-                None
-            }
-            KeyCode::Up => {
-                self.topo_scroll = self.topo_scroll.saturating_sub(1);
-                None
-            }
-            KeyCode::Down => {
-                self.topo_scroll += 1; // the render clamps against the height
-                None
-            }
-            KeyCode::PageUp => {
-                self.topo_scroll = self.topo_scroll.saturating_sub(self.last_topo_height.max(1));
-                None
-            }
-            KeyCode::PageDown => {
-                self.topo_scroll += self.last_topo_height.max(1);
-                None
-            }
-            _ => None,
-        }
+        let instance = self.active_instance()?.id.clone();
+        Some(V2Effect::Interrupt { instance })
     }
 
     fn approval_key(&mut self, key: crossterm::event::KeyEvent) -> Option<V2Effect> {
@@ -953,180 +573,28 @@ impl V2App {
         Some(V2Effect::Decide { approval_id: approval.id.clone(), decision })
     }
 
-    /// Handle a `/command` typed in the composer (D-370). View switches and notes happen in place; the few that
-    /// need the main loop return an effect. An unknown command is a note, never a silent drop into the Leader.
+    /// Client commands never become model input, including retired management commands.
     fn slash_command(&mut self, text: &str) -> Option<V2Effect> {
-        let command = text.split_whitespace().next().unwrap_or(text);
-        match command {
-            "/help" => {
-                self.command_note(SLASH_HELP);
-                None
-            }
-            "/quit" | "/exit" => {
+        match text.trim() {
+            "/help" => self.command_note(format!(
+                "Session {} · model {}
+Enter sends to the Leader; Ctrl+J or Shift+Enter adds a newline.
+Up/Down recalls input; PageUp/PageDown or the wheel reads history.
+Ctrl+C or /interrupt cancels the Leader's model request; running tools and delegated work continue.
+Ctrl+A focuses pending approvals; a approves once, d denies, Esc returns.
+Ctrl+D or /quit exits; the session keeps running.
+Developer tools: teamagents --help; teamagents status --json; teamagents history --id ID.",
+                self.session_id,
+                self.active_instance().map(|i| i.model.as_str()).unwrap_or("unavailable")
+            )),
+            "/interrupt" => return self.interrupt(),
+            "/quit" => {
                 self.quit = true;
-                None
+                return Some(V2Effect::Quit);
             }
-            "/chat" => {
-                self.view = View::Chat;
-                self.focus = Focus::Composer;
-                None
-            }
-            "/instances" => {
-                self.view = View::Instances;
-                self.instance_sel = self.active;
-                None
-            }
-            "/tasks" => {
-                self.view = View::Tasks;
-                None
-            }
-            "/topology" => {
-                self.view = View::Topology;
-                None
-            }
-            "/approvals" => {
-                self.view = View::Chat;
-                self.focus = Focus::Approvals;
-                None
-            }
-            "/status" => {
-                let status = self.status_line();
-                self.command_note(status);
-                None
-            }
-            "/sessions" => {
-                self.command_note(self.sessions_report());
-                None
-            }
-            "/switch" => {
-                // `/switch <id>` — the same effect `/sessions` tells the user about
-                let id = text.split_whitespace().nth(1).unwrap_or("").to_string();
-                match self.sessions.iter().find(|session| session.id == id) {
-                    Some(session) if !session.active => Some(V2Effect::SwitchSession { id: session.id.clone() }),
-                    Some(_) => {
-                        self.command_note(format!("/switch {id}: this is the session already attached"));
-                        None
-                    }
-                    None => {
-                        self.command_note(format!("/switch {id}: no such session; /sessions lists them"));
-                        None
-                    }
-                }
-            }
-            "/goals" => {
-                let id = text.split_whitespace().nth(2).unwrap_or("").to_string();
-                if let Some(verb) = text.split_whitespace().nth(1) {
-                    if verb != "cancel" {
-                        self.command_note(format!("/goals {verb}: the only verb is `cancel`; /goals lists them"));
-                        return None;
-                    }
-                    if id.is_empty() {
-                        self.command_note("/goals cancel needs a goal id; /goals lists them");
-                        return None;
-                    }
-                    return Some(V2Effect::CancelGoal { id });
-                }
-                Some(V2Effect::RefreshGoals)
-            }
-            "/mcp" => {
-                self.command_note(self.mcp_report());
-                None
-            }
-            "/interrupt" => match self.active_instance() {
-                Some(instance) => Some(V2Effect::Interrupt { instance: instance.id.clone() }),
-                None => {
-                    self.command_note("/interrupt: no instance is selected");
-                    None
-                }
-            },
-            _ => {
-                self.command_note(format!("unknown command {command:?}; /help lists them"));
-                None
-            }
+            _ => self.command_note(format!("Unknown command {text:?}. {SLASH_HELP}. Management: teamagents --help.")),
         }
-    }
-
-    /// What `/sessions` prints (D-429): the named sessions under this base with this one marked, and the command
-    /// that switches. A TUI user otherwise has to know an id and pass it on the command line.
-    pub fn sessions_report(&self) -> String {
-        if self.sessions.is_empty() {
-            return "no other sessions under this base: `teamagents sessions new --name NAME` creates one".to_string();
-        }
-        let mut out = String::from("sessions under this base:\n");
-        for session in &self.sessions {
-            let marker = if session.active { " (attached)" } else { "" };
-            let name = if session.name.is_empty() { "-" } else { session.name.as_str() };
-            out.push_str(&format!("  {}{marker}  name: {name}\n", session.id));
-        }
-        out.push_str("`/switch <id>` attaches this client to another session (its own daemon, started if needed)");
-        out
-    }
-
-    /// What `/goals` prints (D-433): one line per goal the session carries, with the ones a user acts on named —
-    /// the budget it has left, whether an instance is working on it, and what the model said when it settled
-    /// (D-431's summary). The checkpoint reports a single goal (D-266), which is why this reads the list.
-    pub fn goals_report(&self, rows: &Json) -> String {
-        let Some(rows) = rows.as_array().filter(|rows| !rows.is_empty()) else {
-            return "this session carries no goals: press `g` on an instance (or run `teamagents goals open \
-                    --id NAME`) to open one"
-                .to_string();
-        };
-        let mut out = String::from("goals in this session (newest the runtime is working on first):\n");
-        for row in rows {
-            let id = row["id"].as_str().unwrap_or("");
-            let status = row["status"].as_str().unwrap_or("");
-            let attached = row["attached_instances"]
-                .as_array()
-                .map(|list| list.iter().filter_map(|i| i.as_str()).collect::<Vec<_>>().join(", "))
-                .unwrap_or_default();
-            let usage = &row["known_usage"];
-            let mut line = format!(
-                "  {id}  {status}  usage {}{}",
-                usage["total"].as_i64().unwrap_or(0),
-                row["limits"]["max_total_tokens"].as_i64().map(|limit| format!("/{limit}")).unwrap_or_default()
-            );
-            if !attached.is_empty() {
-                line.push_str(&format!("  attached: {attached}"));
-            }
-            out.push_str(&line);
-            if let Some(summary) = row["summary"].as_str().filter(|text| !text.trim().is_empty()) {
-                let collapsed = summary.split_whitespace().collect::<Vec<_>>().join(" ");
-                out.push_str(&format!("\n      settled: {}", collapsed.chars().take(100).collect::<String>()));
-            }
-            out.push('\n');
-        }
-        out.push_str(
-            "`/goals cancel <id>` closes a goal (`g` on an instance opens one); a settled goal's own summary is \
-             shown when the model wrote none (D-431)",
-        );
-        out
-    }
-
-    /// What `/mcp` prints (D-413): one line per configured service. The two things a user acts on are here — the
-    /// credential state (sign in with `teamagents mcp login --name X`) and the fact that a service bound at boot is
-    /// what the session offers (so a credential stored while the session runs needs the instance's driver to be
-    /// rebuilt: `instances pause` then `resume`, or `resume` when a required service parked it).
-    pub fn mcp_report(&self) -> String {
-        if self.mcp.is_empty() {
-            return "no MCP services are configured for this session: bind one with \
-                    `teamagents mcp add --name N --command CMD` (or `--transport http --url U`) and restart it"
-                .to_string();
-        }
-        let mut out = String::from("MCP services in this session:\n");
-        for service in &self.mcp {
-            let required = if service.required { "required" } else { "optional" };
-            match &service.credential {
-                Some(state) => {
-                    out.push_str(&format!("  {} ({}, {}, oauth: {state})\n", service.name, service.transport, required))
-                }
-                None => out.push_str(&format!("  {} ({}, {})\n", service.name, service.transport, required)),
-            }
-        }
-        out.push_str(
-            "a service is bound when its instance's driver boots; after `teamagents mcp login --name X`, \
-             pause and resume that instance to pick the credential up (`mcp logout --name X` forgets it)",
-        );
-        out
+        None
     }
 
     fn composer_key(&mut self, key: crossterm::event::KeyEvent) -> Option<V2Effect> {
@@ -1146,6 +614,10 @@ impl V2App {
                 None
             }
             KeyCode::Enter => {
+                if !self.composer.text().starts_with('/') && (self.disconnected || self.active_instance().is_none()) {
+                    self.command_note("Message kept in the draft: waiting for the Leader connection.");
+                    return None;
+                }
                 let text = self.composer.submit()?;
                 // the arrows walk what was sent (D-77): `text.rs` has kept the
                 // history and the recall rules all along, and nothing ever recorded
@@ -1160,14 +632,6 @@ impl V2App {
                 let envelope = format!("env-{}", uuid::Uuid::new_v4());
                 Some(V2Effect::SubmitInput { instance, envelope, text })
             }
-            KeyCode::Tab => {
-                if !self.instances.is_empty() {
-                    self.active = (self.active + 1) % self.instances.len();
-                    self.chat_scroll = 0;
-                }
-                None
-            }
-
             KeyCode::PageUp => {
                 self.scroll_chat(self.last_chat_height.max(1));
                 None
@@ -1250,125 +714,60 @@ impl V2App {
         self.chat_scroll = self.chat_scroll.saturating_sub(lines);
     }
 
-    pub fn wheel(&mut self, up: bool) {
-        match self.view {
-            View::Instances => {
-                if up {
-                    self.instance_sel = self.instance_sel.saturating_sub(1);
-                } else if self.instance_sel + 1 < self.instances.len() {
-                    self.instance_sel += 1;
-                }
-            }
-            View::Tasks => {
-                if up {
-                    self.task_sel = self.task_sel.saturating_sub(1);
-                } else if self.task_sel + 1 < self.tasks.len() {
-                    self.task_sel += 1;
-                }
-            }
-            View::Topology => {
-                if up {
-                    self.topo_scroll = self.topo_scroll.saturating_sub(3);
-                } else {
-                    self.topo_scroll += 3;
-                }
-            }
-            View::Chat => {
-                if up {
-                    self.scroll_chat(3);
-                } else {
-                    self.scroll_chat_back(3);
-                }
-            }
+    pub fn status_line(&self) -> String {
+        if self.disconnected {
+            return "Disconnected · reconnecting".into();
         }
-    }
-
-    pub fn goal_status(&self) -> String {
-        self.goal
+        if !self.approvals.is_empty() {
+            return format!("Approval needed ({}) · Ctrl+A review", self.approvals.len());
+        }
+        let Some(leader) = self.active_instance() else { return "Connecting to the Leader".into() };
+        if leader.lifecycle != "ACTIVE" {
+            return format!("{} · {} · teamagents instances", leader.lifecycle, leader.reason);
+        }
+        let state = match leader.phase.as_str() {
+            "READY" => "Ready",
+            "MODEL_PENDING" => "Thinking",
+            "TOOLS_PENDING" => "Working",
+            "COMPLETION_PENDING" => "Checking",
+            "WAITING" => "Waiting for the team",
+            other => other,
+        };
+        let usage = self
+            .goal
             .as_ref()
             .map(|g| {
-                let mut text = format!("goal {}", g.status);
-                match g.limit_total {
-                    Some(limit) => text.push_str(&format!(" · usage {}/{}", g.known_total, limit)),
-                    None => text.push_str(&format!(" · usage {}", g.known_total)),
-                }
-                if g.unknown {
-                    text.push_str(" (includes unknown)");
-                }
-                // D-431: the model's own account of the work, when it settled with a summary — which is the
-                // only thing a user can read for a goal the model settled without writing prose.
-                if let Some(summary) = &g.summary {
-                    text.push_str(&format!(" · {summary}"));
-                }
-                if let Some(deadline) = g.deadline {
-                    let left = deadline - crate::now_epoch();
-                    text.push_str(&if left > 0.0 {
-                        format!(" · ends in {}m", (left / 60.0) as i64)
-                    } else {
-                        " · past its deadline".to_string()
-                    });
-                }
-                text
+                let limit = g.limit_total.map(|n| format!("/{n}")).unwrap_or_default();
+                format!(" · {}{limit} tokens{}", g.known_total, if g.unknown { " + unknown" } else { "" })
             })
-            .unwrap_or_else(|| "no goal".to_string())
-    }
-
-    pub fn status_line(&self) -> String {
-        let instance_part = self
-            .active_instance()
-            .map(|i| format!("{} [{}]", i.id, i.phase))
-            .unwrap_or_else(|| "(no instance)".to_string());
-        let goal_part = self.goal_status();
-        let approvals_part = if self.approvals.is_empty() {
-            String::new()
-        } else {
-            format!(" · {} pending approvals", self.approvals.len())
-        };
-        let link = if self.disconnected { " · disconnected, reconnecting..." } else { "" };
-        let view = self.view.name();
-        format!("session {} · view {view} · {instance_part} · {goal_part}{approvals_part}{link}", self.session_id)
+            .unwrap_or_default();
+        let deadline = self
+            .goal
+            .as_ref()
+            .and_then(|g| g.deadline)
+            .map(|deadline| {
+                let left = deadline - crate::now_epoch();
+                if left > 0.0 {
+                    format!(" · ends in {}m", (left / 60.0) as i64)
+                } else {
+                    " · past its deadline".into()
+                }
+            })
+            .unwrap_or_default();
+        format!("{state}{usage}{deadline}")
     }
 
     pub fn footer_hint(&self) -> String {
-        if self.confirm.is_some() {
-            return "terminate this instance? y confirm / n cancel".to_string();
+        if self.focus == Focus::Approvals {
+            return "a approve once · d deny · up/down select · Esc back".into();
         }
-        // a `/` draft is a client command (D-370): show what it may be instead of the send hint
-        if self.view == View::Chat && self.focus == Focus::Composer && self.composer.text().starts_with('/') {
-            return SLASH_HELP.to_string();
+        if self.composer.text().starts_with('/') {
+            return SLASH_HELP.into();
         }
-        match self.view {
-            View::Chat => match self.focus {
-                Focus::Composer => {
-                    let approvals = if self.approvals.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" · Ctrl+A approvals({})", self.approvals.len())
-                    };
-                    // Order is priority: a narrow terminal truncates the tail,
-                    // so what a user needs while composing (send, newline, the
-                    // pending approvals) comes first; at 80 columns the whole
-                    // hint is visible.
-                    format!("Enter send · ↑ history · Ctrl+J newline{approvals} · Ctrl+N panels · Tab target")
-                }
-                Focus::Approvals => "a approve once · d deny · up/down select · Esc back".to_string(),
-            },
-            View::Instances => {
-                // A terminated instance takes no lifecycle command (the control plane
-                // refuses them), so the hint stops advertising keys that would answer
-                // with a refusal; reading its conversation stays available.
-                let terminated =
-                    self.instances.get(self.instance_sel).is_some_and(|info| info.lifecycle == "TERMINATED");
-                if terminated {
-                    "Esc back · Enter set conversation target · up/down select · Ctrl+N next".to_string()
-                } else {
-                    "Esc back · Enter set conversation target · p pause · r resume · i interrupt · t terminate · g open the next goal · up/down select · Ctrl+N next"
-                        .to_string()
-                }
-            }
-            View::Tasks => "Esc back · c cancel task · up/down select · Ctrl+N next".to_string(),
-            View::Topology => "Esc back · up/down scroll · Ctrl+N next".to_string(),
+        if !self.approvals.is_empty() {
+            return "Ctrl+A review · Enter send · Ctrl+C interrupt · Ctrl+D exit".into();
         }
+        "Enter send · Ctrl+C interrupt · Ctrl+D exit · /help".into()
     }
 }
 

@@ -1,20 +1,11 @@
 #!/usr/bin/env python3
-"""The TUI against a daemon that dies and comes back (A28's client half, live).
+"""The minimal TUI survives daemon loss and preserves a draft (A28/D-445).
 
-A28's row has the daemon's own protocol covered (`v2_daemon` replays events after a watermark, commands
-deduplicate by id) and the TUI's reconnect path is unit-tested against a *scripted* daemon. What no test
-does is the thing a user watches: attach the real TUI, kill the daemon under it, start a new daemon on the
-same state root, and see whether the client notices, says so, and comes back — with the panel it was showing
-rebuilt from a fresh checkpoint.
+A real daemon is killed and restarted on the same isolated state root. The
+client must report disconnection, retain unsent input, reconnect and show a
+fresh lifecycle reason from the restarted daemon. No model is called.
 
-    make build
     python3 review/dogfood/tui_reconnect.py
-
-The probe asserts, in order: the panel is live (an instance created through the protocol is listed), the
-client says it is **disconnected** when the daemon is killed, a key pressed while disconnected produces a
-visible `command failed` note instead of silence, and — once a new daemon owns the state root — the
-`disconnected` marker disappears and the panel lists the instance again (the reconnect re-syncs the
-checkpoint and the history, §9). No model, no credential, ~20 s.
 """
 import argparse
 import atexit
@@ -53,7 +44,7 @@ context_window = 1000000
 WORKER = "i-worker"
 # the status line is truncated at the terminal width, so the needle is the word the client uses, not
 # the whole sentence (" · disconnected, reconnecting...")
-DISCONNECTED = "disconnected"
+DISCONNECTED = "Disconnected"
 
 
 def protocol(socket_path: pathlib.Path, method: str, params: dict, command_id: str | None = None) -> dict:
@@ -156,14 +147,9 @@ def main() -> int:
             failures.append(f"{label}: {needle!r} never appeared on screen")
             return False
 
-        if not wait_for("i-leader", 60, "startup"):
-            print(painted()[-600:])
+        if not wait_for("Message", 30, "startup"):
             return 1
-        os.write(fd, b"\x0e")  # the instances panel: the probe's worker must be listed
-        if not wait_for(f"{WORKER} · ACTIVE", 20, "the panel listing the worker"):
-            print(painted()[-600:])
-            return 1
-        print(f"  the TUI is attached and the panel lists {WORKER}")
+        os.write(fd, b"draft-kept-through-reconnect")
 
         # --- the daemon dies under it -------------------------------------------
         daemon.send_signal(signal.SIGKILL)
@@ -174,17 +160,9 @@ def main() -> int:
             return 1
         print("  the client says it is disconnected")
 
-        # a key while disconnected must say something, not swallow it: the note lands in the conversation,
-        # so the probe leaves the panel and looks there (the panel itself keeps showing the stale row)
-        os.write(fd, b"p")
-        time.sleep(1.0)
-        os.write(fd, b"\x1b")  # Esc: back to the conversation
-        if not wait_for("command failed", 30, "the failed command being reported"):
-            print(painted()[-600:])
-        else:
-            print("  a key pressed while disconnected reports `command failed` in the conversation")
-        os.write(fd, b"\x0e")  # and back to the instances panel for the reconnect assertions
-        wait_for("instances (", 15, "the instances panel again")
+        os.write(fd, b"\r")
+        if not wait_for("Message kept in the draft", 15, "disconnected send"):
+            return 1
 
         # --- a new daemon on the same state root --------------------------------
         daemon = start_daemon(state_root, workspace, env, root / "daemon.log")
@@ -200,19 +178,17 @@ def main() -> int:
             print("status line:", painted().splitlines()[0][:120])
         else:
             print(f"  the status line cleared after {reconnected}s")
-        # is the client *live* again? A second instance created now can only appear if the panel refetched
-        # (the stale row from before the kill would be there either way, so it cannot prove anything)
-        second = protocol(state_root / "daemon.sock", "spawn_instance",
-                          {"instance_id": "i-worker2", "workspace_ref": str(workspace)}, "reconnect-spawn-2")
-        if not second.get("ok"):
-            failures.append(f"spawn_instance after the restart was refused: {second.get('error')}")
-        if not wait_for("i-worker2 · ACTIVE", 60, "the panel showing an instance created after the restart"):
-            print("status line:", painted().splitlines()[0][:120])
-            print(painted()[-400:])
-        else:
-            print("  the panel shows an instance created after the restart: the client is live")
-
-        os.write(fd, b"\x03")  # quit the TUI
+        # A new reason proves a fresh checkpoint, not merely a cleared stale marker.
+        changed = protocol(state_root / "daemon.sock", "set_lifecycle",
+                           {"instance_id": "i-leader", "lifecycle": "PAUSED", "reason": "fresh-after-restart"},
+                           "reconnect-pause")
+        if not changed.get("ok"):
+            failures.append(f"pause after restart refused: {changed.get('error')}")
+        wait_for("fresh-after-restart", 15, "fresh state after reconnect")
+        if "draft-kept-through-reconnect" not in painted():
+            failures.append("reconnect lost the unsent draft")
+        print("  reconnected, fresh state visible, unsent draft intact")
+        os.write(fd, b"\x04")
         time.sleep(0.5)
     finally:
         if pid:

@@ -1,28 +1,12 @@
 #!/usr/bin/env python3
-"""The instances panel's keys against a real daemon (A21/D-68/D-82, the human surface).
+"""D-445: CLI management remains complete beside the minimal TUI.
 
-The PTY smoke drives the panels against a *scripted* daemon: it asserts the frames the keys produce
-(`set_lifecycle`, `cancel_task`). What it cannot say is whether the panel acts on the row a user selected and
-whether the daemon really changes state. This probe attaches the real TUI to a real daemon and presses the
-keys a user presses:
+The historical filename is retained for existing evidence links. The old
+D-95 panel controls are now developer CLI verbs. This credential-free probe
+creates a worker, pauses/resumes it, cancels a delegated task, verifies the
+termination confirmation, and checks that the TUI stays a conversation.
 
-1. `Ctrl+N` opens the instances view, which shows the session's rows;
-2. `p` pauses the selected instance, `r` resumes it — each must be visible in `teamagents instances --json`
-   *and* on screen (the panel refreshes from the daemon's own events);
-3. the tasks view's `c` cancels the task the user selected (the probe delegates one itself, as the user);
-4. `t` only *asks* ("terminate this instance? y confirm / n cancel"): the instance must still be `ACTIVE`
-   after `t`, still `ACTIVE` after `n`, and only `y` may retire it (D-82's finality, D-68's `--yes`).
-
-No model is involved: the session is started, one extra instance is created through the documented protocol
-(no user surface creates one without a Leader, and the panel's subject is the row, not the model), and every
-assertion is about what the daemon recorded and what the panel paints.
-
-    make build
     python3 review/dogfood/tui_panels.py
-    python3 review/dogfood/tui_panels.py --state-dir /tmp/ta-panels
-
-It needs no credential and no network; it stops the TUI and the daemon it started, and writes only under
-`--state-dir`.
 """
 import argparse
 import atexit
@@ -183,134 +167,51 @@ def main() -> int:
             failures.append(f"{label}: {needle!r} never appeared on screen ({painted()[-200:]!r})")
             return False
 
-        def wait_gone(needle: str, timeout: float, label: str, step: float = 0.25) -> bool:
-            started = time.time()
-            while time.time() - started < timeout:
-                pump(step)
-                if needle not in painted():
-                    return True
-            failures.append(f"{label}: {needle!r} is still on screen")
-            return False
-
-        if not wait_for("i-leader", 60, "startup"):
-            print(painted()[-600:])
+        if not wait_for("Message", 30, "minimal conversation"):
             return 1
-        print("  the TUI is attached; the status line names the leader it talks to")
+        os.write(fd, b"\x0e\t")
+        pump(0.5)
+        if "instances (" in painted():
+            failures.append("retired navigation still opens a panel")
 
-        # --- the instances view --------------------------------------------------
-        os.write(fd, b"\x0e")  # Ctrl+N: conversation -> instances
-        if not wait_for("instances (", 20, "the instances view"):
-            return 1
-        if not wait_for(f"i-leader · ACTIVE", 20, "the leader's row"):
-            return 1
-        if not wait_for(f"{WORKER} · ACTIVE", 20, "the worker's row"):
-            print(painted()[-800:])
-            return 1
-        print(f"  the instances panel lists both rows ({WORKER} · ACTIVE among them)")
+        def cli(*args):
+            result = call([*args, "--state-root", str(state_root)], env)
+            if result.returncode:
+                failures.append(f"CLI {args}: {result.stderr}")
+            return result
 
-        # the panel's selection starts on the conversation target (the leader), so the keys below must first
-        # move to the worker: `▶  <id>` is the selected, non-target row the renderer paints
-        os.write(fd, b"\x1b[B")  # Down
-        if not wait_for(f"▶  {WORKER}", 15, "the selection moving to the worker"):
-            print(painted()[-800:])
-            return 1
-        print("  Down moves the selection to the worker's row")
-
-        # --- p pauses, and the panel follows the daemon --------------------------
-        os.write(fd, b"p")
-        if not wait_until(lambda: lifecycle(state_root, env, WORKER) == "PAUSED", 15):
-            failures.append(f"the `p` key did not pause the instance: {lifecycle(state_root, env, WORKER)}")
-        if not wait_for(f"{WORKER} · PAUSED", 15, "the panel follows the pause"):
-            print(painted()[-400:])
-        else:
-            print("  `p` paused it in the daemon and the panel shows PAUSED")
-
-        # --- r resumes -----------------------------------------------------------
-        os.write(fd, b"r")
-        if not wait_until(lambda: lifecycle(state_root, env, WORKER) == "ACTIVE", 15):
-            failures.append(f"the `r` key did not resume the instance: {lifecycle(state_root, env, WORKER)}")
-        if not wait_for(f"{WORKER} · ACTIVE", 15, "the panel follows the resume"):
-            print(painted()[-400:])
-        else:
-            print("  `r` resumed it and the panel shows ACTIVE")
-
-        # --- the tasks view: `c` cancels the selected row ------------------------
+        cli("instances", "pause", "--id", WORKER)
+        if lifecycle(state_root, env, WORKER) != "PAUSED":
+            failures.append("CLI pause did not land")
+        cli("instances", "resume", "--id", WORKER)
+        if lifecycle(state_root, env, WORKER) != "ACTIVE":
+            failures.append("CLI resume did not land")
+        cli("instances", "pause", "--id", WORKER)
         goal = active_goal(state_root)
-        if goal is None:
-            failures.append("the session has no ACTIVE goal to charge a task to")
-            return 1
-        # The tasks view needs a *row*, not a running turn: hold the member while the task is delegated, or the
-        # delegation starts a model call the probe's subject does not need (measured with a live credential: the
-        # request began and the `c` key then abandoned it, D-138).
-        held = protocol(socket_path, "set_lifecycle", {"instance_id": WORKER, "lifecycle": "PAUSED"}, "panel-hold")
-        if not held.get("ok"):
-            failures.append(f"the probe could not hold the member before delegating: {held.get('error')}")
-            return 1
         delegated = protocol(socket_path, "delegate_task",
                              {"task_id": TASK, "assignee": WORKER, "goal_id": goal,
-                              "description": "panel probe: a task to cancel"}, "panel-delegate")
+                              "description": "management probe: a task to cancel"}, "panel-delegate")
         if not delegated.get("ok"):
-            failures.append(f"delegate_task was refused: {delegated.get('error')}")
+            failures.append(f"delegate_task refused: {delegated.get('error')}")
             return 1
-        os.write(fd, b"\x0e")  # Ctrl+N: instances -> tasks
-        if not wait_for("▶ " + TASK, 20, "the tasks view selecting the new task"):
-            print(painted()[-800:])
-            return 1
-        status = task_status(state_root, env, TASK)
-        if status not in ("PENDING", "RUNNING"):
-            failures.append(f"the delegated task is {status}, so there is nothing to cancel")
-            return 1
-        print(f"  the tasks panel shows {TASK} · {status} (selected)")
-        os.write(fd, b"c")
-        if not wait_until(lambda: task_status(state_root, env, TASK) == "CANCELLED", 15):
-            failures.append(f"the `c` key did not cancel the task: {task_status(state_root, env, TASK)}")
-        if not wait_for(f"{TASK} · CANCELLED", 15, "the panel follows the cancellation"):
-            print(painted()[-400:])
-        else:
-            print("  `c` cancelled it in the daemon and the panel shows CANCELLED")
-        os.write(fd, b"\x1b")  # Esc: back to the conversation
-        if not wait_for("to i-leader", 15, "the conversation view after Esc"):
-            return 1
-        os.write(fd, b"\x0e")  # and back into the instances view for the termination stage
-        if not wait_for("instances (", 15, "the instances view again"):
-            return 1
-        os.write(fd, b"\x1b[B")  # Down: the selection starts on the conversation target again
-        if not wait_for(f"▶  {WORKER}", 15, "the worker's row selected again"):
-            return 1
-
-        # --- t only asks; n cancels the prompt ----------------------------------
-        # the member is held PAUSED since the delegation (no turn may start, D-138), so the point of these two
-        # keys is that they change *nothing* — captured here and compared after each key
-        before_keys = lifecycle(state_root, env, WORKER)
-        os.write(fd, b"t")
-        if not wait_for("terminate this instance? y confirm / n cancel", 15, "the confirmation prompt"):
-            print(painted()[-400:])
-        else:
-            print("  `t` asked for confirmation")
-        if lifecycle(state_root, env, WORKER) != before_keys:
-            failures.append(f"`t` alone changed the instance: {before_keys} -> {lifecycle(state_root, env, WORKER)}")
-        os.write(fd, b"n")
-        if not wait_gone("terminate this instance?", 15, "the cancelled prompt"):
-            print(painted()[-400:])
-        else:
-            print("  `n` cancelled the prompt")
-        if lifecycle(state_root, env, WORKER) != before_keys:
-            failures.append(f"`n` changed the instance anyway: {before_keys} -> {lifecycle(state_root, env, WORKER)}")
-
-        # --- t then y retires it ------------------------------------------------
-        os.write(fd, b"t")
-        if not wait_for("terminate this instance?", 15, "the confirmation prompt (second time)"):
-            return 1
-        os.write(fd, b"y")
-        if not wait_until(lambda: lifecycle(state_root, env, WORKER) == "TERMINATED", 30):
-            failures.append(f"`y` did not retire the instance: {lifecycle(state_root, env, WORKER)}")
-        if not wait_for(f"{WORKER} · TERMINATED", 20, "the panel follows the termination"):
-            print(painted()[-400:])
-        else:
-            print("  `y` retired it and the panel shows TERMINATED")
-
-        os.write(fd, b"\x03")  # quit the TUI
-        time.sleep(0.5)
+        cli("tasks", "cancel", "--id", TASK)
+        if task_status(state_root, env, TASK) != "CANCELLED":
+            failures.append("CLI task cancellation did not land")
+        refused = call(["instances", "terminate", "--id", WORKER, "--state-root", str(state_root)], env)
+        if refused.returncode != 2 or lifecycle(state_root, env, WORKER) != "PAUSED":
+            failures.append("termination without --yes changed state")
+        cli("instances", "terminate", "--id", WORKER, "--yes")
+        if lifecycle(state_root, env, WORKER) != "TERMINATED":
+            failures.append("confirmed CLI termination did not land")
+        status = json.loads(cli("status", "--json").stdout)
+        if not any(i["id"] == WORKER and i["lifecycle"] == "TERMINATED" for i in status["snapshot"]["instances"]):
+            failures.append("status does not report the managed worker")
+        cli("history", "--id", WORKER, "--json")
+        cli("goals", "--json")
+        cli("authority", "--json")
+        print("  minimal TUI with CLI pause/resume/cancel/confirmed termination/status/history: exercised")
+        os.write(fd, b"\x04")
+        pump(0.5)
     finally:
         if pid:
             try:

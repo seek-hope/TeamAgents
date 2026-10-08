@@ -9,6 +9,8 @@ usage: teamagents [--cwd DIR] [--state-root PATH] [--session ID] [--model KEY] [
   -c key=value                        override a config key for this invocation (repeatable; docs/CONFIG.md lists them)\n\
   teamagents                          TUI attached to your daemon (starts one if needed)\n\
   teamagents exec [--json|--stream-json] [--timeout SEC] [--check CMD] [--accept ID=CMD] [--] \"…\"   one headless input\n\
+  teamagents status [--json]                  session checkpoint, model, usage, limits and MCP state\n\
+  teamagents history [--id INSTANCE] [--limit N] [--json]  newest 1..1000 stored entries (default 400, Leader)\n\
   teamagents authority [list] [--json]          the session's grants, with the ids revoke needs\n\
   teamagents authority grant --subject ID --action A --scope S [--parent G]\n\
   teamagents authority revoke --grant ID        revoke that grant and everything derived from it\n\
@@ -20,6 +22,7 @@ usage: teamagents [--cwd DIR] [--state-root PATH] [--session ID] [--model KEY] [
   teamagents approvals approve --id ID          approve that call, once (bound to its arguments)\n\
   teamagents approvals deny --id ID             deny it; the operation fails closed\n\
   teamagents instances [list] [--json]          the session's instances\n\
+  teamagents instances send --id ID --prompt TEXT [--json]  submit to any member; report accepted/queued, not completion\n\
   teamagents instances resume|pause --id ID     let a parked instance run again, or stop one\n\
   teamagents instances interrupt --id ID        cancel the running turn so a queued instruction takes over\n\
   teamagents instances terminate --id ID --yes  retire it (workspace and open work handled)\n\
@@ -372,7 +375,7 @@ fn parse_args() -> Args {
             }
             "serve" | "init" | "doctor" | "validate" | "sessions" | "automations" | "version" | "exec"
             | "authority" | "approvals" | "instances" | "tasks" | "runners" | "artifacts" | "goals" | "surface"
-            | "mcp" => {
+            | "mcp" | "status" | "history" => {
                 if args.command.is_some() {
                     reject("two entry points were given: pick one (teamagents --help lists them)");
                 }
@@ -396,6 +399,8 @@ fn parse_args() -> Args {
                     args.command.as_deref(),
                     Some(
                         "exec"
+                            | "status"
+                            | "history"
                             | "authority"
                             | "approvals"
                             | "instances"
@@ -476,6 +481,7 @@ fn parse_args() -> Args {
                     args.command.as_deref(),
                     Some(
                         "approvals"
+                            | "history"
                             | "instances"
                             | "tasks"
                             | "runners"
@@ -573,7 +579,7 @@ fn parse_args() -> Args {
                 );
                 i += 2;
             }
-            "--prompt" if args.command.as_deref() == Some("automations") => {
+            "--prompt" if matches!(args.command.as_deref(), Some("automations" | "instances")) => {
                 if args.prompt.is_some() {
                     given_twice("--prompt");
                 }
@@ -591,7 +597,7 @@ fn parse_args() -> Args {
                 );
                 i += 2;
             }
-            "--limit" if args.command.as_deref() == Some("sessions") => {
+            "--limit" if matches!(args.command.as_deref(), Some("sessions" | "history")) => {
                 if args.limit.is_some() {
                     given_twice("--limit");
                 }
@@ -1883,20 +1889,33 @@ fn run_sessions(args: &Args) -> i32 {
 
 fn run_instances(args: &Args) -> i32 {
     use teamagents_engine::v2::intervene::{InterventionCommand, InterventionOptions};
+    if args.prompt.is_some() && args.positional.as_deref() != Some("send") {
+        eprintln!("instances: --prompt belongs to instances send --id ID --prompt TEXT");
+        return 2;
+    }
     let state_root = args.state_root.clone().map(PathBuf::from).unwrap_or_else(teamagents_engine::v2_root);
     let command = match (args.positional.as_deref().unwrap_or("list"), args.approval_id.clone()) {
         ("list", None) => InterventionCommand::ListInstances,
         ("pause", Some(id)) => InterventionCommand::Pause { id },
         ("resume", Some(id)) => InterventionCommand::Resume { id },
         ("interrupt", Some(id)) => InterventionCommand::Interrupt { id },
+        ("send", Some(id)) => {
+            let Some(text) = args.prompt.as_ref().filter(|s| !s.trim().is_empty()) else {
+                eprintln!("instances send needs a nonempty --prompt TEXT");
+                return 2;
+            };
+            InterventionCommand::SendInput { id, text: text.clone() }
+        }
         ("terminate", Some(id)) => InterventionCommand::Terminate { id },
         // D-252: the worktree member's branch, brought into the session's own tree
         ("merge", Some(id)) => InterventionCommand::Merge { id },
         ("list", Some(_)) => {
-            eprintln!("instances list takes no --id; use `instances pause|resume|interrupt|terminate|merge --id ID`");
+            eprintln!(
+                "instances list takes no --id; use `instances pause|resume|interrupt|terminate|merge|send --id ID`"
+            );
             return 2;
         }
-        (verb @ ("pause" | "resume" | "interrupt" | "terminate" | "merge"), None) => {
+        (verb @ ("pause" | "resume" | "interrupt" | "terminate" | "merge" | "send"), None) => {
             eprintln!("instances {verb} needs --id ID (see `teamagents instances` for the ids)");
             return 2;
         }
@@ -1947,11 +1966,35 @@ fn run_tasks(args: &Args) -> i32 {
 
 /// `teamagents runners`: what a state root still carries and how to retire it (D-250).
 ///
-/// Deliberately not a client of the running session: the leftover this exists for is the one whose session is
-/// gone. It talks to the *runners* (whose token socket is in each job directory's `job.json`), so a session
-/// that is live is only reported, never required.
-/// `teamagents surface`: the read-only record of what each model request was offered (D-349, the decision
-/// D-341 made for D-143): the tool *names* a request carried and whether the surface check authorized that set.
+/// Read-only status and bounded member history over the running session socket (D-445).
+fn run_inspect(args: &Args) -> i32 {
+    let history = args.command.as_deref() == Some("history");
+    if args.positional.is_some()
+        || args.cwd.is_some()
+        || args.model.is_some()
+        || args.full_auto
+        || !args.overrides.is_empty()
+        || args.plain
+        || args.resume.is_some()
+        || args.team.is_some()
+    {
+        eprintln!("status/history read the running session: use --state-root or --session, and --json; history also takes --id and --limit");
+        return 2;
+    }
+    let limit = args.limit.unwrap_or(400);
+    if !(1..=1000).contains(&limit) {
+        eprintln!("history: --limit must be between 1 and 1000");
+        return 2;
+    }
+    let root = args.state_root.clone().map(PathBuf::from).unwrap_or_else(teamagents_engine::v2_root);
+    teamagents_engine::v2::inspect::run(
+        &root.join("daemon.sock"),
+        history.then_some((args.approval_id.as_deref().unwrap_or("i-leader"), limit)),
+        args.exec_json,
+    )
+}
+
+/// Read what each model request was offered and whether that set was authorized (D-349).
 fn run_surface(args: &Args) -> i32 {
     use teamagents_engine::v2::surfaces::{SurfaceCommand, SurfaceOptions};
     let state_root = args.state_root.clone().map(PathBuf::from).unwrap_or_else(teamagents_engine::v2_root);
@@ -2298,6 +2341,7 @@ fn main() {
         Some("tasks") => run_tasks(&args),
         Some("runners") => run_runners(&args),
         Some("surface") => run_surface(&args),
+        Some("status" | "history") => run_inspect(&args),
         Some("artifacts") => run_artifacts(&args),
         _ if args.plain || args.resume.is_some() || args.team.is_some() => {
             eprintln!("--plain/--resume/--team are no longer supported; use teamagents (TUI) or teamagents exec.");

@@ -54,7 +54,7 @@ default (D-239).
 |---|---|---|---|---|
 | `provider` | `String` | empty | `engine/src/providers/mod.rs`, `engine/src/tools.rs` … (3 files) | The vendor hint: `deepseek` selects that service's defaults (the reasoning echo, the deepseek protocol) while `protocol` is unset, and any other value is a label for a compatible service — the wire is decided by `protocol`/`base_url`, never by this name (D-40, D-229). |
 | `protocol` | `String` | "openai" | `engine/src/providers/mod.rs` | — |
-| `model` | `String` | empty | `core/src/kernel/instance.rs`, `core/src/kernel/mod.rs` … (13 files) | — |
+| `model` | `String` | empty | `core/src/kernel/instance.rs`, `core/src/kernel/mod.rs` … (12 files) | — |
 | `base_url` | `Option<String>` | unset (the reader applies its own) | `engine/src/providers/mod.rs` | — |
 | `api_key_env` | `Option<String>` | unset (the reader applies its own) | `engine/src/providers/mod.rs`, `engine/src/tools.rs` | — |
 | `timeout` | `i64` | 120 | `core/src/v2/control.rs`, `engine/src/mcp.rs` … (9 files) | — |
@@ -68,8 +68,8 @@ default (D-239).
 
 | Key | Type | Absent | Read by | Meaning |
 |---|---|---|---|---|
-| `kind` | `String` | empty | `core/src/kernel/mod.rs`, `core/src/v2/control.rs` … (19 files) | — |
-| `required` | `bool` | false | `core/src/kernel/mod.rs`, `engine/src/bound.rs` … (6 files) | — |
+| `kind` | `String` | empty | `core/src/kernel/mod.rs`, `core/src/v2/control.rs` … (20 files) | — |
+| `required` | `bool` | false | `core/src/kernel/mod.rs`, `engine/src/bound.rs` … (5 files) | — |
 | `provider` | `Option<String>` | unset (the reader applies its own) | `engine/src/providers/mod.rs`, `engine/src/tools.rs` … (3 files) | — |
 | `api_key_env` | `Option<String>` | unset (the reader applies its own) | `engine/src/providers/mod.rs`, `engine/src/tools.rs` | — |
 | `mcp_server` | `Option<String>` | unset (the reader applies its own) | `engine/src/bound.rs` | — |
@@ -119,7 +119,7 @@ default (D-239).
 
 | Key | Type | Absent | Read by | Meaning |
 |---|---|---|---|---|
-| `id` | `String` | empty | `core/src/kernel/instance.rs`, `core/src/v2/control.rs` … (23 files) | Stable id, used in failures, receipts and repair feedback. |
+| `id` | `String` | empty | `core/src/kernel/instance.rs`, `core/src/v2/control.rs` … (24 files) | Stable id, used in failures, receipts and repair feedback. |
 | `command` | `String` | empty | `core/src/v2/control.rs`, `engine/src/bound.rs` … (17 files) | The command, executed through the same shell tool the model uses. |
 | `timeout` | `Option<u64>` | unset (the reader applies its own) | `core/src/v2/control.rs`, `engine/src/mcp.rs` … (9 files) | Seconds; absent means the shell tool's own default. |
 | `network` | `bool` | false | `core/src/v2/control.rs`, `engine/src/mcp.rs` … (3 files) | Run with network access (the sandbox is offline by default). |

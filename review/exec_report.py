@@ -11,7 +11,7 @@ fields were partly undocumented (`docs/USER-GUIDE.md` §1.1 named four of `exec`
 
     python3 review/exec_report.py
 
-It reads the field names out of the source — every `json!({ … })` literal in the six report modules that
+It reads the field names out of the source — every `json!({ … })` literal in the report modules that
 carries `session_id`, which is what makes a literal a *printed report* rather than a protocol request or an
 event payload — and compares the union with the fields `docs/USER-GUIDE.md` §1.2 catalogues, in both
 directions:
@@ -28,7 +28,8 @@ import sys
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 SOURCES = ("engine/src/v2/exec.rs", "engine/src/v2/authority.rs", "engine/src/v2/approvals.rs",
-           "engine/src/v2/intervene.rs", "engine/src/v2/runners.rs", "engine/src/v2/artifacts.rs")
+           "engine/src/v2/intervene.rs", "engine/src/v2/runners.rs", "engine/src/v2/artifacts.rs",
+           "engine/src/v2/inspect.rs")
 GUIDE = REPO / "docs/USER-GUIDE.md"
 SECTION = "### 1.2 The JSON reports"
 

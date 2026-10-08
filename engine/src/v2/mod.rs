@@ -11,6 +11,7 @@ pub mod daemon;
 pub mod driver;
 pub mod exec;
 pub mod goals;
+pub mod inspect;
 pub mod intervene;
 pub mod memory;
 pub mod runners;

@@ -86,9 +86,9 @@ def main() -> int:
         return None
 
     deadline = time.time() + 30
-    while time.time() < deadline and "i-leader" not in painted():
+    while time.time() < deadline and "Message" not in painted():
         pump(1.0)
-    if "i-leader" not in painted():
+    if "Message" not in painted():
         print("FAIL: the TUI never attached to the fake daemon")
         os.kill(pid, 9)
         return 1
@@ -137,7 +137,7 @@ def main() -> int:
         if burst > BURST_BOUND:
             failures.append(f"a {len(WORD)}-character burst took {burst:.2f}s (bound {BURST_BOUND}s)")
 
-    os.write(fd, b"\x03")
+    os.write(fd, b"\x04")
     time.sleep(0.5)
     try:
         os.kill(pid, 9)

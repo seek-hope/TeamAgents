@@ -617,23 +617,21 @@ verdicts writes no file and reports a null path, so the reliable signal is the p
 not the presence of `<state root>/verification.json`.
 
 
-## `tui_panels.py`: the instances panel's keys against a real daemon
+## `tui_panels.py`: developer management beside the minimal TUI
 
-The PTY smoke drives the panels against a scripted daemon (asserting the frames each key produces). This probe
-attaches the real TUI to a real daemon to check the thing a user cares about — that the key acts on the row
-they selected and that the daemon really changes state:
+The historical filename remains for evidence links. D-445 replaces the panel workflow with CLI
+management while a real TUI stays attached to the same isolated daemon.
 
 ```bash
 python3 review/dogfood/tui_panels.py
 ```
 
-No model, no credential, ~10 s: the session starts, the probe creates one extra instance through the
-documented protocol, and then `Ctrl+N` (instances view) → `Down` (the selection marker `▶  i-worker` moves) →
-`p` (paused in `instances --json` **and** repainted as `i-worker · PAUSED`) → `r` (ACTIVE again) → `Ctrl+N`
-(tasks view) with a task the probe delegated itself → `c` (cancelled in `tasks --json` **and** repainted
-`t-panel · CANCELLED`) → `Esc`, `Ctrl+N`, `Down` (back on the worker's row) → `t` (only asks: the footer
-wants `y`, the instance stays ACTIVE) → `n` (cancelled, still ACTIVE) → `t`,`y` (TERMINATED, and the panel
-shows it). Measured 2026-09-26, five runs (D-95).
+No model or credential: a worker is created through the protocol, then CLI pause/resume, task
+cancellation and termination are checked against persisted state. Termination without --yes must fail
+and preserve the worker; confirmation must retire it. Status/history/goals/authority reads remain
+available. Retired navigation keys must not open a panel. The earlier D-95 panel measurements remain
+historical evidence in the decision log.
+
 
 
 ## `deadline.py`: the goal deadline, end to end
@@ -679,15 +677,13 @@ three runs per lever (D-98/D-100).
 python3 review/dogfood/tui_reconnect.py
 ```
 
-No model, ~25 s: the TUI attaches and its panel lists an instance created through the protocol; the daemon is
-`SIGKILL`ed; the client says it is disconnected, and a key pressed meanwhile reports `command failed` in the
-conversation (a panel command that fails is not swallowed). A new daemon on the same state root then brings it
-back — measured 0.6 s until the status line clears, with an instance created *after* the restart appearing in
-the panel, which is the only non-vacuous proof that the client is live again (the pre-kill row is still painted
-either way).
+D-445, no model: attach the TUI, type an unsent draft, SIGKILL the probe's daemon and press Enter.
+The client reports disconnection and preserves the draft. Restart the daemon on the same root;
+the connection indicator must clear and a newly recorded lifecycle reason must appear, proving a
+fresh checkpoint was read. The draft must still be visible. Measured 2026-10-08: reconnect 0.5 s.
 
-The first run found the defect D-99 fixed: the client really reconnected while the status line kept saying
-"disconnected" for 90 s, because clearing the flag did not rebuild the frame.
+The older D-99 panel-based receipt remains historical; the reconnect protocol is unchanged.
+
 
 
 ## `two_gates.py`: the runtime's gate and the client's gate in one run

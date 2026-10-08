@@ -2676,7 +2676,66 @@ fn the_surface_verb_reads_back_what_a_request_was_offered() {
     let (code, _, stderr) = report(&["surface", "--id", "i-nobody"]);
     assert_eq!(code, 2, "{stderr}");
     assert!(stderr.contains("i-nobody"), "{stderr}");
+    // D-445: the minimal TUI moves inspection to these read-only CLI views.
+    let (code, out, stderr) = report(&["status", "--json"]);
+    assert_eq!(code, 0, "{stderr}");
+    let status: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(status["schema_version"], 1);
+    assert_eq!(status["snapshot"]["instances"][0]["id"], "i-leader");
+    assert!(status["snapshot"]["goal"]["known_usage"].is_object());
+    let (code, out, stderr) = report(&["history", "--id", "i-l", "--limit", "1000", "--json"]);
+    assert_eq!(code, 0, "{stderr}");
+    let history: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(history["instance_id"], "i-leader");
+    assert!(history["entries"].as_array().unwrap().iter().any(|e| e["message"]["content"] == "say something"));
+    let (code, out, stderr) = report(&["history", "--limit", "1", "--json"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&out).unwrap()["entries"].as_array().unwrap().len(), 1);
+    let (code, out, stderr) = report(&["history"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(out.contains("say something"), "{out}");
+    for args in [
+        vec!["history", "--id", "absent"],
+        vec!["history", "--limit", "0"],
+        vec!["history", "--limit", "1001"],
+        vec!["status", "--id", "i-leader"],
+        vec!["status", "--full-auto"],
+        vec!["status", "unknown"],
+    ] {
+        let (code, _, stderr) = report(&args);
+        assert_eq!(code, 2, "{args:?}: {stderr}");
+    }
+    let mut client = teamagents_engine::v2::exec::Client::connect(&socket).unwrap();
+    client
+        .command(
+            "inspect-worker",
+            "spawn_instance",
+            serde_json::json!({
+                "instance_id": "i-inspect-worker", "workspace_ref": ws
+            }),
+        )
+        .unwrap();
+    let (code, out, stderr) =
+        report(&["instances", "send", "--id", "i-inspect", "--prompt", "direct\nworker input", "--json"]);
+    assert_eq!(code, 0, "{stderr}");
+    let sent: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(sent["instance_id"], "i-inspect-worker");
+    assert!(sent["envelope_id"].as_str().unwrap().starts_with("env-"));
+    let (code, out, stderr) = report(&["history", "--id", "i-inspect", "--json"]);
+    assert_eq!(code, 0, "{stderr}");
+    let history: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert!(history["entries"].as_array().unwrap().iter().any(|e| e["message"]["content"] == "direct\nworker input"));
+    for args in [
+        vec!["instances", "send", "--prompt", "missing id"],
+        vec!["instances", "send", "--id", "i-inspect", "--prompt", "   "],
+        vec!["instances", "list", "--prompt", "must not be ignored"],
+    ] {
+        let (code, _, stderr) = report(&args);
+        assert_eq!(code, 2, "{args:?}: {stderr}");
+    }
     daemon_guard.stop();
+    let (code, _, stderr) = report(&["status"]);
+    assert_eq!(code, 2, "inspection does not start a daemon: {stderr}");
     std::fs::remove_dir_all(&root).expect("the state root goes away with its daemon");
 }
 

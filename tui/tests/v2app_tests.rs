@@ -5,7 +5,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 use serde_json::{json, Value as Json};
-use teamagents_tui::v2app::{ChatKind, Confirm, Focus, V2App, V2Effect, View};
+use teamagents_tui::v2app::{ChatKind, Focus, V2App, V2Effect};
 use teamagents_tui::v2ui;
 
 fn key(code: KeyCode) -> KeyEvent {
@@ -15,17 +15,6 @@ fn key(code: KeyCode) -> KeyEvent {
 /// Control chord (the interface avoids function keys: some keyboards lack them).
 fn ctrl(c: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
-}
-
-/// `Ctrl+N` cycles chat -> instances -> tasks -> topology -> chat.
-fn cycle_to(app: &mut V2App, view: View) {
-    for _ in 0..4 {
-        if app.view == view {
-            return;
-        }
-        app.handle_key(ctrl('n'));
-    }
-    assert_eq!(app.view, view, "Ctrl+N must reach every view");
 }
 
 fn checkpoint() -> Json {
@@ -118,25 +107,6 @@ fn word_wise_editing_is_wired() {
     assert_eq!(app.composer.col, 0, "Ctrl+← jumps over the word to the left");
     app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
     assert_eq!(app.composer.col, 5, "Ctrl+→ lands after the word to the right");
-    assert!(app.footer_hint().contains("↑ history"), "the hint advertises it: {}", app.footer_hint());
-}
-
-/// A terminated instance takes no lifecycle command (the control plane refuses them:
-/// "instance i-leader is terminated"), so the panel must not advertise keys that would
-/// answer with a refusal — reading its conversation stays available.
-#[test]
-fn the_instances_hint_stops_offering_lifecycle_keys_for_a_terminated_member() {
-    let mut app = app();
-    cycle_to(&mut app, View::Instances);
-    // the fixture's members are ACTIVE: the keys are advertised
-    assert!(app.footer_hint().contains("r resume"), "{}", app.footer_hint());
-    let mut checkpoint = checkpoint();
-    checkpoint["instances"][0]["lifecycle"] = Json::String("TERMINATED".into());
-    app.apply_checkpoint(checkpoint, 6);
-    let hint = app.footer_hint();
-    assert_eq!(app.instances[0].lifecycle, "TERMINATED");
-    assert!(!hint.contains("r resume") && !hint.contains("t terminate"), "{hint}");
-    assert!(hint.contains("Enter set conversation target") && hint.contains("up/down select"), "{hint}");
 }
 
 /// D-433: a command's answer survives a checkpoint refresh, a runtime note does not. The pty smoke found this the
@@ -147,54 +117,11 @@ fn the_instances_hint_stops_offering_lifecycle_keys_for_a_terminated_member() {
 fn a_command_answer_survives_a_checkpoint_and_a_note_does_not() {
     let mut app = V2App::new("s-test");
     app.command_note("goals in this session: turn-2 ACTIVE");
-    app.system_note("a transient runtime note");
+    app.input_queued("transient-worker");
     app.apply_checkpoint(checkpoint(), 6);
     let text: String = app.entries.iter().map(|entry| entry.text.as_str()).collect::<Vec<_>>().join("\n");
     assert!(text.contains("goals in this session: turn-2 ACTIVE"), "the answer must stay: {text}");
-    assert!(!text.contains("transient runtime note"), "a note is superseded by a checkpoint: {text}");
-}
-
-/// D-433: the TUI can list the session's goals and close one. The checkpoint reports a single goal (D-266), so
-/// `/goals` asks for the list; `g` could open a goal and nothing could close it, which is how a session
-/// accumulates ACTIVE goals.
-#[test]
-fn goals_lists_them_and_cancel_is_an_effect() {
-    // the report is a pure function of the `goals` reply, so it is tested without a daemon
-    let app = app();
-    let rows = serde_json::json!([
-        {"id": "goal-s-main", "status": "SUCCEEDED", "known_usage": {"total": 41},
-         "limits": {"max_total_tokens": 1000}, "attached_instances": [],
-         "summary": "cancelled order W1\nand refunded the other card"},
-        {"id": "turn-2", "status": "ACTIVE", "known_usage": {"total": 0}, "limits": {},
-         "attached_instances": ["i-leader"], "summary": null}
-    ]);
-    let report = app.goals_report(&rows);
-    assert!(report.contains("goal-s-main  SUCCEEDED  usage 41/1000"), "{report}");
-    assert!(report.contains("settled: cancelled order W1 and refunded the other card"), "{report}");
-    assert!(report.contains("turn-2  ACTIVE  usage 0"), "{report}");
-    assert!(report.contains("attached: i-leader"), "{report}");
-    assert!(report.contains("/goals cancel <id>"), "{report}");
-    assert!(app.goals_report(&serde_json::json!([])).contains("no goals"), "an empty list says what to do");
-
-    // `/goals` asks the loop for the list; `/goals cancel <id>` closes one; anything else only says so
-    let mut app = V2App::new("s-test");
-    for (text, expect) in [
-        ("/goals", None),
-        ("/goals cancel turn-2", Some("turn-2")),
-        ("/goals cancel", None),
-        ("/goals stop turn-2", None),
-    ] {
-        for c in text.chars() {
-            app.handle_key(key(KeyCode::Char(c)));
-        }
-        let effect = app.handle_key(key(KeyCode::Enter));
-        match (expect, effect) {
-            (Some(id), Some(V2Effect::CancelGoal { id: got })) => assert_eq!(got, id),
-            (None, None) => {}
-            (None, Some(V2Effect::RefreshGoals)) => assert_eq!(text, "/goals"),
-            (expect, effect) => panic!("{text}: expected {expect:?}, got {effect:?}"),
-        }
-    }
+    assert!(!text.contains("transient-worker"), "a note is superseded by a checkpoint: {text}");
 }
 
 /// D-431: a model can settle a goal by calling `finish` without writing any prose (measured on the tau3 retail
@@ -208,11 +135,10 @@ fn a_settled_goal_shows_the_models_own_completion_summary() {
     settled["goal"]["status"] = Json::String("SUCCEEDED".into());
     settled["goal"]["summary"] = Json::String("  cancelled order W1\nand refunded the other card  ".into());
     app.apply_checkpoint(settled, 6);
-    let status = app.status_line();
-    assert!(status.contains("goal SUCCEEDED"), "{status}");
-    // whitespace is collapsed, so a multi-line summary stays on the status line
-    assert!(status.contains("cancelled order W1 and refunded the other card"), "{status}");
-    assert!(!status.contains('\n'), "{status}");
+    let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+    terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
+    let frame = frame_lines(&terminal).join("\n");
+    assert!(frame.contains("Result: cancelled order W1 and refunded the other card"), "{frame}");
     // and an empty summary is not shown as a dangling separator
     let mut blank = V2App::new("s-test");
     let mut quiet = checkpoint();
@@ -232,8 +158,8 @@ fn checkpoint_defaults_to_the_leader_and_tracks_budget() {
     assert!(!goal.unknown);
     assert_eq!(goal.deadline.map(|deadline| deadline > 0.0), Some(true), "the goal carries its deadline");
     let status = app.status_line();
-    assert!(status.contains("i-leader [READY]"), "{status}");
-    assert!(status.contains("usage 10/1000"), "{status}");
+    assert!(status.contains("Ready"), "{status}");
+    assert!(status.contains("10/1000 tokens"), "{status}");
     // the configured deadline is visible, not just enforced (D-64)
     assert!(status.contains("ends in 30m"), "{status}");
     // a goal without a deadline says nothing about one
@@ -351,7 +277,7 @@ fn events_drive_refreshes_and_notes() {
     ]);
     assert!(refresh.history);
     assert!(refresh.approvals);
-    assert!(!refresh.checkpoint);
+    assert!(refresh.checkpoint);
     assert_eq!(app.watermark, 10);
     let notes: Vec<_> = app.entries.iter().filter(|e| e.kind == ChatKind::System).collect();
     // the user sees which contracts are being verified and which one failed
@@ -403,6 +329,9 @@ fn a_lifecycle_note_carries_the_runtime_reason() {
 #[test]
 fn goal_events_mark_checkpoint_refresh() {
     let mut app = app();
+    for kind in ["request_began", "request_failed", "operation_dispatched", "request_cancelled"] {
+        assert!(app.apply_events(&[json!({"kind": kind, "payload": {}})]).checkpoint, "{kind}");
+    }
     let refresh = app.apply_events(&[
         json!({"sequence": 6, "kind": "goal_blocked", "scope": "g1", "payload": {"reason": "checks failed"}}),
         json!({"sequence": 7, "kind": "instance_spawned", "scope": "i-w2", "payload": {"spawner": "i-leader", "task": true}}),
@@ -424,12 +353,13 @@ fn composer_submit_targets_the_active_instance() {
     assert_eq!(text, "hi");
     // the composer cleared for the next message
     assert!(app.composer.text().is_empty());
-    // tab switches the conversation target
+    // Retired navigation keys cannot redirect a message to a worker.
     app.handle_key(key(KeyCode::Tab));
-    assert_eq!(app.active_instance().unwrap().id, "i-worker");
+    app.handle_key(ctrl('n'));
+    assert_eq!(app.active_instance().unwrap().id, "i-leader");
     app.handle_key(key(KeyCode::Char('x')));
     let V2Effect::SubmitInput { instance, .. } = app.handle_key(key(KeyCode::Enter)).unwrap() else { panic!() };
-    assert_eq!(instance, "i-worker");
+    assert_eq!(instance, "i-leader");
 }
 
 #[test]
@@ -465,7 +395,7 @@ fn disconnect_marks_once_and_reconnect_notes_once() {
     assert!(app.disconnected);
     let errors: Vec<_> = app.entries.iter().filter(|e| e.kind == ChatKind::Error).collect();
     assert_eq!(errors.len(), 1);
-    assert!(app.status_line().contains("disconnected"), "{}", app.status_line());
+    assert!(app.status_line().contains("Disconnected"), "{}", app.status_line());
     app.mark_connected();
     assert!(!app.disconnected);
     let notes: Vec<_> = app.entries.iter().filter(|e| e.kind == ChatKind::System).collect();
@@ -484,33 +414,6 @@ fn scroll_clamps_to_the_wrapped_conversation() {
     assert_eq!(app.chat_scroll, 10);
     app.scroll_chat_back(100);
     assert_eq!(app.chat_scroll, 0);
-}
-
-/// D-442: a member that cannot run commands says so where the user looks. The daemon computes the flag with the
-/// runtime's own covering rule; the panel only renders it, and an older daemon that does not report it reads as
-/// able (so the marker is only ever added when the checkpoint justifies it).
-#[test]
-fn a_member_that_cannot_run_commands_says_so_in_the_instances_panel_and_the_gap_names_its_lever() {
-    let mut app = V2App::new("s-test");
-    let mut with_gap = checkpoint();
-    with_gap["instances"][1]["can_run_shell"] = Json::Bool(false);
-    app.apply_checkpoint(with_gap, 5);
-    assert!(app.instances[0].can_run_shell, "the leader holds shell@workspace");
-    assert!(!app.instances[1].can_run_shell, "the spawned member does not");
-    app.view = View::Instances;
-    let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
-    terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
-    let all = frame_lines(&terminal).join("\n");
-    let worker = all.lines().find(|line| line.contains("i-worker")).unwrap_or_default().to_string();
-    let leader = all.lines().find(|line| line.contains("i-leader")).unwrap_or_default().to_string();
-    assert!(worker.contains("no shell"), "the member is marked: {worker}");
-    assert!(!leader.contains("no shell"), "the leader is not marked: {leader}");
-    // a checkpoint from a daemon that does not report the flag leaves the panel quiet
-    let mut older = V2App::new("s-test");
-    let mut unreported = checkpoint();
-    unreported["instances"][1].as_object_mut().unwrap().remove("can_run_shell");
-    older.apply_checkpoint(unreported, 5);
-    assert!(older.instances[1].can_run_shell, "an unreported flag reads as able: {:?}", older.instances[1]);
 }
 
 fn frame_lines(terminal: &Terminal<TestBackend>) -> Vec<String> {
@@ -552,13 +455,13 @@ fn frame_shows_status_chat_approvals_composer_and_footer() {
     terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
     let lines = frame_lines(&terminal);
     let all = lines.join("\n");
-    assert!(all.contains("i-leader [READY]"), "{all}");
+    assert!(all.contains("Approval needed (1)"), "{all}");
     assert!(all.contains("run the tests"), "{all}");
     assert!(all.contains("already running"), "{all}");
     assert!(all.contains("ap-1 · shell · make check"), "{all}");
-    assert!(all.contains("to i-leader"), "{all}");
+    assert!(all.contains("Message"), "{all}");
     assert!(all.contains("keep going"), "{all}");
-    assert!(all.contains("Ctrl+A approvals(1)"), "{all}");
+    assert!(all.contains("Ctrl+A review"), "{all}");
     // the geometry shares one source with hit-testing: the approvals box sits
     // directly above the composer
     let geo = v2ui::geometry(&app, ratatui::layout::Rect::new(0, 0, 72, 18));
@@ -569,26 +472,6 @@ fn frame_shows_status_chat_approvals_composer_and_footer() {
 
 // ---- R19-b③ panels: instances / tasks / topology -------------------------
 
-fn tasks_json() -> Json {
-    json!({"tasks": [
-        {"id": "t-1", "goal_id": "g1", "assignee": "i-worker", "status": "RUNNING"},
-        {"id": "t-2", "goal_id": "g1", "assignee": "i-leader", "status": "SUCCEEDED"}
-    ]})
-}
-
-/// The daemon's grant view as the authority surface reads it (D-61): the id and
-/// its issuer ride along with the visible pair.
-fn grants_json() -> Json {
-    json!({"revision": 7, "grants": [
-        {"id": "g-11111111-2222-3333-4444-555555555555", "issuer": "user", "subject": "i-leader",
-         "action": "manage", "resource_scope": "session", "parent_grant_id": null, "revoked": false},
-        {"id": "g-22222222-3333-4444-5555-666666666666", "issuer": "user", "subject": "i-worker",
-         "action": "message", "resource_scope": "instance:i-leader", "parent_grant_id": null, "revoked": false},
-        {"id": "g-33333333-4444-5555-6666-777777777777", "issuer": "user", "subject": "i-old",
-         "action": "manage", "resource_scope": "session", "parent_grant_id": null, "revoked": true}
-    ]})
-}
-
 /// An input sent while a turn is running is real but queued (D-63): the composer
 /// clears and the chat says where it will enter, so "did it send?" has an answer.
 #[test]
@@ -598,28 +481,6 @@ fn a_queued_input_is_visible_in_the_conversation() {
     let all = app.entries.iter().map(|entry| entry.text.clone()).collect::<Vec<_>>().join("\n");
     assert!(all.contains("queued for i-leader"), "{all}");
     assert!(all.contains("when the running turn ends"), "{all}");
-}
-
-#[test]
-fn view_switching_cycles_with_ctrl_n_and_esc_returns() {
-    let mut app = app();
-    assert_eq!(app.view, View::Chat);
-    app.handle_key(ctrl('n'));
-    assert_eq!(app.view, View::Instances);
-    assert!(app.status_line().contains("view Instances"), "{}", app.status_line());
-    app.handle_key(ctrl('n'));
-    assert_eq!(app.view, View::Tasks);
-    app.handle_key(ctrl('n'));
-    assert_eq!(app.view, View::Topology);
-    app.handle_key(ctrl('n'));
-    assert_eq!(app.view, View::Chat, "the cycle wraps back to the conversation");
-    app.handle_key(ctrl('n'));
-    app.handle_key(key(KeyCode::Esc));
-    assert_eq!(app.view, View::Chat);
-    // function keys are deliberately not bound: keyboards without them must work
-    app.handle_key(key(KeyCode::F(3)));
-    assert_eq!(app.view, View::Chat, "no view is bound to a function key");
-    assert!(app.footer_hint().contains("Ctrl+N"), "{}", app.footer_hint());
 }
 
 /// D-366: the streaming preview is a transient line under the conversation, shown only for the active target,
@@ -645,231 +506,6 @@ fn a_streaming_preview_is_shown_for_the_active_instance_and_replaced() {
     assert_eq!(app.active_preview(), None);
 }
 
-/// D-370: a `/command` in the composer is a client command — it switches a view, notes status, interrupts, or
-/// quits — and never reaches the Leader; an unknown one is a note, and the hint lists the set while a `/` draft
-/// is open.
-#[test]
-fn slash_commands_are_client_side_and_unknown_ones_are_noted() {
-    let mut app = app();
-    app.composer.set_text("/tasks");
-    assert!(app.handle_key(key(KeyCode::Enter)).is_none(), "a slash command sends nothing to the Leader");
-    assert_eq!(app.view, View::Tasks);
-    // panels are left with Esc/Ctrl+N; the slash set belongs to the composer
-    app.view = View::Chat;
-    app.composer.set_text("/interrupt");
-    let effect = app.handle_key(key(KeyCode::Enter)).expect("interrupt effect");
-    assert_eq!(effect, V2Effect::Interrupt { instance: "i-leader".into() });
-    app.composer.set_text("/nonsense");
-    assert!(app.handle_key(key(KeyCode::Enter)).is_none());
-    assert!(
-        app.entries.iter().any(|entry| entry.text.contains("unknown command")),
-        "an unknown slash command is noted: {:?}",
-        app.entries.last()
-    );
-    app.composer.set_text("/");
-    assert!(app.footer_hint().contains("/interrupt"), "{}", app.footer_hint());
-}
-
-#[test]
-fn instances_panel_pauses_resumes_and_switches_the_conversation() {
-    let mut app = app();
-    cycle_to(&mut app, View::Instances);
-    assert_eq!(app.instance_sel, 0); // follows the conversation target
-    app.handle_key(key(KeyCode::Down));
-    assert_eq!(app.instance_sel, 1);
-    let effect = app.handle_key(key(KeyCode::Char('p'))).expect("pause effect");
-    assert_eq!(effect, V2Effect::SetLifecycle { instance: "i-worker".into(), lifecycle: "PAUSED" });
-    let effect = app.handle_key(key(KeyCode::Char('r'))).expect("resume effect");
-    assert_eq!(effect, V2Effect::SetLifecycle { instance: "i-worker".into(), lifecycle: "ACTIVE" });
-    // D-363: the panel can interrupt one running turn (not destructive, so no confirmation)
-    let effect = app.handle_key(key(KeyCode::Char('i'))).expect("interrupt effect");
-    assert_eq!(effect, V2Effect::Interrupt { instance: "i-worker".into() });
-    // Enter promotes the selection to the conversation target and returns
-    let effect = app.handle_key(key(KeyCode::Enter));
-    assert!(effect.is_none());
-    assert_eq!(app.view, View::Chat);
-    assert_eq!(app.active_instance().unwrap().id, "i-worker");
-}
-
-/// D-269: the instances panel opens the next goal, attached to the selection — the TUI's own path to the lever
-/// the CLI got in D-267 (`g`). The daemon applies the session's `[limits]`/`[[checks]]` (D-268), so the panel
-/// sends nothing but the id and the instance; and a panel with nothing selected yields no effect.
-#[test]
-fn instances_panel_opens_the_next_goal_attached_to_the_selection() {
-    let mut app = app();
-    cycle_to(&mut app, View::Instances);
-    let leader = app.instances[0].id.clone();
-    let worker = app.instances[1].id.clone();
-    app.instance_sel = 0;
-    let effect = app.handle_key(key(KeyCode::Char('g'))).expect("open-goal effect");
-    assert_eq!(effect, V2Effect::OpenGoal { attach: leader });
-    app.instance_sel = 1;
-    let effect = app.handle_key(key(KeyCode::Char('g'))).expect("open-goal effect");
-    assert_eq!(effect, V2Effect::OpenGoal { attach: worker });
-    // the hint line advertises the key (the keys audit holds the two together)
-    assert!(app.footer_hint().contains("g open the next goal"), "{}", app.footer_hint());
-}
-
-#[test]
-fn termination_requires_an_explicit_confirmation() {
-    let mut app = app();
-    cycle_to(&mut app, View::Instances);
-    let effect = app.handle_key(key(KeyCode::Char('t')));
-    assert!(effect.is_none());
-    assert_eq!(app.confirm, Some(Confirm::TerminateInstance { instance: "i-leader".into() }));
-    assert!(app.footer_hint().contains("terminate this instance"), "{}", app.footer_hint());
-    // other keys are swallowed while the confirmation pends
-    assert!(app.handle_key(key(KeyCode::Char('p'))).is_none());
-    assert_eq!(app.confirm, Some(Confirm::TerminateInstance { instance: "i-leader".into() }));
-    // n cancels; a fresh t + y terminates
-    app.handle_key(key(KeyCode::Char('n')));
-    assert_eq!(app.confirm, None);
-    app.handle_key(key(KeyCode::Char('t')));
-    let effect = app.handle_key(key(KeyCode::Char('y'))).expect("terminate effect");
-    assert_eq!(effect, V2Effect::SetLifecycle { instance: "i-leader".into(), lifecycle: "TERMINATED" });
-    assert_eq!(app.confirm, None);
-}
-
-#[test]
-fn tasks_panel_cancels_only_live_tasks() {
-    let mut app = app();
-    app.apply_tasks(tasks_json());
-    cycle_to(&mut app, View::Tasks);
-    let effect = app.handle_key(key(KeyCode::Char('c'))).expect("cancel effect");
-    assert_eq!(effect, V2Effect::CancelTask { task_id: "t-1".into() });
-    app.handle_key(key(KeyCode::Down));
-    assert_eq!(app.task_sel, 1);
-    // SUCCEEDED is terminal: nothing to cancel
-    assert!(app.handle_key(key(KeyCode::Char('c'))).is_none());
-}
-
-#[test]
-fn task_and_grant_events_drive_panel_refreshes() {
-    let mut app = app();
-    let refresh = app.apply_events(&[
-        json!({"sequence": 6, "kind": "task_delegated", "scope": "i-worker", "payload": {"task_id": "t-1"}}),
-        json!({"sequence": 7, "kind": "grant_issued", "scope": "g-1", "payload": {}}),
-        json!({"sequence": 8, "kind": "task_cancelled", "scope": "i-worker",
-               "payload": {"task_id": "t-1", "reason": "superseded"}}),
-    ]);
-    assert!(refresh.tasks);
-    assert!(refresh.grants);
-    assert!(app.entries.iter().any(|e| e.text.contains("task t-1 cancelled: superseded")), "{:?}", app.entries);
-}
-
-#[test]
-fn panel_selections_clamp_after_data_refreshes() {
-    let mut app = app();
-    app.apply_tasks(tasks_json());
-    app.task_sel = 1;
-    app.apply_tasks(json!({"tasks": []}));
-    assert_eq!(app.task_sel, 0);
-    app.instance_sel = 5;
-    app.apply_checkpoint(checkpoint(), 6);
-    assert_eq!(app.instance_sel, 1); // two instances in the checkpoint
-}
-
-/// D-165: the instances panel says *why* an instance is not running. The checkpoint row now carries the last
-/// lifecycle transition's own words (the park reason the runtime recorded), which is the answer the panel
-/// could not give before — it said `PARKED` and left the user to open a log.
-#[test]
-fn the_instances_panel_says_why_an_instance_is_parked() {
-    let mut app = app();
-    app.apply_checkpoint(
-        json!({"instances": [
-            {"id": "i-leader", "lifecycle": "PARKED", "phase": "READY", "model": "deepseek-flash",
-             "reason": "MCP server exited"},
-            {"id": "i-worker", "lifecycle": "ACTIVE", "phase": "READY", "model": "k3-256k",
-             "reason": "ACTIVE by the user (teamagents instances)"}
-        ], "goal": null}),
-        6,
-    );
-    cycle_to(&mut app, View::Instances);
-    let mut terminal = Terminal::new(TestBackend::new(72, 18)).unwrap();
-    terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
-    let all = frame_lines(&terminal).join("\n");
-    assert!(all.contains("i-leader · PARKED · READY"), "{all}");
-    assert!(all.contains("— MCP server exited"), "the park reason is on the row: {all}");
-    // an ACTIVE member's last transition says nothing a user needs, so its row is unchanged
-    assert!(all.contains("i-worker · ACTIVE · READY · k3-256k"), "{all}");
-    assert!(!all.contains("ACTIVE by the user"), "no reason on an ACTIVE row: {all}");
-}
-
-#[test]
-fn frame_shows_the_panels_and_panel_hit_testing() {
-    let mut app = app();
-    app.apply_tasks(tasks_json());
-    app.apply_grants(grants_json());
-    let backend = TestBackend::new(72, 18);
-
-    // instances panel
-    cycle_to(&mut app, View::Instances);
-    let mut terminal = Terminal::new(TestBackend::new(72, 18)).unwrap();
-    terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
-    let all = frame_lines(&terminal).join("\n");
-    assert!(all.contains("instances (● conversation target)"), "{all}");
-    assert!(all.contains("i-leader · ACTIVE · READY · deepseek-flash"), "{all}");
-    assert!(all.contains("i-worker"), "{all}");
-    // a team can span providers: the panel says which model each member runs on (D-69)
-    assert!(all.contains("· k3-256k"), "{all}");
-    // the panel advertises its levers; at 72 columns the hint's tail truncates, so the key set is asserted
-    // against the full hint while the frame above proves the panel itself renders (D-363 added `i interrupt`)
-    assert!(app.footer_hint().contains("i interrupt"), "{}", app.footer_hint());
-    assert!(app.footer_hint().contains("t terminate"), "{}", app.footer_hint());
-    let geo = v2ui::geometry(&app, ratatui::layout::Rect::new(0, 0, 72, 18));
-    assert_eq!(geo.approvals.height, 0); // panels hide the chat-only boxes
-    assert_eq!(geo.composer.height, 0);
-    assert_eq!(v2ui::panel_row_at(&geo, geo.body.y + 1, 2), Some(0));
-    assert_eq!(v2ui::panel_row_at(&geo, geo.body.y + 2, 2), Some(1));
-    assert_eq!(v2ui::panel_row_at(&geo, geo.body.y, 2), None); // the border
-    drop(terminal);
-
-    // tasks panel
-    cycle_to(&mut app, View::Tasks);
-    let mut terminal = Terminal::new(TestBackend::new(72, 18)).unwrap();
-    terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
-    let all = frame_lines(&terminal).join("\n");
-    assert!(all.contains("task"), "{all}");
-    assert!(all.contains("t-1 · RUNNING · assignee i-worker · goal g1"), "{all}");
-    assert!(all.contains("t-2 · SUCCEEDED"), "{all}");
-    assert!(all.contains("c cancel task"), "{all}");
-    drop(terminal);
-
-    // topology panel: grant/channel edges + task-delegation edges, revoked hidden
-    cycle_to(&mut app, View::Topology);
-    let mut terminal = Terminal::new(backend).unwrap();
-    terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
-    let all = frame_lines(&terminal).join("\n");
-    assert!(all.contains("topology · active grants 2 · tasks 2"), "{all}");
-    assert!(all.contains("grants and channels"), "{all}");
-    assert!(all.contains("i-leader ─manage→ session"), "{all}");
-    assert!(all.contains("i-worker ─message→ instance:i-leader"), "{all}");
-    // the short id is what `teamagents authority revoke --grant …` takes
-    assert!(all.contains("g-11111111"), "the topology names the grant id: {all}");
-    assert!(!all.contains("i-old"), "{all}"); // revoked grants are not topology
-    assert!(all.contains("task delegation"), "{all}");
-    assert!(all.contains("t-1 ─→ i-worker  [RUNNING]"), "{all}");
-}
-
-/// Quiet borders and a readable selection share the fullscreen dark palette.
-#[test]
-fn the_palette_drives_panels_selection_and_status() {
-    use teamagents_tui::theme::{ACCENT, BG, GREY, PANEL_BG};
-
-    let mut app = app();
-    cycle_to(&mut app, View::Instances); // instances panel
-    let mut terminal = Terminal::new(TestBackend::new(72, 18)).unwrap();
-    terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
-    let buffer = terminal.backend().buffer();
-    let cell = |x: u16, y: u16| buffer.cell((x, y)).expect("cell").clone();
-    let geo = v2ui::geometry(&app, ratatui::layout::Rect::new(0, 0, 72, 18));
-
-    assert_eq!(cell(71, 17).bg, BG, "the screen sits on the palette background");
-    assert_eq!(cell(geo.body.x, geo.body.y).fg, GREY, "panel borders stay quiet");
-    assert_eq!(cell(geo.body.x + 1, geo.body.y + 1).bg, ACCENT, "the selected row is the accent surface");
-    assert_eq!(cell(geo.status.x + 1, geo.status.y).bg, PANEL_BG, "the status line sits on the panel surface");
-}
-
 /// The composer is multi-line, as the footer and the README promise: Ctrl+J
 /// inserts a newline (raw mode delivers the terminal's 0x0A as Ctrl+J) and
 /// Shift+Enter does too where the terminal reports modifiers, while a plain
@@ -893,82 +529,9 @@ fn composer_inserts_newlines_and_submits_the_whole_text() {
     let V2Effect::SubmitInput { text, .. } = effect else { panic!("wrong effect") };
     assert_eq!(text, "line one\nline two\nline three");
     assert!(app.composer.text().is_empty(), "the composer clears after sending");
-    // the footer advertises the newline chord
-    assert!(app.footer_hint().contains("Ctrl+J newline"), "{}", app.footer_hint());
-}
-
-#[test]
-fn responsive_panels_keep_chat_draft_and_keyboard_ownership() {
-    use ratatui::layout::Rect;
-    let mut app = app();
-    app.command_note("conversation stays visible");
-    app.composer.set_text("unfinished draft");
-    let wide = Rect::new(0, 0, 140, 30);
-    assert_eq!(v2ui::geometry(&app, wide).chat.width, 140, "chat starts without a sidebar");
-    app.handle_key(ctrl('n'));
-    let geo = v2ui::geometry(&app, wide);
-    assert!(geo.chat.right() <= geo.body.x);
-    assert!(geo.chat.width >= 72);
-    assert_eq!(geo.body.width, 48);
-    let mut terminal = Terminal::new(TestBackend::new(140, 30)).unwrap();
-    terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
-    let all = frame_lines(&terminal).join("\n");
-    assert!(all.contains("conversation stays visible") && all.contains("unfinished draft"), "{all}");
-    app.handle_key(key(KeyCode::Down));
-    assert_eq!(app.instance_sel, 1);
-    assert_eq!(app.composer.text(), "unfinished draft", "panel keys never edit the draft");
-    let narrow = v2ui::geometry(&app, Rect::new(0, 0, 80, 24));
-    assert_eq!(narrow.chat.height, 0);
-    assert_eq!(narrow.body.width, 80);
+    app.composer.set_text("/help");
     app.handle_key(key(KeyCode::Enter));
-    assert_eq!(app.active_instance().unwrap().id, "i-worker");
-    assert_eq!(app.view, View::Chat);
-    assert_eq!(app.composer.text(), "unfinished draft");
-    assert_eq!(v2ui::geometry(&app, wide).chat.width, 140);
-}
-
-#[test]
-fn scrolled_lists_click_the_visible_item_and_ignore_borders() {
-    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
-    use ratatui::layout::Rect;
-    let mut app = app();
-    app.apply_checkpoint(
-        json!({"instances": (0..40).map(|i| json!({
-        "id": format!("member-{i:02}"), "lifecycle": "ACTIVE", "phase": "READY"
-    })).collect::<Vec<_>>()}),
-        1,
-    );
-    app.apply_tasks(json!({"tasks": (0..40).map(|i| json!({
-        "id": format!("task-{i:02}"), "status": "RUNNING", "assignee": "member-00", "goal_id": "goal"
-    })).collect::<Vec<_>>()}));
-    for width in [80, 140] {
-        for view in [View::Instances, View::Tasks] {
-            app.view = view;
-            app.instance_sel = 32;
-            app.task_sel = 32;
-            let area = Rect::new(0, 0, width, 18);
-            let mut terminal = Terminal::new(TestBackend::new(width, 18)).unwrap();
-            terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
-            let all = frame_lines(&terminal).join("\n");
-            let label = if view == View::Instances { "member-32" } else { "task-32" };
-            assert!(all.contains(label), "selected item is visible: {all}");
-            let geo = v2ui::geometry(&app, area);
-            let event = |column| MouseEvent {
-                kind: MouseEventKind::Down(MouseButton::Left),
-                column,
-                row: geo.body.y + 1,
-                modifiers: KeyModifiers::NONE,
-            };
-            v2ui::handle_mouse(&mut app, area, event(geo.body.x));
-            assert_eq!(app.instance_sel, 32, "border does not select");
-            assert_eq!(app.task_sel, 32, "border does not select");
-            let first = 33 - usize::from(geo.body.height - 2);
-            let visible_line = &frame_lines(&terminal)[usize::from(geo.body.y + 1)];
-            assert!(visible_line.contains(&format!("{first:02}")), "{visible_line}");
-            v2ui::handle_mouse(&mut app, area, event(geo.body.x + 2));
-            assert_eq!(if view == View::Instances { app.instance_sel } else { app.task_sel }, first);
-        }
-    }
+    assert!(app.entries.last().unwrap().text.contains("Ctrl+J"));
 }
 
 #[test]
@@ -979,9 +542,8 @@ fn approvals_beyond_the_first_three_are_visible_and_decide_the_clicked_id() {
     app.apply_approvals(json!({"approvals": (0..8).map(|i| json!({
         "id": format!("ap-{i}"), "operation_id": format!("op-{i}"), "tool": "shell", "preview": format!("command-{i}")
     })).collect::<Vec<_>>()}));
-    app.view = View::Tasks;
     app.handle_key(ctrl('a'));
-    assert_eq!(app.view, View::Chat, "approvals are reachable from a team panel");
+    assert_eq!(app.focus, Focus::Approvals);
     for _ in 0..7 {
         app.handle_key(key(KeyCode::Down));
     }
@@ -1036,39 +598,6 @@ fn composer_wrap_and_caret_survive_resize_and_long_multiline_drafts() {
 }
 
 #[test]
-fn pointer_scrolls_its_pane_and_confirmation_keeps_ownership() {
-    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
-    use ratatui::layout::Rect;
-    let mut app = app();
-    app.command_note("history\n".repeat(80));
-    app.view = View::Instances;
-    let area = Rect::new(0, 0, 140, 30);
-    let mut terminal = Terminal::new(TestBackend::new(140, 30)).unwrap();
-    terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
-    let geo = v2ui::geometry(&app, area);
-    let mut mouse =
-        MouseEvent { kind: MouseEventKind::ScrollUp, column: 2, row: geo.chat.y + 1, modifiers: KeyModifiers::NONE };
-    v2ui::handle_mouse(&mut app, area, mouse);
-    assert_eq!(app.chat_scroll, 3);
-    assert_eq!(app.instance_sel, 0);
-    mouse.kind = MouseEventKind::ScrollDown;
-    mouse.column = geo.body.x + 2;
-    v2ui::handle_mouse(&mut app, area, mouse);
-    assert_eq!(app.instance_sel, 1);
-    assert_eq!(app.chat_scroll, 3);
-    app.handle_key(key(KeyCode::Char('t')));
-    mouse.kind = MouseEventKind::Down(MouseButton::Left);
-    mouse.column = geo.composer.x + 2;
-    mouse.row = geo.composer.y + 1;
-    v2ui::handle_mouse(&mut app, area, mouse);
-    assert_eq!(app.view, View::Instances, "confirmation swallows pointer input too");
-    app.handle_key(key(KeyCode::Esc));
-    v2ui::handle_mouse(&mut app, area, mouse);
-    assert_eq!(app.view, View::Chat);
-    assert_eq!(app.focus, Focus::Composer);
-}
-
-#[test]
 fn appended_output_does_not_pull_a_reader_away_from_history() {
     let mut app = app();
     app.command_note((0..70).map(|i| format!("history-{i:02}\n")).collect::<String>());
@@ -1091,126 +620,4 @@ fn appended_output_does_not_pull_a_reader_away_from_history() {
     app.scroll_chat_back(usize::MAX);
     terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
     assert!(frame_lines(&terminal).join("\n").contains("another line"));
-}
-
-#[test]
-fn every_view_renders_in_tiny_terminals_without_overlapping_regions() {
-    use ratatui::layout::Rect;
-    let mut app = app();
-    app.composer.set_text("long draft\n".repeat(10).as_str());
-    app.apply_approvals(json!({"approvals": [{"id":"ap", "tool":"shell", "preview":"pending"}]}));
-    for view in [View::Chat, View::Instances, View::Tasks, View::Topology] {
-        app.view = view;
-        for width in [0, 1, 2, 3, 40, 119, 120, 180] {
-            for height in [0, 1, 2, 3, 7, 12, 30] {
-                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-                terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
-                let area = Rect::new(0, 0, width, height);
-                let geo = v2ui::geometry(&app, area);
-                let regions = [geo.status, geo.chat, geo.approvals, geo.composer, geo.footer];
-                for (i, region) in regions.iter().enumerate() {
-                    assert_eq!(region.intersection(area), *region);
-                    for other in &regions[i + 1..] {
-                        assert!(region.intersection(*other).is_empty());
-                    }
-                }
-                if view != View::Chat {
-                    for region in regions {
-                        assert!(region.intersection(geo.body).is_empty());
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// D-429: `/sessions` lists the named sessions the daemon reports and marks the one this client is attached to,
-/// and `/switch <id>` produces the effect the loop turns into a reconnect (never for the attached one).
-#[test]
-fn sessions_lists_the_named_sessions_and_switching_is_an_effect() {
-    let mut app = V2App::new("s-test");
-    app.apply_checkpoint(
-        serde_json::json!({
-            "instances": [],
-            "goal": null,
-            "mcp": [],
-            "sessions": [
-                {"id": "s-main", "name": "", "root": "/tmp/base", "active": true},
-                {"id": "s-later", "name": "later work", "root": "/tmp/base/sessions/later", "active": false},
-            ]
-        }),
-        5,
-    );
-    let report = app.sessions_report();
-    assert!(report.contains("s-main (attached)"), "{report}");
-    assert!(report.contains("s-later") && report.contains("later work"), "{report}");
-    assert!(report.contains("/switch <id>"), "{report}");
-
-    let mut app = V2App::new("s-test");
-    app.apply_checkpoint(
-        serde_json::json!({"instances": [], "goal": null, "mcp": [],
-                           "sessions": [{"id": "s-main", "name": "", "root": "/tmp/base", "active": true},
-                                        {"id": "s-later", "name": "", "root": "/tmp/base/sessions/later",
-                                         "active": false}]}),
-        5,
-    );
-    // `/switch s-later` asks the loop to reconnect; the attached session and an unknown id do not
-    for text in ["/switch s-later", "/switch s-main", "/switch nope"] {
-        for c in text.chars() {
-            app.handle_key(key(KeyCode::Char(c)));
-        }
-        let effect = app.handle_key(key(KeyCode::Enter));
-        if text == "/switch s-later" {
-            let V2Effect::SwitchSession { id } = effect.expect("an effect") else { panic!("wrong effect") };
-            assert_eq!(id, "s-later");
-        } else {
-            assert!(effect.is_none(), "{text} must not switch");
-        }
-    }
-}
-
-/// D-413: `/mcp` answers from the checkpoint the daemon sends — the TUI has no config loader, and asking by
-/// loading a service would start a second copy of it. The report names each service, and the two things a user
-/// acts on: an OAuth binding's credential state and the reload lever for a credential stored while the session
-/// runs.
-#[test]
-fn mcp_lists_the_sessions_services_and_their_credential_state() {
-    let mut app = V2App::new("s-test");
-    app.apply_checkpoint(
-        serde_json::json!({
-            "instances": [],
-            "goal": null,
-            "mcp": [
-                {"name": "remote", "transport": "http", "required": true, "oauth": true,
-                 "credential": "not signed in"},
-                {"name": "local", "transport": "stdio", "required": false, "oauth": false, "credential": null},
-            ]
-        }),
-        5,
-    );
-    let report = app.mcp_report();
-    assert!(report.contains("remote (http, required, oauth: not signed in)"), "{report}");
-    assert!(report.contains("local (stdio, optional)"), "{report}");
-    assert!(report.contains("teamagents mcp login --name X"), "{report}");
-    assert!(report.contains("pause and resume"), "{report}");
-
-    // the composer route is the same report, and `/help` advertises the command. A slash command is consumed by
-    // the composer (no `SubmitInput` effect), so it is typed and sent directly rather than through `send`.
-    for text in ["/mcp", "/help"] {
-        for c in text.chars() {
-            app.handle_key(key(KeyCode::Char(c)));
-        }
-        assert!(app.handle_key(key(KeyCode::Enter)).is_none(), "{text} is not a prompt");
-    }
-    let help = app.entries.last().expect("help").text.clone();
-    assert!(help.contains("/mcp"), "{help}");
-    let note = app.entries[app.entries.len() - 2].text.clone();
-    assert!(note.contains("remote (http, required"), "{note}");
-
-    // a session with no MCP services says what to do instead of printing nothing
-    let mut bare = V2App::new("s-test");
-    bare.apply_checkpoint(serde_json::json!({"instances": [], "goal": null, "mcp": []}), 5);
-    let report = bare.mcp_report();
-    assert!(report.contains("no MCP services are configured"), "{report}");
-    assert!(report.contains("teamagents mcp add"), "{report}");
 }

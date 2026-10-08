@@ -20,6 +20,66 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-445 Minimal user TUI, comprehensive developer CLI (2026-10-08)
+
+**Authorization and split.** The user asked for a minimal TUI designed from first principles for users,
+with comprehensive CLI coverage for developers. This replaces Q6's original placement of task management
+inside the TUI, the panel/recipient controls in section 9, and the corresponding surfaces in D-68, D-269,
+D-370, D-413, D-429, D-433, D-442 and D-444. Their backend capabilities remain available. Older dated
+panel receipts below describe the earlier interface, not the current one.
+
+**User contract.** One fullscreen Leader conversation, one-line progress/usage/deadline, composer, short
+footer, and approvals only while pending. No panel cycle, member switching, management slash commands or
+session switching inside the TUI. Enter sends; Ctrl+J/Shift+Enter adds a newline. Ctrl+C and /interrupt
+request cancellation of the Leader's in-flight model request; the actual receipt is shown. This does not
+stop running tools or delegated work. Ctrl+D and /quit detach without a daemon command. /help is the third
+and last client command. A retired command is explained locally, never forwarded to the model.
+
+Approval arrival does not take typing focus. Ctrl+A or a row click focuses approval selection, a/d explicitly
+decides the selected id, and Esc or a composer click restores editing. Paste cannot enter an inactive draft.
+When the Leader is absent or the client is disconnected, sending keeps the unsent draft intact. Tool result previews collapse to a short
+line; full stored messages remain available through the CLI. The empty 24-row layout reserves five rows
+for status, composer and footer, down from six; there is no permanent team sidebar at any width.
+
+**Developer contract.** Existing instance/task/goal controls, authority, approvals, sessions, automations,
+MCP, runners, artifacts, daemon lifecycle, configuration, doctor and headless execution stay in the CLI.
+Direct member input moves to instances send --id ID --prompt TEXT, returning an input receipt
+(accepted or queued), not a completion verdict. A fresh envelope identifies each invocation.
+Two missing inspection verbs are added: status reads the existing checkpoint and greeting; history reads
+any member's newest stored entries (default Leader, 400 entries, explicit limit 1..1000, unique id prefixes).
+Both offer text and JSON, select roots/sessions through the existing flags, do not start a daemon, and exit
+0 on success, 1 on a rejected read, 2 on usage or connection failure. JSON has schema_version=1. The status
+watermark covers its database snapshot; MCP/registry metadata are external reads. History is a bounded tail,
+not a complete export. No store, protocol or execution-policy change is required.
+
+**Verification.** The removed panel tests are replaced by the interaction regressions in
+`tui/tests/minimal.rs` (Leader-only dispatch, unavailable-target draft retention, explicit decisions,
+interrupt versus exit, and 112 terminal-size/approval combinations). Existing composer, history, stream,
+reconnect and viewport checks remain. The PTY smoke checks key/paste/click ownership, resize and the
+non-interrupted receipt. The historical tui_panels.py filename now probes the CLI management replacement;
+tui_reconnect.py checks a preserved draft and fresh state after daemon restart. The CLI integration test
+reads status/history from a real daemon and refuses invalid ids, limits, flags and unavailable sessions.
+
+V2Tui.tla models dispatch and the observed state: LeaderOnly, ExplicitDecision, ExitOnlyDetaches. Each
+has its own counterfactual configuration, respectively wrong recipient, approval while typing, and
+interrupt on exit. Concrete Rust and PTY checks bridge these rules to the client; this is not a refinement
+proof or a proof of visual quality. The five existing Kani harnesses still prove the actual paging/viewport
+arithmetic. Formal material and its report pin follow D-202 in separate commits.
+
+**Gate receipts.** The full check gate passed in 121.85 s: core 130, engine 372 and TUI 35 tests,
+formatting, Clippy with warnings denied, leak checks and hygiene. After the final progress-event subscription
+correction, the complete TUI suite, PTY smoke, formatting and hygiene were run again and passed. Eight
+extreme terminal shapes passed; real-daemon management and reconnect probes passed without a model call.
+The formal regression returned rc 0 for all 40 positive configurations, 116 negative controls and five
+Kani harnesses. The PTY exit assertion initially raced child reaping; it now waits up to two seconds and
+fails with cleanup if the client stays alive. An earlier full check encountered the new send-receipt field
+before its JSON documentation landed; the subsequent complete gate passed with that catalogue in sync.
+
+**Limits.** No new model/config picker, syntax highlighting, transcript search or tool expansion. A graphical
+Kitty window was not inspected; terminal evidence is PTY plus Ratatui frames. The retained direct-request
+interrupt is deliberately named as such; a universal stop of all team processes would require a separate
+runtime design. No paid model run is needed for these client changes.
+
 ## D-444 Conversation-first fullscreen UI and shared viewports (2026-10-08)
 
 **Confirmed direction.** The user chose conversation-first, leaning toward Pi's minimal fullscreen layout,
@@ -180,7 +240,7 @@ it can justify.
 **Evidence.** `v2_daemon::the_checkpoint_says_which_instances_may_run_commands` — the bootstrap's leader reads
 true, and after the user **revokes** its shell grant through the control plane the same checkpoint reads false (a
 real path, not a fixture) — and
-`v2app_tests::a_member_that_cannot_run_commands_says_so_in_the_instances_panel_and_the_gap_names_its_lever`, which
+`v2app_tests::a_member_that_cannot_run_commands_says_so_in_the_instances_panel_and_the_gap_names_its_lever`, which (Historical test removed by D-445; source remains in commit `2f4851d9`.)
 renders a real frame on ratatui's `TestBackend` and checks the marker is on the member's line and not the
 leader's, plus the older-daemon default. No formal material: the flag is a projection over grants the control
 plane already owns, with no new transition or state, and its covering rule is the one `V2Authority` and the
@@ -577,7 +637,7 @@ reply's `result` (its own `checkpoint` helper reads `result["snapshot"]`), so th
 carries no goals". Both are recorded because the unit tests were green through both: only driving the real
 keyboard in a real terminal in front of a real socket saw them.
 
-**Evidence.** `v2app_tests::goals_lists_them_and_cancel_is_an_effect` (the report's rows, the summary line, the
+**Evidence.** `v2app_tests::goals_lists_them_and_cancel_is_an_effect` (the report's rows, the summary line, the (Historical test removed by D-445; source remains in commit `2f4851d9`.)
 empty list, and the four `/goals` forms) and the daemon test above. No formal material: every transition here
 already exists in the control plane (`create_goal`/`cancel_goal`, D-267) and this change adds a client-side read
 and an effect, so there is no new state for a model to certify — the same reason D-429 and D-431 recorded none.
@@ -770,7 +830,7 @@ of borrowing them, because a switch replaces all three. Nothing else about the l
 **Evidence.** `v2_daemon::the_checkpoint_lists_the_bases_sessions_and_marks_the_one_it_serves` (a base with a
 registry and two named sessions, the daemon serving one: three rows — default plus both named — exactly one marked
 active, each carrying the root a client would attach to) and
-`v2app_tests::sessions_lists_the_named_sessions_and_switching_is_an_effect` (the report marks the attached session,
+`v2app_tests::sessions_lists_the_named_sessions_and_switching_is_an_effect` (the report marks the attached session, (Historical test removed by D-445; source remains in commit `2f4851d9`.)
 and `/switch` yields the effect only for a different, existing session). Both were written around one real
 constraint the first draft hit: a base plus `sessions/<id>/daemon.sock` can cross Linux's `sun_path`, which the
 product refuses itself (D-227) — the test builds a short root rather than pretending.
@@ -1690,7 +1750,7 @@ and an optional stdio binding whose command does not exist: the checkpoint carri
 row's state a string and the non-OAuth row's `null`; the session boots with the optional service gone, which is
 the D-74 contract), `daemon::tests::mcp_rows_name_the_credential_state` (the state mapping against a store this
 test owns — the four states plus an unreadable file, so the answer never depends on the machine's own
-`mcp-auth.json`), and `v2app_tests::mcp_lists_the_sessions_services_and_their_credential_state` (the report, the
+`mcp-auth.json`), and `v2app_tests::mcp_lists_the_sessions_services_and_their_credential_state` (the report, the (Historical test removed by D-445; source remains in commit `2f4851d9`.)
 composer route, `/help` advertising the command, and the empty case saying what to do).
 
 **Formal.** None, and not by omission: the change is a **read-only projection** of state the models already cover
@@ -11684,7 +11744,7 @@ unavailable: MCP workspace initialization failed: MCP server exited`, and `--jso
 in a `reason` field on the `instances[]` row a script already reads. New tests:
 `cli::the_instances_list_says_why_an_instance_is_parked` (0.2 s; asserts the
 product's own text and JSON output, after waiting for the park over the socket) and
-`v2app_tests::the_instances_panel_says_why_an_instance_is_parked` (a TestBackend frame: the reason is on a
+`v2app_tests::the_instances_panel_says_why_an_instance_is_parked` (a TestBackend frame: the reason is on a (Historical test removed by D-445; source remains in commit `2f4851d9`.)
 PARKED row, absent on an ACTIVE one). `docs/PROTOCOL.md`'s generated tables are unchanged — they catalogue
 methods, not row fields, and the document already states that a method's caller "should treat the shape it does
 not understand as opaque", so an added row field is compatible by contract.
@@ -14524,7 +14584,7 @@ as it was. Both are observable only against a daemon that keeps the state (D-82)
 
 Evidence: `python3 review/dogfood/tui_panels.py` (three runs), plus the layers it does not repeat — the PTY
 smoke's frames against the scripted daemon (D-68's key map), `v2_daemon::the_intervention_cli_cancels_a_task_and_pauses_and_resumes_an_instance`
-(the same transitions through the CLI) and `tui::the_instances_hint_stops_offering_lifecycle_keys_for_a_terminated_member`
+(the same transitions through the CLI) and `tui::the_instances_hint_stops_offering_lifecycle_keys_for_a_terminated_member` (Historical test removed by D-445; source remains in commit `2f4851d9`.)
 (the hint after retirement).
 
 Ceiling: the topology view still rests on the scripted smoke (it renders edges, it has no action of its own),
@@ -15048,7 +15108,7 @@ Evidence: `v2_daemon::a_terminated_leader_is_reported_as_final_not_resumable` (t
 first, then `exec` exits 2 with the terminated wording and no "Resume"),
 `v2_daemon::a_paused_leader_refusal_names_the_cli_lever` (a pause is not final, and the message names
 `instances resume --id i-leader`) and
-`tui::the_instances_hint_stops_offering_lifecycle_keys_for_a_terminated_member`.
+`tui::the_instances_hint_stops_offering_lifecycle_keys_for_a_terminated_member`. (Historical test removed by D-445; source remains in commit `2f4851d9`.)
 
 Ceiling: a terminated instance is still *listed* (with its history readable) and nothing offers to revive it —
 reviving a retired member (a new instance reusing the id, or a documented "un-retire") is a design decision
@@ -15597,7 +15657,7 @@ runs on what — in the TUI, in the daemon's snapshot, or in the CLI listing.
 
 **Evidence**: `v2_daemon::the_snapshot_reports_each_members_model` (the row and the snapshot carry the
 *resolved* name `deepseek-flash`, not the catalog key `leader_main` — consistent with what a spawned child
-stores) and `tui::frame_shows_the_panels_and_panel_hit_testing` (the panel renders each member's model).
+stores) and `tui::frame_shows_the_panels_and_panel_hit_testing` (the panel renders each member's model). (Historical test removed by D-445; source remains in commit `2f4851d9`.)
 
 **The re-runnable A27 harness** is `review/dogfood/providers.py`: one session, the Leader on DeepSeek Flash
 (native 1M window, D-36) and a worker spawned with `model = "worker_kimi"` (the user's Kimi entry, 262,144

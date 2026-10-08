@@ -126,7 +126,7 @@ teamagents --cwd /path/to/project     # 换成实际项目目录；省略 --cwd 
 ```
 
 Leader 会自己决定要不要组队、组几个人、谁干什么；需要你拍板时（越权限的命令、外网访问）
-才会弹出批准请求。想看细节按 `Ctrl+N` 依次切换面板（实例 → 任务 → 拓扑），`Tab` 切换对话目标，`Ctrl+A` 看待批准。
+才会弹出批准请求。TUI 固定与 Leader 对话，`Ctrl+A` 处理待批准请求；开发管理和诊断入口见 `teamagents --help`（D-445）。
 
 脚本 / CI 用无头入口（`exec` 与 TUI 共用同一个 daemon；提示词写 `-` 就从 stdin 读，长指令可直接管道进来）：
 
@@ -181,12 +181,14 @@ teamagents authority revoke --grant g-1a2b3c4d          # 撤销是终局的，�
 | `--full-auto` | 用户显式开启全自动（仅用户可开；默认越权时请求批准）；只对这条命令启动的会话生效——已在运行的会话保留它启动时的模式，客户端会把这个模式打印出来而不是假装生效 |
 | `init` / `doctor` / `daemon` / `daemon --stop` / `exec` / `authority` / `approvals` / `instances` / `tasks` / `runners` / `artifacts` / `sessions` / `automations` / `version` / `--help` | 准备配置与状态根 / 自检 / 单独运行 daemon（输出写入 `<state root>/daemon.log`）/ 停止拥有该状态根的会话，以套接字为地址（不依赖 pid；`--cwd`/`--model`/`--full-auto` 会被拒绝）/ 无头输入 / 列出、发放与撤销能力 / 列出并决定待批准操作 / 暂停、恢复、打断当前回合、终止、合并 worktree 成员的分支并列出实例 / 列出并取消任务 / 列出该状态根仍持有的作业 runner 并让已结束的那些退休 / 列出该状态根的产物（字节数、归属、是否落盘）并回收无人引用的那些（`runners stop --service --yes` 则改为对已结算命令遗留的进程组发信号）/ 列出、创建、分叉、重命名、恢复、搜索、归档与删除基目录下的命名会话（D-364/D-365/D-368） / 列出、创建、暂停、恢复与删除“自动开始目标”的定时任务（D-367） / 版本 / 用法 |
 
-TUI 键位（与屏幕底部提示一致；**刻意不使用 F 键**，因为部分键盘没有）：
-`Enter` 发送、`Ctrl+J` 换行（终端会上报修饰键时 `Shift+Enter` 同样换行）、`Tab` 切换对话目标、
-`Ctrl+N` 依次切换视图（对话 → 实例 → 任务 → 拓扑 → 回到对话）、`Ctrl+A` 跳到待批准、
-`Esc` 返回、`Ctrl+C`/`Ctrl+D` 退出；
-实例面板 `Enter` 设为对话目标、`p` 暂停、`r` 恢复、`i` 打断当前回合、`t` 终止（需确认）；
-任务面板 `c` 取消任务；批准面板 `a` 批准本次、`d` 拒绝。
+TUI 键位：`Enter` 发送给 Leader，`Ctrl+J` 或 `Shift+Enter` 换行，`↑`/`↓` 回顾输入，
+`PageUp`/`PageDown` 和滚轮浏览对话。`Ctrl+A` 聚焦待批准请求，`a` 批准本次，`d` 拒绝，
+`Esc` 返回草稿。`Ctrl+C` 中断 Leader 正在等待的模型请求（已运行的工具和委派工作继续），
+`Ctrl+D` 退出界面，会话继续运行。仅保留 `/help`、`/interrupt`、`/quit` 三个界面命令。
+
+开发者可用 `teamagents status --json` 检查会话，
+`teamagents history --id INSTANCE --limit 400 --json` 读取成员最近的已存储消息和工具记录。
+成员、任务、目标、权限、会话和 MCP 管理均由 CLI 提供，见[命令地图](docs/USER-GUIDE.md#1-quick-start)。
 
 ## 配置与团队
 

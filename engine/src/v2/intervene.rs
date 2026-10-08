@@ -26,6 +26,8 @@ use super::exec::{resolve_prefix, Client};
 pub enum InterventionCommand {
     /// The session's instances with their lifecycle and phase.
     ListInstances,
+    /// Direct user input to a selected member (D-445), with the ordinary queue boundary.
+    SendInput { id: String, text: String },
     /// Stop driving an instance at its next safe boundary (§5.4).
     Pause { id: String },
     /// Let a parked or paused instance run again.
@@ -161,6 +163,24 @@ pub fn execute(options: &InterventionOptions) -> Result<Json, (i32, String)> {
                 "session_id": session["session_id"], "state_root": session["state_root"],
                 "instance_id": resolved, "lifecycle": row["lifecycle"], "instance": row, "result": result,
             }))
+        }
+        InterventionCommand::SendInput { id, text } => {
+            if text.trim().is_empty() {
+                return Err((2, "instances send: empty prompt".into()));
+            }
+            let rows = instances(&mut client)?;
+            let row = resolve_prefix(&rows, "id", id, "instance", "teamagents instances")?;
+            let resolved = row["id"].as_str().unwrap_or_default();
+            let envelope = format!("env-{}", uuid::Uuid::new_v4());
+            let result = client
+                .command(
+                    &format!("input-{envelope}"),
+                    "submit_input",
+                    json!({"instance_id": resolved, "envelope_id": envelope, "text": text}),
+                )
+                .map_err(|e| (1, format!("instances send: {e}")))?;
+            Ok(json!({"session_id": session["session_id"], "state_root": session["state_root"],
+                "instance_id": resolved, "envelope_id": envelope, "result": result}))
         }
         InterventionCommand::CancelTask { id } => {
             let rows = tasks(&mut client)?;
@@ -406,6 +426,12 @@ fn print_report(options: &InterventionOptions, report: &Json) {
                     "no model request was in flight"
                 })
                 .unwrap_or("asked the session to cancel its turn")
+        ),
+        InterventionCommand::SendInput { .. } => println!(
+            "{}: input {} ({}); this is an input receipt, not a completion verdict",
+            report["instance_id"].as_str().unwrap_or(""),
+            if report["result"]["queued"] == json!(true) { "queued" } else { "accepted" },
+            report["envelope_id"].as_str().unwrap_or("")
         ),
         InterventionCommand::CancelTask { .. } => println!(
             "cancelled {} (was {}): a delegator waiting on it is released",

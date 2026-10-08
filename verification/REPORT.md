@@ -5,6 +5,17 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
+## 0. Gate status (re-run 2026-10-08 at `55de54cb`)
+
+* **D-445 models minimal TUI dispatch.** `V2Tui.tla` checks `LeaderOnly`, `ExplicitDecision` and
+  `ExitOnlyDetaches`: fixed Leader send/interrupt targets, explicit focused approval decisions, and exit
+  without engine control. `MC_tui.cfg` exhaustively verifies 796 distinct states; the three controls each
+  refute the corresponding claim. The full regression verifies all **40** configurations.
+  It refutes all **116** negative controls. Kani reports `Complete - 5 successfully verified harnesses, 0 failures, 5 total`.
+  The Rust/PTY bridge is in `tui/tests/minimal.rs` and `tui/scripts/pty_v2_smoke.py`; the model does not prove
+  rendering, Unicode, transport delivery or tool-process cancellation. Existing kernel semantics and the
+  Kani-compiled viewport source are unchanged. The material commit precedes this report pin (D-202).
+
 ## 0. Gate status (re-run 2026-10-08 at `8ec6bcc6`)
 
 * **D-444 adds proofs of the TUI's shared viewport arithmetic.** The Kani crate compiles

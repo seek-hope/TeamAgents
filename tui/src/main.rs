@@ -14,7 +14,7 @@ use ratatui::Terminal;
 use serde_json::json;
 
 use teamagents_tui::daemon_client::DaemonClient;
-use teamagents_tui::v2app::{Focus as V2Focus, SessionInfo as V2AppSession, V2App, V2Effect, View as V2View};
+use teamagents_tui::v2app::{Focus as V2Focus, V2App, V2Effect};
 use teamagents_tui::v2ui;
 
 struct Args {
@@ -160,8 +160,7 @@ fn v2_main(socket: &std::path::Path) -> ! {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).expect("terminal");
 
-    // D-429: the loop owns the client and the view, because `/switch` replaces both
-    let code = run_v2(&mut terminal, client, app, socket.clone());
+    let code = run_v2(&mut terminal, client, app);
 
     restore_terminal();
     drop(terminal);
@@ -193,45 +192,8 @@ fn v2_refresh_approvals(client: &mut DaemonClient, app: &mut V2App) {
     }
 }
 
-fn v2_refresh_tasks(client: &mut DaemonClient, app: &mut V2App) {
-    match client.call("tasks", json!({})) {
-        Ok(result) => app.apply_tasks(result),
-        Err(e) => app.mark_disconnected(&e),
-    }
-}
-
-fn v2_refresh_grants(client: &mut DaemonClient, app: &mut V2App) {
-    match client.call("grants", json!({})) {
-        Ok(result) => app.apply_grants(result),
-        Err(e) => app.mark_disconnected(&e),
-    }
-}
-
-/// D-429: attach to another session — a client-side move, and the *only* one the TUI makes: the session row the
-/// daemon reported carries the state root whose daemon owns it, so the client connects there instead of reading a
-/// registry it has no loader for. The new daemon is started by this client if it is not running (the same rule the
-/// CLI's `--session` follows).
-fn switch_session(
-    current: &std::path::Path,
-    id: &str,
-    sessions: &[V2AppSession],
-) -> Result<(std::path::PathBuf, DaemonClient, V2App), String> {
-    let session = sessions.iter().find(|session| session.id == id).ok_or("no such session")?;
-    if session.root.is_empty() {
-        return Err("the daemon did not report that session's state root".into());
-    }
-    let target = std::path::PathBuf::from(&session.root).join("daemon.sock");
-    let _ = current;
-    let client =
-        DaemonClient::connect(&target).map_err(|error| format!("cannot connect to {}{error}", target.display()))?;
-    let app = V2App::new(&client.session_id.clone());
-    Ok((target, client, app))
-}
-
 fn run_v2_effect(effect: V2Effect, client: &mut DaemonClient, app: &mut V2App) {
     match effect {
-        // handled by the loop, which can replace the client and the view; reaching here would be a bug
-        V2Effect::SwitchSession { .. } => {}
         V2Effect::SubmitInput { instance, envelope, text } => {
             // the envelope id doubles as the command id: a retry after a lost
             // reply dedups at the control plane (§9)
@@ -257,70 +219,26 @@ fn run_v2_effect(effect: V2Effect, client: &mut DaemonClient, app: &mut V2App) {
                 Err(e) => app.decide_failed(&e),
             }
         }
-        // D-433: the session's goals, read on demand because the checkpoint reports only one of them (D-266).
-        V2Effect::RefreshGoals => match client.call("goals", json!({})) {
-            Ok(reply) => {
-                let report = app.goals_report(&reply["goals"]);
-                app.command_note(report);
-            }
-            Err(e) => app.command_failed(&e),
-        },
-        // D-433: closing a goal is the missing half of the `g` key that opens one — the CLI's `goals cancel`, with
-        // a command id derived from the goal so a retry after a lost reply dedups at the control plane.
-        V2Effect::CancelGoal { id } => {
-            let result = client.command(&format!("goal-cancel-{id}"), "cancel_goal", json!({"goal_id": id}));
-            match result {
-                Ok(_) => {
-                    app.command_note(format!("cancelled goal {id}"));
-                    v2_sync_checkpoint(client, app);
-                }
-                Err(e) => app.command_failed(&e),
-            }
-        }
-        // panel interventions are business commands with fresh command ids;
-        // the user can retry after a disconnect without duplicating an effect
-        V2Effect::SetLifecycle { instance, lifecycle } => {
-            let command_id = format!("lc-{}", uuid::Uuid::new_v4());
-            let result = client.command(
-                &command_id,
-                "set_lifecycle",
-                json!({"instance_id": instance, "lifecycle": lifecycle, "reason": "tui panel intervention"}),
-            );
-            match result {
-                Ok(_) => v2_sync_checkpoint(client, app),
-                Err(e) => app.command_failed(&e),
-            }
-        }
         V2Effect::Interrupt { instance } => {
             let command_id = format!("ir-{}", uuid::Uuid::new_v4());
-            let result = client.command(
+            match client.command(
                 &command_id,
                 "interrupt_instance",
-                json!({"instance_id": instance, "reason": "interrupted from the TUI panel"}),
-            );
-            match result {
-                Ok(_) => v2_sync_checkpoint(client, app),
-                Err(e) => app.command_failed(&e),
-            }
-        }
-        V2Effect::CancelTask { task_id } => {
-            let command_id = format!("ct-{}", uuid::Uuid::new_v4());
-            let result =
-                client.command(&command_id, "cancel_task", json!({"task_id": task_id, "reason": "tui panel cancel"}));
-            match result {
-                Ok(_) => v2_refresh_tasks(client, app),
-                Err(e) => app.command_failed(&e),
-            }
-        }
-        // D-269: the panel opens the next goal attached to the selected instance. The daemon applies the
-        // session's `[limits]`/`[[checks]]` to it (D-268), so the TUI decides nothing about budgets; the id is
-        // readable on purpose, because a user names it again in `teamagents goals` or when re-attaching.
-        V2Effect::OpenGoal { attach } => {
-            let id = format!("goal-{}-{}", attach, &uuid::Uuid::new_v4().simple().to_string()[..8]);
-            let command_id = format!("goal-open-{id}");
-            let result = client.command(&command_id, "create_goal", json!({"id": id, "instance_id": attach}));
-            match result {
-                Ok(_) => v2_sync_checkpoint(client, app),
+                json!({"instance_id": instance, "reason": "interrupted from the TUI"}),
+            ) {
+                Ok(reply) => {
+                    if reply["interrupted"] == json!(true) {
+                        app.command_note(
+                            "Leader model request interrupted. Running tools and delegated work continue.",
+                        );
+                    } else {
+                        app.command_note(format!(
+                            "Nothing interrupted: {}. Running tools and delegated work continue.",
+                            reply["reason"].as_str().unwrap_or("no model request in flight")
+                        ));
+                    }
+                    v2_sync_checkpoint(client, app);
+                }
                 Err(e) => app.command_failed(&e),
             }
         }
@@ -328,22 +246,14 @@ fn run_v2_effect(effect: V2Effect, client: &mut DaemonClient, app: &mut V2App) {
     }
 }
 
-fn run_v2(
-    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
-    mut client: DaemonClient,
-    mut app: V2App,
-    mut socket: std::path::PathBuf,
-) -> i32 {
+fn run_v2(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, mut client: DaemonClient, mut app: V2App) -> i32 {
     v2_sync_checkpoint(&mut client, &mut app);
     v2_refresh_history(&mut client, &mut app);
     v2_refresh_approvals(&mut client, &mut app);
-    v2_refresh_tasks(&mut client, &mut app);
-    v2_refresh_grants(&mut client, &mut app);
     let mut last_event_poll = Instant::now();
     let mut last_slow = Instant::now();
     let mut dirty = true;
     let mut active_id = app.active_instance().map(|i| i.id.clone());
-    let mut last_view = app.view;
     // The connection indicator is part of the status line, so a change in it must rebuild the frame even
     // when nothing else happened: a reconnect that delivers no events used to leave a stale
     // "disconnected, reconnecting..." on screen while the client was in fact connected again (D-99).
@@ -359,21 +269,8 @@ fn run_v2(
         if event::poll(Duration::from_millis(40)).unwrap_or(false) {
             match event::read() {
                 Ok(Event::Key(key)) if key.kind != KeyEventKind::Release => {
-                    match app.handle_key(key) {
-                        // D-429: switching sessions replaces both the client and the view — the loop owns them, so
-                        // it is handled here rather than inside the generic effect runner.
-                        Some(V2Effect::SwitchSession { id }) => match switch_session(&socket, &id, &app.sessions) {
-                            Ok((new_socket, new_client, mut new_app)) => {
-                                socket = new_socket;
-                                client = new_client;
-                                v2_sync_checkpoint(&mut client, &mut new_app);
-                                new_app.system_note(format!("attached to session {id}"));
-                                app = new_app;
-                            }
-                            Err(error) => app.system_note(format!("/switch {id}: {error}")),
-                        },
-                        Some(effect) => run_v2_effect(effect, &mut client, &mut app),
-                        None => {}
+                    if let Some(effect) = app.handle_key(key) {
+                        run_v2_effect(effect, &mut client, &mut app);
                     }
                     dirty = true;
                 }
@@ -386,9 +283,7 @@ fn run_v2(
                     dirty = true;
                 }
                 Ok(Event::Resize(_, _)) => dirty = true,
-                Ok(Event::Paste(text))
-                    if app.view == V2View::Chat && app.focus == V2Focus::Composer && app.confirm.is_none() =>
-                {
+                Ok(Event::Paste(text)) if app.focus == V2Focus::Composer => {
                     for c in text.chars() {
                         if c == '\n' {
                             app.composer.insert_newline();
@@ -406,20 +301,6 @@ fn run_v2(
         if now_active != active_id {
             active_id = now_active;
             v2_refresh_history(&mut client, &mut app);
-            dirty = true;
-        }
-        // entering a panel refreshes its data once; events keep it current
-        if app.view != last_view {
-            last_view = app.view;
-            match app.view {
-                V2View::Instances => v2_sync_checkpoint(&mut client, &mut app),
-                V2View::Tasks => v2_refresh_tasks(&mut client, &mut app),
-                V2View::Topology => {
-                    v2_refresh_grants(&mut client, &mut app);
-                    v2_refresh_tasks(&mut client, &mut app);
-                }
-                V2View::Chat => {}
-            }
             dirty = true;
         }
         if app.disconnected != last_disconnected {
@@ -449,12 +330,6 @@ fn run_v2(
                     if refresh.checkpoint {
                         v2_sync_checkpoint(&mut client, &mut app);
                     }
-                    if refresh.tasks {
-                        v2_refresh_tasks(&mut client, &mut app);
-                    }
-                    if refresh.grants {
-                        v2_refresh_grants(&mut client, &mut app);
-                    }
                     if !events.is_empty() {
                         dirty = true;
                     }
@@ -473,8 +348,6 @@ fn run_v2(
                 if !app.disconnected {
                     v2_refresh_history(&mut client, &mut app);
                     v2_refresh_approvals(&mut client, &mut app);
-                    v2_refresh_tasks(&mut client, &mut app);
-                    v2_refresh_grants(&mut client, &mut app);
                     dirty = true;
                 }
             } else {

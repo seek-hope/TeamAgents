@@ -164,8 +164,8 @@ Make the tests under /tmp/proj pass and explain why each file changed.
 ```
 
 The Leader decides whether to split the work and who does what. It only interrupts you for approvals
-(out-of-scope commands, network access). Press `Ctrl+N` to cycle the panels (instances, tasks, topology),
-`Tab` to switch the conversation target and `Ctrl+A` for pending approvals.
+(out-of-scope commands, network access). The TUI keeps one conversation with the Leader. Use `Ctrl+A`
+for pending approvals; developer management and diagnostics live in `teamagents --help` (D-445).
 
 For scripts and CI, use the headless entry point (`exec` shares the daemon with the TUI; `-` reads the
 prompt from stdin, so a long instruction can be piped in):
@@ -228,18 +228,17 @@ instead. Details, the full action vocabulary and the exit codes are in
 | `--full-auto` | user-only full-auto mode (out-of-scope work is approved instead of requested); it applies to the session this command starts — a session that is already running keeps the mode it booted with, and the client prints that mode instead of pretending |
 | `init` / `doctor` / `daemon` / `daemon --stop` / `exec` / `authority` / `approvals` / `instances` / `tasks` / `runners` / `artifacts` / `sessions` / `automations` / `version` / `--help` | config and state root / self-check (config, credentials, state root, skills, goal limits, checks, hooks, bubblewrap) / run the daemon alone (its output goes to `<state root>/daemon.log`) / stop the session that owns this state root, addressed by its socket (no pid; `--cwd`/`--model`/`--full-auto` are refused) / headless input / list, grant and revoke capabilities / list and decide approvals / pause, resume, interrupt, terminate, merge a worktree member's branch and list instances / list and cancel tasks / list the job runners a state root still carries and ask the settled ones to retire / list a state root's artifacts (bytes, owner, presence) and collect the ones nothing references (`runners stop --service --yes` instead signals the process group a settled command left behind) / list, create, fork, rename, restore, search, archive and delete named sessions under the base (D-364/D-365/D-368) / list, create, pause, resume and delete schedules that start a goal on their own (D-367) / version / usage |
 
-TUI keys (they match the hint line at the bottom; deliberately no function keys, since some keyboards lack
-them): `Enter` send, `Ctrl+J` newline (and `Shift+Enter` where the terminal reports modifiers), `↑`/`↓` walk a
-multi-line draft and recall the prompts you sent (500 deep, the draft comes back when you walk past the
-newest), `Ctrl+W` deletes the word before the caret and `Ctrl+←`/`Ctrl+→` jump by word, `PageUp`/`PageDown`
-(and the mouse wheel) scroll the conversation, `Tab` switch the
-conversation target, `p`/`r`/`i`/`t` pause, resume, interrupt or terminate the selected instance and `g` open the next
-goal attached to it, `Ctrl+N` cycle the
-views (conversation → instances → tasks → topology → back), `Ctrl+A` pending approvals, `Esc` back,
-`Ctrl+C`/`Ctrl+D` quit. In the instances panel `Enter` sets the conversation target, `p` pauses, `r` resumes,
-`i` interrupts the running turn and `t` terminates (with confirmation); in the tasks panel `c` cancels a task; in the approvals panel
-`a` approves once and `d` denies. A composer line starting with `/` is a client command, not an instruction to
-the Leader (`/help` lists them, D-370).
+TUI keys: `Enter` sends to the Leader; `Ctrl+J` or `Shift+Enter` inserts a newline. `↑`/`↓` recalls
+input and walks multiline drafts; `PageUp`/`PageDown` and the wheel scroll history. `Ctrl+W` deletes a word;
+`Ctrl+←`/`Ctrl+→` moves by word. `Ctrl+A` focuses pending approvals: `a` approves once, `d` denies,
+`Esc` returns to the draft. `Ctrl+C` interrupts the Leader's model request (running tools and delegated
+work continue); `Ctrl+D` exits while the session keeps running. The only client commands are `/help`,
+`/interrupt`, `/quit`. Drafts survive resizing, and approval arrival never takes typing focus.
+
+Developer inspection: `teamagents status --json` reads the running session's checkpoint;
+`teamagents history --id INSTANCE --limit 400 --json` reads a bounded tail of stored messages, including
+tool records. Member/task/goal controls, authority, sessions, MCP and diagnostics remain in the CLI;
+see the [developer command map](docs/USER-GUIDE.md#1-quick-start).
 
 ## Configuration and team
 
