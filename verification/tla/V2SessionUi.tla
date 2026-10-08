@@ -5,7 +5,13 @@
    Anchors: tui/src/sessions.rs, engine/src/v2/sessions.rs. *)
 EXTENDS Naturals
 CONSTANTS UnconfirmedDelete, EarlySwitch, EarlyExit, KeepDeletedOpen
-VARIABLES current, selected, confirmed, pending, open, last
+VARIABLES
+  current,
+  selected,
+  confirmed,
+  pending,
+  open,
+  last
 vars == <<current, selected, confirmed, pending, open, last>>
 Sessions == {"a", "b"}
 Init ==
