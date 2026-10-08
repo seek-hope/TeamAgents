@@ -20,6 +20,14 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-449 Raise the diagram source limit to 64 KiB and 500 lines (2026-10-08)
+
+The user requested raising the D-448 diagram-code limit from 32 KiB/300 lines to 64 KiB/500 lines.
+Both ceilings are inclusive; exceeding either retains the size-limit reason and source preview.
+The fallback source preview keeps its separate 32,768-character cap, and other graphics limits are unchanged.
+The existing graphics regression exercises rendered diagrams at each ceiling and refusal one byte or one
+line above it through the background renderer.
+
 ## D-448 Graphics and image presentation in the conversation (2026-10-08)
 
 **Authorization and scope.** The user requested rendering of graphical/image content, with Codex CLI and

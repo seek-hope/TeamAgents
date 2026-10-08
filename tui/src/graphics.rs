@@ -17,7 +17,9 @@ use std::{
 };
 
 const MAX_BYTES: usize = 8 * 1024 * 1024;
-const MAX_SOURCE: usize = 32 * 1024;
+const MAX_SOURCE_BYTES: usize = 64 * 1024;
+const MAX_SOURCE_LINES: usize = 500;
+const MAX_SOURCE_PREVIEW_CHARS: usize = 32 * 1024;
 const CACHE_SIZE: usize = 16;
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
@@ -274,11 +276,11 @@ fn source_fallback(source: &Source, width: usize, reason: &str) -> Vec<Line<'sta
     let mut lines = markdown::plain(reason, width, Style::default().fg(GREY));
     if let Source::Diagram { code, .. } = source {
         lines.extend(markdown::plain(
-            &code.chars().take(MAX_SOURCE).collect::<String>(),
+            &code.chars().take(MAX_SOURCE_PREVIEW_CHARS).collect::<String>(),
             width,
             Style::default().fg(CODE),
         ));
-        if code.chars().count() > MAX_SOURCE {
+        if code.chars().count() > MAX_SOURCE_PREVIEW_CHARS {
             lines.extend(markdown::plain(
                 "Source preview limit reached; the stored message is unchanged.",
                 width,
@@ -293,7 +295,7 @@ fn prepare(request: &Request) -> Result<Document, String> {
     let image = match &request.source {
         Source::Image(url) => decode(&load_image(url, &request.origin)?)?,
         Source::Diagram { language, code } => {
-            if code.len() > MAX_SOURCE || code.lines().count() > 300 {
+            if code.len() > MAX_SOURCE_BYTES || code.lines().count() > MAX_SOURCE_LINES {
                 return Err("diagram size limit exceeded".into());
             }
             if code.matches('{').count() > 64 || code.matches('[').count() > 512 {

@@ -42,7 +42,7 @@ teamagents                           # open the TUI (starts the per-user daemon 
   with source/reference text, or `auto` for detection. Only use the forced protocol with a compatible terminal.
   Image paths belong to the message author's workspace; /artifacts references belong to that member. Remote
   URLs stay as links, and SVG external/embedded resources are not loaded. Inputs are limited to 8 MiB; graph
-  source to 32 KiB/300 lines, with graph complexity limits. Up to sixteen cached previews and eight queued
+  source to 64 KiB/500 lines, with graph complexity limits. Up to sixteen cached previews and eight queued
   renders keep the UI bounded. Images fit at most 120 columns and 36 rows; larger images scale down, and
   scrolling clips them to the conversation. Display limits never rewrite the saved message.
 - **Sessions (D-446)**: Ctrl+S or /sessions opens all sessions under this base, including idle and archived

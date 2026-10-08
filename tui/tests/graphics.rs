@@ -128,6 +128,24 @@ fn text_diagrams_keep_relationships_and_fallback_keeps_source() {
             text(&narrow.lines)
         );
     }
+    let header = "flowchart LR\nA --> B\n";
+    let byte_limit = format!("{header}%%{}", "x".repeat(64 * 1024 - header.len() - 2));
+    let line_limit = format!("{header}{}", "%% padding\n".repeat(498));
+    for (code, accepted) in [
+        (byte_limit.clone(), true),
+        (format!("{byte_limit}x"), false),
+        (line_limit.clone(), true),
+        (format!("{line_limit}%% extra\n"), false),
+    ] {
+        let doc = finish(&mut g, Source::Diagram { language: "mermaid".into(), code }, &Origin::default(), 100);
+        let shown = text(&doc.lines);
+        if accepted {
+            assert!(!shown.contains("Preview unavailable"), "{shown}");
+            assert!(shown.contains('─'), "the boundary input must render a diagram");
+        } else {
+            assert!(shown.contains("diagram size limit exceeded"), "{shown}");
+        }
+    }
     let code = "not-a-diagram\n A-->B";
     let doc = finish(&mut g, Source::Diagram { language: "mermaid".into(), code: code.into() }, &Origin::default(), 80);
     assert!(text(&doc.lines).contains(code), "{}", text(&doc.lines));
