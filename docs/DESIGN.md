@@ -498,6 +498,9 @@ session page for paged history, switching and confirmed deletion, through the en
 successful target sync replaces the client; only confirmed current-session deletion success exits it. Drafts
 belong to individual state roots. The default session can be deleted without deleting siblings or shared data. Geometry remains
 shared between rendering and hit-testing. No management panel or topology canvas is required.
+D-447 presents conversations as Markdown with distinct user/Leader/tool blocks, compact or expanded tool
+previews, and the same renderer in session history. Display limits never change persisted text. Streaming
+uses the same layout and remains explicitly transient. Ctrl+O changes presentation only.
 
 Traces are complete but organised by reference and increment: every request/response, tool argument/receipt,
 retry, compaction, control action and usage record carries a stable identifier and a timestamp, and the

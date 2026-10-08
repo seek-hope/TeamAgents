@@ -20,6 +20,55 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-447 Readable conversation presentation, informed by Pi and Codex (2026-10-08)
+
+**Authorization.** The user requested a better conversation display with Pi and Codex CLI as references.
+This extends D-444's plain-text presentation and replaces D-445's flattened 120-character tool preview.
+The minimal conversation, approval ownership and D-446 session controls remain the interaction contract.
+
+**References actually read.** Installed Pi 1.1.0's assistant/user message components, tool execution component,
+Markdown renderer and terminal/theme documentation: separate user backgrounds, unboxed assistant Markdown,
+compact tool results and width/content caching. Codex source at
+[ea27864f99f0b086cec2f9f0251b7190fb9844f1](https://github.com/openai/codex/tree/ea27864f99f0b086cec2f9f0251b7190fb9844f1/codex-rs/tui/src):
+[Markdown rendering](https://github.com/openai/codex/blob/ea27864f99f0b086cec2f9f0251b7190fb9844f1/codex-rs/tui/src/markdown_render.rs)
+and [command output](https://github.com/openai/codex/blob/ea27864f99f0b086cec2f9f0251b7190fb9844f1/codex-rs/tui/src/exec_cell/render.rs)
+show hanging indents, narrow-table fallbacks, and head/tail output previews. These informed the presentation;
+this is not a claim of complete UI parity or a comparative usability experiment.
+
+**Presentation.** A shared transcript projection renders both the active conversation and session history.
+User messages have a quiet background; the Leader has a separate label and readable body. CommonMark parsing
+uses pulldown-cmark, rather than ad-hoc delimiter replacement: headings, emphasis, inline/fenced code, lists,
+quotes, links and tables. Narrow tables become labelled records. Fences retain indentation and language labels;
+diff additions/removals are colored. There is no grammar-based syntax highlighting or inline image display.
+Grapheme wrapping uses unicode-segmentation (already transitive) and display-cell widths, retains styles, and
+substitutes an oversized indivisible glyph only in the display. Terminal control sequences are filtered.
+
+**Tools and streaming.** A call and its result share one block, paired by member, epoch and call id; a result
+whose call is outside the history page remains visible. Received means received, never inferred success.
+Default previews show four wrapped lines with head/tail retention; Ctrl+O expands to forty and folds back,
+without sending an engine command or changing the draft. Live tool arguments/results are capped at 20,000
+characters with an explicit notice; full session pages preserve stored arguments/results. Rendering expands
+structured arguments in detail view. The live preview uses the daemon's bounded text from its beginning,
+with the same Markdown renderer and an explicit streaming label. It is still transient and never persisted
+by the client. Layout is cached by content, width and preview size.
+
+**Evidence and limits.** Six tests in `tui/tests/conversation.rs` cover Markdown styles, destinations and narrow
+layouts, controls and graphemes, member/epoch call pairing, preview expansion/cache refresh, stream replacement
+and resizing. The PTY smoke also drives Markdown, a stream longer than 400 characters, and Ctrl+O without a
+business command. Kani compiles the actual transcript-window arithmetic for all usize inputs: bounds, tail
+following and a stable top row after append. Removing the append correction in a temporary copy is refuted.
+This is not a proof of Markdown parsing, visual quality or anchoring through arbitrary Markdown reflow.
+Formal material precedes the report pin under D-202. Model-free preview images use synthetic conversations;
+Kitty's graphical window has not been inspected.
+
+**Final verification.** `make check` exits 0 in 118.28 s (core 130 / engine 376 / TUI 44), including
+formatting, warnings-denied Clippy, leak checks and hygiene. `make pty` passes with the added rendering cases;
+the real-daemon session-browser and reconnect probes pass after the final build. All 41 TLA+ configurations,
+120 negative controls and six Kani harnesses pass at material pin `8b1efa00`. The mutation control fails the
+append-stability assertion specifically. Input latency is unchanged at the probe's 0.10 s sampling step;
+the ten-character burst is 0.11 s. Identical synthetic conversations were rendered at 110 and 64 columns
+against the prior source `0d1103f0` and the current renderer. No paid model call was required.
+
 ## D-446 Session history, switching and confirmed deletion in the TUI (2026-10-08)
 
 **Authorization.** The user requested all session records, switching, deletion, and exiting after deleting

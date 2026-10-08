@@ -24,8 +24,13 @@ teamagents                           # open the TUI (starts the per-user daemon 
   listed below. Ctrl+D or /quit detaches the TUI while the daemon keeps running.
 - **Approvals appear only when needed**: Ctrl+A focuses the approval list; a approves once, d denies,
   Esc returns to the draft. Approval arrival never steals typing focus, and a click only selects a row.
-- **Live output (D-366)**: the Leader's streaming preview is transient and replaced by stored history.
-  Tool results are short previews; `teamagents history --id ID --json` reads the stored messages.
+- **Readable conversations (D-447)**: shaded user messages, Leader Markdown, headings, lists, quotes, links,
+  fenced code and tables. Code retains indentation; narrow tables become labelled records. Diff lines have
+  addition/removal colors. Live streaming uses the same layout, remains transient and is replaced by history.
+  Tool calls and results share a block; received output does not by itself establish success.
+  Ctrl+O expands tool previews from four to forty wrapped lines or folds them again. Live tool text is capped
+  at 20,000 characters with a notice; full stored results and arguments remain in /sessions.
+  `teamagents history --id ID --json` also reads stored messages.
 - **Sessions (D-446)**: Ctrl+S or /sessions opens all sessions under this base, including idle and archived
   ones. Up/Down or a click selects a session and reads its stored history without starting it; [ reads an
   older page, ] returns to a newer page, and PageUp/PageDown or the wheel scrolls within the page. Enter

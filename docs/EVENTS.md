@@ -76,7 +76,7 @@ the log is still a supported way to observe it (and the probes that do assert on
 | `request_began` | `instance_id` | `request_id` | `core/src/v2/control.rs:1709` | `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `engine/tests/v2_driver.rs`, `engine/tests/v2_supervisor.rs`, `review/benchmark/cadence.py` |
 | `request_cancelled` | `&instance` / `instance_id` | `reason`, `request_id` | `core/src/v2/control.rs:3261`, `core/src/v2/control.rs:3322` | `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs` |
 | `request_failed` | `&instance` | `parked`, `reason`, `request_id` | `core/src/v2/control.rs:3117` | `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `engine/src/v2/exec.rs`, `engine/tests/v2_driver.rs` |
-| `response_imported` | `&request_instance` | `decision_id`, `intents`, `phase`, `request_id` | `core/src/v2/control.rs:2723` | `tui/src/v2app.rs`, `engine/tests/v2_driver.rs` |
+| `response_imported` | `&request_instance` | `decision_id`, `intents`, `phase`, `request_id` | `core/src/v2/control.rs:2723` | `tui/scripts/pty_v2_smoke.py`, `tui/src/v2app.rs`, `engine/tests/v2_driver.rs` |
 | `task_blocked` | `&task` | `operation_id`, `reason`, `task_id` | `core/src/v2/control.rs:2811` | `tui/src/v2app.rs`, `review/dogfood/unknown_outcome.py` |
 | `task_cancelled` | `&assignee` | `reason`, `task_id` | `core/src/v2/control.rs:1298` | `tui/scripts/pty_v2_smoke.py`, `tui/src/v2app.rs`, `engine/tests/v2_supervisor.rs` |
 | `task_completed` | `&requester` | `assignee`, `delivered`, `status`, `task_id` | `core/src/v2/control.rs:1231` | `tui/src/v2app.rs`, `engine/tests/v2_driver.rs`, `engine/tests/v2_supervisor.rs`, `review/dogfood/providers.py`, `review/eval/r2-p6/anatomy.py` |

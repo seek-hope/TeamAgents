@@ -9,9 +9,8 @@ use ratatui::widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientatio
 use ratatui::Frame;
 
 use crate::theme::*;
-use crate::v2app::{ChatKind, Focus, V2App};
+use crate::v2app::{Focus, V2App};
 use crate::viewport::{item_at, window};
-use crate::wrap::wrap_lines;
 
 /// Quiet panel chrome; focus is identified by the title and selected row.
 fn panel(title: impl Into<String>) -> Block<'static> {
@@ -127,113 +126,55 @@ pub fn render(frame: &mut Frame, app: &mut V2App) {
 fn render_status(frame: &mut Frame, app: &V2App, area: Rect) {
     let style = Style::default().fg(if app.disconnected { ERROR } else { NOTICE });
     let name: String = app.session_name.chars().take(32).collect();
-    let text =
-        if name.is_empty() { format!(" {}", app.status_line()) } else { format!(" {name} · {}", app.status_line()) };
+    let title = if name.is_empty() { "TeamAgents".to_string() } else { format!("TeamAgents · {name}") };
+    let text = format!(" {title}  ·  {}", app.status_line());
     frame.render_widget(Paragraph::new(text).style(style), area);
 }
 
 fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
     let area = Rect::new(area.x + u16::from(area.width > 2), area.y, area.width.saturating_sub(2), area.height);
     let width = area.width as usize;
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    if app.entries.is_empty() && app.active_preview().is_none() {
+    let mut lines = app.transcript.lines(&app.entries, width, Some(if app.expanded_tools { 40 } else { 4 })).to_vec();
+    if lines.is_empty() && app.active_preview().is_none() {
         lines.push(Line::from(""));
-        lines.push(Line::styled("TeamAgents", Style::default().fg(FG).add_modifier(Modifier::BOLD)));
+        lines.push(Line::styled("What would you like to build?", Style::default().fg(FG).add_modifier(Modifier::BOLD)));
         lines.push(Line::from(""));
-        lines.extend(wrap_lines(
-            vec![Line::styled(
-                "Tell the Leader what you want to do. /help lists the few controls.",
-                Style::default().fg(GREY),
-            )],
+        lines.extend(crate::markdown::plain(
+            "Ask the Leader to explore, fix or create something in your project.",
             width,
+            Style::default().fg(GREY),
         ));
-    }
-    for entry in &app.entries {
-        if !lines.is_empty()
-            && matches!(entry.kind, ChatKind::User | ChatKind::Assistant | ChatKind::Command | ChatKind::Error)
-        {
-            lines.push(Line::from(""));
-        }
-        // v1 palette convention: grey bold labels, white body text, accent for
-        // the assistant, notice grey for everything machine-generated
-        let (prefix, style) = match entry.kind {
-            ChatKind::User => (entry.who.to_string(), Style::default().fg(GREY).add_modifier(Modifier::BOLD)),
-            ChatKind::Assistant => (entry.who.clone(), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
-            ChatKind::Tool => (entry.who.clone(), Style::default().fg(GREY).add_modifier(Modifier::BOLD)),
-            ChatKind::Runtime => (entry.who.clone(), Style::default().fg(GREY)),
-            ChatKind::Summary => (entry.who.clone(), Style::default().fg(ACCENT)),
-            ChatKind::System => (entry.who.clone(), Style::default().fg(GREY)),
-            // D-433: a command's answer stands out from runtime chatter (grey bold label) and stays on screen
-            ChatKind::Command => (entry.who.clone(), Style::default().fg(NOTICE).add_modifier(Modifier::BOLD)),
-            ChatKind::Error => (entry.who.clone(), Style::default().fg(ERROR).add_modifier(Modifier::BOLD)),
-        };
-        let head = Line::from(vec![Span::styled(prefix, style), Span::styled(" ", Style::default().fg(GREY))]);
-        let body_style = match entry.kind {
-            ChatKind::System => Style::default().fg(NOTICE),
-            ChatKind::Command => Style::default().fg(FG),
-            ChatKind::Error => Style::default().fg(ERROR),
-            ChatKind::Tool => Style::default().fg(NOTICE),
-            ChatKind::Runtime => Style::default().fg(NOTICE),
-            ChatKind::Summary => Style::default().fg(NOTICE),
-            _ => Style::default().fg(FG),
-        };
-        let mut first = true;
-        for text_line in entry.text.lines() {
-            let line = if first {
-                first = false;
-                Line::from(vec![head.spans[0].clone(), Span::raw(" "), Span::styled(text_line.to_string(), body_style)])
-            } else {
-                Line::from(Span::styled(format!("  {text_line}"), body_style))
-            };
-            lines.extend(wrap_lines(vec![line], width));
-        }
-        if entry.text.is_empty() {
-            lines.push(head);
-        }
+        lines.push(Line::from(""));
+        lines.extend(crate::markdown::plain(
+            "Ctrl+S  Previous conversations     /help  Controls",
+            width,
+            Style::default().fg(GREY),
+        ));
     }
     if let Some(goal) = &app.goal {
         if goal.status != "ACTIVE" {
             if let Some(summary) = &goal.summary {
-                lines.extend(wrap_lines(
-                    vec![Line::styled(format!("Result: {summary}"), Style::default().fg(NOTICE))],
-                    width,
-                ));
+                lines.push(Line::default());
+                lines.extend(crate::markdown::plain(&format!("Result: {summary}"), width, Style::default().fg(NOTICE)));
             }
         }
     }
     if let Some(preview) = app.active_preview() {
-        // §9: a preview is never an authoritative fact — it renders as a transient dimmed line and disappears the
-        // moment the complete response lands. Only the tail is shown, so a long stream stays bounded.
-        let tail: String = preview.chars().rev().take(400).collect::<String>().chars().rev().collect();
-        let mut first = true;
-        for text_line in tail.lines() {
-            let line = if first {
-                first = false;
-                Line::from(vec![
-                    Span::styled("…", Style::default().fg(GREY).add_modifier(Modifier::BOLD)),
-                    Span::raw(" "),
-                    Span::styled(text_line.to_string(), Style::default().fg(NOTICE)),
-                ])
-            } else {
-                Line::from(Span::styled(format!("  {text_line}"), Style::default().fg(NOTICE)))
-            };
-            lines.extend(wrap_lines(vec![line], width));
+        // The daemon bounds this transient text. Keep its beginning so Markdown and scrolling are stable.
+        if !lines.is_empty() {
+            lines.push(Line::default());
         }
+        lines.extend(crate::transcript::assistant(preview, "i-leader", width, true));
     }
     let total = lines.len();
     let height = area.height as usize;
-    if app.chat_scroll > 0 && app.last_chat_width == width {
-        app.chat_scroll = app.chat_scroll.saturating_add(total.saturating_sub(app.last_chat_lines));
-    }
+    let previous = if app.last_chat_width == width { app.last_chat_lines } else { total };
+    let (start, offset) = crate::viewport::transcript_window(total, previous, height, app.chat_scroll);
+    app.chat_scroll = offset;
     app.last_chat_lines = total;
     app.last_chat_width = width;
     app.last_chat_height = height.max(1);
-    // clamp after new content; scroll == 0 follows the tail
     let max_scroll = total.saturating_sub(height);
-    if app.chat_scroll > max_scroll {
-        app.chat_scroll = max_scroll;
-    }
-    let start = total.saturating_sub(height + app.chat_scroll);
     let visible: Vec<Line<'static>> = lines.into_iter().skip(start).take(height).collect();
     frame.render_widget(Paragraph::new(visible), area);
     if total > height && area.width > 0 {
@@ -243,6 +184,7 @@ fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
                 .begin_symbol(None)
                 .end_symbol(None)
                 .thumb_style(Style::default().fg(GREY))
+                .thumb_symbol("▏")
                 .track_symbol(None),
             Rect::new(area.right(), area.y, 1, area.height),
             &mut state,

@@ -2,7 +2,6 @@
 use crate::{
     theme::*,
     viewport::{item_at, window},
-    wrap::wrap_lines,
 };
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{
@@ -46,6 +45,7 @@ pub struct SessionBrowser {
     pub rows: Vec<SessionRow>,
     pub selected: usize,
     pub entries: Vec<Json>,
+    transcript: crate::transcript::Transcript,
     pub next_before: Option<i64>,
     pub before: Option<i64>,
     pub newer: Vec<Option<i64>>,
@@ -63,6 +63,7 @@ impl Default for SessionBrowser {
             rows: vec![],
             selected: 0,
             entries: vec![],
+            transcript: crate::transcript::Transcript::default(),
             next_before: None,
             before: None,
             newer: vec![],
@@ -288,38 +289,11 @@ pub fn render(frame: &mut Frame, browser: &mut SessionBrowser, current: &str) {
     let history = Block::default().borders(Borders::ALL).title(title).border_style(Style::default().fg(GREY));
     let inner = history.inner(chunks[2]);
     frame.render_widget(history, chunks[2]);
-    let mut lines = Vec::new();
-    for entry in &browser.entries {
-        let member = entry["instance_id"].as_str().unwrap_or("");
-        let who = match entry["kind"].as_str().unwrap_or("") {
-            "user" => "You".to_string(),
-            "assistant" if member == "i-leader" => "Leader".to_string(),
-            "tool_result" => format!("Tool result · {member}"),
-            "summary" => "Conversation summary".to_string(),
-            kind => format!("{member} · {kind}"),
-        };
-        lines.push(Line::styled(who, Style::default().fg(ACCENT)));
-        let message = &entry["message"];
-        let mut content = match &message["content"] {
-            Json::String(text) => text.clone(),
-            Json::Null => String::new(),
-            value => serde_json::to_string_pretty(value).unwrap_or_default(),
-        };
-        for call in message["tool_calls"].as_array().into_iter().flatten() {
-            content.push_str(&format!(
-                "\nTool: {}\n{}",
-                call["function"]["name"].as_str().unwrap_or("unknown"),
-                call["function"]["arguments"].as_str().unwrap_or("")
-            ));
-        }
-        let content: String = content.chars().filter(|c| !c.is_control() || *c == '\n' || *c == '\t').collect();
-        lines.extend(content.lines().map(|line| Line::from(line.to_string())));
-        lines.push(Line::from(""));
-    }
+    let entries = crate::transcript::project(&browser.entries, "", false);
+    let mut lines = browser.transcript.lines(&entries, inner.width as usize, None).to_vec();
     if lines.is_empty() {
         lines.push(Line::from(if browser.busy { "Loading..." } else { "No stored messages." }));
     }
-    let lines = wrap_lines(lines, inner.width as usize);
     browser.last_height = (inner.height as usize).max(1);
     browser.last_lines = lines.len();
     browser.scroll = browser.scroll.min(lines.len().saturating_sub(browser.last_height));

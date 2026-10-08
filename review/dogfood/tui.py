@@ -12,8 +12,8 @@ real daemon and a real model, in a real PTY:
    and then quits.
 
 The screen needles are the ones the *renderer* produces, not the raw words: the history pane labels an
-entry with its author (`v2ui.rs`), so the answer has to appear as `<instance> <answer>` and the typed input
-as `you <input>`. A bare word would also match the composer echo of the prompt, which is on screen before
+entry with its author: the answer must appear under the separate `Leader` label, and the typed input
+under `You` (D-447). A bare word would also match the composer echo of the prompt, which is on screen before
 the turn even starts — that is why the first version of this probe "passed" the answer within a second.
 
     python3 review/dogfood/tui.py                    # DeepSeek
@@ -74,8 +74,8 @@ context_window = 262144
 PROMPT = "Reply with the single word TUIDONE and nothing else."
 ANSWER = "TUIDONE"
 # what the history pane paints once the daemon sends the turn's entries back
-ANSWER_NEEDLE = f"i-leader {ANSWER}"
-INPUT_NEEDLE = "you Reply with the single word"
+ANSWER_NEEDLE = f"Leader\n{ANSWER}"
+INPUT_NEEDLE = "You\nReply with the single word"
 
 
 def entries(root: pathlib.Path) -> list[dict]:
@@ -119,7 +119,7 @@ def main() -> int:
     screen = Screen(100, 40)
 
     def painted() -> str:
-        return "\n".join(screen.lines())
+        return "\n".join(line.strip() for line in screen.lines())
 
     # a drain step well below the timings being reported: `read_all` only returns when its own window
     # closes, so a second-long step would quantize every measurement below to whole seconds

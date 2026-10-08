@@ -1,0 +1,244 @@
+//! D-447: one transcript projection and presentation for the live conversation and session history.
+use crate::{
+    markdown,
+    theme::*,
+    v2app::{ChatEntry, ChatKind, ToolInfo},
+};
+use ratatui::{
+    style::{Modifier, Style},
+    text::{Line, Span},
+};
+use serde_json::Value as Json;
+use std::{
+    collections::HashMap,
+    hash::{Hash, Hasher},
+};
+
+/// Pair results only with a call in the same member and epoch. An orphan remains visible.
+/// Display limits never alter the daemon's stored messages.
+pub fn project(rows: &[Json], member: &str, bounded: bool) -> Vec<ChatEntry> {
+    let mut entries: Vec<ChatEntry> = Vec::new();
+    let mut pending = HashMap::new();
+    for row in rows {
+        let message = &row["message"];
+        let who = row["instance_id"].as_str().unwrap_or(member);
+        let content = match &message["content"] {
+            Json::String(text) => text.clone(),
+            Json::Null => String::new(),
+            value => serde_json::to_string_pretty(value).unwrap_or_default(),
+        };
+        let kind = match row["kind"].as_str().unwrap_or("") {
+            "user" => ChatKind::User,
+            "assistant" => ChatKind::Assistant,
+            "tool_result" => ChatKind::Tool,
+            "runtime" => ChatKind::Runtime,
+            "summary" => ChatKind::Summary,
+            _ => ChatKind::Context,
+        };
+        let content = if bounded && matches!(kind, ChatKind::Tool | ChatKind::Summary) {
+            preview(&content, 20_000)
+        } else {
+            content
+        };
+        if kind == ChatKind::Tool {
+            let id = message["tool_call_id"].as_str().unwrap_or("");
+            let key = (who.to_string(), row["epoch"].as_i64(), id.to_string());
+            if let Some(index) = pending.remove(&key) {
+                let entry: &mut ChatEntry = &mut entries[index];
+                entry.tool.as_mut().unwrap().output = Some(content);
+            } else {
+                entries.push(ChatEntry { kind, who: "result".into(), text: content, tool: None });
+            }
+            continue;
+        }
+        let label = match kind {
+            ChatKind::User if who == "i-leader" || who.is_empty() => "you",
+            ChatKind::User => who,
+            ChatKind::Runtime => "runtime",
+            ChatKind::Summary => "compaction",
+            _ => who,
+        };
+        if !content.trim().is_empty() {
+            entries.push(ChatEntry { kind: kind.clone(), who: label.into(), text: content, tool: None });
+        }
+        if kind == ChatKind::Assistant {
+            for call in message["tool_calls"].as_array().into_iter().flatten() {
+                let name = call["function"]["name"].as_str().unwrap_or("tool");
+                let args = call["function"]["arguments"].as_str().unwrap_or("");
+                let id = call["id"].as_str().unwrap_or("");
+                let args = if bounded { preview(args, 20_000) } else { args.into() };
+                if !id.is_empty() {
+                    pending.insert((who.to_string(), row["epoch"].as_i64(), id.to_string()), entries.len());
+                }
+                entries.push(ChatEntry {
+                    kind: ChatKind::Tool,
+                    who: who.into(),
+                    text: String::new(),
+                    tool: Some(ToolInfo { name: name.into(), arguments: args, output: None }),
+                });
+            }
+        }
+    }
+    entries
+}
+
+fn preview(text: &str, cap: usize) -> String {
+    let mut chars = text.chars();
+    let mut shown: String = chars.by_ref().take(cap).collect();
+    if chars.next().is_some() {
+        shown.push_str("\n… Display limit reached; full message in /sessions.");
+    }
+    shown
+}
+
+/// Parsing and wrapping are cached independently of the composer and streamed tail.
+#[derive(Default)]
+pub struct Transcript {
+    key: Option<(u64, usize, Option<usize>)>,
+    lines: Vec<Line<'static>>,
+}
+impl Transcript {
+    pub fn lines(&mut self, entries: &[ChatEntry], width: usize, tool_limit: Option<usize>) -> &[Line<'static>] {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        entries.hash(&mut hasher);
+        let key = (hasher.finish(), width, tool_limit);
+        if self.key != Some(key) {
+            self.lines.clear();
+            for entry in entries {
+                if !self.lines.is_empty() {
+                    self.lines.push(Line::default());
+                }
+                self.lines.extend(render_entry(entry, width, tool_limit));
+            }
+            self.key = Some(key);
+        }
+        &self.lines
+    }
+}
+
+pub fn assistant(text: &str, who: &str, width: usize, streaming: bool) -> Vec<Line<'static>> {
+    let who = if who == "i-leader" || who.is_empty() { "Leader" } else { who };
+    let label = if streaming { format!("{who} · streaming") } else { who.to_string() };
+    let mut out = markdown::plain(&label, width, Style::default().fg(ACCENT).add_modifier(Modifier::BOLD));
+    out.extend(markdown::render(text, width));
+    out
+}
+
+fn render_entry(entry: &ChatEntry, width: usize, tool_limit: Option<usize>) -> Vec<Line<'static>> {
+    if width == 0 {
+        return vec![];
+    }
+    if let Some(tool) = &entry.tool {
+        return render_tool(tool, width, tool_limit);
+    }
+    if entry.kind == ChatKind::Assistant {
+        return assistant(&entry.text, &entry.who, width, false);
+    }
+    let (label, color) = match entry.kind {
+        ChatKind::User => ("You", FG),
+        ChatKind::Tool => ("Tool result · call outside this history page", GREY),
+        ChatKind::Runtime => ("Runtime", GREY),
+        ChatKind::Context => ("Team note", GREY),
+        ChatKind::Summary => ("Conversation compacted", GREY),
+        ChatKind::Error => ("Error", ERROR),
+        ChatKind::Command => ("TeamAgents", ACCENT),
+        _ => ("Notice", GREY),
+    };
+    let label = if entry.kind == ChatKind::User && entry.who != "you" {
+        format!("You → {}", entry.who)
+    } else {
+        label.into()
+    };
+    let mut out = markdown::plain(&label, width, Style::default().fg(color).add_modifier(Modifier::BOLD));
+    out.extend(if entry.kind == ChatKind::Summary {
+        markdown::render(&entry.text, width)
+    } else {
+        markdown::plain(&entry.text, width, Style::default().fg(if entry.kind == ChatKind::User { FG } else { color }))
+    });
+    if entry.kind == ChatKind::User {
+        for line in &mut out {
+            let pad = width.saturating_sub(line.width());
+            line.spans.push(Span::raw(" ".repeat(pad)));
+            line.style = Style::default().bg(USER_BG);
+        }
+    }
+    out
+}
+
+fn render_tool(tool: &ToolInfo, width: usize, limit: Option<usize>) -> Vec<Line<'static>> {
+    let status = if tool.output.is_some() { "result received" } else { "awaiting result" };
+    let mut out = markdown::plain(
+        &format!("› {} · {status}", tool.name),
+        width,
+        Style::default().fg(GREY).add_modifier(Modifier::BOLD),
+    );
+    let args: Json = serde_json::from_str(&tool.arguments).unwrap_or(Json::Null);
+    let detail = if limit != Some(4) {
+        if args.is_null() {
+            tool.arguments.clone()
+        } else {
+            serde_json::to_string_pretty(&args).unwrap_or_default()
+        }
+    } else {
+        args["command"]
+            .as_str()
+            .map(|c| format!("$ {c}"))
+            .or_else(|| args["path"].as_str().map(str::to_string))
+            .or_else(|| args["description"].as_str().map(str::to_string))
+            .unwrap_or_else(|| tool.arguments.clone())
+    };
+    let mut args = markdown::plain(&detail, width.saturating_sub(2).max(1), Style::default().fg(CODE));
+    if let Some(limit) = limit {
+        shorten(&mut args, limit.max(2), width.saturating_sub(2).max(1));
+    }
+    let mut body = args;
+    if let Some(output) = &tool.output {
+        let display = if tool.name != "shell" {
+            serde_json::from_str::<Json>(output)
+                .ok()
+                .filter(|v| v.is_object() || v.is_array())
+                .and_then(|value| serde_json::to_string_pretty(&value).ok())
+                .unwrap_or_else(|| output.clone())
+        } else {
+            output.clone()
+        };
+        let mut rows = markdown::plain(&display, width.saturating_sub(2).max(1), Style::default().fg(NOTICE));
+        if matches!(tool.name.as_str(), "edit_file" | "edit_files") {
+            for line in &mut rows {
+                let first = line.spans.first().and_then(|s| s.content.chars().next());
+                let color = match first {
+                    Some('+') => ADDED,
+                    Some('-') => ERROR,
+                    Some('@') => ACCENT,
+                    _ => NOTICE,
+                };
+                for span in &mut line.spans {
+                    span.style = span.style.fg(color);
+                }
+            }
+        }
+        if let Some(limit) = limit {
+            shorten(&mut rows, limit, width.saturating_sub(2).max(1));
+        }
+        body.extend(rows);
+    }
+    for mut line in body {
+        if width > 2 {
+            line.spans.insert(0, Span::styled("  ", Style::default().fg(GREY)));
+        }
+        out.push(line);
+    }
+    out
+}
+
+fn shorten(lines: &mut Vec<Line<'static>>, limit: usize, width: usize) {
+    if lines.len() <= limit {
+        return;
+    }
+    let omitted = lines.len() - limit;
+    let tail = lines.split_off(lines.len() - limit / 2);
+    lines.truncate(limit - limit / 2);
+    let hint = if limit > 4 { "/sessions for full output" } else { "Ctrl+O details" };
+    lines.extend(markdown::plain(&format!("… {omitted} more lines · {hint}"), width, Style::default().fg(GREY)));
+    lines.extend(tail);
+}

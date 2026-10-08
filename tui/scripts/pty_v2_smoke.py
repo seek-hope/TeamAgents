@@ -39,6 +39,7 @@ class FakeDaemon:
         self.sock_path = sock_path
         self.sequence = 0
         self.events = []
+        self.previews = []
         self.history = []
         self.instances = [dict(i) for i in INSTANCES]
         self.tasks = [dict(t) for t in TASKS]
@@ -97,7 +98,7 @@ class FakeDaemon:
                 elif method == "approvals":
                     out = {"approvals": list(self.approvals)}
                 elif method == "previews":
-                    out = {"previews": []}
+                    out = {"previews": list(self.previews)}
                 elif method in ("approve", "deny") and frame.get("command_id"):
                     self.approvals = [a for a in self.approvals if a["id"] != params.get("approval_id")]
                     out = {"decided": True}
@@ -294,6 +295,34 @@ def main():
     forbidden = {"tasks", "grants", "goals", "set_lifecycle", "cancel_task", "cancel_goal"}
     if any(f["method"] in forbidden for f in daemon.frames):
         failures.append("the TUI still accesses management surfaces")
+
+    # D-447: Markdown, streamed prefixes, compact tool output and local expansion in a real terminal.
+    os.write(fd, b"display-draft")
+    daemon.history = [
+        {"kind": "assistant", "message": {"tool_calls": [{"id": "render-call", "function": {
+            "name": "shell", "arguments": json.dumps({"command": "printf render-proof"})}}]}},
+        {"kind": "tool_result", "message": {"tool_call_id": "render-call",
+            "content": "\n".join(f"output-{i:02}" for i in range(12))}},
+        {"kind": "assistant", "message": {"content": "## Render proof\n\n**Readable answer** with `inline_code`.\n\n```rust\n    let kept = true;\n```\n\n| Check | Result |\n|---|---|\n| Layout | pass |"}},
+    ]
+    daemon.previews = [{"instance_id": "i-leader", "text": "### Stream origin\n\n" + "continuing words " * 35}]
+    daemon.emit("response_imported", "i-leader", {})
+    scr.feed(read_all(fd, 0.8).decode("utf-8", "replace"))
+    expect("Render proof", "Markdown heading")
+    expect("Readable answer", "emphasis")
+    expect("    let kept = true;", "code indentation")
+    expect("Stream origin", "stream prefix beyond the old 400-character tail")
+    shown = "\n".join(scr.lines())
+    if "## Render proof" in shown or "**Readable answer**" in shown or "output-05" in shown:
+        failures.append("Markdown stayed raw or compact output did not fold")
+    commands = sum("command_id" in f for f in daemon.frames)
+    daemon.previews = []
+    os.write(fd, b"\x0f")
+    scr.feed(read_all(fd, 0.8).decode("utf-8", "replace"))
+    expect("output-05", "expanded tool output")
+    expect("display-draft", "expansion preserves the composer")
+    if commands != sum("command_id" in f for f in daemon.frames):
+        failures.append("tool expansion sent a business command")
 
     # Exit detaches only; it sends no daemon-side business command.
     before_exit = sum("command_id" in f for f in daemon.frames)

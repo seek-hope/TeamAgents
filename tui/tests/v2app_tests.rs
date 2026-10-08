@@ -186,23 +186,15 @@ fn history_rebuilds_the_conversation_and_keeps_system_notes() {
         {"idx": 4, "kind": "assistant", "message": {"role": "assistant", "content": "done"}}
     ]}));
     let kinds: Vec<_> = app.entries.iter().map(|e| e.kind.clone()).collect();
-    assert_eq!(
-        kinds,
-        vec![
-            ChatKind::User,
-            ChatKind::Assistant,
-            ChatKind::Tool,
-            ChatKind::Tool,
-            ChatKind::Assistant,
-            ChatKind::System
-        ]
-    );
+    assert_eq!(kinds, vec![ChatKind::User, ChatKind::Assistant, ChatKind::Tool, ChatKind::Assistant, ChatKind::System]);
     assert_eq!(app.entries[0].text, "write a script");
     assert_eq!(app.entries[0].who, "you");
-    assert_eq!(app.entries[2].text, "[shell] ls");
-    assert_eq!(app.entries[3].text, "file.txt");
+    let tool = app.entries[2].tool.as_ref().unwrap();
+    assert_eq!(tool.name, "shell");
+    assert_eq!(tool.arguments, "{\"command\": \"ls\"}");
+    assert_eq!(tool.output.as_deref(), Some("file.txt"));
     // the system note survived the rebuild, layered after the conversation
-    assert!(app.entries[5].text.contains("goal finished"));
+    assert!(app.entries[4].text.contains("goal finished"));
 }
 
 /// R22/A20: a compaction summary is shown as its own entry, so the user can

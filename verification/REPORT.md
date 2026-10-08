@@ -5,6 +5,15 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
+## 0. Gate status (re-run 2026-10-08 at `8b1efa00`)
+
+* **D-447 verifies the published transcript scroll arithmetic.** Kani reports
+  `Complete - 6 successfully verified harnesses, 0 failures, 6 total`. The added harness checks every usize
+  input for bounded coordinates, tail following and append stability of a valid scrolled viewport. Removing
+  the append adjustment is refuted in a temporary-copy control. TLA+ regression passes all **41** configurations
+  and refutes all **120** negative controls. No TLA+ semantics changed. Markdown, Unicode and visual appearance
+  are outside the arithmetic proof; `tui/tests/conversation.rs` and the PTY smoke bridge the display paths.
+
 ## 0. Gate status (re-run 2026-10-08 at `d1eb0522`)
 
 * **D-446 models session switching and confirmed deletion.** `V2SessionUi.tla` verifies 106 distinct states

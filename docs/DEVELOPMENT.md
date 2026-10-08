@@ -163,6 +163,7 @@ cargo test --offline --locked --manifest-path engine/Cargo.toml --test cli
 cargo test --offline --locked --manifest-path engine/Cargo.toml --test install
 # tui: conversation state and rendering
 cargo test --offline --locked --manifest-path tui/Cargo.toml --test v2app_tests
+cargo test --offline --locked --manifest-path tui/Cargo.toml --test conversation
 cargo test --offline --locked --manifest-path tui/Cargo.toml --test sessions
 cargo test --offline --locked --manifest-path engine/Cargo.toml --test session_browser
 ```

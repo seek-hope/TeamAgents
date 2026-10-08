@@ -18,7 +18,7 @@ pub enum Focus {
     Approvals,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ChatKind {
     User,
     Assistant,
@@ -29,6 +29,8 @@ pub enum ChatKind {
     /// A runtime compaction summary (R22/A20): the model's view is covered by
     /// it, so the user must see where the conversation was compacted.
     Summary,
+    /// Stored team/context notices, distinct from transient client annotations.
+    Context,
     System,
     Error,
     /// Client help and receipts survive checkpoint refreshes (D-433/D-445).
@@ -36,11 +38,19 @@ pub enum ChatKind {
     Command,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash)]
 pub struct ChatEntry {
     pub kind: ChatKind,
     pub who: String,
     pub text: String,
+    pub tool: Option<ToolInfo>,
+}
+
+#[derive(Clone, Debug, Hash)]
+pub struct ToolInfo {
+    pub name: String,
+    pub arguments: String,
+    pub output: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -113,8 +123,6 @@ pub struct Refresh {
 /// Retained system-note cap: notes are UI signals layered over the
 /// authoritative history; the cap keeps a long session bounded.
 const NOTE_CAP: usize = 200;
-/// Tool-result preview cap in the conversation (the UI only renders previews, §9).
-const PREVIEW_CHARS: usize = 400;
 
 pub struct V2App {
     pub session_root: String,
@@ -123,6 +131,8 @@ pub struct V2App {
     pub session_id: String,
     pub instances: Vec<InstanceInfo>,
     pub entries: Vec<ChatEntry>,
+    pub transcript: crate::transcript::Transcript,
+    pub expanded_tools: bool,
     pub goal: Option<GoalInfo>,
     pub approvals: Vec<ApprovalInfo>,
     pub approval_sel: usize,
@@ -151,6 +161,8 @@ impl V2App {
             session_id: session_id.to_string(),
             instances: vec![],
             entries: vec![],
+            transcript: crate::transcript::Transcript::default(),
+            expanded_tools: false,
             goal: None,
             approvals: vec![],
             approval_sel: 0,
@@ -194,7 +206,7 @@ impl V2App {
     /// A command's output: it survives a checkpoint refresh, unlike a `System` note, because the user asked a
     /// question and the answer must stay on screen until they scroll away from it (D-433).
     pub fn command_note(&mut self, text: impl Into<String>) {
-        self.entries.push(ChatEntry { kind: ChatKind::Command, who: "note".into(), text: text.into() });
+        self.entries.push(ChatEntry { kind: ChatKind::Command, who: "note".into(), text: text.into(), tool: None });
         if self.entries.len() > NOTE_CAP * 4 {
             let drop = self.entries.len() - NOTE_CAP * 4;
             self.entries.drain(..drop);
@@ -202,7 +214,7 @@ impl V2App {
     }
 
     fn note(&mut self, text: impl Into<String>) {
-        self.entries.push(ChatEntry { kind: ChatKind::System, who: "system".into(), text: text.into() });
+        self.entries.push(ChatEntry { kind: ChatKind::System, who: "system".into(), text: text.into(), tool: None });
         if self.entries.len() > NOTE_CAP * 4 {
             let drop = self.entries.len() - NOTE_CAP * 4;
             self.entries.drain(..drop);
@@ -210,7 +222,7 @@ impl V2App {
     }
 
     fn note_error(&mut self, text: impl Into<String>) {
-        self.entries.push(ChatEntry { kind: ChatKind::Error, who: "error".into(), text: text.into() });
+        self.entries.push(ChatEntry { kind: ChatKind::Error, who: "error".into(), text: text.into(), tool: None });
     }
 
     // ---- daemon → app application points --------------------------------
@@ -266,54 +278,11 @@ impl V2App {
     /// History of the active instance: the authoritative conversation (§9 —
     /// only renders previews). System notes stay layered on top, newest last.
     pub fn apply_history(&mut self, history: Json) {
-        let mut rebuilt: Vec<ChatEntry> = Vec::new();
-        for entry in history["entries"].as_array().cloned().unwrap_or_default() {
-            let kind = entry["kind"].as_str().unwrap_or("");
-            let message = &entry["message"];
-            match kind {
-                "user" => rebuilt.push(ChatEntry {
-                    kind: ChatKind::User,
-                    who: "you".into(),
-                    text: message["content"].as_str().unwrap_or("").to_string(),
-                }),
-                "assistant" => {
-                    let who = self.active_instance().map(|i| i.id.clone()).unwrap_or_default();
-                    let content = message["content"].as_str().unwrap_or("").trim().to_string();
-                    if !content.is_empty() {
-                        rebuilt.push(ChatEntry { kind: ChatKind::Assistant, who: who.clone(), text: content });
-                    }
-                    for call in message["tool_calls"].as_array().cloned().unwrap_or_default() {
-                        let name = call["function"]["name"].as_str().unwrap_or("?");
-                        let args = call["function"]["arguments"].as_str().unwrap_or("");
-                        let preview = tool_preview(name, args);
-                        rebuilt.push(ChatEntry { kind: ChatKind::Tool, who: who.clone(), text: preview });
-                    }
-                }
-                "tool_result" => {
-                    let content = message["content"].as_str().unwrap_or("");
-                    rebuilt.push(ChatEntry {
-                        kind: ChatKind::Tool,
-                        who: "result".into(),
-                        text: truncate(&content.split_whitespace().collect::<Vec<_>>().join(" "), 120),
-                    });
-                }
-                // the runtime's own closing word for a turn (§8/D-71): it ends
-                // the turn, it is not something the member said
-                "runtime" => rebuilt.push(ChatEntry {
-                    kind: ChatKind::Runtime,
-                    who: "runtime".into(),
-                    text: message["content"].as_str().unwrap_or("").to_string(),
-                }),
-                // covered entries stay visible here: the user sees the whole
-                // conversation, the model sees the summary (R22/A20)
-                "summary" => rebuilt.push(ChatEntry {
-                    kind: ChatKind::Summary,
-                    who: "compaction".into(),
-                    text: truncate(message["content"].as_str().unwrap_or(""), PREVIEW_CHARS),
-                }),
-                _ => {}
-            }
-        }
+        let rebuilt = crate::transcript::project(
+            history["entries"].as_array().map(Vec::as_slice).unwrap_or(&[]),
+            "i-leader",
+            true,
+        );
         let notes: Vec<ChatEntry> = self
             .entries
             .drain(..)
@@ -543,6 +512,10 @@ impl V2App {
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
                 KeyCode::Char('s') => return self.open_sessions(),
+                KeyCode::Char('o') => {
+                    self.expanded_tools = !self.expanded_tools;
+                    return None;
+                }
                 KeyCode::Char('c') => return self.interrupt(),
                 KeyCode::Char('d') => {
                     self.quit = true;
@@ -616,6 +589,7 @@ Ctrl+C or /interrupt cancels the Leader's model request; running tools and deleg
 Ctrl+A focuses pending approvals; a approves once, d denies, Esc returns.
 Ctrl+D or /quit exits; the session keeps running.
 Ctrl+S or /sessions opens session history, switching and confirmed deletion.
+Ctrl+O expands or folds tool previews; /sessions shows full stored results.
 Developer tools: teamagents --help; teamagents status --json; teamagents history --id ID.",
                 self.session_id,
                 self.active_instance().map(|i| i.model.as_str()).unwrap_or("unavailable")
@@ -803,25 +777,4 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
         }
         "Enter send · Ctrl+S sessions · Ctrl+C interrupt · Ctrl+D exit · /help".into()
     }
-}
-
-/// One-line preview of a tool call: shell shows the command, everything
-/// else the tool name with a bounded args preview.
-fn tool_preview(name: &str, args_json: &str) -> String {
-    let args: Json = serde_json::from_str(args_json).unwrap_or(Json::Null);
-    let detail = args["command"]
-        .as_str()
-        .map(str::to_string)
-        .or_else(|| args["text"].as_str().map(str::to_string))
-        .unwrap_or_else(|| truncate(&args_json.replace('\n', " "), 120));
-    format!("[{name}] {}", truncate(&detail, 160))
-}
-
-fn truncate(text: &str, cap: usize) -> String {
-    let count = text.chars().count();
-    if count <= cap {
-        return text.to_string();
-    }
-    let kept: String = text.chars().take(cap).collect();
-    format!("{kept}...({count} chars total)")
 }
