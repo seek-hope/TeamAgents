@@ -25,6 +25,15 @@ pub fn transcript_window(total: usize, previous: usize, height: usize, offset: u
     (maximum - offset, offset)
 }
 
+/// Intersect a media block with a transcript viewport without adding untrusted offsets.
+/// Returns rows skipped in the image, screen row, and visible row count.
+pub fn clip_rows(top: usize, len: usize, start: usize, height: usize) -> Option<(usize, usize, usize)> {
+    let skip = start.saturating_sub(top).min(len);
+    let row = top.saturating_sub(start);
+    let count = (len - skip).min(height.saturating_sub(row));
+    (count > 0).then_some((skip, row, count))
+}
+
 /// Map a visible row back to its item, refusing blank space after the list.
 pub fn item_at(len: usize, selected: usize, height: usize, row: usize) -> Option<usize> {
     let (start, count) = window(len, selected, height);

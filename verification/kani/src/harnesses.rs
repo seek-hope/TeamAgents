@@ -59,6 +59,26 @@ fn transcript_scroll_is_bounded_and_append_keeps_the_reader() {
     }
 }
 
+/// D-448: a partially visible image cannot paint outside its image or transcript viewport.
+#[kani::proof]
+fn media_clipping_stays_inside_both_ranges() {
+    let top: usize = kani::any();
+    let len: usize = kani::any();
+    let start: usize = kani::any();
+    let height: usize = kani::any();
+    if let Some((skip, row, count)) = crate::viewport::clip_rows(top, len, start, height) {
+        assert!(count > 0);
+        assert!(skip <= len && count <= len - skip);
+        assert!(row <= height && count <= height - row);
+        assert!(top.saturating_add(skip) == start.saturating_add(row));
+        assert!(skip == 0 || row == 0);
+    } else {
+        assert!(
+            len == 0 || height == 0 || (start >= top && start - top >= len) || (top >= start && top - start >= height)
+        );
+    }
+}
+
 /// Coordinate contract (no loops, holds for every `usize`): a page is at most
 /// `limit` long, `offset + page` neither overflows nor runs past the end, a full page
 /// is taken unless the tail is reached, and the tail consumes exactly the remainder.
