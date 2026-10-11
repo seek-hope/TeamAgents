@@ -1417,6 +1417,7 @@ dependencies = [
  "crossterm 0.29.0",
  "image",
  "layout-rs",
+ "libc",
  "mermaid-rs-renderer",
  "mermaid-text",
  "percent-encoding",

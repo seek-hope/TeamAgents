@@ -520,7 +520,8 @@ pub(crate) async fn bootstrap(
             let workspace = workspace.to_string();
             let mut goal_limits = goal_limits.clone();
             let profile = json!({"model": leader_profile.model, "instructions": leader_profile.instructions,
-                                 "options": leader_profile.options, "context_window": leader_profile.context_window});
+                                 "options": leader_profile.options, "context_window": leader_profile.context_window,
+                                 "images": leader_profile.images});
             let deadline_minutes = goal_limits
                 .as_object_mut()
                 .and_then(|limits| limits.remove("deadline_minutes"))
@@ -900,7 +901,13 @@ impl<P: Provider> Driver<P> {
     /// D-392: turn every `view_image` reference in this request's view into a real image part — or the
     /// placeholder, when the model has not declared image support. Storage keeps the reference and only the
     /// request carries bytes, so the context, the checkpoints and the database stay free of base64.
-    fn expand_images(&self, entries: &mut [ContextEntry]) {
+    fn expand_images(&self, entries: &mut [ContextEntry]) -> Result<(), String> {
+        super::attachments::expand(
+            self.config.instances_dir.parent().ok_or("attachment session root is unavailable")?,
+            entries,
+            self.config.profile.images,
+            self.config.provider.protocol(),
+        )?;
         let artifacts = self.config.state_root.join("artifacts");
         for entry in entries {
             if matches!(entry.kind, EntryKind::ToolResult) {
@@ -912,6 +919,7 @@ impl<P: Provider> Driver<P> {
                 );
             }
         }
+        Ok(())
     }
 
     /// The whole epoch, covered entries included: readback must still reach
@@ -1507,7 +1515,7 @@ that delegated it learns the outcome only from a settlement.";
         // D-418: and the criterion itself, before the model plans the turn rather than when it claims to be done.
         self.brief_checks(snapshot).await?;
         let mut entries = self.context_entries(snapshot).await?;
-        self.expand_images(&mut entries);
+        self.expand_images(&mut entries)?;
         // A turn opens for *unaddressed* work only: content that arrived since the
         // last request (the drain above applied it) or a task this instance has not
         // started yet. A task it already addressed is not a reason to ask again —
@@ -1554,7 +1562,7 @@ that delegated it learns the outcome only from a settlement.";
         let last_prompt = self.last_prompt_tokens().await?;
         if self.over_threshold(&request, last_prompt) && self.compact(&entries).await? {
             entries = self.context_entries(snapshot).await?;
-            self.expand_images(&mut entries);
+            self.expand_images(&mut entries)?;
             request = kernel.prepare_request(&entries, &request_id);
         }
         let begun = self
@@ -1627,7 +1635,8 @@ that delegated it learns the outcome only from a settlement.";
         let request = match self.prepared.get(&request_id) {
             Some(request) => request.clone(),
             None => {
-                let entries = self.context_entries(snapshot).await?;
+                let mut entries = self.context_entries(snapshot).await?;
+                self.expand_images(&mut entries)?;
                 self.team_kernel(snapshot).await?.0.prepare_request(&entries, &request_id)
             }
         };

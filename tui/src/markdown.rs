@@ -261,11 +261,31 @@ pub fn render_media(text: &str, width: usize, mut graphics: Option<&mut Graphics
                 w.text(format!("╭─ {lang}"));
                 w.flush();
                 w.indents.push(Indent { first: "│ ".into(), rest: "│ ".into() });
-                for line in
-                    crate::highlight::code_lines(&code, &lang, closing_fence(&text, range.start, content_end, end))
+                if closing_fence(&text, range.start, content_end, end)
+                    && crate::highlight::eligible(&code, &lang)
+                    && graphics.is_some()
                 {
-                    w.spans.extend(line.spans);
-                    w.flush();
+                    let prefix: String = w.indents.iter().map(|p| p.rest.as_str()).collect();
+                    let indent = unicode_width::UnicodeWidthStr::width(prefix.as_str()).min(width.saturating_sub(1));
+                    let mut doc = graphics.as_deref_mut().unwrap().block(
+                        Source::Code { language: lang, code },
+                        origin,
+                        width - indent,
+                    );
+                    doc.offset(w.out.len(), indent);
+                    media.extend(doc.media);
+                    for mut line in doc.lines {
+                        line.spans.insert(
+                            0,
+                            Span::styled(prefix.chars().take(indent).collect::<String>(), Style::default().fg(GREY)),
+                        );
+                        w.out.push(line);
+                    }
+                } else {
+                    for line in crate::highlight::code_lines(&code, &lang) {
+                        w.spans.extend(line.spans);
+                        w.flush();
+                    }
                 }
                 w.indents.pop();
                 w.text("╰─");

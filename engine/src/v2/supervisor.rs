@@ -61,6 +61,9 @@ pub struct SupervisorHandle {
     drivers: Arc<std::sync::Mutex<HashMap<String, InstanceDriver>>>,
     task: std::sync::Mutex<Option<tokio::task::JoinHandle<Result<(), String>>>>,
     _lock: std::fs::File,
+    input_root: PathBuf,
+    input_catalog: teamagents_core::models::UserConfig,
+    input_preparation: tokio::sync::Mutex<()>,
 }
 
 impl SupervisorHandle {
@@ -119,7 +122,13 @@ impl SupervisorHandle {
     pub async fn submit_user(&self, cmd: Command) -> Result<Json, String> {
         let instance = cmd.params["instance_id"].as_str().map(str::to_string);
         let interrupt = cmd.method == "interrupt_instance";
-        let result = self.submit(cmd, Identity::User).await?;
+        let result = if cmd.method == "submit_input" && cmd.params.get("attachments").is_some_and(|v| v != &json!([])) {
+            let _preparing =
+                self.input_preparation.try_lock().map_err(|_| "attachment preparation busy: retry this input")?;
+            super::attachments::submit(&self.storage, &self.input_root, &self.input_catalog, cmd).await?
+        } else {
+            self.submit(cmd, Identity::User).await?
+        };
         if let Some(instance) = instance {
             if let Some(driver) = self.drivers.lock().unwrap().get(&instance) {
                 if interrupt {
@@ -328,6 +337,9 @@ where
         return Err("session was deleted while waiting for its coordinator lock".into());
     }
     let storage = Storage::open(&config.session_db, &config.session_id, true, config.storage_queue)?;
+    super::attachments::recover(&storage).await?;
+    let input_root = config.state_root.clone();
+    let input_catalog = config.catalog.clone();
     let leader_profile = crate::providers::resolve_profile(config.leader_profile.clone(), &config.catalog);
     bootstrap(
         &storage,
@@ -363,6 +375,9 @@ where
         drivers,
         task: std::sync::Mutex::new(Some(task)),
         _lock: lock,
+        input_root,
+        input_catalog,
+        input_preparation: tokio::sync::Mutex::new(()),
     })
 }
 

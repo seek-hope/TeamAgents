@@ -559,7 +559,7 @@ pub fn search(home: &Path, query: &str, limit: usize) -> Result<(Vec<Json>, Vec<
         };
         let mut stmt = conn
             .prepare(
-                "SELECT instance_id, idx, kind, message_json FROM context_entries ORDER BY instance_id, epoch, idx",
+                "SELECT instance_id, idx, kind, message_json, epoch, rowid FROM context_entries ORDER BY instance_id, epoch, idx",
             )
             .map_err(|e| format!("search {}: {e}", entry.id))?;
         let rows = stmt
@@ -569,17 +569,20 @@ pub fn search(home: &Path, query: &str, limit: usize) -> Result<(Vec<Json>, Vec<
                     row.get::<_, i64>(1)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
                 ))
             })
             .map_err(|e| format!("search {}: {e}", entry.id))?;
         for row in rows {
-            let (instance, idx, kind, message_json) = row.map_err(|e| format!("search {}: {e}", entry.id))?;
+            let (instance, idx, kind, message_json, epoch, cursor) =
+                row.map_err(|e| format!("search {}: {e}", entry.id))?;
             let text = message_text(&message_json);
             if !text.to_lowercase().contains(&needle) {
                 continue;
             }
             hits.push(json!({"session_id": entry.id, "instance_id": instance, "idx": idx, "kind": kind,
-                             "snippet": snippet(&text, &needle, 160)}));
+                             "epoch":epoch,"cursor":cursor,"snippet": snippet(&text, &needle, 160)}));
             if hits.len() >= limit {
                 return Ok((hits, skipped));
             }

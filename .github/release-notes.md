@@ -16,9 +16,13 @@
   Kitty graphics, portable Unicode/block previews, and Ctrl+G source fallback.
 - Local command completion with explicit submission, language syntax colors and viewport-driven media
   previews that remain available beyond sixteen images in long histories (D-450).
+- Explicit engine-owned file/image snapshots and path completion, pending-input edit/cancel, local
+  Markdown/JSON export and session-browser search (D-451). Display grammar/image/diagram parsing runs in
+  resource-bounded terminable Rust helpers. Current-source archive installation is rehearsed locally;
+  these notes do not publish an artifact.
 - Installer, `teamagents init`, `doctor` and `exec` as documented in the [install guide](https://github.com/seek-hope/TeamAgents/blob/main/docs/INSTALL.md).
 
-Local regression for this release: `make check` green (core 130 / engine 376 / tui 57) plus `make pty`;
+Local regression for this release: `make check` green (core 134 / engine 384 / tui 73) plus `make pty`;
 real-model acceptance is reported separately in [docs/ACCEPTANCE.md](https://github.com/seek-hope/TeamAgents/blob/main/docs/ACCEPTANCE.md).
 
 ### Install and first run

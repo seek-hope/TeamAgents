@@ -100,7 +100,17 @@ fn main() {
     let mut completion = V2App::new("completion-probe");
     completion.composer.set_text("/hel");
     let effect = completion.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-    let lines = markdown::render("```rust\nfn main() { let message = \"hello\"; }\n```", 120);
+    let fence = "```rust\nfn main() { let message = \"hello\"; }\n```";
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let lines = loop {
+        let changed = completion.graphics.poll();
+        let doc = markdown::render_media(fence, 120, Some(&mut completion.graphics), &Default::default());
+        if changed {
+            break doc.lines;
+        }
+        assert!(Instant::now() < deadline, "code preview did not settle");
+        std::thread::sleep(Duration::from_millis(5));
+    };
     let colors: BTreeSet<String> = lines
         .iter()
         .filter(|l| l.spans.iter().any(|s| s.content.contains("fn")))

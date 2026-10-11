@@ -129,7 +129,9 @@ def main(argv) -> int:
     bin_dir = scratch / "bin"
     config_home = scratch / "config"
     state_home = scratch / "state"
-    smoke_env = {**os.environ, "XDG_CONFIG_HOME": str(config_home), "XDG_STATE_HOME": str(state_home)}
+    smoke_home = scratch / "home"
+    smoke_home.mkdir()
+    smoke_env = {**os.environ, "HOME": str(smoke_home), "XDG_CONFIG_HOME": str(config_home), "XDG_STATE_HOME": str(state_home)}
     run("install", ["sh", str(dist / "install.sh"), "--archive", str(archive), "--bin-dir", str(bin_dir)],
         env=smoke_env)
     run("init", [str(bin_dir / "teamagents"), "init"], env=smoke_env)
@@ -137,6 +139,9 @@ def main(argv) -> int:
     if not written.is_file() or written.stat().st_size == 0:
         print(f"FAIL: init wrote no config at {written}")
         return 1
+    before = written.read_bytes()
+    run("init keeps config", [str(bin_dir / "teamagents"), "init"], env=smoke_env)
+    assert written.read_bytes() == before, "init replaced existing configuration"
     if not os.access(bin_dir / "teamagents-tui", os.X_OK):
         print("FAIL: the TUI binary is not executable after the install")
         return 1

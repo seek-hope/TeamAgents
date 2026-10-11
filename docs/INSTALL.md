@@ -11,6 +11,12 @@ neither Rust, Python nor Node.js. Model services require your own credentials.
 > corrupted archive), and `make build` still produces the same binaries from source.
 
 
+D-451 source features (attachments, editable pending input, export/search and bounded presentation workers)
+postdate that tag. The current-source musl archive was installed and exercised under isolated HOME/XDG/bin
+roots by `python3 review/maturity-2026-10-11/install.py`; hashes and scope are recorded in the
+[maturity report](../review/maturity-2026-10-11/REPORT.md). This is an unpublished Linux x86_64 rehearsal,
+not a change to the latest public release or proof of other platforms.
+
 Run the [install command from the README](../README.md#latest-release-recommended): it picks the latest
 release, verifies SHA-256 and installs `teamagents` and `teamagents-tui` into `~/.local/bin`. Both programs
 must come from the same version and live in the same directory.

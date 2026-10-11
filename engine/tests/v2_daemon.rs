@@ -99,6 +99,8 @@ fn finish_call(summary: &str) -> Json {
 }
 
 mod common;
+#[path = "cases/inputs.rs"]
+mod inputs;
 
 /// The scratch root of one test: `teamagents-v2-daemon-<tag>-<uuid>`, removed when the test ends (D-226).
 type Root = common::TempRoot;
@@ -1106,6 +1108,7 @@ fn exec_options(socket: &Path, workspace: &Path, prompt: &str, checks: Vec<Strin
     ExecOptions {
         socket: socket.to_path_buf(),
         prompt: prompt.to_string(),
+        attachments: Vec::new(),
         timeout_s: 60,
         json_out: true,
         stream_events: false,

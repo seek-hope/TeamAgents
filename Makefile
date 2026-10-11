@@ -49,7 +49,8 @@ lint:
 # (D-226) and a scratch directory (D-131) — are checked
 # by `review/leak_guard.py` around the run: it names and stops whatever appeared, instead of reporting a count
 # that leaves the reader guessing and a process that poisons the next run's baseline (D-147).
-test:
+# Display-process tests must execute a helper built from this source, including clean checkouts.
+test: build
 	@set -eu; guard=$$(mktemp); trap 'rm -f "$$guard"' EXIT HUP INT TERM; \
 		python3 review/leak_guard.py snapshot "$$guard"; \
 		for crate in $(CRATES); do cargo test $(CARGO_FLAGS) --manifest-path $$crate/Cargo.toml; done; \

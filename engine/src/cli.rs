@@ -1085,6 +1085,11 @@ fn daemon_boot(
         .build()
         .map_err(|e| e.to_string())?;
     runtime.block_on(async move {
+        // Register both handlers before publishing the socket: clients may signal as soon as it exists.
+        let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+            .map_err(|e| e.to_string())?;
+        let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .map_err(|e| e.to_string())?;
         let handle = crate::v2::daemon::serve(config).await?;
         eprintln!(
             "teamagents daemon started\n  socket:    {}\n  state root: {}\n  clients can attach now; `teamagents daemon --stop`, Ctrl-C or SIGTERM stops it (committed state is kept)",
@@ -1099,10 +1104,8 @@ fn daemon_boot(
         // listening on, has its receipt already, and the accept loop is gone with the socket — the daemon's
         // remaining work is the same designed shutdown. Without this arm the process waited for a signal
         // forever and a `daemon --stop` reported a stop that had not happened (measured 2026-09-27).
-        let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .map_err(|e| e.to_string())?;
         tokio::select! {
-            result = tokio::signal::ctrl_c() => { result.map_err(|e| e.to_string())?; }
+            _ = interrupt.recv() => {}
             _ = terminate.recv() => {}
             _ = handle.stopped() => {}
         }

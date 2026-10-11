@@ -1,7 +1,13 @@
 //! teamagents: single Rust entry point — CLI, TUI launcher, session daemon and
 //! the headless client (`exec`) that shares the daemon with the TUI.
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+};
 use teamagents_engine::{cli, tools};
 
 const HELP: &str = "TeamAgents: work with a Leader in your terminal\n\n\
@@ -21,6 +27,10 @@ usage: teamagents [--cwd DIR] [--state-root PATH] [--session ID] [--model KEY] [
   teamagents goals cancel --id ID               close that goal and release the instance its refusal parked\n\
   teamagents approvals approve --id ID          approve that call, once (bound to its arguments)\n\
   teamagents approvals deny --id ID             deny it; the operation fails closed\n\
+  teamagents inputs paths [--query PREFIX] [--json]  complete workspace attachment paths\n\
+  teamagents inputs [list] [--recipient ID] [--after N --limit N] [--json]  pending user inputs, with revisions\n\
+  teamagents inputs edit --id ID --revision N --prompt TEXT [--recipient ID] [--json]  revise pending text\n\
+  teamagents inputs cancel --id ID --revision N [--recipient ID] [--json]  cancel pending delivery\n\
   teamagents instances [list] [--json]          the session's instances\n\
   teamagents instances send --id ID --prompt TEXT [--json]  submit to any member; report accepted/queued, not completion\n\
   teamagents instances resume|pause --id ID     let a parked instance run again, or stop one\n\
@@ -33,6 +43,7 @@ usage: teamagents [--cwd DIR] [--state-root PATH] [--session ID] [--model KEY] [
   teamagents sessions rename --id ID --name NAME  give a named session a new display name\n\
   teamagents sessions restore --id ID           bring an archived session back\n\
   teamagents sessions search --query TEXT [--limit N]  search every session's conversation (read-only, D-368)\n\
+  teamagents sessions export --id ID --output FILE [--format json|markdown] [--json]  export a complete local snapshot without starting it\n\
   teamagents sessions archive --id ID           move a named session aside (refused while a daemon runs it)\n\
   teamagents sessions open --id ID [--json]     restore/start or join a session and report its socket\n\
   teamagents sessions history --id ID [--before N] [--limit N] [--json]  page all stored records without starting it\n\
@@ -66,6 +77,8 @@ usage: teamagents [--cwd DIR] [--state-root PATH] [--session ID] [--model KEY] [
   teamagents doctor [--state-root PATH] check config, credentials, state root and host\n\
   teamagents version | --version      print the version\n\
   teamagents --help                   print this help\n\n\
+exec accepts repeated --attach PATH (workspace-relative UTF-8 text or PNG/JPEG/GIF/WebP; eight files,\n\
+1 MiB/text, 5 MiB/image, 16 MiB total). Files are snapshotted by the session daemon; symlinks are refused.\n\
 exec reads the prompt from stdin when it is \"-\", runs each --check acceptance command\n\
 in the workspace after the turn ends (a verdict on the exit code), and attaches each\n\
 --accept ID=COMMAND to the goal before the input lands (a gate the runtime repairs\n\
@@ -171,6 +184,7 @@ pub struct Args {
     /// D-267: `goals open --attach INSTANCE` — attach the new goal to that instance, which is what makes a later
     /// delegation charge to it (D-266).
     pub attach: Option<String>,
+    pub attachments: Vec<String>,
     /// D-364: `sessions new --name NAME`.
     pub session_name: Option<String>,
     /// D-367: `automations add --every MINUTES --prompt TEXT`.
@@ -178,6 +192,10 @@ pub struct Args {
     pub prompt: Option<String>,
     /// D-368: `sessions search --query TEXT [--limit N]`.
     pub query: Option<String>,
+    /// D-451: explicit session export destination; never overwritten.
+    pub output: Option<String>,
+    /// D-451: `json` or `markdown` export encoding.
+    pub format: Option<String>,
     /// D-408: `mcp add` — the binding this build writes into the user config.
     pub mcp_command: Option<String>,
     pub mcp_args: Vec<String>,
@@ -188,6 +206,10 @@ pub struct Args {
     pub limit: Option<u64>,
     /// D-446: exclusive row cursor for paged session history.
     pub before: Option<i64>,
+    /// D-451: revision and recipient identify one pending user input.
+    pub input_revision: Option<i64>,
+    pub recipient: Option<String>,
+    pub after: Option<i64>,
     /// D-267: `goals open --deadline MINUTES` — a deadline for the new goal, measured from now (§8).
     pub deadline_minutes: Option<u64>,
     /// D-412: `mcp login --paste` — the browser is on another machine, so read the redirected URL from stdin
@@ -247,10 +269,13 @@ fn parse_args() -> Args {
         stream_json: false,
         service_stop: false,
         attach: None,
+        attachments: Vec::new(),
         session_name: None,
         every_minutes: None,
         prompt: None,
         query: None,
+        output: None,
+        format: None,
         mcp_command: None,
         mcp_args: Vec::new(),
         mcp_transport: None,
@@ -259,6 +284,9 @@ fn parse_args() -> Args {
         mcp_server: None,
         limit: None,
         before: None,
+        input_revision: None,
+        recipient: None,
+        after: None,
         deadline_minutes: None,
         mcp_login_paste: false,
         mcp_login_no_browser: false,
@@ -384,7 +412,7 @@ fn parse_args() -> Args {
             }
             "serve" | "init" | "doctor" | "validate" | "sessions" | "automations" | "version" | "exec"
             | "authority" | "approvals" | "instances" | "tasks" | "runners" | "artifacts" | "goals" | "surface"
-            | "mcp" | "status" | "history" => {
+            | "mcp" | "status" | "history" | "inputs" => {
                 if args.command.is_some() {
                     reject("two entry points were given: pick one (teamagents --help lists them)");
                 }
@@ -410,6 +438,7 @@ fn parse_args() -> Args {
                         "exec"
                             | "status"
                             | "history"
+                            | "inputs"
                             | "authority"
                             | "approvals"
                             | "instances"
@@ -491,6 +520,7 @@ fn parse_args() -> Args {
                     Some(
                         "approvals"
                             | "history"
+                            | "inputs"
                             | "instances"
                             | "tasks"
                             | "runners"
@@ -588,7 +618,7 @@ fn parse_args() -> Args {
                 );
                 i += 2;
             }
-            "--prompt" if matches!(args.command.as_deref(), Some("automations" | "instances")) => {
+            "--prompt" if matches!(args.command.as_deref(), Some("automations" | "instances" | "inputs")) => {
                 if args.prompt.is_some() {
                     given_twice("--prompt");
                 }
@@ -597,13 +627,27 @@ fn parse_args() -> Args {
                 );
                 i += 2;
             }
-            "--query" if args.command.as_deref() == Some("sessions") => {
+            "--query" if matches!(args.command.as_deref(), Some("sessions" | "inputs")) => {
                 if args.query.is_some() {
                     given_twice("--query");
                 }
                 args.query = Some(
                     argv.get(i + 1).cloned().filter(|v| !v.is_empty()).unwrap_or_else(|| needs_a_value("--query")),
                 );
+                i += 2;
+            }
+            "--format" if args.command.as_deref() == Some("sessions") => {
+                if args.format.is_some() {
+                    given_twice("--format");
+                }
+                args.format = Some(value_after(&argv, i, "--format"));
+                i += 2;
+            }
+            "--output" if args.command.as_deref() == Some("sessions") => {
+                if args.output.is_some() {
+                    given_twice("--output");
+                }
+                args.output = Some(value_after(&argv, i, "--output"));
                 i += 2;
             }
             "--before" if args.command.as_deref() == Some("sessions") => {
@@ -618,7 +662,28 @@ fn parse_args() -> Args {
                 );
                 i += 2;
             }
-            "--limit" if matches!(args.command.as_deref(), Some("sessions" | "history")) => {
+            "--recipient" if args.command.as_deref() == Some("inputs") => {
+                if args.recipient.is_some() {
+                    given_twice("--recipient");
+                }
+                args.recipient = Some(value_after(&argv, i, "--recipient"));
+                i += 2;
+            }
+            flag @ ("--revision" | "--after") if args.command.as_deref() == Some("inputs") => {
+                let target = if flag == "--revision" { &mut args.input_revision } else { &mut args.after };
+                if target.is_some() {
+                    given_twice(flag);
+                }
+                *target = Some(
+                    value_after(&argv, i, flag)
+                        .parse::<i64>()
+                        .ok()
+                        .filter(|n| *n >= 0)
+                        .unwrap_or_else(|| reject(&format!("{flag} needs a nonnegative integer"))),
+                );
+                i += 2;
+            }
+            "--limit" if matches!(args.command.as_deref(), Some("sessions" | "history" | "inputs")) => {
                 if args.limit.is_some() {
                     given_twice("--limit");
                 }
@@ -649,6 +714,10 @@ fn parse_args() -> Args {
                         .filter(|v| !v.is_empty() && !v.starts_with('-'))
                         .unwrap_or_else(|| needs_a_value("--action")),
                 );
+                i += 2;
+            }
+            "--attach" if args.command.as_deref() == Some("exec") => {
+                args.attachments.push(value_after(&argv, i, "--attach"));
                 i += 2;
             }
             "--attach" if args.command.as_deref() == Some("goals") => {
@@ -917,6 +986,7 @@ fn run_exec(args: &Args) -> i32 {
     teamagents_engine::v2::exec::run(teamagents_engine::v2::exec::ExecOptions {
         socket,
         prompt,
+        attachments: args.attachments.clone(),
         timeout_s: args.timeout.unwrap_or(900),
         json_out: args.exec_json,
         stream_events: args.stream_json,
@@ -1603,6 +1673,40 @@ fn run_automations(args: &Args) -> i32 {
     }
 }
 
+/// Run a bounded local export while retaining the temporary-file/no-replacement contract on Ctrl-C.
+fn export_with_ctrl_c(
+    registry: &teamagents_engine::v2::sessions::Registry,
+    id: &str,
+    output: &Path,
+    format: teamagents_engine::v2::session_export::Format,
+) -> Result<serde_json::Value, String> {
+    let cancel = Arc::new(AtomicBool::new(false));
+    let worker_cancel = Arc::clone(&cancel);
+    let registry = registry.clone();
+    let id = id.to_string();
+    let output = output.to_path_buf();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("export signal runtime: {error}"))?;
+    runtime.block_on(async move {
+        // Register before starting output so an early Ctrl-C cannot strand the temporary file.
+        let mut signals = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+            .map_err(|error| format!("export signal handler: {error}"))?;
+        let mut worker = tokio::task::spawn_blocking(move || {
+            teamagents_engine::v2::session_export::export(&registry, &id, &output, format, &worker_cancel)
+        });
+        tokio::select! {
+            result = &mut worker => result.map_err(|error| format!("export worker: {error}"))?,
+            _ = signals.recv() => {
+                cancel.store(true, Ordering::Relaxed);
+                // Publication may already have won. Return the real outcome, including success.
+                worker.await.map_err(|error| format!("export worker: {error}"))?
+            }
+        }
+    })
+}
+
 /// `teamagents sessions`: the picker and lifetime of named sessions (D-364).
 ///
 /// It is filesystem management over the base directory — each named session is its own state root, so A33's
@@ -1615,18 +1719,25 @@ fn run_sessions(args: &Args) -> i32 {
     let home = teamagents_engine::v2::sessions::base_of(&root);
     let home = home.canonicalize().unwrap_or(home);
     let verb = args.positional.as_deref().unwrap_or("list");
-    if matches!(verb, "open" | "history")
+    if matches!(verb, "open" | "history" | "export")
         && (args.cwd.is_some() || args.model.is_some() || args.full_auto || !args.overrides.is_empty())
     {
-        eprintln!("sessions open/history use the selected session; model/workspace/config overrides belong to teamagents --session ID");
+        eprintln!(
+            "sessions open/history/export use the selected session; model/workspace/config overrides do not apply"
+        );
         return 2;
     }
-    if (args.before.is_some() && verb != "history") || (args.daemon_stop && verb != "delete") {
-        eprintln!("sessions: --before belongs to history; --stop belongs to delete");
+    if (args.before.is_some() && verb != "history")
+        || (args.daemon_stop && verb != "delete")
+        || ((args.output.is_some() || args.format.is_some()) && verb != "export")
+    {
+        eprintln!(
+            "sessions: --before belongs to history, --output/--format belong to export, and --stop belongs to delete"
+        );
         return 2;
     }
     // Serialize registry writers and open/delete across CLI and TUI clients. Reads use atomic registry files.
-    let _registry_lock = if !matches!(verb, "list" | "ls" | "search" | "history") {
+    let _registry_lock = if !matches!(verb, "list" | "ls" | "search" | "history" | "export") {
         let lock = std::fs::create_dir_all(&home)
             .map_err(|e| e.to_string())
             .and_then(|_| teamagents_engine::jobs::state_lock(&home.join("sessions.lock")));
@@ -1648,6 +1759,35 @@ fn run_sessions(args: &Args) -> i32 {
         }
     };
     match verb {
+        "export" => {
+            let id = args.approval_id.as_deref().unwrap_or("default");
+            let Some(output) = args.output.as_deref() else {
+                eprintln!("sessions export needs --output FILE");
+                return 2;
+            };
+            let format =
+                match teamagents_engine::v2::session_export::Format::parse(args.format.as_deref().unwrap_or("json")) {
+                    Ok(format) => format,
+                    Err(error) => {
+                        eprintln!("sessions export: {error}");
+                        return 2;
+                    }
+                };
+            match export_with_ctrl_c(&registry, id, Path::new(output), format) {
+                Ok(report) => {
+                    if args.exec_json {
+                        println!("{report}");
+                    } else {
+                        println!("exported session {id} to {output} ({} bytes)", report["bytes"]);
+                    }
+                    0
+                }
+                Err(error) => {
+                    eprintln!("sessions export: {error}");
+                    1
+                }
+            }
+        }
         "history" => {
             let id = args.approval_id.as_deref().unwrap_or("default");
             match teamagents_engine::v2::session_browser::history(&registry, id, args.before, args.limit.unwrap_or(200))
@@ -2006,6 +2146,91 @@ fn run_sessions(args: &Args) -> i32 {
                  `sessions search --query TEXT`, `sessions archive --id ID`, `sessions delete --id ID --yes`"
             );
             2
+        }
+    }
+}
+
+fn run_inputs(args: &Args) -> i32 {
+    use teamagents_engine::v2::exec::Client;
+    let verb = args.positional.as_deref().unwrap_or("list");
+    if args.cwd.is_some() || args.model.is_some() || args.full_auto || !args.overrides.is_empty() {
+        eprintln!("inputs uses the running session; workspace/model/config flags do not apply");
+        return 2;
+    }
+    let mut params = serde_json::json!({"instance_id": args.recipient.as_deref().unwrap_or("i-leader")});
+    let method = match verb {
+        "paths"
+            if args.approval_id.is_none()
+                && args.input_revision.is_none()
+                && args.prompt.is_none()
+                && args.limit.is_none()
+                && args.after.is_none() =>
+        {
+            params["prefix"] = args.query.as_deref().unwrap_or("").into();
+            "input_paths"
+        }
+        "list"
+            if args.approval_id.is_none()
+                && args.input_revision.is_none()
+                && args.prompt.is_none()
+                && args.query.is_none() =>
+        {
+            let limit = args.limit.unwrap_or(50);
+            if !(1..=100).contains(&limit) {
+                eprintln!("inputs list --limit must be 1..100");
+                return 2;
+            }
+            params["limit"] = limit.into();
+            params["after"] = args.after.unwrap_or(0).into();
+            "inputs"
+        }
+        "edit" | "cancel" if args.limit.is_none() && args.after.is_none() && args.query.is_none() => {
+            let (Some(id), Some(revision)) = (&args.approval_id, args.input_revision) else {
+                eprintln!("inputs edit/cancel requires --id ENVELOPE --revision N from inputs list");
+                return 2;
+            };
+            params["envelope_id"] = id.clone().into();
+            params["revision"] = revision.into();
+            if verb == "edit" {
+                let Some(text) = args.prompt.as_ref().filter(|s| !s.trim().is_empty()) else {
+                    eprintln!("inputs edit requires --prompt TEXT");
+                    return 2;
+                };
+                params["text"] = text.clone().into();
+                "edit_input"
+            } else if args.prompt.is_none() {
+                "cancel_input"
+            } else {
+                eprintln!("inputs cancel does not accept --prompt");
+                return 2;
+            }
+        }
+        _ => {
+            eprintln!("inputs: use list [--after N --limit N], edit --id ID --revision N --prompt TEXT, or cancel --id ID --revision N; --recipient defaults to i-leader");
+            return 2;
+        }
+    };
+    let root = args.state_root.clone().map(PathBuf::from).unwrap_or_else(teamagents_engine::v2_root);
+    let mut client = match Client::connect(&root.join("daemon.sock")) {
+        Ok(client) => client,
+        Err(error) => {
+            eprintln!("inputs: {error}");
+            return 2;
+        }
+    };
+    let result = if matches!(method, "inputs" | "input_paths") {
+        client.call(method, params)
+    } else {
+        client.command(&format!("input-change-{}", uuid::Uuid::new_v4()), method, params)
+    };
+    match result {
+        Ok(report) => {
+            println!("{}", serde_json::to_string_pretty(&report).unwrap());
+            0
+        }
+        Err(error) => {
+            eprintln!("inputs: {error}");
+            1
         }
     }
 }
@@ -2459,6 +2684,7 @@ fn main() {
         Some("goals") => run_goals(&args),
         Some("mcp") => run_mcp(&args),
         Some("instances") => run_instances(&args),
+        Some("inputs") => run_inputs(&args),
         Some("sessions") => run_sessions(&args),
         Some("automations") => run_automations(&args),
         Some("tasks") => run_tasks(&args),

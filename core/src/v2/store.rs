@@ -106,6 +106,24 @@ CREATE TABLE IF NOT EXISTS envelopes (
 );
 CREATE INDEX IF NOT EXISTS idx_envelopes_recipient ON envelopes(recipient, state);
 
+-- D-451: append-only user input revisions; the envelope keeps delivery identity/order.
+CREATE TABLE IF NOT EXISTS input_revisions (
+    envelope_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    action TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created REAL NOT NULL,
+    PRIMARY KEY (envelope_id, revision)
+);
+
+CREATE TABLE IF NOT EXISTS input_attachments (
+    envelope_id TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    artifact_id TEXT NOT NULL,
+    PRIMARY KEY (envelope_id, ordinal),
+    UNIQUE (artifact_id)
+);
+
 CREATE TABLE IF NOT EXISTS context_entries (
     instance_id TEXT NOT NULL,
     epoch INTEGER NOT NULL,
@@ -456,6 +474,26 @@ fn migrate(conn: &Connection, from: i64) -> Result<(), String> {
                      ALTER TABLE model_requests ADD COLUMN surface_authorized INTEGER NOT NULL DEFAULT 0;",
                 )
                 .map_err(|e| format!("migrate 3 -> 4: {e}"))?,
+            // 4 -> 5 (D-451): existing envelopes retain identity and ordering.
+            4 => tx
+                .execute_batch(
+                    "CREATE TABLE IF NOT EXISTS input_revisions (
+                         envelope_id TEXT NOT NULL,
+                         revision INTEGER NOT NULL,
+                         action TEXT NOT NULL,
+                         payload_json TEXT NOT NULL,
+                         created REAL NOT NULL,
+                         PRIMARY KEY (envelope_id, revision)
+                     );
+                     CREATE TABLE IF NOT EXISTS input_attachments (
+                         envelope_id TEXT NOT NULL,
+                         ordinal INTEGER NOT NULL,
+                         artifact_id TEXT NOT NULL,
+                         PRIMARY KEY (envelope_id, ordinal),
+                         UNIQUE (artifact_id)
+                     );",
+                )
+                .map_err(|e| format!("migrate 4 -> 5: {e}"))?,
             other => return Err(format!("no migration step from v2 schema version {other}")),
         }
         version += 1;

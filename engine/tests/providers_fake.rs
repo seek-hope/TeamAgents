@@ -16,6 +16,9 @@ use teamagents_engine::providers::{
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
+#[path = "cases/provider_content.rs"]
+mod provider_content;
+
 struct FakeServer {
     base: String,
     requests: Arc<Mutex<Vec<String>>>,

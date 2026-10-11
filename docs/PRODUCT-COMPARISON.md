@@ -22,9 +22,9 @@ unknown and intentional differences. A missing file name does not establish a mi
 
 | Dimension | Codex / Pi reference | TeamAgents position |
 |---|---|---|
-| Input | Codex has a selectable command popup; Pi documents slash/path completion, file references, external editor and two queue types | D-450 completes the four local commands. File/image input convenience and editable queue visibility remain gaps |
-| Code/media | Codex uses grammar highlighting with size/line guards; Pi uses explicit-language coloring with fallback | D-447/D-448 provide Markdown, Mermaid/SVG/DOT and local images. D-450 adds grammar coloring and schedules long-history previews from the viewport; no universal language/terminal parity claim |
-| Sessions | Codex resume/fork/archive/delete; Pi picker, branch tree, fork/clone and export | Registry and CLI fork/search; optional TUI history/switch/delete. Message-level branches and local HTML export remain gaps |
+| Input | Codex has a selectable command popup; Pi documents slash/path completion, file references, external editor and two queue types | D-451 adds explicit engine-owned text/image attachments, workspace path selection and revision-checked pending input edit/cancel; external editor and alternative queue semantics remain gaps |
+| Code/media | Codex uses grammar highlighting with size/line guards; Pi uses explicit-language coloring with fallback | D-451 moves grammar/diagram/image parsing into bounded terminable Rust helpers; D-450 viewport scheduling and twenty-media revisit remain verified. Linux process isolation is tested; arbitrary terminal/OS parity is not |
+| Sessions | Codex resume/fork/archive/delete; Pi picker, branch tree, fork/clone and export | D-451 adds complete local Markdown/JSON snapshot export and optional-browser search snippets/navigation. Message-level branches and HTML export remain gaps |
 | Tools | File/shell/tool providers, with different extension and review surfaces | Files/shell/web/MCP/skills/codemode pass through control-plane operations and receipts. Tool names alone do not compare coding quality |
 | Headless/protocol | Codex exec JSON/schema plus app-server; Pi print, JSONL, RPC and SDK | Exec JSON/stream-JSON and local Unix protocol exist. No general embedding SDK |
 | Config/instructions | Both support user/project configuration and instruction discovery | Validated CLI overrides (D-428); reads repository-local configuration at the nearest trusted project (D-434), plus instruction files. Project config requires user opt-in and cannot supply permissions, hooks, checks, retention or limits. CLI management is deliberate; the user TUI stays minimal |
@@ -41,10 +41,11 @@ D-450 implements local completion, code highlighting and the media-cache repair.
 figures 16 through 19 of twenty never received previews. The same fixture now checks every visible placement,
 including revisiting an evicted image; its receipt and timing conditions live in the report.
 
-The next priorities are a release rehearsal/publication decision, input attachments, local session export and
-navigation, editable queued input, stronger adversarial-renderer isolation, and live sandbox/provider evidence.
-MCP resources, embedding interfaces, long-context observability and controlled collaboration evaluation remain
-separate work. Each item in the report names evidence, user impact, dependencies and a next acceptance method.
+D-451 implements attachments, pending-input revision/cancellation, local export/search and terminable rendering.
+The [maturity report](../review/maturity-2026-10-11/REPORT.md) records deterministic real-local-runtime workflows,
+process fault tests and an unpublished installed-artifact rehearsal. These results do not measure model coding
+quality or cross-product gains. External editor, message branching/HTML export, MCP resources, embedding APIs,
+context/cost observability, terminal coverage and live sandbox/provider evidence remain ranked follow-up work.
 
 Automatic cross-session context injection, distributed/multi-tenant execution and a plugin marketplace remain
 explicit design exclusions; they need a user-confirmed design change. Explicit append-only memory and session

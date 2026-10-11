@@ -36,6 +36,7 @@ pub struct DaemonHandle {
     stopped: Arc<tokio::sync::Notify>,
     supervisor: Arc<SupervisorHandle>,
     task: tokio::task::JoinHandle<Result<(), String>>,
+    scheduler: tokio::task::JoinHandle<()>,
 }
 
 impl DaemonHandle {
@@ -54,8 +55,13 @@ impl DaemonHandle {
     /// Stop accepting, stop the supervisor, wait for the serve task.
     pub async fn shutdown(self) -> Result<(), String> {
         self.shutdown.store(true, Ordering::SeqCst);
+        // Stop client/scheduler admission before joining the drivers. These tasks own
+        // supervisor references, including its coordinator lock (D-451).
+        self.scheduler.abort();
+        let _ = self.scheduler.await;
+        let served = self.task.await.map_err(|e| format!("daemon join: {e}"))?;
         self.supervisor.shutdown_shared().await?;
-        (&mut { self.task }).await.map_err(|e| format!("daemon join: {e}"))?
+        served
     }
 }
 
@@ -161,12 +167,12 @@ where
     let shutdown = Arc::new(AtomicBool::new(false));
     let stopped = Arc::new(tokio::sync::Notify::new());
     // D-367: automations tick for the lifetime of the session, independent of any client.
-    {
+    let scheduler = {
         let supervisor = supervisor.clone();
         let facts = facts.clone();
         let shutdown = shutdown.clone();
-        tokio::spawn(async move { run_scheduler(supervisor, facts, shutdown).await });
-    }
+        tokio::spawn(async move { run_scheduler(supervisor, facts, shutdown).await })
+    };
     let task = {
         let shutdown = shutdown.clone();
         let stopped = stopped.clone();
@@ -181,7 +187,7 @@ where
             result
         })
     };
-    Ok(DaemonHandle { shutdown, stopped, supervisor, task })
+    Ok(DaemonHandle { shutdown, stopped, supervisor, task, scheduler })
 }
 
 /// Facts every client is told in the greeting: the session id, its state root,
@@ -248,26 +254,31 @@ async fn accept_loop(
     facts: Arc<SessionFacts>,
     shutdown: Arc<AtomicBool>,
 ) -> Result<(), String> {
-    loop {
+    let mut clients = tokio::task::JoinSet::new();
+    let result = loop {
         if shutdown.load(Ordering::SeqCst) {
-            return Ok(());
+            break Ok(());
         }
         let accepted = tokio::select! {
             accepted = listener.accept() => accepted,
+            _ = clients.join_next(), if !clients.is_empty() => continue,
             _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => continue,
         };
         let (stream, _) = match accepted {
             Ok(pair) => pair,
-            Err(e) => return Err(format!("accept: {e}")),
+            Err(e) => break Err(format!("accept: {e}")),
         };
         let (supervisor, session_db, facts, shutdown_in_client) =
             (supervisor.clone(), session_db.clone(), facts.clone(), shutdown.clone());
-        tokio::spawn(async move {
+        clients.spawn(async move {
             if let Err(error) = serve_client(stream, supervisor, &session_db, &facts, shutdown_in_client).await {
                 eprintln!("daemon client: {error}");
             }
         });
-    }
+    };
+    clients.abort_all();
+    while clients.join_next().await.is_some() {}
+    result
 }
 
 async fn run_scheduler(supervisor: Arc<SupervisorHandle>, facts: Arc<SessionFacts>, shutdown: Arc<AtomicBool>) {
@@ -379,7 +390,8 @@ async fn handle(request: &Json, supervisor: &SupervisorHandle, session_db: &Path
     let method = request.get("method").and_then(|v| v.as_str()).unwrap_or("");
     let params = request.get("params").cloned().unwrap_or(json!({}));
     match method {
-        "checkpoint" | "events" | "history" | "tasks" | "grants" | "approvals" | "goals" | "surfaces" | "previews" => {
+        "checkpoint" | "events" | "history" | "tasks" | "grants" | "approvals" | "goals" | "surfaces" | "previews"
+        | "inputs" => {
             // §9: previews are the supervisor's in-memory streaming text, not a table; every other read comes from
             // the database. Passing the payload keeps previews inside `read_method`'s dispatch, which is what
             // `docs/PROTOCOL.md` is generated from.
@@ -405,6 +417,18 @@ async fn handle(request: &Json, supervisor: &SupervisorHandle, session_db: &Path
         // a protocol command) would be new surface, and it would have to answer the identity question a pid file
         // raises"). It is not a control-plane command: stopping a daemon is not a state transition of the
         // session's data, and a member instance never holds this socket.
+        "input_paths" => {
+            let Some(prefix) = params["prefix"].as_str() else {
+                return reply(false, json!("input_paths.prefix required"));
+            };
+            let workspace = PathBuf::from(&facts.workspace);
+            let prefix = prefix.to_string();
+            match tokio::task::spawn_blocking(move || super::attachments::candidates(&workspace, &prefix)).await {
+                Ok(Ok(paths)) => reply(true, paths),
+                Ok(Err(error)) => reply(false, json!(error)),
+                Err(error) => reply(false, json!(format!("path completion: {error}"))),
+            }
+        }
         "shutdown" => reply(true, json!({"stopping": true, "state_root": facts.state_root})),
         // A business command: the v2 command vocabulary is the write surface
         // and the control plane authorizes/dedups it (§9). The client-chosen
@@ -702,6 +726,37 @@ fn read_method(
                 .map_err(|e| format!("surfaces query: {e}"))?;
             let surfaces: Vec<Json> = rows.collect::<Result<_, _>>().map_err(|e| format!("surfaces rows: {e}"))?;
             Ok(json!({"surfaces": surfaces}))
+        }
+        "inputs" => {
+            let instance = params["instance_id"].as_str().unwrap_or("i-leader");
+            let after = params["after"].as_i64().unwrap_or(0);
+            let limit = params["limit"].as_i64().unwrap_or(50);
+            if after < 0 || !(1..=100).contains(&limit) {
+                return Err("inputs: after must be >= 0 and limit must be 1..100".into());
+            }
+            let mut stmt = conn
+                .prepare(
+                    "SELECT e.id, e.sequence, e.epoch, e.payload_json,
+                        COALESCE((SELECT MAX(r.revision) FROM input_revisions r WHERE r.envelope_id = e.id), 0)
+                 FROM envelopes e JOIN instances i ON i.id = e.recipient AND i.session_id = e.session_id
+                 WHERE e.recipient = ?1 AND e.epoch = i.context_epoch AND e.sender = 'user'
+                   AND e.kind = 'user_input' AND e.state = 'ACCEPTED' AND e.sequence > ?2
+                 ORDER BY e.sequence LIMIT ?3",
+                )
+                .map_err(|e| format!("inputs: {e}"))?;
+            let rows = stmt
+                .query_map(rusqlite::params![instance, after, limit + 1], |row| {
+                    let raw: String = row.get(3)?;
+                    Ok(json!({"envelope_id": row.get::<_, String>(0)?, "sequence": row.get::<_, i64>(1)?,
+                    "epoch": row.get::<_, i64>(2)?, "payload": serde_json::from_str::<Json>(&raw).unwrap_or(Json::Null),
+                    "revision": row.get::<_, i64>(4)?}))
+                })
+                .map_err(|e| format!("inputs: {e}"))?;
+            let mut inputs: Vec<Json> = rows.collect::<Result<_, _>>().map_err(|e| format!("inputs: {e}"))?;
+            let more = inputs.len() > limit as usize;
+            inputs.truncate(limit as usize);
+            let next = if more { inputs.last().map(|row| row["sequence"].clone()) } else { None };
+            Ok(json!({"instance_id": instance, "inputs": inputs, "next_after": next}))
         }
         "tasks" => {
             let mut stmt = conn

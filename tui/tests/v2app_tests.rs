@@ -339,7 +339,7 @@ fn composer_submit_targets_the_active_instance() {
     app.handle_key(key(KeyCode::Char('h')));
     app.handle_key(key(KeyCode::Char('i')));
     let effect = app.handle_key(key(KeyCode::Enter)).expect("submit effect");
-    let V2Effect::SubmitInput { instance, envelope, text } = effect else { panic!("wrong effect") };
+    let V2Effect::SubmitInput { instance, envelope, text, .. } = effect else { panic!("wrong effect") };
     assert_eq!(instance, "i-leader");
     assert!(envelope.starts_with("env-"), "{envelope}");
     assert_eq!(text, "hi");

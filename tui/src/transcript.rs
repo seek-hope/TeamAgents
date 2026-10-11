@@ -23,7 +23,17 @@ pub fn project(rows: &[Json], member: &str, bounded: bool) -> Vec<ChatEntry> {
     for row in rows {
         let message = &row["message"];
         let who = row["instance_id"].as_str().unwrap_or(member);
-        let (content, media) = crate::graphics::content(&message["content"]);
+        let (mut content, media) = crate::graphics::content(&message["content"]);
+        for attachment in message["attachments"].as_array().into_iter().flatten() {
+            content.push_str(&format!(
+                "\nAttachment {:?} · {} · {} bytes · SHA-256 {} · snapshot {}",
+                attachment["label"].as_str().unwrap_or("unknown"),
+                attachment["media_type"].as_str().unwrap_or("unknown"),
+                attachment["bytes"],
+                attachment["digest"].as_str().unwrap_or("missing"),
+                attachment["artifact_id"].as_str().unwrap_or("missing")
+            ));
+        }
         let workspace = row["workspace"].as_str().unwrap_or("").to_string();
         let kind = match row["kind"].as_str().unwrap_or("") {
             "user" => ChatKind::User,

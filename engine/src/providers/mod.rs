@@ -5,6 +5,7 @@
 
 pub mod anthropic;
 pub mod chat_completions;
+mod content;
 pub mod responses;
 
 use serde_json::{json, Value as Json};

@@ -5,6 +5,7 @@
 
 pub mod approvals;
 pub mod artifacts;
+pub mod attachments;
 pub mod authority;
 pub mod automations;
 pub mod daemon;
@@ -16,6 +17,7 @@ pub mod intervene;
 pub mod memory;
 pub mod runners;
 pub mod session_browser;
+pub mod session_export;
 pub mod sessions;
 pub mod storage;
 pub mod supervisor;

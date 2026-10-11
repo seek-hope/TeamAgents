@@ -121,6 +121,7 @@ fn handshake(socket: &Path) -> Result<(Conn, Json), String> {
 pub struct ExecOptions {
     pub socket: PathBuf,
     pub prompt: String,
+    pub attachments: Vec<String>,
     pub timeout_s: u64,
     pub json_out: bool,
     /// Stream the session's committed events while the run waits, as NDJSON (`exec --stream-json`, D-249): one
@@ -488,7 +489,7 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
         .command(
             &format!("input-{envelope}"),
             "submit_input",
-            json!({"instance_id": instance, "envelope_id": envelope, "text": options.prompt}),
+            json!({"instance_id": instance, "envelope_id": envelope, "text": options.prompt, "attachments":options.attachments}),
         )
         .map_err(|error| socket_lost("submitting the input", &error))?;
     // A turn that was already in flight when this run started cannot include the
@@ -571,6 +572,13 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
                     // moves the epoch before the boundary reaches it (§5.3/A24): the
                     // run has nothing to wait for and must not call its own deadline
                     // a timeout (D-72). The runtime names every envelope it seals.
+                    if event["kind"] == json!("input_cancelled")
+                        && event["scope"] == json!(instance)
+                        && event["payload"]["envelope_id"] == json!(envelope)
+                    {
+                        undelivered = true;
+                        turn_failure = Some("Pending input was cancelled before consumption.".into());
+                    }
                     if event["kind"] == json!("envelopes_sealed") && event["scope"] == json!(instance) {
                         let sealed = event["payload"]["envelope_ids"].as_array();
                         if sealed.is_some_and(|ids| ids.iter().any(|id| id == &json!(envelope))) {
@@ -729,6 +737,7 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
         "failure": turn_failure,
         "approval": pending_approval,
         "input_queued": queued,
+        "envelope_id": envelope,
         "workspace": options.workspace.to_string_lossy(),
         "verification": verification,
         "verification_path": verification_path,

@@ -49,8 +49,12 @@ pub fn geometry(app: &V2App, area: Rect) -> V2Geometry {
         (app.approvals.len().min(3) as u16 + 2).min(content.height.saturating_sub(composer_h).saturating_sub(1))
     };
     let completion_h = if app.focus == Focus::Composer {
-        (app.completion.candidates(&app.composer).len() as u16)
-            .min(content.height.saturating_sub(composer_h + approvals_h).saturating_sub(1))
+        let count = if app.attachments.visible(&app.composer) {
+            app.attachments.candidates.len().min(8)
+        } else {
+            app.completion.candidates(&app.composer).len()
+        };
+        (count as u16).min(content.height.saturating_sub(composer_h + approvals_h).saturating_sub(1))
     } else {
         0
     };
@@ -89,6 +93,9 @@ pub fn approval_at(geo: &V2Geometry, app: &V2App, row: u16, col: u16) -> Option<
 /// Pointer routing uses the rendered rectangles; selecting an approval never decides it.
 pub fn handle_mouse(app: &mut V2App, area: Rect, mouse: crossterm::event::MouseEvent) {
     use crossterm::event::{MouseButton, MouseEventKind};
+    if app.queue.is_some() {
+        return;
+    }
     let geo = geometry(app, area);
     let point = ratatui::layout::Position::new(mouse.column, mouse.row);
     match mouse.kind {
@@ -126,6 +133,10 @@ pub fn render(frame: &mut Frame, app: &mut V2App) {
     app.graphics.deferred = true;
     let area = frame.area();
     if area.width == 0 || area.height == 0 {
+        return;
+    }
+    if let Some(queue) = &app.queue {
+        crate::queue::render(frame, queue);
         return;
     }
     if let Some(browser) = app.browser.as_mut() {
@@ -266,6 +277,25 @@ fn render_approvals(frame: &mut Frame, app: &V2App, area: Rect) {
 }
 
 fn render_completion(frame: &mut Frame, app: &V2App, area: Rect) {
+    if app.attachments.visible(&app.composer) {
+        let (start, count) = window(app.attachments.candidates.len(), app.attachments.selected, area.height as usize);
+        let lines = app
+            .attachments
+            .candidates
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(count)
+            .map(|(i, path)| {
+                Line::styled(
+                    path.clone(),
+                    if i == app.attachments.selected { selection() } else { Style::default().fg(GREY) },
+                )
+            })
+            .collect::<Vec<_>>();
+        frame.render_widget(Paragraph::new(lines), area);
+        return;
+    }
     let candidates = app.completion.candidates(&app.composer);
     let selected = app.completion.selected(&app.composer).min(candidates.len().saturating_sub(1));
     let (start, count) = window(candidates.len(), selected, area.height as usize);
@@ -289,7 +319,12 @@ fn render_composer(frame: &mut Frame, app: &V2App, area: Rect) {
         return;
     }
     let focused = app.focus == Focus::Composer;
-    let block = panel("Message").border_style(Style::default().fg(if focused { ACCENT } else { GREY }));
+    let title = if app.attachments.paths.is_empty() {
+        "Message".to_string()
+    } else {
+        format!("Message · {} attachments (/attach lists)", app.attachments.paths.len())
+    };
+    let block = panel(title).border_style(Style::default().fg(if focused { ACCENT } else { GREY }));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let (lines, row, col) = app.composer.visual_lines(inner.width as usize);

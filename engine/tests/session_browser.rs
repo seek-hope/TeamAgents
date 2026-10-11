@@ -105,6 +105,143 @@ fn all_history_pages_include_archived_members_and_survive_new_appends() {
 }
 
 #[test]
+fn search_and_export_cli_are_current_read_only_surfaces() {
+    let fixture = Fixture::new();
+    let db = fixture.root.join("session.sqlite");
+    let conn = teamagents_core::v2::store::open(&db, true).unwrap();
+    conn.execute(
+        "INSERT INTO instances (id,session_id,profile_revision,workspace_ref,lifecycle,phase,profile_json) VALUES ('i-leader','s-main',1,'/workspace','ACTIVE','READY','{}')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO context_entries (id,instance_id,epoch,idx,kind,message_json,created) VALUES ('entry-search','i-leader',0,1,'user',?1,0)",
+        [json!({"content":"Unicode needle λ and <script>alert(1)</script>"}).to_string()],
+    )
+    .unwrap();
+    drop(conn);
+
+    let registry_file = fixture.root.join("sessions.json");
+    let registry_before = std::fs::read(&registry_file).ok();
+    let search = fixture.json(&["sessions", "search", "--query", "needle", "--limit", "10", "--json"]);
+    assert_eq!(search["hits"].as_array().unwrap().len(), 1);
+    assert!(search["hits"][0]["snippet"].as_str().unwrap().contains("needle"));
+    assert_eq!(registry_before, std::fs::read(&registry_file).ok());
+    assert!(!fixture.root.join("sessions.lock").exists(), "read-only search must not acquire a writer lock");
+
+    let json_path = fixture.dir.join("export.json");
+    let json_path_string = json_path.to_string_lossy().into_owned();
+    let exported = fixture.json(&[
+        "sessions",
+        "export",
+        "--id",
+        "default",
+        "--output",
+        &json_path_string,
+        "--format",
+        "json",
+        "--json",
+    ]);
+    assert_eq!(exported["complete"], true);
+    let body: Json = serde_json::from_slice(&std::fs::read(&json_path).unwrap()).unwrap();
+    assert_eq!(body["snapshot"]["session_id"], "default");
+    assert!(body["context_entries"][0]["message"]["content"].as_str().unwrap().contains("needle"));
+    assert!(body["context_entries"][0]["message"]["content"].as_str().unwrap().contains("<script>"));
+    assert!(
+        !fixture.run(&["sessions", "export", "--id", "default", "--output", &json_path_string,]).status.success(),
+        "export must refuse to overwrite"
+    );
+
+    let markdown_path = fixture.dir.join("export.md");
+    let markdown_path_string = markdown_path.to_string_lossy().into_owned();
+    let markdown = fixture.json(&[
+        "sessions",
+        "export",
+        "--id",
+        "default",
+        "--output",
+        &markdown_path_string,
+        "--format",
+        "markdown",
+        "--json",
+    ]);
+    assert_eq!(markdown["complete"], true);
+    let markdown_body = std::fs::read_to_string(&markdown_path).unwrap();
+    assert!(markdown_body.starts_with("# Session export"));
+    assert!(markdown_body.contains("Unicode needle λ and <script>alert(1)</script>"));
+
+    let incompatible = fixture.run(&["sessions", "export", "--output", &markdown_path_string, "--cwd", "."]);
+    assert!(!incompatible.status.success());
+    assert!(String::from_utf8_lossy(&incompatible.stderr).contains("overrides do not apply"));
+}
+
+#[test]
+fn export_ctrl_c_reaps_worker_and_removes_unpublished_temporary() {
+    use std::{
+        process::Stdio,
+        time::{Duration, Instant},
+    };
+    let fixture = Fixture::new();
+    let conn = teamagents_core::v2::store::open(&fixture.root.join("session.sqlite"), true).unwrap();
+    conn.execute_batch("BEGIN").unwrap();
+    let message = json!({"content":"source line ".repeat(45000)}).to_string();
+    for idx in 1..=80 {
+        conn.execute("INSERT INTO context_entries (id,instance_id,epoch,idx,kind,message_json,created) VALUES (?1,'i-leader',0,?2,'user',?3,0)",
+            rusqlite::params![format!("signal-{idx}"),idx,message]).unwrap();
+    }
+    conn.execute_batch("COMMIT").unwrap();
+    drop(conn);
+    let output = fixture.dir.join("cancelled.json");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_teamagents"))
+        .arg("--state-root")
+        .arg(&fixture.root)
+        .args(["sessions", "export", "--output"])
+        .arg(&output)
+        .arg("--json")
+        .env("XDG_CONFIG_HOME", fixture.dir.join("config"))
+        .env("XDG_STATE_HOME", fixture.dir.join("state"))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let temporary = || {
+        std::fs::read_dir(&fixture.dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|entry| entry.file_name().to_string_lossy().starts_with(".teamagents-export-"))
+    };
+    while !temporary() {
+        if child.try_wait().unwrap().is_some() || Instant::now() >= deadline {
+            let _ = child.kill();
+            let receipt = child.wait_with_output().unwrap();
+            panic!("export ended before cancellation: {}", String::from_utf8_lossy(&receipt.stderr));
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    // SAFETY: child.id is still our unreaped child; signal that exact process, not a reused PID.
+    assert_eq!(unsafe { libc::kill(child.id() as i32, libc::SIGINT) }, 0);
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("export ignored SIGINT");
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let receipt = child.wait_with_output().unwrap();
+    assert!(!receipt.status.success());
+    assert!(String::from_utf8_lossy(&receipt.stderr).contains("cancelled"), "{receipt:?}");
+    assert!(!output.exists());
+    assert!(!temporary());
+    // The same CLI can publish a subsequent complete snapshot and refuses to overwrite it.
+    let next = fixture.json(&["sessions", "export", "--output", output.to_str().unwrap(), "--json"]);
+    assert_eq!(next["complete"], true);
+    let data: Json = serde_json::from_slice(&std::fs::read(&output).unwrap()).unwrap();
+    assert_eq!(data["context_entries"].as_array().unwrap().len(), 80);
+}
+
+#[test]
 fn deleting_a_live_default_requires_confirmation_and_preserves_its_siblings() {
     let fixture = Fixture::new();
     let named = fixture.json(&["sessions", "new", "--name", "kept", "--json"]);

@@ -68,7 +68,7 @@ impl Control {
     /// The single entry point. Duplicate command ids return the stored
     /// receipt; the same id with a different payload is rejected (§6.3).
     pub fn submit(&mut self, command: Command, identity: Identity) -> Result<Json, String> {
-        self.submit_inner(command, identity).map_err(|error| {
+        self.submit_inner(command, identity, None).map_err(|error| {
             // A31/§4.4: SQLite reports a full disk as SQLITE_FULL ("database
             // or disk is full") through whichever handler context stringified
             // it. Classify it at the boundary so drivers can stop dispatching
@@ -81,11 +81,22 @@ impl Control {
         })
     }
 
-    fn submit_inner(&mut self, command: Command, identity: Identity) -> Result<Json, String> {
-        if command.command_id.is_empty() {
-            return Err("command_id must not be empty".into());
+    /// Engine-only preparation boundary: the receipt binds the original paths/text,
+    /// while the transaction consumes only verified, staged snapshot descriptors.
+    pub fn submit_input_snapshots(
+        &mut self,
+        command: Command,
+        snapshots: Vec<super::attachments::InputAttachment>,
+    ) -> Result<Json, String> {
+        if command.method != "submit_input" {
+            return Err("snapshots require submit_input".into());
         }
-        let hash = payload_hash(&command.method, &command.params, &identity);
+        self.submit_inner(command, Identity::User, Some(snapshots))
+    }
+
+    /// Inspect dedup before filesystem work, including a retry after files vanished.
+    pub fn command_receipt(&self, command: &Command, identity: &Identity) -> Result<Option<Json>, String> {
+        let hash = payload_hash(&command.method, &command.params, identity);
         let existing: Option<(String, String)> = self
             .conn
             .query_row(
@@ -95,15 +106,37 @@ impl Control {
             )
             .optional()
             .map_err(|e| format!("command dedup read: {e}"))?;
-        if let Some((stored_hash, result)) = existing {
-            if stored_hash != hash {
-                return Err(format!("command_id {} was already used with a different payload", command.command_id));
+        match existing {
+            Some((stored, result)) if stored == hash => {
+                serde_json::from_str(&result).map(Some).map_err(|e| format!("stored receipt: {e}"))
             }
-            return serde_json::from_str(&result).map_err(|e| format!("stored receipt: {e}"));
+            Some(_) => Err(format!("command_id {} was already used with a different payload", command.command_id)),
+            None => Ok(None),
+        }
+    }
+
+    fn submit_inner(
+        &mut self,
+        command: Command,
+        identity: Identity,
+        snapshots: Option<Vec<super::attachments::InputAttachment>>,
+    ) -> Result<Json, String> {
+        if command.command_id.is_empty() {
+            return Err("command_id must not be empty".into());
+        }
+        let hash = payload_hash(&command.method, &command.params, &identity);
+        if let Some(result) = self.command_receipt(&command, &identity)? {
+            return Ok(result);
         }
         let method = command.method.clone();
-        let params = command.params.clone();
+        let mut params = command.params.clone();
         let tx = self.conn.transaction().map_err(|e| format!("begin tx: {e}"))?;
+        if let Some(snapshots) = snapshots {
+            bind_input_attachments(&tx, &self.session_id, &command, &snapshots)?;
+            params["attachments"] = json!(snapshots);
+        } else if method == "submit_input" && params.get("attachments").is_some_and(|v| v != &json!([])) {
+            return Err("input attachments must be snapshotted by the engine".into());
+        }
         let result = dispatch(&tx, &self.session_id, &method, &params, &identity)?;
         tx.execute(
             "INSERT INTO commands (command_id, payload_hash, result_json, created) VALUES (?1, ?2, ?3, ?4)",
@@ -141,6 +174,8 @@ fn dispatch(
         "fire_timer" => fire_timer(tx, session_id, params, identity),
         "blocked_report" => blocked_report(tx, session_id, params, identity),
         "submit_input" => submit_input(tx, session_id, params, identity),
+        "edit_input" => revise_input(tx, session_id, params, identity, false),
+        "cancel_input" => revise_input(tx, session_id, params, identity, true),
         "begin_request" => begin_request(tx, session_id, params, identity),
         "record_attempt" => record_attempt(tx, session_id, params),
         "begin_compression" => begin_compression(tx, session_id, params, identity),
@@ -924,15 +959,11 @@ fn drain_inbox(tx: &Connection, session_id: &str, params: &Json, identity: &Iden
         }
         let payload: Json = serde_json::from_str(&payload_json).unwrap_or(json!({}));
         let content = envelope_text(&kind, &sender, correlation.as_deref(), &payload);
-        append_context(
-            tx,
-            instance_id,
-            epoch,
-            "user",
-            &json!({"role": "user", "content": content}),
-            Some(&id),
-            &json!([]),
-        )?;
+        let mut message = json!({"role": "user", "content": content});
+        if kind == "user_input" {
+            copy_input_attachments(&payload, &mut message);
+        }
+        append_context(tx, instance_id, epoch, "user", &message, Some(&id), &json!([]))?;
         tx.execute("UPDATE envelopes SET state = 'APPLIED' WHERE id = ?1", [&id])
             .map_err(|e| format!("apply envelope {id}: {e}"))?;
         applied += 1;
@@ -1480,9 +1511,14 @@ fn require_checks(tx: &Connection, session_id: &str, params: &Json, identity: &I
 /// (instance, epoch, envelope_id); a different payload under a replayed id
 /// is rejected by the caller's command receipt check.
 fn submit_input(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
+    require_user(identity)?;
     let instance_id = params["instance_id"].as_str().ok_or("submit_input.instance_id required")?;
     let envelope_id = params["envelope_id"].as_str().ok_or("submit_input.envelope_id required")?;
     let text = params["text"].as_str().ok_or("submit_input.text required")?;
+    let mut payload = json!({"text": text});
+    copy_input_attachments(params, &mut payload);
+    let mut message = json!({"role": "user", "content": text});
+    copy_input_attachments(&payload, &mut message);
     let (session, epoch, lifecycle, phase, revision) = load_instance(tx, instance_id)?;
     if session != session_id {
         return Err(format!("instance {instance_id} does not belong to this session"));
@@ -1500,17 +1536,10 @@ fn submit_input(tx: &Connection, session_id: &str, params: &Json, identity: &Ide
         "INSERT INTO envelopes
          (id, session_id, sender, recipient, epoch, kind, correlation_id, payload_json, sequence, state)
          VALUES (?1, ?2, ?3, ?4, ?5, 'user_input', NULL, ?6, ?7, 'ACCEPTED')",
-        rusqlite::params![
-            envelope_id,
-            session_id,
-            sender,
-            instance_id,
-            epoch,
-            json!({"text": text}).to_string(),
-            sequence
-        ],
+        rusqlite::params![envelope_id, session_id, sender, instance_id, epoch, payload.to_string(), sequence],
     )
     .map_err(|e| format!("envelope {envelope_id}: {e}"))?;
+    record_input_revision(tx, envelope_id, 0, "submitted", &payload)?;
     // A turn in flight has a *fixed* request that cannot include this input, so
     // applying it now would store it behind that request's own reply: the model
     // would read its answer as the answer to an input it never saw, and the idle
@@ -1524,15 +1553,7 @@ fn submit_input(tx: &Connection, session_id: &str, params: &Json, identity: &Ide
         return Ok(json!({"envelope_id": envelope_id, "applied": false, "queued": true,
                          "phase": phase, "instance_revision": revision}));
     }
-    let applied = append_context(
-        tx,
-        instance_id,
-        epoch,
-        "user",
-        &json!({"role": "user", "content": text}),
-        Some(envelope_id),
-        &json!([]),
-    )?;
+    let applied = append_context(tx, instance_id, epoch, "user", &message, Some(envelope_id), &json!([]))?;
     if applied {
         tx.execute("UPDATE envelopes SET state = 'APPLIED' WHERE id = ?1", [envelope_id])
             .map_err(|e| format!("envelope apply: {e}"))?;
@@ -1569,6 +1590,148 @@ fn submit_input(tx: &Connection, session_id: &str, params: &Json, identity: &Ide
     publish_list(tx, session_id, params)?;
     event(tx, session_id, "input", instance_id, &json!({"envelope_id": envelope_id, "applied": applied}))?;
     Ok(json!({"envelope_id": envelope_id, "applied": applied, "instance_revision": revision}))
+}
+
+fn copy_input_attachments(from: &Json, to: &mut Json) {
+    if let Some(attachments) = from.get("attachments").filter(|v| v.as_array().is_some_and(|a| !a.is_empty())) {
+        to["attachments"] = attachments.clone();
+    }
+}
+
+fn bind_input_attachments(
+    tx: &Connection,
+    session: &str,
+    command: &Command,
+    attachments: &[super::attachments::InputAttachment],
+) -> Result<(), String> {
+    use super::attachments::{MAX_ATTACHMENTS, MAX_TOTAL_BYTES};
+    let paths = command.params["attachments"].as_array().ok_or("attachments must be an array of paths")?;
+    if attachments.len() != paths.len() || attachments.len() > MAX_ATTACHMENTS {
+        return Err("attachment snapshot count mismatch or exceeds eight files".into());
+    }
+    let envelope = command.params["envelope_id"].as_str().ok_or("input.envelope_id required")?;
+    let mut total = 0usize;
+    for (ordinal, attachment) in attachments.iter().enumerate() {
+        attachment.validate()?;
+        if paths[ordinal].as_str() != Some(&attachment.label) {
+            return Err("attachment path does not match submission".into());
+        }
+        total = total.checked_add(attachment.bytes).ok_or("attachment size overflow")?;
+        if total > MAX_TOTAL_BYTES {
+            return Err("attachments exceed 16 MiB total".into());
+        }
+        let valid: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM artifacts WHERE id = ?1 AND session_id = ?2 AND digest = ?3 AND size = ?4
+               AND kind = 'input_attachment' AND owner_scope = 'input' AND owner_ref = ?5 AND completeness = 'STAGING'",
+                rusqlite::params![
+                    attachment.artifact_id,
+                    session,
+                    attachment.digest,
+                    attachment.bytes as i64,
+                    command.command_id
+                ],
+                |r| r.get(0),
+            )
+            .map_err(|e| format!("attachment ownership: {e}"))?;
+        if valid != 1 {
+            return Err("attachment snapshot is not staged for this input and session".into());
+        }
+        tx.execute(
+            "INSERT INTO input_attachments (envelope_id, ordinal, artifact_id) VALUES (?1, ?2, ?3)",
+            rusqlite::params![envelope, ordinal as i64, attachment.artifact_id],
+        )
+        .map_err(|e| format!("input attachment: {e}"))?;
+        publish_one(tx, session, &attachment.artifact_id)?;
+        // The durable reference retains original snapshots even after cancellation or envelope pruning.
+        tx.execute("UPDATE artifacts SET owner_ref = NULL WHERE id = ?1", [&attachment.artifact_id])
+            .map_err(|e| format!("attachment owner release: {e}"))?;
+    }
+    Ok(())
+}
+
+/// D-451: original and revised payloads are immutable audit records. The current
+/// envelope is the only delivery fact; an edit never moves its sequence or epoch.
+fn record_input_revision(
+    tx: &Connection,
+    envelope: &str,
+    revision: i64,
+    action: &str,
+    payload: &Json,
+) -> Result<(), String> {
+    tx.execute(
+        "INSERT INTO input_revisions (envelope_id, revision, action, payload_json, created)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![envelope, revision, action, payload.to_string(), crate::models::now()],
+    )
+    .map_err(|e| format!("input revision: {e}"))?;
+    Ok(())
+}
+
+fn revise_input(
+    tx: &Connection,
+    session_id: &str,
+    params: &Json,
+    identity: &Identity,
+    cancel: bool,
+) -> Result<Json, String> {
+    require_user(identity)?;
+    let instance = params["instance_id"].as_str().ok_or("input.instance_id required")?;
+    let envelope = params["envelope_id"].as_str().ok_or("input.envelope_id required")?;
+    let expected = params["revision"].as_i64().filter(|v| *v >= 0).ok_or("input.revision must be >= 0")?;
+    let (session, epoch, lifecycle, _, _) = load_instance(tx, instance)?;
+    if session != session_id || lifecycle == "TERMINATED" {
+        return Err("input recipient is not live in this session".into());
+    }
+    let row: Option<(i64, String, String)> = tx
+        .query_row(
+            "SELECT epoch, state, payload_json FROM envelopes
+             WHERE id = ?1 AND session_id = ?2 AND recipient = ?3
+               AND sender = 'user' AND kind = 'user_input'",
+            rusqlite::params![envelope, session_id, instance],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .map_err(|e| format!("pending input: {e}"))?;
+    let (stored_epoch, state, raw) = row.ok_or("no user input with that identity and recipient")?;
+    if stored_epoch != epoch || state != "ACCEPTED" {
+        return Err(format!("input {envelope} is {state} or belongs to an old epoch; only pending input can change"));
+    }
+    let current: Option<i64> = tx
+        .query_row("SELECT MAX(revision) FROM input_revisions WHERE envelope_id = ?1", [envelope], |row| row.get(0))
+        .map_err(|e| format!("input revision read: {e}"))?;
+    let revision = current.unwrap_or(0);
+    if revision != expected {
+        return Err(format!("input {envelope} revision {revision} != expected {expected}: refresh before editing"));
+    }
+    let mut payload: Json = serde_json::from_str(&raw).map_err(|e| format!("input payload: {e}"))?;
+    if current.is_none() {
+        record_input_revision(tx, envelope, 0, "original", &payload)?;
+    }
+    if !cancel {
+        let text = params["text"].as_str().ok_or("edit_input.text required")?;
+        if text.trim().is_empty() || text.len() > 1024 * 1024 {
+            return Err("edited input must contain text and be at most 1 MiB".into());
+        }
+        // Attachments are engine-owned immutable references; editing text preserves them.
+        payload["text"] = json!(text);
+    }
+    let next = revision.checked_add(1).ok_or("input revision exhausted")?;
+    let state = if cancel { "CANCELLED" } else { "ACCEPTED" };
+    tx.execute(
+        "UPDATE envelopes SET payload_json = ?1, state = ?2 WHERE id = ?3 AND state = 'ACCEPTED'",
+        rusqlite::params![payload.to_string(), state, envelope],
+    )
+    .map_err(|e| format!("revise input: {e}"))?;
+    record_input_revision(tx, envelope, next, if cancel { "cancelled" } else { "edited" }, &payload)?;
+    event(
+        tx,
+        session_id,
+        if cancel { "input_cancelled" } else { "input_edited" },
+        instance,
+        &json!({"envelope_id": envelope, "revision": next}),
+    )?;
+    Ok(json!({"envelope_id": envelope, "instance_id": instance, "revision": next, "state": state}))
 }
 
 /// Append one context entry; returns false when the (instance, epoch,
@@ -4158,6 +4321,7 @@ fn artifact_gc_claim(tx: &Connection, session_id: &str, params: &Json) -> Result
                    AND id NOT IN (SELECT payload_ref FROM context_entries WHERE payload_ref IS NOT NULL)
                    AND id NOT IN (SELECT request_ref FROM model_requests)
                    AND id NOT IN (SELECT response_ref FROM attempts WHERE response_ref IS NOT NULL)
+                   AND id NOT IN (SELECT artifact_id FROM input_attachments)
                    AND id NOT IN (SELECT payload_ref FROM events WHERE payload_ref IS NOT NULL)
                  LIMIT ?2",
             )
@@ -4419,6 +4583,7 @@ fn artifact_collect(tx: &Connection, session_id: &str, params: &Json) -> Result<
                OR id IN (SELECT payload_ref FROM context_entries WHERE payload_ref IS NOT NULL)
                OR id IN (SELECT request_ref FROM model_requests)
                OR id IN (SELECT response_ref FROM attempts WHERE response_ref IS NOT NULL)
+               OR id IN (SELECT artifact_id FROM input_attachments)
                OR id IN (SELECT payload_ref FROM events WHERE payload_ref IS NOT NULL))",
             [id],
             |row| row.get(0),

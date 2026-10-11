@@ -2,11 +2,14 @@
 use crate::text::Composer;
 use crossterm::event::{KeyCode, KeyEvent};
 
-pub const COMMANDS: [(&str, &str); 4] = [
+pub const COMMANDS: [(&str, &str); 7] = [
     ("/help", "Show controls"),
     ("/sessions", "Browse conversations"),
     ("/interrupt", "Interrupt the Leader model request"),
     ("/quit", "Detach from this session"),
+    ("/queue", "Edit or cancel pending input"),
+    ("/attach", "Stage a file; Tab completes paths"),
+    ("/detach", "Remove an attachment by index"),
 ];
 
 #[derive(Default)]

@@ -100,6 +100,12 @@ you ──goal (natural language)──▶ Leader ──spawn / delegate──�
 - **Isolation**: under `approved_scope` instance shells run in `bubblewrap`; when it is missing the command
   fails loudly instead of silently degrading to unsandboxed execution.
 
+D-451 adds explicit text/image attachments (`/attach PATH` or `exec --attach PATH`), workspace path
+completion, revision-checked pending input (`/queue` or `inputs`), browser search and complete local
+Markdown/JSON session export. Rendering runs in bounded Rust display processes with safe source fallback.
+See the [user guide](docs/USER-GUIDE.md) for limits and controls and the [maturity report](review/maturity-2026-10-11/REPORT.md)
+for deterministic local evidence and remaining gaps. These source features are newer than the v0.2.0 tag.
+
 ## Install
 
 Requirements: Linux (x86_64) plus `bubblewrap`; model credentials are read from environment variables and

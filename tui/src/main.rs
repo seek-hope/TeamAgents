@@ -100,6 +100,9 @@ fn parse_args() -> Args {
 }
 
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("--display-worker") {
+        std::process::exit(teamagents_tui::graphics::run_display_worker());
+    }
     let args = parse_args();
     if !atty_stdout() {
         eprintln!("the TUI needs a real terminal; for scripts use teamagents exec \"…\"");
@@ -204,19 +207,73 @@ fn v2_refresh_approvals(client: &mut DaemonClient, app: &mut V2App) {
 
 fn run_v2_effect(effect: V2Effect, client: &mut DaemonClient, app: &mut V2App, sessions: &mut SessionClient) {
     match effect {
-        V2Effect::Sessions(action) => sessions.start(action, app),
-        V2Effect::SubmitInput { instance, envelope, text } => {
+        V2Effect::Sessions(action) => {
+            if matches!(action, teamagents_tui::sessions::SessionAction::CancelSearch) {
+                sessions.cancel_search(app);
+            } else {
+                sessions.start(action, app);
+            }
+        }
+        V2Effect::Queue(action) => {
+            use teamagents_tui::queue::Action;
+            let result = match &action {
+                Action::List { after } => {
+                    client.call("inputs", json!({"instance_id":"i-leader", "after":after, "limit":20}))
+                }
+                Action::Revise { envelope, revision, text, command_id } => {
+                    let method = if text.is_some() { "edit_input" } else { "cancel_input" };
+                    client.command(
+                        command_id,
+                        method,
+                        json!({"instance_id":"i-leader", "envelope_id":envelope, "revision":revision, "text":text}),
+                    )
+                }
+            };
+            if let Some(queue) = &mut app.queue {
+                match result {
+                    Err(error) => queue.fail(error),
+                    Ok(reply) => {
+                        if matches!(action, Action::List { .. }) {
+                            queue.apply(&reply);
+                        } else {
+                            queue.saved();
+                            match client.call("inputs", json!({"instance_id":"i-leader", "limit":20})) {
+                                Ok(reply) => queue.apply(&reply),
+                                Err(error) => queue.fail(error),
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        V2Effect::InputPaths { prefix } => match client.call("input_paths", json!({"prefix":prefix})) {
+            Ok(reply) => {
+                app.attachments.apply(&reply, &app.composer);
+                if app.attachments.candidates.is_empty() {
+                    app.command_note("No matching workspace paths.");
+                }
+            }
+            Err(error) => app.command_failed(&error),
+        },
+        V2Effect::SubmitInput { instance, envelope, text, attachments } => {
             // the envelope id doubles as the command id: a retry after a lost
             // reply dedups at the control plane (§9)
             let result = client.command(
                 &format!("input-{envelope}"),
                 "submit_input",
-                json!({"instance_id": instance, "envelope_id": envelope, "text": text}),
+                json!({"instance_id": instance, "envelope_id": envelope, "text": text, "attachments":attachments}),
             );
             match result {
-                Ok(reply) if reply["queued"] == json!(true) => app.input_queued(&instance),
-                Ok(_) => {}
-                Err(e) => app.submit_failed(&e),
+                Ok(reply) => {
+                    app.attachments.accepted();
+                    if reply["queued"] == json!(true) {
+                        app.input_queued(&instance);
+                    }
+                }
+                Err(e) => {
+                    app.composer.set_text(&text);
+                    app.submit_failed(&e);
+                }
             }
         }
         V2Effect::Decide { approval_id, decision } => {
@@ -308,6 +365,18 @@ fn run_v2(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, mut client
                 }
                 Ok(Event::Resize(_, _)) => {
                     app.graphics.resize();
+                    dirty = true;
+                }
+                Ok(Event::Paste(text)) if app.queue.is_some() => {
+                    if let Some(queue) = &mut app.queue {
+                        queue.paste(&text);
+                    }
+                    dirty = true;
+                }
+                Ok(Event::Paste(text)) if app.browser.as_ref().is_some_and(|browser| browser.search_editing) => {
+                    if let Some(browser) = &mut app.browser {
+                        browser.paste_search(&text);
+                    }
                     dirty = true;
                 }
                 Ok(Event::Paste(text)) if app.focus == V2Focus::Composer && app.browser.is_none() => {

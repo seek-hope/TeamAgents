@@ -62,6 +62,79 @@ fn failed_paging_keeps_its_cursor_and_a_successful_page_can_return() {
 }
 
 #[test]
+fn browser_search_is_local_editable_and_opens_only_on_explicit_enter() {
+    let mut browser = browser();
+    browser.begin_search();
+    for character in "needle λ".chars() {
+        assert!(browser.key(key(KeyCode::Char(character))).is_none());
+    }
+    let action = browser.key(key(KeyCode::Enter));
+    assert_eq!(action, Some(SessionAction::Search { query: "needle λ".into(), generation: 1 }));
+    assert!(browser.busy);
+    browser.apply_search(
+        &json!({"hits": [
+            {"session_id":"s-2", "instance_id":"i-leader", "idx":7, "snippet":"needle λ"},
+            {"session_id":"s-3", "instance_id":"i-leader", "idx":8, "snippet":"another"}
+        ], "skipped": []}),
+        "needle λ",
+        1,
+    );
+    assert!(!browser.busy);
+    assert_eq!(browser.key(key(KeyCode::Down)), None);
+    assert_eq!(browser.search_selected, 1);
+    assert_eq!(browser.key(key(KeyCode::Enter)), Some(SessionAction::Open(browser.rows[3].clone())));
+}
+
+#[test]
+fn browser_search_no_match_cancel_and_stale_result_keep_the_browser_and_draft() {
+    let mut browser = browser();
+    browser.begin_search();
+    browser.paste_search("\u{4e0d}\u{5b58}\u{5728}");
+    let action = browser.key(key(KeyCode::Enter));
+    assert_eq!(action, Some(SessionAction::Search { query: "\u{4e0d}\u{5b58}\u{5728}".into(), generation: 1 }));
+    browser.cancel_search();
+    assert!(!browser.search_active());
+    assert_eq!(browser.search_query, "");
+    browser.apply_search(
+        &json!({"hits": [{"session_id":"s-1", "snippet":"stale"}], "skipped": []}),
+        "\u{4e0d}\u{5b58}\u{5728}",
+        1,
+    );
+    assert!(browser.search_hits.is_empty(), "cancelled results must not repopulate the browser");
+    assert_eq!(browser.selected, 0, "search must not change the session selection");
+    browser.begin_search();
+    browser.paste_search("none");
+    let action = browser.key(key(KeyCode::Enter));
+    assert!(matches!(action, Some(SessionAction::Search { .. })));
+    browser.apply_search(&json!({"hits": [], "skipped": []}), "none", 3);
+    assert!(browser.search_active());
+    assert!(browser.key(key(KeyCode::Enter)).is_none(), "no hit cannot switch sessions");
+    assert!(browser.error.as_deref().unwrap().contains("No"), "rendered no-match state remains explicit");
+    browser.key(key(KeyCode::Esc));
+    assert!(!browser.search_active());
+}
+
+#[test]
+fn browser_search_renders_at_narrow_sizes() {
+    let mut app = V2App::new("s-main");
+    let mut state = browser();
+    state.begin_search();
+    state.paste_search("record");
+    state.apply_search(
+        &json!({"hits": [{"session_id":"s-0", "instance_id":"i-leader", "idx":1, "snippet":"record"}], "skipped": []}),
+        "record",
+        0,
+    );
+    app.browser = Some(state);
+    for width in [0, 1, 2, 8, 40] {
+        for height in [0, 1, 2, 4, 12] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| v2ui::render(frame, &mut app)).unwrap();
+        }
+    }
+}
+
+#[test]
 fn long_session_lists_render_and_click_the_same_visible_rows_at_every_size() {
     for width in [0, 1, 2, 8, 40, 80, 140] {
         for height in [0, 1, 2, 4, 12, 24, 40] {

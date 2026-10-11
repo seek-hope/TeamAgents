@@ -4,8 +4,13 @@ use serde_json::{json, Value as Json};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
-    sync::mpsc,
+    process::Command,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc,
+    },
+    thread,
+    time::{Duration, Instant},
 };
 
 enum Reply {
@@ -13,10 +18,29 @@ enum Reply {
     Opened { client: DaemonClient, app: Box<V2App> },
 }
 
+struct Pending {
+    receiver: mpsc::Receiver<(SessionAction, Result<Reply, String>)>,
+    cancel: Arc<AtomicBool>,
+    search: bool,
+    join: Option<thread::JoinHandle<()>>,
+}
+impl Drop for Pending {
+    fn drop(&mut self) {
+        // Only search is cancellable. Explicit open/delete operations keep their engine ownership
+        // when the UI detaches; they already have a bounded subprocess wait.
+        if self.search {
+            self.cancel.store(true, Ordering::Relaxed);
+            if let Some(join) = self.join.take() {
+                let _ = join.join();
+            }
+        }
+    }
+}
+
 pub struct SessionClient {
     root: String,
-    pending: Option<mpsc::Receiver<(SessionAction, Result<Reply, String>)>>,
-    drafts: BTreeMap<String, Composer>,
+    pending: Option<Pending>,
+    drafts: BTreeMap<String, (Composer, crate::attachments::Attachments)>,
 }
 
 impl SessionClient {
@@ -29,46 +53,71 @@ impl SessionClient {
             return;
         }
         let (tx, rx) = mpsc::channel();
-        self.pending = Some(rx);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = Arc::clone(&cancel);
+        let search = matches!(action, SessionAction::Search { .. });
         if let Some(browser) = app.browser.as_mut() {
             browser.busy = true;
         }
         let root = self.root.clone();
-        std::thread::spawn(move || {
-            let reply = execute(&root, &action);
-            let _ = tx.send((action, reply));
+        let join = thread::spawn(move || {
+            let reply = execute(&root, &action, &worker_cancel);
+            if !worker_cancel.load(Ordering::Relaxed) {
+                let _ = tx.send((action, reply));
+            }
         });
+        self.pending = Some(Pending { receiver: rx, cancel, search, join: Some(join) });
+    }
+
+    /// Cancel the outstanding session CLI operation and drop its receipt channel. The child is
+    /// killed by the worker, while the dropped channel prevents a late result from touching a
+    /// newly opened browser or a superseding search.
+    pub fn cancel_search(&mut self, app: &mut V2App) {
+        if self.pending.as_ref().is_some_and(|pending| !pending.search) {
+            return;
+        }
+        self.pending.take();
+        if let Some(browser) = app.browser.as_mut() {
+            browser.busy = false;
+        }
     }
 
     /// Switch atomically after handshake, checkpoint, history and approvals all succeeded.
     /// Drafts use state-root identity: every daemon may legitimately report the same session_id.
     pub fn poll(&mut self, client: &mut DaemonClient, app: &mut V2App) -> bool {
-        let Some(rx) = &self.pending else {
-            return false;
+        let received = match self.pending.as_ref() {
+            None => return false,
+            Some(pending) => match pending.receiver.try_recv() {
+                Ok(reply) => Some(reply),
+                Err(mpsc::TryRecvError::Empty) => return false,
+                Err(mpsc::TryRecvError::Disconnected) => None,
+            },
         };
-        let (action, reply) = match rx.try_recv() {
-            Ok(reply) => reply,
-            Err(mpsc::TryRecvError::Empty) => return false,
-            Err(mpsc::TryRecvError::Disconnected) => {
-                self.pending = None;
-                if let Some(browser) = app.browser.as_mut() {
-                    browser.fail("Session operation ended without a receipt.".into());
-                }
-                return true;
+        let Some((action, reply)) = received else {
+            self.pending = None;
+            if let Some(browser) = app.browser.as_mut() {
+                browser.fail("Session operation ended without a receipt.".into());
             }
+            return true;
         };
         self.pending = None;
         match reply {
             Err(error) => {
-                if let Some(browser) = app.browser.as_mut() {
+                if let SessionAction::Search { ref query, generation } = action {
+                    if let Some(browser) = app.browser.as_mut() {
+                        browser.fail_search(error, query, generation);
+                    }
+                } else if let Some(browser) = app.browser.as_mut() {
                     browser.fail(error);
                 }
             }
             Ok(Reply::Opened { client: next_client, app: mut next_app }) => {
                 let draft = std::mem::replace(&mut app.composer, Composer::new(vec![]));
-                self.drafts.insert(app.session_root.clone(), draft);
-                if let Some(draft) = self.drafts.remove(&next_app.session_root) {
+                let attachments = std::mem::take(&mut app.attachments);
+                self.drafts.insert(app.session_root.clone(), (draft, attachments));
+                if let Some((draft, attachments)) = self.drafts.remove(&next_app.session_root) {
                     next_app.composer = draft;
+                    next_app.attachments = attachments;
                 }
                 *client = next_client;
                 *app = *next_app;
@@ -81,6 +130,11 @@ impl SessionClient {
                         } else {
                             browser.busy = false;
                         }
+                    }
+                }
+                SessionAction::Search { ref query, generation } => {
+                    if let Some(browser) = app.browser.as_mut() {
+                        browser.apply_search(&data, query, generation);
                     }
                 }
                 SessionAction::History { before, .. } => {
@@ -97,6 +151,7 @@ impl SessionClient {
                     }
                 }
                 SessionAction::Open(_) => {}
+                SessionAction::CancelSearch => {}
             },
         }
         true
@@ -134,12 +189,20 @@ fn executable() -> Result<PathBuf, String> {
     Err("Cannot find teamagents. Launch this interface through the teamagents CLI.".into())
 }
 
-fn execute(root: &str, action: &SessionAction) -> Result<Reply, String> {
+const MAX_SESSION_OUTPUT: usize = 64 * 1024 * 1024;
+
+fn execute(root: &str, action: &SessionAction, cancel: &AtomicBool) -> Result<Reply, String> {
+    if matches!(action, SessionAction::CancelSearch) {
+        return Ok(Reply::Data(json!({})));
+    }
     let mut command = Command::new(executable()?);
     command.args(["--state-root", root, "sessions"]);
     match action {
         SessionAction::List => {
             command.arg("list");
+        }
+        SessionAction::Search { query, .. } => {
+            command.args(["search", "--query", query, "--limit", "100"]);
         }
         SessionAction::History { id, before } => {
             command.args(["history", "--id", id, "--limit", "200"]);
@@ -153,12 +216,21 @@ fn execute(root: &str, action: &SessionAction) -> Result<Reply, String> {
         SessionAction::Delete(row) => {
             command.args(["delete", "--id", &row.id, "--stop", "--yes"]);
         }
+        SessionAction::CancelSearch => unreachable!("cancel actions never spawn a session process"),
     }
-    let output = command.arg("--json").stdin(Stdio::null()).output().map_err(|e| format!("Session command: {e}"))?;
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    command.arg("--json");
+    let output = crate::subprocess::capture(
+        &mut command,
+        &[],
+        MAX_SESSION_OUTPUT,
+        Instant::now() + Duration::from_secs(120),
+        || cancel.load(Ordering::Relaxed),
+    )?;
+    let std::process::Output { status, stdout, stderr } = output;
+    if !status.success() {
+        return Err(String::from_utf8_lossy(&stderr).trim().to_string());
     }
-    let data: Json = serde_json::from_slice(&output.stdout).map_err(|e| format!("Invalid session receipt: {e}"))?;
+    let data: Json = serde_json::from_slice(&stdout).map_err(|e| format!("Invalid session receipt: {e}"))?;
     match action {
         SessionAction::Open(row) => {
             let socket = data["socket"].as_str().ok_or("Session receipt has no socket")?;
@@ -182,6 +254,7 @@ fn execute(root: &str, action: &SessionAction) -> Result<Reply, String> {
         SessionAction::Delete(row) if data["deleted"] != true || data["id"] != row.id => {
             Err("Deletion was not confirmed by the engine; staying in the TUI.".into())
         }
+        SessionAction::CancelSearch => Ok(Reply::Data(data)),
         _ => Ok(Reply::Data(data)),
     }
 }

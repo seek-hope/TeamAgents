@@ -151,7 +151,8 @@ def documented_keys() -> dict:
 
 def main() -> int:
     source = "\n".join((REPO / path).read_text() for path in
-                       ("tui/src/v2app.rs", "tui/src/sessions.rs", "tui/src/completion.rs"))
+                       ("tui/src/v2app.rs", "tui/src/sessions.rs", "tui/src/completion.rs",
+                        "tui/src/attachments.rs", "tui/src/queue.rs"))
     findings = []
     advertised = hint_keys(source)
     for key in sorted(advertised - {"Key p", "Key r", "Key t", "Key c", "Key a", "Key d", "Key y", "Key n"}):

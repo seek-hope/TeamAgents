@@ -1,16 +1,25 @@
 # Acceptance matrix (A01–A36)
 
 Baseline: [the design and acceptance baseline](DESIGN.md) §12/§16. Current implementation checked on
-**2026-09-27** (the date of the last full pass: `make check`, `make test`, `make pty`, the offline and
-model probe sets and the three formal gates).
+**2026-10-11** for D-451 local development/product/formal checks. Historical real-model probe dates remain
+attached to their individual rows; the current local regression does not renew real-service acceptance.
 
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 130 / engine 376 / tui 57 test targets) and `make pty` passes — re-measured 2026-10-08: `pty v2 smoke: ok`, rc 0, credential-free, including Leader-only input, explicit approvals, interrupt/exit, resize and draft ownership (D-445); both are
+`make check` is green (core 134 / engine 384 / tui 73 test targets) and `make pty` passes — re-measured 2026-10-11: `pty v2 smoke: ok`, rc 0, credential-free, including Leader-only input, explicit approvals, interrupt/exit, resize and draft ownership (D-445); both are
 preconditions for every item below. `make check` includes `make language-check`, which fails on non-English
 characters outside the two documented exceptions (`README.zh-CN.md` and the frozen material under
 `review/eval`).
+
+D-451 adds evidence for A01/A06/A08/A11/A16/A21/A28/A29/A36: immutable file/image inputs, transactional
+pending revisions/cancellation, local export/search and bounded display processes. The
+[maturity report](../review/maturity-2026-10-11/REPORT.md) links source, negative tests, immutable receipts,
+44 positive formal configurations, 137 refuted controls, seven Kani proofs and installed-archive workflows.
+Five scripted-provider coding cases use actual daemons/runners, files and SQLite; PTY checks cover draft and
+input ownership. These are deterministic runtime results, not real-model quality, publication or Pi parity.
+The report keeps ranked gaps and an unexecuted native-context/budget proposal; independent round acceptance
+is recorded by the durable goal audit. Source-only features postdate the v0.2.0 tag.
 
 ## Requirements (Q1–Q19) and their evidence
 

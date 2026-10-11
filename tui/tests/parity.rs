@@ -36,7 +36,7 @@ fn completion_edits_only_until_an_explicit_submit_and_keeps_input_ownership() {
         assert!(app.composer.history.is_empty());
     }
     let mut app = V2App::new("completion");
-    app.composer.set_text("/");
+    app.composer.set_text("/qui");
     assert!(app.handle_key(key(KeyCode::Up)).is_none());
     assert!(app.handle_key(key(KeyCode::Enter)).is_none());
     assert_eq!(app.composer.text(), "/quit");
@@ -91,11 +91,12 @@ fn completion_layout_preserves_regions_and_selected_candidate_at_small_sizes() {
                 assert!(regions[i + 1..].iter().all(|r| region.intersection(*r).is_empty()));
             }
             if width >= 8 && geo.completion.height > 0 {
-                let (start, count) = teamagents_tui::viewport::window(4, 3, geo.completion.height as usize);
-                assert!(start + count > 3);
-                let row = geo.completion.y + (3 - start) as u16;
+                let last = teamagents_tui::completion::COMMANDS.len() - 1;
+                let (start, count) = teamagents_tui::viewport::window(last + 1, last, geo.completion.height as usize);
+                assert!(start + count > last);
+                let row = geo.completion.y + (last - start) as u16;
                 let shown: String = (0..width).map(|x| terminal.backend().buffer()[(x, row)].symbol()).collect();
-                assert!(shown.starts_with("/quit"), "{width}x{height}: {shown}");
+                assert!(shown.starts_with(teamagents_tui::completion::COMMANDS[last].0), "{width}x{height}: {shown}");
             }
         }
     }
@@ -113,7 +114,17 @@ fn grammars_preserve_source_and_color_tokens_in_the_shared_renderer() {
         ("shell", "#!/bin/sh\nprintf \"hello\""),
     ] {
         let fenced = format!("```{lang}\n{source}\n```");
-        let lines = markdown::render(&fenced, 120);
+        let mut graphics = teamagents_tui::graphics::Graphics::default();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let lines = loop {
+            let changed = graphics.poll();
+            let lines = markdown::render_media(&fenced, 120, Some(&mut graphics), &Default::default()).lines;
+            if changed {
+                break lines;
+            }
+            assert!(Instant::now() < deadline, "highlight timeout: {lang}");
+            std::thread::sleep(Duration::from_millis(5));
+        };
         let colors: HashSet<_> =
             body(&lines).into_iter().filter(|s| !s.content.trim().is_empty()).map(|s| s.style.fg).collect();
         assert!(colors.len() >= 2, "no token colors for {lang}: {colors:?}");
@@ -132,8 +143,17 @@ fn grammars_preserve_source_and_color_tokens_in_the_shared_renderer() {
             false,
         );
         let mut history = teamagents_tui::transcript::Transcript::default();
-        let saved = history.lines(&entries, 120, None);
-        assert_eq!(body(saved), body(&lines));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let changed = graphics.poll();
+            let saved = history.document(&entries, 120, None, Some(&mut graphics), "");
+            if changed {
+                assert_eq!(body(&saved.lines), body(&lines));
+                break;
+            }
+            assert!(Instant::now() < deadline, "saved highlight timeout: {lang}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
     let diff = markdown::render("```diff\n-old\n+new\n```", 40);
     assert!(body(&diff).iter().any(|s| s.content == "+new" && s.style.fg == Some(theme::ADDED)));

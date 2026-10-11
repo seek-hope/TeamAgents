@@ -91,6 +91,12 @@ export PATH="$HOME/.local/bin:$PATH"
 升级前退出 TeamAgents，再次执行即可；已有配置和会话会保留。
 支持指定版本、自定义安装目录和本地发行包安装，详见 [安装指南](docs/INSTALL.md)。
 
+D-451 源码新增显式文本/图片附件（`/attach PATH` 或 `exec --attach PATH`）、工作区路径补全、
+待消费输入的修订和取消（`/queue` 或 `inputs`）、会话浏览器搜索以及完整的本地 Markdown/JSON 导出。
+展示解析在有资源和超时限制的 Rust 辅助进程中运行，失败时保留源码。使用方式见
+[用户指南](docs/USER-GUIDE.md)，确定性本地验证和剩余缺口见
+[成熟度报告](review/maturity-2026-10-11/REPORT.md)。这些源码功能晚于 v0.2.0 标签，尚未发布。
+
 ### 从源码构建
 
 ```bash

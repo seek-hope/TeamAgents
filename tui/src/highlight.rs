@@ -7,12 +7,7 @@ use ratatui::{
 use std::sync::OnceLock;
 use syntect::{easy::HighlightLines, highlighting::Theme, parsing::SyntaxSet, util::LinesWithEndings};
 
-pub(crate) fn code_lines(code: &str, language: &str, complete: bool) -> Vec<Line<'static>> {
-    if complete && !matches!(language, "diff" | "patch") {
-        if let Some(lines) = highlighted(code, language) {
-            return lines;
-        }
-    }
+pub(crate) fn code_lines(code: &str, language: &str) -> Vec<Line<'static>> {
     code.strip_suffix('\n')
         .unwrap_or(code)
         .split('\n')
@@ -32,12 +27,17 @@ pub(crate) fn code_lines(code: &str, language: &str, complete: bool) -> Vec<Line
         .collect()
 }
 
-fn highlighted(code: &str, language: &str) -> Option<Vec<Line<'static>>> {
-    if language.is_empty()
-        || code.len() > 64 * 1024
-        || code.lines().count() > 500
-        || code.lines().any(|l| l.len() > 4096)
-    {
+pub(crate) fn eligible(code: &str, language: &str) -> bool {
+    !language.is_empty()
+        && !matches!(language, "diff" | "patch")
+        && code.len() <= 64 * 1024
+        && code.lines().count() <= 500
+        && code.lines().all(|line| line.len() <= 4096)
+}
+
+/// Called only inside the isolated display helper.
+pub(crate) fn highlighted(code: &str, language: &str) -> Option<Vec<Line<'static>>> {
+    if !eligible(code, language) {
         return None;
     }
     static SYNTAX: OnceLock<SyntaxSet> = OnceLock::new();
@@ -59,8 +59,7 @@ fn highlighted(code: &str, language: &str) -> Option<Vec<Line<'static>>> {
         THEME.get_or_init(|| two_face::theme::extra()[two_face::theme::EmbeddedThemeName::Base16OceanDark].clone());
     let mut highlighter = HighlightLines::new(syntax, theme);
     let mut lines = vec![];
-    // ponytail: byte/line limits bound inputs, not a hard CPU deadline inside a regex call.
-    // If adversarial grammars make a single line costly, move coloring into a cancellable worker process.
+    // The parent enforces a wall deadline and kills this process inside a costly regex call.
     for line in LinesWithEndings::from(code) {
         let spans = highlighter
             .highlight_line(line, set)

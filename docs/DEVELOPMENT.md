@@ -68,8 +68,8 @@ audits — each one a claim the tree makes about itself, each with the decision 
   in hygiene since D-130); `review/env_knobs.py` keeps the `TEAMAGENTS_*` table
   below equal to the code's reads; `review/project_config_claim.py` checks the one fact every document states —
   the project config is read, under the user's opt-in (D-133, wired by D-244), and `review/release_artifact.py` does the same for the second one —
-  the published release is not this product (D-203: the fact is computed from the tags, whose trees all predate
-  the v2 layout, and the two READMEs had recommended that install with no caveat); `review/silent_skips.py` fails a test that returns from a capability
+  whether published tags contain the current architecture (D-203 originally caught pre-v2 tags; v0.2.0
+  contains v2 but predates D-451 source features); `review/silent_skips.py` fails a test that returns from a capability
   guard without saying why (D-121).
 * **the config surface, both directions**: `review/config_keys.py` reports a config field whose only readers
   are the loader, the validator, the doctor surface and the argv parser — a key this build accepts and never
@@ -185,7 +185,7 @@ nobody uses, and several are what the probes depend on.
 | `TEAMAGENTS_JOB_TEST_HOOKS` | the runner's own tests | compiles-in fault injection for the job runner, disabled unless the parent opts in; never read from a job file or a model (A31) |
 | `TEAMAGENTS_RUNNER_BIN` | integration tests | the runner image, so the test binary can serve as the runner (production uses the same `teamagents` binary) |
 | `TEAMAGENTS_GRAPHICS` | TUI users and terminal probes | `auto` (default), `kitty`, `blocks`, or `off`; selects local graphics presentation; Ctrl+G toggles previews and reloads files when enabled again (D-448) |
-| `TEAMAGENTS_SESSION_CLI` | the CLI launcher (or a direct TUI caller) | the engine executable used by the session browser for list/history/open/delete; normally the launcher supplies its own path (D-446) |
+| `TEAMAGENTS_SESSION_CLI` | the CLI launcher (or a direct TUI caller) | the engine executable used by the session browser for list/history/search/open/delete; normally the launcher supplies its own path (D-446/D-451) |
 | `TEAMAGENTS_TUI` | the CLI, when the TUI is not a sibling of it | where `teamagents` finds `teamagents-tui`; its own error message names this variable (`engine/src/main.rs`) |
 | `TEAMAGENTS_BIN_DIR` | `install.sh` | where the installer puts the binaries; documented for users in `docs/INSTALL.md` |
 
@@ -312,15 +312,28 @@ need; when upgrading one, update only the affected lock files and re-run the int
    The same path can be run before the tag without publishing: `make release-rehearsal` (D-217) runs the version
    gate, the musl-static release build of both binaries, the archive, the checksums and the smoke against the tree,
    and prints the archive's size. A build, not a check — a cold run is minutes, so it stays out of `make check`.
-4. **Afterwards, flip the caveats.** Four places say the latest release is the earlier implementation:
-   `docs/INSTALL.md`'s note, `README.md`, `README.zh-CN.md` and `docs/ACCEPTANCE.md`'s known gap. With the release
-   serving this tree, `review/release_artifact.py` *fails until they are removed*, and its statement list is the
-   fifth place to update; `review/install_check.py` then stops reporting the vintage failure and the known gap goes.
+4. **Update release freshness claims.** v0.2.0 already delivers the v2 architecture; it predates D-451.
+   After publication, update the dated freshness notes in `docs/INSTALL.md`, both READMEs and
+   `docs/ACCEPTANCE.md` to match the exact tagged artifact. `review/release_artifact.py` and
+   `review/install_check.py` compare the release surface; do not relabel earlier tags as pre-v2.
 5. **Verify the published artifact**: the SHA-256 from the public URL, the install, `init` keeping an existing
    config and a real TUI start.
 
 Real-model evaluation needs explicit credentials and the model's native context, recorded separately; a maintenance
 regression never claims to widen provider compatibility.
+
+D-451's reproducible unpublished rehearsal is `python3 review/maturity-2026-10-11/install.py`. It installs the
+actual musl archive under fresh HOME/XDG/bin/workspace roots, verifies checksums, init/config preservation and
+doctor, then drives installed CLI/daemon/runner/PTY coding, queue, attachment, search, reconnect and session
+paths with a deterministic loopback provider. No user installation is replaced and no tag is published.
+The artifact hashes and platform are recorded by `review/maturity-2026-10-11/run.py`.
+
+The TUI invokes its own `--display-worker` mode for rendering only. It clears the environment, closes inherited
+FDs and installs process limits plus a Linux syscall allowlist before parsing; there is no configurable worker
+executable override. Test-only parent injection uses `TEAMAGENTS_DISPLAY_WORKER_TESTS` for fault modes. Build
+`teamagents-tui` before focused library tests that invoke the helper. Media gets 750 ms; cold code grammars get
+2.5 s. The host-side confined regular-file read precedes the helper and is not a filesystem liveness guarantee.
+The source remains readable when isolation or rendering fails.
 
 ## Fixed tasks and grading
 

@@ -157,8 +157,16 @@ fn a_config_override_reaches_the_config_and_a_bad_one_is_refused() {
     };
     // a valid override is accepted (the config row does not fail)
     let (code, text) = run(&["doctor", "-c", "limits.tool_output_chars=8000"]);
-    assert_eq!(code, Some(0), "{text}");
-    assert!(!text.lines().any(|line| line.contains("[FAIL]") && line.contains("user config")), "{text}");
+    let failures: Vec<_> = text.lines().filter(|line| line.contains("[FAIL]")).collect();
+    if teamagents_engine::tools::sandbox_usable() {
+        assert_eq!(code, Some(0), "{text}");
+        assert!(failures.is_empty(), "{text}");
+    } else {
+        assert_eq!(code, Some(1), "{text}");
+        assert_eq!(failures.len(), 1, "{text}");
+        assert!(failures[0].contains("bubblewrap isolation"), "{text}");
+    }
+    assert!(text.contains("[ok  ] user config"), "{text}");
     // a key this build does not serve
     let (code, text) = run(&["doctor", "-c", "nonsense=1"]);
     assert_eq!(code, Some(1), "{text}");

@@ -57,9 +57,9 @@ impl Responses {
         Self::new("https://api.openai.com/v1", api_key, timeout)
     }
 
-    fn body(&self, request: &ModelRequest) -> Json {
+    fn body(&self, request: &ModelRequest) -> Result<Json, ProviderError> {
         // Cross-protocol continuation safety (pi-ai transform-messages).
-        let (instructions, input) = to_responses_input(&normalize_tool_call_ids(&request.messages));
+        let (instructions, input) = to_responses_input(&normalize_tool_call_ids(&request.messages))?;
         let tools: Vec<Json> = request
             .tools
             .iter()
@@ -108,7 +108,7 @@ impl Responses {
                 map.insert("max_output_tokens".into(), json!(clamped));
             }
         }
-        body
+        Ok(body)
     }
 }
 
@@ -136,7 +136,7 @@ impl Provider for Responses {
             http = http.bearer_auth(&self.api_key);
         }
         let response = tokio::select! {
-            send = http.body(self.body(request).to_string()).send() => {
+            send = http.body(self.body(request)?.to_string()).send() => {
                 send.map_err(|e| {
                     if e.is_timeout() || e.is_connect() || e.is_request() {
                         ProviderError::transient(format!("responses API: {e}"))
@@ -287,11 +287,8 @@ impl Provider for Responses {
 }
 
 /// Chat-completions history → Responses `instructions` + `input` items.
-/// Ceiling (D-392): the image flow lands for the chat-completions/deepseek wire, where the provider body carries a
-/// `content` parts array verbatim. This transform still only reads string content, so a part reaching it would be
-/// dropped; the driver substitutes the placeholder before building a request whenever the model did not declare
-/// `images = true`. Wiring parts here is the next step if this protocol ever needs vision.
-fn to_responses_input(history: &[Json]) -> (String, Vec<Json>) {
+/// D-451: user/tool parts retain native text and images; unsupported parts fail explicitly.
+fn to_responses_input(history: &[Json]) -> Result<(String, Vec<Json>), ProviderError> {
     let mut instructions = String::new();
     let mut out: Vec<Json> = vec![];
     for message in history {
@@ -305,7 +302,7 @@ fn to_responses_input(history: &[Json]) -> (String, Vec<Json>) {
                 instructions.push_str(content);
             }
             "user" if message.get("tool_call_id").is_none() => {
-                out.push(json!({"role": "user", "content": [{"type": "input_text", "text": content}]}));
+                out.push(json!({"role": "user", "content": super::content::parts(&message["content"], "responses")?}));
             }
             "assistant" => {
                 if let Some(items) = message.get("responses_output").and_then(Json::as_array) {
@@ -330,13 +327,13 @@ fn to_responses_input(history: &[Json]) -> (String, Vec<Json>) {
                 out.push(json!({
                     "type": "function_call_output",
                     "call_id": message.get("tool_call_id").cloned().unwrap_or(Json::Null),
-                    "output": content,
+                    "output": if message["content"].is_array() { json!(super::content::parts(&message["content"], "responses")?) } else { json!(content) },
                 }));
             }
             _ => {}
         }
     }
-    (instructions, out)
+    Ok((instructions, out))
 }
 
 /// Responses `output` items → the chat-shaped assistant message the kernel

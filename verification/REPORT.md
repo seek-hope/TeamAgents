@@ -5,6 +5,21 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
+## 0. Gate status (re-run 2026-10-11 at `e9a0aa84`)
+
+* **D-451 models immutable input admission/revisions and owned display processes.** The full regression
+  verifies all **44** configurations and refutes all **137** negative controls. Kani reports
+  `Complete - 7 successfully verified harnesses, 0 failures, 7 total`.
+  `V2InputQueue.tla` explores 196 generated / 64 distinct states; `V2DisplayWorker.tla` explores
+  9,079 generated / 1,601 distinct states. Twelve new controls refute their intended safety properties.
+  The formal material was committed at `e9a0aa84` before this pin (D-202). Raw commands/statuses/hashes
+  are in `review/maturity-2026-10-11/receipts/formal-{all,controls,kani}-final.json` and their logs.
+  Rust bridges cover transactional edit/consume/retry, immutable attachment snapshots, real process hangs,
+  crashes, overflow, cancellation, stale generations, owner drop and next-preview recovery. Snapshot
+  verification is abstracted; stop/reap is an atomic model step after the parent observes a deadline.
+  These results do not establish Rust refinement, kernel scheduling, parser termination, filesystem
+  liveness, or real-model success.
+
 ## 0. Gate status (re-run 2026-10-08 at `5848f8d2`)
 
 * **D-450 models completion effects and viewport media admission.** `V2Presentation.tla` verifies

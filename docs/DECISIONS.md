@@ -20,6 +20,40 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-451 Build a verifiable daily coding workflow (2026-10-11)
+
+**Approved scope.** The maturity cycle adds engine-owned file/image attachments and path completion,
+local Markdown/JSON session export and lightweight search, revision-checked pending-input edit/cancel,
+and hard-stoppable presentation workers. It also requires deterministic real-runtime coding probes and
+an isolated installation rehearsal, not publication. The implementation contracts and evolving evidence
+are in `review/maturity-2026-10-11/REPORT.md`. These are approved refinements of Q6/Q7/Q11/Q15, not a new
+backend, management dashboard, automatic memory policy or plugin system.
+
+**Boundaries.** Attachment selection edits a draft; only explicit submission admits input. Workspace reads
+and durable snapshots belong to the engine, not the TUI. Queue edits affect only unconsumed user envelopes,
+with an expected revision and retained originals; cancellation does not interrupt a tool, task or model.
+Schema 4 -> 5 migrates explicitly in one transaction by adding input revision records, leaving earlier
+envelope state and ordering valid; old queued inputs acquire their original revision record on first edit.
+Presentation helpers execute only bounded rendering work, with no model/tool/config/credential authority;
+this explicitly permits an isolated Rust display subprocess without moving business execution into the TUI.
+Existing graphics limits, permission boundaries and interrupt/exit/delete semantics remain binding.
+
+**Acceptance.** Full development/terminal/offline/sandbox-condition gates, applicable formal properties
+with effective controls, installation of the actual local archive and independent audit are required.
+Scripted providers do not establish model task success or gains over Pi. Failed runs remain evidence.
+No paid evaluation, tag, push, release or mutation of existing user sessions/configuration is authorized.
+Remaining maturity gaps retain a ranked next-cycle acceptance plan.
+
+**Measured repairs.** The actual queue/restart path exposed retained scheduler/client ownership and a
+member-root versus session-root snapshot lookup; both were repaired. The final ordinary gate also exposed
+SIGINT registration after socket publication. Both process signal handlers now register before serving, so
+a client observing the socket can request designed shutdown immediately. The missing-backend gate found an
+older doctor test that wrongly required overall success; it now requires exactly the expected isolation failure
+and a successful config row. The broken-backend gate found D-369 had changed glob to a native fallback when
+bubblewrap was installed but unusable. Restored D-114 refusal without weakening its original test.
+Failed receipts and corrected regressions remain in the maturity manifest; output streams are losslessly gzip-stored with their original
+SHA-256 values, including the language-check failure fixture. No failing output is rewritten for hygiene.
+
 ## D-450 Compare current Codex/Pi sources and improve conversation usability (2026-10-08)
 
 **Approved scope.** Refresh the twelve-dimension comparison and implement local command completion,

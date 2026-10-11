@@ -55,10 +55,10 @@ impl Anthropic {
         self.stall.unwrap_or_else(|| super::stream_stall_bound(self.timeout))
     }
 
-    fn body(&self, request: &ModelRequest) -> Json {
+    fn body(&self, request: &ModelRequest) -> Result<Json, ProviderError> {
         // Cross-protocol continuation safety (pi-ai transform-messages): ids
         // minted under another protocol may violate this API's id rules.
-        let (system, messages) = to_anthropic_messages(&normalize_tool_call_ids(&request.messages));
+        let (system, messages) = to_anthropic_messages(&normalize_tool_call_ids(&request.messages))?;
         let tools: Vec<Json> = request
             .tools
             .iter()
@@ -99,7 +99,7 @@ impl Anthropic {
             body["output_config"] = json!({"effort": effort});
         }
         body["stream"] = json!(true);
-        body
+        Ok(body)
     }
 }
 
@@ -128,7 +128,7 @@ impl Provider for Anthropic {
             http = http.header("x-api-key", &self.api_key);
         }
         let response = tokio::select! {
-            send = http.body(self.body(request).to_string()).send() => {
+            send = http.body(self.body(request)?.to_string()).send() => {
                 send.map_err(|e| {
                     if e.is_timeout() || e.is_connect() || e.is_request() {
                         ProviderError::transient(format!("anthropic API: {e}"))
@@ -289,11 +289,8 @@ impl Provider for Anthropic {
 }
 
 /// Chat-completions history → Anthropic `system` + `messages`.
-/// Ceiling (D-392): the image flow lands for the chat-completions/deepseek wire, where the provider body carries a
-/// `content` parts array verbatim. This transform still only reads string content, so a part reaching it would be
-/// dropped; the driver substitutes the placeholder before building a request whenever the model did not declare
-/// `images = true`. Wiring parts here is the next step if this protocol ever needs vision.
-fn to_anthropic_messages(history: &[Json]) -> (String, Vec<Json>) {
+/// D-451: native content blocks preserve images in user messages and tool results.
+fn to_anthropic_messages(history: &[Json]) -> Result<(String, Vec<Json>), ProviderError> {
     let mut system = String::new();
     let mut out: Vec<Json> = vec![];
     for message in history {
@@ -307,7 +304,7 @@ fn to_anthropic_messages(history: &[Json]) -> (String, Vec<Json>) {
                 system.push_str(content);
             }
             "user" if message.get("tool_call_id").is_none() => {
-                out.push(json!({"role": "user", "content": [{"type": "text", "text": content}]}));
+                out.push(json!({"role": "user", "content": super::content::parts(&message["content"], "anthropic")?}));
             }
             "assistant" => {
                 if let Some(blocks) = message["anthropic_blocks"].as_array() {
@@ -340,7 +337,7 @@ fn to_anthropic_messages(history: &[Json]) -> (String, Vec<Json>) {
                 let block = json!({
                     "type": "tool_result",
                     "tool_use_id": message.get("tool_call_id").cloned().unwrap_or(Json::Null),
-                    "content": content,
+                    "content": if message["content"].is_array() { json!(super::content::parts(&message["content"], "anthropic")?) } else { json!(content) },
                 });
                 // Consecutive tool results must share one user message (API rule).
                 match out.last_mut() {
@@ -362,7 +359,7 @@ fn to_anthropic_messages(history: &[Json]) -> (String, Vec<Json>) {
             _ => {}
         }
     }
-    (system, out)
+    Ok((system, out))
 }
 
 /// Anthropic content blocks → the chat-shaped assistant message the kernel

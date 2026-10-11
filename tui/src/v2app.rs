@@ -10,7 +10,7 @@ use serde_json::Value as Json;
 use crate::text::Composer;
 
 /// The slash commands the composer understands (D-370), shown while a `/` draft is open and by `/help`.
-const SLASH_HELP: &str = "commands: /help · /sessions · /interrupt · /quit";
+const SLASH_HELP: &str = "commands: /help · /sessions · /queue · /interrupt · /quit";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Focus {
@@ -98,10 +98,15 @@ pub struct GoalInfo {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum V2Effect {
     Sessions(crate::sessions::SessionAction),
+    Queue(crate::queue::Action),
+    InputPaths {
+        prefix: String,
+    },
     SubmitInput {
         instance: String,
         envelope: String,
         text: String,
+        attachments: Vec<String>,
     },
     Decide {
         approval_id: String,
@@ -130,6 +135,7 @@ pub struct V2App {
     pub session_root: String,
     pub session_name: String,
     pub browser: Option<crate::sessions::SessionBrowser>,
+    pub queue: Option<crate::queue::Queue>,
     pub session_id: String,
     pub instances: Vec<InstanceInfo>,
     pub entries: Vec<ChatEntry>,
@@ -143,6 +149,7 @@ pub struct V2App {
     pub focus: Focus,
     pub composer: Composer,
     pub completion: crate::completion::Completion,
+    pub attachments: crate::attachments::Attachments,
     pub disconnected: bool,
     /// Scroll offset in wrapped lines from the bottom (0 = following).
     pub chat_scroll: usize,
@@ -163,6 +170,7 @@ impl V2App {
             session_root: String::new(),
             session_name: String::new(),
             browser: None,
+            queue: None,
             session_id: session_id.to_string(),
             instances: vec![],
             entries: vec![],
@@ -176,6 +184,7 @@ impl V2App {
             focus: Focus::Composer,
             composer: Composer::new(vec![]),
             completion: crate::completion::Completion::default(),
+            attachments: crate::attachments::Attachments::default(),
             disconnected: false,
             chat_scroll: 0,
             watermark: 0,
@@ -528,11 +537,23 @@ impl V2App {
 
     pub fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> Option<V2Effect> {
         use crossterm::event::{KeyCode, KeyModifiers};
+        if self.queue.is_some()
+            && !(key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c' | 'd' | 'g')))
+        {
+            let queue = self.queue.as_mut()?;
+            if key.code == KeyCode::Esc {
+                if queue.escape() {
+                    self.queue = None;
+                }
+                return None;
+            }
+            return queue.key(key).map(V2Effect::Queue);
+        }
         if self.browser.is_some()
             && !(key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c' | 'd' | 'g')))
         {
             let browser = self.browser.as_mut()?;
-            if key.code == KeyCode::Esc && !browser.busy && browser.confirmation.is_none() {
+            if key.code == KeyCode::Esc && !browser.busy && browser.confirmation.is_none() && !browser.search_active() {
                 self.browser = None;
                 return None;
             }
@@ -541,6 +562,7 @@ impl V2App {
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
                 KeyCode::Char('s') => return self.open_sessions(),
+                KeyCode::Char('q') if self.focus == Focus::Composer => return self.open_queue(),
                 KeyCode::Char('g') => {
                     self.graphics.toggle();
                     return None;
@@ -567,6 +589,11 @@ impl V2App {
             Focus::Approvals => self.approval_key(key),
             Focus::Composer => self.composer_key(key),
         }
+    }
+
+    fn open_queue(&mut self) -> Option<V2Effect> {
+        self.queue = Some(crate::queue::Queue::default());
+        Some(V2Effect::Queue(crate::queue::Action::List { after: 0 }))
     }
 
     fn open_sessions(&mut self) -> Option<V2Effect> {
@@ -613,6 +640,30 @@ impl V2App {
 
     /// Client commands never become model input, including retired management commands.
     fn slash_command(&mut self, text: &str) -> Option<V2Effect> {
+        if let Some(path) = text.strip_prefix("/attach ") {
+            if self.attachments.paths.len() >= 8 {
+                self.command_note("At most eight attachments per input.");
+            } else if path.is_empty() {
+                self.command_note("Use /attach PATH; Tab lists workspace paths.");
+            } else {
+                self.attachments.paths.push(path.to_string());
+                self.command_note(format!(
+                    "Attachment {} staged: {path:?}. Send a message to submit it; /detach INDEX removes it.",
+                    self.attachments.paths.len()
+                ));
+            }
+            return None;
+        }
+        if let Some(index) = text.strip_prefix("/detach ") {
+            match index.trim().parse::<usize>().ok().filter(|i| *i > 0 && *i <= self.attachments.paths.len()) {
+                Some(index) => {
+                    let path = self.attachments.paths.remove(index - 1);
+                    self.command_note(format!("Attachment removed from draft: {path:?}"));
+                }
+                None => self.command_note("Use /detach INDEX with a staged attachment's one-based index."),
+            }
+            return None;
+        }
         match text.trim() {
             "/help" => self.command_note(format!(
                 "Session {} · model {}
@@ -622,14 +673,22 @@ A slash prefix shows commands: Up/Down selects, Tab/Enter fills, Esc cancels; En
 Ctrl+C or /interrupt cancels the Leader's model request; running tools and delegated work continue.
 Ctrl+A focuses pending approvals; a approves once, d denies, Esc returns.
 Ctrl+D or /quit exits; the session keeps running.
-Ctrl+S or /sessions opens session history, switching and confirmed deletion.
+Ctrl+S or /sessions opens session history, switching and confirmed deletion; / searches stored messages.
+Ctrl+Q or /queue shows pending Leader inputs; Enter edits, Delete asks to cancel, Esc returns to the draft.
+/attach PATH stages a workspace file; Tab lists paths; Enter fills, another Enter stages. /detach INDEX removes it.
+Attachments: eight files, 1 MiB UTF-8 text or 5 MiB PNG/JPEG/GIF/WebP, 16 MiB total; symlinks are refused.
 Ctrl+O expands or folds tool previews; /sessions shows full stored results.
 Ctrl+G switches graphics previews and source; image files stay unchanged.
 Developer tools: teamagents --help; teamagents status --json; teamagents history --id ID.",
                 self.session_id,
                 self.active_instance().map(|i| i.model.as_str()).unwrap_or("unavailable")
             )),
+            "/attach" => self.command_note(format!(
+                "Staged attachments: {:?}. Use /attach PATH; Tab lists workspace paths.",
+                self.attachments.paths
+            )),
             "/sessions" => return self.open_sessions(),
+            "/queue" => return self.open_queue(),
             "/interrupt" => return self.interrupt(),
             "/quit" => {
                 self.quit = true;
@@ -644,6 +703,14 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
         use crossterm::event::{KeyCode, KeyModifiers};
         if key.code == KeyCode::Enter && key.kind == crossterm::event::KeyEventKind::Repeat {
             return None;
+        }
+        if self.attachments.key(&mut self.composer, key) {
+            return None;
+        }
+        if key.code == KeyCode::Tab && key.modifiers.is_empty() {
+            if let Some(prefix) = self.composer.text().strip_prefix("/attach ") {
+                return Some(V2Effect::InputPaths { prefix: prefix.to_string() });
+            }
         }
         if self.completion.key(&mut self.composer, key) {
             return None;
@@ -667,7 +734,13 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
                     self.command_note("Message kept in the draft: waiting for the Leader connection.");
                     return None;
                 }
-                let text = self.composer.submit()?;
+                let text = if self.composer.text().starts_with("/attach ") {
+                    let raw = self.composer.text();
+                    self.composer.clear();
+                    raw
+                } else {
+                    self.composer.submit()?
+                };
                 // the arrows walk what was sent (D-77): `text.rs` has kept the
                 // history and the recall rules all along, and nothing ever recorded
                 // into it, so ↑ did nothing but scroll
@@ -678,8 +751,8 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
                     return self.slash_command(&text);
                 }
                 let instance = self.active_instance()?.id.clone();
-                let envelope = format!("env-{}", uuid::Uuid::new_v4());
-                Some(V2Effect::SubmitInput { instance, envelope, text })
+                let envelope = self.attachments.envelope(&text);
+                Some(V2Effect::SubmitInput { instance, envelope, text, attachments: self.attachments.paths.clone() })
             }
             KeyCode::PageUp => {
                 self.scroll_chat(self.last_chat_height.max(1));

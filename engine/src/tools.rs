@@ -898,7 +898,14 @@ fn workspace_executor_with_control(
             }
             "glob" => {
                 let pattern = if arg("pattern").is_empty() { "*".to_string() } else { arg("pattern") };
-                if (mode == ShellMode::Host || sandbox_ok(&mode)) && sandbox_rg_available() {
+                // D-114: an installed but broken bubblewrap must report its refusal, not silently
+                // change ignore semantics by falling back to the native walker.
+                let use_rg = match &mode {
+                    ShellMode::Host => true,
+                    ShellMode::Sandbox(backend) if backend.kind == SandboxKind::Bubblewrap => bwrap_available(),
+                    _ => sandbox_ok(&mode),
+                };
+                if use_rg && sandbox_rg_available() {
                     // A positive `rg --glob` overrides .gitignore. Filter the
                     // already-ignored file list instead.
                     let command = format!(

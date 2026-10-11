@@ -50,7 +50,13 @@ teamagents                           # open the TUI (starts the per-user daemon 
   source to 64 KiB/500 lines, with graph complexity limits. Up to sixteen cached previews and eight queued
   renders keep the UI bounded. Only visible previews request decoding; scrolling back reloads evicted
   images without discarding their known layout heights. Images fit at most 120 columns and 36 rows; larger images scale down, and
-  scrolling clips them to the conversation. Display limits never rewrite the saved message.
+  scrolling clips them to the conversation. Display limits never rewrite the saved message. Grammar coloring,
+  diagrams and image decoding run in terminable Rust display processes: 750 ms for media, 2.5 s for cold
+  code grammars, 16 MiB per wire stream, 768 MiB address space and 2 CPU seconds. Linux x86-64/AArch64 helpers
+  deny file opens, sockets and child creation after loading fixed public fonts. Unsupported isolation,
+  timeout, crash or invalid output preserves source; code stays readable while colors are pending.
+  Toggle, resize and session replacement cancel stale work. These are local process bounds, not a guarantee
+  about unresponsive filesystems or kernels.
 - **Sessions (D-446)**: Ctrl+S or /sessions opens all sessions under this base, including idle and archived
   ones. Up/Down or a click selects a session and reads its stored history without starting it; [ reads an
   older page, ] returns to a newer page, and PageUp/PageDown or the wheel scrolls within the page. Enter
@@ -58,8 +64,34 @@ teamagents                           # open the TUI (starts the per-user daemon 
   unsent draft. Press d or Delete, then y to confirm deletion; n or Esc cancels. Deleting the current session
   successfully exits the TUI. Deleting another leaves the current conversation open. Failure stays visible.
   Deletion stops that session and its jobs; member workspaces must first be retired or moved. A default
-  session deletion preserves named sessions and shared data. Press r to refresh the list.
-- **Four client commands**: /help, /sessions, /interrupt, /quit. Unknown or retired commands remain local and point
+  session deletion preserves named sessions and shared data. Press r to refresh the list. Press / to enter a
+  search query, then Enter searches stored messages. Up/Down/Home/End or PageUp/PageDown select results;
+  the preview identifies the session, member, epoch and entry and explicitly shows a snippet. Enter opens
+  its session, / edits the query, and Esc cancels a pending search or clears results before closing the page.
+  Search never changes the active session or dispatches model input; unreadable sessions are reported.
+- **Attachments (D-451)**: type `/attach PATH` to stage a workspace-relative text file or PNG/JPEG/GIF/WebP.
+  Tab after `/attach ` queries workspace paths; Up/Down selects, Tab/Enter fills and Esc dismisses without
+  sending. Another Enter stages the path; only submitting a message captures bytes. Paths may contain spaces
+  or Unicode. `/attach` lists staging; `/detach INDEX` removes an item. At most eight files, 1 MiB per UTF-8
+  text file, 5 MiB per image and 16 MiB total. The engine refuses symlink components, traversal, remote paths,
+  special files and unsupported binary content. Snapshots retain bytes/digests across edits, retries and
+  source deletion. Text is quoted; images require a model declaring `images = true` and stay native image
+  content on supported protocols. Drafts retain staged paths across session switches and failed sends.
+  Headless equivalent: `teamagents exec --attach 'src/file name.rs' --attach image.png "Review these files"`.
+- **Pending inputs (D-451)**: Ctrl+Q or `/queue` lists unconsumed Leader inputs. Enter opens a separate text
+  editor; Enter saves, Ctrl+J inserts a line and Esc discards the edit. Attachments remain unchanged.
+  Delete then y cancels the captured envelope/revision; Esc keeps it. Use r to refresh and n for the next page.
+  The conversation draft stays separate. Consumed, cancelled, old-epoch or stale-revision input is refused.
+  CLI: `inputs list --json`, then `inputs edit --id ID --revision N --prompt TEXT` or
+  `inputs cancel --id ID --revision N`. A cancelled headless input ends with an explicit undelivered failure.
+  These actions do not interrupt models or stop running tools/delegations.
+- **Local session export (D-451)**: `teamagents sessions export --id ID --output FILE --format json`
+  (or `markdown`) writes a consistent snapshot of every stored member/context/input revision and reference.
+  It preserves tool associations, labels unavailable references and never fetches or embeds external bytes.
+  Existing destinations are refused. The export is limited to 256 MiB with a 16 MiB record limit; exceeding
+  either fails explicitly. Ctrl+C removes unpublished temporary output; a publication that already completed
+  returns success. Pruned records cannot be recovered. Export stays in the developer CLI.
+- **Seven client commands**: /help, /sessions, /interrupt, /quit, /attach, /detach, /queue. Unknown or retired commands remain local and point
   to `teamagents --help`; they are never sent to the model.
 - **Developer CLI**: all management is also available through scriptable commands, using `--state-root PATH` or
   `--session ID` to select the session. `status --json` reads the running session's checkpoint, model,
@@ -76,7 +108,7 @@ teamagents                           # open the TUI (starts the per-user daemon 
 | Inspect/control team members | `instances`: send, pause, resume, interrupt, terminate, merge |
 | Inspect/control tasks and goals | `tasks`: list, cancel; `goals`: list, open, cancel |
 | Inspect/control permissions and approvals | `authority`: list, grant, revoke; `approvals`: list, approve, deny |
-| Sessions and recurring work | `sessions`: list, open, history, new, fork, rename, restore, search, archive, delete, prune; `automations` |
+| Sessions and recurring work | `sessions`: list, open, history, export, new, fork, rename, restore, search, archive, delete, prune; `automations` |
 | MCP, configuration and diagnostics | `mcp`: list, add, remove, login, logout; `init`, `doctor`, `-c key=value` |
 | Processes and stored artifacts | `daemon --stop`, `runners`, `artifacts` |
 

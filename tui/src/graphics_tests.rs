@@ -4,7 +4,8 @@ use super::*;
 fn viewport_admission_and_eviction_keep_cache_and_queue_bounded() {
     let (send, requests) = mpsc::sync_channel(8);
     let (results, receive) = mpsc::sync_channel(8);
-    let mut graphics = Graphics { deferred: true, worker: Some(Worker { send, receive }), ..Graphics::default() };
+    let mut graphics = Graphics { deferred: true, ..Graphics::default() };
+    graphics.worker = Some(Worker { send, receive, join: None, token: Arc::clone(&graphics.generation_token) });
     let origin = Origin::default();
     for selected in 0..20 {
         graphics.begin_frame();
@@ -33,7 +34,8 @@ fn viewport_admission_and_eviction_keep_cache_and_queue_bounded() {
 fn old_generation_results_wake_retries_without_repopulating_the_cache() {
     let (send, requests) = mpsc::sync_channel(8);
     let (results, receive) = mpsc::sync_channel(8);
-    let mut graphics = Graphics { worker: Some(Worker { send, receive }), ..Graphics::default() };
+    let mut graphics = Graphics::default();
+    graphics.worker = Some(Worker { send, receive, join: None, token: Arc::clone(&graphics.generation_token) });
     graphics.block(Source::Image("old.png".into()), &Origin::default(), 80);
     let stale = requests.try_recv().unwrap();
     graphics.toggle();

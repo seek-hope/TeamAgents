@@ -507,7 +507,16 @@ IDs are local client resources and are cleaned up independently of session lifet
 D-450 adds completion for the existing four local commands; filling edits the draft and only explicit
 submission executes. The shared code renderer adds bounded explicit-language highlighting with plain-source
 fallback. Media layout retains descriptors/heights while only visible blocks request the bounded cache/queue.
-These presentation changes preserve approval input ownership and session/interrupt/exit semantics.
+D-451 extends local commands with /attach, /detach and /queue. File selection edits a per-session draft;
+only explicit Leader submission asks the engine to snapshot confined workspace files. Inputs carry immutable
+artifact references and append-only revisions. User-only edits/cancellation compare the pending envelope's
+identity, recipient, epoch and revision in the same transaction as consumption. They never interrupt a turn.
+The optional session browser searches stored messages; explicit Enter opens the selected session. CLI exports
+stream all stored history/revisions/references from one read snapshot to an explicitly chosen new local file.
+Display grammar/diagram/image work runs in a Rust helper with bounded I/O and deadlines, resource limits,
+closed inherited descriptors and a Linux syscall allowlist before parsing. It has no model/tool/config authority;
+unsupported isolation falls back to source. Cancellation advances a generation, stops active parsing and rejects
+stale results. These presentation changes preserve approval input ownership and session/interrupt/exit semantics.
 
 Traces are complete but organised by reference and increment: every request/response, tool argument/receipt,
 retry, compaction, control action and usage record carries a stable identifier and a timestamp, and the
