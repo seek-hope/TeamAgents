@@ -57,6 +57,12 @@ way, every bound stays hard, and the parent still stops and reaps the process gr
 **Not eliminable.** A userspace parent cannot promise kernel/filesystem liveness for its own reads or spawns;
 this stays a documented boundary (USER-GUIDE), not a claim of the process bounds.
 
+**Audit-sandbox robustness.** An unreachable Docker daemon is the same documented fail-closed refusal as an
+absent image (D-369), so the backend refusal test now accepts that half with a stated skip reason instead of
+assuming a running daemon; the audit sandbox's fresh /run has no docker socket. The approved checks also pin the
+toolchain location (RUSTUP_HOME/CARGO_HOME); the read-only audit sandbox additionally requires build output to
+be redirected to its writable temporary directory.
+
 ## D-451 Build a verifiable daily coding workflow (2026-10-11)
 
 **Approved scope.** The maturity cycle adds engine-owned file/image attachments and path completion,
