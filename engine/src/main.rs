@@ -2225,13 +2225,67 @@ fn run_inputs(args: &Args) -> i32 {
     };
     match result {
         Ok(report) => {
-            println!("{}", serde_json::to_string_pretty(&report).unwrap());
+            if args.exec_json {
+                println!("{}", serde_json::to_string_pretty(&report).unwrap());
+            } else {
+                print_inputs_human(method, &report);
+            }
             0
         }
         Err(error) => {
             eprintln!("inputs: {error}");
             1
         }
+    }
+}
+
+/// Human-readable inputs output; `--json` keeps the machine-readable shape.
+fn print_inputs_human(method: &str, report: &serde_json::Value) {
+    match method {
+        "input_paths" => {
+            let paths = report["paths"].as_array().cloned().unwrap_or_default();
+            if paths.is_empty() {
+                println!("no matching workspace paths");
+            }
+            for path in paths {
+                println!("{}", path.as_str().unwrap_or_default());
+            }
+            if report["limited"].as_bool().unwrap_or(false) {
+                println!("(listing truncated; type more of the path to narrow it)");
+            }
+        }
+        "inputs" => {
+            let inputs = report["inputs"].as_array().cloned().unwrap_or_default();
+            if inputs.is_empty() {
+                println!("no pending inputs");
+            }
+            for row in inputs {
+                let text = row["payload"]["text"].as_str().unwrap_or("");
+                let preview: String = text.chars().take(80).map(|c| if c.is_control() { ' ' } else { c }).collect();
+                let files = row["payload"]["attachments"].as_array().map_or(0, Vec::len);
+                let ellipsis = if text.chars().count() > 80 { "…" } else { "" };
+                println!(
+                    "{}  r{}  seq {}  [{files} file(s)]  {preview}{ellipsis}",
+                    row["envelope_id"].as_str().unwrap_or("?"),
+                    row["revision"],
+                    row["sequence"]
+                );
+            }
+            if let Some(after) = report["next_after"].as_i64() {
+                println!("more pending: teamagents inputs list --after {after}");
+            }
+        }
+        "edit_input" => {
+            println!(
+                "edited {} (now revision {}); attachments retained",
+                report["envelope_id"].as_str().unwrap_or("?"),
+                report["revision"]
+            );
+        }
+        "cancel_input" => {
+            println!("cancelled {}; pending delivery withdrawn", report["envelope_id"].as_str().unwrap_or("?"));
+        }
+        _ => {}
     }
 }
 

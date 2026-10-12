@@ -82,14 +82,23 @@ async fn pending_inputs_edit_cancel_and_restart_through_daemon_and_cli() {
                 .output()
                 .unwrap()
         };
+        let human = run(&["inputs", "list"]);
+        assert!(human.status.success(), "{}", String::from_utf8_lossy(&human.stderr));
+        let human_text = String::from_utf8_lossy(&human.stdout).into_owned();
+        assert!(human_text.contains("r1") && human_text.contains("file(s)"), "{human_text}");
+        assert!(serde_json::from_str::<Json>(&human_text).is_err(), "default output must not be JSON: {human_text}");
+        let paths = run(&["inputs", "paths", "--query", "no-such-prefix"]);
+        assert!(paths.status.success(), "{}", String::from_utf8_lossy(&paths.stderr));
+        assert!(String::from_utf8_lossy(&paths.stdout).contains("no matching workspace paths"));
         let listed = run(&["inputs", "list", "--json"]);
         assert!(listed.status.success(), "{}", String::from_utf8_lossy(&listed.stderr));
         let data: Json = serde_json::from_slice(&listed.stdout).unwrap();
         assert_eq!(data["inputs"][0]["revision"], 1);
         let edit = run(&["inputs", "edit", "--id", "a", "--revision", "1", "--prompt", "cli-edited-a", "--json"]);
         assert!(edit.status.success(), "{}", String::from_utf8_lossy(&edit.stderr));
-        let cancelled = run(&["inputs", "cancel", "--id", "b", "--revision", "0", "--json"]);
+        let cancelled = run(&["inputs", "cancel", "--id", "b", "--revision", "0"]);
         assert!(cancelled.status.success(), "{}", String::from_utf8_lossy(&cancelled.stderr));
+        assert!(String::from_utf8_lossy(&cancelled.stdout).contains("cancelled"));
         let repeat = run(&["inputs", "cancel", "--id", "b", "--revision", "0"]);
         assert_eq!(repeat.status.code(), Some(1));
     });
@@ -159,5 +168,120 @@ async fn pending_inputs_edit_cancel_and_restart_through_daemon_and_cli() {
     assert!(!serde_json::to_string(&requests).unwrap().contains("original-b"));
     assert!(serde_json::to_string(&requests).unwrap().contains("snapshot before restart"));
     assert!(!serde_json::to_string(&requests).unwrap().contains("\"attachments\""));
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn inputs_pages_have_a_byte_budget_without_losing_or_repeating_rows() {
+    let root = root("inputs-byte-budget");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let mut slow = reply("first reply");
+    slow["__slow_ms__"] = json!(1500);
+    let handle = serve(config_recording(
+        &root,
+        HashMap::from([("i-leader".into(), vec![slow])]),
+        UserConfig::default(),
+        vec![],
+        json!({}),
+        &seen,
+    ))
+    .await
+    .unwrap();
+    let socket = root.dir.join("state/daemon.sock");
+    let mut client = Client::connect(&socket).await;
+    assert_eq!(client.command("first", "submit_input", input_params("first")).await["ok"], true);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while seen.lock().unwrap().is_empty() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        client.command("pause", "set_lifecycle", json!({"instance_id":"i-leader", "lifecycle":"PAUSED"})).await["ok"],
+        true
+    );
+    let big = "x".repeat(1024 * 1024);
+    for index in 0..5 {
+        let id = format!("big-{index}");
+        let reply =
+            client.command(&id, "submit_input", json!({"instance_id":"i-leader", "envelope_id":id, "text":big})).await;
+        assert_eq!(reply["result"]["queued"], true, "{reply}");
+    }
+    let mut seen_ids = Vec::new();
+    let mut after = 0i64;
+    let mut first_page = None;
+    for _ in 0..10 {
+        let page = client.call("inputs", json!({"after":after, "limit":100})).await;
+        let rows = page["result"]["inputs"].as_array().unwrap();
+        if first_page.is_none() {
+            first_page = Some(rows.len());
+        }
+        seen_ids.extend(rows.iter().map(|row| row["envelope_id"].as_str().unwrap().to_string()));
+        let Some(next) = page["result"]["next_after"].as_i64() else { break };
+        assert!(next > after, "the pagination cursor must advance");
+        after = next;
+    }
+    seen_ids.sort();
+    assert_eq!(seen_ids, ["big-0", "big-1", "big-2", "big-3", "big-4"], "no row lost or repeated");
+    assert_eq!(first_page.unwrap(), 3, "three 1 MiB payloads fit the 4 MiB page budget, the fourth does not");
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn concurrent_attachment_submissions_queue_instead_of_failing_busy() {
+    let root = root("attach-concurrent");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    std::fs::write(root.dir.join("ws/one.txt"), "one").unwrap();
+    std::fs::write(root.dir.join("ws/two.txt"), "two").unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let mut slow = reply("first reply");
+    slow["__slow_ms__"] = json!(1500);
+    let handle = serve(config_recording(
+        &root,
+        HashMap::from([("i-leader".into(), vec![slow])]),
+        UserConfig::default(),
+        vec![],
+        json!({}),
+        &seen,
+    ))
+    .await
+    .unwrap();
+    let socket = root.dir.join("state/daemon.sock");
+    let mut control = Client::connect(&socket).await;
+    assert_eq!(control.command("first", "submit_input", input_params("first")).await["ok"], true);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while seen.lock().unwrap().is_empty() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        control.command("pause", "set_lifecycle", json!({"instance_id":"i-leader", "lifecycle":"PAUSED"})).await["ok"],
+        true
+    );
+    let mut first = Client::connect(&socket).await;
+    let mut second = Client::connect(&socket).await;
+    let (one, two) = tokio::join!(
+        first.command(
+            "c-one",
+            "submit_input",
+            json!({"instance_id":"i-leader", "envelope_id":"one", "text":"with one", "attachments":["one.txt"]})
+        ),
+        second.command(
+            "c-two",
+            "submit_input",
+            json!({"instance_id":"i-leader", "envelope_id":"two", "text":"with two", "attachments":["two.txt"]})
+        ),
+    );
+    assert_eq!(one["ok"], true, "{one}");
+    assert_eq!(two["ok"], true, "{two}");
+    assert_eq!(one["result"]["queued"], true, "{one}");
+    assert_eq!(two["result"]["queued"], true, "{two}");
+    let page = control.call("inputs", json!({})).await;
+    let rows = page["result"]["inputs"].as_array().unwrap();
+    assert_eq!(rows.len(), 2, "{page}");
     handle.shutdown().await.unwrap();
 }

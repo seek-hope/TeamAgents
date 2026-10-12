@@ -4,7 +4,12 @@
 pub(crate) fn limits() -> Result<(), String> {
     for (resource, value) in [
         (libc::RLIMIT_AS, 768 * 1024 * 1024),
-        (libc::RLIMIT_CPU, 2),
+        // D-452: the CPU ceiling is a backstop above the parent's wall deadlines (3 s media / 6 s
+        // code), never the primary bound. A throttled CPU spends more CPU-seconds on the same cold
+        // grammar; measured on the reference host, cold TypeScript highlight reaches ~2.5 s CPU in a
+        // debug build, so the earlier 2 s cap SIGKILLed legitimate work before its deadline. The
+        // parent still stops and reaps the group at the wall deadline.
+        (libc::RLIMIT_CPU, 8),
         (libc::RLIMIT_STACK, 8 * 1024 * 1024),
         (libc::RLIMIT_NOFILE, 32),
         (libc::RLIMIT_CORE, 0),

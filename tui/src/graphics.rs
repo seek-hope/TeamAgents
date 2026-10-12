@@ -33,9 +33,15 @@ const MAX_SOURCE_BYTES: usize = 64 * 1024;
 const MAX_SOURCE_LINES: usize = 500;
 const MAX_SOURCE_PREVIEW_CHARS: usize = 32 * 1024;
 const CACHE_SIZE: usize = 16;
-const WORKER_TIMEOUT: Duration = Duration::from_millis(750);
-// A cold TypeScript grammar compiles lazily (~1.5 s in the pinned debug toolchain).
-const CODE_WORKER_TIMEOUT: Duration = Duration::from_millis(2500);
+// D-452: the media deadline covers SVG/diagram rasterization, not just image decode: a debug-build
+// mermaid pie raster takes ~0.7 s on the reference machine (dot ~0.17 s, flow ~0.03 s), so the earlier
+// 750 ms bound made legitimate previews fall back to source under test/CI parallelism. 3 s keeps the
+// wait hard-bounded (the source is shown meanwhile) with headroom for a slow or busy host.
+const WORKER_TIMEOUT: Duration = Duration::from_millis(3000);
+// D-452: a cold grammar is compiled per helper process; measured on the reference host, cold TypeScript
+// highlight costs ~2.5 s CPU in a debug build, so the earlier 2.5 s bound sat exactly on the render and
+// timed out legitimate work. 6 s is a hard ceiling, not a target; the plain source is visible meanwhile.
+const CODE_WORKER_TIMEOUT: Duration = Duration::from_millis(6000);
 const MAX_WORKER_INPUT: usize = 16 * 1024 * 1024;
 const MAX_WORKER_OUTPUT: usize = 16 * 1024 * 1024;
 

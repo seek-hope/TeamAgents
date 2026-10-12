@@ -51,8 +51,8 @@ teamagents                           # open the TUI (starts the per-user daemon 
   renders keep the UI bounded. Only visible previews request decoding; scrolling back reloads evicted
   images without discarding their known layout heights. Images fit at most 120 columns and 36 rows; larger images scale down, and
   scrolling clips them to the conversation. Display limits never rewrite the saved message. Grammar coloring,
-  diagrams and image decoding run in terminable Rust display processes: 750 ms for media, 2.5 s for cold
-  code grammars, 16 MiB per wire stream, 768 MiB address space and 2 CPU seconds. Linux x86-64/AArch64 helpers
+  diagrams and image decoding run in terminable Rust display processes: 3 s for media, 6 s for cold
+  code grammars, 16 MiB per wire stream, 768 MiB address space and 8 CPU seconds. Linux x86-64/AArch64 helpers
   deny file opens, sockets and child creation after loading fixed public fonts. Unsupported isolation,
   timeout, crash or invalid output preserves source; code stays readable while colors are pending.
   Toggle, resize and session replacement cancel stale work. These are local process bounds, not a guarantee
@@ -82,8 +82,10 @@ teamagents                           # open the TUI (starts the per-user daemon 
   editor; Enter saves, Ctrl+J inserts a line and Esc discards the edit. Attachments remain unchanged.
   Delete then y cancels the captured envelope/revision; Esc keeps it. Use r to refresh and n for the next page.
   The conversation draft stays separate. Consumed, cancelled, old-epoch or stale-revision input is refused.
-  CLI: `inputs list --json`, then `inputs edit --id ID --revision N --prompt TEXT` or
-  `inputs cancel --id ID --revision N`. A cancelled headless input ends with an explicit undelivered failure.
+  CLI: `inputs list`, `inputs paths --query PREFIX`, `inputs edit --id ID --revision N --prompt TEXT` or
+  `inputs cancel --id ID --revision N` — human-readable by default, JSON with `--json`. A list page holds at
+  most 100 rows and 4 MiB of payload; `next_after` continues from the last row, so a caller pages through
+  without losing or repeating an input. A cancelled headless input ends with an explicit undelivered failure.
   These actions do not interrupt models or stop running tools/delegations.
 - **Local session export (D-451)**: `teamagents sessions export --id ID --output FILE --format json`
   (or `markdown`) writes a consistent snapshot of every stored member/context/input revision and reference.

@@ -123,8 +123,9 @@ impl SupervisorHandle {
         let instance = cmd.params["instance_id"].as_str().map(str::to_string);
         let interrupt = cmd.method == "interrupt_instance";
         let result = if cmd.method == "submit_input" && cmd.params.get("attachments").is_some_and(|v| v != &json!([])) {
-            let _preparing =
-                self.input_preparation.try_lock().map_err(|_| "attachment preparation busy: retry this input")?;
+            // Concurrent attachment submissions queue on the lock instead of failing busy:
+            // each one snapshots its own files in turn (D-451 review fix).
+            let _preparing = self.input_preparation.lock().await;
             super::attachments::submit(&self.storage, &self.input_root, &self.input_catalog, cmd).await?
         } else {
             self.submit(cmd, Identity::User).await?

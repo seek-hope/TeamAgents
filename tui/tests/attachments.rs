@@ -78,3 +78,22 @@ fn attachments_preserve_approval_ownership_disconnected_drafts_and_narrow_frames
     assert!(app.handle_key(key(KeyCode::Enter)).is_none());
     assert!(app.attachments.paths.is_empty());
 }
+
+#[test]
+fn slash_commands_never_enter_input_history_but_messages_do() {
+    let mut app = app();
+    app.attachments.paths.push("staged.txt".into());
+    app.composer.set_text("/detach 1");
+    assert!(app.handle_key(key(KeyCode::Enter)).is_none());
+    assert!(app.attachments.paths.is_empty());
+    app.composer.set_text("/attach new.txt");
+    assert!(app.handle_key(key(KeyCode::Enter)).is_none());
+    assert_eq!(app.attachments.paths, ["new.txt"]);
+    app.composer.set_text("/help");
+    assert!(app.handle_key(key(KeyCode::Enter)).is_none());
+    assert!(app.composer.history.is_empty(), "client commands are not sent messages");
+    app.composer.set_text("ordinary");
+    assert!(matches!(app.handle_key(key(KeyCode::Enter)), Some(V2Effect::SubmitInput { .. })));
+    assert_eq!(app.composer.history.len(), 1);
+    assert_eq!(app.composer.history[0], "ordinary");
+}

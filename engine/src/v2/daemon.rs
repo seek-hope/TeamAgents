@@ -734,6 +734,9 @@ fn read_method(
             if after < 0 || !(1..=100).contains(&limit) {
                 return Err("inputs: after must be >= 0 and limit must be 1..100".into());
             }
+            // Row count is not the only bound: a page also carries at most 4 MiB of payload bytes
+            // (one row may exceed it alone and still forms its own page, so pagination never stalls).
+            const MAX_PAGE_PAYLOAD_BYTES: usize = 4 * 1024 * 1024;
             let mut stmt = conn
                 .prepare(
                     "SELECT e.id, e.sequence, e.epoch, e.payload_json,
@@ -747,14 +750,29 @@ fn read_method(
             let rows = stmt
                 .query_map(rusqlite::params![instance, after, limit + 1], |row| {
                     let raw: String = row.get(3)?;
-                    Ok(json!({"envelope_id": row.get::<_, String>(0)?, "sequence": row.get::<_, i64>(1)?,
+                    let bytes = raw.len();
+                    Ok((
+                        json!({"envelope_id": row.get::<_, String>(0)?, "sequence": row.get::<_, i64>(1)?,
                     "epoch": row.get::<_, i64>(2)?, "payload": serde_json::from_str::<Json>(&raw).unwrap_or(Json::Null),
-                    "revision": row.get::<_, i64>(4)?}))
+                    "revision": row.get::<_, i64>(4)?}),
+                        bytes,
+                    ))
                 })
                 .map_err(|e| format!("inputs: {e}"))?;
-            let mut inputs: Vec<Json> = rows.collect::<Result<_, _>>().map_err(|e| format!("inputs: {e}"))?;
-            let more = inputs.len() > limit as usize;
-            inputs.truncate(limit as usize);
+            let rows: Vec<(Json, usize)> = rows.collect::<Result<_, _>>().map_err(|e| format!("inputs: {e}"))?;
+            let fetched = rows.len();
+            let mut inputs: Vec<Json> = Vec::new();
+            let mut payload_bytes = 0usize;
+            for (row, bytes) in rows {
+                if inputs.len() >= limit as usize
+                    || (!inputs.is_empty() && payload_bytes + bytes > MAX_PAGE_PAYLOAD_BYTES)
+                {
+                    break;
+                }
+                payload_bytes += bytes;
+                inputs.push(row);
+            }
+            let more = inputs.len() < fetched;
             let next = if more { inputs.last().map(|row| row["sequence"].clone()) } else { None };
             Ok(json!({"instance_id": instance, "inputs": inputs, "next_after": next}))
         }

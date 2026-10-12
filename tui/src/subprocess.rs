@@ -7,12 +7,24 @@ use std::{
     time::{Duration, Instant},
 };
 
-struct OwnedChild(Child);
+struct OwnedChild {
+    child: Child,
+    /// Kill the whole process group on drop. Set on every failure/cancel/timeout path;
+    /// cleared on success so a child that legitimately started a long-lived descendant
+    /// (e.g. `sessions open` starting a daemon) is not torn down with it.
+    kill_group: bool,
+}
 impl Drop for OwnedChild {
     fn drop(&mut self) {
+        if self.kill_group {
+            // The child is its process-group leader (capture sets process_group(0)); a negative
+            // pid signals the group, reaping grandchildren a plain kill would leave behind.
+            // If the group is already gone this fails with ESRCH, which is fine.
+            unsafe { libc::kill(-(self.child.id() as i32), libc::SIGKILL) };
+        }
         // wait also reaps an already-exited child. No pipe reader must join first.
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 
@@ -55,17 +67,22 @@ pub(crate) fn capture(
     if Instant::now() >= deadline {
         return Err("subprocess timed out".into());
     }
-    let mut child = OwnedChild(
-        command
+    use std::os::unix::process::CommandExt;
+    // The child leads its own process group, so failure paths can reap the whole tree,
+    // including grandchildren that inherited the pipes.
+    command.process_group(0);
+    let mut child = OwnedChild {
+        child: command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| format!("subprocess spawn: {e}"))?,
-    );
-    let mut stdin = child.0.stdin.take();
-    let mut stdout = child.0.stdout.take().ok_or("subprocess stdout unavailable")?;
-    let mut stderr = child.0.stderr.take().ok_or("subprocess stderr unavailable")?;
+        kill_group: true,
+    };
+    let mut stdin = child.child.stdin.take();
+    let mut stdout = child.child.stdout.take().ok_or("subprocess stdout unavailable")?;
+    let mut stderr = child.child.stderr.take().ok_or("subprocess stderr unavailable")?;
     nonblocking(stdin.as_ref().ok_or("subprocess stdin unavailable")?)?;
     nonblocking(&stdout)?;
     nonblocking(&stderr)?;
@@ -99,10 +116,13 @@ pub(crate) fn capture(
             err_done = drain(&mut stderr, &mut err, output_limit)?;
         }
         if status.is_none() {
-            status = child.0.try_wait().map_err(|e| format!("subprocess wait: {e}"))?;
+            status = child.child.try_wait().map_err(|e| format!("subprocess wait: {e}"))?;
         }
         if out_done && err_done {
             if let Some(status) = status {
+                // Success: the direct child exited and its pipes are done. Descendants that
+                // outlive it by design (a daemon started by `sessions open`) keep running.
+                child.kill_group = false;
                 return Ok(Output { status, stdout: out, stderr: err });
             }
         }
@@ -181,5 +201,22 @@ mod tests {
         .unwrap_err();
         assert!(error.contains("timed out"));
         assert!(start.elapsed() < Duration::from_millis(450));
+    }
+
+    #[test]
+    fn timeout_kills_the_whole_process_group_including_grandchildren() {
+        let marker = std::env::temp_dir().join(format!("ta-grandchild-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let code = format!(
+            "import subprocess; subprocess.Popen(['python3','-c',\
+             'import time,pathlib; time.sleep(0.4); pathlib.Path({:?}).touch()'])",
+            marker.to_string_lossy()
+        );
+        let start = Instant::now();
+        let error = capture(&mut python(&code), &[], 1000, start + Duration::from_millis(100), || false).unwrap_err();
+        assert!(error.contains("timed out"), "{error}");
+        // The grandchild would write the marker at 0.4 s if it survived the group kill at the deadline.
+        thread::sleep(Duration::from_millis(700));
+        assert!(!marker.exists(), "grandchild survived the process-group kill");
     }
 }

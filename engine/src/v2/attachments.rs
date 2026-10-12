@@ -189,29 +189,63 @@ pub async fn submit(storage: &Storage, root: &Path, catalog: &UserConfig, comman
         .await
         .map_err(|e| format!("attachment capture: {e}"))??;
     let descriptors: Vec<_> = prepared.iter().map(|p| p.descriptor.clone()).collect();
-    for descriptor in &descriptors {
-        let params = json!({"id":descriptor.artifact_id,"digest":descriptor.digest,"size":descriptor.bytes,
-            "kind":"input_attachment","owner_scope":"input","owner_ref":command.command_id,
-            "storage_ref":root.join("artifacts").join(format!("{}.blob",descriptor.artifact_id)).to_string_lossy()});
-        storage
+    let root_owned = root.to_path_buf();
+    let cleanup = descriptors.clone();
+    let outcome = async {
+        for descriptor in &descriptors {
+            let params = json!({"id":descriptor.artifact_id,"digest":descriptor.digest,"size":descriptor.bytes,
+                "kind":"input_attachment","owner_scope":"input","owner_ref":command.command_id,
+                "storage_ref":root.join("artifacts").join(format!("{}.blob",descriptor.artifact_id)).to_string_lossy()});
+            storage
+                .call(move |c| {
+                    c.submit(
+                        Command {
+                            command_id: format!("stage-{}", uuid::Uuid::new_v4()),
+                            method: "artifact_stage".into(),
+                            params,
+                        },
+                        Identity::System,
+                    )
+                })
+                .await??;
+        }
+        let root = root.to_path_buf();
+        tokio::task::spawn_blocking(move || publish(&root, &prepared))
+            .await
+            .map_err(|e| format!("attachment publication: {e}"))??;
+        // The original client command is hashed, not a new read of its files on retry.
+        storage.call(move |c| c.submit_input_snapshots(command, descriptors)).await?
+    }
+    .await;
+    if outcome.is_err() {
+        // Failure after staging must not leak STAGING rows or this round's blobs until a restart
+        // (the boot-time recover() remains the backstop for a crash between operations).
+        cleanup_failed_submission(storage, &root_owned, &cleanup).await;
+    }
+    outcome
+}
+
+/// Best-effort cleanup for a failed submission: abandon this round's staged artifacts and delete
+/// only the blob/temp files named by this round's fresh artifact ids.
+async fn cleanup_failed_submission(storage: &Storage, root: &Path, descriptors: &[InputAttachment]) {
+    let dir = root.join("artifacts");
+    for descriptor in descriptors {
+        let id = descriptor.artifact_id.clone();
+        let _ = storage
             .call(move |c| {
                 c.submit(
                     Command {
-                        command_id: format!("stage-{}", uuid::Uuid::new_v4()),
-                        method: "artifact_stage".into(),
-                        params,
+                        command_id: format!("abandon-{id}"),
+                        method: "artifact_abandon".into(),
+                        params: json!({"id": id}),
                     },
                     Identity::System,
                 )
             })
-            .await??;
+            .await;
+        let _ = std::fs::remove_file(dir.join(format!("{}.blob", descriptor.artifact_id)));
+        let _ = std::fs::remove_file(dir.join(format!("{}.tmp", descriptor.artifact_id)));
     }
-    let root = root.to_path_buf();
-    tokio::task::spawn_blocking(move || publish(&root, &prepared))
-        .await
-        .map_err(|e| format!("attachment publication: {e}"))??;
-    // The original client command is hashed, not a new read of its files on retry.
-    storage.call(move |c| c.submit_input_snapshots(command, descriptors)).await?
 }
 
 /// At daemon boot no publication from the previous daemon remains in flight. The

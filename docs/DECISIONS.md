@@ -20,6 +20,43 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
 
+## D-452 Repair the D-451 review findings and bound display work by measurement (2026-10-12)
+
+**Approved scope.** A read-only review of the D-451 delivery found four defects and three residual risks; this
+round repairs them with tests, syncs the docs and keeps the D-451 boundaries. Nothing here changes the Rust
+control plane, the single SQLite authority, the daemon/TUI/CLI split or the permission model.
+
+**Inputs CLI and paging.** `teamagents inputs` printed JSON regardless of `--json`; it now prints human-readable
+rows by default (envelope id, revision, sequence, attachment count, preview, next-page hint) and JSON only with
+`--json`. The daemon's `inputs` read was row-bounded but not byte-bounded; a page now carries at most 100 rows
+**and** 4 MiB of payload, the first row is always included so paging cannot stall, and `next_after` is the last
+included row's sequence, so a caller never loses or repeats an input.
+
+**Attachment failures and concurrency.** A failed attachment submission used to leave its STAGING rows and this
+round's blob/temp files until a daemon restart ran `recover`; `engine::attachments::submit` now abandons each
+staged artifact and deletes only the files named by this round's fresh artifact ids as soon as the submission
+fails (the boot-time `recover` stays the backstop for a crash between operations). Concurrent attachment
+submissions used to fail with `attachment preparation busy`; `SupervisorHandle::submit_user` now queues them on
+an async lock and each snapshots its own files in turn.
+
+**Process groups and input history.** `subprocess::capture` owned only the direct child, so a session-CLI
+grandchild could survive a timeout. The child now leads its own process group (`process_group(0)`) and the
+failure/cancel/timeout paths kill the whole group; the success path clears that flag so a deliberately
+long-lived descendant (a daemon started by `sessions open`) is untouched. Separately, client slash commands
+(`/attach`, `/detach`, `/help`, `/queue`) no longer enter the composer's input history — only messages actually
+submitted to the Leader do (D-77's "the arrows walk what was sent").
+
+**Bounds corrected by measurement (debug build, reference host).** The D-451 media deadline of 750 ms sat below
+the real cost of SVG/diagram rasterization: a mermaid `pie` takes ~0.7 s, so legitimate previews fell back to
+source under test/CI parallelism; the media deadline is now 3 s. The cold-grammar deadline of 2.5 s equalled the
+measured cold TypeScript highlight (~2.5 s CPU in a debug build), and the sandbox's `RLIMIT_CPU` of 2 s killed
+that work with SIGKILL before either bound applied; the code deadline is now 6 s and the CPU ceiling 8 s, a
+backstop above the wall deadlines rather than the primary bound. The plain source is shown immediately either
+way, every bound stays hard, and the parent still stops and reaps the process group at the wall deadline.
+
+**Not eliminable.** A userspace parent cannot promise kernel/filesystem liveness for its own reads or spawns;
+this stays a documented boundary (USER-GUIDE), not a claim of the process bounds.
+
 ## D-451 Build a verifiable daily coding workflow (2026-10-11)
 
 **Approved scope.** The maturity cycle adds engine-owned file/image attachments and path completion,

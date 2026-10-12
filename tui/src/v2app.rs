@@ -734,22 +734,28 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
                     self.command_note("Message kept in the draft: waiting for the Leader connection.");
                     return None;
                 }
-                let text = if self.composer.text().starts_with("/attach ") {
+                let text = {
                     let raw = self.composer.text();
-                    self.composer.clear();
-                    raw
-                } else {
-                    self.composer.submit()?
+                    if raw == "/attach"
+                        || raw == "/detach"
+                        || raw.starts_with("/attach ")
+                        || raw.starts_with("/detach ")
+                    {
+                        // Client commands never enter the input history (same for attach and detach).
+                        self.composer.clear();
+                        raw
+                    } else {
+                        self.composer.submit()?
+                    }
                 };
-                // the arrows walk what was sent (D-77): `text.rs` has kept the
-                // history and the recall rules all along, and nothing ever recorded
-                // into it, so ↑ did nothing but scroll
-                self.composer.record_submission(&text);
                 // D-370: a leading `/` is a client command, not an instruction to the Leader (pi's slash-command
                 // shape). Handled here, before the active instance is required, so `/help` works with no instance.
+                // Client commands are not sent messages, so they never enter the input history; D-77's
+                // "the arrows walk what was sent" records ordinary submissions only, below.
                 if text.starts_with('/') {
                     return self.slash_command(&text);
                 }
+                self.composer.record_submission(&text);
                 let instance = self.active_instance()?.id.clone();
                 let envelope = self.attachments.envelope(&text);
                 Some(V2Effect::SubmitInput { instance, envelope, text, attachments: self.attachments.paths.clone() })

@@ -61,6 +61,66 @@ fn attachment_budgets_paths_and_types_fail_closed() {
 }
 
 #[tokio::test]
+async fn a_failed_submission_abandons_staged_artifacts_and_removes_blobs_immediately() {
+    let root = Root::new();
+    let label = "report.txt";
+    std::fs::write(root.0.join(label), "bytes").unwrap();
+    let storage = Storage::open(&root.0.join("session.sqlite"), "s1", true, 32).unwrap();
+    let workspace = root.0.clone();
+    storage
+        .call(move |c| {
+            c.submit(
+                Command {
+                    command_id: "create".into(),
+                    method: "create_instance".into(),
+                    params: json!({"id":"i-leader","workspace_ref":workspace,"profile":{"model":"text"}}),
+                },
+                Identity::User,
+            )
+            .unwrap();
+            // Reusing this envelope makes the attachment submission's dispatch fail after staging.
+            c.submit(
+                Command {
+                    command_id: "plain".into(),
+                    method: "submit_input".into(),
+                    params: json!({"instance_id":"i-leader","envelope_id":"dup","text":"first"}),
+                },
+                Identity::User,
+            )
+            .unwrap();
+        })
+        .await
+        .unwrap();
+    let failed = submit(
+        &storage,
+        &root.0,
+        &UserConfig::default(),
+        Command {
+            command_id: "attach-dup".into(),
+            method: "submit_input".into(),
+            params: json!({"instance_id":"i-leader","envelope_id":"dup","text":"second","attachments":[label]}),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(failed.contains("dup"), "{failed}");
+    let (staging, abandoned, references) = storage
+        .call(|c| {
+            let count = |sql: &str| c.connection().query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
+            (
+                count("SELECT COUNT(*) FROM artifacts WHERE completeness='STAGING'"),
+                count("SELECT COUNT(*) FROM artifacts WHERE completeness='ABANDONED'"),
+                count("SELECT COUNT(*) FROM input_attachments"),
+            )
+        })
+        .await
+        .unwrap();
+    assert_eq!((staging, abandoned, references), (0, 1, 0));
+    let leftovers = std::fs::read_dir(root.0.join("artifacts")).unwrap().count();
+    assert_eq!(leftovers, 0, "the failed submission left blob/temp files behind");
+}
+
+#[tokio::test]
 async fn immutable_snapshot_retry_revision_gc_and_corruption() {
     let root = Root::new();
     let label = "report.txt";

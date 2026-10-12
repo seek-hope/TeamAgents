@@ -25,7 +25,7 @@ fn worker_faults_are_bounded_isolated_and_recover() {
         let start = Instant::now();
         let error = run_helper(&request(&format!("__test_{mode}")), &token).err().expect("fault must fail");
         assert!(error.contains(expected), "{mode}: {error}");
-        assert!(start.elapsed() < Duration::from_secs(2), "{mode} was not bounded");
+        assert!(start.elapsed() < Duration::from_secs(4), "{mode} was not bounded");
         let next = run_helper(&request("mermaid"), &token).unwrap_or_else(|e| panic!("after {mode}: {e}"));
         assert!(!next.lines.is_empty());
     }
@@ -81,7 +81,7 @@ fn composer_and_frames_remain_live_while_helper_hangs() {
     }
     assert_eq!(app.composer.text(), "draft while parsing");
     assert!(start.elapsed() < Duration::from_millis(500));
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(4);
     loop {
         if app.graphics.poll() {
             break;
