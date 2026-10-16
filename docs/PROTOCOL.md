@@ -35,7 +35,9 @@ its `goal`, a task, an approval, a grant, a history entry, the envelopes themsel
 generated table at the end of this document, which is what the user guide's report contract (§1.2) points at
 (D-173). One page of the `inputs` read method is bounded by both a row count (1..100) and a 4 MiB
 payload-byte budget; the reply's `next_after` is the last included row's sequence, so a caller pages through
-without losing or repeating an input (D-452).
+without losing or repeating an input (D-452). The read checks stored UTF-8 byte lengths before loading or
+parsing payloads. If the first remaining payload alone exceeds 4 MiB, it returns an error naming its envelope
+id and revision for explicit edit/cancel; it never silently skips, truncates or mutates that input.
 
 **Commands** are executed by the control plane under the caller's identity (`Identity::User`) in one database
 transaction, with the permission and budget checks of `core/src/v2/capability.rs`; `identity checked` below means
@@ -53,10 +55,10 @@ the handler re-checks who may do this rather than trusting the request.
 | `history` | `instance_id`, `limit` | `entries`, `envelope_id`, `epoch`, `idx`, `instance_id`, `kind`, `message`, `workspace` | `engine/src/v2/daemon.rs:665` |
 | `surfaces` | `instance_id`, `limit` | `epoch`, `goal_id`, `instance_id`, `kind`, `offered_tools`, `request_id`, `status`, `surface_authorized`, `surfaces` | `engine/src/v2/daemon.rs:698` |
 | `inputs` | — | `envelope_id`, `epoch`, `inputs`, `instance_id`, `next_after`, `payload`, `revision`, `sequence` | `engine/src/v2/daemon.rs:730` |
-| `tasks` | — | `assignee`, `goal_id`, `id`, `status`, `tasks` | `engine/src/v2/daemon.rs:779` |
-| `approvals` | — | `approvals`, `id`, `operation_id`, `preview`, `tool` | `engine/src/v2/daemon.rs:795` |
-| `goals` | — | `attached_instances`, `deadline`, `goals`, `id`, `known_usage`, `limits`, `status`, `summary`, `unknown_usage` | `engine/src/v2/daemon.rs:824` |
-| `grants` | — | `action`, `grants`, `id`, `issuer`, `parent_grant_id`, `resource_scope`, `revision`, `revoked`, `subject` | `engine/src/v2/daemon.rs:870` |
+| `tasks` | — | `assignee`, `goal_id`, `id`, `status`, `tasks` | `engine/src/v2/daemon.rs:781` |
+| `approvals` | — | `approvals`, `id`, `operation_id`, `preview`, `tool` | `engine/src/v2/daemon.rs:797` |
+| `goals` | — | `attached_instances`, `deadline`, `goals`, `id`, `known_usage`, `limits`, `status`, `summary`, `unknown_usage` | `engine/src/v2/daemon.rs:826` |
+| `grants` | — | `action`, `grants`, `id`, `issuer`, `parent_grant_id`, `resource_scope`, `revision`, `revoked`, `subject` | `engine/src/v2/daemon.rs:872` |
 
 ### Commands (executed by the control plane)
 

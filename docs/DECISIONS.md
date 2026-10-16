@@ -29,8 +29,12 @@ control plane, the single SQLite authority, the daemon/TUI/CLI split or the perm
 **Inputs CLI and paging.** `teamagents inputs` printed JSON regardless of `--json`; it now prints human-readable
 rows by default (envelope id, revision, sequence, attachment count, preview, next-page hint) and JSON only with
 `--json`. The daemon's `inputs` read was row-bounded but not byte-bounded; a page now carries at most 100 rows
-**and** 4 MiB of payload, the first row is always included so paging cannot stall, and `next_after` is the last
-included row's sequence, so a caller never loses or repeats an input.
+**and** 4 MiB of payload. It checks stored UTF-8 byte lengths before loading or parsing payloads, and
+`next_after` is the last included row's sequence, so a caller never loses or repeats an input. An oversized
+first remaining row fails explicitly with its id/revision for edit or cancel; it is never skipped or mutated.
+The independent audit caught the initial implementation collecting payloads before checking bytes and allowing
+an oversized first row. Both exceptions are removed; the daemon regression now covers exact-budget payloads,
+UTF-8 oversized rows, deferred errors after a full page, and successful traversal after an explicit edit.
 
 **Attachment failures and concurrency.** A failed attachment submission used to leave its STAGING rows and this
 round's blob/temp files until a daemon restart ran `recover`; `engine::attachments::submit` now abandons each
@@ -62,6 +66,14 @@ absent image (D-369), so the backend refusal test now accepts that half with a s
 assuming a running daemon; the audit sandbox's fresh /run has no docker socket. The approved checks also pin the
 toolchain location (RUSTUP_HOME/CARGO_HOME); the read-only audit sandbox additionally requires build output to
 be redirected to its writable temporary directory.
+
+**Local toolchain inspection (2026-10-16).** `command -v rustup` resolves to `/usr/bin/rustup`;
+`rustup --version` reports 1.29.1, and `pacman -Qi rustup` reports package 1.29.1-1.1 installed on
+2026-10-15 at 16:08:51 +0800. `/var/log/pacman.log` records that installation (not an upgrade entry).
+`rustup toolchain list` includes 1.95.0 and `rustup show active-toolchain` selects it via this repository's
+`rust-toolchain.toml`; the active compiler reports 1.95.0. These read-only probes inspect the current host;
+they do not establish its earlier installation history or attribute the audit failures to a toolchain update.
+The audit failures were independently explained by its empty toolchain home and read-only build directory.
 
 ## D-451 Build a verifiable daily coding workflow (2026-10-11)
 

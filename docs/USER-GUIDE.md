@@ -85,7 +85,10 @@ teamagents                           # open the TUI (starts the per-user daemon 
   CLI: `inputs list`, `inputs paths --query PREFIX`, `inputs edit --id ID --revision N --prompt TEXT` or
   `inputs cancel --id ID --revision N` — human-readable by default, JSON with `--json`. A list page holds at
   most 100 rows and 4 MiB of payload; `next_after` continues from the last row, so a caller pages through
-  without losing or repeating an input. A cancelled headless input ends with an explicit undelivered failure.
+  without losing or repeating an input. Byte lengths are checked before payloads are loaded. If the first
+  remaining input alone exceeds the budget, the read fails with its envelope id and revision; edit or cancel
+  that input to continue. The read never skips or changes it. A cancelled headless input ends with an explicit
+  undelivered failure.
   These actions do not interrupt models or stop running tools/delegations.
 - **Local session export (D-451)**: `teamagents sessions export --id ID --output FILE --format json`
   (or `markdown`) writes a consistent snapshot of every stored member/context/input revision and reference.

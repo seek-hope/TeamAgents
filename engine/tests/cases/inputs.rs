@@ -177,7 +177,8 @@ async fn inputs_pages_have_a_byte_budget_without_losing_or_repeating_rows() {
     std::fs::create_dir_all(root.dir.join("ws")).unwrap();
     let seen = Arc::new(Mutex::new(Vec::new()));
     let mut slow = reply("first reply");
-    slow["__slow_ms__"] = json!(1500);
+    // Keep the request in flight while the larger UTF-8 submissions are serialized.
+    slow["__slow_ms__"] = json!(30000);
     let handle = serve(config_recording(
         &root,
         HashMap::from([("i-leader".into(), vec![slow])]),
@@ -215,6 +216,8 @@ async fn inputs_pages_have_a_byte_budget_without_losing_or_repeating_rows() {
     for _ in 0..10 {
         let page = client.call("inputs", json!({"after":after, "limit":100})).await;
         let rows = page["result"]["inputs"].as_array().unwrap();
+        let payload_bytes: usize = rows.iter().map(|row| serde_json::to_vec(&row["payload"]).unwrap().len()).sum();
+        assert!(payload_bytes <= 4 * 1024 * 1024, "{payload_bytes}");
         if first_page.is_none() {
             first_page = Some(rows.len());
         }
@@ -226,6 +229,96 @@ async fn inputs_pages_have_a_byte_budget_without_losing_or_repeating_rows() {
     seen_ids.sort();
     assert_eq!(seen_ids, ["big-0", "big-1", "big-2", "big-3", "big-4"], "no row lost or repeated");
     assert_eq!(first_page.unwrap(), 3, "three 1 MiB payloads fit the 4 MiB page budget, the fourth does not");
+
+    let page = client.call("inputs", json!({"limit":1})).await;
+    let first = &page["result"]["inputs"][0];
+    let overhead = serde_json::to_vec(&first["payload"]).unwrap().len() - big.len();
+    for index in 0..5 {
+        let cancelled = client
+            .command(
+                &format!("cancel-{index}"),
+                "cancel_input",
+                json!({
+                    "instance_id":"i-leader", "envelope_id":format!("big-{index}"), "revision":0
+                }),
+            )
+            .await;
+        assert_eq!(cancelled["ok"], true, "{cancelled}");
+    }
+    let budget = 4 * 1024 * 1024;
+    let exact = "x".repeat(budget - overhead);
+    let submitted = client
+        .command(
+            "exact",
+            "submit_input",
+            json!({
+                "instance_id":"i-leader", "envelope_id":"big-5", "text":exact
+            }),
+        )
+        .await;
+    assert_eq!(submitted["ok"], true, "{submitted}");
+    let tail = client
+        .command(
+            "tail",
+            "submit_input",
+            json!({
+                "instance_id":"i-leader", "envelope_id":"big-6", "text":"tail"
+            }),
+        )
+        .await;
+    assert_eq!(tail["ok"], true, "{tail}");
+    let page = client.call("inputs", json!({"limit":100})).await;
+    let rows = page["result"]["inputs"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "an exact-budget payload fits");
+    assert_eq!(serde_json::to_vec(&rows[0]["payload"]).unwrap().len(), budget);
+    assert_eq!(page["result"]["next_after"], rows[0]["sequence"]);
+    let cursor = page["result"]["next_after"].as_i64().unwrap();
+
+    // UTF-8 byte length, not character count, determines the oversized boundary.
+    let oversized = "\u{03bb}".repeat((budget - overhead) / 2 + 1);
+    let submitted = client
+        .command(
+            "oversized",
+            "submit_input",
+            json!({
+                "instance_id":"i-leader", "envelope_id":"big-7", "text":oversized
+            }),
+        )
+        .await;
+    assert_eq!(submitted["result"]["queued"], true, "{submitted}");
+    let cancelled = client
+        .command(
+            "cancel-tail",
+            "cancel_input",
+            json!({
+                "instance_id":"i-leader", "envelope_id":"big-6", "revision":0
+            }),
+        )
+        .await;
+    assert_eq!(cancelled["ok"], true, "{cancelled}");
+    let page = client.call("inputs", json!({"limit":100})).await;
+    assert_eq!(page["result"]["inputs"].as_array().unwrap().len(), 1);
+    assert_eq!(page["result"]["next_after"], cursor, "oversized next row is not skipped");
+    let refused = client.call("inputs", json!({"after":cursor,"limit":100})).await;
+    assert_eq!(refused["ok"], false, "{refused}");
+    let reason = refused.to_string();
+    assert!(reason.contains("big-7 revision 0 exceeds the 4 MiB payload budget"), "{reason}");
+    assert!(reason.len() < 1024, "no oversized payload in error reply");
+    let edited = client
+        .command(
+            "repair",
+            "edit_input",
+            json!({
+                "instance_id":"i-leader", "envelope_id":"big-7", "revision":0, "text":"repaired"
+            }),
+        )
+        .await;
+    assert_eq!(edited["ok"], true, "failed read leaves input editable: {edited}");
+    let page = client.call("inputs", json!({"after":cursor,"limit":100})).await;
+    let rows = page["result"]["inputs"].as_array().unwrap();
+    assert_eq!(rows.iter().map(|r| r["envelope_id"].as_str().unwrap()).collect::<Vec<_>>(), ["big-7"]);
+    assert_eq!(rows[0]["payload"]["text"], "repaired");
+    assert!(page["result"]["next_after"].is_null());
     handle.shutdown().await.unwrap();
 }
 
