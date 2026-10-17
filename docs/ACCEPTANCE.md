@@ -1,13 +1,16 @@
 # Acceptance matrix (A01–A36)
 
 Baseline: [the design and acceptance baseline](DESIGN.md) §12/§16. Current implementation checked on
-**2026-10-11** for D-451 local development/product/formal checks. Historical real-model probe dates remain
-attached to their individual rows; the current local regression does not renew real-service acceptance.
+**2026-10-17** for D-452 local regression and independent review acceptance; D-451 product, PTY and formal
+checks retain their **2026-10-11** dates. Historical real-model probe dates remain attached to their
+individual rows; the current local regression does not renew real-service acceptance.
 
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 134 / engine 387 / tui 75 test targets) and `make pty` passes — re-measured 2026-10-11: `pty v2 smoke: ok`, rc 0, credential-free, including Leader-only input, explicit approvals, interrupt/exit, resize and draft ownership (D-445); both are
+`make check` is green (core 134 / engine 387 / tui 75 test targets), rechecked in the D-452 independent audit
+on 2026-10-17. `make pty` last passed on 2026-10-11: `pty v2 smoke: ok`, rc 0, credential-free, including
+Leader-only input, explicit approvals, interrupt/exit, resize and draft ownership (D-445); both are
 preconditions for every item below. `make check` includes `make language-check`, which fails on non-English
 characters outside the two documented exceptions (`README.zh-CN.md` and the frozen material under
 `review/eval`).
@@ -19,7 +22,14 @@ pending revisions/cancellation, local export/search and bounded display processe
 Five scripted-provider coding cases use actual daemons/runners, files and SQLite; PTY checks cover draft and
 input ownership. These are deterministic runtime results, not real-model quality, publication or Pi parity.
 The report keeps ranked gaps and an unexecuted native-context/budget proposal; independent round acceptance
-is recorded by the durable goal audit. Source-only features postdate the v0.2.0 tag.
+is recorded by the completed session's durable goal audit. Source-only features postdate the v0.2.0 tag.
+
+D-452 closed the review-fix round at commit 6f8a7402: human/JSON inputs CLI, strict pre-load payload byte
+budget and pagination, immediate failed-attachment cleanup, serialized concurrent attachment submissions,
+subprocess group cleanup and consistent client-command history. All six criteria passed the independent
+read-only audit, including the final oversized-input regression. This is a recorded audit outcome, not a new
+real-service or installation measurement. The latest D-452 entry in `docs/DECISIONS.md` records the behavior,
+regressions and toolchain inspection; the new-session entry in `AGENTS.md` leads to the development handoff.
 
 ## Requirements (Q1–Q19) and their evidence
 

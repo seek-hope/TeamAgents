@@ -331,8 +331,9 @@ The artifact hashes and platform are recorded by `review/maturity-2026-10-11/run
 The TUI invokes its own `--display-worker` mode for rendering only. It clears the environment, closes inherited
 FDs and installs process limits plus a Linux syscall allowlist before parsing; there is no configurable worker
 executable override. Test-only parent injection uses `TEAMAGENTS_DISPLAY_WORKER_TESTS` for fault modes. Build
-`teamagents-tui` before focused library tests that invoke the helper. Media gets 750 ms; cold code grammars get
-2.5 s. The host-side confined regular-file read precedes the helper and is not a filesystem liveness guarantee.
+`teamagents-tui` before focused library tests that invoke the helper. Media gets 3 s; cold code grammars get
+6 s, with an 8 s CPU backstop (D-452). The host-side confined regular-file read precedes the helper and is not
+a filesystem liveness guarantee.
 The source remains readable when isolation or rendering fails.
 
 ## Fixed tasks and grading
