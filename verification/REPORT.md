@@ -5,7 +5,9 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
-## 0. Gate status (re-run 2026-10-11 at `e9a0aa84`)
+## 0. Gate status (re-run 2026-10-19 at `b4e9f1f9`)
+
+* **D-459 prompt-cache stability touched the Kani subject and the provider edge.** `core/src/kernel/types.rs` gained the cache fields and `core/src/kernel/instance.rs` froze the L1 frontier; the provider changes are sample-tested. The full regression verifies all **45** configurations and refutes all **138** negative controls; Kani reports `Complete - 7 successfully verified harnesses, 0 failures, 7 total`. The re-run is pinned at `b4e9f1f9`, after the cache material; no TLA+ semantics changed.
 
 * **D-455 models capability delegation with a small, focused transition model.** `V2Capabilities.tla` checks `NoChildWithoutParent`, `ChildNonDelegable`, `TaskSettleRevokes` and `ParentRevokeCascades`; `MC_capabilities_bad.cfg` refutes `NoChildWithoutParent`, so the claims are not vacuous. The authority models carry the delegable/task fields and their invariants. The full regression verifies all **45** configurations and refutes all **138** negative controls.
 
