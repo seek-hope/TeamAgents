@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """A real-model check that the bound web tools work and their guard holds (A01/A25-adjacent).
 
-Two turns in one session, with a `[tools.fetch]` binding (the credential-free half of the web
-tools; `web_search` needs an API key and is covered by its own unit tests):
+Two turns in one session, with a `[tools.fetch]` binding. Both web tools use the
+DeepSeek Search/Fetch APIs and therefore need `DEEPSEEK_API_KEY`.
 
 1. the model fetches a public page (`https://example.com`) and reports a phrase from it — the
    readable body really reaches the conversation;

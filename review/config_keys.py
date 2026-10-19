@@ -62,7 +62,8 @@ PLUMBING = {"core/src/models.rs", "engine/src/config.rs", "engine/src/cli.rs", "
 # refuses every other name, D-161). They are config keys a user may write, so the examples and the documents may
 # name them; when that table grows, this set grows with it.
 HAND_READ = {"permissions", "mode", "trust_project", "trusted_projects", "sandbox",
-              "sandbox_image", "sandbox_ssh_target", "sandbox_ssh_workdir", "sandbox_ssh_options"}
+              "sandbox_image", "sandbox_ssh_target", "sandbox_ssh_workdir", "sandbox_ssh_options",
+              "approvals_reviewer", "reviewer_model"}
 
 # Keys the loader *refuses*: naming one in an example or a user-facing document sends a user into an error, so
 # that is a finding even though the key is declared (D-75's `codex_profile` is the shape).

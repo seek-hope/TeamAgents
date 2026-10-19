@@ -14,8 +14,8 @@ Two rules decide whether a key is *honoured*, and both are part of the trust sto
   (exactly those repositories, compared by canonical path) in your own config; the loader looks for the project
   file in the working directory and then up through its parents (D-434). With the opt-in its `models`, `tools`,
   `skills_paths` and `instruction_files` merge in, and your own definitions of the same name always win.
-  `[permissions]` (both `mode` and the trust flag), `hooks`, `checks`, `retention` and `limits` may only ever
-  come from your config, trusted or not. `docs/USER-GUIDE.md` §2 says the same in prose, and
+  `[permissions]` (both `mode` and the trust flag, and the automatic-review keys), `hooks`, `checks`,
+  `retention` and `limits` may only ever come from your config, trusted or not. `docs/USER-GUIDE.md` §2 says the same in prose, and
   `docs/ACCEPTANCE.md` records what is still not covered (the session's own directory only, and one opt-in for
   every repository). `python3 review/project_config_claim.py` checks that every document agrees with the code on
   this point (D-133, D-244).
@@ -54,10 +54,10 @@ default (D-239).
 |---|---|---|---|---|
 | `provider` | `String` | empty | `engine/src/providers/mod.rs`, `engine/src/tools.rs` … (3 files) | The vendor hint: `deepseek` selects that service's defaults (the reasoning echo, the deepseek protocol) while `protocol` is unset, and any other value is a label for a compatible service — the wire is decided by `protocol`/`base_url`, never by this name (D-40, D-229). |
 | `protocol` | `String` | "openai" | `engine/src/providers/mod.rs`, `engine/src/v2/attachments.rs` … (3 files) | — |
-| `model` | `String` | empty | `core/src/kernel/instance.rs`, `core/src/kernel/mod.rs` … (14 files) | — |
+| `model` | `String` | empty | `core/src/kernel/instance.rs`, `core/src/kernel/mod.rs` … (15 files) | — |
 | `base_url` | `Option<String>` | unset (the reader applies its own) | `engine/src/providers/mod.rs` | — |
 | `api_key_env` | `Option<String>` | unset (the reader applies its own) | `engine/src/providers/mod.rs`, `engine/src/tools.rs` | — |
-| `timeout` | `i64` | 120 | `core/src/v2/control.rs`, `engine/src/mcp.rs` … (9 files) | — |
+| `timeout` | `i64` | 120 | `core/src/v2/control.rs`, `engine/src/mcp.rs` … (10 files) | — |
 | `max_retries` | `i64` | 2 | `engine/src/reference.rs`, `engine/src/v2/driver.rs` … (3 files) | Transport retries the driver may add to one request: the instance that uses this profile retries a transient failure this many times before the turn parks with `transient retries exhausted` (A19). Applied per instance since D-247 (D-240 measured the key accepted and ignored, because one session constant served every member); 0 means one attempt, and a negative value is refused at load. |
 | `generation_options` | `HashMap<String, Json>` | empty | `engine/src/providers/mod.rs` | — |
 | `images` | `bool` | false | `engine/src/providers/mod.rs`, `engine/src/v2/attachments.rs` … (4 files) | Does this model accept images (D-392)? **Fail-closed by default**: only a profile that says `images = true` may carry an image part to the wire, so a model that was never checked for vision is sent the placeholder text instead of a block its provider would reject or silently ignore. The declared capability is the gate; no runtime probe guesses it. |
@@ -68,7 +68,7 @@ default (D-239).
 
 | Key | Type | Absent | Read by | Meaning |
 |---|---|---|---|---|
-| `kind` | `String` | empty | `core/src/kernel/mod.rs`, `core/src/v2/control.rs` … (27 files) | — |
+| `kind` | `String` | empty | `core/src/kernel/mod.rs`, `core/src/v2/control.rs` … (28 files) | — |
 | `required` | `bool` | false | `core/src/kernel/mod.rs`, `engine/src/bound.rs` … (5 files) | — |
 | `provider` | `Option<String>` | unset (the reader applies its own) | `engine/src/providers/mod.rs`, `engine/src/tools.rs` … (3 files) | — |
 | `api_key_env` | `Option<String>` | unset (the reader applies its own) | `engine/src/providers/mod.rs`, `engine/src/tools.rs` | — |
@@ -77,7 +77,7 @@ default (D-239).
 | `mcp_execution` | `Option<String>` | unset (the reader applies its own) | `engine/src/bound.rs` | Local MCP execution boundary: workspace (default) or explicit host. |
 | `mcp_network` | `bool` | false | `engine/src/bound.rs` | Network access for workspace-sandboxed MCP processes. |
 | `command` | `Option<String>` | unset (the reader applies its own) | `core/src/v2/control.rs`, `engine/src/bound.rs` … (17 files) | The `kind = "mcp"` service's argv over stdio (the default transport) — required for that kind and transport, refused at load otherwise (D-232). |
-| `args` | `Vec<String>` | empty | `core/src/kernel/mod.rs`, `core/src/v2/control.rs` … (15 files) | — |
+| `args` | `Vec<String>` | empty | `core/src/kernel/mod.rs`, `core/src/v2/control.rs` … (16 files) | — |
 | `url` | `Option<String>` | unset (the reader applies its own) | `engine/src/bound.rs`, `engine/src/mcp_auth.rs` … (7 files) | The `kind = "mcp"` service's endpoint over the `http` transport — required there, and an absolute http(s) URL (D-232). |
 | `bearer_token_env_var` | `Option<String>` | unset (the reader applies its own) | `engine/src/bound.rs`, `engine/src/mcp_auth.rs` | Bearer token for the http transport: names the environment variable the secret is read from — the token itself never lands in this file. |
 | `oauth` | `bool` | false | `engine/src/bound.rs`, `engine/src/mcp_auth.rs` … (3 files) | D-412: sign in to this HTTP service with OAuth (`teamagents mcp login --name <binding>`) and use the credential stored beside the config (`mcp-auth.json`, mode 0600). Mutually exclusive with `bearer_token_env_var`: one endpoint, one credential. |
@@ -96,13 +96,14 @@ default (D-239).
 | Key | Type | Absent | Read by | Meaning |
 |---|---|---|---|---|
 | `models` | `HashMap<String, ModelProfile>` | empty | `engine/src/providers/mod.rs`, `engine/src/v2/driver.rs` | — |
-| `tools` | `HashMap<String, ToolBinding>` | empty | `core/src/kernel/instance.rs`, `core/src/kernel/mod.rs` … (13 files) | — |
+| `tools` | `HashMap<String, ToolBinding>` | empty | `core/src/kernel/instance.rs`, `core/src/kernel/mod.rs` … (14 files) | — |
 | `skills_paths` | `Vec<String>` | empty | `engine/src/tools.rs` | Directories the `skill` tool searches for `SKILL.md` entries. An entry must exist and be a directory; the default (`~/.agents/skills`) is used only when the key is unset (D-232). |
 | `instruction_files` | `Vec<String>` | empty | `engine/src/v2/driver.rs` | Files whose text is appended to **every** member's system prompt (the leader's and each child's), in this order, each under a heading naming the file: read per turn, so an edit lands on the next turn, and a file that cannot be read is named by `doctor` and on the daemon's log rather than skipped in silence (D-102 recorded the promise, D-246 delivers it). |
 | `retention` | `Retention` | the Retention default | `engine/src/v2/daemon.rs`, `engine/src/v2/driver.rs` … (3 files) | — |
 | `hooks` | `Hooks` | the Hooks default | `engine/src/hooks.rs`, `engine/src/tools.rs` … (3 files) | — |
 | `checks` | `Vec<CheckSpec>` | empty | `core/src/v2/control.rs`, `engine/src/v2/exec.rs` … (4 files) | Acceptance checks the user predefines for every goal (DESIGN §8, Q11): the runtime runs them in the isolated shell at the completion boundary, so a goal cannot be reported as done while a check fails. They are the user's own machine contracts, never conditions a model extracted. |
 | `limits` | `GoalLimits` | the GoalLimits default | `engine/src/providers/mod.rs`, `engine/src/v2/daemon.rs` … (6 files) | Usage and wall-clock ceilings every goal this session creates carries (§8, A18/A35): the goal's `max_total_tokens` refuses a new request once the settled usage would pass it, and its deadline refuses one past that moment. Both are the user's own bounds; a session with neither runs until the user stops it (see `docs/USER-GUIDE.md` §2.2). |
+| `update` | `UpdateConfig` | the UpdateConfig default | `core/src/kernel/types.rs`, `core/src/v2/control.rs` … (6 files) | Governed self-update policy (`[update]`). The user config is the only source: a repository-local file may never change how its own agent is replaced (D-453). |
 
 ### `[limits]`
 
@@ -119,9 +120,9 @@ default (D-239).
 
 | Key | Type | Absent | Read by | Meaning |
 |---|---|---|---|---|
-| `id` | `String` | empty | `core/src/kernel/instance.rs`, `core/src/v2/control.rs` … (32 files) | Stable id, used in failures, receipts and repair feedback. |
+| `id` | `String` | empty | `core/src/kernel/instance.rs`, `core/src/v2/control.rs` … (33 files) | Stable id, used in failures, receipts and repair feedback. |
 | `command` | `String` | empty | `core/src/v2/control.rs`, `engine/src/bound.rs` … (17 files) | The command, executed through the same shell tool the model uses. |
-| `timeout` | `Option<u64>` | unset (the reader applies its own) | `core/src/v2/control.rs`, `engine/src/mcp.rs` … (9 files) | Seconds; absent means the shell tool's own default. |
+| `timeout` | `Option<u64>` | unset (the reader applies its own) | `core/src/v2/control.rs`, `engine/src/mcp.rs` … (10 files) | Seconds; absent means the shell tool's own default. |
 | `network` | `bool` | false | `core/src/v2/control.rs`, `engine/src/mcp.rs` … (3 files) | Run with network access (the sandbox is offline by default). |
 | `inputs` | `Vec<String>` | empty | `core/src/v2/control.rs`, `engine/src/v2/driver.rs` … (3 files) | Workspace-relative inputs the check reads. |
 

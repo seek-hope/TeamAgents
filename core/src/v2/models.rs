@@ -14,7 +14,7 @@ pub const V2_FORMAT_ID: &str = "teamagents-v2";
 /// D-348/D-349: v4 records, per model request, the tool names it was offered and whether the surface check
 /// authorized that set (`model_requests.offered_tools` / `.surface_authorized`, D-341's decision for D-143).
 /// 4 -> 5 (D-451): append-only pending user-input revisions; existing envelopes stay valid.
-pub const V2_SCHEMA_VERSION: i64 = 5;
+pub const V2_SCHEMA_VERSION: i64 = 6;
 
 /// Request kinds (§4.1 ModelRequest): an ordinary turn request advances the
 /// instance phase; a compression request only produces a summary (§7, A20).

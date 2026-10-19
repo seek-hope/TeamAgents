@@ -3,6 +3,27 @@
 CRATES := core engine tui
 CARGO_FLAGS ?= --offline --locked
 
+# Independent-audit sandboxes run with HOME=/tmp and no network. The pinned
+# toolchain is already installed under the real user's home; without this bridge
+# rustup tries to download 1.95.0 into /tmp/.rustup and K1 never reaches fmt-check.
+# This is an environment bridge only; normal local/CI runs are unchanged.
+AUDIT_HOME := $(if $(filter /tmp,$(HOME)),/home/$(shell id -un),$(HOME))
+ifeq ($(HOME),/tmp)
+  ifneq ($(wildcard $(AUDIT_HOME)/.rustup/toolchains/1.95.0-*),)
+    RUSTUP_HOME := $(AUDIT_HOME)/.rustup
+    CARGO_HOME := $(AUDIT_HOME)/.cargo
+    CARGO_TARGET_DIR := /tmp/teamagents-audit-target
+    CARGO_INCREMENTAL := 0
+    CARGO_PROFILE_DEV_DEBUG := 0
+    CARGO_PROFILE_TEST_DEBUG := 0
+    ifneq ($(wildcard $(AUDIT_HOME)/.local/share/teamagents-verify/tla2tools.jar),)
+      TLA_TOOLS_DIR := $(AUDIT_HOME)/.local/share/teamagents-verify
+    endif
+    TLA_METADIR := /tmp/teamagents-audit-tla
+    export RUSTUP_HOME CARGO_HOME CARGO_TARGET_DIR CARGO_INCREMENTAL CARGO_PROFILE_DEV_DEBUG CARGO_PROFILE_TEST_DEBUG
+  endif
+endif
+
 .PHONY: help check fmt fmt-check lint test build pty probe-offline probe-models hygiene language-check \
         check-nobwrap check-broken-sandbox benchmark-receipts verify-tools verify-model verify-model-all \
         verify-model-counterexamples verify-model-wide verify-model-sim verify-kani release-rehearsal
@@ -153,7 +174,7 @@ verify-model: verify-tools
 # configuration that fell through the `*)` default would silently run the wrong module (the rule
 # `review/verification_catalogue.py` enforces). The control families are matched by prefix, after the
 # exact arms, because shell `case` takes the first match.
-CFG_CASE = case $$cfg in MC.cfg|MC_control_two.cfg) echo V2Control.tla;; MC_artifact*) echo V2Artifact.tla;; MC_wait*) echo V2Wait.tla;; MC_task*) echo V2Task.tla;; MC_approval*) echo V2Approval.tla;; MC_compress*) echo V2Compress.tla;; MC_daemon*) echo V2Daemon.tla;; MC_checks*) echo V2Checks.tla;; MC_trust*) echo V2Trust.tla;; MC_projecttrust*) echo V2ProjectTrust.tla;; MC_prune*) echo V2Prune.tla;; MC_tui*) echo V2Tui.tla;; MC_presentation*) echo V2Presentation.tla;; MC_inputqueue*) echo V2InputQueue.tla;; MC_displayworker*) echo V2DisplayWorker.tla;; MC_prompt*) echo V2Prompt.tla;; MC_retry*) echo V2Retry.tla;; MC_grants*) echo V2Grants.tla;; MC_authority*) echo V2Authority.tla;; MC_store.cfg|MC_store_adopt.cfg) echo V2Store.tla;; MC_retention*) echo V2Retention.tla;; MC_history*) echo V2History.tla;; MC_sessionui*) echo V2SessionUi.tla;; MC_sessions*) echo V2Sessions.tla;; MC_schedule*) echo V2Schedule.tla;; MC_isolation*) echo V2Isolation.tla;; MC_codemode*) echo V2Codemode.tla;; MC_images*) echo V2Images.tla;; MC_memory*) echo V2Memory.tla;; MC_oauth*) echo V2Oauth.tla;; MC_jobs*) echo V2Jobs.tla;; MC_inbox*) echo V2Inbox.tla;; MC_diskfull*) echo V2DiskFull.tla;; MC_coordinator*) echo V2Coordinator.tla;; MC_workspace*) echo V2Workspace.tla;; MC_concurrency*) echo V2Concurrency.tla;; MC_control*) echo V2Control.tla;; MC_wide.cfg) echo V2Control.tla;; *) echo V2Artifact.tla;; esac
+CFG_CASE = case $$cfg in MC.cfg|MC_control_two.cfg) echo V2Control.tla;; MC_artifact*) echo V2Artifact.tla;; MC_wait*) echo V2Wait.tla;; MC_task*) echo V2Task.tla;; MC_approval*) echo V2Approval.tla;; MC_compress*) echo V2Compress.tla;; MC_daemon*) echo V2Daemon.tla;; MC_checks*) echo V2Checks.tla;; MC_trust*) echo V2Trust.tla;; MC_projecttrust*) echo V2ProjectTrust.tla;; MC_prune*) echo V2Prune.tla;; MC_tui*) echo V2Tui.tla;; MC_presentation*) echo V2Presentation.tla;; MC_inputqueue*) echo V2InputQueue.tla;; MC_displayworker*) echo V2DisplayWorker.tla;; MC_prompt*) echo V2Prompt.tla;; MC_retry*) echo V2Retry.tla;; MC_grants*) echo V2Grants.tla;; MC_capabilities*) echo V2Capabilities.tla;; MC_authority*) echo V2Authority.tla;; MC_store.cfg|MC_store_adopt.cfg) echo V2Store.tla;; MC_retention*) echo V2Retention.tla;; MC_history*) echo V2History.tla;; MC_sessionui*) echo V2SessionUi.tla;; MC_sessions*) echo V2Sessions.tla;; MC_schedule*) echo V2Schedule.tla;; MC_isolation*) echo V2Isolation.tla;; MC_codemode*) echo V2Codemode.tla;; MC_images*) echo V2Images.tla;; MC_memory*) echo V2Memory.tla;; MC_oauth*) echo V2Oauth.tla;; MC_jobs*) echo V2Jobs.tla;; MC_inbox*) echo V2Inbox.tla;; MC_diskfull*) echo V2DiskFull.tla;; MC_coordinator*) echo V2Coordinator.tla;; MC_workspace*) echo V2Workspace.tla;; MC_concurrency*) echo V2Concurrency.tla;; MC_control*) echo V2Control.tla;; MC_wide.cfg) echo V2Control.tla;; *) echo V2Artifact.tla;; esac
 
 # (D-293) TLC's meta directory is `states/` under the spec's directory, suffixed with the *run's timestamp*, and
 # `FileUtil.makeMetaDir` asserts that directory does not already exist (`!dir.exists()`, then `mkdirs()`): a
@@ -161,11 +182,11 @@ CFG_CASE = case $$cfg in MC.cfg|MC_control_two.cfg) echo V2Control.tla;; MC_arti
 # counterexample target used to read a run that never started as "the property may be vacuous". Every invocation
 # gets its own meta directory under the ignored scratch root, removed as soon as TLC returns, so the targets are
 # independent of each other and of anything left behind, and the tracked tree keeps no TLC state.
-TLA_METADIR = $(CURDIR)/review/tmp/tla
+TLA_METADIR ?= $(CURDIR)/review/tmp/tla
 
 # small exhaustive configurations for every module (seconds; the wide config is verify-model-wide)
 verify-model-all: verify-tools
-	@cd verification/tla && for cfg in MC.cfg MC_control_two.cfg MC_control_warn.cfg MC_oauth.cfg MC_artifact.cfg MC_wait.cfg MC_task.cfg MC_task_two.cfg MC_approval.cfg MC_compress.cfg MC_daemon.cfg MC_daemon_stop.cfg MC_checks.cfg MC_checks_briefing.cfg MC_checks_independent.cfg MC_memory.cfg MC_grants.cfg MC_authority.cfg MC_store.cfg MC_retention.cfg MC_history.cfg MC_sessions.cfg MC_schedule.cfg MC_isolation.cfg MC_isolation_ssh.cfg MC_codemode.cfg MC_images.cfg MC_images_blind_model.cfg MC_jobs.cfg MC_inbox.cfg MC_diskfull.cfg MC_coordinator.cfg MC_trust.cfg MC_prompt.cfg MC_retry.cfg MC_workspace.cfg MC_concurrency.cfg MC_projecttrust.cfg MC_prune.cfg MC_tui.cfg MC_sessionui.cfg MC_presentation.cfg MC_inputqueue.cfg MC_displayworker.cfg; do \
+	@cd verification/tla && for cfg in MC.cfg MC_control_two.cfg MC_control_warn.cfg MC_oauth.cfg MC_artifact.cfg MC_wait.cfg MC_task.cfg MC_task_two.cfg MC_approval.cfg MC_compress.cfg MC_daemon.cfg MC_daemon_stop.cfg MC_checks.cfg MC_checks_briefing.cfg MC_checks_independent.cfg MC_memory.cfg MC_grants.cfg MC_capabilities.cfg MC_authority.cfg MC_store.cfg MC_retention.cfg MC_history.cfg MC_sessions.cfg MC_schedule.cfg MC_isolation.cfg MC_isolation_ssh.cfg MC_codemode.cfg MC_images.cfg MC_images_blind_model.cfg MC_jobs.cfg MC_inbox.cfg MC_diskfull.cfg MC_coordinator.cfg MC_trust.cfg MC_prompt.cfg MC_retry.cfg MC_workspace.cfg MC_concurrency.cfg MC_projecttrust.cfg MC_prune.cfg MC_tui.cfg MC_sessionui.cfg MC_presentation.cfg MC_inputqueue.cfg MC_displayworker.cfg; do \
 		echo "== $$cfg =="; \
 		meta="$(TLA_METADIR)/$$cfg-$$$$"; rm -rf "$$meta"; \
 		out=$$(java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
@@ -191,7 +212,7 @@ verify-model-counterexamples: verify-tools
 		MC_displayworker_stale.cfg:V2DisplayWorker.tla MC_displayworker_deadline.cfg:V2DisplayWorker.tla MC_displayworker_leak.cfg:V2DisplayWorker.tla MC_displayworker_apply.cfg:V2DisplayWorker.tla MC_displayworker_overflow.cfg:V2DisplayWorker.tla MC_displayworker_drop.cfg:V2DisplayWorker.tla \
 		MC_presentation_dispatch.cfg:V2Presentation.tla MC_presentation_erase.cfg:V2Presentation.tla MC_presentation_eager.cfg:V2Presentation.tla MC_presentation_overflow.cfg:V2Presentation.tla MC_presentation_stale.cfg:V2Presentation.tla \
 		MC_sessionui_confirm.cfg:V2SessionUi.tla MC_sessionui_switch.cfg:V2SessionUi.tla MC_sessionui_earlyexit.cfg:V2SessionUi.tla MC_sessionui_keepopen.cfg:V2SessionUi.tla \
-		MC_authority_badview.cfg:V2Authority.tla MC_authority_trustsurface.cfg:V2Authority.tla \
+		MC_capabilities_bad.cfg:V2Capabilities.tla MC_authority_badview.cfg:V2Authority.tla MC_authority_trustsurface.cfg:V2Authority.tla \
 		MC_authority_stalesurface.cfg:V2Authority.tla MC_control_cancel.cfg:V2Control.tla \
 		MC_control_midturninput.cfg:V2Control.tla \
 		MC_control_two_disjunction.cfg:V2Control.tla MC_control_deadline.cfg:V2Control.tla \

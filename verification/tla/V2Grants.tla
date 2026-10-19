@@ -46,6 +46,10 @@ Scopes == {"session", "workspace"} \union {"instance:" \o i : i \in Instances}
 \* exact.
 Covers == {<<s, t>> \in Scopes \X Scopes : s = "session" \/ s = t}
 
+\* Task ids a capability child can be scoped to (D-455). Kept as a definition
+\* rather than a CONSTANT so existing configurations keep their vocabulary.
+Tasks == {"t1"}
+
 \* The session's default authority (the bootstrap, D-58 plus create_instance's
 \* workspace grant): shell for the leader's shared workspace and the team
 \* authority it manages with. A child spawned by the leader holds none of it.
@@ -87,6 +91,8 @@ Grant == [subject : Instances \union {"none"},
           scope   : Scopes,
           parent  : GrantIds \union {"none"},
           issuer  : Instances \union {"user"},
+          delegable : BOOLEAN,
+          task    : Tasks \union {"none"},
           live    : BOOLEAN]
 
 VARIABLES
@@ -141,9 +147,9 @@ Init ==
                   IF g \in DOMAIN BootstrapGrants
                   THEN [subject |-> BootstrapGrants[g].subject, action |-> BootstrapGrants[g].action,
                         scope |-> BootstrapGrants[g].scope, parent |-> "none",
-                        issuer |-> "user", live |-> TRUE]
+                        issuer |-> "user", delegable |-> (g = "g1"), task |-> "none", live |-> TRUE]
                   ELSE [subject |-> "none", action |-> "none", scope |-> CHOOSE s \in Scopes : TRUE,
-                        parent |-> "none", issuer |-> "user", live |-> FALSE] ]
+                        parent |-> "none", issuer |-> "user", delegable |-> FALSE, task |-> "none", live |-> FALSE] ]
   /\ revision = 0
   /\ offered = [i \in Instances |-> EntitledIn(grants, i)]
   /\ ops = [o \in Ops |-> [stamp |-> 0, effects |-> 0]]
@@ -154,7 +160,18 @@ Init ==
 UserIssues(g, subject, action, scope) ==
   /\ ~UsedFor(grants, g) /\ subject \in Instances /\ action \in Actions /\ scope \in Scopes
   /\ grants' = [grants EXCEPT ![g] = [subject |-> subject, action |-> action, scope |-> scope,
-                                     parent |-> "none", issuer |-> "user", live |-> TRUE]]
+                                     parent |-> "none", issuer |-> "user", delegable |-> FALSE,
+                                     task |-> "none", live |-> TRUE]]
+  /\ revision' = revision + 1
+  /\ offered' = [i \in Instances |-> EntitledIn(grants', i)]
+  /\ UNCHANGED <<ops, revokedIds, staleOps>>
+
+\* The user may mark a grant delegable; only the user can create this shape.
+UserIssuesDelegable(g, subject, action, scope) ==
+  /\ ~UsedFor(grants, g) /\ subject \in Instances /\ action \in Actions /\ scope \in Scopes
+  /\ grants' = [grants EXCEPT ![g] = [subject |-> subject, action |-> action, scope |-> scope,
+                                     parent |-> "none", issuer |-> "user", delegable |-> TRUE,
+                                     task |-> "none", live |-> TRUE]]
   /\ revision' = revision + 1
   /\ offered' = [i \in Instances |-> EntitledIn(grants', i)]
   /\ UNCHANGED <<ops, revokedIds, staleOps>>
@@ -169,7 +186,23 @@ InstanceMints(g, parent, action, scope) ==
   /\ <<grants[parent].scope, scope>> \in Covers
   /\ grants' = [grants EXCEPT ![g] = [subject |-> grants[parent].subject, action |-> action,
                                      scope |-> scope, parent |-> parent,
-                                     issuer |-> grants[parent].subject, live |-> TRUE]]
+                                     issuer |-> grants[parent].subject, delegable |-> FALSE,
+                                     task |-> "none", live |-> TRUE]]
+  /\ revision' = revision + 1
+  /\ offered' = [i \in Instances |-> EntitledIn(grants', i)]
+  /\ UNCHANGED <<ops, revokedIds, staleOps>>
+
+\* A task-scoped child grant may be minted only from a live delegable parent.
+InstanceMintsCapability(g, parent, action, scope, task) ==
+  /\ ~UsedFor(grants, g) /\ LiveFor(grants, parent) /\ grants[parent].delegable
+  /\ grants[parent].subject \in Instances /\ task \in Tasks
+  /\ \/ grants[parent].action = action
+     \/ grants[parent].action = "manage" /\ action \in {"message", "delegate"}
+  /\ <<grants[parent].scope, scope>> \in Covers
+  /\ grants' = [grants EXCEPT ![g] = [subject |-> grants[parent].subject, action |-> action,
+                                     scope |-> scope, parent |-> parent,
+                                     issuer |-> grants[parent].subject, delegable |-> FALSE,
+                                     task |-> task, live |-> TRUE]]
   /\ revision' = revision + 1
   /\ offered' = [i \in Instances |-> EntitledIn(grants', i)]
   /\ UNCHANGED <<ops, revokedIds, staleOps>>
@@ -184,7 +217,7 @@ Spawn(g, child) ==
                         /\ grants' = [grants EXCEPT ![g] =
                               [subject |-> "leader", action |-> "delegate",
                                scope |-> "instance:" \o child, parent |-> m,
-                               issuer |-> "leader", live |-> TRUE]]
+                               issuer |-> "leader", delegable |-> FALSE, task |-> "none", live |-> TRUE]]
   /\ revision' = revision + 1
   /\ offered' = [i \in Instances |-> EntitledIn(grants', i)]
   /\ UNCHANGED <<ops, revokedIds, staleOps>>
@@ -200,6 +233,18 @@ Revoke(g) ==
   /\ revision' = revision + 1
   /\ offered' = [i \in Instances |-> EntitledIn(IF OfferedLagsRevocation THEN grants ELSE grants', i)]
   /\ revokedIds' = revokedIds \union SubtreeFor(grants, g)
+  /\ UNCHANGED <<ops, staleOps>>
+
+\* Task settlement consumes every grant scoped to that task, without widening
+\* the revocation to another task's grants.
+SettleTask(task) ==
+  /\ task \in Tasks
+  /\ LET gone == {g \in GrantIds : Used(g) /\ grants[g].task = task}
+     IN grants' = [h \in GrantIds |->
+                     IF h \in gone THEN [grants[h] EXCEPT !.live = FALSE] ELSE grants[h]]
+  /\ revision' = revision + 1
+  /\ offered' = [i \in Instances |-> EntitledIn(grants', i)]
+  /\ revokedIds' = revokedIds \union {g \in GrantIds : Used(g) /\ grants[g].task = task}
   /\ UNCHANGED <<ops, staleOps>>
 
 \* A request registers its operations with the revision of the moment. An
@@ -225,6 +270,19 @@ RefusedDispatch(o) ==
   /\ ops[o].stamp # revision
   /\ staleOps' = staleOps \union {o}
   /\ UNCHANGED <<grants, revision, offered, ops, revokedIds>>
+
+\* The focused capability path: g1 (the user-issued leader shell) is marked
+\* delegable, and the leader mints one attenuated child for child/task t1.
+CapabilityChild(g) ==
+  /\ ~UsedFor(grants, g)
+  /\ LiveFor(grants, "g1") /\ grants["g1"].delegable
+  /\ grants' = [grants EXCEPT ![g] =
+        [subject |-> "child", action |-> "shell", scope |-> "workspace",
+         parent |-> "g1", issuer |-> "leader", delegable |-> FALSE,
+         task |-> "t1", live |-> TRUE]]
+  /\ revision' = revision + 1
+  /\ offered' = [i \in Instances |-> EntitledIn(grants', i)]
+  /\ UNCHANGED <<ops, revokedIds, staleOps>>
 
 Next ==
   \/ \E g \in GrantIds, subject \in Instances, action \in Actions, scope \in Scopes :
@@ -282,6 +340,16 @@ RevokedStaysRevoked == \A g \in GrantIds : g \in revokedIds => ~Live(g)
 
 CascadeTakesTheSubtree ==
   \A g \in GrantIds : Used(g) /\ ~Live(g) => \A c \in Children(g) : ~Live(c)
+
+\* Only the user can mark a grant delegable (D-455).
+DelegableGrantsAreUserIssued ==
+  \A g \in GrantIds : Used(g) /\ grants[g].delegable => grants[g].issuer = "user"
+
+\* A task-scoped child is always non-delegable and names its parent.
+TaskScopedGrantsAreNonDelegable ==
+  \A g \in GrantIds : Used(g) /\ grants[g].task # "none" => ~grants[g].delegable
+TaskScopedGrantsHaveParents ==
+  \A g \in GrantIds : Used(g) /\ grants[g].task # "none" => grants[g].parent # "none"
 
 \* The offered surface never promises what the instance cannot use.
 OfferedToolsAreAuthorized ==

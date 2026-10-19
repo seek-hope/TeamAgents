@@ -92,12 +92,12 @@ fn main() {
         let mut tools: HashMap<String, ToolBinding> = HashMap::new();
         let search = ToolBinding {
             kind: "web_search".into(),
-            provider: Some("anysearch".into()),
-            url: Some("https://api.anysearch.com/v1/search".into()),
+            provider: Some("deepseek".into()),
+            url: Some("https://api.deepseek.com/v1/tools/search".into()),
             api_key_env: Some("ANYSEARCH_API_KEY".into()),
             ..Default::default()
         };
-        let fetch = ToolBinding { kind: "web_fetch".into(), provider: Some("anysearch".into()), ..Default::default() };
+        let fetch = ToolBinding { kind: "web_fetch".into(), provider: Some("deepseek".into()), ..Default::default() };
         tools.insert("web".into(), search);
         tools.insert("fetch".into(), fetch);
         catalog.tools = tools;
@@ -136,10 +136,13 @@ fn main() {
         session_db: session_db.clone(),
         session_id: "s-p2".into(),
         instance_id: "i-main".into(),
+        leader_id: "i-main".into(),
         state_root: state.clone(),
         instances_dir: state.clone().join("instances"),
         workspace: workspace.clone(),
         permissions: if full_auto { "full_auto".into() } else { "approved_scope".into() },
+        approvals_reviewer: "user".into(),
+        reviewer_model: None,
         sandbox: teamagents_engine::tools::SandboxBackend::bubblewrap(),
         profile: KernelProfile {
             images: false,

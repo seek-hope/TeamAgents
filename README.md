@@ -38,7 +38,7 @@ and reports back; you watch progress and approve anything that leaves the sandbo
 <!-- maps: docs/PRODUCT-COMPARISON.md reader=user -->
 <!-- maps: docs/USER-GUIDE.md reader=user -->
 
-> **First time here:** [download and install](docs/INSTALL.md) · [latest release](https://github.com/seek-hope/TeamAgents/releases/latest)
+> **First time here:** [install guide](docs/INSTALL.md). No public release is currently published.
 
 ## How it works
 
@@ -91,7 +91,7 @@ you ──goal (natural language)──▶ Leader ──spawn / delegate──�
   `read_history`. Compaction calls count against the goal budget.
 - **Tools**: file read/write/search with exact-match edits, SHA-256 version checks and atomic writes (a
   process-wide write lock serializes mutations), a persistent in-session shell (`cd` and
-  `export` survive across commands), web search and fetch, MCP (stdio and streamable HTTP, composed from
+  `export` survive across commands), web search and fetch via DeepSeek Search/Fetch, MCP (stdio and streamable HTTP, composed from
   model-written code through the one `codemode` tool, D-374) and Skills
   (`~/.agents/skills`).
 - **User hooks (`[hooks]`)**: `notify` forwards events (`tool_call` / `team_action` / `run_*`) to your own
@@ -104,37 +104,17 @@ D-451 adds explicit text/image attachments (`/attach PATH` or `exec --attach PAT
 completion, revision-checked pending input (`/queue` or `inputs`), browser search and complete local
 Markdown/JSON session export. Rendering runs in bounded Rust display processes with safe source fallback.
 See the [user guide](docs/USER-GUIDE.md) for limits and controls and the [maturity report](review/maturity-2026-10-11/REPORT.md)
-for deterministic local evidence and remaining gaps. These source features are newer than the v0.2.0 tag.
+for deterministic local evidence and remaining gaps. These source features are newer than the last public release; no release is currently published.
 
 ## Install
 
 Requirements: Linux (x86_64) plus `bubblewrap`; model credentials are read from environment variables and
 never written into the config.
 
-### Latest release (recommended)
+### No public release currently
 
-> **Note (2026-09-29):** the latest published release (`v0.2.0`) is the product this README describes — the v2
-> tree, cut from this repository by D-343; `python3 review/install_check.py` re-runs the comparison against the
-> published artifact, and the [install guide](docs/INSTALL.md) says the same.
-
-The repository and the [releases](https://github.com/seek-hope/TeamAgents/releases/latest) are public: no
-GitHub login and no Rust toolchain needed. The installer picks the latest version, verifies SHA-256 and
-installs both binaries into `~/.local/bin`:
-
-```bash
-(
-  set -eu
-  installer="$(mktemp)"
-  trap 'rm -f "$installer"' EXIT
-  curl -fsSL https://raw.githubusercontent.com/seek-hope/TeamAgents/main/install.sh -o "$installer"
-  sh "$installer"
-)
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-Add `export PATH="$HOME/.local/bin:$PATH"` to `~/.bashrc` or `~/.zshrc` so later terminals find it. Quit
-TeamAgents before upgrading and run the installer again; the existing config and sessions are kept. Pinned
-versions, custom install directories and local archives are documented in the [install guide](docs/INSTALL.md).
+All GitHub releases and tags were removed on 2026-10-18. No release will be published until the user
+authorizes one; build from source below.
 
 ### Building from source
 
@@ -297,7 +277,7 @@ see the [developer command map](docs/USER-GUIDE.md#1-quick-start).
 
 Run `make check` before anything else; the full workflow is in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) and
 the repository conventions in [AGENTS.md](AGENTS.md). Defects, reviews and evaluation evidence live in
-`review/`, formal-verification evidence in `verification/`. Pushing a `v*` tag makes
-`.github/workflows/release.yml` build and publish the release archives (with `SHA256SUMS`).
+`review/`, formal-verification evidence in `verification/`. A `v*` tag builds the release archive, but publication is gated by the
+`TEAMAGENTS_RELEASE_APPROVED` repository variable; no release is currently authorized.
 
 Chinese documentation: [README.zh-CN.md](README.zh-CN.md)

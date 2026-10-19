@@ -245,6 +245,14 @@ worktrees are created on demand. Files in the shared project are readable by aut
 the design never claims that all information must pass through messages. full_auto's host shell keeps the
 logical isolation boundary the user accepted.
 
+Least privilege is measured by the effective scope and lifetime of a capability, not by the number of
+user-visible grants. A user grant may be marked `delegable`; only the user can set that bit. A spawn/delegate
+request may declare a generic capability, and the control plane issues an attenuated, task-scoped,
+non-delegable child grant only from a live delegable parent. Without one it records a pending capability
+request and holds the task in `WAITING_CAPABILITY`; the user approves or denies it, and no model or leader can
+self-approve. Child grants die with their task or instance, and revoking a parent cascades. The default remains
+no shell for spawned instances, and no task type, model name or repository heuristic adds authority (D-455).
+
 ### 5.2 The model-visible surface
 
 Basic file, terminal and web tools are directly available. Collaboration keeps a small set of intuitive actions

@@ -33,6 +33,10 @@ pub struct SupervisorConfig<P, F> {
     pub sandbox: crate::tools::SandboxBackend,
     /// Trusted session permission mode ("approved_scope" | "full_auto"), D-41.
     pub permissions: String,
+    /// Who decides an operation approval: the user or the auto-reviewer.
+    pub approvals_reviewer: String,
+    /// Optional model key for the reviewer; the member's model is the fallback.
+    pub reviewer_model: Option<String>,
     pub catalog: teamagents_core::models::UserConfig,
     pub bindings: Vec<String>,
     /// Transient transport retries inside one request (single retry owner, §7).
@@ -462,10 +466,13 @@ where
                             session_db: self.config.session_db.clone(),
                             session_id: self.config.session_id.clone(),
                             instance_id: id.clone(),
+                            leader_id: self.config.leader_id.clone(),
                             state_root: instance_root,
                             instances_dir: instances_dir.clone(),
                             workspace,
                             permissions: self.config.permissions.clone(),
+                            approvals_reviewer: self.config.approvals_reviewer.clone(),
+                            reviewer_model: self.config.reviewer_model.clone(),
                             sandbox: self.config.sandbox.clone(),
                             // the kernel gets the wire-effective profile while
                             // the factory still sees the catalog key (R17)

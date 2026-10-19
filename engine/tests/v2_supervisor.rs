@@ -166,6 +166,8 @@ where
         state_root: root.dir.join("state"),
         workspace: root.dir.join("ws"),
         permissions: "full_auto".into(),
+        approvals_reviewer: "user".into(),
+        reviewer_model: None,
         sandbox: teamagents_engine::tools::SandboxBackend::bubblewrap(),
         catalog: UserConfig::default(),
         bindings: vec![],

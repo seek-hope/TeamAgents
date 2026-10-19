@@ -31,9 +31,15 @@ pub enum AuthorityCommand {
     /// Read the session's grants (with the ids a revoke needs).
     List,
     /// Issue a scoped grant for one subject.
-    Grant { subject: String, action: String, scope: String, parent: Option<String> },
+    Grant { subject: String, action: String, scope: String, parent: Option<String>, delegable: bool },
     /// Revoke one grant by id (an unambiguous prefix is enough) and its subtree.
     Revoke { grant: String },
+    /// Read the pending capability requests.
+    Requests,
+    /// Approve one pending capability request (user only).
+    Approve { request: String },
+    /// Deny one pending capability request (user only).
+    Deny { request: String },
 }
 
 pub struct AuthorityOptions {
@@ -74,16 +80,23 @@ pub fn execute(options: &AuthorityOptions) -> Result<Json, (i32, String)> {
                 .map_err(|error| (1, format!("authority: cannot read the instances: {error}")))?;
             let report = json!({"session_id": session["session_id"], "state_root": session["state_root"],
                    "revision": view["revision"], "instances": checkpoint["snapshot"]["instances"],
-                   "grants": view["grants"]});
+                   "grants": view["grants"], "capability_requests": view["capability_requests"]});
             let gaps = capability_gaps(&report);
             let mut report = report;
             report["gaps"] = json!(gaps);
             report
         }
-        AuthorityCommand::Grant { subject, action, scope, parent } => {
-            grant(&mut client, &session, subject, action, scope, parent.as_deref())?
+        AuthorityCommand::Grant { subject, action, scope, parent, delegable } => {
+            grant(&mut client, &session, subject, action, scope, parent.as_deref(), *delegable)?
         }
         AuthorityCommand::Revoke { grant: wanted } => revoke(&mut client, &session, wanted)?,
+        AuthorityCommand::Requests => {
+            let view = read_grants(&mut client)?;
+            json!({"session_id": session["session_id"], "state_root": session["state_root"],
+                   "capability_requests": view["capability_requests"]})
+        }
+        AuthorityCommand::Approve { request } => decide(&mut client, &session, request, true)?,
+        AuthorityCommand::Deny { request } => decide(&mut client, &session, request, false)?,
     };
     Ok(report)
 }
@@ -152,6 +165,7 @@ fn grant(
     action: &str,
     scope: &str,
     parent: Option<&str>,
+    delegable: bool,
 ) -> Result<Json, (i32, String)> {
     if subject.trim().is_empty() {
         return Err((2, "authority: --subject must name the instance receiving the grant".into()));
@@ -180,7 +194,7 @@ fn grant(
     // a subject that does not exist yet is legal (the spawner picks instance
     // ids), so this is reported, not refused
     let note = subject_note(client, subject)?;
-    let mut params = json!({"subject": subject, "action": action, "resource_scope": scope});
+    let mut params = json!({"subject": subject, "action": action, "resource_scope": scope, "delegable": delegable});
     if let Some(parent) = parent {
         params["parent_grant_id"] = json!(parent);
     }
@@ -192,7 +206,7 @@ fn grant(
         "session_id": session["session_id"], "state_root": session["state_root"],
         "grant_id": result["grant_id"], "revision": result["revision"],
         "subject": subject, "action": action, "resource_scope": scope,
-        "parent_grant_id": parent,
+        "parent_grant_id": parent, "delegable": delegable,
     });
     if let Some(note) = note {
         report["note"] = json!(note);
@@ -247,6 +261,17 @@ fn resolve(grants: &[Json], wanted: &str) -> Result<Json, (i32, String)> {
 
 // ------------------------------------------------------------------ rendering --
 
+fn decide(client: &mut Client, session: &Json, request: &str, approve: bool) -> Result<Json, (i32, String)> {
+    let method = if approve { "approve_capability" } else { "deny_capability" };
+    let command_id = format!("authority-{method}-{}", uuid::Uuid::new_v4());
+    let result = client
+        .command(&command_id, method, json!({"request_id": request}))
+        .map_err(|error| (1, format!("authority: the session refused {method}: {error}")))?;
+    Ok(json!({"session_id": session["session_id"], "state_root": session["state_root"],
+              "request_id": request, "decision": if approve { "APPROVED" } else { "DENIED" },
+              "result": result}))
+}
+
 fn print_report(options: &AuthorityOptions, report: &Json) {
     if options.json_out {
         println!("{}", serde_json::to_string(&report).unwrap_or_else(|_| "{}".into()));
@@ -266,6 +291,26 @@ fn print_report(options: &AuthorityOptions, report: &Json) {
             if let Some(note) = report["note"].as_str() {
                 eprintln!("note: {note}");
             }
+        }
+        AuthorityCommand::Requests => {
+            let requests = report["capability_requests"].as_array().cloned().unwrap_or_default();
+            if requests.is_empty() {
+                println!("no pending capability requests");
+            }
+            for request in &requests {
+                println!(
+                    "{}  {} ─{}→ {}  task {}  [{}]",
+                    request["id"].as_str().unwrap_or(""),
+                    request["subject"].as_str().unwrap_or(""),
+                    request["action"].as_str().unwrap_or(""),
+                    request["resource_scope"].as_str().unwrap_or(""),
+                    request["task_id"].as_str().unwrap_or(""),
+                    request["status"].as_str().unwrap_or("")
+                );
+            }
+        }
+        AuthorityCommand::Approve { .. } | AuthorityCommand::Deny { .. } => {
+            println!("{} {}", report["decision"].as_str().unwrap_or(""), report["request_id"].as_str().unwrap_or(""));
         }
         AuthorityCommand::Revoke { .. } => {
             let grant = &report["grant"];
@@ -330,6 +375,21 @@ fn print_list(report: &Json) {
                     gap["hand"].as_str().unwrap_or("")
                 );
             }
+        }
+    }
+    let requests = report["capability_requests"].as_array().cloned().unwrap_or_default();
+    if !requests.is_empty() {
+        println!("pending capability requests:");
+        for request in &requests {
+            println!(
+                "  {}  {} ─{}→ {}  task {}  (approve: teamagents authority approve --request {})",
+                request["id"].as_str().unwrap_or(""),
+                request["subject"].as_str().unwrap_or(""),
+                request["action"].as_str().unwrap_or(""),
+                request["resource_scope"].as_str().unwrap_or(""),
+                request["task_id"].as_str().unwrap_or(""),
+                request["id"].as_str().unwrap_or("")
+            );
         }
     }
     if grants.is_empty() {

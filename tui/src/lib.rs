@@ -4,6 +4,7 @@ pub mod attachments;
 pub mod completion;
 pub mod daemon_client;
 mod display_sandbox;
+pub mod editor;
 pub mod graphics;
 mod highlight;
 pub mod markdown;

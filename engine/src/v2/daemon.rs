@@ -872,7 +872,7 @@ fn read_method(
         "grants" => {
             let mut stmt = conn
                 .prepare(
-                    "SELECT id, issuer, subject, action, resource_scope, parent_grant_id, revoked_at
+                    "SELECT id, issuer, subject, action, resource_scope, parent_grant_id, delegable, task_id, revoked_at
                      FROM grants ORDER BY subject, action, id",
                 )
                 .map_err(|e| format!("grants prepare: {e}"))?;
@@ -882,16 +882,35 @@ fn read_method(
                               "subject": row.get::<_, String>(2)?, "action": row.get::<_, String>(3)?,
                               "resource_scope": row.get::<_, String>(4)?,
                               "parent_grant_id": row.get::<_, Option<String>>(5)?,
-                              "revoked": row.get::<_, Option<f64>>(6)?.is_some()}))
+                              "delegable": row.get::<_, i64>(6)? != 0,
+                              "task_id": row.get::<_, Option<String>>(7)?,
+                              "revoked": row.get::<_, Option<f64>>(8)?.is_some()}))
                 })
                 .map_err(|e| format!("grants query: {e}"))?;
             let grants: Vec<Json> = rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("grants: {e}"))?;
+            let mut request_stmt = conn
+                .prepare(
+                    "SELECT id, requester, subject, action, resource_scope, task_id, parent_grant_id, status
+                     FROM capability_requests WHERE status = 'PENDING' ORDER BY created_at, id",
+                )
+                .map_err(|e| format!("capability requests prepare: {e}"))?;
+            let request_rows = request_stmt
+                .query_map([], |row| {
+                    Ok(json!({"id": row.get::<_, String>(0)?, "requester": row.get::<_, String>(1)?,
+                              "subject": row.get::<_, String>(2)?, "action": row.get::<_, String>(3)?,
+                              "resource_scope": row.get::<_, String>(4)?, "task_id": row.get::<_, String>(5)?,
+                              "parent_grant_id": row.get::<_, Option<String>>(6)?,
+                              "status": row.get::<_, String>(7)?}))
+                })
+                .map_err(|e| format!("capability requests query: {e}"))?;
+            let capability_requests: Vec<Json> =
+                request_rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("capability requests: {e}"))?;
             let revision: i64 = conn
                 .query_row("SELECT value FROM meta WHERE key = 'grant_revision'", [], |row| row.get::<_, String>(0))
                 .ok()
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(0);
-            Ok(json!({"grants": grants, "revision": revision}))
+            Ok(json!({"grants": grants, "capability_requests": capability_requests, "revision": revision}))
         }
         other => Err(format!("unknown read method {other:?}")),
     }

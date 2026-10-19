@@ -10,7 +10,7 @@ use serde_json::Value as Json;
 use crate::text::Composer;
 
 /// The slash commands the composer understands (D-370), shown while a `/` draft is open and by `/help`.
-const SLASH_HELP: &str = "commands: /help · /sessions · /queue · /interrupt · /quit";
+const SLASH_HELP: &str = "commands: /help · /edit · /sessions · /queue · /interrupt · /quit";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Focus {
@@ -101,6 +101,10 @@ pub enum V2Effect {
     Queue(crate::queue::Action),
     InputPaths {
         prefix: String,
+    },
+    /// Open the external editor for this draft (D-454).
+    EditDraft {
+        initial: String,
     },
     SubmitInput {
         instance: String,
@@ -502,6 +506,20 @@ impl V2App {
         self.note_error(format!("command failed: {error}"));
     }
 
+    /// Settle an external-editor attempt. The `/edit` suffix path takes the
+    /// draft out of the composer before the effect is returned, so a cancel or
+    /// editor failure must put it back; Ctrl+E supplies the same initial and is
+    /// idempotent here.
+    pub fn finish_editor(&mut self, initial: &str, result: Result<String, String>) {
+        match result {
+            Ok(text) => self.composer.set_text(&text),
+            Err(error) => {
+                self.composer.set_text(initial);
+                self.command_failed(&error);
+            }
+        }
+    }
+
     pub fn mark_disconnected(&mut self, error: &str) {
         if !self.disconnected {
             self.disconnected = true;
@@ -687,6 +705,8 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
                 "Staged attachments: {:?}. Use /attach PATH; Tab lists workspace paths.",
                 self.attachments.paths
             )),
+            "/edit" => self
+                .command_note("Ctrl+E edits the current draft; type /edit after a draft to open it in VISUAL/EDITOR."),
             "/sessions" => return self.open_sessions(),
             "/queue" => return self.open_queue(),
             "/interrupt" => return self.interrupt(),
@@ -715,6 +735,9 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
         if self.completion.key(&mut self.composer, key) {
             return None;
         }
+        if key.code == KeyCode::Char('e') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            return Some(V2Effect::EditDraft { initial: self.composer.text() });
+        }
         match key.code {
             // A newline in the composer, as the footer and `text.rs` promise.
             // Ctrl+J is the universal one: in raw mode the terminal's 0x0A
@@ -730,6 +753,13 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
                 None
             }
             KeyCode::Enter => {
+                let raw = self.composer.text();
+                if let Some(initial) = raw.strip_suffix("/edit") {
+                    if !initial.trim().is_empty() {
+                        self.composer.clear();
+                        return Some(V2Effect::EditDraft { initial: initial.trim_end().to_string() });
+                    }
+                }
                 if !self.composer.text().starts_with('/') && (self.disconnected || self.active_instance().is_none()) {
                     self.command_note("Message kept in the draft: waiting for the Leader connection.");
                     return None;
@@ -738,6 +768,7 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
                     let raw = self.composer.text();
                     if raw == "/attach"
                         || raw == "/detach"
+                        || raw == "/edit"
                         || raw.starts_with("/attach ")
                         || raw.starts_with("/detach ")
                     {
@@ -848,6 +879,13 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
         }
         if !self.approvals.is_empty() {
             return format!("Approval needed ({}) · Ctrl+A review", self.approvals.len());
+        }
+        if let Some(waiting) = self
+            .instances
+            .iter()
+            .find(|instance| instance.lifecycle == "ACTIVE" && instance.phase == "WAITING_CAPABILITY")
+        {
+            return format!("{} · waiting for capability approval · teamagents instances", waiting.id);
         }
         let Some(leader) = self.active_instance() else { return "Connecting to the Leader".into() };
         if leader.lifecycle != "ACTIVE" {

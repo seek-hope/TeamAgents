@@ -131,6 +131,19 @@ fn restore_terminal() {
 
 /// R19 v2 entry: connect the session daemon and run the conversation
 /// interface (plan §9 — models and tools execute in the engine).
+fn enter_terminal() {
+    let mut stdout = std::io::stdout();
+    enable_raw_mode().expect("raw mode");
+    stdout.execute(EnterAlternateScreen).expect("alt screen");
+    if supports_keyboard_enhancement().unwrap_or(false) {
+        let _ = stdout.execute(crossterm::event::PushKeyboardEnhancementFlags(
+            crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                | crossterm::event::KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES,
+        ));
+    }
+    execute!(stdout, crossterm::event::EnableMouseCapture, crossterm::event::EnableBracketedPaste).ok();
+}
+
 fn v2_main(socket: &std::path::Path) -> ! {
     let socket = socket.to_path_buf();
     let client = match DaemonClient::connect(&socket) {
@@ -310,8 +323,17 @@ fn run_v2_effect(effect: V2Effect, client: &mut DaemonClient, app: &mut V2App, s
                 Err(e) => app.command_failed(&e),
             }
         }
+        V2Effect::EditDraft { .. } => {}
         V2Effect::Quit => {}
     }
+}
+
+fn edit_in_editor(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, app: &mut V2App, initial: &str) {
+    restore_terminal();
+    let result = teamagents_tui::editor::edit_text(initial, None);
+    enter_terminal();
+    let _ = terminal.clear();
+    app.finish_editor(initial, result);
 }
 
 fn run_v2(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, mut client: DaemonClient, mut app: V2App) -> i32 {
@@ -345,7 +367,10 @@ fn run_v2(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, mut client
             match event::read() {
                 Ok(Event::Key(key)) if key.kind != KeyEventKind::Release => {
                     if let Some(effect) = app.handle_key(key) {
-                        run_v2_effect(effect, &mut client, &mut app, &mut sessions);
+                        match effect {
+                            V2Effect::EditDraft { initial } => edit_in_editor(terminal, &mut app, &initial),
+                            other => run_v2_effect(other, &mut client, &mut app, &mut sessions),
+                        }
                     }
                     dirty = true;
                 }

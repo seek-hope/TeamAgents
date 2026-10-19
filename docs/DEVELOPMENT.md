@@ -188,6 +188,9 @@ nobody uses, and several are what the probes depend on.
 | `TEAMAGENTS_SESSION_CLI` | the CLI launcher (or a direct TUI caller) | the engine executable used by the session browser for list/history/search/open/delete; normally the launcher supplies its own path (D-446/D-451) |
 | `TEAMAGENTS_TUI` | the CLI, when the TUI is not a sibling of it | where `teamagents` finds `teamagents-tui`; its own error message names this variable (`engine/src/main.rs`) |
 | `TEAMAGENTS_BIN_DIR` | `install.sh` | where the installer puts the binaries; documented for users in `docs/INSTALL.md` |
+| `TEAMAGENTS_INSTALL_ROOT` | self-update and the updater | the versioned install root (`versions`, `current`, `previous`, `updates`); default `~/.local/lib/teamagents` (`engine/src/update.rs`) |
+| `TEAMAGENTS_UPDATER_BIN` | self-update tests and operators | the updater binary to spawn instead of the sibling `teamagents-update`; the updater is still detached and user-approved |
+| `TEAMAGENTS_UPDATE_CRASH_AT` | self-update tests | a crash-injection point in `engine/tests/update.rs`; read only when the test harness sets it, never from the model or a request |
 
 ## Formal verification (TLA+ / Kani)
 

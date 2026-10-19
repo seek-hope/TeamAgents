@@ -184,6 +184,63 @@ pub struct UserConfig {
     /// the user stops it (see `docs/USER-GUIDE.md` §2.2).
     #[serde(default)]
     pub limits: GoalLimits,
+    /// Governed self-update policy (`[update]`). The user config is the only
+    /// source: a repository-local file may never change how its own agent is
+    /// replaced (D-453).
+    #[serde(default)]
+    pub update: UpdateConfig,
+}
+
+/// User policy for the governed self-update transaction.
+///
+/// `channel = "source"` belongs to the separate source-development round and is
+/// refused by this build; `agent_requests` decides whether the model is offered
+/// `request_self_update` at all, never whether it may execute one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateConfig {
+    #[serde(default = "default_update_channel")]
+    pub channel: String,
+    #[serde(default = "default_update_agent_requests")]
+    pub agent_requests: String,
+    #[serde(default = "default_update_keep_versions")]
+    pub keep_versions: usize,
+    #[serde(default = "default_update_restart")]
+    pub restart: String,
+    #[serde(default = "default_update_repo")]
+    pub repo: String,
+}
+
+fn default_update_channel() -> String {
+    "stable".into()
+}
+
+fn default_update_agent_requests() -> String {
+    "off".into()
+}
+
+fn default_update_keep_versions() -> usize {
+    3
+}
+
+fn default_update_restart() -> String {
+    "current".into()
+}
+
+fn default_update_repo() -> String {
+    "seek-hope/TeamAgents".into()
+}
+
+impl Default for UpdateConfig {
+    fn default() -> Self {
+        UpdateConfig {
+            channel: default_update_channel(),
+            agent_requests: default_update_agent_requests(),
+            keep_versions: default_update_keep_versions(),
+            restart: default_update_restart(),
+            repo: default_update_repo(),
+        }
+    }
 }
 
 /// User-config ceilings for every goal (`[limits]` in the config).

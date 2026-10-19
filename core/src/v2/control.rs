@@ -160,6 +160,9 @@ fn dispatch(
         "spawn_instance" => spawn_instance(tx, session_id, params, identity),
         "issue_grant" => issue_grant(tx, session_id, params, identity),
         "revoke_grant" => revoke_grant(tx, session_id, params, identity),
+        "capability_requests" => read_capability_requests(tx, session_id),
+        "approve_capability" => approve_capability(tx, session_id, params, identity),
+        "deny_capability" => deny_capability(tx, session_id, params, identity),
         "reauthorize_operation" => reauthorize_operation(tx, session_id, params),
         "reset_instance" => reset_instance(tx, session_id, params, identity),
         "create_goal" => create_goal(tx, session_id, params, identity),
@@ -187,6 +190,7 @@ fn dispatch(
         "cancel_operation" => cancel_operation(tx, session_id, params),
         "approve" => approve(tx, session_id, params, identity),
         "deny" => deny(tx, session_id, params, identity),
+        "review_decision" => review_decision(tx, session_id, params, identity),
         "fail_request" => fail_request(tx, session_id, params),
         "cancel_request" => cancel_request(tx, session_id, params),
         "interrupt_instance" => interrupt_instance(tx, session_id, params, identity),
@@ -291,6 +295,35 @@ fn authorized(tx: &Connection, subject: &str, action: &str, resource: &str) -> R
     Ok(active_grant(tx, subject, action, resource)?.is_some())
 }
 
+/// The most specific live grant that the holder may delegate. Only a grant the
+/// user explicitly marked delegable can produce a child (§D-455).
+fn active_delegable_grant(
+    tx: &Connection,
+    subject: &str,
+    action: &str,
+    resource: &str,
+) -> Result<Option<(String, String)>, String> {
+    let mut stmt = tx
+        .prepare(
+            "SELECT id, resource_scope FROM grants \
+             WHERE subject = ?1 AND action = ?2 AND revoked_at IS NULL AND delegable = 1",
+        )
+        .map_err(|e| format!("delegable grant read: {e}"))?;
+    let rows = stmt
+        .query_map(rusqlite::params![subject, action], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+        .map_err(|e| format!("delegable grant query: {e}"))?;
+    let mut best: Option<(String, String)> = None;
+    for row in rows {
+        let (id, scope) = row.map_err(|e| format!("delegable grant row: {e}"))?;
+        if crate::v2::capability::scope_covers(&scope, resource)
+            && best.as_ref().is_none_or(|(_, held)| scope.len() > held.len())
+        {
+            best = Some((id, scope));
+        }
+    }
+    Ok(best)
+}
+
 impl Control {
     /// Whether `subject` holds a live grant of `action` covering `resource` —
     /// exactly the question the dispatch re-check asks (A03/A04). The
@@ -370,6 +403,11 @@ fn issue_grant(tx: &Connection, session_id: &str, params: &Json, identity: &Iden
     if subject.is_empty() || action.is_empty() || scope.is_empty() {
         return Err("issue_grant: subject/action/resource_scope must not be empty".into());
     }
+    let delegable = params["delegable"].as_bool().unwrap_or(false);
+    let task_id = params["task_id"].as_str().map(str::to_string);
+    if delegable && !matches!(identity, Identity::User) {
+        return Err("only the user may mark a grant delegable".into());
+    }
     let parent: Option<String> = match identity {
         Identity::User => params["parent_grant_id"].as_str().map(str::to_string),
         Identity::System => return Err("the system identity cannot issue grants".into()),
@@ -406,9 +444,9 @@ fn issue_grant(tx: &Connection, session_id: &str, params: &Json, identity: &Iden
     }
     let id = format!("g-{}", uuid::Uuid::new_v4());
     tx.execute(
-        "INSERT INTO grants (id, session_id, issuer, subject, action, resource_scope, parent_grant_id, revision, revoked_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, NULL)",
-        rusqlite::params![id, session_id, identity.actor(), subject, action, scope, parent],
+        "INSERT INTO grants (id, session_id, issuer, subject, action, resource_scope, parent_grant_id, delegable, task_id, revision, revoked_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, NULL)",
+        rusqlite::params![id, session_id, identity.actor(), subject, action, scope, parent, delegable as i64, task_id],
     )
     .map_err(|e| format!("grant insert: {e}"))?;
     let revision = bump_grant_revision(tx)?;
@@ -418,9 +456,67 @@ fn issue_grant(tx: &Connection, session_id: &str, params: &Json, identity: &Iden
         "grant_issued",
         subject,
         &json!({"grant_id": id, "subject": subject, "action": action, "resource_scope": scope,
-                "parent_grant_id": parent, "revision": revision}),
+                "parent_grant_id": parent, "delegable": delegable, "task_id": task_id, "revision": revision}),
     )?;
     Ok(json!({"grant_id": id, "revision": revision}))
+}
+
+struct CapabilityGrantSpec<'a> {
+    issuer: &'a str,
+    subject: &'a str,
+    action: &'a str,
+    scope: &'a str,
+    task_id: &'a str,
+    parent_id: Option<&'a str>,
+}
+
+/// Issue one attenuated, task-scoped child grant from a live delegable parent
+/// (D-455). A spawned child grant is never delegable; a user approval may use
+/// the user identity and issue the same task-scoped shape directly.
+fn issue_task_grant(tx: &Connection, session_id: &str, spec: CapabilityGrantSpec<'_>) -> Result<String, String> {
+    let CapabilityGrantSpec { issuer, subject, action, scope, task_id, parent_id } = spec;
+    if !crate::v2::capability::authorizes_something(action, scope) {
+        return Err(format!("no check asks about {action}@{scope}"));
+    }
+    if issuer != "user" {
+        let parent =
+            parent_id.ok_or_else(|| format!("instance {issuer} needs a delegable parent for {action}@{scope}"))?;
+        let row: Option<(String, String, i64)> = tx
+            .query_row(
+                "SELECT action, resource_scope, delegable FROM grants WHERE id = ?1 AND revoked_at IS NULL",
+                [parent],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(|e| format!("capability parent: {e}"))?;
+        let Some((p_action, p_scope, p_delegable)) = row else {
+            return Err(format!("capability parent {parent} is missing or revoked"));
+        };
+        let action_ok = p_action == action || (p_action == "manage" && matches!(action, "message" | "delegate"));
+        if p_delegable != 1 || !action_ok || !crate::v2::capability::scope_covers(&p_scope, scope) {
+            return Err(format!(
+                "capability parent {parent} is not a live delegable covering grant for {action}@{scope}"
+            ));
+        }
+    }
+    let id = format!("g-{}", uuid::Uuid::new_v4());
+    tx.execute(
+        "INSERT INTO grants (id, session_id, issuer, subject, action, resource_scope, parent_grant_id, delegable, task_id, revision, revoked_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, ?8, 0, NULL)",
+        rusqlite::params![id, session_id, issuer, subject, action, scope, parent_id, task_id],
+    )
+    .map_err(|e| format!("capability grant insert: {e}"))?;
+    let revision = bump_grant_revision(tx)?;
+    event(
+        tx,
+        session_id,
+        "capability_grant_issued",
+        subject,
+        &json!({"grant_id": id, "issuer": issuer, "subject": subject, "action": action,
+                "resource_scope": scope, "parent_grant_id": parent_id, "task_id": task_id,
+                "delegable": false, "revision": revision}),
+    )?;
+    Ok(id)
 }
 
 /// Revoke a grant (§5.1): the User may revoke any grant; an instance may
@@ -451,6 +547,35 @@ fn revoke_grant(tx: &Connection, session_id: &str, params: &Json, identity: &Ide
 /// Revoke a grant and every active grant derived from it, transitively
 /// (§5.1). Returns the ids actually revoked; the caller bumps the session
 /// grant revision once for the whole batch.
+/// Revoke every grant attached to one task (D-455). Called when the task
+/// settles or is cancelled; a parent cascade covers the rest. The caller owns
+/// the revision bump so a settlement can make one atomic grant change.
+fn revoke_task_grants(tx: &Connection, session_id: &str, task_id: &str) -> Result<Vec<String>, String> {
+    let ids: Vec<String> = {
+        let mut stmt = tx
+            .prepare("SELECT id FROM grants WHERE task_id = ?1 AND revoked_at IS NULL")
+            .map_err(|e| format!("task grants: {e}"))?;
+        let rows =
+            stmt.query_map([task_id], |row| row.get::<_, String>(0)).map_err(|e| format!("task grants query: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("task grants collect: {e}"))?
+    };
+    let mut revoked = Vec::new();
+    for id in ids {
+        revoked.extend(revoke_grant_tree(tx, &id)?);
+    }
+    if !revoked.is_empty() {
+        let revision = bump_grant_revision(tx)?;
+        event(
+            tx,
+            session_id,
+            "task_grants_revoked",
+            task_id,
+            &json!({"task_id": task_id, "revoked": revoked, "revision": revision}),
+        )?;
+    }
+    Ok(revoked)
+}
+
 fn revoke_grant_tree(tx: &Connection, root: &str) -> Result<Vec<String>, String> {
     let mut ids = vec![root.to_string()];
     let mut frontier = vec![root.to_string()];
@@ -777,6 +902,9 @@ fn spawn_instance(tx: &Connection, session_id: &str, params: &Json, identity: &I
             &Identity::Instance(spawner.clone()),
         )?;
     }
+    if params.get("capabilities").is_some() && params.get("task").is_none() {
+        return Err("spawn capabilities require an initial task".into());
+    }
     let mut task = Json::Null;
     if let Some(description) = params["task"].as_str() {
         let task_id =
@@ -787,6 +915,9 @@ fn spawn_instance(tx: &Connection, session_id: &str, params: &Json, identity: &I
         }
         if let Some(acceptance) = params.get("acceptance_refs") {
             delegate["acceptance_refs"] = acceptance.clone();
+        }
+        if let Some(capabilities) = params.get("capabilities") {
+            delegate["capabilities"] = capabilities.clone();
         }
         let delegation_identity = if spawner == "user" { Identity::User } else { Identity::Instance(spawner.clone()) };
         task = delegate_task(tx, session_id, &delegate, &delegation_identity)?;
@@ -995,6 +1126,206 @@ fn drain_inbox(tx: &Connection, session_id: &str, params: &Json, identity: &Iden
               "revision": revision}))
 }
 
+/// Parse the generic capability requests carried by spawn/delegate. Strings use
+/// `action@scope`; objects use `action` plus `resource_scope`/`scope`. The pair
+/// must be one some check asks about; a typo is refused, not stored as a dead grant.
+fn parse_requested_capabilities(params: &Json) -> Result<Vec<(String, String)>, String> {
+    let Some(value) = params.get("capabilities") else { return Ok(Vec::new()) };
+    if value.is_null() {
+        return Ok(Vec::new());
+    }
+    let items = value.as_array().ok_or("capabilities must be an array")?;
+    let mut capabilities = Vec::new();
+    for item in items {
+        let (action, scope) = if let Some(text) = item.as_str() {
+            let (action, scope) =
+                text.split_once('@').ok_or_else(|| format!("capability {text:?} must be action@scope"))?;
+            (action.to_string(), scope.to_string())
+        } else {
+            let action = item["action"].as_str().ok_or("capability.action required")?;
+            let scope = item["resource_scope"]
+                .as_str()
+                .or_else(|| item["scope"].as_str())
+                .ok_or("capability.resource_scope required")?;
+            (action.to_string(), scope.to_string())
+        };
+        if !crate::v2::capability::authorizes_something(&action, &scope) {
+            return Err(format!("no check asks about {action}@{scope}"));
+        }
+        if !capabilities.iter().any(|(held_action, held_scope)| held_action == &action && held_scope == &scope) {
+            capabilities.push((action, scope));
+        }
+    }
+    Ok(capabilities)
+}
+
+fn capability_payload(description: &str, acceptance: &Json) -> Json {
+    json!({"description": description, "acceptance_refs": acceptance})
+}
+
+struct CapabilityRequestSpec<'a> {
+    requester: &'a str,
+    subject: &'a str,
+    action: &'a str,
+    scope: &'a str,
+    task_id: &'a str,
+    parent: Option<&'a str>,
+    payload: &'a Json,
+}
+
+fn create_capability_request(
+    tx: &Connection,
+    session_id: &str,
+    spec: CapabilityRequestSpec<'_>,
+) -> Result<String, String> {
+    let CapabilityRequestSpec { requester, subject, action, scope, task_id, parent, payload } = spec;
+    let id = format!("cr-{}", uuid::Uuid::new_v4());
+    let now = crate::models::now();
+    tx.execute(
+        "INSERT INTO capability_requests
+         (id, session_id, requester, subject, action, resource_scope, task_id, parent_grant_id,
+          payload_json, status, created_at, decided_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'PENDING', ?10, NULL)",
+        rusqlite::params![id, session_id, requester, subject, action, scope, task_id, parent, payload.to_string(), now],
+    )
+    .map_err(|e| format!("capability request insert: {e}"))?;
+    event(
+        tx,
+        session_id,
+        "capability_requested",
+        subject,
+        &json!({"request_id": id, "requester": requester, "subject": subject, "action": action,
+                "resource_scope": scope, "task_id": task_id, "parent_grant_id": parent}),
+    )?;
+    Ok(id)
+}
+
+/// Resolve a task's capabilities atomically. A live delegable parent is used to
+/// issue an attenuated child; a user-created task may issue directly; anything
+/// else becomes a user approval request and holds the task.
+fn resolve_requested_capabilities(
+    tx: &Connection,
+    session_id: &str,
+    requester: &str,
+    subject: &str,
+    task_id: &str,
+    capabilities: &[(String, String)],
+    payload: &Json,
+) -> Result<(Vec<String>, Vec<String>), String> {
+    let mut granted = Vec::new();
+    let mut pending = Vec::new();
+    for (action, scope) in capabilities {
+        if requester == "user" {
+            granted.push(issue_task_grant(
+                tx,
+                session_id,
+                CapabilityGrantSpec { issuer: "user", subject, action, scope, task_id, parent_id: None },
+            )?);
+            continue;
+        }
+        if let Some((parent_id, _)) = active_delegable_grant(tx, requester, action, scope)? {
+            granted.push(issue_task_grant(
+                tx,
+                session_id,
+                CapabilityGrantSpec { issuer: requester, subject, action, scope, task_id, parent_id: Some(&parent_id) },
+            )?);
+        } else {
+            let parent = active_grant(tx, requester, action, scope)?.map(|(id, _)| id);
+            pending.push(create_capability_request(
+                tx,
+                session_id,
+                CapabilityRequestSpec {
+                    requester,
+                    subject,
+                    action,
+                    scope,
+                    task_id,
+                    parent: parent.as_deref(),
+                    payload,
+                },
+            )?);
+        }
+    }
+    Ok((granted, pending))
+}
+
+fn queue_task_assignment(
+    tx: &Connection,
+    session_id: &str,
+    task_id: &str,
+    requester: &str,
+    assignee: &str,
+    payload: &Json,
+) -> Result<String, String> {
+    let (_, epoch, _, _, _) = load_instance(tx, assignee)?;
+    queue_envelope(
+        tx,
+        session_id,
+        &Outbox {
+            sender: requester,
+            recipient: assignee,
+            epoch,
+            kind: "task_assigned",
+            correlation_id: Some(task_id),
+            payload,
+        },
+    )
+}
+
+/// Dispatch a task held for capability approval once no request remains pending.
+fn dispatch_held_task(tx: &Connection, session_id: &str, task_id: &str) -> Result<Option<String>, String> {
+    let row: Option<(String, String, String)> = tx
+        .query_row(
+            "SELECT requester, assignee, status FROM tasks WHERE id = ?1 AND session_id = ?2",
+            rusqlite::params![task_id, session_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .map_err(|e| format!("held task: {e}"))?;
+    let Some((requester, assignee, status)) = row else { return Ok(None) };
+    if status != "WAITING_CAPABILITY" {
+        return Ok(None);
+    }
+    let pending: i64 = tx
+        .query_row(
+            "SELECT COUNT(*) FROM capability_requests WHERE task_id = ?1 AND status = 'PENDING'",
+            [task_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("pending capabilities: {e}"))?;
+    if pending > 0 {
+        return Ok(None);
+    }
+    let raw: Option<String> = tx
+        .query_row(
+            "SELECT payload_json FROM capability_requests WHERE task_id = ?1 ORDER BY created_at LIMIT 1",
+            [task_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("capability payload: {e}"))?;
+    let payload: Json = raw.and_then(|raw| serde_json::from_str(&raw).ok()).unwrap_or_else(|| json!({}));
+    tx.execute(
+        "UPDATE tasks SET status = 'PENDING', revision = revision + 1 WHERE id = ?1 AND status = 'WAITING_CAPABILITY'",
+        [task_id],
+    )
+    .map_err(|e| format!("dispatch held task {task_id}: {e}"))?;
+    tx.execute(
+        "UPDATE instances SET phase = 'READY', revision = revision + 1 WHERE id = ?1 AND phase = 'WAITING_CAPABILITY'",
+        [&assignee],
+    )
+    .map_err(|e| format!("wake capability task: {e}"))?;
+    let envelope_id = queue_task_assignment(tx, session_id, task_id, &requester, &assignee, &payload)?;
+    event(
+        tx,
+        session_id,
+        "task_dispatched",
+        &assignee,
+        &json!({"task_id": task_id, "envelope_id": envelope_id, "status": "PENDING"}),
+    )?;
+    Ok(Some(envelope_id))
+}
+
 /// Delegate a task (§5.2/§5.3): the requester atomically registers the task,
 /// the narrow return capability (task_result@task:<id>, just enough to
 /// settle this task — no general reverse channel) and the assignment
@@ -1006,6 +1337,8 @@ fn delegate_task(tx: &Connection, session_id: &str, params: &Json, identity: &Id
     let description = params["description"].as_str().unwrap_or("");
     let acceptance = params.get("acceptance_refs").cloned().unwrap_or(json!([]));
     let dependencies = params.get("dependencies").cloned().unwrap_or(json!([]));
+    let capabilities = parse_requested_capabilities(params)?;
+    let assignment = capability_payload(description, &acceptance);
     let (session, epoch, lifecycle, _, _) = load_instance(tx, assignee)?;
     if session != session_id {
         return Err(format!("instance {assignee} does not belong to this session"));
@@ -1080,32 +1413,202 @@ fn delegate_task(tx: &Connection, session_id: &str, params: &Json, identity: &Id
     .map_err(|e| format!("delegate_task {task_id}: {e}"))?;
     let return_grant = format!("g-{}", uuid::Uuid::new_v4());
     tx.execute(
-        "INSERT INTO grants (id, session_id, issuer, subject, action, resource_scope, parent_grant_id, revision, revoked_at)
-         VALUES (?1, ?2, ?3, ?4, 'task_result', ?5, ?6, 0, NULL)",
-        rusqlite::params![return_grant, session_id, requester, assignee, format!("task:{task_id}"), parent_grant],
+        "INSERT INTO grants (id, session_id, issuer, subject, action, resource_scope, parent_grant_id, delegable, task_id, revision, revoked_at)
+         VALUES (?1, ?2, ?3, ?4, 'task_result', ?5, ?6, 0, ?7, 0, NULL)",
+        rusqlite::params![return_grant, session_id, requester, assignee, format!("task:{task_id}"), parent_grant, task_id],
     )
     .map_err(|e| format!("return grant: {e}"))?;
     bump_grant_revision(tx)?;
-    let envelope_id = queue_envelope(
-        tx,
-        session_id,
-        &Outbox {
-            sender: &requester,
-            recipient: assignee,
-            epoch,
-            kind: "task_assigned",
-            correlation_id: Some(task_id),
-            payload: &json!({"task_id": task_id, "description": description, "acceptance_refs": acceptance}),
-        },
-    )?;
+    let mut envelope_id: Option<String> = None;
+    if capabilities.is_empty() {
+        envelope_id = Some(queue_envelope(
+            tx,
+            session_id,
+            &Outbox {
+                sender: &requester,
+                recipient: assignee,
+                epoch,
+                kind: "task_assigned",
+                correlation_id: Some(task_id),
+                payload: &assignment,
+            },
+        )?);
+    }
     event(
         tx,
         session_id,
         "task_delegated",
         assignee,
-        &json!({"task_id": task_id, "requester": requester, "goal_id": goal_id, "envelope_id": envelope_id}),
+        &json!({"task_id": task_id, "requester": requester, "goal_id": goal_id,
+                "envelope_id": envelope_id, "capabilities": capabilities}),
     )?;
-    Ok(json!({"task_id": task_id, "status": "PENDING", "return_grant": return_grant, "envelope_id": envelope_id}))
+    let mut status = "PENDING";
+    let mut capability_requests = Vec::new();
+    if !capabilities.is_empty() {
+        let (granted, pending) =
+            resolve_requested_capabilities(tx, session_id, &requester, assignee, task_id, &capabilities, &assignment)?;
+        if pending.is_empty() {
+            envelope_id = Some(queue_task_assignment(tx, session_id, task_id, &requester, assignee, &assignment)?);
+            event(
+                tx,
+                session_id,
+                "task_dispatched",
+                assignee,
+                &json!({"task_id": task_id, "envelope_id": envelope_id, "granted": granted}),
+            )?;
+        } else {
+            tx.execute(
+                "UPDATE tasks SET status = 'WAITING_CAPABILITY', revision = revision + 1 WHERE id = ?1",
+                [task_id],
+            )
+            .map_err(|e| format!("hold task {task_id}: {e}"))?;
+            tx.execute(
+                "UPDATE instances SET phase = 'WAITING_CAPABILITY', revision = revision + 1 WHERE id = ?1 AND phase = 'READY'",
+                [assignee],
+            )
+            .map_err(|e| format!("park capability task: {e}"))?;
+            status = "WAITING_CAPABILITY";
+            capability_requests = pending;
+        }
+    }
+    Ok(json!({"task_id": task_id, "status": status, "return_grant": return_grant,
+              "envelope_id": envelope_id, "capability_requests": capability_requests}))
+}
+
+fn read_capability_requests(tx: &Connection, session_id: &str) -> Result<Json, String> {
+    let mut stmt = tx
+        .prepare(
+            "SELECT id, requester, subject, action, resource_scope, task_id, parent_grant_id,
+                    payload_json, status, created_at, decided_at
+             FROM capability_requests WHERE session_id = ?1 ORDER BY created_at, id",
+        )
+        .map_err(|e| format!("capability requests read: {e}"))?;
+    let rows = stmt
+        .query_map([session_id], |row| {
+            let payload: String = row.get(7)?;
+            Ok(json!({
+                "id": row.get::<_, String>(0)?,
+                "requester": row.get::<_, String>(1)?,
+                "subject": row.get::<_, String>(2)?,
+                "action": row.get::<_, String>(3)?,
+                "resource_scope": row.get::<_, String>(4)?,
+                "task_id": row.get::<_, String>(5)?,
+                "parent_grant_id": row.get::<_, Option<String>>(6)?,
+                "payload": serde_json::from_str::<Json>(&payload).unwrap_or(Json::Null),
+                "status": row.get::<_, String>(8)?,
+                "created_at": row.get::<_, f64>(9)?,
+                "decided_at": row.get::<_, Option<f64>>(10)?,
+            }))
+        })
+        .map_err(|e| format!("capability requests query: {e}"))?;
+    let requests = rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("capability requests collect: {e}"))?;
+    Ok(json!({"requests": requests}))
+}
+
+fn approve_capability(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
+    if !matches!(identity, Identity::User) {
+        return Err("only the user may approve a capability request".into());
+    }
+    let id = params["request_id"].as_str().ok_or("approve_capability.request_id required")?;
+    type CapabilityRequestRow = (String, String, String, String, String, Option<String>, String);
+    let row: Option<CapabilityRequestRow> = tx
+        .query_row(
+            "SELECT requester, subject, action, resource_scope, task_id, parent_grant_id, status
+             FROM capability_requests WHERE id = ?1 AND session_id = ?2",
+            rusqlite::params![id, session_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)),
+        )
+        .optional()
+        .map_err(|e| format!("capability request {id}: {e}"))?;
+    let Some((_requester, subject, action, scope, task_id, parent, status)) = row else {
+        return Err(format!("capability request {id} does not exist"));
+    };
+    if status != "PENDING" {
+        return Err(format!("capability request {id} is {status}, not pending"));
+    }
+    let grant_id = issue_task_grant(
+        tx,
+        session_id,
+        CapabilityGrantSpec {
+            issuer: "user",
+            subject: &subject,
+            action: &action,
+            scope: &scope,
+            task_id: &task_id,
+            parent_id: parent.as_deref(),
+        },
+    )?;
+    let now = crate::models::now();
+    tx.execute(
+        "UPDATE capability_requests SET status = 'APPROVED', decided_at = ?1 WHERE id = ?2 AND status = 'PENDING'",
+        rusqlite::params![now, id],
+    )
+    .map_err(|e| format!("approve capability {id}: {e}"))?;
+    event(
+        tx,
+        session_id,
+        "capability_approved",
+        &subject,
+        &json!({"request_id": id, "grant_id": grant_id, "task_id": task_id, "subject": subject}),
+    )?;
+    let dispatched = dispatch_held_task(tx, session_id, &task_id)?.is_some();
+    let _ = wake_satisfied(tx, session_id)?;
+    Ok(json!({"request_id": id, "status": "APPROVED", "grant_id": grant_id,
+              "task_id": task_id, "dispatched": dispatched}))
+}
+
+fn deny_capability(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
+    if !matches!(identity, Identity::User) {
+        return Err("only the user may deny a capability request".into());
+    }
+    let id = params["request_id"].as_str().ok_or("deny_capability.request_id required")?;
+    let (task_id, status): (String, String) = tx
+        .query_row(
+            "SELECT task_id, status FROM capability_requests WHERE id = ?1 AND session_id = ?2",
+            rusqlite::params![id, session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|e| format!("capability request {id}: {e}"))?;
+    if status != "PENDING" {
+        return Err(format!("capability request {id} is {status}, not pending"));
+    }
+    let now = crate::models::now();
+    tx.execute(
+        "UPDATE capability_requests SET status = 'DENIED', decided_at = ?1
+         WHERE task_id = ?2 AND session_id = ?3 AND status = 'PENDING'",
+        rusqlite::params![now, task_id, session_id],
+    )
+    .map_err(|e| format!("deny capability {id}: {e}"))?;
+    let assignee: Option<String> = tx
+        .query_row(
+            "SELECT assignee FROM tasks WHERE id = ?1 AND session_id = ?2",
+            rusqlite::params![task_id, session_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("denied task assignee: {e}"))?;
+    tx.execute(
+        "UPDATE tasks SET status = 'CANCELLED', revision = revision + 1 WHERE id = ?1 AND status = 'WAITING_CAPABILITY'",
+        [&task_id],
+    )
+    .map_err(|e| format!("cancel capability task {task_id}: {e}"))?;
+    if let Some(assignee) = &assignee {
+        tx.execute(
+            "UPDATE instances SET phase = 'READY', revision = revision + 1 WHERE id = ?1 AND phase = 'WAITING_CAPABILITY'",
+            [assignee],
+        )
+        .map_err(|e| format!("release denied capability task: {e}"))?;
+    }
+    revoke_task_grants(tx, session_id, &task_id)?;
+    event(
+        tx,
+        session_id,
+        "capability_denied",
+        &task_id,
+        &json!({"request_id": id, "task_id": task_id, "status": "CANCELLED"}),
+    )?;
+    let _ = wake_satisfied(tx, session_id)?;
+    Ok(json!({"request_id": id, "status": "DENIED", "task_id": task_id, "task_status": "CANCELLED"}))
 }
 
 fn load_task(tx: &Connection, session_id: &str, task_id: &str) -> Result<(String, String, String, String), String> {
@@ -1174,6 +1677,9 @@ fn complete_task(tx: &Connection, session_id: &str, params: &Json, identity: &Id
         rusqlite::params![target, result_refs.to_string(), task_id],
     )
     .map_err(|e| format!("complete task {task_id}: {e}"))?;
+    // capability and return grants are task-scoped (D-455): consume them
+    // with the settlement, in this same transaction.
+    revoke_task_grants(tx, session_id, task_id)?;
     // a settlement reported from the assignee's finish turn closes that
     // turn (mirror of complete_goal's phase rule); conditional, so settling
     // mid-turn or by the user never rewires a live phase
@@ -1286,25 +1792,8 @@ fn cancel_task(tx: &Connection, session_id: &str, params: &Json, identity: &Iden
     }
     tx.execute("UPDATE tasks SET status = 'CANCELLED', revision = revision + 1 WHERE id = ?1", [task_id])
         .map_err(|e| format!("cancel task {task_id}: {e}"))?;
-    let grants: Vec<String> = {
-        let mut stmt = tx
-            .prepare(
-                "SELECT id FROM grants WHERE subject = ?1 AND action = 'task_result'
-                 AND resource_scope = ?2 AND revoked_at IS NULL",
-            )
-            .map_err(|e| format!("return grants: {e}"))?;
-        let rows = stmt
-            .query_map(rusqlite::params![assignee, format!("task:{task_id}")], |row| row.get(0))
-            .map_err(|e| format!("return grants query: {e}"))?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("return grants collect: {e}"))?
-    };
-    let mut revoked = false;
-    for id in grants {
-        revoked |= !revoke_grant_tree(tx, &id)?.is_empty();
-    }
-    if revoked {
-        bump_grant_revision(tx)?;
-    }
+    // capability, return and any other task-scoped grants die with the task.
+    revoke_task_grants(tx, session_id, task_id)?;
     let alive: Option<String> = tx
         .query_row("SELECT lifecycle FROM instances WHERE id = ?1", [&assignee], |row| row.get(0))
         .optional()
@@ -2369,6 +2858,22 @@ fn condition_state(
                 None => ConditionState::Dead,
             })
         }
+        Some("capability") => {
+            let request_id = condition["request_id"].as_str().ok_or("wait capability condition needs request_id")?;
+            let status: Option<String> = tx
+                .query_row(
+                    "SELECT status FROM capability_requests WHERE id = ?1 AND session_id = ?2",
+                    rusqlite::params![request_id, session_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| format!("wait capability: {e}"))?;
+            Ok(match status.as_deref() {
+                Some("APPROVED" | "DENIED") => ConditionState::Satisfied,
+                Some("PENDING") => ConditionState::Pending,
+                _ => ConditionState::Dead,
+            })
+        }
         Some("operation") => {
             let operation_id =
                 condition["operation_id"].as_str().ok_or("wait operation condition needs operation_id")?;
@@ -3220,6 +3725,16 @@ fn approve(tx: &Connection, session_id: &str, params: &Json, identity: &Identity
 fn deny(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
     require_user(identity)?;
     let approval_id = params["approval_id"].as_str().ok_or("deny.approval_id required")?;
+    deny_approval(tx, session_id, approval_id, "denied by user", None)
+}
+
+fn deny_approval(
+    tx: &Connection,
+    session_id: &str,
+    approval_id: &str,
+    reason: &str,
+    review: Option<&Json>,
+) -> Result<Json, String> {
     let operation_id: String = tx
         .query_row("SELECT operation_id FROM approvals WHERE id = ?1 AND status = 'PENDING'", [approval_id], |row| {
             row.get(0)
@@ -3228,8 +3743,8 @@ fn deny(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -
     tx.execute("UPDATE approvals SET status = 'DENIED' WHERE id = ?1", [approval_id])
         .map_err(|e| format!("deny: {e}"))?;
     let receipt = json!({"operation_id": operation_id, "ok": false, "started": false,
-                         "content": json!({"error": "denied by user"}).to_string(),
-                         "error": {"class": "denied", "reason": "denied by user"}});
+                         "content": json!({"error": reason}).to_string(),
+                         "error": {"class": "denied", "reason": reason}});
     tx.execute(
         "UPDATE operations SET status = 'CANCELLED', receipt_json = ?2 WHERE operation_id = ?1 AND status = 'PREPARED'",
         rusqlite::params![operation_id, receipt.to_string()],
@@ -3240,7 +3755,70 @@ fn deny(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -
         .map_err(|e| format!("deny decision: {e}"))?;
     let open = consume_if_closed(tx, session_id, &decision_id)?;
     event(tx, session_id, "approval_denied", approval_id, &json!({"operation_id": operation_id}))?;
+    if let Some(review) = review {
+        event(
+            tx,
+            session_id,
+            "approval_reviewed",
+            approval_id,
+            &json!({"operation_id": operation_id, "outcome": "deny", "review": review}),
+        )?;
+    }
     Ok(json!({"approval_id": approval_id, "status": "DENIED", "operation_id": operation_id, "decision_open": open}))
+}
+
+fn require_system(identity: &Identity) -> Result<(), String> {
+    if *identity != Identity::System {
+        return Err("automatic review decisions require the runtime's system identity".into());
+    }
+    Ok(())
+}
+
+/// Automatic-review decision. It is a distinct command from `approve`/`deny`
+/// so the user-only rule on `approve`, `deny` and capability requests stays
+/// intact: only the runtime submits this, and only for an operation approval.
+/// The review evidence rides in the event, never in the approval row's status.
+fn review_decision(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
+    require_system(identity)?;
+    let approval_id = params["approval_id"].as_str().ok_or("review_decision.approval_id required")?;
+    let outcome = params["outcome"].as_str().ok_or("review_decision.outcome required")?;
+    if outcome != "allow" && outcome != "deny" {
+        return Err(format!("review_decision.outcome must be allow or deny, got {outcome:?}"));
+    }
+    let rationale = params["rationale"].as_str().unwrap_or("").trim();
+    if rationale.is_empty() {
+        return Err("review_decision.rationale required".into());
+    }
+    let risk_level = params["risk_level"].as_str().unwrap_or("unknown");
+    let user_authorization = params["user_authorization"].as_str().unwrap_or("unknown");
+    let reviewer_model = params["reviewer_model"].as_str().unwrap_or("unknown");
+    let review = json!({"decided_by": "auto_review", "risk_level": risk_level,
+                        "user_authorization": user_authorization, "rationale": rationale,
+                        "reviewer_model": reviewer_model});
+    if outcome == "deny" {
+        let reason = format!("denied by auto-review: {rationale}");
+        return deny_approval(tx, session_id, approval_id, &reason, Some(&review));
+    }
+    let operation_id: String = tx
+        .query_row("SELECT operation_id FROM approvals WHERE id = ?1 AND status = 'PENDING'", [approval_id], |row| {
+            row.get(0)
+        })
+        .map_err(|e| format!("review approval {approval_id}: {e}"))?;
+    let changed = tx
+        .execute("UPDATE approvals SET status = 'APPROVED' WHERE id = ?1 AND status = 'PENDING'", [approval_id])
+        .map_err(|e| format!("review approve: {e}"))?;
+    if changed != 1 {
+        return Err(format!("approval {approval_id} is not pending"));
+    }
+    event(tx, session_id, "approval_granted", approval_id, &json!({"approval_id": approval_id}))?;
+    event(
+        tx,
+        session_id,
+        "approval_reviewed",
+        approval_id,
+        &json!({"operation_id": operation_id, "outcome": "allow", "review": review}),
+    )?;
+    Ok(json!({"approval_id": approval_id, "status": "APPROVED", "operation_id": operation_id}))
 }
 
 fn expire_pending_approvals(tx: &Connection, operation_id: &str) -> Result<(), String> {
@@ -5364,6 +5942,72 @@ mod tests {
     }
 
     #[test]
+    fn automatic_review_decides_only_one_operation_approval() {
+        let (mut ctl, path) = control("review");
+        create_instance(&mut ctl, "i1");
+        open_decision(&mut ctl, "x", "i1", 0, 1);
+        let asked = ctl
+            .submit(
+                cmd("dp-r", "dispatch_operation", json!({"operation_id": "d-x:0", "approval_required": true})),
+                Identity::System,
+            )
+            .expect("park");
+        assert_eq!(asked["status"], json!("APPROVAL_REQUIRED"));
+        let approval_id = asked["approval_id"].as_str().expect("approval id").to_string();
+        let review = json!({"approval_id": approval_id, "outcome": "allow", "risk_level": "low",
+                            "user_authorization": "high", "rationale": "within the requested workspace",
+                            "reviewer_model": "reviewer"});
+        // only the runtime may submit the automatic decision
+        assert!(ctl
+            .submit(cmd("rv-user", "review_decision", review.clone()), Identity::User)
+            .unwrap_err()
+            .contains("system identity"));
+        let decided = ctl.submit(cmd("rv-1", "review_decision", review), Identity::System).expect("review allow");
+        assert_eq!(decided["status"], json!("APPROVED"));
+        let status: String = ctl
+            .connection()
+            .query_row("SELECT status FROM approvals WHERE id = ?1", [&approval_id], |row| row.get(0))
+            .unwrap();
+        assert_eq!(status, "APPROVED");
+        // the reviewed approval authorizes this one operation, and dispatch now proceeds
+        let dispatched = ctl
+            .submit(
+                cmd("dp-r2", "dispatch_operation", json!({"operation_id": "d-x:0", "approval_required": true})),
+                Identity::System,
+            )
+            .expect("dispatch after review");
+        assert_eq!(dispatched["status"], json!("DISPATCH_COMMITTED"));
+        // a denial is a different one-way decision and leaves no effect
+        create_instance(&mut ctl, "i2");
+        open_decision(&mut ctl, "y", "i2", 0, 1);
+        let asked = ctl
+            .submit(
+                cmd("dp-d", "dispatch_operation", json!({"operation_id": "d-y:0", "approval_required": true})),
+                Identity::System,
+            )
+            .expect("park");
+        let denied_id = asked["approval_id"].as_str().unwrap().to_string();
+        let denied = ctl
+            .submit(
+                cmd(
+                    "rv-2",
+                    "review_decision",
+                    json!({"approval_id": denied_id, "outcome": "deny",
+                                                       "rationale": "outside the workspace"}),
+                ),
+                Identity::System,
+            )
+            .expect("review deny");
+        assert_eq!(denied["status"], json!("DENIED"));
+        let operation: String = ctl
+            .connection()
+            .query_row("SELECT status FROM operations WHERE operation_id = 'd-y:0'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(operation, "CANCELLED");
+        cleanup(&path);
+    }
+
+    #[test]
     fn dispatch_rechecks_permission_revision() {
         let (mut ctl, path) = control("dispatch-rev");
         create_instance(&mut ctl, "i1");
@@ -7066,6 +7710,202 @@ mod tests {
         let missing: i64 =
             ctl.connection().query_row("SELECT COUNT(*) FROM instances WHERE id = 'w1'", [], |row| row.get(0)).unwrap();
         assert_eq!(missing, 0);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn capability_requests_are_delegable_task_scoped_and_user_approved() {
+        let (mut ctl, path) = control("capability");
+        create_instance(&mut ctl, "leader");
+        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1"})), Identity::User).expect("goal");
+        ctl.submit(
+            cmd("mg-1", "issue_grant", json!({"subject": "leader", "action": "manage", "resource_scope": "session"})),
+            Identity::User,
+        )
+        .expect("manage");
+        ctl.submit(
+            cmd(
+                "dg-1",
+                "issue_grant",
+                json!({"subject": "leader", "action": "shell", "resource_scope": "workspace", "delegable": true}),
+            ),
+            Identity::User,
+        )
+        .expect("delegable shell");
+        // A live delegable parent issues the child in the spawn transaction.
+        let spawned = ctl
+            .submit(
+                cmd(
+                    "sp-1",
+                    "spawn_instance",
+                    json!({"instance_id": "w1", "instructions": "work", "task": "dig", "task_id": "t-w1",
+                           "goal_id": "g1", "capabilities": ["shell@workspace"]}),
+                ),
+                Identity::Instance("leader".into()),
+            )
+            .expect("spawn with capability");
+        assert_eq!(spawned["task"]["status"], json!("PENDING"));
+        assert_eq!(phase_of(&ctl, "w1"), "READY");
+        let child: (i64, i64, Option<String>, Option<String>) = ctl
+            .connection()
+            .query_row(
+                "SELECT COUNT(*), COALESCE(MAX(delegable), 0), MAX(parent_grant_id), MAX(task_id)
+                 FROM grants WHERE subject = 'w1' AND action = 'shell'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(child.0, 1, "one task-scoped shell grant");
+        assert_eq!(child.1, 0, "child grants are never delegable");
+        assert!(child.2.is_some(), "the child names its parent");
+        assert_eq!(child.3.as_deref(), Some("t-w1"), "the child is task-scoped");
+        // The child can start and settle; settlement consumes the task-scoped grant.
+        ctl.submit(cmd("st-w1", "start_task", json!({"task_id": "t-w1"})), Identity::Instance("w1".into()))
+            .expect("start");
+        ctl.submit(
+            cmd("ct-w1", "complete_task", json!({"task_id": "t-w1", "status": "SUCCEEDED"})),
+            Identity::Instance("w1".into()),
+        )
+        .expect("complete");
+        let live: i64 = ctl
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM grants WHERE subject = 'w1' AND action = 'shell' AND revoked_at IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(live, 0, "task settlement revoked the child grant");
+        // Parent revocation cascades to a fresh child.
+        let spawned = ctl
+            .submit(
+                cmd(
+                    "sp-4",
+                    "spawn_instance",
+                    json!({"instance_id": "w4", "instructions": "work", "task": "dig", "task_id": "t-w4",
+                           "goal_id": "g1", "capabilities": ["shell@workspace"]}),
+                ),
+                Identity::Instance("leader".into()),
+            )
+            .expect("second spawn");
+        assert_eq!(spawned["task"]["status"], json!("PENDING"));
+        let parent: String = ctl
+            .connection()
+            .query_row(
+                "SELECT id FROM grants WHERE subject = 'leader' AND action = 'shell' AND delegable = 1 AND revoked_at IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        ctl.submit(cmd("rv-parent", "revoke_grant", json!({"grant_id": parent})), Identity::User)
+            .expect("revoke parent");
+        let live: i64 = ctl
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM grants WHERE subject = 'w4' AND action = 'shell' AND revoked_at IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(live, 0, "parent revocation cascaded");
+        assert!(
+            !ctl.holds_covering_grant("w4", "shell", "workspace").unwrap(),
+            "a revoked parent cannot satisfy the dispatch question"
+        );
+        // Without a delegable parent, a request is held and the task is not dispatched.
+        let held = ctl
+            .submit(
+                cmd(
+                    "sp-2",
+                    "spawn_instance",
+                    json!({"instance_id": "w2", "instructions": "work", "task": "dig", "task_id": "t-w2",
+                           "goal_id": "g1", "capabilities": ["shell@workspace"]}),
+                ),
+                Identity::Instance("leader".into()),
+            )
+            .expect("held spawn");
+        assert_eq!(held["task"]["status"], json!("WAITING_CAPABILITY"));
+        assert_eq!(phase_of(&ctl, "w2"), "WAITING_CAPABILITY");
+        let request = held["task"]["capability_requests"][0].as_str().unwrap().to_string();
+        let wait_id = open_wait(
+            &mut ctl,
+            "cap-wait",
+            "leader",
+            0,
+            json!({"mode": "ANY", "conditions": [{"kind": "capability", "request_id": request}]}),
+        );
+        let envelopes: i64 = ctl
+            .connection()
+            .query_row("SELECT COUNT(*) FROM envelopes WHERE correlation_id = 't-w2'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(envelopes, 0, "a held task has no assignment envelope");
+        let err = ctl
+            .submit(
+                cmd("ap-bad", "approve_capability", json!({"request_id": request})),
+                Identity::Instance("leader".into()),
+            )
+            .unwrap_err();
+        assert!(err.contains("only the user"), "{err}");
+        let approved = ctl
+            .submit(cmd("ap-1", "approve_capability", json!({"request_id": request})), Identity::User)
+            .expect("approve");
+        assert_eq!(approved["dispatched"], json!(true));
+        assert_eq!(wait_state(&ctl, &wait_id), "SATISFIED", "approval wakes the capability wait");
+        assert_eq!(phase_of(&ctl, "w2"), "READY");
+        let status: String =
+            ctl.connection().query_row("SELECT status FROM tasks WHERE id = 't-w2'", [], |row| row.get(0)).unwrap();
+        assert_eq!(status, "PENDING");
+        let live: i64 = ctl
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM grants WHERE subject = 'w2' AND action = 'shell' AND revoked_at IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(live, 1);
+        // Instance termination revokes the task-scoped grant with its holder.
+        ctl.submit(
+            cmd("term-w2", "set_lifecycle", json!({"instance_id": "w2", "lifecycle": "TERMINATED"})),
+            Identity::User,
+        )
+        .expect("terminate w2");
+        let live: i64 = ctl
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM grants WHERE subject = 'w2' AND action = 'shell' AND revoked_at IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(live, 0, "instance termination revoked the child grant");
+        // Denial cancels the task, releases the instance and leaves no grant.
+        let denied = ctl
+            .submit(
+                cmd(
+                    "sp-3",
+                    "spawn_instance",
+                    json!({"instance_id": "w3", "instructions": "work", "task": "dig", "task_id": "t-w3",
+                           "goal_id": "g1", "capabilities": ["shell@workspace"]}),
+                ),
+                Identity::Instance("leader".into()),
+            )
+            .expect("denied spawn");
+        let request = denied["task"]["capability_requests"][0].as_str().unwrap().to_string();
+        ctl.submit(cmd("dn-1", "deny_capability", json!({"request_id": request})), Identity::User).expect("deny");
+        assert_eq!(phase_of(&ctl, "w3"), "READY");
+        let task: String =
+            ctl.connection().query_row("SELECT status FROM tasks WHERE id = 't-w3'", [], |row| row.get(0)).unwrap();
+        assert_eq!(task, "CANCELLED");
+        let live: i64 = ctl
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM grants WHERE subject = 'w3' AND action = 'shell' AND revoked_at IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(live, 0);
         cleanup(&path);
     }
 

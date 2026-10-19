@@ -219,6 +219,17 @@ questions that only exist once the user can. Each claim is paired with the contr
 | `ListedIdsAreUsed` | the view never invents an id | the `grants` SELECT | — | A03 |
 | `AuthorityTracesToTheUser`, `RevokedStaysRevoked`, `ChildGrantsAreCoveredByTheirParent`, `CascadeTakesTheSubtree`, `EffectAtMostOnce`, `OnceStaleNeverExecutes`, `BootstrappedAuthority` | as in `V2Grants`, in the presence of the surface's own grants | see the authority table above | — | A02/A03 |
 
+### Capability delegation (`V2Capabilities`, D-455)
+
+`tla/V2Capabilities.tla` + `tla/MC_capabilities.cfg` model the new delegation transition: the user marks a
+parent delegable, the leader mints one attenuated task child, settlement revokes it and parent revocation
+cascades. Its claims are `NoChildWithoutParent`, `ChildNonDelegable`, `TaskSettleRevokes` and
+`ParentRevokeCascades`; `tla/MC_capabilities_bad.cfg` must refute `NoChildWithoutParent` by minting without a
+delegable parent. The authority models carry the same fields and add `DelegableGrantsAreUserIssued`,
+`TaskScopedGrantsAreNonDelegable` and `TaskScopedGrantsHaveParents` (the latter two in V2Grants; the first two
+also in V2Authority). Both `make verify-model-all` and `make verify-model-counterexamples` run the new
+configuration.
+
 ### Artifacts and GC (A30)
 
 | Property (spec) | Meaning | Code anchor |
@@ -282,6 +293,9 @@ module the method's rule is checked in; the property-by-property anchors above s
 | `issue_grant` | `V2Grants.tla` |
 | `revoke_grant` | `V2Grants.tla` (the cascade) with `V2Authority.tla` (the id a revoke names) |
 | `reauthorize_operation` | `V2Authority.tla` (the dispatch re-check) |
+| `capability_requests` | `V2Capabilities.tla` (pending capability surface) |
+| `approve_capability` | `V2Capabilities.tla` (attenuated task-scoped grant) |
+| `deny_capability` | `V2Capabilities.tla` (fail-closed cancellation) |
 | `reset_instance` | `V2Control.tla` (the epoch reset) |
 | `create_goal` | `V2Task.tla` |
 | `send_message` | `V2Inbox.tla` |
@@ -306,6 +320,7 @@ module the method's rule is checked in; the property-by-property anchors above s
 | `complete_operation` | `V2Control.tla` |
 | `cancel_operation` | `V2Control.tla` |
 | `approve` | `V2Approval.tla` |
+| `review_decision` | `unproven`: D-458 automatic review decides one pending operation approval; the control boundary and the reviewer adapter are tested, but no TLA model covers the reviewer |
 | `deny` | `V2Approval.tla` |
 | `fail_request` | `V2Control.tla` |
 | `cancel_request` | `V2Control.tla` |

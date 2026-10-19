@@ -1,25 +1,23 @@
 # Installing, first run and upgrades
 
+> **No public release currently (2026-10-18).** All release tags and assets were removed. Build from source
+> using the README until a release is authorized; the installer/archive sections below describe the future release path.
+
 TeamAgents currently supports **Linux x86_64**. Release archives are statically linked against musl and need
 neither Rust, Python nor Node.js. Model services require your own credentials.
 
 ## 1. Download and install
 
-> **Note (2026-09-29):** the latest published release (`v0.2.0`) **is** this product generation — the v2 tree and
-> the surface this guide describes, cut from this repository by D-343. `python3 review/install_check.py`
-> verifies the path end to end against that artifact (download, SHA-256, both binaries and the refusal of a
-> corrupted archive), and `make build` still produces the same binaries from source.
+> **No published release is currently available.** The last release tags and assets were removed on
+> 2026-10-18. The v0.2.0 material below is historical; the current source is installed by building both
+> binaries from source. The current-source musl archive was installed and exercised under isolated
+> HOME/XDG/bin roots by `python3 review/maturity-2026-10-11/install.py`; hashes and scope are recorded in the
+> [maturity report](../review/maturity-2026-10-11/REPORT.md). This is an unpublished Linux x86_64 rehearsal,
+> not a published release or proof of other platforms.
 
-
-D-451 source features (attachments, editable pending input, export/search and bounded presentation workers)
-postdate that tag. The current-source musl archive was installed and exercised under isolated HOME/XDG/bin
-roots by `python3 review/maturity-2026-10-11/install.py`; hashes and scope are recorded in the
-[maturity report](../review/maturity-2026-10-11/REPORT.md). This is an unpublished Linux x86_64 rehearsal,
-not a change to the latest public release or proof of other platforms.
-
-Run the [install command from the README](../README.md#latest-release-recommended): it picks the latest
-release, verifies SHA-256 and installs `teamagents` and `teamagents-tui` into `~/.local/bin`. Both programs
-must come from the same version and live in the same directory.
+When a release is authorized, the installer picks the latest release, verifies SHA-256 and installs
+`teamagents` and `teamagents-tui` into `~/.local/bin`. Both programs must come from the same version and
+live in the same directory. Until then, build both from source as described above.
 
 The repository is public, so no GitHub account or clone is needed. The installer prefers a logged-in `gh` and
 falls back to `curl`; it supports Linux x86_64 only and fails before downloading on anything else.
@@ -38,8 +36,8 @@ verification fails or the archive is incomplete, already installed programs stay
 second binary fails, the previous one is restored. The installer never calls sudo and never edits shell
 startup files.
 
-**Browser download:** open the [latest release](https://github.com/seek-hope/TeamAgents/releases/latest) and
-download `install.sh`, the `.tar.gz` and `SHA256SUMS` into the same empty directory, then run:
+**Browser download (after a release is authorized):** download `install.sh`, the `.tar.gz` and
+`SHA256SUMS` from the release into the same empty directory, then run:
 
 ```bash
 # Replace VERSION with the version you downloaded.

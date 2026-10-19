@@ -144,6 +144,8 @@ async fn main() -> Fallible<()> {
         state_root: state_root.clone(),
         workspace: workspace.clone(),
         permissions: permissions.clone(),
+        approvals_reviewer: "user".into(),
+        reviewer_model: None,
         sandbox: teamagents_engine::tools::SandboxBackend::bubblewrap(),
         catalog: catalog.clone(),
         bindings: vec!["files".into(), "shell".into(), "web".into(), "skills".into()],

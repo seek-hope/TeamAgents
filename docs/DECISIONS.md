@@ -11,14 +11,145 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Skills | user-level registration root `~/.agents/skills`; read on demand with `skill search/read`, and skill instructions never widen execution permissions | D-23, D-34 |
 | Usage visibility | turn and goal usage/budget are visible in the TUI and in events | D-24 |
 | MCP | both transports, stdio and streamable HTTP; calls go through the shared permission, approval, budget, cancellation and receipt entry points | D-25 |
+| Web tools | `web_search` and `web_fetch` call DeepSeek Search/Fetch (`/v1/tools/search`, `/v1/tools/fetch`) with the same bearer key; no AnySearch backend | D-456 |
+| Release publication | no public release exists; all release tags/assets were removed on 2026-10-18, and the publish job is gated by `TEAMAGENTS_RELEASE_APPROVED` until the user authorizes a release | D-457 |
 | Context compaction | triggered by real window usage; the summary keeps the original request and acceptance criteria, and the full text stays retrievable | D-28 |
 | Task priority | complex coding and long-horizon stability come first | D-35 |
 | Native context | real-model evaluation always uses the model's native window and records the value and its source | D-36 |
 | Install and first config | download-and-run install; `init` writes a minimal config and never overwrites an existing file | D-37; `docs/INSTALL.md` records the differences of earlier releases (≤ v0.1.2) |
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
+| Capability delegation | user remains the authority root; spawned instances still hold no shell by default; a user grant may be marked `delegable`, and only such a parent may produce attenuated, task-scoped, non-delegable child grants; missing capabilities become a visible pending approval, not a silent idle | D-455 |
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
+
+## D-458 Automatic review for operation approvals (2026-10-19)
+
+**Decision.** `[permissions] approvals_reviewer = "auto_review"` routes an operation approval to a separate,
+read-only reviewer model before the user is asked. The reviewer sees the exact parked operation, the recent
+user/instruction context and the effective workspace; it returns strict JSON
+`{risk_level, user_authorization, outcome: allow|deny, rationale}`. `allow` creates a one-operation approval
+bound to the existing operation, argument hash and permission revision; `deny` cancels it. The reviewer cannot
+execute a tool, widen a grant or alter the policy.
+
+**Boundaries.** This is **not** `full_auto`: it only applies to operation approvals under `approved_scope`.
+Capability requests remain user-only (D-455); the reviewer has no path to approve `approve_capability` or to
+issue a grant. Deterministic hard denials (publication, credentials, privilege escalation, recursive deletion)
+are refused before a model call. A reviewer timeout, transport error, malformed answer or failed control
+submission leaves the approval pending and has no effect; an interactive user can still decide it, and a
+headless run exits 3 without an effect. `full_auto` never asks for an approval and therefore never invokes the
+reviewer. The session's own user remains the authority root.
+
+**Configuration.** `approvals_reviewer` and optional `reviewer_model` are read from the user's own
+`[permissions]`; a project file cannot set them. The reviewer uses the instance's provider with the named model
+key (or the member's model), has no tools, and its audit event is `approval_reviewed` with the model, risk,
+authorization and rationale.
+
+**Evidence.** `core::control::tests::automatic_review_decides_only_one_operation_approval` pins the
+system-only decision, the one-operation allow, the denial cancellation and the user-identity refusal;
+`engine::v2::reviewer::tests` cover strict parsing, hard denials and the no-tools request;
+`v2_driver::auto_review_allows_one_operation_without_a_user_decision` drives a real scripted provider through
+an approval and a real shell. `cargo test --offline` is green for the core suite; the engine target compiles
+with `-D warnings`. The reviewer's own token usage is not charged to the goal in this first version; the audit
+event records the decision, not a billing row.
+
+## D-457 Release freeze: no publication until user authorization (2026-10-18)
+
+**Decision.** All GitHub releases and their tags were deleted on 2026-10-18. The repository has no public
+release, and no new release is published until the user explicitly authorizes one. Source builds are the only
+distribution path meanwhile.
+
+**Enforcement.** The release workflow still builds a tagged archive, but its `Publish` step now requires the
+repository variable `TEAMAGENTS_RELEASE_APPROVED` to be `true`; an unset variable skips publication. Deleting a
+release also deletes its tag, so the old `releases/latest` surface is intentionally gone.
+
+**Boundary.** This is a release-policy decision, not a change to the product version or to the build. The
+v0.2.0 tags/assets and the old install links are removed; the next version number and its notes are the user's
+decision.
+
+## D-456 Web search and fetch use DeepSeek Search/Fetch (2026-10-18)
+
+**Decision.** `web_search` and `web_fetch` are backed by the DeepSeek Search/Fetch APIs
+(`POST https://api.deepseek.com/v1/tools/search` and `POST https://api.deepseek.com/v1/tools/fetch`), using the
+same Bearer credential as the model (`api_key_env`, normally `DEEPSEEK_API_KEY`). The previous AnySearch
+backend is removed.
+
+**Boundary.** Binding remains authorization: a model gets a web tool only from a `[tools.*]` entry, and a
+`required = true` binding whose credential is missing still fails the member's start. Both tools require the
+credential; a missing one is a capability state, never an anonymous request. Search maps DeepSeek's
+`results[]` fields (title, url, snippet, summary, content, date, authority, rerank score); fetch sends `{url}`
+and maps `{title, content}`; the local private-address guard still runs before a URL is sent to the API.
+
+**Evidence.** `engine/src/tools.rs` tests cover the DeepSeek response shapes, bearer header, missing-credential
+capability state, required-binding boot failure and private-address refusal. `docs/CONFIG.md`,
+`docs/USER-GUIDE.md`, the example config and `review/dogfood/web.py` were updated; `make check` is the gate.
+
+## D-455 Least privilege with minimal permission churn: delegable, task-scoped capabilities (2026-10-18)
+
+**Why this changes D-61.** D-61's rule that a spawned worker holds no `shell@workspace` is the correct
+default: a team must not inherit the user's reach. The rust-cutadapt trial on 2026-10-17 showed the cost of
+implementing that rule as a user grant per worker. The leader spawned a coding implementer, the worker had no
+shell, the authority view exposed the gap, and the leader still waited while the worker spent 39 minutes
+researching and could not build or test. The user confirmed the principle that should replace the absolute
+per-worker reading: **least privilege is the effective scope and lifetime of a capability, while the number of
+user-visible permission changes is a separate cost to minimize.** The default stays closed; the missing piece
+is an explicit, attenuated delegation path, not a task-type heuristic.
+
+**Rule.**
+
+- The user remains the root of authority. A spawned instance gets no ambient authority, and a spawn with no
+  capability request still holds no shell. Task type, model name, repository type and the command to be run
+  never grant anything.
+- A grant may carry `delegable`, which only the user may set or clear. It defaults to false. A delegable parent
+  grants its holder permission to issue a child grant, not permission to widen it.
+- `spawn` and `delegate` accept a generic `capabilities` request (for example `shell@workspace`). The control
+  plane resolves it in the same transaction as the instance/task registration:
+  - if the requester holds a live, covering, delegable grant, it issues a child grant with `parent_grant_id`,
+    a scope and lifetime no wider than the parent, the task id, and `delegable = false`;
+  - otherwise it records a pending capability request and puts the instance/task in
+    `WAITING_CAPABILITY`; the task assignment is not delivered and no model turn starts;
+  - the pending request is a user approval, not a model decision: only the user may approve or deny it; the
+    model and the leader cannot self-approve;
+  - approval creates only the requested task-scoped grant and dispatches the held task; denial cancels the
+    task fail-closed and leaves no grant behind.
+- A child grant dies with its task (settlement or cancellation) and with its instance (termination). Revoking a
+  parent cascades to every child grant. Dispatch re-checks the live grant, so a stale or revoked capability can
+  never authorize an effect.
+- No capability is inherited implicitly, and a child grant is never delegable. A later task that needs the same
+  capability asks again, reusing a live parent only; nothing is left behind as ambient authority.
+
+**Why this is still least privilege.** The effective authority is the child's action over the parent's scope,
+for one task, and it is revoked automatically. The parent is a user decision; the child is an attenuation, not
+an independent grant. The user can revoke the parent once and take the whole subtree.
+
+**Why this reduces permission changes.** The user grants the team/leader a delegable capability once; workers
+whose tasks declare the capability receive task-scoped children without another user interaction. Workers whose
+tasks do not declare it remain without it. This removes the per-worker grant/revoke loop while keeping the
+capability surface explicit and auditable.
+
+**Surfaces.** `teamagents authority` lists `delegable` and `task_id` on grants and the pending capability
+requests; `authority request|approve|deny` are the user's decision path. `instances`/`status`/the TUI show a
+member in `WAITING_CAPABILITY` with the pending request, rather than an apparently idle member. A missing
+delegable parent produces the pending request and an exact approval command; it never silently grants.
+
+**Boundaries.** A child cannot outlive its task, widen its parent, or be delegated further. A user who does not
+want the leader to create children simply leaves the parent non-delegable and uses the pending-approval path.
+The existing D-60 tool-surface rule remains: an instance is offered `shell` only when it holds a covering live
+grant; `WAITING_CAPABILITY` instances are offered no shell until approval.
+
+**Evidence (2026-10-18).** The core capability test covers user-only delegable issuance, an attenuated task-scoped child, settlement revocation, parent cascade, pending -> approve, pending -> deny, non-user self-approval refusal, instance termination and stale dispatch. The TUI test shows a `WAITING_CAPABILITY` member. `make verify-model-all` (including `MC_capabilities.cfg`, `MC_grants` and `MC_authority`) and `make verify-model-counterexamples` pass; V2Grants/V2Authority carry the delegable/task fields and invariants, and the focused V2Capabilities.tla model checks the new transitions. The final make-check/hygiene/git-diff evidence is recorded in the goal completion report.
+
+## D-453 Governed self-update transactions (2026-10-17)
+
+**What.** Self-update is a cross-process transaction, not a model shell: a detached updater switches a versioned install under a single-writer hash-chain journal, validates the archive and version before staging, runs a health check, and rolls back on failure. The model may only request the update; the user approves, and the updater is the only writer outside the sandbox. `[update] agent_requests = "off"` is the default, so the frozen evaluation tool surface does not change without the user opting in.
+
+**Boundaries.** The model can request the update, but it cannot approve it, choose an arbitrary URL, edit the update policy or forge the gate command; the user's one approval is bound to the concrete operation. The updater is a detached process outside the model's sandbox: the daemon never overwrites its own binary in place. A failed health check restores the previous version, and a crash leaves a journal state the next run can inspect rather than a half-switched install.
+
+**Evidence.** The implementation is in `engine/src/update.rs` with its CLI dispatch in `engine/src/main.rs`, configuration in `core/src/models.rs` and `engine/src/config.rs`, and the request/approval path in `engine/src/v2/driver.rs`; the focused tests are in `engine/src/update.rs` and `engine/tests/update.rs` (layout migration, journal chain/corruption, checksum/version/path safety, crash points, switch/rollback, health check and a live-daemon stop/switch/start/follow-up). The complete `make check` result is recorded in the goal completion report.
+
+**Why the transaction shape.** A half-switched install is worse than no update: the daemon may be running from one tree while the launcher selects another. The journal makes the chosen version, the staging result and the switch decision one ordered record, so a crash has a single interpretation. The model stays a requester and the detached updater owns every write outside the sandbox.
+
+The journal records the selected version before the switch, so recovery never has to infer which tree was live.
 
 ## D-452 Repair the D-451 review findings and bound display work by measurement (2026-10-12)
 

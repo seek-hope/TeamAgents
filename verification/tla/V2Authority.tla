@@ -60,6 +60,8 @@ Scopes == {"session", "workspace"} \union {"instance:" \o i : i \in Instances}
 \* The *shape* of a scope: the code builds every resource it asks about from one
 \* of these (capability.rs `ScopeShape::of`).
 Shapes == {"session", "workspace", "instance"}
+
+Tasks == {"t1"}
 ScopeShape ==
   [ s \in Scopes |->
       CASE s = "session"   -> "session"
@@ -138,6 +140,8 @@ Grant == [subject : Instances \union {"none"},
           scope   : Scopes,
           parent  : GrantIds \union {"none"},
           issuer  : Instances \union {Granter},
+          delegable : BOOLEAN,
+          task    : Tasks \union {"none"},
           live    : BOOLEAN]
 
 VARIABLES
@@ -198,9 +202,9 @@ Init ==
                   IF g \in DOMAIN BootstrapGrants
                   THEN [subject |-> BootstrapGrants[g].subject, action |-> BootstrapGrants[g].action,
                         scope |-> BootstrapGrants[g].scope, parent |-> "none",
-                        issuer |-> Granter, live |-> TRUE]
+                        issuer |-> Granter, delegable |-> FALSE, task |-> "none", live |-> TRUE]
                   ELSE [subject |-> "none", action |-> "none", scope |-> CHOOSE s \in Scopes : TRUE,
-                        parent |-> "none", issuer |-> Granter, live |-> FALSE] ]
+                        parent |-> "none", issuer |-> Granter, delegable |-> FALSE, task |-> "none", live |-> FALSE] ]
   /\ revision = 0
   /\ offered = [i \in Instances |-> SurfaceOf(grants, i)]
   /\ listed = {}
@@ -220,7 +224,7 @@ List ==
 \* the user already held — it never widens an instance's own. With a parent the
 \* new grant is a *derived* one and must be covered by it (issue_grant's parent
 \* check), which is what makes the cascade below reachable from the user's side.
-UserGrants(g, subject, action, shape, parent) ==
+UserGrants(g, subject, action, shape, parent, delegable) ==
   /\ ~UsedFor(grants, g)
   /\ subject \in Instances
   /\ <<action, shape>> \in GrantablePairs
@@ -234,7 +238,8 @@ UserGrants(g, subject, action, shape, parent) ==
            \/ grants[p].scope = CHOOSE s \in Scopes : ScopeShape[s] = shape)
   /\ LET scope == CHOOSE s \in Scopes : ScopeShape[s] = shape
      IN grants' = [grants EXCEPT ![g] = [subject |-> subject, action |-> action, scope |-> scope,
-                                        parent |-> parent, issuer |-> Granter, live |-> TRUE]]
+                                        parent |-> parent, issuer |-> Granter, delegable |-> delegable,
+                                        task |-> "none", live |-> TRUE]]
   /\ revision' = revision + 1
   /\ UNCHANGED <<offered, listed, ops, revokedIds, staleOps>>
 
@@ -248,7 +253,7 @@ Spawn(g) ==
                         /\ grants' = [grants EXCEPT ![g] =
                               [subject |-> "leader", action |-> "delegate",
                                scope |-> "instance:worker", parent |-> m,
-                               issuer |-> "leader", live |-> TRUE]]
+                               issuer |-> "leader", delegable |-> FALSE, task |-> "none", live |-> TRUE]]
   /\ revision' = revision + 1
   /\ UNCHANGED <<offered, listed, ops, revokedIds, staleOps>>
 
@@ -311,8 +316,8 @@ RefusedDispatch(o) ==
 Next ==
   \/ List
   \/ \E g \in GrantIds, subject \in Instances, action \in Actions, shape \in Shapes,
-        parent \in GrantIds \union {"none"} :
-       UserGrants(g, subject, action, shape, parent)
+        parent \in GrantIds \union {"none"}, delegable \in BOOLEAN :
+       UserGrants(g, subject, action, shape, parent, delegable)
   \/ \E g \in GrantIds : Spawn(g)
   \/ \E g \in GrantIds : UserRevokes(g)
   \/ \E i \in Instances : Observe(i)
@@ -369,6 +374,11 @@ ChildGrantsAreCoveredByTheirParent ==
 \* A revocation takes the whole subtree (V2Grants)...
 CascadeTakesTheSubtree ==
   \A g \in GrantIds : Used(g) /\ ~Live(g) => \A c \in ChildrenFor(grants, g) : ~Live(c)
+
+DelegableGrantsAreUserIssued ==
+  \A g \in GrantIds : Used(g) /\ grants[g].delegable => grants[g].issuer = Granter
+TaskScopedGrantsAreNonDelegable ==
+  \A g \in GrantIds : Used(g) /\ grants[g].task # "none" => ~grants[g].delegable
 
 \* ...and exactly the subtree: revoking the worker's shell must not take the
 \* leader's authority with it. Only a grant the user named (from the view) may be

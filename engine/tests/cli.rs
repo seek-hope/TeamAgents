@@ -740,8 +740,8 @@ fn doctor_probes_isolation_and_config_errors() {
     std::fs::write(
         config.join("config.toml"),
         "[models.m]\nprovider=\"openai\"\nmodel=\"x\"\n\n\
-         [tools.search]\nkind = \"web_search\"\nprovider = \"anysearch\"\n\
-         url = \"https://api.anysearch.com/v1/search\"\napi_key_env = \"TA_DOCTOR_WEB_KEY\"\n",
+         [tools.search]\nkind = \"web_search\"\nprovider = \"deepseek\"\n\
+         url = \"https://api.deepseek.com/v1/tools/search\"\napi_key_env = \"TA_DOCTOR_WEB_KEY\"\n",
     )
     .unwrap();
     let without_key = run(&home.join("state"));
@@ -766,9 +766,10 @@ fn doctor_probes_isolation_and_config_errors() {
     std::fs::write(
         config.join("config.toml"),
         "[models.m]\nprovider=\"openai\"\nmodel=\"x\"\n\n\
-         [tools.fetch]\nkind = \"web_fetch\"\n\n\
-         [tools.nokey]\nkind = \"web_search\"\nprovider = \"anysearch\"\n\n\
-         [tools.needkey]\nkind = \"web_search\"\nprovider = \"anysearch\"\n\
+         [tools.fetch]\nkind = \"web_fetch\"\nprovider = \"deepseek\"\n\
+         api_key_env = \"TA_DOCTOR_FETCH_KEY\"\n\n\
+         [tools.nokey]\nkind = \"web_search\"\nprovider = \"deepseek\"\n\n\
+         [tools.needkey]\nkind = \"web_search\"\nprovider = \"deepseek\"\n\
          api_key_env = \"TA_DOCTOR_REQUIRED_KEY\"\nrequired = true\n",
     )
     .unwrap();
@@ -779,7 +780,8 @@ fn doctor_probes_isolation_and_config_errors() {
     assert!(web.contains("cannot start a member"), "the row says what the boot does: {web}");
     assert!(web.contains("[WARN] tools.nokey"), "no credential at all is a capability state too: {web}");
     assert!(web.contains("no `api_key_env` is configured"), "{web}");
-    assert!(web.contains("[ok  ] tools.fetch") && web.contains("needs no credential"), "{web}");
+    assert!(web.contains("[WARN] tools.fetch"), "fetch now needs a DeepSeek credential: {web}");
+    assert!(web.contains("TA_DOCTOR_FETCH_KEY is unset"), "{web}");
 
     // D-79: a config that declares no web binding at all says so too — the model is then
     // offered neither web_search nor web_fetch, which the README's feature list would

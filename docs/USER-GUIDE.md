@@ -260,9 +260,11 @@ row, which `instances` prints when a member is not running (D-165).
 | `history` | `schema_version`, `session_id`, `state_root`, `instance_id`, `limit`, `entries` |
 | `instances send` | `session_id`, `state_root`, `instance_id`, `envelope_id`, `result` |
 | `exec` | `permissions`, `session_workspace`, `instance_id`, `instance_lifecycle`, `end`, `goal_status`, `reply`, `reply_source`, `failure`, `approval`, `input_queued`, `workspace`, `verification`, `verification_path`, `acceptance`, `acceptance_goal`, `watermark`, `usage` |
-| `authority list` | `revision`, `instances`, `grants` |
-| `authority grant` | `grant_id`, `revision`, `subject`, `action`, `resource_scope`, `parent_grant_id` |
+| `authority list` | `revision`, `instances`, `grants`, `capability_requests` |
+| `authority grant` | `grant_id`, `revision`, `subject`, `action`, `resource_scope`, `parent_grant_id`, `delegable` |
 | `authority revoke` | `grant_id`, `grant`, `revoked`, `revision` |
+| `authority requests` | `capability_requests` |
+| `authority approve` / `deny` | `request_id`, `decision`, `result` |
 | `approvals list` | `approvals` |
 | `approvals approve` / `deny` | `approval_id`, `decision`, `approval`, `result` |
 | `instances list` | `instances` |
@@ -343,11 +345,16 @@ model = "deepseek-flash"
 api_key_env = "DEEPSEEK_API_KEY"
 context_window = 1000000     # native window; leave empty when unknown (never guess a small value, D-36)
 
-[tools.web]                  # optional tool binding (web / fetch / mcp)
+[tools.web]                  # optional tool binding (web_search / web_fetch / mcp)
 kind = "web_search"
-provider = "anysearch"
-url = "https://api.anysearch.com/v1/search"
-api_key_env = "ANYSEARCH_API_KEY"
+provider = "deepseek"
+url = "https://api.deepseek.com/v1/tools/search"
+api_key_env = "DEEPSEEK_API_KEY"
+
+[tools.fetch]
+kind = "web_fetch"
+provider = "deepseek"
+api_key_env = "DEEPSEEK_API_KEY"
 ```
 
 - `context_window` drives the request budget and the compaction threshold; real models must use their native
@@ -358,11 +365,11 @@ api_key_env = "ANYSEARCH_API_KEY"
   which a deep state root can cross — D-227), the bubblewrap isolation probe and that the programs named
   in `[hooks]` are executable; it also lists the `[[checks]]` that will gate every goal. An `sessions/` layout
   from an earlier release is reported explicitly and is never migrated.
-- A `[tools.*]` binding with `kind = "web_search"` needs a credential: `api_key_env` names the environment
-  variable it authenticates with. Without it — not configured, or the named variable unset — a search call
-  answers with a **capability state** naming what to configure, and no request leaves the host unauthenticated
-  (DESIGN §7, D-167). `kind = "web_fetch"` needs no credential. A binding with `required = true` that cannot
-  work (missing credential, unserved `provider`) refuses the member's start, so `doctor` reports its row as a
+- Both `web_search` and `web_fetch` bindings use the DeepSeek Search/Fetch APIs and need a credential:
+  `api_key_env` names the environment variable (normally `DEEPSEEK_API_KEY`). Without it — not configured, or
+  the named variable unset — a call answers with a **capability state** naming what to configure, and no request
+  leaves the host unauthenticated (DESIGN §7, D-167/D-456). A binding with `required = true` that cannot work
+  (missing credential, unserved `provider`) refuses the member's start, so `doctor` reports its row as a
   **FAIL** and the parked instance carries the reason (D-164/D-165); an optional one keeps the capability and
   the call answers with that state.
   The tools themselves appear only for the kinds you declare (§5.2: binding is the authorization, D-168): a
@@ -517,7 +524,11 @@ pre_tool = ["/home/you/bin/policy.sh"]            # policy hook before tool call
   entry fails that call with the available keys, and an instance that cannot boot at all is parked with the
   reason (its task stays open for you to cancel). A tool the instance cannot dispatch is not offered at all: a
   worker the Leader spawned holds `shell` only after you grant it `shell@workspace` (§5.1's boundary, D-60), so
-  it works with the file/web/skill tools (they need their binding, not a grant) until then.
+  it works with the file/web/skill tools (they need their binding, not a grant) until then. Since D-455 you can
+  mark that grant `delegable`; a `spawn` or `delegate` that declares
+  `capabilities = ["shell@workspace"]` then receives an attenuated, task-scoped child grant without another
+  user decision. If no delegable parent covers it, the task parks in `WAITING_CAPABILITY`; `authority requests`
+  shows the pending approval and the task is not dispatched until you approve it.
 - **Who may run commands**: a member the Leader spawns does not inherit `shell@workspace` (D-61), so the tool
   surface hides `shell` from it (D-60). `teamagents authority` prints the command that would fix it, and
   `teamagents status --json` includes `can_run_shell`, computed using the dispatch gate's covering rule
@@ -587,8 +598,18 @@ teamagents authority                                   # instances + grants, and
 teamagents authority --json                            # the same, with `gaps`: what each ACTIVE instance is
                                                        # missing and the exact `grant` that would fix it (D-441)
 teamagents authority grant --subject i-worker-1 --action shell --scope workspace
+teamagents authority grant --delegable --subject i-leader --action shell --scope workspace
+teamagents authority requests                        # pending capability approvals
+teamagents authority approve --request cr-...        # one task-scoped child grant
+teamagents authority deny --request cr-...           # cancel the held task, fail closed
 teamagents authority revoke --grant g-1a2b3c4d        # the full id or an unambiguous prefix
 ```
+
+A `delegable` grant is the only thing the Leader may use to issue a child. The child is task-scoped, never
+delegable, cannot widen its parent, and dies with the task or its instance; revoking the parent takes the
+whole subtree. A task that needs a capability without a covering delegable parent is held in
+`WAITING_CAPABILITY` and exposed as a pending approval; it is never dispatched on a guess. The TUI marks such
+a member in the status line, and `teamagents status --json` reports the same phase.
 
 The action vocabulary is exactly what some check consults — nothing else can authorize anything:
 
@@ -647,12 +668,20 @@ sessions you start:
 ```toml
 [permissions]
 mode = "full_auto"            # or "approved_scope" (the default); the flag still wins
+# approvals_reviewer = "auto_review"  # operation approvals go to a read-only reviewer instead of the user
+# reviewer_model = "leader_main"       # optional; the member's model is the fallback
 # sandbox = "bubblewrap"      # or "docker" (D-369) or "ssh" (D-437); the backend for approved_scope
 # sandbox_image = "debian:stable-slim"   # required for docker; the image must be present locally
 # sandbox_ssh_target = "user@host"       # required for ssh: one destination, or an alias from ~/.ssh/config
 # sandbox_ssh_workdir = "/srv/work"      # optional for ssh: where the remote command runs (default: the session's own path)
 # sandbox_ssh_options = ["-p", "2222"]   # optional for ssh: extra argv for the client (port, key, jump host)
 ```
+
+`approvals_reviewer = "auto_review"` is a middle ground between asking for every operation and `full_auto`: the
+runtime sends the exact parked operation and recent user context to a separate, read-only reviewer, which may
+allow or deny it. It does **not** approve capability requests (those remain user-only) and it is not a security
+boundary; a failed review leaves the approval pending, so a headless run exits 3 without an effect. The audit
+event is `approval_reviewed`. `full_auto` bypasses it entirely.
 
 `sandbox` picks the backend `approved_scope` runs commands in: `bubblewrap` (the default), `docker`, which also
 needs `sandbox_image` naming a locally present image, or `ssh`, which needs `sandbox_ssh_target` and runs the

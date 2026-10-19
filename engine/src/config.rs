@@ -265,7 +265,7 @@ fn read_config_file(path: &Path) -> Result<String, String> {
 /// forgotten here — a silent drop would make the feature inert, which is exactly
 /// what happened to `[retention]` and `[hooks]` before that test existed.
 const CATALOG_KEYS: &[&str] =
-    &["models", "tools", "skills_paths", "instruction_files", "retention", "hooks", "checks", "limits"];
+    &["models", "tools", "skills_paths", "instruction_files", "retention", "hooks", "checks", "limits", "update"];
 
 /// The one wording for a key this build does not serve (D-75's rule, D-161's enforcement):
 /// refused with a pointer, never dropped in silence.
@@ -310,6 +310,31 @@ fn validate_shared(catalog: &UserConfig) -> Result<(), String> {
     validate_checks(catalog)?;
     validate_profiles(catalog)?;
     validate_tools(catalog)?;
+    validate_update(catalog)?;
+    Ok(())
+}
+
+/// The update policy is a user decision, and only the modes this build serves
+/// are accepted. `source` is the separate self-development round, not a silent
+/// synonym for `stable`; `auto` is not served by this build, so a config that
+/// asks for it is refused instead of being read as `approve`.
+fn validate_update(catalog: &UserConfig) -> Result<(), String> {
+    let update = &catalog.update;
+    if update.channel != "stable" {
+        return Err(format!("update.channel must be \"stable\" in this build, got {:?}", update.channel));
+    }
+    if !matches!(update.agent_requests.as_str(), "off" | "approve") {
+        return Err(format!("update.agent_requests must be \"off\" or \"approve\", got {:?}", update.agent_requests));
+    }
+    if update.keep_versions < 1 {
+        return Err("update.keep_versions must be at least 1".into());
+    }
+    if !matches!(update.restart.as_str(), "current" | "none") {
+        return Err(format!("update.restart must be \"current\" or \"none\", got {:?}", update.restart));
+    }
+    if update.repo.is_empty() || !update.repo.contains('/') {
+        return Err("update.repo must be an owner/repository pair".into());
+    }
     Ok(())
 }
 
@@ -1107,7 +1132,7 @@ generation_options = { reasoning_effort = "max" }
 
 [tools.web]
 kind = "web_search"
-provider = "anysearch"
+provider = "deepseek"
 "#,
         )
         .unwrap();
@@ -1122,6 +1147,11 @@ provider = "anysearch"
         assert!(parse_user_config("permissions = 1\n").unwrap_err().contains("must be a table"));
         assert!(parse_user_config("[permissions]\nmode = \"yolo\"\n").unwrap_err().contains("invalid permission mode"));
         assert!(parse_user_config("[permissions]\ntrust_project = true\nmode = \"full_auto\"\n").is_ok());
+        assert!(parse_user_config("[permissions]\napprovals_reviewer = \"auto_review\"\n").is_ok());
+        assert!(parse_user_config("[permissions]\napprovals_reviewer = \"maybe\"\n")
+            .unwrap_err()
+            .contains("invalid approvals reviewer"));
+        assert!(parse_user_config("[permissions]\nreviewer_model = 1\n").is_err());
     }
 }
 
@@ -1158,6 +1188,8 @@ pub fn project_config_path(cwd: &Path) -> PathBuf {
 pub struct Permissions {
     pub trust_all: bool,
     pub mode: String,
+    pub approvals_reviewer: String,
+    pub reviewer_model: Option<String>,
     pub trusted_projects: Vec<PathBuf>,
 }
 
@@ -1369,7 +1401,7 @@ pub fn load_user_config_for_with(cwd: &Path, overrides: &[String]) -> Result<(Us
     // user config here too: the product's loader kept it, this one dropped it, so wiring the merge would have
     // silently lost every `[limits]` setting (found while writing D-244, and the test
     // `the_two_loaders_agree_on_a_user_only_config` is what keeps the two rule sets equal).
-    for key in ["retention", "hooks", "checks", "limits"] {
+    for key in ["retention", "hooks", "checks", "limits", "update"] {
         if let Some(value) = user.get(key) {
             merged.insert(key.into(), value.clone());
         }
@@ -1395,7 +1427,13 @@ pub fn load_user_config_for_with(cwd: &Path, overrides: &[String]) -> Result<(Us
 
 fn project_permissions(user: &toml::Value) -> Result<Permissions, String> {
     let Some(permissions) = user.get("permissions") else {
-        return Ok(Permissions { trust_all: false, mode: "approved_scope".into(), trusted_projects: Vec::new() });
+        return Ok(Permissions {
+            trust_all: false,
+            mode: "approved_scope".into(),
+            approvals_reviewer: "user".into(),
+            reviewer_model: None,
+            trusted_projects: Vec::new(),
+        });
     };
     let table = permissions.as_table().ok_or_else(|| "[permissions] must be a table in user config".to_string())?;
     // the same rule as the top level: `mod = "full_auto"` (a typo of `mode`, a *safety* setting) used to leave
@@ -1409,10 +1447,12 @@ fn project_permissions(user: &toml::Value) -> Result<Permissions, String> {
             && key != "sandbox_ssh_target"
             && key != "sandbox_ssh_workdir"
             && key != "sandbox_ssh_options"
+            && key != "approvals_reviewer"
+            && key != "reviewer_model"
         {
             return Err(format!(
                 "{} ([permissions] takes mode, trust_project, trusted_projects, sandbox, sandbox_image, \
-                 sandbox_ssh_target, sandbox_ssh_workdir and sandbox_ssh_options)",
+                 sandbox_ssh_target, sandbox_ssh_workdir, sandbox_ssh_options, approvals_reviewer and reviewer_model)",
                 unknown_key(key)
             ));
         }
@@ -1450,10 +1490,48 @@ fn project_permissions(user: &toml::Value) -> Result<Permissions, String> {
     if mode != "approved_scope" && mode != "full_auto" {
         return Err(format!("invalid permission mode {mode:?} in user config"));
     }
-    Ok(Permissions { trust_all: trusted, mode, trusted_projects })
+    let approvals_reviewer = match table.get("approvals_reviewer") {
+        None => "user".to_string(),
+        Some(value) => value
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| format!("permissions.approvals_reviewer must be a string, got {value}"))?,
+    };
+    if approvals_reviewer != "user" && approvals_reviewer != "auto_review" {
+        return Err(format!("invalid approvals reviewer {approvals_reviewer:?} in user config"));
+    }
+    let reviewer_model = match table.get("reviewer_model") {
+        None => None,
+        Some(value) => Some(
+            value
+                .as_str()
+                .filter(|text| !text.trim().is_empty())
+                .map(str::to_string)
+                .ok_or_else(|| format!("permissions.reviewer_model must be a non-empty model key, got {value}"))?,
+        ),
+    };
+    Ok(Permissions { trust_all: trusted, mode, approvals_reviewer, reviewer_model, trusted_projects })
 }
 
 /// Full-auto must be user-chosen in config or CLI; never from a project file.
+pub fn approval_reviewer_from_config() -> Result<String, String> {
+    let text = std::fs::read_to_string(user_config_path()).unwrap_or_default();
+    if text.trim().is_empty() {
+        return Ok("user".into());
+    }
+    let user: toml::Value = text.parse().map_err(|e| format!("bad TOML: {e}"))?;
+    Ok(project_permissions(&user)?.approvals_reviewer)
+}
+
+pub fn reviewer_model_from_config() -> Result<Option<String>, String> {
+    let text = std::fs::read_to_string(user_config_path()).unwrap_or_default();
+    if text.trim().is_empty() {
+        return Ok(None);
+    }
+    let user: toml::Value = text.parse().map_err(|e| format!("bad TOML: {e}"))?;
+    Ok(project_permissions(&user)?.reviewer_model)
+}
+
 pub fn permission_mode_from_config() -> Result<String, String> {
     let text = std::fs::read_to_string(user_config_path()).unwrap_or_default();
     if text.trim().is_empty() {

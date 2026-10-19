@@ -15,6 +15,7 @@ pub mod goals;
 pub mod inspect;
 pub mod intervene;
 pub mod memory;
+pub mod reviewer;
 pub mod runners;
 pub mod session_browser;
 pub mod session_export;

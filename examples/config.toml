@@ -81,13 +81,14 @@ generation_options = { reasoning_effort = "max" }    # default effort; tests use
 
 [tools.web]
 kind = "web_search"
-provider = "anysearch"
-url = "https://api.anysearch.com/v1/search"
-api_key_env = "ANYSEARCH_API_KEY"
+provider = "deepseek"
+url = "https://api.deepseek.com/v1/tools/search"
+api_key_env = "DEEPSEEK_API_KEY"
 
 [tools.fetch]
 kind = "web_fetch"
-provider = "anysearch"
+provider = "deepseek"
+api_key_env = "DEEPSEEK_API_KEY"
 
 # Sample: Tavily over MCP (needs TAVILY_API_KEY); replace [tools.web] with it
 # [tools.web]

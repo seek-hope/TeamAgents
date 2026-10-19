@@ -23,6 +23,7 @@ pub mod observability;
 pub mod providers;
 pub mod reference;
 pub mod tools;
+pub mod update;
 pub mod v2;
 pub mod workspace;
 

@@ -7,8 +7,10 @@ in [README.md](README.md); the fix ledger is in
 
 ## 0. Gate status (re-run 2026-10-11 at `e9a0aa84`)
 
+* **D-455 models capability delegation with a small, focused transition model.** `V2Capabilities.tla` checks `NoChildWithoutParent`, `ChildNonDelegable`, `TaskSettleRevokes` and `ParentRevokeCascades`; `MC_capabilities_bad.cfg` refutes `NoChildWithoutParent`, so the claims are not vacuous. The authority models carry the delegable/task fields and their invariants. The full regression verifies all **45** configurations and refutes all **138** negative controls.
+
 * **D-451 models immutable input admission/revisions and owned display processes.** The full regression
-  verifies all **44** configurations and refutes all **137** negative controls. Kani reports
+  verifies all **45** configurations and refutes all **138** negative controls. Kani reports
   `Complete - 7 successfully verified harnesses, 0 failures, 7 total`.
   `V2InputQueue.tla` explores 196 generated / 64 distinct states; `V2DisplayWorker.tla` explores
   9,079 generated / 1,601 distinct states. Twelve new controls refute their intended safety properties.
@@ -789,6 +791,8 @@ A28–A30, A32, A34, A35) and the remaining **10** (A05, A12, A14, A15, A21, A26
 alone**, and conversely formal coverage does not excuse an item from sample or real-environment acceptance.
 
 ## 5. Unproven list (honest boundaries)
+
+8. **Automatic review (`review_decision`)**: D-458 lets a read-only reviewer turn one pending operation approval into a decision when `[permissions] approvals_reviewer = "auto_review"`. The control plane's finality, single-use and revision checks are covered by `core` tests, and the reviewer's fail-closed paths by `engine` tests, but the reviewer's own judgement is not modelled by `V2Approval.tla` and its output is not a proof of safety.
 
 1. **The model is not the code.** The model is an abstract state machine; the code-level correspondence is
    bounded exploration, not a refinement proof. Crossing that line would require mapping every invariant onto

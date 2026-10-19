@@ -84,7 +84,8 @@ jobs:
             dist/install.sh
           if-no-files-found: error
       - name: Publish
-        if: github.ref_type == 'tag'
+        # D-457: a tag builds, but nothing is published until the user sets this repository variable.
+        if: github.ref_type == 'tag' && vars.TEAMAGENTS_RELEASE_APPROVED == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

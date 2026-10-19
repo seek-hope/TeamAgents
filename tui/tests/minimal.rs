@@ -2,7 +2,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{backend::TestBackend, layout::Rect, Terminal};
 use serde_json::json;
 use teamagents_tui::{
-    v2app::{Focus, V2App, V2Effect},
+    v2app::{Focus, InstanceInfo, V2App, V2Effect},
     v2ui,
 };
 
@@ -113,4 +113,51 @@ fn every_size_keeps_one_nonoverlapping_conversation_and_conditional_approvals() 
             }
         }
     }
+}
+
+#[test]
+fn a_waiting_capability_member_is_visible_in_the_status_line() {
+    let mut app = V2App::new("minimal");
+    app.instances.push(InstanceInfo {
+        id: "i-worker".into(),
+        lifecycle: "ACTIVE".into(),
+        phase: "WAITING_CAPABILITY".into(),
+        model: String::new(),
+        reason: String::new(),
+    });
+    assert!(app.status_line().contains("waiting for capability approval"), "{}", app.status_line());
+}
+
+#[test]
+fn ctrl_e_edits_the_current_draft_and_slash_edit_is_local() {
+    let mut app = app();
+    app.composer.set_text("draft to edit");
+    assert_eq!(
+        app.handle_key(ctrl('e')),
+        Some(V2Effect::EditDraft { initial: "draft to edit".into() }),
+        "Ctrl+E hands the current draft to the editor"
+    );
+    assert_eq!(app.composer.text(), "draft to edit", "the effect does not clear the draft");
+
+    let mut app = V2App::new("minimal");
+    app.composer.set_text("draft text /edit");
+    assert_eq!(
+        app.handle_key(key(KeyCode::Enter)),
+        Some(V2Effect::EditDraft { initial: "draft text".into() }),
+        "/edit after a draft hands that draft to the editor"
+    );
+    assert_eq!(app.composer.text(), "", "the edited draft is not left in the composer");
+}
+
+#[test]
+fn editor_cancel_restores_the_draft_for_the_slash_path() {
+    let mut app = V2App::new("minimal");
+    app.composer.set_text("draft text /edit");
+    let effect = app.handle_key(key(KeyCode::Enter));
+    let Some(V2Effect::EditDraft { initial }) = effect else {
+        panic!("the /edit suffix must open the editor");
+    };
+    assert_eq!(app.composer.text(), "", "the effect takes the draft out of the composer");
+    app.finish_editor(&initial, Err("editor failed".into()));
+    assert_eq!(app.composer.text(), "draft text", "cancel restores the draft");
 }

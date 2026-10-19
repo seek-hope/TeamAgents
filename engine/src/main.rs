@@ -17,9 +17,12 @@ usage: teamagents [--cwd DIR] [--state-root PATH] [--session ID] [--model KEY] [
   teamagents exec [--json|--stream-json] [--timeout SEC] [--check CMD] [--accept ID=CMD] [--] \"…\"   one headless input\n\
   teamagents status [--json]                  session checkpoint, model, usage, limits and MCP state\n\
   teamagents history [--id INSTANCE] [--limit N] [--json]  newest 1..1000 stored entries (default 400, Leader)\n\
-  teamagents authority [list] [--json]          the session's grants, with the ids revoke needs\n\
-  teamagents authority grant --subject ID --action A --scope S [--parent G]\n\
+  teamagents authority [list] [--json]          the session's grants and pending capability requests\n\
+  teamagents authority grant --subject ID --action A --scope S [--parent G] [--delegable]\n\
   teamagents authority revoke --grant ID        revoke that grant and everything derived from it\n\
+  teamagents authority requests [--json]        list pending capability approvals\n\
+  teamagents authority approve --request ID     approve one capability request (user only)\n\
+  teamagents authority deny --request ID        deny one capability request (user only)\n\
   teamagents approvals [list] [--json]          the approvals a session is waiting on\n\
   teamagents goals [list] [--json]              the goals the session carries (D-267)\n\
   teamagents goals open --id ID [--attach X]    open the next goal, optionally attached to an instance,\n\
@@ -173,6 +176,8 @@ pub struct Args {
     pub scope: Option<String>,
     pub parent_grant: Option<String>,
     pub grant: Option<String>,
+    pub request: Option<String>,
+    pub delegable: bool,
     pub approval_id: Option<String>,
     pub confirmed: bool,
     /// D-435: `sessions prune --days N` — the archive window, defaulting to `[retention] archived_days`.
@@ -261,6 +266,8 @@ fn parse_args() -> Args {
         scope: None,
         parent_grant: None,
         grant: None,
+        request: None,
+        delegable: false,
         approval_id: None,
         confirmed: false,
         days: None,
@@ -777,6 +784,22 @@ fn parse_args() -> Args {
                 );
                 i += 2;
             }
+            "--request" if args.command.as_deref() == Some("authority") => {
+                if args.request.is_some() {
+                    given_twice("--request");
+                }
+                args.request = Some(
+                    argv.get(i + 1)
+                        .cloned()
+                        .filter(|v| !v.is_empty() && !v.starts_with('-'))
+                        .unwrap_or_else(|| needs_a_value("--request")),
+                );
+                i += 2;
+            }
+            "--delegable" if args.command.as_deref() == Some("authority") => {
+                args.delegable = true;
+                i += 1;
+            }
             // D-248: `daemon --stop` is the stop lever; `daemon` alone starts one in the foreground.
             "--stop" if matches!(args.command.as_deref(), Some("daemon" | "sessions")) => {
                 args.daemon_stop = true;
@@ -1030,6 +1053,8 @@ fn run_authority(args: &Args) -> i32 {
     let verb = args.positional.as_deref().unwrap_or_else(|| {
         if args.grant.is_some() {
             "revoke"
+        } else if args.request.is_some() {
+            "approve"
         } else if args.subject.is_some() || args.action.is_some() || args.scope.is_some() {
             "grant"
         } else {
@@ -1038,13 +1063,25 @@ fn run_authority(args: &Args) -> i32 {
     });
     let command = match verb {
         "list" => {
-            if args.grant.is_some() || args.subject.is_some() || args.action.is_some() || args.scope.is_some() {
+            if args.grant.is_some()
+                || args.subject.is_some()
+                || args.action.is_some()
+                || args.scope.is_some()
+                || args.request.is_some()
+            {
                 eprintln!(
-                    "authority list takes no --grant/--subject/--action/--scope; did you mean `authority grant`?"
+                    "authority list takes no --grant/--subject/--action/--scope/--request; did you mean `authority grant` or `authority requests`?"
                 );
                 return 2;
             }
             AuthorityCommand::List
+        }
+        "requests" => {
+            if args.request.is_some() {
+                eprintln!("authority requests takes no --request; use `authority approve --request ID`");
+                return 2;
+            }
+            AuthorityCommand::Requests
         }
         "grant" => {
             let required = [
@@ -1056,7 +1093,7 @@ fn run_authority(args: &Args) -> i32 {
                 if present.is_none() {
                     eprintln!(
                         "authority grant needs {flag}\n\
-                         usage: teamagents authority grant --subject ID --action A --scope S [--parent G]"
+                         usage: teamagents authority grant --subject ID --action A --scope S [--parent G] [--delegable]"
                     );
                     return 2;
                 }
@@ -1066,6 +1103,7 @@ fn run_authority(args: &Args) -> i32 {
                 action: args.action.clone().unwrap_or_default(),
                 scope: args.scope.clone().unwrap_or_default(),
                 parent: args.parent_grant.clone(),
+                delegable: args.delegable,
             }
         }
         "revoke" => {
@@ -1075,9 +1113,21 @@ fn run_authority(args: &Args) -> i32 {
             };
             AuthorityCommand::Revoke { grant }
         }
+        "approve" | "deny" => {
+            let Some(request) = args.request.clone() else {
+                eprintln!("authority {verb} needs --request ID (see `authority requests`)");
+                return 2;
+            };
+            if verb == "approve" {
+                AuthorityCommand::Approve { request }
+            } else {
+                AuthorityCommand::Deny { request }
+            }
+        }
         other => {
             eprintln!(
                 "authority: unknown command {other:?}; use `teamagents authority [list]`, \
+                 `authority requests`, `authority approve --request ID`, `authority deny --request ID`, \
                  `authority grant --subject ID --action A --scope S` or `authority revoke --grant ID`"
             );
             return 2;
@@ -2684,6 +2734,13 @@ fn which_binary(name: &str) -> Option<PathBuf> {
 }
 
 fn main() {
+    // The updater is a small, self-contained transaction: dispatch it before the
+    // session parser so `update --apply` can run from a detached process with no
+    // session or model configuration. `update --help` has its own text.
+    let argv: Vec<String> = std::env::args().collect();
+    if argv.get(1).map(String::as_str) == Some("update") {
+        std::process::exit(teamagents_engine::update::run_cli(&argv[2..]));
+    }
     let mut args = parse_args();
     if let Err(error) = resolve_session(&mut args) {
         eprintln!("teamagents: {error}");

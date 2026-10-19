@@ -83,6 +83,7 @@ Delegate a task to another instance with a narrow return path: the assignee can 
 | `task_id` | `string` | no | Optional explicit task id; one is generated when omitted. |
 | `description` | `string` | yes | — |
 | `acceptance_refs` | `array` | no | References the result must satisfy. |
+| `capabilities` | `array` | no | Generic capabilities this task needs, e.g. shell@workspace. A live delegable parent grant issues a task-scoped child automatically; otherwise the task waits for the user's approval and is not dispatched. |
 
 ### `spawn`
 
@@ -96,6 +97,7 @@ Create a new instance and atomically register its initial task with the return p
 | `instructions` | `string` | yes | System instructions for the new instance. |
 | `model` | `string` | no | Catalog entry for the new instance (a key such as leader_main, or the model name it declares). Omit to inherit this instance's model; a mixed team comes from naming a different entry. |
 | `task` | `string` | no | Initial task description; registered with its narrow return path when present. |
+| `capabilities` | `array` | no | Generic capabilities the initial task needs, e.g. shell@workspace. Requires task. A live delegable parent grant issues a task-scoped child automatically; otherwise the instance waits in WAITING_CAPABILITY for the user's approval and the task is not dispatched. |
 | `workspace` | `string` | no | Where the instance works. shared (default) uses the project directory; isolated gets a private directory under the session state root; git_worktree gets its own branch and worktree, and falls back to shared (saying why) when the project is not a clean git repository. |
 
 ### `cancel_task`

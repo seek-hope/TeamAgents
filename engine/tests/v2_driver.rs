@@ -132,10 +132,13 @@ impl Root {
             session_db: self.dir.join("session.sqlite"),
             session_id: "s-test".into(),
             instance_id: "i-main".into(),
+            leader_id: "i-main".into(),
             state_root: self.dir.join("state"),
             instances_dir: self.dir.join("state").join("instances"),
             workspace: self.dir.join("ws"),
             permissions: "full_auto".into(),
+            approvals_reviewer: "user".into(),
+            reviewer_model: None,
             sandbox: teamagents_engine::tools::SandboxBackend::bubblewrap(),
             profile: KernelProfile {
                 images: false,
@@ -850,6 +853,39 @@ async fn shell_approval_blocks_then_allows_and_denial_cancels() {
     handle.deny(&asked).await.expect("deny");
     assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
     assert!(!denied_marker.exists(), "a denied command never runs");
+    handle.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn auto_review_allows_one_operation_without_a_user_decision() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("auto-review-allow");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let marker = root.dir.join("ws").join("reviewed.txt");
+    let script = vec![
+        Step::Message(shell_call("c1", &format!("touch {}", marker.display()))),
+        Step::Message(reply(
+            r#"{"outcome":"allow","risk_level":"low","user_authorization":"high","rationale":"within the requested workspace"}"#,
+        )),
+        Step::Message(finish_call("auto-review flow done")),
+    ];
+    let mut config = root.config(ScriptedProvider { script: Mutex::new(script.into()) });
+    config.require_shell_approval = true;
+    config.approvals_reviewer = "auto_review".into();
+    config.permissions = "approved_scope".into();
+    let handle = start(config).await.expect("start");
+    handle.input("touch inside the workspace").await.expect("input");
+    let reviewed = wait_event(&handle, "approval_reviewed", 10_000).await;
+    assert_eq!(reviewed["payload"]["outcome"], json!("allow"));
+    assert_eq!(reviewed["payload"]["review"]["decided_by"], json!("auto_review"));
+    for _ in 0..200 {
+        if marker.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(marker.exists(), "an auto-reviewed command must run");
+    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
     handle.shutdown().await.expect("shutdown");
 }
 

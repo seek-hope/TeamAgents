@@ -23,7 +23,7 @@
 | [安装指南](docs/INSTALL.md) | 下载安装与升级 |
 | [形式化验证](verification/README.md) | TLA+ 规格与 Kani 证明：性质 ↔ 代码 ↔ 验收编号、未证明清单 |
 
-> **首次使用：** [下载安装与升级](docs/INSTALL.md) · [最新发行版](https://github.com/seek-hope/TeamAgents/releases/latest)
+> **首次使用：** [安装指南](docs/INSTALL.md)。当前没有公开发行版。
 
 ## 怎么工作
 
@@ -59,7 +59,7 @@
   原文经 `read_history` 仍可检索，压缩调用计入目标预算。
 - **工具面**：文件读写/搜索（精确匹配编辑、SHA-256 版本校验、原子写入，进程内写锁串行化）、
   会话内持久 shell（`cd`/`export` 跨命令保留）、
-  网页搜索与抓取、MCP（stdio 与 streamable HTTP）、Skills（`~/.agents/skills`）。
+  网页搜索与抓取（DeepSeek Search/Fetch）、MCP（stdio 与 streamable HTTP）、Skills（`~/.agents/skills`）。
 - **用户钩子（`[hooks]`）**：`notify` 把事件（`tool_call`/`team_action`/`run_*`）通知给你自己的程序；
   `pre_tool` 能在任何原生工具执行前拦截（exit 2 拒绝，stderr 作原因），坏钩子只记日志不卡团队。
 - **隔离**：`approved_scope` 下实例 shell 走 `bubblewrap`；缺失时明确报错，不会静默退化成不隔离执行。
@@ -68,34 +68,15 @@
 
 要求：Linux（x86_64）+ `bubblewrap`；模型密钥从环境变量读，不写进配置。
 
-### 安装最新版（推荐）
+### 当前没有公开发行版
 
-> **注意（2026-09-29）：** 最新发行版（`v0.2.0`）就是本文档所描述的产品——由本仓库切出的 v2 版本（D-343）；
-> `python3 review/install_check.py` 会对着已发布的产物重新核对安装路径，[安装指南](docs/INSTALL.md)中说明与之一致。
-
-仓库和 [发行版](https://github.com/seek-hope/TeamAgents/releases/latest) 已公开，无需登录 GitHub，
-也无需 Rust 工具链。安装程序会自动选取最新版本、校验 SHA-256，并将两个程序安装到 `~/.local/bin`：
-
-```bash
-(
-  set -eu
-  installer="$(mktemp)"
-  trap 'rm -f "$installer"' EXIT
-  curl -fsSL https://raw.githubusercontent.com/seek-hope/TeamAgents/main/install.sh -o "$installer"
-  sh "$installer"
-)
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-将 `export PATH="$HOME/.local/bin:$PATH"` 加入 `~/.bashrc` 或 `~/.zshrc`，以后打开终端也能直接运行。
-升级前退出 TeamAgents，再次执行即可；已有配置和会话会保留。
-支持指定版本、自定义安装目录和本地发行包安装，详见 [安装指南](docs/INSTALL.md)。
+所有 GitHub release 和 tag 已于 2026-10-18 删除。在用户明确授权之前不会发布新版本；请从源码构建。
 
 D-451 源码新增显式文本/图片附件（`/attach PATH` 或 `exec --attach PATH`）、工作区路径补全、
 待消费输入的修订和取消（`/queue` 或 `inputs`）、会话浏览器搜索以及完整的本地 Markdown/JSON 导出。
 展示解析在有资源和超时限制的 Rust 辅助进程中运行，失败时保留源码。使用方式见
 [用户指南](docs/USER-GUIDE.md)，确定性本地验证和剩余缺口见
-[成熟度报告](review/maturity-2026-10-11/REPORT.md)。这些源码功能晚于 v0.2.0 标签，尚未发布。
+[成熟度报告](review/maturity-2026-10-11/REPORT.md)。这些源码功能晚于上一公开发行版；当前没有公开发行版。
 
 ### 从源码构建
 
@@ -237,4 +218,4 @@ Enter 切换，方括号翻页，`d` 后按 `y` 确认删除，Esc 取消或返�
 
 开发先运行 `make check`；完整流程见 [开发与维护](docs/DEVELOPMENT.md)，仓库约定见 [AGENTS.md](AGENTS.md)。
 缺陷、审查与评测证据记录在 `review/`，形式化验证证据在 `verification/`。
-打 `v*` tag 会触发 `.github/workflows/release.yml` 自动构建并发布发行包（含 `SHA256SUMS`）。
+打 `v*` tag 只会构建发行包；发布由仓库变量 `TEAMAGENTS_RELEASE_APPROVED` 控制，当前未授权任何 release。

@@ -187,6 +187,13 @@ pub fn doctor(state_root: Option<PathBuf>, overrides: &[String]) -> i32 {
     let mut results = vec![];
     // the core is a library now: report the linked core's own version string
     check(&mut results, "rust core", true, format!("teamagents-core {}", teamagents_core::core_version()));
+    match crate::update::Layout::discover(None, None) {
+        Ok(layout) => {
+            let (ok, text) = crate::update::doctor_row(&layout);
+            check(&mut results, "update", ok, text);
+        }
+        Err(error) => check(&mut results, "update", false, error),
+    }
     let config_path = user_config_path();
     // D-244: doctor reads what a session *started in this directory* would read — the user config plus the
     // repository-local one, under the user's trust gate — and reports the merge's decision in its own row,
@@ -556,9 +563,9 @@ pub fn doctor(state_root: Option<PathBuf>, overrides: &[String]) -> i32 {
                 &mut results,
                 "web tools",
                 false,
-                "none configured: the model is offered neither web_search nor web_fetch. Fetching needs no \
-                 credential ([tools.fetch] with kind = \"web_fetch\"); web_search also wants \
-                 provider/url/api_key_env"
+                "none configured: the model is offered neither web_search nor web_fetch. Both use DeepSeek \
+                 Search/Fetch; declare [tools.web] and/or [tools.fetch] with provider = \"deepseek\" and \
+                 api_key_env = \"DEEPSEEK_API_KEY\""
                     .into(),
             );
         }
@@ -567,12 +574,11 @@ pub fn doctor(state_root: Option<PathBuf>, overrides: &[String]) -> i32 {
                 continue;
             }
             let label = format!("tools.{name}");
-            let provider = binding.provider.as_deref().unwrap_or("anysearch");
-            // D-167: `web_search` needs a credential — DESIGN §7 calls its absence a capability state — and a
+            let provider = binding.provider.as_deref().unwrap_or("deepseek");
+            // D-167/D-456: both web kinds use DeepSeek Search/Fetch and both need the bearer credential. A
             // *required* binding that cannot work refuses the member's start, so that is a FAIL (D-164's rule,
             // applied to the web half). The credential wording comes from the helper the tool call and the boot
-            // use, so the three cannot describe the same binding differently. `web_fetch` is the half that
-            // needs no credential at all.
+            // use, so the three cannot describe the same binding differently.
             let row: RowReporter = if binding.required { check } else { optional_check };
             let lost = if binding.required {
                 "the session cannot start a member until it is fixed (the instance parks)"
@@ -580,21 +586,9 @@ pub fn doctor(state_root: Option<PathBuf>, overrides: &[String]) -> i32 {
                 "a call answers with that capability state and the session still boots"
             };
             let key = binding.api_key_env.as_deref();
-            let (ok, detail) = if binding.kind == "web_fetch" {
-                (
-                    true,
-                    match key {
-                        Some(key) => format!("web_fetch needs no credential (api_key_env {key} is not used)"),
-                        None => "web_fetch needs no credential".to_string(),
-                    },
-                )
-            } else if provider != "anysearch" {
-                (false, format!("web_search provider {provider:?} is not one this build speaks (anysearch), so {lost}"))
-            } else {
-                match crate::tools::web_search_credential(key) {
-                    Ok(_) => (true, format!("web_search via {provider:?}, credential {} is set", key.unwrap_or(""))),
-                    Err(reason) => (false, format!("web_search via {provider:?}: {reason}, so {lost}")),
-                }
+            let (ok, detail) = match crate::tools::web_credential(provider, key) {
+                Ok(_) => (true, format!("{} via {provider:?}, credential {} is set", binding.kind, key.unwrap_or(""))),
+                Err(reason) => (false, format!("{} via {provider:?}: {reason}, so {lost}", binding.kind)),
             };
             row(&mut results, &label, ok, detail);
         }
@@ -1019,6 +1013,12 @@ fn daemon_boot(
     // on where the session lives, or the default entry cannot find the daemon
     let state_root = state_root.map(PathBuf::from).unwrap_or_else(crate::v2_root);
     require_state_root_dir(&state_root)?;
+    let permissions = if full_auto { "full_auto".to_string() } else { crate::config::permission_mode_from_config()? };
+    // D-453: a restart must preserve the arguments this daemon was started with.
+    // The record holds no credentials; only the workspace, model key, mode and
+    // the user's own `-c` overrides.
+    crate::update::write_boot_record(&state_root, &workspace, &model_key, full_auto, overrides, &permissions)
+        .map_err(|error| crate::cli::state_root_uncreatable(&state_root, &std::io::Error::other(error)))?;
     let socket = state_root.join("daemon.sock");
     let catalog_for_factory = catalog.clone();
     // D-168: the members' tool surface follows the config — a web tool is offered only for the kind the catalog
@@ -1050,7 +1050,9 @@ fn daemon_boot(
             // `permission_mode_from_config` reads the user config only). D-75: the
             // config key was parsed, validated and then ignored, so a user who wrote
             // `mode = "full_auto"` silently ran in approved_scope.
-            permissions: if full_auto { "full_auto".into() } else { crate::config::permission_mode_from_config()? },
+            permissions,
+            approvals_reviewer: crate::config::approval_reviewer_from_config()?,
+            reviewer_model: crate::config::reviewer_model_from_config()?,
             sandbox: crate::config::sandbox_from_config()?,
             catalog,
             bindings: default_bindings(),

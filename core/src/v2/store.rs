@@ -87,9 +87,27 @@ CREATE TABLE IF NOT EXISTS grants (
     action TEXT NOT NULL,
     resource_scope TEXT NOT NULL,
     parent_grant_id TEXT,
+    delegable INTEGER NOT NULL DEFAULT 0,
+    task_id TEXT,
     revision INTEGER NOT NULL DEFAULT 0,
     revoked_at REAL
 );
+
+CREATE TABLE IF NOT EXISTS capability_requests (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    requester TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    action TEXT NOT NULL,
+    resource_scope TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    parent_grant_id TEXT,
+    payload_json TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    decided_at REAL
+);
+CREATE INDEX IF NOT EXISTS idx_capability_requests_status ON capability_requests(status, session_id);
 
 CREATE TABLE IF NOT EXISTS envelopes (
     id TEXT PRIMARY KEY,
@@ -439,6 +457,18 @@ fn foreign_tables(conn: &Connection) -> Result<Vec<String>, String> {
 /// single transaction; a version from the future (or from before the first
 /// step) is refused. Each step is self-contained, so a crash can only leave the
 /// database at a version this chain knows how to continue from.
+fn column_present(conn: &Connection, table: &str, column: &str) -> Result<bool, String> {
+    let mut stmt =
+        conn.prepare(&format!("PRAGMA table_info({table})")).map_err(|e| format!("inspect {table} columns: {e}"))?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(1)).map_err(|e| format!("read {table} columns: {e}"))?;
+    for name in rows {
+        if name.map_err(|e| format!("{table} column row: {e}"))? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn migrate(conn: &Connection, from: i64) -> Result<(), String> {
     if from > V2_SCHEMA_VERSION {
         return Err(format!(
@@ -494,6 +524,38 @@ fn migrate(conn: &Connection, from: i64) -> Result<(), String> {
                      );",
                 )
                 .map_err(|e| format!("migrate 4 -> 5: {e}"))?,
+            // 5 -> 6 (D-455): delegable, task-scoped capability grants. The
+            // ALTERs are conditional because the migration tests replay the
+            // chain over a schema whose columns may already exist.
+            5 => {
+                if !column_present(&tx, "grants", "delegable")? {
+                    tx.execute("ALTER TABLE grants ADD COLUMN delegable INTEGER NOT NULL DEFAULT 0", [])
+                        .map_err(|e| format!("migrate 5 -> 6 delegable: {e}"))?;
+                }
+                if !column_present(&tx, "grants", "task_id")? {
+                    tx.execute("ALTER TABLE grants ADD COLUMN task_id TEXT", [])
+                        .map_err(|e| format!("migrate 5 -> 6 task_id: {e}"))?;
+                }
+                tx.execute_batch(
+                    "CREATE TABLE IF NOT EXISTS capability_requests (
+                         id TEXT PRIMARY KEY,
+                         session_id TEXT NOT NULL,
+                         requester TEXT NOT NULL,
+                         subject TEXT NOT NULL,
+                         action TEXT NOT NULL,
+                         resource_scope TEXT NOT NULL,
+                         task_id TEXT NOT NULL,
+                         parent_grant_id TEXT,
+                         payload_json TEXT NOT NULL,
+                         status TEXT NOT NULL,
+                         created_at REAL NOT NULL,
+                         decided_at REAL
+                     );
+                     CREATE INDEX IF NOT EXISTS idx_capability_requests_status
+                         ON capability_requests(status, session_id);",
+                )
+                .map_err(|e| format!("migrate 5 -> 6 requests: {e}"))?;
+            }
             other => return Err(format!("no migration step from v2 schema version {other}")),
         }
         version += 1;

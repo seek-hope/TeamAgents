@@ -60,7 +60,6 @@ KNOWN_UNCALLED = {
     "ModelRequestRecord": "mechanical: DESIGN §4.1 minimal data contract (ModelRequest / Attempt), read through "
                           "SQL",
     "Attempt": "mechanical: DESIGN §4.1 minimal data contract (ModelRequest / Attempt), read through SQL",
-    "Operation": "mechanical: DESIGN §4.1 minimal data contract (the operation row, §6.1), read through SQL",
 }
 
 # name -> why tests/examples/benches may mention it and no product code needs to
@@ -84,6 +83,7 @@ KNOWN_TEST_ONLY = {
 KNOWN_DOC_ONLY = {
     "Goal": "mechanical: DESIGN §4.1 minimal data contract (the goal row, §4.2/§8), read through SQL",
     "Artifact": "mechanical: DESIGN §4.1 minimal data contract (the artifact row, §9.1), read through SQL",
+    "Operation": "mechanical: DESIGN §4.1 minimal data contract (the operation row, §6.1), read through SQL",
     "cancel_turn": "D-63: the parked substrate for interrupt-and-redirect (D-78 kept it with a ponytail note "
                    "on `wait_idle`); the driver's own doc is its only other mention",
 }

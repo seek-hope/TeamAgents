@@ -334,7 +334,8 @@ pub fn collaboration_tool_schemas(actions: &[&str]) -> Vec<Json> {
                             "assignee": {"type": "string", "description": "Instance id that receives the task."},
                             "task_id": {"type": "string", "description": "Optional explicit task id; one is generated when omitted."},
                             "description": {"type": "string"},
-                            "acceptance_refs": {"type": "array", "items": {"type": "string"}, "description": "References the result must satisfy."}
+                            "acceptance_refs": {"type": "array", "items": {"type": "string"}, "description": "References the result must satisfy."},
+                            "capabilities": {"type": "array", "items": {"type": "string"}, "description": "Generic capabilities this task needs, e.g. shell@workspace. A live delegable parent grant issues a task-scoped child automatically; otherwise the task waits for the user's approval and is not dispatched."}
                         },
                         "required": ["assignee", "description"]
                     }
@@ -352,6 +353,7 @@ pub fn collaboration_tool_schemas(actions: &[&str]) -> Vec<Json> {
                             "instructions": {"type": "string", "description": "System instructions for the new instance."},
                             "model": {"type": "string", "description": "Catalog entry for the new instance (a key such as leader_main, or the model name it declares). Omit to inherit this instance's model; a mixed team comes from naming a different entry."},
                             "task": {"type": "string", "description": "Initial task description; registered with its narrow return path when present."},
+                            "capabilities": {"type": "array", "items": {"type": "string"}, "description": "Generic capabilities the initial task needs, e.g. shell@workspace. Requires task. A live delegable parent grant issues a task-scoped child automatically; otherwise the instance waits in WAITING_CAPABILITY for the user's approval and the task is not dispatched."},
                             "workspace": {"type": "string", "enum": ["shared", "isolated", "git_worktree"],
                                 "description": "Where the instance works. shared (default) uses the project directory; isolated gets a private directory under the session state root; git_worktree gets its own branch and worktree, and falls back to shared (saying why) when the project is not a clean git repository."}
                         },

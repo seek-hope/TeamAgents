@@ -994,20 +994,17 @@ pub(crate) fn web_tools(
     }
     let mut tools = WebTools::default();
     for (name, binding) in candidates {
-        // a required service that cannot load fails the member at load time
-        // (ToolServiceUnavailable)
-        if binding.required && binding.kind == "web_search" {
-            let provider = binding.provider.clone().unwrap_or_else(|| "anysearch".into());
-            if provider != "anysearch" {
-                return Err(format!(
-                    "required tool service {name:?} is unavailable: unsupported web_search provider {provider:?}"
-                ));
-            }
-            // D-167, the other half of DESIGN §7: `web_search` needs a credential, so a *required* one whose
-            // credential is missing fails the member's start — the same contract an MCP service with an unset
-            // secret has (`bound.rs`) — instead of being bound into a member whose every search can only answer
-            // with the capability state. D-76's note claimed this already; nothing implemented it.
-            if let Err(reason) = web_search_credential(binding.api_key_env.as_deref()) {
+        // A required service that cannot load fails the member at load time
+        // (ToolServiceUnavailable). D-456: both web kinds use the DeepSeek
+        // Search/Fetch APIs, and both authenticate with the same bearer key.
+        let provider = binding.provider.as_deref().unwrap_or("deepseek");
+        if provider != "deepseek" {
+            return Err(format!(
+                "tool service {name:?}: unsupported web provider {provider:?} (this build serves deepseek)"
+            ));
+        }
+        if binding.required {
+            if let Err(reason) = web_credential(provider, binding.api_key_env.as_deref()) {
                 return Err(format!("required tool service {name:?} is unavailable: {reason}"));
             }
         }
@@ -1208,9 +1205,9 @@ pub(crate) fn member_executor_with_control(
                 .search
                 .clone()
                 .ok_or_else(|| format!("tool {tool} is not bound to this member"))?;
-            let provider = binding.provider.clone().unwrap_or_else(|| "anysearch".into());
-            if provider != "anysearch" {
-                return Err(format!("unsupported web_search provider {provider:?}"));
+            let provider = binding.provider.as_deref().unwrap_or("deepseek");
+            if provider != "deepseek" {
+                return Err(format!("unsupported web provider {provider:?} (this build serves deepseek)"));
             }
             let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
             let max = args.get("max_results").and_then(|v| v.as_i64()).unwrap_or(5);
@@ -1225,10 +1222,14 @@ pub(crate) fn member_executor_with_control(
                 .fetch
                 .clone()
                 .ok_or_else(|| format!("tool {tool} is not bound to this member"))?;
+            let provider = binding.provider.as_deref().unwrap_or("deepseek");
+            if provider != "deepseek" {
+                return Err(format!("unsupported web provider {provider:?} (this build serves deepseek)"));
+            }
             let url = args.get("url").and_then(|v| v.as_str()).unwrap_or("");
             let max = args.get("max_bytes").and_then(|v| v.as_u64()).unwrap_or(2_000_000) as usize;
             let allow_private = binding.env.get("allow_private").map(|v| v == "1").unwrap_or(false);
-            web_fetch(url, max, allow_private)
+            web_fetch(url, max, allow_private, binding.url.as_deref(), binding.api_key_env.as_deref())
         }
         "skill" => {
             if !bindings.iter().any(|b| b == "skills") {
@@ -2637,12 +2638,16 @@ pub fn is_private_addr(addr: std::net::IpAddr) -> bool {
     }
 }
 
-/// The bearer token a `web_search` binding authenticates with, or the reason it has none (D-167).
+/// The bearer token a web binding authenticates with, or the reason it has none (D-167).
 ///
 /// One wording for the three consumers — the tool call, the member's start (`web_tools`) and `doctor` — so the
 /// same binding cannot be described differently in a receipt, a park reason and a doctor row. A variable that
 /// is *set but empty* counts as absent, the way `api_key_env` does in `config::missing_key_envs`.
-pub(crate) fn web_search_credential(api_key_env: Option<&str>) -> Result<String, String> {
+/// D-456: the only web provider this build serves is DeepSeek Search/Fetch.
+pub(crate) fn web_credential(provider: &str, api_key_env: Option<&str>) -> Result<String, String> {
+    if provider != "deepseek" {
+        return Err(format!("unsupported web provider {provider:?} (this build serves deepseek)"));
+    }
     match api_key_env.map(str::trim).filter(|env| !env.is_empty()) {
         Some(env) => std::env::var(env)
             .ok()
@@ -2652,13 +2657,19 @@ pub(crate) fn web_search_credential(api_key_env: Option<&str>) -> Result<String,
     }
 }
 
-/// The capability state a `web_search` call answers with when it has no credential: what to configure, and
-/// what the other half of the same section needs instead. Never an anonymous request (D-167).
+/// The capability state a `web_search` call answers with when it has no credential: what to configure.
+/// Never an anonymous request (D-167).
 fn web_search_capability(reason: &str) -> String {
-    format!("web_search is unavailable: {reason}; web_fetch needs no credential")
+    format!(
+        "web_search is unavailable: {reason}; configure provider = \"deepseek\" and api_key_env = \
+         \"DEEPSEEK_API_KEY\""
+    )
 }
 
-/// AnySearch provider: POST {query, max_results}.
+const DEEPSEEK_SEARCH_URL: &str = "https://api.deepseek.com/v1/tools/search";
+const DEEPSEEK_FETCH_URL: &str = "https://api.deepseek.com/v1/tools/fetch";
+
+/// DeepSeek Search: POST {query, count, need_content}.
 pub fn web_search(
     query: &str,
     max_results: i64,
@@ -2666,18 +2677,16 @@ pub fn web_search(
     api_key_env: Option<&str>,
     include_content: bool,
 ) -> Result<Json, String> {
-    let url = url.unwrap_or("https://api.anysearch.com/v1/search");
+    let url = url.unwrap_or(DEEPSEEK_SEARCH_URL);
     // D-167: DESIGN §7 — "a missing web-search credential … is reported as a capability state, and no
-    // executable binding is invented". Before this the request went out anyway, without an `Authorization`
-    // header, so the model saw the provider's own 401 instead of a sentence naming what to configure (and an
-    // unauthenticated request left the host for a third party). The call never leaves without a credential.
-    let key = web_search_credential(api_key_env).map_err(|reason| web_search_capability(&reason))?;
-    let count = max_results.clamp(1, 20);
+    // executable binding is invented". The call never leaves without a credential.
+    let key = web_credential("deepseek", api_key_env).map_err(|reason| web_search_capability(&reason))?;
+    let count = max_results.clamp(1, 50);
     let mut request =
         ureq::post(url).timeout(std::time::Duration::from_secs(30)).set("content-type", "application/json");
     request = request.set("authorization", &format!("Bearer {key}"));
     let response = request
-        .send_string(&json!({"query": query, "max_results": count}).to_string())
+        .send_string(&json!({"query": query, "count": count, "need_content": include_content}).to_string())
         .map_err(|e| format!("web_search failed: {e}"))?;
     let payload: Json = response.into_json().map_err(|e| format!("web_search bad json: {e}"))?;
     Ok(parse_search_response(&payload, query, count, include_content))
@@ -2685,8 +2694,7 @@ pub fn web_search(
 
 fn parse_search_response(payload: &Json, query: &str, count: i64, include_content: bool) -> Json {
     let results: Vec<Json> = payload
-        .get("data")
-        .and_then(|d| d.get("results"))
+        .get("results")
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default()
@@ -2697,6 +2705,11 @@ fn parse_search_response(payload: &Json, query: &str, count: i64, include_conten
                 "title": item.get("title").and_then(|v| v.as_str()).unwrap_or(""),
                 "url": item.get("url").and_then(|v| v.as_str()).unwrap_or(""),
                 "snippet": item.get("snippet").and_then(|v| v.as_str()).unwrap_or(""),
+                "summary": item.get("summary").and_then(|v| v.as_str()).unwrap_or(""),
+                "site_name": item.get("site_name").cloned().unwrap_or(Json::Null),
+                "date": item.get("date").cloned().unwrap_or(Json::Null),
+                "authority": item.get("authority").cloned().unwrap_or(Json::Null),
+                "rerank_score": item.get("rerank_score").cloned().unwrap_or(Json::Null),
                 "fetched_at": iso_now(),
             });
             if include_content {
@@ -2707,140 +2720,40 @@ fn parse_search_response(payload: &Json, query: &str, count: i64, include_conten
             entry
         })
         .collect();
-    json!({"query": query, "provider": "anysearch", "results": results})
+    json!({"query": query, "provider": "deepseek", "results": results})
 }
 
-type UrlGuard = std::sync::Arc<dyn Fn(&str) -> Result<String, String> + Send + Sync>;
-
-/// GET with redirects followed manually so every hop passes the SSRF guard
-/// (ureq's built-in following would only guard the first URL, P1-2). The
-/// custom resolver vets DNS answers through the same guard and hands only the
-/// passing addresses to the connector: a rebind between guard and connect
-/// cannot reroute the request, and each redirect hop re-resolves through it.
-fn http_get_guarded(url: &str, guard: &UrlGuard) -> Result<ureq::Response, String> {
-    let resolver = {
-        let guard = guard.clone();
-        move |netloc: &str| -> std::io::Result<Vec<std::net::SocketAddr>> {
-            use std::net::ToSocketAddrs;
-            let host = match netloc.strip_prefix('[') {
-                Some(rest) => rest.split(']').next().unwrap_or(""),
-                None => netloc.rsplit_once(':').map(|(h, _)| h).unwrap_or(netloc),
-            };
-            let addrs: Vec<std::net::SocketAddr> = netloc.to_socket_addrs()?.collect();
-            // a literal was already vetted by the guard when it approved the URL
-            if host.parse::<std::net::IpAddr>().is_ok() {
-                return Ok(addrs);
-            }
-            let vetted: Vec<std::net::SocketAddr> = addrs
-                .into_iter()
-                .filter(|addr| {
-                    let check = match addr.ip() {
-                        std::net::IpAddr::V4(ip) => format!("http://{ip}"),
-                        std::net::IpAddr::V6(ip) => format!("http://[{ip}]"),
-                    };
-                    guard(&check).is_ok()
-                })
-                .collect();
-            if vetted.is_empty() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::PermissionDenied,
-                    format!("refusing private address for {host}"),
-                ));
-            }
-            Ok(vetted)
-        }
-    };
-    let agent = ureq::AgentBuilder::new().redirects(0).resolver(resolver).build();
-    let mut current = guard(url)?;
-    for _ in 0..10 {
-        let response = agent
-            .get(&current)
-            .timeout(std::time::Duration::from_secs(30))
-            .call()
-            .map_err(|e| format!("web_fetch failed: {e}"))?;
-        if !(300..400).contains(&response.status()) {
-            return Ok(response);
-        }
-        let location = response.header("location").ok_or("web_fetch: redirect without location")?;
-        let next = url::Url::parse(&current)
-            .and_then(|base| base.join(location))
-            .map_err(|e| format!("web_fetch: bad redirect target {location:?}: {e}"))?;
-        current = guard(next.as_str())?;
+/// DeepSeek Fetch: POST {url}; the API returns `{title, content}` with content already as Markdown.
+/// The local guard still rejects private literals/addresses before anything is sent to the API.
+pub fn web_fetch(
+    url: &str,
+    max_bytes: usize,
+    allow_private: bool,
+    endpoint: Option<&str>,
+    api_key_env: Option<&str>,
+) -> Result<Json, String> {
+    if !allow_private {
+        guard_url(url)?;
     }
-    Err("web_fetch: too many redirects".into())
-}
-
-/// Guarded GET, title + readable text body.
-pub fn web_fetch(url: &str, max_bytes: usize, allow_private: bool) -> Result<Json, String> {
-    let guard: UrlGuard =
-        std::sync::Arc::new(move |u: &str| if allow_private { Ok(u.to_string()) } else { guard_url(u) });
-    let response = http_get_guarded(url, &guard)?;
-    let content_type = response.header("content-type").unwrap_or("").to_string();
-    let final_url = response.get_url().to_string();
-    let body = response.into_string().map_err(|e| format!("web_fetch failed: {e}"))?;
-    if !content_type.contains("html") && !content_type.contains("text/") {
-        return Err(format!("unsupported content type {content_type:?} for {url:?}"));
-    }
-    let truncated_by_bytes = body.len() > max_bytes;
-    let body: String = body.chars().take(max_bytes).collect();
-    let (title, text) = strip_html(&body);
-    let capped: String = text.chars().take(200_000).collect();
+    let endpoint = endpoint.unwrap_or(DEEPSEEK_FETCH_URL);
+    let key = web_credential("deepseek", api_key_env)?;
+    let mut request =
+        ureq::post(endpoint).timeout(std::time::Duration::from_secs(30)).set("content-type", "application/json");
+    request = request.set("authorization", &format!("Bearer {key}"));
+    let response =
+        request.send_string(&json!({"url": url}).to_string()).map_err(|e| format!("web_fetch failed: {e}"))?;
+    let payload: Json = response.into_json().map_err(|e| format!("web_fetch bad json: {e}"))?;
+    let title = payload.get("title").and_then(|v| v.as_str()).unwrap_or("");
+    let content = payload.get("content").and_then(|v| v.as_str()).unwrap_or("");
+    let truncated = content.len() > max_bytes;
+    let content: String = content.chars().take(max_bytes).collect();
     Ok(json!({
-        "title": if title.is_empty() { url.to_string() } else { title },
-        "url": final_url,
+        "title": if title.is_empty() { url.to_string() } else { title.to_string() },
+        "url": url,
         "fetched_at": iso_now(),
-        "content": capped,
-        "truncated": truncated_by_bytes || text.chars().count() > 200_000,
+        "content": content,
+        "truncated": truncated,
     }))
-}
-
-/// Minimal HTML → (title, visible text), skipping script/style/noscript.
-fn strip_html(html: &str) -> (String, String) {
-    let mut out = String::new();
-    let mut rest = html;
-    // Earliest skipped-element opener, not just the first match found.
-    while let Some((start, opener)) = ["<script", "<style", "<noscript"]
-        .iter()
-        .filter_map(|opener| rest.find(opener).map(|index| (index, *opener)))
-        .min_by_key(|(index, _)| *index)
-    {
-        out.push_str(&rest[..start]);
-        let close = format!("</{}>", &opener[1..]);
-        match rest[start..].find(&close) {
-            Some(end) => rest = &rest[start + end + close.len()..],
-            None => break,
-        }
-    }
-    out.push_str(rest);
-    let mut text = String::new();
-    let mut title = String::new();
-    let mut in_tag = false;
-    let mut in_title = false;
-    let mut tag = String::new();
-    for ch in out.chars() {
-        match ch {
-            '<' => {
-                in_tag = true;
-                tag.clear();
-                if !in_title {
-                    in_title = false;
-                }
-            }
-            '>' => {
-                in_tag = false;
-                if tag.trim().eq_ignore_ascii_case("title") {
-                    in_title = true;
-                } else if tag.trim().eq_ignore_ascii_case("/title") {
-                    in_title = false;
-                }
-                text.push(' ');
-            }
-            c if in_tag => tag.push(c),
-            c if in_title => title.push(c),
-            c => text.push(c),
-        }
-    }
-    (title.split_whitespace().collect::<Vec<_>>().join(" "), text.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
 fn iso_now() -> String {
@@ -3647,75 +3560,25 @@ mod tests {
     }
 
     #[test]
-    fn web_fetch_guards_every_redirect_hop() {
-        // P1-2: a redirect to a target the guard refuses must stop the fetch
-        let second =
-            serve_once("HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: 6\r\n\r\nsecret".into());
-        let first = serve_once(format!("HTTP/1.1 302 Found\r\nlocation: {second}\r\ncontent-length: 0\r\n\r\n"));
-        let allowed = first.clone();
-        let guard: UrlGuard = std::sync::Arc::new(move |u: &str| {
-            if u == allowed {
-                Ok(u.to_string())
-            } else {
-                Err(format!("private address refused: {u}"))
-            }
-        });
-        let err = http_get_guarded(&first, &guard).unwrap_err();
-        assert!(err.contains("private address"), "{err}");
-    }
+    fn deepseek_fetch_posts_the_url_and_returns_markdown() {
+        let body = r##"{"title":"Example","content":"# Example\n\nBody"}"##;
+        let endpoint = serve_once(format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+            body.len()
+        ));
+        let _env = crate::env_lock();
+        std::env::set_var("TA_DEEPSEEK_FETCH_KEY", "test-key");
+        let result = web_fetch("https://example.com", 1_000_000, false, Some(&endpoint), Some("TA_DEEPSEEK_FETCH_KEY"))
+            .expect("the DeepSeek fetch response is parsed");
+        std::env::remove_var("TA_DEEPSEEK_FETCH_KEY");
+        assert_eq!(result["title"], "Example");
+        assert_eq!(result["content"], "# Example\n\nBody");
+        assert_eq!(result["url"], "https://example.com");
 
-    #[test]
-    fn resolver_refuses_dns_answers_the_guard_rejects() {
-        // DNS-rebinding TOCTOU: the name-based guard accepts "localhost", but
-        // its loopback answer must not reach the connector once re-resolved
-        let guard: UrlGuard = std::sync::Arc::new(|u: &str| {
-            if u.contains("localhost") {
-                Ok(u.to_string())
-            } else {
-                Err(format!("private address refused: {u}"))
-            }
-        });
-        let err = http_get_guarded("http://localhost:1/", &guard).unwrap_err();
+        // the local guard still refuses a private target before any request is sent
+        let err = web_fetch("http://127.0.0.1:9/", 1_000_000, false, Some(&endpoint), Some("TA_DEEPSEEK_FETCH_KEY"))
+            .unwrap_err();
         assert!(err.contains("refusing private address"), "{err}");
-    }
-
-    #[test]
-    fn resolver_connects_to_the_vetted_answer() {
-        // a name (not a literal) is resolved, vetted, and the vetted address
-        // is the one dialed
-        let server = serve_once("HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: 2\r\n\r\nhi".into());
-        let url = server.replace("127.0.0.1", "localhost");
-        let guard: UrlGuard = std::sync::Arc::new(|u: &str| Ok(u.to_string()));
-        let response = http_get_guarded(&url, &guard).unwrap();
-        assert_eq!(response.status(), 200);
-    }
-
-    #[test]
-    fn web_fetch_follows_guarded_redirect_chain() {
-        // both hops pass the guard -> the final hop's body and URL are returned
-        let second = serve_once("HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: 5\r\n\r\nhello".into());
-        let first = serve_once(format!("HTTP/1.1 302 Found\r\nlocation: {second}\r\ncontent-length: 0\r\n\r\n"));
-        let result = web_fetch(&first, 1_000_000, true).expect("allow_private serves the local chain");
-        assert_eq!(result["content"], json!("hello"));
-        assert_eq!(result["url"], json!(second));
-    }
-
-    #[test]
-    fn web_fetch_stops_after_ten_redirects() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("http://{}/loop", listener.local_addr().unwrap());
-        let location = url.clone();
-        std::thread::spawn(move || {
-            while let Ok((mut stream, _)) = listener.accept() {
-                let mut buf = [0u8; 4096];
-                let _ = stream.read(&mut buf);
-                let _ = stream.write_all(
-                    format!("HTTP/1.1 302 Found\r\nlocation: {location}\r\ncontent-length: 0\r\n\r\n").as_bytes(),
-                );
-            }
-        });
-        let err = web_fetch(&url, 1_000_000, true).unwrap_err();
-        assert!(err.contains("too many redirects"), "{err}");
     }
 
     #[test]
@@ -4154,20 +4017,15 @@ mod tests {
 
     #[test]
     fn web_shapes_are_stable_and_bindings_are_required() {
-        let payload = json!({"code": 0, "data": {"results": [
-            {"title": "T", "url": "https://x", "snippet": "S", "content": "BODY"},
-        ]}});
+        let payload = json!({"results": [
+            {"title": "T", "url": "https://x", "snippet": "S", "summary": "L", "content": "BODY"},
+        ]});
         let parsed = parse_search_response(&payload, "q", 5, false);
-        assert_eq!(parsed["provider"], "anysearch");
+        assert_eq!(parsed["provider"], "deepseek");
         assert_eq!(parsed["results"][0]["title"], "T");
         assert!(parsed["results"][0].get("content").is_none());
         assert_eq!(parse_search_response(&payload, "q", 5, true)["results"][0]["content"], "BODY");
 
-        let (title, text) = strip_html(
-            "<html><head><title>Hi</title><style>x{}</style></head><body><p>Hello  world</p><script>evil()</script></body></html>",
-        );
-        assert_eq!(title, "Hi");
-        assert_eq!(text, "Hello world");
         assert_eq!(iso8601(0), "1970-01-01T00:00:00Z");
         assert_eq!(iso8601(1_700_000_000), "2023-11-14T22:13:20Z");
 
@@ -4189,22 +4047,6 @@ mod tests {
 
     // -- P1-2 / P2-6 regression tests (review 2026-09-14) --
 
-    fn tiny_server(reply: String) -> String {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let base = format!("http://{}", listener.local_addr().unwrap());
-        std::thread::spawn(move || {
-            while let Ok((mut conn, _)) = listener.accept() {
-                use std::io::{Read, Write};
-                let mut buf = [0u8; 2048];
-                let _ = conn.read(&mut buf);
-                if conn.write_all(reply.as_bytes()).is_err() {
-                    return;
-                }
-            }
-        });
-        base
-    }
-
     /// D-167: DESIGN §7 — "a missing web-search credential … is reported as a capability state, and no
     /// executable binding is invented". Measured before this test existed: with `api_key_env` naming an unset
     /// variable the request went out anyway, with **no `Authorization` header**, so the model saw the
@@ -4222,7 +4064,7 @@ mod tests {
                 let mut buf = [0u8; 4096];
                 let read = conn.read(&mut buf).unwrap_or(0);
                 record.lock().unwrap().push(String::from_utf8_lossy(&buf[..read]).into_owned());
-                let body = r#"{"data":{"results":[]}}"#;
+                let body = r#"{"results":[]}"#;
                 let _ = conn.write_all(
                     format!(
                         "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
@@ -4236,7 +4078,7 @@ mod tests {
         // declared but unset: the capability names the variable, and no request is sent
         let error = web_search("q", 5, Some(&base), Some("TA_WEB_SEARCH_DEFINITELY_UNSET"), false).unwrap_err();
         assert!(error.contains("TA_WEB_SEARCH_DEFINITELY_UNSET"), "the message names the variable: {error}");
-        assert!(error.contains("web_fetch needs no credential"), "and the other half of §7: {error}");
+        assert!(error.contains("configure provider"), "the capability names the DeepSeek configuration: {error}");
         // nothing configured at all: search needs one (`web_fetch` is the half that does not)
         let error = web_search("q", 5, Some(&base), None, false).unwrap_err();
         assert!(error.contains("no `api_key_env` is configured"), "the message says what to configure: {error}");
@@ -4270,7 +4112,7 @@ mod tests {
             catalog.tools.insert(
                 "search".into(),
                 serde_json::from_value(json!({
-                    "kind": "web_search", "provider": "anysearch",
+                    "kind": "web_search", "provider": "deepseek",
                     "api_key_env": "TA_WEB_REQUIRED_DEFINITELY_UNSET", "required": required
                 }))
                 .unwrap(),
@@ -4285,38 +4127,6 @@ mod tests {
         assert!(error.contains("TA_WEB_REQUIRED_DEFINITELY_UNSET"), "the reason names the variable: {error}");
         let optional = web_tools(&binding(false), &["web".to_string()]).expect("an optional one only loses it");
         assert!(optional.search.is_some(), "the binding itself is not dropped: it answers with the state");
-    }
-
-    #[test]
-    fn redirect_chain_is_guarded_at_every_hop() {
-        let hop_b = tiny_server("HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: 2\r\n\r\nhi".into());
-        let hop_a = tiny_server(format!("HTTP/1.1 302 Found\r\nlocation: {hop_b}/secret\r\ncontent-length: 0\r\n\r\n"));
-        let hop_blocked =
-            tiny_server("HTTP/1.1 302 Found\r\nlocation: http://blocked.invalid/\r\ncontent-length: 0\r\n\r\n".into());
-
-        // happy path: an allowed redirect is followed to its 200
-        let (a, b) = (hop_a.clone(), hop_b.clone());
-        let allow_local: UrlGuard = std::sync::Arc::new(move |u: &str| {
-            if u.starts_with(&a) || u.starts_with(&b) {
-                Ok(u.to_string())
-            } else {
-                Err(format!("blocked {u}"))
-            }
-        });
-        let response = http_get_guarded(&format!("{hop_a}/x"), &allow_local).unwrap();
-        assert_eq!(response.status(), 200);
-
-        // the guard must also run on the redirect target, not just hop one
-        let blocked_base = hop_blocked.clone();
-        let allow_first_only: UrlGuard = std::sync::Arc::new(move |u: &str| {
-            if u.starts_with(&blocked_base) {
-                Ok(u.to_string())
-            } else {
-                Err(format!("blocked {u}"))
-            }
-        });
-        let err = http_get_guarded(&format!("{hop_blocked}/x"), &allow_first_only).unwrap_err();
-        assert!(err.contains("blocked"), "redirect target escaped the guard: {err}");
     }
 
     #[cfg(unix)]

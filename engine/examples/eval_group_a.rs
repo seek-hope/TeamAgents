@@ -92,12 +92,12 @@ fn main() {
         let mut tools: HashMap<String, ToolBinding> = HashMap::new();
         let search = ToolBinding {
             kind: "web_search".into(),
-            provider: Some("anysearch".into()),
-            url: Some("https://api.anysearch.com/v1/search".into()),
+            provider: Some("deepseek".into()),
+            url: Some("https://api.deepseek.com/v1/tools/search".into()),
             api_key_env: Some("ANYSEARCH_API_KEY".into()),
             ..Default::default()
         };
-        let fetch = ToolBinding { kind: "web_fetch".into(), provider: Some("anysearch".into()), ..Default::default() };
+        let fetch = ToolBinding { kind: "web_fetch".into(), provider: Some("deepseek".into()), ..Default::default() };
         tools.insert("web".into(), search);
         tools.insert("fetch".into(), fetch);
         catalog.tools = tools;

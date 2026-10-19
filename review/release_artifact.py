@@ -11,7 +11,8 @@ is built on it), so whatever the newest tag published is not the product the doc
 
 The fact is computed from the tags, and the documents have to agree with it:
 
-* while no release tag carries the layout, each statement below must be **present**;
+* while no release tag exists at all, each document must say there is **no public release** (D-457);
+* while a release tag exists but does not carry the layout, each statement below must be **present**;
 * publishing a v2 release flips it — the newest tag then carries the layout, so each statement must be
   **absent** — and whoever cuts that release meets a failing audit until the statements and this list are
   rewritten together. That is the point: one fact with several statements, not several opinions (the shape
@@ -51,6 +52,14 @@ STATEMENTS = [
     ("README.zh-CN.md", "v0.1.2", "the mirrored install note (a version token: code here is English only)"),
 ]
 
+# D-457: no tag at all is a third state, and the correct statement is that no public release exists.
+NO_RELEASE_STATEMENTS = [
+    ("docs/INSTALL.md", "no public release", "§1's note"),
+    ("docs/ACCEPTANCE.md", "no public release", "the known-gap entry"),
+    ("README.md", "no public release", "the install section"),
+    ("README.zh-CN.md", "GitHub release", "the mirrored install note (an English token: code here is English only)"),
+]
+
 
 def git(*args: str) -> tuple[int, str]:
     """`(exit code, stdout)` for a git command in this repository."""
@@ -88,6 +97,15 @@ def check(released: bool, documents: dict) -> list:
     return out
 
 
+def check_no_release(documents: dict) -> list:
+    """Findings: while no release exists, every document must say so."""
+    out = []
+    for path, phrase, where in NO_RELEASE_STATEMENTS:
+        if normalize(phrase) not in normalize(documents[path]):
+            out.append(f"{path}: the statement that no public release exists is missing — {where}")
+    return out
+
+
 def main(argv) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tag", help="the release tag to read instead of the newest (the control)")
@@ -103,12 +121,13 @@ def main(argv) -> int:
     documents = {path: pathlib.Path(overrides.get(path, REPO / path)).read_text(errors="replace")
                  for path, _, _ in STATEMENTS}
     if not tag:
-        print("note: this clone carries no release tag, so whether the published artifact is this product "
-              "cannot be computed; the statements below are read as the stale case")
-    state = "is" if released else "is not"
-    print(f"the newest release tag `{tag or '(none)'}` {state} built on {args.layout}: the published artifact "
-          f"{'is' if released else 'is not'} the product the documents describe")
-    findings = check(released, documents)
+        print("no release tag exists: no public release is published (D-457)")
+        findings = check_no_release(documents)
+    else:
+        state = "is" if released else "is not"
+        print(f"the newest release tag `{tag}` {state} built on {args.layout}: the published artifact "
+              f"{'is' if released else 'is not'} the product the documents describe")
+        findings = check(released, documents)
     crate_versions = {}
     for crate in ("engine", "core", "tui"):
         manifest = REPO / crate / "Cargo.toml"

@@ -10,6 +10,7 @@ use crate::jobs::{client, JobSpec, Journal};
 use crate::providers::{Cancel, ErrorClass, Provider, ProviderEvent};
 use crate::reference::readback_receipt;
 use crate::tools::{shell_command_spec, ShellMode, V2Toolkit};
+use crate::v2::reviewer::{self, Verdict};
 use crate::v2::storage::Storage;
 use rusqlite::OptionalExtension;
 use serde_json::{json, Value as Json};
@@ -141,6 +142,10 @@ pub struct DriverConfig<P> {
     pub session_db: PathBuf,
     pub session_id: String,
     pub instance_id: String,
+    /// The session's Leader id: the one instance the user talks to. A
+    /// self-update request is offered only there, and its follow-up returns to
+    /// that same identity after the restart.
+    pub leader_id: String,
     /// Jobs, artifacts and the coordinator lock live here (one lock per root, §6.1).
     pub state_root: PathBuf,
     /// Per-instance directories (`<session root>/instances`, §5.1): a spawn
@@ -149,6 +154,10 @@ pub struct DriverConfig<P> {
     pub workspace: PathBuf,
     /// Trusted session permission mode ("approved_scope" | "full_auto"), D-41.
     pub permissions: String,
+    /// Operation approvals are decided by the user or by the reviewer.
+    pub approvals_reviewer: String,
+    /// Optional model key for the reviewer; the member's model is the fallback.
+    pub reviewer_model: Option<String>,
     /// The sandbox `approved_scope` runs commands in (D-369): bubblewrap or docker, from the user's own config.
     pub sandbox: crate::tools::SandboxBackend,
     pub profile: KernelProfile,
@@ -1293,6 +1302,13 @@ impl<P: Provider> Driver<P> {
             profile.tools.retain(|tool| tool["function"]["name"] != json!("shell"));
         }
         profile.tools.extend(teamagents_core::kernel::collaboration_tool_schemas(&actions));
+        // D-453: the self-update request is a Leader-only, user-approved
+        // capability. Offering it to a worker would let delegated work ask for
+        // the installation to be replaced; the policy gate and the identity
+        // check here are the same rule, stated where the surface is built.
+        if self.config.instance_id == self.config.leader_id && self.config.catalog.update.agent_requests == "approve" {
+            profile.tools.push(crate::update::request_tool_schema());
+        }
         // D-392: the image tool follows the declared capability, not the build. A model without it would only ever
         // receive the placeholder, and leaving it out of the always-offered set is also what keeps the pinned
         // evaluation surface (D-182) unchanged for a profile that declares no image support.
@@ -1940,6 +1956,93 @@ that delegated it learns the outcome only from a settlement.";
         Ok(artifact_id)
     }
 
+    /// D-458: the recent user/instruction facts the reviewer is allowed to
+    /// see. Bounded here as well as in the prompt: an approval is not a
+    /// context-export path.
+    async fn review_context(&self) -> Result<String, String> {
+        let instance = self.config.instance_id.clone();
+        let rows: Vec<(String, Option<String>)> = self
+            .storage
+            .call(move |control| {
+                let mut stmt = control
+                    .connection()
+                    .prepare(
+                        "SELECT kind, message_json FROM context_entries
+                         WHERE instance_id = ?1 AND kind IN ('user', 'instructions')
+                         ORDER BY idx DESC LIMIT 8",
+                    )
+                    .map_err(|e| format!("review context prepare: {e}"))?;
+                let rows = stmt
+                    .query_map([&instance], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)))
+                    .map_err(|e| format!("review context query: {e}"))?;
+                rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("review context collect: {e}"))
+            })
+            .await??;
+        let mut out = String::new();
+        for (kind, payload) in rows.into_iter().rev() {
+            let message: Json =
+                payload.as_deref().and_then(|text| serde_json::from_str(text).ok()).unwrap_or(Json::Null);
+            let content = message["content"].as_str().unwrap_or("");
+            if content.is_empty() {
+                continue;
+            }
+            out.push_str(&format!("[{kind}] {content}\n"));
+        }
+        Ok(out)
+    }
+
+    /// D-458: review one parked operation. `Ok(true)` means the reviewer
+    /// allowed it (the next driver step re-dispatches); `Ok(false)` means it
+    /// denied it (the control plane cancelled the operation). An error leaves
+    /// the approval pending for the user; it never becomes an implicit allow.
+    async fn review_operation(&self, operation_id: &str, intent: &Json, approval_id: &str) -> Result<bool, String> {
+        let (model, reviewer_provider) = match &self.config.reviewer_model {
+            Some(key) => {
+                let (_, entry) = crate::providers::resolve_model(&self.config.catalog, key)
+                    .ok_or_else(|| format!("reviewer model {key:?} is not in the catalog"))?;
+                let provider = crate::providers::build_for_model(&self.config.catalog, key)?;
+                (entry.model.clone(), Some(provider))
+            }
+            None => (self.config.profile.model.clone(), None),
+        };
+        let assessment = match reviewer::hard_deny(intent) {
+            Some(reason) => reviewer::Assessment {
+                risk_level: "critical".into(),
+                user_authorization: "unknown".into(),
+                outcome: Verdict::Deny,
+                rationale: reason,
+            },
+            None => {
+                let context = self.review_context().await?;
+                let scope = json!({"workspace": self.config.workspace.display().to_string(),
+                                   "permissions": self.config.permissions});
+                let request = reviewer::build_request(&model, &self.config.profile.options, intent, &context, &scope);
+                let cancel = Cancel::new();
+                match reviewer_provider.as_ref() {
+                    Some(provider) => reviewer::review(provider, &request, &cancel).await,
+                    None => reviewer::review(&self.config.provider, &request, &cancel).await,
+                }
+                .map_err(|error| format!("{error:?}"))?
+            }
+        };
+        let outcome = match assessment.outcome {
+            Verdict::Allow => "allow",
+            Verdict::Deny => "deny",
+        };
+        self.submit(
+            self.command(
+                format!("review-{approval_id}-{}", uuid::Uuid::new_v4()),
+                "review_decision",
+                json!({"approval_id": approval_id, "outcome": outcome, "risk_level": assessment.risk_level,
+                       "user_authorization": assessment.user_authorization, "rationale": assessment.rationale,
+                       "reviewer_model": model, "operation_id": operation_id}),
+            ),
+            Identity::System,
+        )
+        .await?;
+        Ok(assessment.outcome == Verdict::Allow)
+    }
+
     /// TOOLS_PENDING: dispatch/execute the fixed intents in order (§6.2) and
     /// import terminal receipts; DISPATCH_COMMITTED at entry means recovery.
     async fn step_tools(&mut self, snapshot: &Snapshot) -> Result<bool, String> {
@@ -1993,7 +2096,13 @@ that delegated it learns the outcome only from a settlement.";
                             format!("dispatch-{operation_id}-{}", uuid::Uuid::new_v4()),
                             "dispatch_operation",
                             json!({"operation_id": operation_id,
-                                   "approval_required": intent["name"].as_str() == Some("shell") && self.config.require_shell_approval,
+                                   "approval_required": match intent["name"].as_str() {
+                                       Some("shell") => self.config.require_shell_approval,
+                                       Some("request_self_update") => {
+                                           self.config.catalog.update.agent_requests == "approve"
+                                       }
+                                       _ => false,
+                                   },
                                    "permission_revision": 0}),
                         ),
                         Identity::System,
@@ -2001,7 +2110,21 @@ that delegated it learns the outcome only from a settlement.";
                     .await;
                 match dispatched {
                     Ok(result) if result["status"] == json!("APPROVAL_REQUIRED") => {
-                        // wait for the user's decision; approve/deny wakes us
+                        let approval_id = result["approval_id"].as_str().unwrap_or("").to_string();
+                        if self.config.approvals_reviewer == "auto_review"
+                            && self.config.permissions != "full_auto"
+                            && !approval_id.is_empty()
+                        {
+                            match self.review_operation(&operation_id, &intent, &approval_id).await {
+                                Ok(_) => {}
+                                Err(error) => eprintln!(
+                                    "auto-review left approval {approval_id} pending instead of allowing it: {error}"
+                                ),
+                            }
+                        }
+                        // The reviewer either decided (the next step re-reads),
+                        // denied (the operation is cancelled), or failed closed
+                        // and left the approval for the user.
                         return Ok(false);
                     }
                     Ok(_) => {}
@@ -2021,6 +2144,7 @@ that delegated it learns the outcome only from a settlement.";
             let name = intent["name"].as_str().unwrap_or("");
             match name {
                 "shell" => self.execute_shell(&operation_id, &intent, !recovered, TimeoutSource::Model).await?,
+                "request_self_update" => self.execute_update_request(&operation_id, &intent, recovered).await?,
                 "read_history" => self.execute_readback(&operation_id, &intent, snapshot).await?,
                 // A `finish` that stated no usable outcome arrives here as an
                 // ordinary intent (the kernel refuses to read an outcome it
@@ -2353,6 +2477,94 @@ that delegated it learns the outcome only from a settlement.";
                           "policy": serde_json::to_value(prepared.policy).unwrap_or(Json::Null),
                           "note": prepared.note});
         Ok((prepared.path.to_string_lossy().into_owned(), info))
+    }
+
+    /// D-453: a self-update request is not a shell call. It persists the exact
+    /// target/reason/follow-up as an install-wide request and starts the
+    /// detached updater; the updater waits for this turn's safe boundary, stops
+    /// the daemon, switches and resumes with the follow-up. A recovered request
+    /// is never spawned twice.
+    async fn execute_update_request(
+        &mut self,
+        operation_id: &str,
+        intent: &Json,
+        recovered: bool,
+    ) -> Result<(), String> {
+        let args = &intent["args"];
+        let target = args["target"].as_str().unwrap_or("");
+        let reason = args["reason"].as_str().unwrap_or("");
+        let follow_up = args["follow_up"].as_str().unwrap_or("");
+        if let Err(error) = crate::update::validate_request(target, reason, follow_up) {
+            return self.complete_with_error(operation_id, intent, "update_request", &error).await;
+        }
+        if self.config.catalog.update.agent_requests != "approve" {
+            return self
+                .complete_with_error(
+                    operation_id,
+                    intent,
+                    "update_policy",
+                    "agent-requested updates are disabled by [update] agent_requests",
+                )
+                .await;
+        }
+        if self.config.instance_id != self.config.leader_id {
+            return self
+                .complete_with_error(operation_id, intent, "update_policy", "only the Leader may request a self-update")
+                .await;
+        }
+        let layout = crate::update::Layout::discover(None, None)?;
+        let path = crate::update::request_path(&layout, operation_id);
+        if recovered {
+            let reason = if path.is_file() {
+                "the self-update request was already persisted before the interruption; it was not spawned again"
+            } else {
+                "the self-update operation was dispatched before an interruption and cannot be verified; it was not retried"
+            };
+            let mut receipt = self.receipt_skeleton(operation_id, intent, true, json!({"error": reason}).to_string());
+            receipt.error = Some(ReceiptError { class: "outcome_unknown".into(), reason: reason.into() });
+            return self
+                .complete_op(
+                    operation_id,
+                    "OUTCOME_UNKNOWN",
+                    &serde_json::to_value(receipt).unwrap_or(Json::Null),
+                    vec![],
+                )
+                .await;
+        }
+        let state_root = self.config.session_db.parent().unwrap_or(&self.config.state_root).to_path_buf();
+        let request = crate::update::UpdateRequest {
+            id: operation_id.to_string(),
+            target: target.to_string(),
+            reason: reason.to_string(),
+            follow_up: follow_up.to_string(),
+            state_root,
+            session_id: self.config.session_id.clone(),
+            instance_id: self.config.instance_id.clone(),
+            leader_id: self.config.leader_id.clone(),
+            operation_id: operation_id.to_string(),
+            daemon_pid: std::process::id(),
+            created_at: teamagents_core::models::now(),
+        };
+        let path = match crate::update::write_request(&layout, &request) {
+            Ok(path) => path,
+            Err(error) => return self.complete_with_error(operation_id, intent, "update_request", &error).await,
+        };
+        let updater = match crate::update::spawn_updater(&layout, &path) {
+            Ok(pid) => pid,
+            Err(error) => {
+                return self.complete_with_error(operation_id, intent, "update_updater", &error).await;
+            }
+        };
+        let content = json!({
+            "output": format!(
+                "self-update to {target} scheduled; the daemon will restart after this turn and continue with the follow-up"
+            ),
+            "updater_pid": updater,
+        })
+        .to_string();
+        let receipt = self.receipt_skeleton(operation_id, intent, true, content);
+        let receipt = teamagents_core::kernel::ToolReceipt { ok: true, ..receipt };
+        self.complete_op(operation_id, "SUCCEEDED", &serde_json::to_value(receipt).unwrap_or(Json::Null), vec![]).await
     }
 
     async fn execute_collaboration(&mut self, operation_id: &str, intent: &Json) -> Result<(), String> {
