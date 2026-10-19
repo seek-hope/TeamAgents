@@ -264,8 +264,9 @@ pub struct GoalLimits {
     /// re-sent tokens for one extra call when the model really needs the rest.
     #[serde(default)]
     pub tool_output_chars: Option<usize>,
-    /// D-426: how many characters of tool output the wire view keeps before masking the older ones (unset keeps a
-    /// quarter of the model's context window, clamped). Lower values cut the tokens re-sent on every request.
+    /// D-426/D-459: how many characters of tool output the first wire view keeps before masking the older ones
+    /// (unset keeps a quarter of the model's context window, clamped). The chosen frontier is held fixed until
+    /// compaction, so lower values cut the initial request and the date of the next cache miss, not every turn.
     #[serde(default)]
     pub context_keep_chars: Option<usize>,
     /// D-415: the most seconds one *model* tool call may run. The model picks a call's `timeout` (the shell tool's

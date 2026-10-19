@@ -115,6 +115,12 @@ impl ChatCompletions {
             "stream": true,
             "stream_options": {"include_usage": true},
         });
+        // Pi's stable-session trick: OpenAI's automatic prefix cache routes on a
+        // caller-supplied key. Only send it to the official endpoint; compatible
+        // endpoints (DeepSeek included) need no key and may reject the field.
+        if self.base.contains("api.openai.com") && !request.cache_key.is_empty() {
+            body["prompt_cache_key"] = json!(request.cache_key.chars().take(64).collect::<String>());
+        }
         if let (Some(target), Some(options)) = (body.as_object_mut(), request.options.as_object()) {
             for (key, value) in options {
                 target.insert(key.clone(), value.clone());
@@ -319,10 +325,33 @@ mod image_wire_tests {
             tools: vec![],
             options: json!({}),
             est_prompt_tokens: 10,
+            cache_key: String::new(),
         };
         let body = provider.body(&request);
         let parts = body["messages"][0]["content"].as_array().expect("parts survive to the wire");
         assert_eq!(parts.len(), 2, "{parts:?}");
         assert_eq!(parts[1]["image_url"]["url"], json!("data:image/png;base64,iVBORw0KGgo="));
+    }
+
+    /// D-459, borrowed from Pi: a stable session key keeps OpenAI's automatic
+    /// prompt cache on the same routing prefix. It is sent only to the official
+    /// endpoint; a compatible endpoint must not receive an unknown field.
+    #[test]
+    fn the_openai_body_carries_a_stable_prompt_cache_key_only_on_openai() {
+        let request = ModelRequest {
+            request_id: "r".into(),
+            model: "m".into(),
+            messages: vec![json!({"role":"user","content":"hi"})],
+            tools: vec![],
+            options: json!({}),
+            est_prompt_tokens: 10,
+            cache_key: "instance:epoch:".repeat(10),
+        };
+        let openai = ChatCompletions::new("https://api.openai.com/v1", "k", std::time::Duration::from_secs(5)).unwrap();
+        let body = openai.body(&request);
+        assert_eq!(body["prompt_cache_key"].as_str().unwrap().chars().count(), 64);
+        let deepseek =
+            ChatCompletions::new("https://api.deepseek.com/v1", "k", std::time::Duration::from_secs(5)).unwrap();
+        assert!(deepseek.body(&request).get("prompt_cache_key").is_none());
     }
 }

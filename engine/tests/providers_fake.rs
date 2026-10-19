@@ -106,6 +106,7 @@ fn request() -> ModelRequest {
         tools: vec![],
         options: json!({}),
         est_prompt_tokens: 5,
+        cache_key: String::new(),
     }
 }
 
@@ -395,6 +396,7 @@ fn responses_request() -> ModelRequest {
         ],
         options: json!({"max_tokens": 1024, "reasoning_effort": "low", "temperature": 0.2}),
         est_prompt_tokens: 5,
+        cache_key: String::new(),
     }
 }
 
@@ -595,6 +597,7 @@ fn anthropic_request() -> ModelRequest {
         ],
         options: json!({"max_tokens": 2048, "reasoning_effort": "high", "temperature": 0.2}),
         est_prompt_tokens: 5,
+        cache_key: String::new(),
     }
 }
 
@@ -617,7 +620,10 @@ fn anthropic_request_body_translates_history_tools_and_options() {
     assert!(raw.contains("anthropic-version: 2023-06-01"), "headers: {raw}");
     assert!(raw.contains("x-api-key: k"), "headers: {raw}");
     let body = request_body(&server);
-    assert_eq!(body["system"], "You are lead.\n\nBe brief.");
+    assert_eq!(
+        body["system"],
+        json!([{"type":"text","text":"You are lead.\n\nBe brief.","cache_control":{"type":"ephemeral"}}])
+    );
     assert_eq!(body["max_tokens"], 2048, "max_tokens is required by this API");
     assert_eq!(body["output_config"], json!({"effort": "high"}), "reasoning_effort maps to output_config.effort");
     assert!(body.get("reasoning_effort").is_none());
@@ -625,8 +631,9 @@ fn anthropic_request_body_translates_history_tools_and_options() {
     assert_eq!(body["stream"], true);
     assert_eq!(
         body["tools"],
-        json!([{"name":"shell","description":"run","input_schema":{"type":"object"}}]),
-        "tools are flattened to the Anthropic shape"
+        json!([{"name":"shell","description":"run","input_schema":{"type":"object"},
+                "cache_control":{"type":"ephemeral"}}]),
+        "tools are flattened to the Anthropic shape and carry the cache breakpoint"
     );
     let messages = body["messages"].as_array().unwrap();
     assert_eq!(messages[0], json!({"role":"user","content":[{"type":"text","text":"hi"}]}));
@@ -648,8 +655,10 @@ fn anthropic_request_body_translates_history_tools_and_options() {
         messages[3],
         json!({"role":"assistant","content":[
             {"type":"thinking","thinking":"hmm","signature":"sig"},
-            {"type":"text","text":"kept"}]})
+            {"type":"text","text":"kept","cache_control":{"type":"ephemeral"}}]})
     );
+    let breakpoints = body.to_string().matches("cache_control").count();
+    assert_eq!(breakpoints, 3, "system, last tool and last message only: {body}");
     assert_eq!(messages.len(), 4);
     rt.block_on(server.task).unwrap();
 }
@@ -865,6 +874,7 @@ fn tool_call_ids_normalize_for_cross_protocol_continuation() {
             tools: vec![],
             options: json!({}),
             est_prompt_tokens: 5,
+            cache_key: String::new(),
         }
     };
     let server =

@@ -2753,6 +2753,9 @@ fn settle_usage(tx: &Connection, goal_id: &str, usage: &Json) -> Result<(), Stri
     known.prompt += parsed.prompt;
     known.completion += parsed.completion;
     known.total += parsed.total;
+    known.cache_hit += parsed.cache_hit;
+    known.cache_miss += parsed.cache_miss;
+    known.cache_write += parsed.cache_write;
     tx.execute(
         "UPDATE goals SET known_usage_json = ?1 WHERE id = ?2",
         rusqlite::params![json!(known).to_string(), goal_id],

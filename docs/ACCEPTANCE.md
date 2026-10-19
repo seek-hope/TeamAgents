@@ -8,7 +8,7 @@ individual rows; the current local regression does not renew real-service accept
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 136 / engine 398 / tui 79 test targets), rechecked in the D-452 independent audit
+`make check` is green (core 137 / engine 399 / tui 79 test targets), rechecked in the D-452 independent audit
 on 2026-10-17. `make pty` last passed on 2026-10-11: `pty v2 smoke: ok`, rc 0, credential-free, including
 Leader-only input, explicit approvals, interrupt/exit, resize and draft ownership (D-445); both are
 preconditions for every item below. `make check` includes `make language-check`, which fails on non-English

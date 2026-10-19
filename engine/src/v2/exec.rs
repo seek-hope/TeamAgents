@@ -501,8 +501,9 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
     // D-427: what *this run* cost, summed from the provider's own reported usage on each recorded attempt (the
     // goal's settled total lives elsewhere; a run is what a user is looking at when they wonder about the bill).
     // An attempt the provider never priced is counted, not hidden: `unpriced_attempts` says how many.
-    let mut usage = json!({"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "requests": 0,
-                           "unpriced_attempts": 0});
+    let mut usage = json!({"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
+                           "cache_hit_tokens": 0, "cache_miss_tokens": 0, "cache_write_tokens": 0,
+                           "requests": 0, "unpriced_attempts": 0});
     let mut turn_failure: Option<String> = None;
     let mut reply: Option<String> = None;
     let mut pending_approval: Option<String> = None;
@@ -718,6 +719,10 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
         _ => Json::Null,
     };
     let (reply, reply_source) = reply_for_report(reply, settled_goal.as_deref(), &goals_for_reply);
+    let cache_hit = usage["cache_hit_tokens"].as_u64().unwrap_or(0);
+    let cache_miss = usage["cache_miss_tokens"].as_u64().unwrap_or(0);
+    usage["cache_hit_rate"] =
+        if cache_hit + cache_miss > 0 { json!(cache_hit as f64 / (cache_hit + cache_miss) as f64) } else { Json::Null };
     let report = json!({
         "session_id": client.session_id,
         "state_root": client.state_root,
@@ -745,7 +750,7 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
         "acceptance": options.accept,
         "acceptance_goal": accept_goal,
         "watermark": client.watermark,
-        // D-427: the tokens this run spent, as the provider reported them
+        // D-427/D-459: the tokens this run spent, as the provider reported them
         "usage": usage,
     });
     Ok(ExecRun { report, end, checks_ok })
@@ -758,7 +763,14 @@ fn add_attempt_usage(usage: &mut Json, payload: &Json) {
     usage["requests"] = json!(usage["requests"].as_u64().unwrap_or(0) + 1);
     let reported = &payload["usage"];
     if reported.is_object() {
-        for key in ["prompt_tokens", "completion_tokens", "total_tokens"] {
+        for key in [
+            "prompt_tokens",
+            "completion_tokens",
+            "total_tokens",
+            "cache_hit_tokens",
+            "cache_miss_tokens",
+            "cache_write_tokens",
+        ] {
             let sum = usage[key].as_u64().unwrap_or(0) + reported[key].as_u64().unwrap_or(0);
             usage[key] = json!(sum);
         }
@@ -945,6 +957,8 @@ fn print_usage(report: &Json) {
     }
     let prompt = usage["prompt_tokens"].as_u64().unwrap_or(0);
     let completion = usage["completion_tokens"].as_u64().unwrap_or(0);
+    let hit = usage["cache_hit_tokens"].as_u64().unwrap_or(0);
+    let miss = usage["cache_miss_tokens"].as_u64().unwrap_or(0);
     let unpriced = usage["unpriced_attempts"].as_u64().unwrap_or(0);
     let note = if unpriced > 0 {
         format!(" ({unpriced} attempt(s) the provider did not price are not counted)")
@@ -953,7 +967,12 @@ fn print_usage(report: &Json) {
     };
     // "tokens:", not "usage:": the bare `usage:` prefix is what the CLI prints for a usage error, and one
     // `make check` test asserts a plain run never prints it (the collision was caught by that test).
-    println!("tokens: {prompt} prompt + {completion} completion over {requests} request(s){note}");
+    let cache = if hit + miss > 0 {
+        format!("; cache {:0.1}% ({hit}/{})", 100.0 * hit as f64 / (hit + miss) as f64, hit + miss)
+    } else {
+        String::new()
+    };
+    println!("tokens: {prompt} prompt + {completion} completion over {requests} request(s){cache}{note}");
 }
 
 /// Human-readable check verdicts on stdout (the verdict is product output); a
@@ -1461,21 +1480,26 @@ mod tests {
     /// D-427: the run's usage sums the provider's own numbers and counts what it never priced.
     #[test]
     fn run_usage_sums_what_the_provider_reported_and_counts_what_it_did_not() {
-        let mut usage = json!({"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "requests": 0,
-                               "unpriced_attempts": 0});
+        let mut usage = json!({"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
+                               "cache_hit_tokens": 0, "cache_miss_tokens": 0, "cache_write_tokens": 0,
+                               "requests": 0, "unpriced_attempts": 0});
         add_attempt_usage(
             &mut usage,
-            &json!({"usage": {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14}}),
+            &json!({"usage": {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14,
+                              "cache_hit_tokens": 8, "cache_miss_tokens": 2}}),
         );
         add_attempt_usage(
             &mut usage,
-            &json!({"usage": {"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6}}),
+            &json!({"usage": {"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6,
+                              "cache_hit_tokens": 3, "cache_miss_tokens": 2}}),
         );
         add_attempt_usage(&mut usage, &json!({"status": "FAILED"}));
         assert_eq!(usage["requests"], json!(3));
         assert_eq!(usage["prompt_tokens"], json!(15));
         assert_eq!(usage["completion_tokens"], json!(5));
         assert_eq!(usage["total_tokens"], json!(20));
+        assert_eq!(usage["cache_hit_tokens"], json!(11));
+        assert_eq!(usage["cache_miss_tokens"], json!(4));
         assert_eq!(usage["unpriced_attempts"], json!(1), "an unpriced attempt is counted, not hidden: {usage}");
     }
 }

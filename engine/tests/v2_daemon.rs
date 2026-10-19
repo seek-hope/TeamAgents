@@ -50,7 +50,7 @@ impl Provider for ScriptedProvider {
             return Ok(AttemptOutcome {
                 response: ModelResponse {
                     message,
-                    usage: Some(Usage { prompt: 3, completion: 2, total: 5 }),
+                    usage: Some(Usage { prompt: 3, completion: 2, total: 5, ..Default::default() }),
                     native: json!({}),
                 },
                 raw: json!({"scripted": true}),
@@ -71,7 +71,7 @@ impl Provider for ScriptedProvider {
         Ok(AttemptOutcome {
             response: ModelResponse {
                 message,
-                usage: Some(Usage { prompt: 3, completion: 2, total: 5 }),
+                usage: Some(Usage { prompt: 3, completion: 2, total: 5, ..Default::default() }),
                 native: json!({}),
             },
             raw: json!({"scripted": true}),

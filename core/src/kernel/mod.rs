@@ -71,7 +71,7 @@ mod tests {
                 {"id":"c1","function":{"name":"shell","arguments":"{\"command\":\"ls\"}"}},
                 {"id":"c2","function":{"name":"shell","arguments":"{\"command\":\"pwd\"}"}}
             ]}),
-            usage: Some(Usage { prompt: 10, completion: 5, total: 15 }),
+            usage: Some(Usage { prompt: 10, completion: 5, total: 15, ..Default::default() }),
             native: json!({}),
         };
         let out = kernel.interpret_response(&response, "e9");
@@ -304,6 +304,62 @@ mod tests {
         assert_eq!(entries(&kernel)[0].message["content"].as_str().unwrap().len(), 40_000);
     }
 
+    /// D-459: once the L1 frontier is chosen, later requests keep it fixed.
+    /// The provider sees the same prefix and only the appended tail differs;
+    /// a new tool output is not retroactively hidden until compaction, which is
+    /// the bound on the extra wire bytes.
+    #[test]
+    fn stable_mask_frontier_keeps_the_prefix_and_leaves_new_output_visible() {
+        let kernel = KernelInstance::new(
+            "inst-1",
+            0,
+            KernelProfile {
+                images: false,
+                model: "m".into(),
+                instructions: "i".into(),
+                tools: vec![],
+                options: json!({}),
+                context_window: Some(1_000_000),
+                tool_output_chars: None,
+                context_keep_chars: Some(0),
+            },
+        );
+        let exchange = |call: &str, content: &str, assistant: &str| {
+            vec![
+                ContextEntry::new(
+                    format!("a-{call}"),
+                    EntryKind::Assistant,
+                    json!({"role":"assistant","content":"","tool_calls":[{"id":call,"type":"function",
+                           "function":{"name":"shell","arguments":"{}"}}]}),
+                ),
+                ContextEntry::new(
+                    format!("t-{call}"),
+                    EntryKind::ToolResult,
+                    json!({"role":"tool","tool_call_id":call,"content":content}),
+                ),
+                ContextEntry::new(
+                    format!("b-{call}"),
+                    EntryKind::Assistant,
+                    json!({"role":"assistant","content":assistant}),
+                ),
+            ]
+        };
+        let mut entries = vec![kernel.user_entry("start", "u")];
+        entries.extend(exchange("c1", "first output", "first ack"));
+        let (first, mask) = kernel.prepare_request_with_mask(&entries, "req-1", None);
+        let mask = mask.expect("a zero keep budget must choose a frontier");
+        assert!(mask.contains("c1"));
+        assert!(first.messages[3]["content"].as_str().unwrap().contains("tool output hidden"));
+
+        entries.extend(exchange("c2", "second output", "second ack"));
+        let (second, again) = kernel.prepare_request_with_mask(&entries, "req-2", Some(&mask));
+        assert_eq!(again.as_ref(), Some(&mask), "the frontier is held, not recomputed");
+        assert_eq!(&first.messages[..5], &second.messages[..5], "the old prefix is byte-identical");
+        let second_tool = second.messages.iter().find(|m| m["tool_call_id"] == json!("c2")).unwrap();
+        assert_eq!(second_tool["content"], json!("second output"), "new output stays visible until compaction");
+        assert_eq!(second.messages.len(), first.messages.len() + 3);
+    }
+
     /// A message (or note) landing between a call and its answer must not
     /// leave the wire with an unanswered tool call: strict endpoints reject
     /// that. The stored order is untouched; only the wire copy pairs them.
@@ -514,12 +570,29 @@ mod tests {
     fn usage_parses_openai_and_anthropic_shapes() {
         assert_eq!(
             Usage::from_json(&json!({"usage":{"prompt_tokens":10,"completion_tokens":4,"total_tokens":14}})),
-            Some(Usage { prompt: 10, completion: 4, total: 14 })
+            Some(Usage { prompt: 10, completion: 4, total: 14, cache_miss: 10, ..Default::default() })
         );
         assert_eq!(
             Usage::from_json(&json!({"usage":{"input_tokens":7,"output_tokens":3}})),
-            Some(Usage { prompt: 7, completion: 3, total: 10 })
+            Some(Usage { prompt: 7, completion: 3, total: 10, cache_miss: 7, ..Default::default() })
         );
+        // DeepSeek reports both halves of the split; Anthropic reports cache
+        // input outside `input_tokens`, so the neutral prompt must add it.
+        assert_eq!(
+            Usage::from_json(&json!({"usage":{
+                "prompt_tokens":100, "completion_tokens":5, "total_tokens":105,
+                "prompt_cache_hit_tokens":80, "prompt_cache_miss_tokens":20}})),
+            Some(Usage { prompt: 100, completion: 5, total: 105, cache_hit: 80, cache_miss: 20, ..Default::default() })
+        );
+        assert_eq!(
+            Usage::from_json(&json!({"usage":{
+                "input_tokens":20, "output_tokens":5,
+                "cache_read_input_tokens":80, "cache_creation_input_tokens":10}})),
+            Some(Usage { prompt: 110, completion: 5, total: 115, cache_hit: 80, cache_miss: 20, cache_write: 10 })
+        );
+        let roundtrip =
+            Usage { prompt: 100, completion: 5, total: 105, cache_hit: 80, cache_miss: 20, cache_write: 10 };
+        assert_eq!(Usage::from_json(&json!({"usage": roundtrip.to_json()})), Some(roundtrip));
         assert_eq!(Usage::from_json(&json!({})), None);
     }
 }

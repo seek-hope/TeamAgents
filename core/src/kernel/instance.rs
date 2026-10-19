@@ -5,7 +5,7 @@
 
 use super::types::*;
 use serde_json::{json, Value as Json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Static profile snapshot for one instance revision. A profile change makes
 /// a new KernelInstance (new profile_revision), never a silent mutation.
@@ -68,25 +68,51 @@ impl KernelInstance {
     /// fixed once returned: the runtime reserves budget, then registers the
     /// request and moves the phase to MODEL_PENDING in one transaction.
     pub fn prepare_request(&self, entries: &[ContextEntry], request_id: &str) -> ModelRequest {
+        self.prepare_request_with_mask(entries, request_id, None).0
+    }
+
+    /// Prepare a request while keeping an already-chosen L1 mask frontier
+    /// stable. `frozen` is the set of tool-result ids masked by an earlier
+    /// request in this driver; when it is `Some`, no new historical message is
+    /// rewritten, so the provider can keep hitting the same prefix until L2
+    /// compaction resets the view. `None` computes the frontier and returns it
+    /// for the caller to keep.
+    ///
+    /// This is a cache-hit optimisation with a bounded cost: tool outputs that
+    /// arrive after the frontier stay on the wire until the next compaction,
+    /// instead of being masked one by one and invalidating the suffix. The
+    /// compaction threshold remains the hard bound.
+    pub fn prepare_request_with_mask(
+        &self,
+        entries: &[ContextEntry],
+        request_id: &str,
+        frozen: Option<&HashSet<String>>,
+    ) -> (ModelRequest, Option<HashSet<String>>) {
         let mut messages = Vec::with_capacity(entries.len() + 1);
         messages.push(json!({"role": "system", "content": self.profile.instructions}));
-        messages.extend(materialize(
+        let (wire, mask) = materialize(
             entries,
             self.profile.context_window,
             self.profile.tool_output_chars,
             self.profile.context_keep_chars,
-        ));
+            frozen,
+        );
+        messages.extend(wire);
         let mut tools = self.profile.tools.clone();
         tools.extend(builtin_tool_schemas());
         let est = estimated_tokens(&json!({"messages": messages, "tools": tools}));
-        ModelRequest {
-            request_id: request_id.to_string(),
-            model: self.profile.model.clone(),
-            messages,
-            tools,
-            options: self.profile.options.clone(),
-            est_prompt_tokens: est,
-        }
+        (
+            ModelRequest {
+                request_id: request_id.to_string(),
+                model: self.profile.model.clone(),
+                messages,
+                tools,
+                options: self.profile.options.clone(),
+                est_prompt_tokens: est,
+                cache_key: format!("{}:{}", self.instance_id, self.epoch),
+            },
+            mask,
+        )
     }
 
     /// ModelResponse → assistant entry + intents (§3 `interpret_response`).
@@ -305,29 +331,38 @@ fn materialize(
     context_window: Option<u64>,
     output_chars: Option<usize>,
     keep_chars: Option<usize>,
-) -> Vec<Json> {
+    frozen: Option<&HashSet<String>>,
+) -> (Vec<Json>, Option<HashSet<String>>) {
     let output_cap = output_chars.unwrap_or(TOOL_OUTPUT_CAP).max(1);
     let stored: Vec<Json> = entries.iter().map(|entry| entry.message.clone()).collect();
     let messages = pair_tool_results(&stored);
     let last_assistant = messages.iter().rposition(|m| m["role"] == "assistant").unwrap_or(0);
-    let readbacks: HashMap<&str, Json> = messages
+    // The first readback recipe is the stable one: a later readback of the same
+    // tool call must not rewrite the hint on an earlier masked message, or the
+    // provider sees a changed prefix even though no new context arrived.
+    let mut readbacks: HashMap<&str, Json> = HashMap::new();
+    for call in messages
         .iter()
         .filter(|message| message["role"] == "assistant")
         .flat_map(|message| message["tool_calls"].as_array().into_iter().flatten())
         .filter(|call| call["function"]["name"] == READBACK_TOOL)
-        .filter_map(|call| {
-            let id = call["id"].as_str()?;
-            let args: Json = serde_json::from_str(call["function"]["arguments"].as_str()?).ok()?;
-            args["tool_call_id"].as_str().filter(|source| !source.is_empty())?;
-            let recipe: serde_json::Map<String, Json> = args
-                .as_object()?
-                .iter()
-                .filter(|(key, _)| matches!(key.as_str(), "tool_call_id" | "offset" | "limit"))
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .collect();
-            Some((id, Json::Object(recipe)))
-        })
-        .collect();
+    {
+        let Some(id) = call["id"].as_str() else { continue };
+        let Ok(args) = serde_json::from_str::<Json>(call["function"]["arguments"].as_str().unwrap_or("")) else {
+            continue;
+        };
+        if args["tool_call_id"].as_str().is_none_or(|source| source.is_empty()) {
+            continue;
+        }
+        let recipe: serde_json::Map<String, Json> = args
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter(|(key, _)| matches!(key.as_str(), "tool_call_id" | "offset" | "limit"))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        readbacks.entry(id).or_insert(Json::Object(recipe));
+    }
     let read_hint = |id: &str| match readbacks.get(id) {
         Some(recipe) => format!("call {READBACK_TOOL} with {recipe}"),
         None => format!("call {READBACK_TOOL} with tool_call_id={id:?}"),
@@ -347,7 +382,24 @@ fn materialize(
         }
     }
     if out.is_empty() {
-        return out;
+        return (out, None);
+    }
+    // A frozen frontier is the whole point: mask exactly the ids chosen by the
+    // first request under pressure, and leave every later tool output alone.
+    if let Some(frozen) = frozen {
+        for message in &mut out {
+            if message["role"] != "tool" {
+                continue;
+            }
+            let id = message["tool_call_id"].as_str().unwrap_or("");
+            if !frozen.contains(id) {
+                continue;
+            }
+            let len = message["content"].as_str().map(|c| c.len()).unwrap_or(0);
+            message["content"] =
+                json!(format!("[tool output hidden ({len} bytes) — {} to retrieve it]", read_hint(id)));
+        }
+        return (out, Some(frozen.clone()));
     }
     // D-426: an explicit budget wins over the window-derived one; the default keeps the older rule (a quarter of
     // the window, clamped) so a session that says nothing behaves exactly as before.
@@ -356,6 +408,7 @@ fn materialize(
             .map(|window| (window / 4).clamp(MASK_KEEP_RECENT as u64, MASK_KEEP_MAX as u64) as usize)
             .unwrap_or(MASK_KEEP_RECENT)
     });
+    let mut mask = HashSet::new();
     for i in (0..=last_assistant).rev() {
         let message = &out[i];
         if message["role"] != "tool" {
@@ -368,11 +421,14 @@ fn materialize(
         }
         budget = 0;
         let id = message["tool_call_id"].as_str().unwrap_or("");
+        if !id.is_empty() {
+            mask.insert(id.to_string());
+        }
         out[i] = json!({
             "role": "tool",
             "tool_call_id": id,
             "content": format!("[tool output hidden ({len} bytes) — {} to retrieve it]", read_hint(id)),
         });
     }
-    out
+    (out, if mask.is_empty() { None } else { Some(mask) })
 }

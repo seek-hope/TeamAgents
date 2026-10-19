@@ -79,6 +79,9 @@ impl Responses {
             "stream": true,
             "store": false,
         });
+        if self.base.contains("api.openai.com") && !request.cache_key.is_empty() {
+            body["prompt_cache_key"] = json!(request.cache_key.chars().take(64).collect::<String>());
+        }
         if !instructions.is_empty() {
             body["instructions"] = json!(instructions);
         }

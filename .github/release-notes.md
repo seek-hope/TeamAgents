@@ -22,7 +22,7 @@
   these notes do not publish an artifact.
 - Installer, `teamagents init`, `doctor` and `exec` as documented in the [install guide](https://github.com/seek-hope/TeamAgents/blob/main/docs/INSTALL.md).
 
-Local regression for this release: `make check` green (core 136 / engine 398 / tui 79) plus `make pty`;
+Local regression for this release: `make check` green (core 137 / engine 399 / tui 79) plus `make pty`;
 real-model acceptance is reported separately in [docs/ACCEPTANCE.md](https://github.com/seek-hope/TeamAgents/blob/main/docs/ACCEPTANCE.md).
 
 ### Install and first run

@@ -19,6 +19,7 @@ fn request() -> ModelRequest {
         tools: vec![],
         options: json!({}),
         est_prompt_tokens: 4,
+        cache_key: String::new(),
     }
 }
 

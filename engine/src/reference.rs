@@ -180,6 +180,9 @@ pub async fn run_reference<P: Provider>(
             usage.prompt += u.prompt;
             usage.completion += u.completion;
             usage.total += u.total;
+            usage.cache_hit += u.cache_hit;
+            usage.cache_miss += u.cache_miss;
+            usage.cache_write += u.cache_write;
         }
         let entry_id = format!("e{next_entry}");
         next_entry += 1;

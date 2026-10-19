@@ -292,10 +292,12 @@ What the field names do not carry:
   to a user can tell the model's words from the runtime's fallback — plain mode says the same thing in words
   ("the model settled the goal without writing anything; its own summary of the work:").
 - `usage` is what *this run* cost, as the provider reported it: `prompt_tokens`, `completion_tokens`,
-  `total_tokens`, `requests`, and `unpriced_attempts` (attempts the provider never priced, which are **not**
-  counted as free). Plain mode prints the same numbers as one `tokens: …` line. They are the numbers the
-  `[limits]` cost keys act on: `tool_output_chars` and `context_keep_chars` (§2.2) change what a request
-  carries.
+  `total_tokens`, `cache_hit_tokens`, `cache_miss_tokens`, `cache_write_tokens`, `cache_hit_rate`, `requests`,
+  and `unpriced_attempts` (attempts the provider never priced, which are **not** counted as free). A zero
+  hit/miss pair means the provider did not report a split; it is not a measured miss. Plain mode prints the
+  same numbers as one `tokens: …` line, including the cache percentage when the provider reported one. They are
+  the numbers the `[limits]` cost keys act on: `tool_output_chars` and `context_keep_chars` (§2.2) change what a
+  request carries.
 - `watermark` is the event cursor the report was built at, which is what a client resumes from after a
   reconnect (A28).
 - `result` is the daemon's own reply to a command, and `instance`/`task`/`approval`/`grant` is the affected row
@@ -449,8 +451,10 @@ context_keep_chars = 64000   # optional: how much tool output the request keeps 
 - `tool_output_chars` and `context_keep_chars` are **cost** limits: they change what a request carries, never what
   is stored. The full text of every tool output stays in the session with a readback recipe, so a model that needs
   the rest calls `read_history` for it. Measured on one task set, the defaults cost 61 299 prompt tokens per request
-  at the median and the lean pair above 33 387, with the same outcomes (D-426). Lower them when you pay per prompt
-  token; leave them unset to keep the defaults.
+  at the median and the lean pair above 33 387, with the same outcomes (D-426). `context_keep_chars` chooses the
+  first mask frontier; D-459 then holds that frontier fixed until compaction so the provider can keep hitting the
+  same prefix. New tool outputs therefore stay on the wire until compaction, which is the hard bound; lower the
+  value when you pay per prompt token.
 - With none of them configured a goal — and therefore the session — runs until you stop it, which is why `doctor`
   says so out loud (`goal limits: none: …`). A zero is a config error at load time.
 - Both come from **your** config: like `[[checks]]`, a cloned project cannot set them. They are fixed when

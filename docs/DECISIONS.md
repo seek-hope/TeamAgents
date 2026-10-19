@@ -22,6 +22,48 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Capability delegation | user remains the authority root; spawned instances still hold no shell by default; a user grant may be marked `delegable`, and only such a parent may produce attenuated, task-scoped, non-delegable child grants; missing capabilities become a visible pending approval, not a silent idle | D-455 |
 | Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
 | Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
+| Prompt cache | cache hit/miss/write are provider-reported and visible; the L1 frontier is fixed between compactions; Anthropic gets explicit breakpoints and OpenAI a stable key; DeepSeek stays automatic | D-459 |
+
+## D-459 Prompt-cache stability and telemetry (2026-10-19)
+
+**Why.** A prompt-cache audit of the existing DeepSeek traces (309 requests, four runs, `deepseek-flash`, 1 M
+window, before D-425/D-426) measured **86.23 % weighted cache-hit tokens**, **90.47 % median per request**;
+later requests hit **92.15 %** while first requests hit 9.59 %. The hit rate was real but accidental: the code
+had no cache telemetry and D-426 rewrote old tool outputs at a moving budget boundary, so every boundary move
+invalidated the suffix. Pi's provider layer supplied the missing pattern: stable session keys, explicit
+Anthropic `cache_control` on system/tools/last message, and `cacheRead`/`cacheWrite` in usage.
+
+**Decision.** (1) `Usage` keeps `cache_hit`, `cache_miss` and `cache_write`; the adapters parse DeepSeek
+`prompt_cache_hit_tokens`/`prompt_cache_miss_tokens`, OpenAI `prompt_tokens_details.cached_tokens`, and
+Anthropic `cache_read_input_tokens`/`cache_creation_input_tokens`. They persist in the attempt, response
+artifact, goal usage and `attempt_recorded`; `exec` reports the split and `cache_hit_rate`. Zero hit and zero
+miss mean the provider did not report a split, not a measured miss. (2) The L1 mask frontier is **frozen**
+after the first request that needs it and reset only when L2 compaction commits (or when a summary fails and the
+request would otherwise outgrow the window). Tools that arrive after the frontier stay visible until compaction,
+so the historical prefix is append-only between compactions. (3) Anthropic requests put an ephemeral
+`cache_control` breakpoint on the system prompt, the last tool and the last cacheable message block; OpenAI
+requests to `api.openai.com` carry a stable `prompt_cache_key` derived from instance and epoch. DeepSeek uses its
+automatic cache and receives no extra field. (4) The first readback recipe for a tool call is the one used in
+older hints, so a later readback cannot rewrite an earlier prefix.
+
+**Boundaries.** This is not Pi's cache warming: no background refresh request is sent, and no model cost table is
+assumed. `cache_hit_rate` is provider-reported hit/(hit+miss), not a dollar estimate. The frozen frontier has a
+real cost: `context_keep_chars` now chooses the initial frontier, not a per-turn cap, so the wire can grow until
+compaction; compaction remains the hard bound and a failed summary falls back to a fresh frontier (one cache
+miss). Anthropic cache writes are billed and the breakpoints are sent unconditionally for that protocol; a
+provider that ignores them ignores them.
+
+**Pi evidence.** `@earendil-works/pi-ai`'s `openai-completions` places `cache_control` on the system prompt, the
+last tool and the last conversation text (`cacheControlFormat: "anthropic"`), sends `prompt_cache_key` from the
+session id, and records `cacheRead`/`cacheWrite`; `pi-coding-agent` adds cache-miss notices and a bounded
+cache warmer with an economic threshold. This decision adopts the stable-key, breakpoint and usage parts; it does
+not adopt warming or Pi's cost table.
+
+**Evidence.** `kernel::tests::usage_parses_openai_and_anthropic_shapes` (all three provider shapes and the
+stored round trip), `kernel::tests::stable_mask_frontier_keeps_the_prefix_and_leaves_new_output_visible`
+(byte-identical prefix, frozen frontier, new output visible), the Anthropic body test (three breakpoints and no
+thinking-block breakpoint), the OpenAI body test (64-character key only on the official endpoint), and the
+`exec` usage test (cache fields summed, unpriced attempts still counted). The gate remains `make check`.
 
 ## D-458 Automatic review for operation approvals (2026-10-19)
 

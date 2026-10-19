@@ -52,7 +52,7 @@ impl Provider for ScriptedProvider {
             Step::Message(message) => Ok(AttemptOutcome {
                 response: ModelResponse {
                     message,
-                    usage: Some(Usage { prompt: 3, completion: 2, total: 5 }),
+                    usage: Some(Usage { prompt: 3, completion: 2, total: 5, ..Default::default() }),
                     native: json!({}),
                 },
                 raw: json!({"scripted": true}),

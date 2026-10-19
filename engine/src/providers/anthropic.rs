@@ -75,15 +75,32 @@ impl Anthropic {
         // what the context window still has left (pi-ai simple-options).
         let configured_max = request.options.get("max_tokens").and_then(|v| v.as_u64()).unwrap_or(8192);
         let max_tokens = clamp_max_tokens(configured_max, request.est_prompt_tokens, self.context_window);
+        // Prompt caching is off unless a breakpoint is explicit (Anthropic does
+        // not infer one). Three stable edges cover the system prompt, the whole
+        // tool schema and the conversation prefix: system, the last tool, and
+        // the last text/tool block. This mirrors Pi's cache-control placement.
+        let cache_control = json!({"type": "ephemeral"});
+        let mut messages = messages;
+        if let Some(last) = messages.last_mut() {
+            add_cache_control(last, &cache_control);
+        }
         let mut body = json!({
             "model": request.model,
             "max_tokens": max_tokens,
             "messages": messages,
         });
         if !system.is_empty() {
-            body["system"] = json!(system);
+            body["system"] = json!([{
+                "type": "text",
+                "text": system,
+                "cache_control": cache_control,
+            }]);
         }
         if !tools.is_empty() {
+            let mut tools = tools;
+            if let Some(last) = tools.last_mut() {
+                last["cache_control"] = cache_control;
+            }
             body["tools"] = json!(tools);
         }
         // Wire-name mapping (ported contract): values arrive already resolved
@@ -285,6 +302,19 @@ impl Provider for Anthropic {
             raw: data,
             elapsed_ms: started.elapsed().as_millis() as u64,
         })
+    }
+}
+
+/// Put an Anthropic cache breakpoint on the last cacheable block of a message.
+/// Thinking blocks are intentionally skipped: the API accepts cache_control on
+/// text, tool_use, tool_result and image blocks, not on signed thinking.
+fn add_cache_control(message: &mut Json, cache_control: &Json) {
+    let Some(parts) = message["content"].as_array_mut() else { return };
+    for part in parts.iter_mut().rev() {
+        if matches!(part.get("type").and_then(Json::as_str), Some("text" | "tool_use" | "tool_result" | "image")) {
+            part["cache_control"] = cache_control.clone();
+            return;
+        }
     }
 }
 

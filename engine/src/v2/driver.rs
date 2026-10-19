@@ -462,6 +462,10 @@ pub struct Driver<P: Provider> {
     /// storage round trip on the turn path.
     last_prompt: u64,
     last_prompt_loaded: bool,
+    /// D-459: the L1 mask frontier chosen by an earlier request in this driver.
+    /// Keeping it fixed until compaction means no historical message is
+    /// rewritten between turns, so the provider's prefix cache stays valid.
+    wire_mask: Option<std::collections::HashSet<String>>,
     /// User hooks (`[hooks] notify` / `pre_tool`), if the config configures any.
     hooks: Option<Arc<Hooks>>,
     /// Last lifecycle seen by the loop: `run_paused` fires on the edge, and the
@@ -694,6 +698,7 @@ pub(crate) fn spawn_driver<P: Provider + 'static>(
         offered: Vec::new(),
         last_prompt: 0,
         last_prompt_loaded: false,
+        wire_mask: None,
         hooks,
         last_lifecycle: None,
     };
@@ -1118,6 +1123,7 @@ impl<P: Provider> Driver<P> {
             request_id: request_id.clone(),
             model: self.config.profile.model.clone(),
             est_prompt_tokens: estimated_tokens(&json!({"messages": messages, "tools": []})),
+            cache_key: String::new(),
             messages,
             tools: vec![],
             options: self.config.profile.options.clone(),
@@ -1186,8 +1192,7 @@ impl<P: Provider> Driver<P> {
                     "record_attempt",
                     json!({"attempt_id": attempt_id, "request_id": request_id, "status": "COMPLETE",
                            "elapsed_ms": outcome.elapsed_ms,
-                           "usage": outcome.response.usage.map(|u| json!({
-                               "prompt_tokens": u.prompt, "completion_tokens": u.completion, "total_tokens": u.total})),
+                           "usage": outcome.response.usage.map(|u| u.to_json()),
                            "response_ref": response_ref, "publish": [response_ref]}),
                 ),
                 Identity::System,
@@ -1571,15 +1576,30 @@ that delegated it learns the outcome only from a settlement.";
         // answered with what does (`unknown_tool_message`).
         self.offered = offered_tools.iter().cloned().chain(builtin_names()).collect();
         let request_id = format!("req-{}", uuid::Uuid::new_v4());
-        let mut request = kernel.prepare_request(&entries, &request_id);
+        let (mut request, mask) = kernel.prepare_request_with_mask(&entries, &request_id, self.wire_mask.as_ref());
+        self.wire_mask = mask;
         // L2 (§7, A20): a summary is taken before the request is fixed and
         // registered, so the compacted view is what begin_request reserves
         // budget for and what the provider receives
         let last_prompt = self.last_prompt_tokens().await?;
-        if self.over_threshold(&request, last_prompt) && self.compact(&entries).await? {
-            entries = self.context_entries(snapshot).await?;
-            self.expand_images(&mut entries)?;
-            request = kernel.prepare_request(&entries, &request_id);
+        if self.over_threshold(&request, last_prompt) {
+            if self.compact(&entries).await? {
+                self.wire_mask = None;
+                entries = self.context_entries(snapshot).await?;
+                self.expand_images(&mut entries)?;
+                let (next, mask) = kernel.prepare_request_with_mask(&entries, &request_id, None);
+                request = next;
+                self.wire_mask = mask;
+            } else if self.wire_mask.is_some() {
+                // The summary could not commit (or there was nothing to
+                // summarise). Recompute the frontier once so a growing
+                // frozen view cannot run past the window; this costs one
+                // cache miss, not a failed turn.
+                self.wire_mask = None;
+                let (next, mask) = kernel.prepare_request_with_mask(&entries, &request_id, None);
+                request = next;
+                self.wire_mask = mask;
+            }
         }
         let begun = self
             .submit(
@@ -1653,7 +1673,13 @@ that delegated it learns the outcome only from a settlement.";
             None => {
                 let mut entries = self.context_entries(snapshot).await?;
                 self.expand_images(&mut entries)?;
-                self.team_kernel(snapshot).await?.0.prepare_request(&entries, &request_id)
+                let (request, mask) = self.team_kernel(snapshot).await?.0.prepare_request_with_mask(
+                    &entries,
+                    &request_id,
+                    self.wire_mask.as_ref(),
+                );
+                self.wire_mask = mask;
+                request
             }
         };
         let attempt = self.attempt_count(&request_id).await? + 1;
@@ -1684,8 +1710,7 @@ that delegated it learns the outcome only from a settlement.";
                             format!("attempt-{attempt_id}"),
                             "record_attempt",
                             json!({"attempt_id": attempt_id, "request_id": request_id, "status": "COMPLETE",
-                                   "elapsed_ms": outcome.elapsed_ms, "usage": outcome.response.usage.map(|u| json!({
-                                       "prompt_tokens": u.prompt, "completion_tokens": u.completion, "total_tokens": u.total})),
+                                   "elapsed_ms": outcome.elapsed_ms, "usage": outcome.response.usage.map(|u| u.to_json()),
                                    // D-416: how the stream behaved — the frames that arrived, the wait for the
                                    // first one, and the longest silence between two. A long request that streamed
                                    // steadily and one that sat silent are the same `elapsed_ms` otherwise, and the

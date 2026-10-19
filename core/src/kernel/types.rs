@@ -80,19 +80,81 @@ pub struct Usage {
     pub prompt: u64,
     pub completion: u64,
     pub total: u64,
+    /// Provider-reported prefix-cache reads. Zero means the provider did not
+    /// report a cache split; it is not a claim that the request missed.
+    #[serde(default)]
+    pub cache_hit: u64,
+    /// Provider-reported prefix-cache misses. Derived from `prompt - cache_hit`
+    /// when the provider only reports the hit half.
+    #[serde(default)]
+    pub cache_miss: u64,
+    /// Provider-reported cache writes (Anthropic `cache_creation_input_tokens`).
+    #[serde(default)]
+    pub cache_write: u64,
 }
 
 impl Usage {
     pub fn from_json(data: &Json) -> Option<Usage> {
         // OpenAI/DeepSeek chat shape, then Anthropic shape.
         if let Some(usage) = data.get("usage") {
-            let prompt = usage["prompt_tokens"].as_u64().or_else(|| usage["input_tokens"].as_u64())?;
-            let completion =
-                usage["completion_tokens"].as_u64().or_else(|| usage["output_tokens"].as_u64()).unwrap_or(0);
-            let total = usage["total_tokens"].as_u64().unwrap_or(prompt + completion);
-            return Some(Usage { prompt, completion, total });
+            // Raw provider shapes (prompt_tokens/input_tokens) and the
+            // neutral shape stored in a response artifact (prompt) both parse.
+            let openai_prompt = usage["prompt_tokens"].as_u64().or_else(|| usage["prompt"].as_u64());
+            let anthropic_input = usage["input_tokens"].as_u64();
+            let input = openai_prompt.or(anthropic_input)?;
+            let completion = usage["completion_tokens"]
+                .as_u64()
+                .or_else(|| usage["output_tokens"].as_u64())
+                .or_else(|| usage["completion"].as_u64())
+                .unwrap_or(0);
+            let cache_hit = usage["prompt_cache_hit_tokens"]
+                .as_u64()
+                .or_else(|| usage["prompt_tokens_details"]["cached_tokens"].as_u64())
+                .or_else(|| usage["cache_read_input_tokens"].as_u64())
+                .or_else(|| usage["cached_tokens"].as_u64())
+                .or_else(|| usage["cache_hit"].as_u64())
+                .or_else(|| usage["cache_hit_tokens"].as_u64())
+                .unwrap_or(0);
+            let cache_write = usage["prompt_tokens_details"]["cache_write_tokens"]
+                .as_u64()
+                .or_else(|| usage["cache_creation_input_tokens"].as_u64())
+                .or_else(|| usage["cache_write"].as_u64())
+                .or_else(|| usage["cache_write_tokens"].as_u64())
+                .unwrap_or(0);
+            let cache_miss = usage["prompt_cache_miss_tokens"]
+                .as_u64()
+                .or_else(|| usage["cache_miss"].as_u64())
+                .or_else(|| usage["cache_miss_tokens"].as_u64())
+                .or_else(|| openai_prompt.map(|prompt| prompt.saturating_sub(cache_hit)))
+                .or(anthropic_input)
+                .unwrap_or(0);
+            // Anthropic reports cached tokens outside `input_tokens`; the
+            // provider-neutral prompt must still contain every input token
+            // because it is what the context budget and the hit rate count.
+            let prompt = if openai_prompt.is_none() && anthropic_input.is_some() {
+                anthropic_input.unwrap_or(0).saturating_add(cache_hit).saturating_add(cache_write)
+            } else {
+                input
+            };
+            let total = usage["total_tokens"]
+                .as_u64()
+                .or_else(|| usage["total"].as_u64())
+                .unwrap_or(prompt.saturating_add(completion));
+            return Some(Usage { prompt, completion, total, cache_hit, cache_miss, cache_write });
         }
         None
+    }
+
+    /// The provider-reported usage in the shape the event/attempt payloads use.
+    pub fn to_json(self) -> Json {
+        json!({
+            "prompt_tokens": self.prompt,
+            "completion_tokens": self.completion,
+            "total_tokens": self.total,
+            "cache_hit_tokens": self.cache_hit,
+            "cache_miss_tokens": self.cache_miss,
+            "cache_write_tokens": self.cache_write,
+        })
     }
 }
 
@@ -107,6 +169,9 @@ pub struct ModelRequest {
     pub tools: Vec<Json>,
     pub options: Json,
     pub est_prompt_tokens: u64,
+    /// Stable per-instance-epoch key for providers with automatic prompt-cache
+    /// routing (OpenAI `prompt_cache_key`). DeepSeek and Anthropic ignore it.
+    pub cache_key: String,
 }
 
 #[derive(Debug, Clone)]
