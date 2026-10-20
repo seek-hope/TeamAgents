@@ -5,11 +5,11 @@ CARGO_FLAGS ?= --offline --locked
 
 # Independent-audit sandboxes run with HOME=/tmp and no network. The pinned
 # toolchain is already installed under the real user's home; without this bridge
-# rustup tries to download 1.95.0 into /tmp/.rustup and K1 never reaches fmt-check.
+# rustup tries to download 1.99.1 into /tmp/.rustup and K1 never reaches fmt-check.
 # This is an environment bridge only; normal local/CI runs are unchanged.
 AUDIT_HOME := $(if $(filter /tmp,$(HOME)),/home/$(shell id -un),$(HOME))
 ifeq ($(HOME),/tmp)
-  ifneq ($(wildcard $(AUDIT_HOME)/.rustup/toolchains/1.95.0-*),)
+  ifneq ($(wildcard $(AUDIT_HOME)/.rustup/toolchains/1.99.1-*),)
     RUSTUP_HOME := $(AUDIT_HOME)/.rustup
     CARGO_HOME := $(AUDIT_HOME)/.cargo
     CARGO_TARGET_DIR := /tmp/teamagents-audit-target
