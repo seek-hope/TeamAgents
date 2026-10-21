@@ -14,7 +14,8 @@ in [README.md](README.md); the fix ledger is in
   also ran past the abstraction's bounds), not by the `SweepWaitsForTheSession` claim it was written for. Both
   halves are fixed: each control carries a `\* expects: <Claim>` marker that `make verify-model-counterexamples`
   compares with what TLC reports, and every checked claim that no control refutes is a row in
-  [COVERAGE.md](COVERAGE.md) with a status (105 rows, `needs-control` today; the audit recomputes that number).
+  [COVERAGE.md](COVERAGE.md) with a status. It opened at 105 `needs-control` rows and is now empty; the audit
+recomputes that number, so a claim that loses its control reappears there and fails the gate.
 * **The D-455 claims are no longer vacuous witnesses.** `MC_capabilities_delegable_child.cfg`,
   `MC_capabilities_settle_keeps_child.cfg` and `MC_capabilities_revoke_keeps_child.cfg` refute
   `ChildNonDelegable`, `TaskSettleRevokes` and `ParentRevokeCascades` through three counterfactual constants the

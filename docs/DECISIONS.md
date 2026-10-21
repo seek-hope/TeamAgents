@@ -47,8 +47,9 @@ adding a control or justifying the row. `--write-coverage` regenerates the rows 
 **Material.** `V2Capabilities.tla` gained three counterfactual constants (`AllowDelegableChild`,
 `SettleKeepsChild`, `RevokeKeepsChild`) and the configurations that refute `ChildNonDelegable`,
 `TaskSettleRevokes` and `ParentRevokeCascades` — the three D-455 claims that had no witness. The ledger to date
-is **105** claims, ordered in `verification/COVERAGE.md`; the goal is complete when that number is zero, and the
-remaining work is adding a control (or a justified entailment) per row.
+opened at **105** claims. **Completed 2026-10-21:** every row is gone — each claim is now the `expects:` target of
+its own refuting control or a justified `entailed-by` row, and the gate fails when a claim loses one (38 models,
+298 configurations, 47 positive, 250 controls).
 
 **Ledger corrections.** `verification/REPORT.md` §4 now records the formal coverage A31 (`V2DiskFull`) and A33
 (`V2Coordinator`) already had, states A12's partial coverage, the subtotal moves 26 → 28, and the unproven list

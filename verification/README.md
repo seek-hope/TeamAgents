@@ -117,7 +117,8 @@ the model; that is exactly what is enumerated.
 
 Every claim a positive configuration checks is either the `expects:` target of a counterexample configuration
 (that control is then shown to refute it, D-462) or a row in [COVERAGE.md](COVERAGE.md). That file is the
-backlog: **105** claims are enumerated exhaustively and no configuration is shown to break them, so the list is
+record: it opened with **105** claims that no configuration was shown to break, and D-462's batches closed all
+of them — **0** remain, each now the `expects:` target of its own control or a justified entailment. The list is
 the measure of how far "every claim can fail" has come. `review/verification_catalogue.py` recomputes the count
 and fails when a new claim lands in neither place, and `--write-coverage` regenerates the rows.
 
