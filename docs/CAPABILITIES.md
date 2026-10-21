@@ -1,8 +1,10 @@
-# Capabilities and their evidence (2026-10-08)
+# Capabilities and their evidence
 
 This page is the **map, not the ledger**: one row per capability, the strongest check behind it, what that check
 measured as the capability's *boundary*, and what still has no evidence. Every row points into a ledger that
-carries the detail, and nothing here overrides one of them.
+carries the detail, and nothing here overrides one of them. Current behavior was checked against source
+f78a6709 plus the D-461 working-tree follow-up on 2026-10-21; historical measurement dates below have not been renewed. The prioritized candidate
+queue lives in [PRODUCT-COMPARISON.md](PRODUCT-COMPARISON.md), not in duplicate feature lists here.
 
 | For | Read |
 |---|---|
@@ -13,7 +15,8 @@ carries the detail, and nothing here overrides one of them.
 | what the benchmark failures are made of, product-side | [../review/benchmark/CAPABILITY.md](../review/benchmark/CAPABILITY.md) |
 
 **Evidence classes.** A *test* runs in `make check` (offline, no credentials). A *probe* is a re-runnable script
-under `review/dogfood/` or `review/benchmark/` that needs a real model and sometimes a real service. A *model* is
+under `review/dogfood/` or `review/benchmark/`; some are credential-free local/fake-service checks and
+others need a real model or external service. Read the probe's declared mode before treating it as live evidence. A *model* is
 a TLA+ specification (`make verify-model-all`, `make verify-model-counterexamples`) or a Kani proof
 (`make verify-kani`). A *measurement* is a dated number whose raw output stays in the tree. Where a claim rests on
 no more than a decision's own wording, the row says so.
@@ -36,7 +39,9 @@ no more than a decision's own wording, the row says so.
 | Visibility is not delivery, and history is private | A05; `V2History.tla` (`InstancesReadOnlyTheirOwn`, `SystemNeverReads`) | the user's "may read any" is the absence of a restriction and so has no state half to break | — |
 | A call runs because a *binding* authorizes it | `v2_mcp::skill_call_without_the_binding_fails_honestly`; `V2Grants.tla`, `V2Authority.tla` | the binding gate's own refusal message is pinned by a test, so it cannot be reworded for convenience | — |
 | An approval binds one concrete operation, argument hash and permission revision | `review/dogfood/approval.py` (real TUI, approve and deny); `V2Approval.tla` (`NoLateEffect`, `ApprovalDecisionIsFinal`) | an approval is used up by that single dispatch; a leftover is expired automatically or denied by hand | — |
-| Required checks gate *settlement* | `review/dogfood/checks.py` (three rounds, then the goal parks `BLOCKED` with the failing check named); `V2Checks.tla` | **the gate cannot stop a turn that never claims to be done** (D-400) and is inert where the agent never calls `finish` (D-403); a **wrong** check is worse than none (D-400: `winning-avg-corewars` 3/3 at 966 s became 1/3 at 3,649 s because the check named a path the agent did not use) | a check the agent can run before declaring done; a stall detector |
+| Task-scoped capability delegation | `core/src/v2/control.rs` capability tests; `V2Capabilities.tla`, `V2Grants.tla`, `V2Authority.tla`; D-455 | user-issued delegable parent, attenuated non-delegable children, task/instance expiry and parent revocation; otherwise WAITING_CAPABILITY | matched real-coding intervention/cost measurement |
+| Automatic operation approval review | `engine/src/v2/reviewer.rs`, `engine/tests/v2_driver.rs`; D-458 | one concrete operation only, no capability approval; failed review leaves it pending; substring hard denials are not a complete safety policy | reviewer usage in goal accounting; adversarial and real-service evidence |
+| Required checks gate *settlement* | `review/dogfood/checks.py` (three rounds, then the goal parks `BLOCKED` with the failing check named); `V2Checks.tla` | **the gate cannot stop a turn that never claims to be done** (D-400) and is inert where the agent never calls `finish` (D-403); a **wrong** check is worse than none (D-400: `winning-avg-corewars` 3/3 at 966 s became 1/3 at 3,649 s because the check named a path the agent did not use) | D-461 provides idle-unsettled diagnostics with explicit recovery, not automatic settlement; independent verification can run pre-authorized checks mid-turn via verify_goal |
 | Independent verification of a claim | `v2_daemon::an_independent_goal_does_not_settle_on_its_producers_own_passing_round`; `V2Checks.tla` (`IndependenceIsNotSelfVerified`) with `MC_checks_self_verified.cfg` refuted (D-393) | **provenance, not strength**: producer and verifier run the same commands under the same authority (D-398), and no second agent can recover a criterion the environment does not reveal (D-401: 0/3, all failing the same unobservable convention) | — |
 
 ## 3. Execution, verification and the clock
@@ -56,7 +61,8 @@ no more than a decision's own wording, the row says so.
 | Capability | Strongest evidence | Measured boundary | Open |
 |---|---|---|---|
 | Compaction that survives a restart, and never blocks a turn | `V2Compress.tla` (eight claims); `v2_driver::failed_summaries_fall_back_uncompressed_and_break_after_three` | a summary that cannot be written leaves the originals in the view and trips a breaker after three attempts | — |
-| codemode: one tool, a QuickJS sandbox, only the script's own output in context | `review/codemode` tests in the `engine` suite; `V2Codemode.tla` with a refuted leak control; the `pre_tool` veto, structured results and the persistent store (D-374, D-376) | the frequently quoted "≈40 % fewer prompt tokens" is **Pi's own measurement of Pi's codemode**, not measured here | a product-side token measurement on a fixed task |
+| Stable prompt-cache prefix and cache telemetry | `core/src/kernel/mod.rs`, provider-body tests in `engine/tests/providers_fake.rs`, `engine/src/v2/exec.rs`; D-459 | provider-reported hit/miss/write, frozen L1 frontier until compaction, Anthropic breakpoints and official OpenAI session key; no report means unknown, not zero hits | priced cost/attribution, reviewer accounting and measured post-change service behavior |
+| codemode: one tool, a QuickJS sandbox, only the script's own output in context | `review/codemode` tests in the `engine` suite; `V2Codemode.tla` with a refuted leak control; the `pre_tool` veto, structured results and the persistent store (D-374, D-376) | MCP-only synchronous host bridge, not native-file/shell composition or parallel MCP execution; image() yields markers. The frequently quoted token saving is Pi's measurement, not a TeamAgents result | a product-side token measurement on a fixed task |
 | An image reaches a vision model, and a model without support is told so | `v2_daemon::view_image_reaches_the_wire_as_a_part_only_for_a_model_that_declares_images`; `V2Images.tla` (`NoImagesWithoutSupport`, `PartsOnlyFromLoadedBytes`) with a blind-model control refuted; live: a red square answered, 228 against 44 prompt tokens | priced at ~184 / 177 / 645 prompt tokens for 16² / 256² / 1024² pixels (measured); on its motivating task the structural barrier is gone but the capability gap remains (0/3 at 1,800 s, D-394) | — |
 | Durable memory for facts that exist nowhere on disk | `V2Memory.tla` (`NotesAreAppendOnly`, `TheStoreRefusesAtTheCap`, `RecallIsBounded`) with an eviction control refuted; the fixture measurement **0/3 → 3/3** (D-406), whose control twice wrote an explicit "choosing one would be an unverifiable guess" | **no measurable gain when the state is already on disk**: on a real task a second session went 2/3 with memory and 2/3 without (D-409), so a note pays only for what artifacts do not carry | a long project whose facts never become files |
 | Skills and MCP services, over both transports | `review/dogfood/skills.py`, `mcp.py`, `mcp_http.py`; `cli::mcp_list_names_the_services_and_their_tools`; `mcp add`/`mcp remove` edit exactly one binding block (D-399, D-408); `mcp login`/`logout` sign in to an OAuth HTTP service (discovery, dynamic registration, PKCE with a state, loopback or pasted redirect, a 0600 credential file, refresh on expiry or a 401) with `V2Oauth.tla`'s five claims verified, five controls refuted and `engine/tests/mcp_oauth.rs` driving the real binary against a fake authorization server (D-412) | the nearest trusted project config is read (D-434); **no vendor's OAuth server was exercised**, so the sign-in is accepted against the specifications and a fake, not against a live service | MCP management lives in the developer CLI; `status --json` reports the running session's bindings (D-445) |
@@ -69,14 +75,16 @@ no more than a decision's own wording, the row says so.
 | One daemon per state root, a headless client, and a TUI | `review/dogfood/tui.py`, `tui_panels.py`, `tui_reconnect.py`, `input_latency.py`; `make pty`; `V2Coordinator.tla`, `V2Concurrency.tla` | rendering and mouse hit-testing share one geometry module, so a panel that draws must be the panel that is clicked | — |
 | Readable conversation Markdown and compact tool results | `tui/tests/conversation.rs`, PTY smoke; Kani transcript-window proof | shared live/history renderer, explicit streaming, Unicode-cell wrapping, four/forty-line previews | full tool output stays in stored history |
 | Mermaid, SVG, DOT and local image previews | `tui/tests/graphics.rs`, `tui/scripts/pty_graphics_smoke.py`; Kani media-clipping proof | native Kitty PNG placement, Unicode/block fallback, author-scoped local references, Ctrl+G source toggle | bounded static previews; remote URLs remain links; no universal diagram-language parity |
-| Conversation completion, code colors and long-history media | `tui/tests/parity.rs`, `tui/src/graphics_tests.rs`, `tui/src/graphics_worker_tests.rs`; `V2Presentation.tla` and `V2DisplayWorker.tla`; [maturity report](../review/maturity-2026-10-11/REPORT.md) | seven local commands; seven grammar families and diff; twenty distinct images including eviction/revisit; terminable isolated display processes with source fallback | wider terminal/OS coverage; these are synthetic/local-runtime checks, not model-success evidence |
-| Input attachments and pending revisions | `core/tests/input_queue.rs`, `engine/src/v2/attachments_tests.rs`, `engine/tests/cases/inputs.rs`, maturity workflow/PTY probes; `V2InputQueue.tla` | engine-owned confined immutable snapshots, explicit draft submission, revision-checked edit/cancel, original audit rows and native image parts | real-provider image acceptance and external editor |
+| Conversation completion, code colors and long-history media | `tui/tests/parity.rs`, `tui/src/graphics_tests.rs`, `tui/src/graphics_worker_tests.rs`; `V2Presentation.tla` and `V2DisplayWorker.tla`; [maturity report](../review/maturity-2026-10-11/REPORT.md) | seven completion-menu commands plus separately recognized /edit; seven grammar families and diff; twenty distinct images including eviction/revisit; terminable isolated display processes with source fallback | wider terminal/OS coverage; these are synthetic/local-runtime checks, not model-success evidence |
+| Input attachments and pending revisions | `core/tests/input_queue.rs`, `engine/src/v2/attachments_tests.rs`, `engine/tests/cases/inputs.rs`, maturity workflow/PTY probes; `V2InputQueue.tla` | engine-owned confined immutable snapshots, explicit draft submission, revision-checked edit/cancel, original audit rows and native image parts | real-provider image acceptance and richer follow-up semantics |
+| External composer editor | `tui/src/editor.rs` success/failure test; routing in `tui/src/v2app.rs` and `tui/src/main.rs` | VISUAL/EDITOR, Ctrl+E or draft /edit suffix, no implicit send, error restores draft; /edit is absent from completion | editor crash/resize/reconnect and graphical-terminal integration coverage |
 | Local export and browser search | `engine/src/v2/session_export_tests.rs`, `engine/tests/session_browser.rs`, `tui/tests/sessions.rs`, maturity PTY probe | complete bounded read snapshot in Markdown/JSON, references retained, no overwrite, real SIGINT cleanup; search preview is a snippet | HTML export and message-level branches |
-| Sessions: registry, fork, rename, restore, search, TUI history/switch/delete | `V2Sessions.tla` (`RegistryIsInjective`, `ArchiveOnlyWhenIdle`) with three refuted controls; `V2SessionUi.tla` with four refuted controls; `engine/tests/session_browser.rs`, `tui/tests/sessions.rs`, `review/dogfood/tui_sessions.py` | the memory store belongs to the **base**, not to one named session (D-405) | — |
+| Sessions: registry, fork, rename, restore, search, TUI history/switch/delete | `V2Sessions.tla` (`RegistryIsInjective`, `ArchiveOnlyWhenIdle`) with three refuted controls; `V2SessionUi.tla` with four refuted controls; `engine/tests/session_browser.rs`, `tui/tests/sessions.rs`, `review/dogfood/tui_sessions.py` | fork requires no live source daemon; no message-level tree; memory belongs to the base, not one named session (D-405) | project/session selection ergonomics and message-level branches |
+| Read-only work diagnostics and explicit recovery | engine/src/v2/diagnostics/tests.rs; engine/tests/v2_daemon.rs restart/send/cancel cases; tui/tests/minimal.rs frames | D-461 option A: current-epoch persisted facts, retained reasons, wait/timer and current-operation detail; no model calls or state changes on observation | real-user effectiveness and large-team polling measurements; automatic reminders are excluded |
 | Interventions: pause, resume, terminate, cancel a task | `review/dogfood/lifecycle_run.py`, `cancel.py`; D-68's headless path | **cancelling a task is not stopping its work**: the assignee's command runs until its own timeout unless the instance is terminated (D-88) | — |
 | Automations: a schedule that starts a goal on its own | `V2Schedule.tla` (`NoDuplicateRun`, `AtMostOneRunPerAutomation`, `DisabledNeverRuns`, `OnlyDueSlotsRun`) with four refuted controls | safety only: a run need not ever happen | — |
 | Workspace policies: shared, isolated, git worktree | `workspace::tests::shared_and_isolated_roots`, `worktree_lifecycle_and_guards`; `review/dogfood/workspace.py` | retirement refuses anything with uncommitted or unmerged work, and says why | — |
-| Install, init, doctor, cleanup, reopen | `engine/tests/install.rs`; `review/dogfood/boundary.py`; `make release-rehearsal`; D-451 installed-artifact probe | v0.2.0 delivers v2 but predates D-451; current-source musl archive installed and exercised locally without publication | a separately authorized release; untested platforms |
+| Install, init, doctor, cleanup, reopen | `engine/tests/install.rs`; `review/dogfood/boundary.py`; `make release-rehearsal`; D-451 installed-artifact probe | the D-451 pinned-source musl archive was installed and exercised locally; all public releases/tags were subsequently removed (D-457); current use requires source builds | a separately authorized release; untested platforms |
 
 ## 6. Evaluation standing: three benchmarks, DeepSeek Flash
 
@@ -99,61 +107,46 @@ Patch-vs-gold similarity is the cheap probe, and a run's trajectory must be coll
 ran because the image ships no `python3`; D-410: a wrap-up note no model ever received; D-416: a measurement whose
 binary predated the instrument).
 
-**Where the remaining failures are.** Terminal-Bench: not reasoning depth (D-380: lower effort scored better; D-381:
-a 12-hour budget changed nothing) but throughput and cadence, and the window's composition is task-dependent —
-one attempt spent 98 % of its 730 s in model requests (68 of them, one 190 s), another 94–96 % of 775–841 s inside
-tool calls (three asking for 300 s), with long calls *chosen by the model* (D-414). A long request is the model
-streaming slowly, never a stalled connection (D-416: frame gaps ≤ 1.1 s across 232 requests). SWE-bench: four of
-twelve failed with patches that take a different route than the reference fix. τ³-bench: **8/10**, once the harness graded from the product's
-own tool calls rather than from a conversation the product's tools never appear in — the first run's 0/10 was a
-harness artefact and is retracted, and with it the "self-verification gap" story that had been read out of it.
+The results above are historical task outcomes, not Pi comparisons or measurements of every later source
+revision. The corrected tau3 full-split results supersede its small pilot; the invalid retrieval-contaminated
+SWE-bench runs remain invalid. The benchmark ledger preserves those corrections and the underlying receipts.
 
 **How to read it.** One full-set run is a point estimate with a **±5-task band** (D-388). Each task runs with its
 **own** authored budget (48 × 900 s, 17 × 1,800 s, 13 × 3,600 s, plus three longer) because harbor does; the
 harness never shrinks a real model's context window; and the adapter calls the same system-dependency setup every
-built-in harbor agent does (D-382). Three tasks are **excluded from the headline denominator** and listed beside
-it: `qemu-alpine-ssh` and `qemu-startup` (their images' mirror rot — the verifier cannot install anything, so the
+built-in harbor agent does (D-382). Three tasks are excluded only from the **adjusted 258-trial denominator**, not from the all-task 267:
+ `qemu-alpine-ssh` and `qemu-startup` (their images' mirror rot — the verifier cannot install anything, so the
 0 is not the agent's), and `pytorch-model-cli` (an under-determined specification: it grades the reference
 implementation's `/255` convention while the only criterion the environment offers favours the other one, D-401).
 `mteb-retrieve` was excluded here for a while (D-423) and is back in the denominator: a later trajectory showed the
 prompt it needs is discoverable from `mteb`'s own model metadata, which is what the instruction says to use — the
 earlier failures were a self-check that overwrote the correct answer (D-425).
-**Read a check's own receipt before attributing a result to it** (D-395: an acceptance check that never ran
-because the image ships no `python3`).
 
-**Where the remaining failures are.** Per task: 55 tasks 3/3, 17 tasks 2/3, 8 tasks 1/3, 9 tasks 0/3; 40 trials
-(15 %) ended in an exception (33 deadline cuts, 7 non-zero exits). The surviving pattern is not reasoning depth —
-lower reasoning effort scored *better* than higher (D-380) and a 12-hour budget changed nothing (D-381) — but
-**throughput and cadence**: a turn is bounded by wall clock, and every runtime lever (an acceptance gate, a
-wrap-up note, a deadline) is observable only where the model comes up for air (D-400, D-403, D-410).
-`review/benchmark/cadence.py` then decomposed the window itself, and its composition is **task-dependent**: one
-attempt spent 98 % of its 730 s in model requests (68 of them, one 190 s) while another spent 94–96 % of
-775–841 s inside tool calls (three of them asking for 300 s) — so a bound on one resource cannot help the other
-family, and the next experiment (`[limits] max_tool_seconds`, a ceiling on what one call may ask for) is
-pre-registered against the tool-dominated family rather than assumed (D-414). The last plausible lever — capping the
-context — was measured and refuted: prompts are large (median 49.7 k tokens, p90 114.8 k, and compaction never fires
-under a 1 M window) but a 200 k-token prompt costs only ~0.5 s of prefill, while latency tracks the model's own
-completion (301 → 903 tokens across the same buckets); so large prompts are a **billing** fact, not a throughput one
-(D-424). The other half of that split was
-measured to its end: a long model request is the model **streaming slowly** — frame gaps of at most 1.1 s and a
-first frame within 0.7 s across 232 requests — so there is no stall to detect and no runtime lever on that
-family (D-416).
+**Failure diagnoses are task-specific.** The recorded Terminal-Bench distribution was 55 tasks at 3/3,
+17 at 2/3, eight at 1/3 and nine at 0/3; 40 trials ended in exceptions (33 deadline cuts and seven nonzero
+exits). D-414 measured model-dominated and tool-dominated cases separately. D-416 found slow streaming,
+not a stalled connection, in its sampled long requests; this is not a claim that providers never stall.
+D-424 found that larger prompts were a billing issue rather than the dominant latency source in its sample.
+These results justify measuring cadence and cost, not assuming that a shorter window, longer timeout,
+higher effort or more agents will improve every task. Keep native windows in all real-model evaluations.
 
-## 7. Pending
+## 7. Remaining evidence and candidate work
 
-- **MCP lives in the developer CLI (D-445).** `status --json` reads the running session's binding and
-  credential state; `mcp list` queries configured services. The sign-in flow stays a separate process.
-- **A tool call's wall clock** — D-415 implements the optional duration ceiling. Its benefit still needs
-  task-specific measurement; it cannot accelerate a model-dominated turn.
-- **The briefing's own measurement** — completed with a null result (D-418), as recorded above.
-  It remains information, not evidence of a task-success improvement.
-- **Current product comparison and follow-up** — the [D-450 report](../review/parity-2026-10-08/REPORT.md)
-  retains evidence, priorities and next acceptance methods across input, sessions, sandbox services,
-  ecosystem interfaces, collaboration and release. The three completed presentation changes do not close it.
-- **Memory on a longer horizon** — D-406 measures the isolated case and D-409 the real-task case; what neither
-  speaks to is a project over many sessions whose facts never became files.
-- **Release freshness** — v0.2.0 already delivers the v2 product (D-343); the older-generation caveat
-  is closed. The 2026-09-29 tag predates later runtime and TUI changes. Packaging and live installation of
-  this iteration still require a fresh rehearsal and a separately authorized release.
-- **The collaboration gain's success form** — Q16's latency form is confirmed (D-264, the paired metric); the
-  end-to-end success form is not, and whether the narrower gain satisfies Q16's wording is the user's call.
+[The daily-coding queue](PRODUCT-COMPARISON.md#2-candidate-improvements-in-priority-order) is the single
+priority list. The major unclosed evidence boundaries are:
+
+- Matched Pi coding outcomes, manual intervention and complete cost: existing A/B/C arms are internal
+  TeamAgents ablations, not comparator trials.
+- Real selected provider/image/OAuth/Docker paths, full skill support resources and user-home development
+  environments; local serialization and scripted-provider tests establish different facts.
+- Adversarial review of auto-approval and other boundaries; broader graphical terminal/platform coverage.
+- Exact-artifact installation and update acceptance after a separately authorized release; no public
+  release currently exists (D-457).
+- Long-horizon memory where facts are not already files; D-406's fixture and D-409's real-task null result
+  do not establish general benefit.
+- Q16's collaboration-success form: the narrower paired latency result is confirmed in D-264, not a
+  general end-to-end success improvement. Whether it satisfies Q16's wording remains a user decision.
+
+MCP management in the CLI and absence of automatic cross-session memory are product choices, not missing
+promised TUI features. External editing, capability delegation and cache telemetry are implemented; their
+coverage and remaining limitations are separated from absent features above.

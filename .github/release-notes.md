@@ -1,3 +1,6 @@
+> Unpublished release-note template. D-457 still freezes publication; the download instructions below
+> apply only after an explicitly authorized release. Until then, build from source as described in INSTALL.
+
 ### What is in this release
 
 - The single authoritative state: one SQLite database per session (WAL with `synchronous=FULL`); instances,
@@ -18,11 +21,13 @@
   previews that remain available beyond sixteen images in long histories (D-450).
 - Explicit engine-owned file/image snapshots and path completion, pending-input edit/cancel, local
   Markdown/JSON export and session-browser search (D-451). Display grammar/image/diagram parsing runs in
-  resource-bounded terminable Rust helpers. Current-source archive installation is rehearsed locally;
+  resource-bounded terminable Rust helpers. The D-451 pinned-source archive was rehearsed locally;
   these notes do not publish an artifact.
+- Read-only work diagnostics with explicit recovery instructions in CLI/TUI (D-461); observation never
+  prompts a model, settles a task or stops an operation.
 - Installer, `teamagents init`, `doctor` and `exec` as documented in the [install guide](https://github.com/seek-hope/TeamAgents/blob/main/docs/INSTALL.md).
 
-Local regression for this release: `make check` green (core 137 / engine 399 / tui 79) plus `make pty`;
+Local regression for this release: `make check` green (core 137 / engine 405 / tui 81) plus `make pty`;
 real-model acceptance is reported separately in [docs/ACCEPTANCE.md](https://github.com/seek-hope/TeamAgents/blob/main/docs/ACCEPTANCE.md).
 
 ### Install and first run

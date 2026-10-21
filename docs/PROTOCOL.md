@@ -39,6 +39,19 @@ without losing or repeating an input (D-452). The read checks stored UTF-8 byte 
 parsing payloads. If the first remaining payload alone exceeds 4 MiB, it returns an error naming its envelope
 id and revision for explicit edit/cancel; it never silently skips, truncates or mutates that input.
 
+**Work diagnostics (D-461).** Checkpoint instance rows add diagnosis; snapshot.tasks contains only
+unsettled tasks. The tasks read still includes terminal tasks. Each task has diagnosis and assignee_activity:
+task settlement never implies that the assignee's operation stopped. The shared diagnostics helper is
+SELECT-only, in the caller's read transaction, with no events, model requests or scheduling side effects.
+
+A diagnosis carries code, summary, attention, next_steps, optional reason (null if unavailable), waits and
+operations. Wait rows preserve id, mode, conditions and timer_at; operation rows are for the instance's
+current request/epoch and carry id, status and cancel_requested, not tool arguments or output. Codes include
+idle_unsettled, idle, ready, waiting, wait_missing, waiting_approval, waiting_capability, model_pending,
+tools_pending, checking, inactive, terminated, blocked, settled, missing_assignee and unknown. Clients must
+accept unfamiliar codes and absent fields from older daemons. attention is an inspection hint, never a
+permission or a deadlock verdict. A missing timer and elapsed time alone do not establish a stall.
+
 **Commands** are executed by the control plane under the caller's identity (`Identity::User`) in one database
 transaction, with the permission and budget checks of `core/src/v2/capability.rs`; `identity checked` below means
 the handler re-checks who may do this rather than trusting the request.
@@ -49,16 +62,16 @@ the handler re-checks who may do this rather than trusting the request.
 
 | Method | Parameters | Reply keys | Answered at |
 |---|---|---|---|
-| `previews` | — | `previews` | `engine/src/v2/daemon.rs:643` |
-| `checkpoint` | — | `snapshot`, `watermark` | `engine/src/v2/daemon.rs:649` |
-| `events` | `since` | `events`, `resync_required`, `watermark` | `engine/src/v2/daemon.rs:656` |
-| `history` | `instance_id`, `limit` | `entries`, `envelope_id`, `epoch`, `idx`, `instance_id`, `kind`, `message`, `workspace` | `engine/src/v2/daemon.rs:665` |
-| `surfaces` | `instance_id`, `limit` | `epoch`, `goal_id`, `instance_id`, `kind`, `offered_tools`, `request_id`, `status`, `surface_authorized`, `surfaces` | `engine/src/v2/daemon.rs:698` |
-| `inputs` | — | `envelope_id`, `epoch`, `inputs`, `instance_id`, `next_after`, `payload`, `revision`, `sequence` | `engine/src/v2/daemon.rs:730` |
-| `tasks` | — | `assignee`, `goal_id`, `id`, `status`, `tasks` | `engine/src/v2/daemon.rs:781` |
-| `approvals` | — | `approvals`, `id`, `operation_id`, `preview`, `tool` | `engine/src/v2/daemon.rs:797` |
-| `goals` | — | `attached_instances`, `deadline`, `goals`, `id`, `known_usage`, `limits`, `status`, `summary`, `unknown_usage` | `engine/src/v2/daemon.rs:826` |
-| `grants` | — | `action`, `capability_requests`, `delegable`, `grants`, `id`, `issuer`, `parent_grant_id`, `requester`, `resource_scope`, `revision`, `revoked`, `status`, `subject`, `task_id` | `engine/src/v2/daemon.rs:872` |
+| `previews` | — | `previews` | `engine/src/v2/daemon.rs:646` |
+| `checkpoint` | — | `snapshot`, `watermark` | `engine/src/v2/daemon.rs:652` |
+| `events` | `since` | `events`, `resync_required`, `watermark` | `engine/src/v2/daemon.rs:659` |
+| `history` | `instance_id`, `limit` | `entries`, `envelope_id`, `epoch`, `idx`, `instance_id`, `kind`, `message`, `workspace` | `engine/src/v2/daemon.rs:668` |
+| `surfaces` | `instance_id`, `limit` | `epoch`, `goal_id`, `instance_id`, `kind`, `offered_tools`, `request_id`, `status`, `surface_authorized`, `surfaces` | `engine/src/v2/daemon.rs:701` |
+| `inputs` | — | `envelope_id`, `epoch`, `inputs`, `instance_id`, `next_after`, `payload`, `revision`, `sequence` | `engine/src/v2/daemon.rs:733` |
+| `tasks` | — | `tasks` | `engine/src/v2/daemon.rs:784` |
+| `approvals` | — | `approvals`, `id`, `operation_id`, `preview`, `tool` | `engine/src/v2/daemon.rs:793` |
+| `goals` | — | `attached_instances`, `deadline`, `goals`, `id`, `known_usage`, `limits`, `status`, `summary`, `unknown_usage` | `engine/src/v2/daemon.rs:822` |
+| `grants` | — | `action`, `capability_requests`, `delegable`, `grants`, `id`, `issuer`, `parent_grant_id`, `requester`, `resource_scope`, `revision`, `revoked`, `status`, `subject`, `task_id` | `engine/src/v2/daemon.rs:868` |
 
 ### Commands (executed by the control plane)
 
@@ -125,7 +138,7 @@ the handler re-checks who may do this rather than trusting the request.
 
 The rows a client reads (`instances[]`, `tasks[]`, `approvals[]`, `grants[]`, `entries[]`), a
 checkpoint's `goal` object and the greeting/reply envelopes are all built as `json!({ … })`
-literals in `engine/src/v2/daemon.rs`; this table is that list. A row is one literal.
+literals in `engine/src/v2/daemon.rs` and its diagnostics helper; this table is that list. A row is one literal.
 
 | Built at | Fields |
 |---|---|
@@ -138,9 +151,9 @@ literals in `engine/src/v2/daemon.rs`; this table is that list. A row is one lit
 | `handle` | `request_id`, `ok`, `error` |
 | `handle` | — |
 | `input_paths` arm | `stopping`, `state_root` |
-| `read_snapshot` | `id`, `lifecycle`, `phase`, `model`, `reason`, `can_run_shell` |
-| `read_snapshot` | `instances`, `goal`, `mcp`, `sessions` |
+| `read_snapshot` | `id`, `lifecycle`, `phase`, `model`, `reason`, `can_run_shell`, `diagnosis` |
 | `read_snapshot` | `status`, `known_usage`, `summary`, `unknown_usage`, `limits`, `deadline` |
+| `read_snapshot` | `instances`, `tasks`, `goal`, `mcp`, `sessions` |
 | `read_events` | `sequence`, `kind`, `scope`, `payload` |
 | `apply_session_goal_limits` | — |
 | `previews` arm | `previews` |
@@ -152,7 +165,6 @@ literals in `engine/src/v2/daemon.rs`; this table is that list. A row is one lit
 | `surfaces` arm | `surfaces` |
 | `inputs` arm | `envelope_id`, `sequence`, `epoch`, `payload`, `revision` |
 | `inputs` arm | `instance_id`, `inputs`, `next_after` |
-| `tasks` arm | `id`, `goal_id`, `assignee`, `status` |
 | `tasks` arm | `tasks` |
 | `approvals` arm | `id`, `operation_id`, `tool`, `preview` |
 | `approvals` arm | `approvals` |
@@ -163,5 +175,9 @@ literals in `engine/src/v2/daemon.rs`; this table is that list. A row is one lit
 | `grants` arm | `id`, `issuer`, `subject`, `action`, `resource_scope`, `parent_grant_id`, `delegable`, `task_id`, `revoked` |
 | `grants` arm | `id`, `requester`, `subject`, `action`, `resource_scope`, `task_id`, `parent_grant_id`, `status` |
 | `grants` arm | `grants`, `capability_requests`, `revision` |
+| diagnostics: `diagnosis` | `code`, `summary`, `attention`, `next_steps`, `reason`, `waits`, `operations` |
+| diagnostics: `read_sql` | `id`, `mode`, `conditions`, `timer_at` |
+| diagnostics: `read_sql` | `id`, `status`, `cancel_requested` |
+| diagnostics: `read_sql` | `id`, `goal_id`, `assignee`, `status`, `diagnosis`, `assignee_activity` |
 
 <!-- generated: end -->

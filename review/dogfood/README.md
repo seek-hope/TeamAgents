@@ -71,7 +71,8 @@ once** across the crash; `unknown_outcome.py` checks the operation's class, the 
 notification and the absence of a success claim; `boundary.py` checks the refused file's **bytes are
 unchanged**; `two_gates.py` and `checks.py` check that the model was told about the runtime check's
 failure; `hooks.py` checks the veto, the reason reaching the model and the two allow-shapes for a
-broken hook; `instructions.py` is built to *flip* when the feature lands. What no reading settles is
+broken hook; `instructions.py` now checks that explicit instruction files reach both leader and worker
+prompts (D-246), replacing D-102's historical negative assertion. What no reading settles is
 whether a covering assertion is itself strong enough (a tolerance too loose, a count too generous):
 `probes.py --self-check` gates the mechanical part — every probe must be cited by an acceptance row
 or a decision — and the rest stays a reading, stated as such.
@@ -710,18 +711,20 @@ exit `1` and the client's verdict `ok: true`; a passing runtime check plus a fai
 neither gate replaces the other. Measured 2026-09-26, 16.0 s and 5.2 s (D-101, D-146).
 
 
-## `instructions.py`: `instruction_files` is declared, validated and unread
+## `instructions.py`: explicit instruction files reach every member
 
 ```bash
 python3 review/dogfood/instructions.py
 ```
 
-The config key is accepted, its path is validated, and `doctor` used to print
-`[ok  ] instruction files  1 file(s) reach every member's prompt` — while nothing in this build reads those
-files: a member's system text is its profile's `instructions`. The probe configures a file holding a canary,
-runs one real-model turn and reads the prompt the leader was given: the canary is **not** in it, and `doctor`
-now says `declared, not applied` (D-102). It is written to flip — when the feature lands, the assertion becomes
-"the canary is in the prompt" and this probe is its acceptance test.
+The current probe is credential-free: a local scripted provider captures requests from a leader and its
+spawned worker. It asserts that the configured file's canary reaches both system prompts, after the member's
+own instructions, and that doctor reports the files and byte count (D-246). It does not test automatic
+AGENTS.md discovery, which is a separate absent feature.
+
+Historically, D-102 found this key accepted and validated but unread, while doctor claimed the files reached
+every member. The original real-model probe asserted absence. D-246 deliberately flipped that assertion to
+presence and moved the witness to captured provider requests; the earlier finding is not current behavior.
 
 
 ## `mcp_http.py`: the HTTP transport, its bearer token, and a required service that cannot start

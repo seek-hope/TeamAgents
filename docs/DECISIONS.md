@@ -1,8 +1,10 @@
 # Implementation decisions (current)
 
-This file records the direction, boundaries and deviations that are **currently binding**: any implementation
-that departs from the confirmed design is discussed with the user first. The decision log of earlier
-implementations stays reachable through Git history (`git log -- docs/archive`).
+This file records confirmed direction, boundaries and deviations in reverse decision order. Newer decisions
+may supersede older entries; the current-rule table below summarizes the active contract. Historical findings
+and measurements keep their original dates and are not claims about every later source revision. Any
+implementation departing from the confirmed design requires user confirmation first. The decision log of
+earlier implementations stays reachable through Git history (`git log -- docs/archive`).
 
 ## Earlier rules that still apply
 
@@ -16,13 +18,85 @@ implementations stays reachable through Git history (`git log -- docs/archive`).
 | Context compaction | triggered by real window usage; the summary keeps the original request and acceptance criteria, and the full text stays retrievable | D-28 |
 | Task priority | complex coding and long-horizon stability come first | D-35 |
 | Native context | real-model evaluation always uses the model's native window and records the value and its source | D-36 |
-| Install and first config | download-and-run install; `init` writes a minimal config and never overwrites an existing file | D-37; `docs/INSTALL.md` records the differences of earlier releases (≤ v0.1.2) |
+| Install and first config | source builds while publication is frozen; init writes a minimal config and never overwrites an existing file; local archives require matching checksums | D-37, D-457; docs/INSTALL.md |
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
 | Capability delegation | user remains the authority root; spawned instances still hold no shell by default; a user grant may be marked `delegable`, and only such a parent may produce attenuated, task-scoped, non-delegable child grants; missing capabilities become a visible pending approval, not a silent idle | D-455 |
-| Repository-local config | read for the directory the session works in, but contributes **nothing** until the user sets `[permissions] trust_project = true` in their own config; `[permissions]`, hooks, checks, retention and limits stay user-only | D-244 |
-| Retention | `[retention] history_days` is applied at a session's start under the `V2Retention` guards (the log's head, a pending wait's fact, a non-terminal instance's lifecycle and evaluation evidence are never evicted); `archived_days` stays unapplied — one session per state root (A33) | D-245 |
+| Repository-local config | nearest ancestor config is discovered; canonical-root trusted_projects or explicit trust_project admits it; permissions, hooks, checks, retention, limits and update policy stay user-only; instruction files remain explicit | D-244, D-246, D-434 |
+| Retention | history_days applies at boot under V2Retention guards; archived_days is applied by sessions prune under V2Prune guards; live state and evidence stay protected | D-245, D-435, D-436 |
 | Prompt cache | cache hit/miss/write are provider-reported and visible; the L1 frontier is fixed between compactions; Anthropic gets explicit breakpoints and OpenAI a stable key; DeepSeek stays automatic | D-459 |
+
+## D-461 Read-only work diagnostics and explicit recovery (2026-10-21)
+
+**Confirmed scope.** After discussing DD-01, the user selected option A (diagnosis plus explicit recovery)
+and rejected option B (automatic model reminders). This authorizes the diagnostic implementation, not the
+rest of the candidate queue. No scheduler, permission, settlement, cancellation or replay semantics change.
+
+**Implementation.** A shared SELECT-only projection in engine/src/v2/diagnostics.rs derives instance activity
+and task diagnostics for checkpoint, instances and tasks. Reads share the caller's SQLite snapshot; the
+checkpoint includes only unsettled tasks, while the tasks read retains its complete list. READY alone is not
+idle: pending tasks, accepted current-epoch input and the visible context tail are checked, including summary
+ordering and compressed entries. Diagnostics distinguish idle-unsettled, model/tool/check processing,
+operation approval, capability approval, registered waits, inactive instances and BLOCKED tasks. A timer's
+presence is reported, not interpreted as proof of progress or deadlock. Current-request operation statuses
+remain visible even when a task is cancelled or an instance is paused. Runtime block/lifecycle reasons are
+reported when retained; unavailable reasons are null, not reconstructed from model prose.
+
+**User surface.** Human and JSON CLI lists carry reasons and suggested existing commands. TUI status shows
+attention states and /help shows a bounded snapshot of reasons and recovery instructions without switching
+the composer, sending input or executing a command. Fresh checkpoints replace old diagnostics; older daemons
+without these fields still work. The existing request, wait, approval and capability events trigger refreshes.
+Recovery remains the user's explicit send, cancel, approval, resume or confirmed termination. Suggestions
+require the same session selector and the printed instance/task ids; they are never auto-executed.
+
+**Adjacent fix (exec stream).** Repeated full-gate runs exposed a pre-existing settle race in
+`teamagents exec --stream-json`: the checkpoint and event read of one pass could straddle a settlement
+committed before the `history` read, so the run broke with the input streamed but not `goal_completed`, and
+the report's usage missed that `attempt_recorded` (0 requests for a turn that ran). The loop now takes one
+further immediate pass after a terminal outcome before reporting. Lines stay a prefix of the event log, usage
+is complete, and the second pass cannot loop because the settle is already known. The existing streaming test
+now asserts the settlement event and one accounted request. This fixes an observation/reporting bug; it does
+not retry a model request or replay an effect.
+
+**Evidence.** Five projection tests cover query-only reads/reopen, visible epochs and queued work, ALL/ANY
+waits with/without timers and external conditions, approval/tool/unknown outcomes, and cancelled tasks with
+active assignees. The daemon/CLI cancellation test now witnesses idle worker plus pending Leader wait across
+a real daemon restart and repeated reads with no extra provider calls. A second scripted-provider test shows
+explicit worker input causing real settlement and waking the existing wait. Two TUI tests cover frames,
+local-only help, draft/focus ownership, refresh and reconnect. These are deterministic local checks, not
+real-model task-quality or a performance claim. No additional model reminder, task success inference,
+automatic cancellation or effect replay was added. Large-team polling remains a measurement boundary.
+
+## D-460 Refresh current documentation and record daily-coding candidates (2026-10-21)
+
+**Authorized scope.** The user requested documentation cleanup, normalization and a written improvement list
+following the read-only Pi replacement assessment. This is a documentation/maintenance change, not approval
+to implement the list, change runtime semantics, spend on model trials or publish a release.
+
+**Current-source basis.** f78a6709 includes capability delegation, automatic operation review, the external
+editor, DeepSeek web tools and D-459 cache telemetry. The current comparison uses installed
+Pi 1.3.0 documentation/source, not the old Pi 1.1.0 snapshot. Codex and historical evaluation runs were not
+refreshed. The handoff now names the current source rather than presenting the D-452 closure as HEAD.
+
+**Document roles.** PRODUCT-COMPARISON owns the candidate queue with priority, inspected gap and proposed
+acceptance. USER-GUIDE and INSTALL describe current operation; CAPABILITIES summarizes evidence; ACCEPTANCE
+owns the local baseline and per-item evidence, with old findings separated from the current gap summary.
+DEVELOPMENT records the maintenance rule. Existing dated reports, manifests, raw runs and earlier decision
+bodies remain evidence of their original sources; they are not rewritten into new acceptance.
+
+**Corrections.** Remove obsolete release-download/old-upgrade instructions, the unwired-project-config claim,
+the blanket per-worker manual-grant description and the missing-editor claim. State the actual limits of
+skills support resources, MCP-only synchronous codemode, image markers versus native attachments, session
+fork, toolchain mounts and reviewer billing. Cache statistics are provider usage, not a price estimate.
+Retention and artifact collection are described as implemented, with their deletion guards and remaining
+policy limits; the current instruction-file probe is no longer described as a historical failure.
+The keybinding documentation audit now recognizes the already implemented Ctrl+E handler; no product key
+or permission behavior changes.
+
+**Evidence.** On 2026-10-21, make check passed (core 137 / engine 399 / tui 79) and make pty passed the v2,
+blocks and Kitty-protocol smoke checks. Local gates do not establish independent audit acceptance,
+graphical-terminal coverage, a new release, live-provider compatibility or Pi task-success equivalence.
+The ranked candidates remain unapproved; design changes need their own confirmed decisions.
 
 ## D-459 Prompt-cache stability and telemetry (2026-10-19)
 

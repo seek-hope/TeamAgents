@@ -10,12 +10,13 @@ in three layers:
   `[tools.fetch]`/`[tools.search]` entry offers neither, D-168). The leader's profile ships them by default
   (`docs/USER-GUIDE.md` §5).
 * **The instance's grants** — the team tools in `kernel::collaboration_tool_schemas(actions)` appear only for the
-  actions the instance holds a grant for (D-61: a spawned worker holds nothing of its own, and `wait` is always
-  offered to team instances). The dispatch boundary re-checks regardless of what was offered (§6.1), which is why
+  actions the instance holds a grant for. D-61's no-ambient-shell default remains; D-455 can derive an
+  explicitly requested, task-scoped grant from a user-issued delegable parent, or await a user decision.
+  `wait` is always offered to team instances. The dispatch boundary re-checks the effective grant (§6.1), so
   an unoffered call fails closed instead of running.
-* **The session's bindings** — `[tools.*]` in the config, including MCP services (D-74). Those are discovered
-  from the server at session start and appear as `<service>_<tool>`, so they cannot be listed here; `doctor` shows
-  what a session actually bound.
+* **The session's bindings** — `[tools.*]` in the config, including MCP services (D-74). Their tools are
+  discovered at session start and reachable through codemode's normalized service/tool names, not separately
+  advertised model functions. Doctor reports configured services; status reports the live bound surface.
 
 `kernel::builtin_tool_schemas()` is the floor: `finish` and the readback tool are offered to every instance.
 

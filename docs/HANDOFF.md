@@ -1,135 +1,118 @@
 # Development handoff
 
-Prepared for a new development session on 2026-10-17. This document preserves the completed session's
-handoff; it is not a new implementation plan or an authorization to execute the backlog. Update it after
-closing a development cycle. The design, decision log and acceptance ledger remain authoritative.
+Updated **2026-10-21** against source **f78a6709 plus the D-461 working-tree follow-up**. This is the current entry point for a new development
+session, not an authorization to implement the candidate backlog. Recheck Git status and recent commits;
+this document does not assert that a remote branch or installed binary matches the working tree.
 
 ## Start here
 
-1. Read [AGENTS.md](../AGENTS.md), then this document. Inspect Git status and recent commits before editing;
-   do not assume the recorded baseline is still HEAD.
-2. Read [DESIGN.md](DESIGN.md) for Q1-Q19 and A01-A36, the latest entries in
-   [DECISIONS.md](DECISIONS.md), and the baseline/known gaps in [ACCEPTANCE.md](ACCEPTANCE.md).
-3. Use [DEVELOPMENT.md](DEVELOPMENT.md) for build, test, generated-reference and evidence maintenance.
-   [PRODUCT-COMPARISON.md](PRODUCT-COMPARISON.md) and the dated reports it links describe possible follow-up
-   work. Agree the next bounded objective with the user before treating a candidate as approved scope.
+1. Read [AGENTS.md](../AGENTS.md), then inspect Git status and recent commits.
+2. Read [DESIGN.md](DESIGN.md) for Q1-Q19 and A01-A36, the current rules and newest entries in
+   [DECISIONS.md](DECISIONS.md), and the baseline/current gaps in [ACCEPTANCE.md](ACCEPTANCE.md).
+3. Use [DEVELOPMENT.md](DEVELOPMENT.md) for build, tests and documentation maintenance.
+   [PRODUCT-COMPARISON.md](PRODUCT-COMPARISON.md) owns the prioritized daily-coding candidate queue,
+   including the source/documentation comparison with Pi 1.3.0. Agree a bounded objective before coding.
 
-## Completed baseline
+## Current source baseline
 
-The last implementation commit is **6f8a7402d017031be2bb797160cb5139287b1ea4** on main. It was pushed to
-origin/main and verified against the remote ref in the completed session. Later documentation-only commits
-may follow it. There is no unfinished implementation task carried over from that session.
-
-| Cycle | Delivered | Source anchor |
+| Source | What it contributes | Evidence boundary |
 |---|---|---|
-| D-450 | Completion, code highlighting and media-cache repair | ea43869d |
-| D-451 | File/image inputs, pending-input revision/cancellation, complete local Markdown/JSON export, session search, bounded Rust display workers, five deterministic coding/recovery workflows and unpublished installation rehearsal | e9a0aa84, 44353fc4, a06a5150 |
-| D-452 | Review fixes and measured display bounds; final strict input page budget repair | c77a691a, b3898af6, 6f8a7402 |
+| ea43869d through a06a5150 | D-450/D-451 completion, highlighting, attachments, pending input, export/search and bounded display workers | Dated comparison/maturity receipts belong to their pinned source, not every later commit |
+| c77a691a, b3898af6, 6f8a7402 | D-452 input paging, attachment cleanup/concurrency, capture process groups and display bounds | The completed D-452 independent audit is historical; it is not the latest implementation baseline |
+| 11929da6 | D-455 task-scoped capability delegation, D-458 operation auto-review, D-453 updater, external editor, D-456 web tools and D-457 release freeze | Includes governed updater, external editor, DeepSeek web tools and release freeze; distinguish implemented mechanisms from real-service acceptance |
+| b4e9f1f9, 90ca30d8 | D-459 stable prompt-cache prefix/telemetry and the formal report's source pin | Cache usage is not a dollar estimate; no cache warming was added |
+| f78a6709 | Rust toolchain pin 1.99.1 | Read rust-toolchain.toml and the lockfiles before building |
 
-D-452's independent read-only audit accepted all six criteria. The final audit reran the full check target and
-Git whitespace check with exit 0, including formatting, Clippy with warnings denied, all three crate suites,
-test-count reconciliation and hygiene. Counts: **core 134 / engine 387 / tui 75**. This paragraph records the
-completed session's audit result; it is not a portable signed audit receipt. The code and regressions below
-remain independently rerunnable after deleting the conversation. The old goal was completed and cleared;
-there is no goal ID to resume in a new session.
+D-461 implements the user's selected DD-01 option A: read-only work diagnostics and explicit recovery.
+Option B (automatic model reminders) was explicitly rejected. The shared projection lives in
+engine/src/v2/diagnostics.rs; checkpoint, instances, tasks and local TUI /help expose it. Tests cover query-only
+reopen, real daemon restart without additional model calls, explicit input/cancellation recovery and TUI frames.
 
-D-451's deterministic runtime, PTY, formal and installation evidence remains in
-[the maturity report](../review/maturity-2026-10-11/REPORT.md) and its immutable manifest/receipts. Those runs
-belong to their recorded sources. D-452 did not rerun every formal proof, installed artifact or terminal probe,
-and does not renew real-service acceptance. Neither round establishes general maturity, Pi parity or improved
-real-model task success. The published v0.2.0 artifact predates these source changes; no new release was made.
+Local checks rerun on 2026-10-21: **make check passed, core 137 / engine 405 / tui 81**;
+**make pty passed** the v2, blocks and Kitty-protocol smoke checks. The accompanying documentation refresh
+is preserved separately from D-461's diagnostic-only behavior change. These results are local regressions, not a new independent audit, real-model
+comparison, actual graphical-terminal matrix, installed-artifact acceptance or release.
 
-## D-452 behavior and regression entry points
+The [D-451 maturity report](../review/maturity-2026-10-11/REPORT.md) retains its immutable manifests and
+receipts. The [formal report](../verification/REPORT.md) carries its own source and run boundary. Neither
+is renewed by a documentation edit or a Cargo pass. All public releases/tags were removed under D-457;
+source builds are the current distribution path. Publication requires separate user authorization.
 
-- Inputs CLI defaults to human-readable output; the JSON flag preserves machine output. The real-daemon CLI
-  regression is in engine/tests/cases/inputs.rs.
-- Pending-input pages hold at most 100 rows and 4 MiB of stored UTF-8 payload bytes. The daemon reads lengths
-  before loading/parsing payloads. The cursor names the last included sequence. An oversized first remaining
-  input returns an error naming its id/revision for explicit edit or cancel; it is never skipped or truncated.
-  This is a payload budget, not a bound on the entire encoded response including metadata.
-- Failed attachment submission immediately attempts to abandon this round's STAGING artifacts and delete its
-  blob/temp files. Cleanup is best effort under storage/filesystem failure; boot recovery remains the crash
-  backstop. Concurrent attachment submissions queue on an async lock.
-- Captured children lead their own process group. Capture error, cancellation and timeout kill that group;
-  completed captures preserve intentional long-lived descendants such as a session daemon.
-- Client slash commands do not enter input history. Only messages submitted to the Leader do.
-- Display wall deadlines are 3 seconds for media and 6 seconds for cold code grammars; the CPU backstop is
-  8 seconds. Plain source remains available. Userspace cannot guarantee kernel/filesystem liveness for the
-  parent's reads, spawn or wait operations.
+## Behavior and focused regression entry points
 
-Relevant focused regressions (all part of the normal suites):
+- Pending-input pages hold at most 100 rows and 4 MiB of stored UTF-8 payload. Lengths are checked before
+  loading; an oversized first input fails with its id/revision rather than being skipped or truncated.
+  The limit is on payload bytes, not the entire encoded response.
+- Failed attachment submission attempts immediate cleanup of that round's STAGING artifacts and files;
+  boot recovery remains the crash backstop. Concurrent submissions queue on an async lock.
+- Captured children lead their own process group. Failure, cancellation and timeout kill it; a completed
+  capture may preserve an intentional long-lived descendant such as a daemon.
+- External editing uses VISUAL, then EDITOR, and restores the draft on failure. Success changes the draft,
+  never implicitly sends it. The /edit entry is recognized but not in the seven-item completion menu.
+- A worker still has no ambient shell. An explicitly requested capability can derive a task-scoped child
+  from a user-issued delegable parent; otherwise work waits in WAITING_CAPABILITY for a user decision.
+- Automatic approval review applies only to concrete operations, not capability requests. Review failure
+  leaves the approval pending. Reviewer model usage is not yet charged to the goal (D-458).
+- D-459 records provider cache hit/miss/write usage and freezes the L1 masking frontier between compactions.
+  No reported split means unknown cache behavior, not a measured miss.
 
-- engine/tests/cases/inputs.rs: pending_inputs_edit_cancel_and_restart_through_daemon_and_cli,
-  inputs_pages_have_a_byte_budget_without_losing_or_repeating_rows,
-  concurrent_attachment_submissions_queue_instead_of_failing_busy.
-- engine/src/v2/attachments_tests.rs:
-  a_failed_submission_abandons_staged_artifacts_and_removes_blobs_immediately.
-- tui/src/subprocess.rs: timeout_kills_the_whole_process_group_including_grandchildren.
-- tui/tests/attachments.rs: slash_commands_never_enter_input_history_but_messages_do.
+Useful checks, all included in the normal suites:
 
-## Verification and local environment
+| Area | Regression location |
+|---|---|
+| Input paging/edit/cancel/restart and concurrent attachments | engine/tests/cases/inputs.rs, engine/src/v2/attachments_tests.rs |
+| Process-group capture and draft/attachment ownership | tui/src/subprocess.rs, tui/tests/attachments.rs |
+| External editor success/failure | tui/src/editor.rs |
+| Delegable capabilities and operation-only review | core/src/v2/control.rs tests, engine/tests/v2_driver.rs, engine/src/v2/reviewer.rs |
+| Cache usage, stable prefixes and provider request bodies | core/src/kernel/mod.rs, engine/tests/providers_fake.rs, engine/src/v2/exec.rs |
+| Governed update transactions | engine/src/update.rs, engine/tests/update.rs |
 
-There is no workspace-root Cargo manifest. Use the make entry point or explicit crate manifests.
-Do not run leak-guard gates alongside live probes: their process/scratch censuses can interfere.
+## Verification and environment
+
+There is no workspace-root Cargo manifest. Use make or explicit crate manifests. Run leak-guard gates
+serially with live probes; their process/scratch censuses can otherwise interfere.
 
 ```bash
 git status --short --branch
 git log -5 --oneline
 make check
-# Additional terminal coverage when the change needs it:
 make pty
 ```
 
-The previous independent-check sandbox mounted the repository and host read-only, provided writable /tmp,
-and set HOME to /tmp. Its initial failures were environmental: rustup could not find the installed toolchain,
-then Cargo could not write the repository target directory. The working host-specific form was:
+Build output requires writable space; use CARGO_TARGET_DIR when checking a read-only source mount.
+Keep the actual installed Rust/Cargo homes available rather than hiding them with an arbitrary HOME/PATH
+change. An unavailable Docker daemon can produce a documented skip/refusal path; a green gate does not
+establish a working live Docker backend or external provider.
 
-```bash
-env RUSTUP_HOME=/home/rimuru/.rustup CARGO_HOME=/home/rimuru/.cargo \
-  CARGO_TARGET_DIR=/tmp/cargo-check-target make check
-```
-
-Use the actual installed toolchain/cache paths on another host. Do not override HOME or PATH to work around
-this: sandbox-toolchain tests derive their mounts from the Rust/Cargo homes. Ensure sufficient writable build
-space; the previous host's /tmp was a 16 GiB tmpfs. Do not delete warm target directories just to tidy the tree.
-
-Read-only inspection on 2026-10-16 found /usr/bin/rustup 1.29.1, distro package 1.29.1-1.1 installed on
-2026-10-15, and Rust 1.95.0 selected by rust-toolchain.toml. No toolchain update was performed by that work.
-D-452 records the inspection commands. A Docker test reports an explicit skip when its daemon is unreachable;
-a green local gate is not evidence of a live Docker backend or external provider run.
-
-The D-451 verifier checks exact source hashes. Run its offline verification at the pinned D-451 tree
-(a06a5150), using a detached worktree or temporary Git archive if needed. It is expected to reject a later
-source tree. Never rewrite that manifest to make current code appear to have passed old runs. Do not run its
-write mode as routine cleanup. New runtime evidence needs a new dated receipt set.
+The D-451 verifier checks exact source hashes. Run its offline verification at a06a5150, using a detached
+worktree or temporary Git archive. It is expected to reject later source. Never rewrite a frozen manifest
+to make current code appear to have passed an older run; new acceptance needs new receipts.
 
 ## Files and state to preserve
 
-- Tracked source, docs, frozen evaluations and immutable receipts are the portable handoff. Temporary logs
-  under /tmp or /var/tmp and ignored agent journals are not required to resume development.
-- The root session.sqlite is tracked. Treat it as existing project data, not disposable scratch. Do not
-  delete or migrate it without understanding its provenance and the user's requested operation.
-- Ignored agent state, logs, TLC states and build outputs can exist beside the tracked tree. Do not use a broad
-  Git clean, database deletion or process-kill command to prepare a new conversation.
-- Preserve the user's existing TeamAgents configs, sessions and self-update installation, including the
-  default state under ~/.local/state/teamagents/v2. Test with isolated HOME/XDG/state/workspace directories.
-- Credentials stay in environment variables or machine stores; never copy them into this handoff or receipts.
+- Tracked source, docs, frozen evaluations and immutable receipts are the portable handoff. Temporary
+  check logs and ignored agent journals are not required to resume development.
+- The root session.sqlite is tracked project data, not disposable scratch. Do not delete or migrate it
+  without understanding its provenance and the requested operation.
+- Ignored agent state, logs, TLC states and build outputs may exist beside tracked files. Do not use broad
+  Git clean, database deletion or process-kill commands to prepare a conversation.
+- Preserve the user's configs, sessions and installation, including the default state under
+  ~/.local/state/teamagents/v2. Tests use isolated HOME/XDG/state/workspace directories.
+- Credentials remain in environment variables or machine stores, never in docs, prompts, events or logs.
 
-## Next-cycle choices and standing constraints
+## Next-cycle constraints
 
-The previous cycle is closed. Candidate directions include an external editor, richer session branching or
-HTML export, MCP resource browsing, embedding interfaces, context/cost observability, broader terminal tests,
-and live provider/sandbox evidence. Consult the comparison and acceptance documents for priorities and limits;
-none is implicitly selected by this handoff. Paid-model experiments and release publication need their own
-concrete scope and authorization. Preserve native model context windows in any real-model experiment.
+Prioritize the agreed items from the comparison queue rather than copying its whole backlog into a goal.
+DD-01 option A is implemented; do not add automatic reminders under that authorization. The next candidates
+are real development/skill environments and a paired coding evaluation; instruction discovery, tool composition, session controls and complete accounting follow.
+External editing, capability delegation and cache telemetry are already implemented, with remaining
+coverage limits stated separately. Paid trials and releases require concrete scope and authorization.
 
-Keep the Rust control plane, one authoritative SQLite database per session, independent daemon and minimal
-Leader TUI with CLI management. Input targets the Leader; interrupt cancels its model request, not tools;
-exit detaches; deletion stays identity-bound; approvals do not steal the composer; no implicit dispatch.
-Automatic cross-session injection, distributed multi-tenant execution and a plugin marketplace remain outside
-the confirmed design. Design deviations require user confirmation before implementation.
+Keep the Rust control plane, single SQLite authority, independent daemon and minimal Leader TUI with CLI
+management. Interrupt cancels a model request, not tools; exit detaches; deletion stays identity-bound;
+approvals do not steal the composer; unknown effects are not replayed. Automatic cross-session injection,
+distributed/multi-tenant execution and a marketplace remain excluded. Design deviations need confirmation.
 
-The user's terminal is Kitty with zsh. Use isolated terminal checks and preserve owned Kitty image cleanup.
-Retain existing presentation limits and fallback behavior when extending UI code. Code/docs stay English,
-except the Chinese README and explicitly frozen evidence. Keep generated references and their inventories in
-sync instead of weakening hygiene checks to accommodate documentation changes.
+The user's terminal is Kitty with zsh. Keep graphical-terminal evidence separate from PTY protocol tests
+and preserve owned-image cleanup. Code/docs are English except README.zh-CN.md and frozen evidence.
+Generated references and their inventories must remain synchronized; never weaken a gate to hide drift.

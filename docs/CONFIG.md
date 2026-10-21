@@ -5,7 +5,7 @@ one (mode `0600`, no credentials, keeps an existing file), `teamagents doctor` r
 (credentials, state root, isolation, skills, declared tools, the keys below that this build does not apply), and
 the user guide's §2 explains the sections in prose: `[[checks]]` (§2.1), `[limits]` (§2.2), `[hooks]` (§2.3).
 
-Two rules decide whether a key is *honoured*, and both are part of the trust story:
+Three rules decide whether a key is *honoured*:
 
 * **Your own config is read, and the repository's is read under one gate.** A repository-local
   `<cwd>/.teamagents/config.toml` is read by the product now — `daemon`, `doctor` and the client all load through
@@ -14,14 +14,14 @@ Two rules decide whether a key is *honoured*, and both are part of the trust sto
   (exactly those repositories, compared by canonical path) in your own config; the loader looks for the project
   file in the working directory and then up through its parents (D-434). With the opt-in its `models`, `tools`,
   `skills_paths` and `instruction_files` merge in, and your own definitions of the same name always win.
-  `[permissions]` (both `mode` and the trust flag, and the automatic-review keys), `hooks`, `checks`,
-  `retention` and `limits` may only ever come from your config, trusted or not. `docs/USER-GUIDE.md` §2 says the same in prose, and
-  `docs/ACCEPTANCE.md` records what is still not covered (the session's own directory only, and one opt-in for
-  every repository). `python3 review/project_config_claim.py` checks that every document agrees with the code on
-  this point (D-133, D-244).
-* **A key this build accepts but does not apply says so** in the table below and in `doctor` (D-102's
-  D-75's `codex_profile` and `[retention]`'s `archived_days`, D-245) — accepted-and-ignored would otherwise
-  look exactly like accepted-and-working.
+  `[permissions]` (mode, trust and automatic-review keys), `hooks`, `checks`, `retention`, `limits` and
+  `update` may only ever come from your config, trusted or not. USER-GUIDE §2 describes this boundary;
+  ACCEPTANCE records current coverage. `python3 review/project_config_claim.py` checks the basic loading
+  claim, while the loader tests cover ancestor discovery and canonical-root trust (D-434).
+* **The reference distinguishes runtime consumers from configuration/CLI plumbing.** A field reported as
+  having no runtime reader is not necessarily ignored: archived_days is consumed by sessions prune (D-435),
+  while codex_profile is explicitly refused at load (D-75). Read the reason beside the field rather than
+  treating every such row as an unavailable feature.
 * **A key — or a *value* — this build does not serve is refused, or named by `doctor` before a session can start.**
   At load, with a pointer here (`unknown key … docs/CONFIG.md lists every key this build serves`): at the top
   level, inside every table and inside each `[models.*]`/`[tools.*]` entry — `protocol` must be one this build can

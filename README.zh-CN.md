@@ -14,7 +14,7 @@
 | 文档 | 内容 |
 |---|---|
 | [使用指南](docs/USER-GUIDE.md) | 上手、配置、权限、Skills/MCP、恢复与清理 |
-| [与 Codex CLI、Pi 的对比](docs/PRODUCT-COMPARISON.md) | 带日期与出处的对比快照，以及它引出的决策 |
+| [日常编码成熟度与产品对比](docs/PRODUCT-COMPARISON.md) | 当前 Pi 对比、证据边界、按优先级排列的候选改进，以及历史 Codex 对比 |
 | [验收对照表](docs/ACCEPTANCE.md) | A01–A36 逐项证据与已知缺口 |
 | [能力与证据](docs/CAPABILITIES.md) | 每项能力一行：背后的检查、该检查量出的边界、以及仍未决的部分 |
 | [开发与维护](docs/DEVELOPMENT.md) | 工具链、门禁、目录约定、复跑命令 |
@@ -36,14 +36,14 @@
                           └── finish：Leader 声明目标达成并通过完成检查，才算完成
 ```
 
-- 你**总是**和 Leader 对话，不直接指挥成员；组不组队、组几个人由 Leader 按需求决定（一人成队合法）。
+- TUI 固定与 Leader 对话；组不组队、组几个人由 Leader 决定（一人成队合法）。开发者 CLI 也支持直接向成员发送指令和干预。
 - 每个实例有自己的模型、工具绑定、工作区策略与预算；越权操作变成**批准请求**，其他实例继续干活。
 - 运行时事实（谁在做什么、任务卡在哪、回合为什么结束）都落在会话库里：可查、可恢复、可审计。
 
 ## 主要特性
 
 - **受控协作**：`spawn` / `delegate` / `send` / `wait` 都经控制平面授权，并在派发时重查权限版本；会话启动时默认把团队权限（会话范围的 `manage` / `delegate` / `message`）授给 Leader，授权可随时撤销；工具面跟着授权走：实例只会看到自己真正能派发的工具（Leader spawn 的 worker 在拿到 `shell@workspace` 之前没有 shell）。
-  有限下授、父级撤销级联、超时与未知结果都有恢复分类。
+  D-455 支持从用户显式授予的可下授权限派生任务级子授权；缺少权限时形成待批准请求。父级撤销级联、超时与未知结果都有恢复分类。
 - **工作区策略**：`spawn` 可按需给实例共享目录、私有隔离目录或独立 Git worktree（各自分支）；
   终止实例时按记录回收，有未提交/未合并成果的目录永不自动删除，只报告原因。
 - **多模型混合**：同一会话可混用三种线上协议（responses / anthropic / chat-completions）的真实实例，
@@ -53,8 +53,8 @@
   已知结果复用、在途丢失诚实记账（`OUTCOME_UNKNOWN`）、**不猜测重放**。
 - **权限门**：`approved_scope`（默认，bubblewrap 隔离，越权需批准）与 `full_auto`（仅用户可开，D-41
   主机 Shell）；一条批准绑定一个具体操作、其参数散列与权限 revision，只对那一次派发生效。
-- **完成检查闸门**：`finish` 只接受诚实结论；目标结算前必须真实通过的是**你自己**配置里的 `[[checks]]`。
-  项目文件目前还不能添加检查——合并加载器已实现，但没有任何入口调用它（见下文「配置与团队」）。
+- **完成检查闸门**：`finish` 只接受诚实结论；目标成功结算前必须真实通过的是**你自己**配置里的 `[[checks]]`。
+  可信项目配置已经会被加载，但不能提供验收检查；验收策略始终由用户掌握（见下文「配置与团队」）。
 - **长上下文压缩**：按实际窗口占用触发，摘要保留原始要求、用户修订、验收与未决问题；
   原文经 `read_history` 仍可检索，压缩调用计入目标预算。
 - **工具面**：文件读写/搜索（精确匹配编辑、SHA-256 版本校验、原子写入，进程内写锁串行化）、
@@ -76,7 +76,8 @@ D-451 源码新增显式文本/图片附件（`/attach PATH` 或 `exec --attach 
 待消费输入的修订和取消（`/queue` 或 `inputs`）、会话浏览器搜索以及完整的本地 Markdown/JSON 导出。
 展示解析在有资源和超时限制的 Rust 辅助进程中运行，失败时保留源码。使用方式见
 [用户指南](docs/USER-GUIDE.md)，确定性本地验证和剩余缺口见
-[成熟度报告](review/maturity-2026-10-11/REPORT.md)。这些源码功能晚于上一公开发行版；当前没有公开发行版。
+[成熟度报告](review/maturity-2026-10-11/REPORT.md)，其中证据只对应其固定源码。当前源码还包含外部编辑器、
+任务级能力下授、可选的操作自动审查与供应商缓存统计。当前没有公开发行版。
 
 ### 从源码构建
 
@@ -104,7 +105,7 @@ teamagents --cwd /path/to/project     # 换成实际项目目录；省略 --cwd 
 ```
 
 `init` 遵循 XDG 配置目录；默认使用 DeepSeek Flash（1M 上下文），其他服务可编辑生成的 TOML。
-从 v0.1.1 升级时，安装脚本会复制配置模板，可直接跳过 `init`。
+已有配置会被保留；请用 `doctor` 检查，不要假定 `init` 会合并新增配置字段。
 
 进去以后直接说目标，例如：
 
@@ -141,14 +142,18 @@ git diff | teamagents exec -                                    # 提示词从 s
 新请求，`deadline_minutes` 会在超过截止时间后拒绝新请求；两者都不配置时，会话会一直跑到你手动停止为止（`doctor`
 会把这件事直接说出来）。见 [docs/USER-GUIDE.md](docs/USER-GUIDE.md) §2.2。
 
-**能力由你来发。** Leader 拿到它自己团队工具需要的那几项权限；它 spawn 出来的 worker 一项都没有，因此在
-你授权之前，worker 只能用文件、网页和 skill 工具——编码任务通常需要的是共享工作目录的 shell：
+**能力由你来发。** worker 不会隐式继承权限。你可以单独授予它共享工作区 shell，
+也可以显式允许 Leader 为声明需要该能力的任务下授权限：
 
 ```bash
-teamagents authority                                    # 列出实例与授权（含撤销需要的 id）
+teamagents authority                                    # 授权与待批准能力请求
 teamagents authority grant --subject i-worker-1 --action shell --scope workspace
+teamagents authority grant --subject i-leader --action shell --scope workspace --delegable
 teamagents authority revoke --grant g-1a2b3c4d          # 撤销是终局的，派生授权一并撤销
 ```
+
+可下授权限是用户的选择，不是默认值。子授权不能扩大父授权范围或再次下授，随任务结束或实例终止失效。
+没有覆盖范围的父授权时，已声明的能力需求会等待用户决定，而不是先启动一个无法执行任务的 worker。
 
 每次派发都会重新校验授权，所以撤销也能拦住已经排队的工作，工具会在该实例下一次请求时从模型可见的工具面
 消失。表面会拒绝那些「永远做不了任何事」的授权（动作不在词表内，或像 `shell@instance:i-worker-1` 这样没有
@@ -181,7 +186,10 @@ TUI 键位：`Enter` 发送给 Leader，`Ctrl+J` 或 `Shift+Enter` 换行，`↑
 `Esc` 返回草稿。`Ctrl+C` 中断 Leader 正在等待的模型请求（已运行的工具和委派工作继续），
 `Ctrl+D` 退出界面，会话继续运行。`Ctrl+S` 或 `/sessions` 打开会话列表和历史：方向键选择，
 Enter 切换，方括号翻页，`d` 后按 `y` 确认删除，Esc 取消或返回。删除当前会话成功后退出 TUI。
-界面命令为 `/help`、`/sessions`、`/interrupt`、`/quit`。各会话的草稿分别保留，切换后可以继续编辑。
+界面命令包括 `/help`、`/sessions`、`/interrupt`、`/quit`、`/attach`、`/detach`、`/queue` 和 `/edit`。
+`Ctrl+E` 用 `VISUAL` 或 `EDITOR` 打开草稿；成功后回到输入框，不会自动发送。
+在草稿末尾加 `/edit` 也会打开编辑器；单独输入 `/edit` 显示说明，它尚未列入补全菜单。
+各会话草稿分别保留，批准请求不会抢走输入焦点。
 
 开发者可用 `teamagents status --json` 检查会话，
 `teamagents history --id INSTANCE --limit 400 --json` 读取成员最近的已存储消息和工具记录。
@@ -189,11 +197,12 @@ Enter 切换，方括号翻页，`d` 后按 `y` 确认删除，Esc 取消或返�
 
 ## 配置与团队
 
-- 会话读两份配置：你的 `$XDG_CONFIG_HOME/teamagents/config.toml`，以及它所处目录的
-  `<cwd>/.teamagents/config.toml`。仓库那份**默认不起作用**，直到你在自己的配置里写
-  `[permissions] trust_project = true`；之后它的 models、tools、skills 路径与 instruction 文件才会并入
-  （同名时你的定义永远优先），而 `[permissions]`、hooks、checks、retention、limits 始终只来自你的配置。
-  `doctor` 的 `project config` 行会报告合并结果（两处限制见 `docs/ACCEPTANCE.md`）。
+- 会话读取你的 `$XDG_CONFIG_HOME/teamagents/config.toml`，并向上查找最近的 `.teamagents/config.toml`。
+  项目设置**默认不起作用**；你可在 `[permissions] trusted_projects` 中显式信任规范化后的项目根目录，
+  或用 `trust_project = true` 信任所有项目。随后 models、tools、skills 路径与 instruction 文件才会合并
+  （同名时用户定义优先）；权限、hooks、checks、retention、limits 与更新策略始终属于用户。
+  `doctor` 报告信任和合并结果。指令文件仍须显式配置；发现项目配置不等于自动加载 AGENTS.md。
+  shell 后端可选 bubblewrap、Docker 或 SSH，边界见使用指南。
 - 模型 profile 用 `protocol = "responses" | "anthropic" | "openai" | "deepseek"` 选线上格式，
   `base_url` + `model` 决定实际接哪家；密钥只写环境变量名。
 - 用户配置里的 `[[checks]]` 是"完成验收"的机器契约（只允许写在用户配置，项目文件不能定义）：
@@ -204,8 +213,12 @@ Enter 切换，方括号翻页，`d` 后按 `y` 确认删除，Esc 取消或返�
 
 ## 现状与限制
 
-- 只支持 Linux；成员 shell 隔离依赖 `bubblewrap`，缺失时明确报错而非降级为不隔离执行。
-- 发行包只有 x86_64（musl）；暂无 Windows/macOS、分布式执行、远程成员协议、浏览器自动化。
+- 支持的分发目标是 Linux x86_64，当前没有公开发行版。没有已支持的 Windows/macOS 构建、分布式成员协议或内置浏览器自动化。
+- 选定的 bubblewrap、Docker 或 SSH 后端不可用时会拒绝执行，不会静默退回本地主机。
+  SSH 是远程 shell，不是分布式 agent；它不保证远端进程取消，也不能强制远端网络隔离。
+- 可以开展受控的日常编码试用，但尚未证明能够作为唯一通用主力平替 Pi。
+  CLI/TUI 已提供只读工作诊断与显式恢复指引（D-461），不会自动催促模型。
+  后续优先完善开发环境与完整 Skills 工作流、配对编码评估；随后是指令发现、工具组合、会话操作和完整计费。
 - DESIGN §7 的四类协议族（chat-completions——`openai` 与 `chat/completions` 两个名字、DeepSeek 扩展、
   Anthropic、responses）都有本地假服务回归测试（`engine/tests/providers_fake.rs`），并由
   `python3 review/dogfood/protocols.py` 逐个对真实服务验收。环境中没有对应凭据的协议族会报告为**跳过**

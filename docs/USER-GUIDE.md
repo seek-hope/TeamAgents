@@ -1,7 +1,9 @@
 # TeamAgents user guide
 
-This guide describes the current implementation. Notes from earlier releases and the migration material
-were removed from the tree and stay reachable through Git history (`git log -- docs/archive`).
+This guide describes source f78a6709 plus the D-461 diagnostic follow-up, checked on 2026-10-21. For installation,
+see [INSTALL.md](INSTALL.md); for evidence and candidate improvements, see
+[ACCEPTANCE.md](ACCEPTANCE.md) and [PRODUCT-COMPARISON.md](PRODUCT-COMPARISON.md). Historical decisions and
+recorded experiments are not instructions for the current product.
 
 ## 1. Quick start
 
@@ -9,7 +11,7 @@ were removed from the tree and stay reachable through Git history (`git log -- d
 teamagents init                      # write the config (kept if it exists) and prepare the state root
 export DEEPSEEK_API_KEY=...          # the environment variable named by api_key_env
 teamagents doctor                    # config, credentials, state root, skills, bubblewrap and host checks
-teamagents                           # open the TUI (starts the per-user daemon when needed)
+teamagents                           # open the TUI (starts this session's daemon when needed)
 ```
 
 - **One daemon per session**: `teamagents` probes `$XDG_STATE_HOME/teamagents/v2/daemon.sock` and, when it is
@@ -21,6 +23,11 @@ teamagents                           # open the TUI (starts the per-user daemon 
   wheel read history. Drafts soft-wrap and survive resizing. Kitty's native Shift-drag copies text.
   A slash prefix shows local commands: Up/Down selects, Tab or Enter fills, Esc cancels without clearing
   the draft. Press Enter to submit the filled command. An exact typed command needs only its ordinary Enter.
+- **External editor**: Ctrl+E opens the current draft in VISUAL, falling back to EDITOR. Saving and exiting
+  successfully replaces the draft; a nonzero exit, missing editor or read failure restores it and reports
+  the error. Nothing is sent automatically. Appending /edit to nonempty draft text and pressing Enter opens
+  the same editor; /edit alone shows instructions. Staged attachments are separate from the edited text.
+  The editor is a trusted local program running with the user's permissions, not a model sandbox tool.
 - **Interrupt and exit**: Ctrl+C or /interrupt cancels the Leader's in-flight model request. The receipt
   says whether anything was interrupted. Running tools and delegated work continue; developer controls are
   listed below. Ctrl+D or /quit detaches the TUI while the daemon keeps running.
@@ -89,15 +96,17 @@ teamagents                           # open the TUI (starts the per-user daemon 
   remaining input alone exceeds the budget, the read fails with its envelope id and revision; edit or cancel
   that input to continue. The read never skips or changes it. A cancelled headless input ends with an explicit
   undelivered failure.
-  These actions do not interrupt models or stop running tools/delegations.
+  These actions do not interrupt models or stop running tools/delegations. Ordinary queued input enters
+  at the next safe request boundary; there is no separate queue that waits for the entire goal to finish.
 - **Local session export (D-451)**: `teamagents sessions export --id ID --output FILE --format json`
   (or `markdown`) writes a consistent snapshot of every stored member/context/input revision and reference.
   It preserves tool associations, labels unavailable references and never fetches or embeds external bytes.
   Existing destinations are refused. The export is limited to 256 MiB with a 16 MiB record limit; exceeding
   either fails explicitly. Ctrl+C removes unpublished temporary output; a publication that already completed
   returns success. Pruned records cannot be recovered. Export stays in the developer CLI.
-- **Seven client commands**: /help, /sessions, /interrupt, /quit, /attach, /detach, /queue. Unknown or retired commands remain local and point
-  to `teamagents --help`; they are never sent to the model.
+- **Client commands**: /help, /sessions, /interrupt, /quit, /attach, /detach, /queue and /edit. The first
+  seven appear in the completion menu; /edit is recognized separately. Unknown or retired commands stay
+  local and point to `teamagents --help`; they are never sent to the model.
 - **Developer CLI**: all management is also available through scriptable commands, using `--state-root PATH` or
   `--session ID` to select the session. `status --json` reads the running session's checkpoint, model,
   goal usage/limits/deadline, bound MCP state and known sessions without starting a daemon. The watermark
@@ -112,7 +121,7 @@ teamagents                           # open the TUI (starts the per-user daemon 
 | Inspect progress and conversations | `status`, `history`, `surface` |
 | Inspect/control team members | `instances`: send, pause, resume, interrupt, terminate, merge |
 | Inspect/control tasks and goals | `tasks`: list, cancel; `goals`: list, open, cancel |
-| Inspect/control permissions and approvals | `authority`: list, grant, revoke; `approvals`: list, approve, deny |
+| Inspect/control permissions and approvals | `authority`: list, grant, revoke, requests, approve, deny; `approvals`: list, approve, deny |
 | Sessions and recurring work | `sessions`: list, open, history, export, new, fork, rename, restore, search, archive, delete, prune; `automations` |
 | MCP, configuration and diagnostics | `mcp`: list, add, remove, login, logout; `init`, `doctor`, `-c key=value` |
 | Processes and stored artifacts | `daemon --stop`, `runners`, `artifacts` |
@@ -145,8 +154,9 @@ teamagents                           # open the TUI (starts the per-user daemon 
   `--full-auto`), so a client that joins a session already running keeps that session's settings and prints
   them (`note: a session is already running for this state root in … mode` / `that session works in …`).
   Starting a client with a different `--cwd` against a live session therefore does not move it — stop that
-  daemon or use another `--state-root`. A `--cwd` that is not an *existing directory* is different: it can
-  never be honoured (the session confines every file and shell command to it), so `exec`, the TUI and
+  daemon or use another `--state-root`. Sessions are not automatically grouped/selected by repository;
+  select a named session deliberately. There is no interactive model/effort hot-switch command.
+  A `--cwd` that is not an *existing directory* is different: it can never be honoured (the session confines every file and shell command to it), so `exec`, the TUI and
   `daemon` refuse it outright with `--cwd … is not a directory` instead of booting a session whose workspace
   no tool can resolve.
 - **State root**: `$XDG_STATE_HOME/teamagents/v2/` (default `~/.local/state/teamagents/v2`), where
@@ -331,7 +341,7 @@ A `trusted_projects` entry is matched against the repository's **canonical** pat
 its target are the same decision, `/repo` does not trust `/repo/sub` or `/repo-two`, and an entry that resolves
 nowhere trusts nothing. With the opt-in the repository's model profiles, tool bindings, `skills_paths` and
 `instruction_files` merge in, and your own definitions of the same name win; `[permissions]` (the mode and both
-trust keys), `[hooks]`, `[[checks]]`, `[retention]` and `[limits]` can only ever come from your config, so a
+trust keys), `[hooks]`, `[[checks]]`, `[retention]`, `[limits]` and `[update]` can only come from your config, so a
 cloned repository cannot install a command that runs without an approval prompt, delete data, raise a ceiling
 you set or grant itself trust. `doctor`'s `project config` row says what the merge did **and which source
 trusted it** (`trusted via trusted_projects:/path`), with a `[WARN]` and one reason per refused entry when
@@ -685,7 +695,10 @@ mode = "full_auto"            # or "approved_scope" (the default); the flag stil
 runtime sends the exact parked operation and recent user context to a separate, read-only reviewer, which may
 allow or deny it. It does **not** approve capability requests (those remain user-only) and it is not a security
 boundary; a failed review leaves the approval pending, so a headless run exits 3 without an effect. The audit
-event is `approval_reviewed`. `full_auto` bypasses it entirely.
+event is `approval_reviewed`. `full_auto` bypasses it entirely. The review has a 30-second timeout;
+its model usage is not yet charged to the goal, so goal totals and token limits do not cover that extra
+spend. The deterministic hard-denial layer is a substring check, not a complete shell-policy parser.
+Treat auto-review as an opt-in convenience, not evidence that arbitrary unattended commands are safe.
 
 `sandbox` picks the backend `approved_scope` runs commands in: `bubblewrap` (the default), `docker`, which also
 needs `sandbox_image` naming a locally present image, or `ssh`, which needs `sandbox_ssh_target` and runs the
@@ -711,6 +724,12 @@ by hand) or use another `--state-root`.
 
 When bubblewrap is unavailable this is a **classified failure** (`started=false`); the command never falls
 back silently to host execution.
+
+The default sandbox hides the host home and uses a sanitized PATH. Rust toolchains and selected Cargo
+cache directories are explicitly mounted read-only; credential-bearing Cargo config files are not mounted.
+User-home nvm, pyenv, Conda, uv and Go installations/caches are not automatically exposed. System or
+workspace-local tools may work, but verify your actual build/test commands in the configured environment.
+A missing development tool is an environment issue, not an implicit authorization to switch to full_auto.
 
 ### 4.1 Approving a call from the CLI (D-67)
 
@@ -858,7 +877,15 @@ teamagents goals cancel --id g-spent    # close a goal nothing can spend (its ce
   naming the file, and it is read per turn, so an edit lands on the next turn (D-102 recorded the promise,
   D-246 delivers it). `doctor` counts what a session will deliver — `1 file(s), 141 byte(s) reach every member's
   prompt` — and warns, naming it, when a declared file cannot be read. Keep these files for rules that must hold
-  for the whole team; a member's own profile text still comes first.
+  for the whole team; a member's own profile text still comes first. Files must be listed explicitly:
+  automatic AGENTS.md/ancestor instruction discovery is not implemented. Do not confuse it with the upward
+  project-config search in section 2.
+- **Skill resource boundary**: search matches names/descriptions and returns at most ten hits; read returns
+  at most 32,000 characters of SKILL.md text. It does not return a skill-root metadata object or expose
+  arbitrary references/scripts/assets under that root. A skill registered outside the workspace can be
+  found while its supporting files remain inaccessible to file tools or the default shell sandbox.
+  Review resource paths and prepare authorized workspace resources explicitly; a loaded instruction is
+  never a grant to read the host home or execute its scripts.
 - The tools themselves — every function a model may be offered, with its parameters and the model-facing
   description, split by the layer that decides it (the profile's tools, the instance's grants, the session's
   bindings) — are catalogued in [docs/TOOLS.md](TOOLS.md), generated from the schemas.
@@ -912,19 +939,20 @@ teamagents goals cancel --id g-spent    # close a goal nothing can spend (its ce
   `required` service parked it) — the driver, and with it the toolkit, is rebuilt; the conversation and the goal
   are untouched. A `required` service with no credential parks its instance instead, with the runtime's own
   reason, which is the other path to the same lever.
-- **Binding one is writing it down** (D-74): a `[tools.<name>] kind = "mcp"` entry in your config *is* the
-  binding, exactly like `[tools.web]` for the web tools — the service starts with the session and its tools
-  reach every member's model surface as `<name>_<tool>`. Only your **user** config is read today (a
-  repository-local project file is not — §2), so a cloned project cannot bind a service at all yet; when the
-  repository's config contributes, its `tools` need `[permissions] trust_project = true`. `required = true` means
-  the session must not start without it; `doctor` lists each declared service and whether its command can run,
-  so a typo shows up there instead of in `daemon.log`.
+- **Binding one is writing it down** (D-74/D-434): a `[tools.<name>] kind = "mcp"` entry is the binding.
+  It can come from the user config or a project config admitted by trusted_projects or trust_project
+  (section 2); an untrusted cloned project cannot bind a service. Tools are reachable through codemode
+  under their normalized service/tool names, not individually advertised model functions. A required service
+  that cannot boot parks the affected instance; an optional failure drops that capability. Doctor lists
+  configured services and static setup problems. MCP resource discovery/reading is not implemented.
 - **MCP is called from code, not one tool per tool** (D-374, completed by D-376, learned from pi's codemode).
   Bound MCP tools are not advertised individually; the model is offered one `codemode` tool and calls them from a
   short JavaScript program — `const hit = await tools.search({ q: "…" }); text(hit.items[0].id)` — so loops,
   batched calls and filtering happen inside the sandbox and **only the script's own output enters the
-  conversation**, never the payloads it read. The script runs in a QuickJS VM whose only capabilities are your
-  bound tools (no files, no network, no timers), with a 256 MB heap, an output budget and a per-script deadline
+  conversation**, never the payloads it read. This composition surface reaches bound MCP tools, not native
+  file/shell tools. The host bridge is synchronous: a JavaScript promise batch does not establish parallel
+  MCP execution. The script runs in a QuickJS VM whose only capabilities are your
+  bound MCP tools (no direct files, network or timers), with a 256 MB heap, an output budget and a per-script deadline
   (default two minutes; `// @options: {"timeout_ms": …, "max_output_tokens": …}` overrides them); `ALL_TOOLS`,
   `searchTools(query)`, `describeTool(name)` and `describeNamespace(service)` find a tool from inside the script,
   and `store`/`load` keep JSON values between codemode calls — persisted under the instance's state root, so a
@@ -932,8 +960,9 @@ teamagents goals cancel --id g-spent    # close a goal nothing can spend (its ce
   than flattened text. **Your `pre_tool` hook is asked for every nested call**, so a script cannot reach a tool
   you denied; a failed or vetoed nested call rejects with the reason, and an interrupted `codemode` dispatch is
   `OUTCOME_UNKNOWN` and never replayed, exactly like a direct MCP call. `image(...)` accepts a base64 `data:` URL
-  (a remote URL is refused), but this build has no image flow into the model context yet, so an image is
-  reported as a short marker rather than shown to the model.
+  (a remote URL is refused), but this codemode path reports an image as a short marker rather than native
+  image content. That limit does not apply to explicit image attachments or view_image with an image-capable
+  model; those have their own native image path.
 - **Where a stdio server runs** is your choice, and the default is the safe one (D-106):
   `mcp_execution = "workspace"` starts the server inside bubblewrap, with the member's workspace as its working
   directory — it cannot read or write host paths outside that workspace, its `HOME` is a private directory, and
@@ -958,19 +987,36 @@ teamagents goals cancel --id g-spent    # close a goal nothing can spend (its ce
 - Long-context compaction triggers on **real window usage**: the summary keeps the original request, user
   revisions, acceptance criteria and open questions, while the full text stays retrievable through
   `read_history`. Compaction calls count against the goal budget.
-- Data cleanup is a one-off migration, not a lever this build has: the state of earlier releases (≤ v0.1.2)
-  is **not migrated**, and that old state — sessions, preferences and caches — was removed deliberately,
-  against a written inventory taken first (the upgrade notes in `docs/ACCEPTANCE.md` record it). Nothing in
-  this build deletes your data on its own, and credentials, `~/.agents/skills`, `~/.codex` and the evidence
-  under `review/` are always kept.
-- **Artifacts** are the exception to remember when you look at disk usage: every member keeps its own
-  `/artifacts/` directory under the state root — oversized tool output is pruned there per member at 512 MB,
-  while model-response artifacts are kept as the evidence a recovery reads. Artifacts no record references are
-  **not collected yet**: the control plane can mark them (`artifact_gc_claim`), but no build path runs that and
-  no file is deleted, so DESIGN §4.4's scheduled artifact collection is a known gap here (D-174). `teamagents
-  doctor` reports the count and size it finds.
+- **Retention and cleanup are implemented.** history_days is applied at daemon boot; archived_days is
+  applied by `teamagents sessions prune`, with a dry-run and explicit confirmation (§2). Defaults retain
+  history and archived sessions. Configured retention and explicit deletion can remove eligible data;
+  preserve anything you need before changing those policies. Incompatible database formats are refused,
+  not silently migrated or deleted. Historical one-off cleanup is not current installation behavior.
+- **Artifact collection runs at boot and on demand.** `teamagents artifacts` reports the catalog and bytes;
+  `teamagents artifacts gc` takes the coordinator lock and refuses while a daemon is serving the root.
+  Collection claims an unreferenced object transactionally before removing its bytes. D-436 releases a
+  completed owner's hold only after a nonzero history_days window; live/unknown work and other references
+  remain protected. With the default zero window, completed owners are not released merely because they
+  finished. Broader reference-expiration policy remains a decision boundary (D-438), not a blanket GC promise.
 
 ## 7. Troubleshooting
+
+**Work diagnostics (D-461).** Run `teamagents instances`, `teamagents tasks` or `teamagents status --json`
+against the same session (--state-root or --session). The TUI status points to attention states; /help shows
+up to twenty diagnostic rows and recovery instructions locally. Neither view sends a prompt or changes state.
+
+The diagnosis separates idle-with-unsettled-work from model/tool/check processing, approval waits,
+capability waits, paused/parked instances and registered waits. READY with queued input is not called idle.
+Wait details preserve ALL/ANY, conditions and timer_at; no timer is not proof of deadlock. A long-running
+request or command is not labelled stalled merely because time passed. Diagnostics describe a snapshot,
+not a promise that the next command will see the same state.
+
+Use the instance/task ids printed on the row in suggestions labelled INSTANCE/TASK, retaining your session
+selector. For an idle worker, explicitly send a new instruction with instances send, or cancel its task if
+its result is no longer needed. BLOCKED still does not satisfy a task wait. To stop an executing command,
+use confirmed instance termination, not task cancellation or model interruption. Check unknown effects
+before retrying. The task list also shows assignee activity after task settlement; a CANCELLED task does not
+prove a command stopped. Missing historical reasons remain unavailable. No automatic reminder is sent.
 
 | Symptom | What to do |
 |---|---|

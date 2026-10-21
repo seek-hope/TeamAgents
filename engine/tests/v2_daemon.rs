@@ -943,7 +943,9 @@ async fn the_intervention_cli_cancels_a_task_and_pauses_and_resumes_an_instance(
     let scripts = HashMap::from([("i-leader".to_string(), leader), ("i-worker".to_string(), worker)]);
     let root = root("intervention-cli");
     std::fs::create_dir_all(root.dir.join("ws")).unwrap();
-    let handle = serve(config(&root, scripts)).await.expect("daemon");
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let handle =
+        serve(config_recording(&root, scripts, UserConfig::default(), vec![], json!({}), &seen)).await.expect("daemon");
     let state_root = root.dir.join("state");
     let mut client = Client::connect(&state_root.join("daemon.sock")).await;
     let since = client.call("checkpoint", json!({})).await["result"]["watermark"].as_i64().unwrap();
@@ -952,18 +954,43 @@ async fn the_intervention_cli_cancels_a_task_and_pauses_and_resumes_an_instance(
     let mut running = false;
     for _ in 0..800 {
         let tasks = client.call("tasks", json!({})).await;
-        if tasks["result"]["tasks"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|task| task["id"] == json!("t-prose") && task["status"] == json!("RUNNING"))
-        {
-            running = true;
-            break;
+        if tasks["result"]["tasks"].as_array().unwrap().iter().any(|task| {
+            task["id"] == json!("t-prose")
+                && task["status"] == json!("RUNNING")
+                && task["diagnosis"]["code"] == "idle_unsettled"
+        }) {
+            let checkpoint = client.call("checkpoint", json!({})).await;
+            if checkpoint["result"]["snapshot"]["instances"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|i| i["id"] == "i-leader" && i["phase"] == "WAITING")
+            {
+                running = true;
+                break;
+            }
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     assert!(running, "the delegated task is RUNNING while its assignee stopped");
+    let before = client.call("checkpoint", json!({})).await;
+    let count = seen.lock().unwrap().len();
+    assert_eq!(count, 3, "two Leader requests and one worker reply");
+    for _ in 0..4 {
+        let read = client.call("tasks", json!({})).await;
+        assert_eq!(read["result"]["tasks"][0]["diagnosis"]["code"], "idle_unsettled");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(seen.lock().unwrap().len(), count, "diagnostics never prompt the model");
+    // A real daemon restart preserves both the open wait and the diagnosis.
+    handle.shutdown().await.unwrap();
+    let resumed = HashMap::from([("i-leader".into(), vec![finish_call("the task was cancelled")])]);
+    let handle =
+        serve(config_recording(&root, resumed, UserConfig::default(), vec![], json!({}), &seen)).await.unwrap();
+    client = Client::connect(&state_root.join("daemon.sock")).await;
+    let after = client.call("checkpoint", json!({})).await;
+    assert_eq!(before["result"]["snapshot"]["tasks"], after["result"]["snapshot"]["tasks"]);
+    assert_eq!(seen.lock().unwrap().len(), count, "restart must not invent work for an idle member");
     let cli = |args: Vec<String>, state: PathBuf| async move {
         tokio::task::spawn_blocking(move || {
             let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
@@ -985,9 +1012,12 @@ async fn the_intervention_cli_cancels_a_task_and_pauses_and_resumes_an_instance(
     let (code, out, err) = cli(vec!["tasks".into()], state_root.clone()).await;
     assert_eq!(code, 0, "{err}");
     assert!(out.contains("t-prose") && out.contains("RUNNING"), "{out}");
+    assert!(out.contains("idle_unsettled") && out.contains("instances send") && out.contains("tasks cancel"), "{out}");
     let (code, out, _) = cli(vec!["instances".into()], state_root.clone()).await;
     assert_eq!(code, 0);
     assert!(out.contains("i-worker") && out.contains("ACTIVE"), "{out}");
+    assert!(out.contains("idle_unsettled") && out.contains("no timer"), "{out}");
+    assert_eq!(seen.lock().unwrap().len(), count, "CLI reads must not invoke a model");
     // D-363: interrupting an idle instance is honest about there being no turn to cancel
     let (code, out, err) =
         cli(vec!["instances".into(), "interrupt".into(), "--id".into(), "i-worker".into()], state_root.clone()).await;
@@ -1020,6 +1050,76 @@ async fn the_intervention_cli_cancels_a_task_and_pauses_and_resumes_an_instance(
     let tasks = client.call("tasks", json!({})).await;
     assert_eq!(tasks["result"]["tasks"][0]["status"], json!("CANCELLED"), "{tasks}");
     handle.shutdown().await.expect("shutdown");
+}
+
+/// D-461 option A: an explicit user instruction, not a diagnostic read, resumes
+/// an idle worker. Its real finish then satisfies the Leader's existing wait.
+#[tokio::test]
+async fn explicit_input_recovers_an_idle_unsettled_worker_without_automatic_prompts() {
+    let root = root("diag-recover");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let leader = vec![
+        json!({"role":"assistant", "content":"", "tool_calls":[
+            {"id":"spawn", "type":"function", "function":{"name":"spawn", "arguments":
+                json!({"instance_id":"i-worker", "instructions":"work"}).to_string()}},
+            {"id":"delegate", "type":"function", "function":{"name":"delegate", "arguments":
+                json!({"assignee":"i-worker", "task_id":"t-recover", "description":"finish the task"}).to_string()}}
+        ]}),
+        json!({"role":"assistant", "content":"", "tool_calls":[
+            {"id":"wait", "type":"function", "function":{"name":"wait", "arguments":
+                json!({"mode":"ALL", "conditions":[{"kind":"task", "task_id":"t-recover"}]}).to_string()}}
+        ]}),
+        finish_call("task completed"),
+    ];
+    let scripts = HashMap::from([
+        ("i-leader".into(), leader),
+        ("i-worker".into(), vec![reply("I stopped without settling."), finish_call("completed on explicit input")]),
+    ]);
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let handle =
+        serve(config_recording(&root, scripts, UserConfig::default(), vec![], json!({}), &seen)).await.unwrap();
+    let socket = root.dir.join("state/daemon.sock");
+    let mut client = Client::connect(&socket).await;
+    let since = client.call("checkpoint", json!({})).await["result"]["watermark"].as_i64().unwrap();
+    client.command("begin-recovery", "submit_input", input_params("delegate the task")).await;
+    let mut idle = false;
+    for _ in 0..400 {
+        let snapshot = client.call("checkpoint", json!({})).await;
+        if snapshot["result"]["snapshot"]["tasks"][0]["diagnosis"]["code"] == "idle_unsettled"
+            && snapshot["result"]["snapshot"]["instances"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|i| i["id"] == "i-leader" && i["phase"] == "WAITING")
+        {
+            idle = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(idle, "worker must actually become idle before recovery");
+    assert_eq!(seen.lock().unwrap().len(), 3);
+    let result = tokio::task::spawn_blocking(move || {
+        use teamagents_engine::v2::intervene::{execute, InterventionCommand, InterventionOptions};
+        execute(&InterventionOptions {
+            socket,
+            confirmed: false,
+            json_out: true,
+            command: InterventionCommand::SendInput {
+                id: "i-worker".into(),
+                text: "Settle your task honestly now.".into(),
+            },
+        })
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(result["envelope_id"].is_string());
+    assert_eq!(wait_goal(&mut client, since).await.0, "SUCCEEDED");
+    let tasks = client.call("tasks", json!({})).await;
+    assert_eq!(tasks["result"]["tasks"][0]["status"], "SUCCEEDED");
+    assert_eq!(seen.lock().unwrap().len(), 5, "only the instructed worker and then the woken Leader ran");
+    handle.shutdown().await.unwrap();
 }
 
 /// Every instance's row describes the model it runs on (D-69), and the snapshot
@@ -2277,6 +2377,12 @@ async fn the_streaming_headless_mode_prints_the_events_then_the_report() {
     assert!(sequences.windows(2).all(|pair| pair[1] > pair[0]), "the lines are the log in order: {sequences:?}");
     let report = &report_line[0]["report"];
     assert_eq!(report["end"], json!("completed"), "{report}");
+    assert!(
+        events.iter().any(|line| line["event"]["kind"] == json!("goal_completed")),
+        "the event that ended the run is streamed, not skipped by the settle race: {out}"
+    );
+    assert_eq!(report["usage"]["requests"], json!(1), "the drained attempt is accounted: {report}");
+    assert_eq!(report["usage"]["prompt_tokens"], json!(3), "{report}");
     assert_eq!(
         report["watermark"],
         json!(*sequences.last().expect("at least one event")),

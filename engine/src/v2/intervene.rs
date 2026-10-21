@@ -372,6 +372,7 @@ fn print_report(options: &InterventionOptions, report: &Json) {
                     },
                     why
                 );
+                print_diagnosis(&instance["diagnosis"]);
             }
         }
         InterventionCommand::ListTasks => {
@@ -385,6 +386,11 @@ fn print_report(options: &InterventionOptions, report: &Json) {
                     task["assignee"].as_str().unwrap_or(""),
                     task["goal_id"].as_str().unwrap_or("")
                 );
+                print_diagnosis(&task["diagnosis"]);
+                if task["diagnosis"]["code"] != task["assignee_activity"]["code"] {
+                    println!("    assignee activity:");
+                    print_diagnosis(&task["assignee_activity"]);
+                }
             }
         }
         InterventionCommand::Merge { .. } => {
@@ -438,6 +444,32 @@ fn print_report(options: &InterventionOptions, report: &Json) {
             report["task_id"].as_str().unwrap_or(""),
             report["task"]["status"].as_str().unwrap_or("")
         ),
+    }
+}
+
+/// Suggestions are never executed. INSTANCE/TASK refer to the row above; retain
+/// the same --state-root/--session selector when invoking a recovery command.
+fn print_diagnosis(diagnostic: &Json) {
+    if let Some(summary) = diagnostic["summary"].as_str() {
+        println!("    {}: {summary}", diagnostic["code"].as_str().unwrap_or("unknown"));
+        if let Some(reason) = diagnostic["reason"].as_str() {
+            println!("    reason: {reason}");
+        }
+        if let Some(steps) = diagnostic["next_steps"].as_str() {
+            println!("    next (same session; INSTANCE/TASK = row ids): {steps}");
+        }
+        for wait in diagnostic["waits"].as_array().into_iter().flatten() {
+            println!(
+                "    wait {} mode={} timer_at={} conditions={}",
+                wait["id"], wait["mode"], wait["timer_at"], wait["conditions"]
+            );
+        }
+        for operation in diagnostic["operations"].as_array().into_iter().flatten() {
+            println!(
+                "    operation {} status={} cancel_requested={}",
+                operation["id"], operation["status"], operation["cancel_requested"]
+            );
+        }
     }
 }
 

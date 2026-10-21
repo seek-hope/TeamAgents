@@ -39,6 +39,7 @@ DOC = REPO / "docs" / "PROTOCOL.md"
 BEGIN = "<!-- generated: begin -->"
 END = "<!-- generated: end -->"
 DAEMON = REPO / "engine" / "src" / "v2" / "daemon.rs"
+DIAGNOSTICS = DAEMON.with_name("diagnostics.rs")
 CONTROL = REPO / "core" / "src" / "v2" / "control.rs"
 # the two markers a literal can sit under: a read arm of the dispatcher, or the function that builds it
 MARKERS = ((re.compile(r'^\s*"([a-z_]+)" => \{', re.M), True),
@@ -147,10 +148,12 @@ def tables():
     lines += ["", "### Every field the protocol carries in one object, and where it is built", "",
               "The rows a client reads (`instances[]`, `tasks[]`, `approvals[]`, `grants[]`, `entries[]`), a",
               "checkpoint's `goal` object and the greeting/reply envelopes are all built as `json!({ … })`",
-              "literals in `engine/src/v2/daemon.rs`; this table is that list. A row is one literal.", "",
+              "literals in `engine/src/v2/daemon.rs` and its diagnostics helper; this table is that list. A row is one literal.", "",
               "| Built at | Fields |", "|---|---|"]
-    for where, fields in literal_fields(DAEMON.read_text(errors="replace")):
-        lines.append(f"| {where} | {', '.join(f'`{field}`' for field in fields) or '—'} |")
+    for source in (DAEMON, DIAGNOSTICS):
+        for where, fields in literal_fields(source.read_text(errors="replace")):
+            label = f"diagnostics: {where}" if source == DIAGNOSTICS else where
+            lines.append(f"| {label} | {', '.join(f'`{field}`' for field in fields) or '—'} |")
     return "\n".join(lines)
 
 

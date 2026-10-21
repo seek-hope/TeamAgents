@@ -528,6 +528,8 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
     // a consumer that closed stdout stops the streaming but not the run (`| head`): a closed reader is not a
     // failed run, and the report still has its own outcome to report
     let mut streaming = sink.is_some();
+    // How many passes have seen a terminal outcome; the second one has drained the events after it.
+    let mut settled_passes = 0u8;
     loop {
         // The checkpoint is read *before* the events on purpose. A settlement
         // commits its event and the instance's phases in one transaction, so a
@@ -683,7 +685,16 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
         };
         if let Some(terminal) = terminal {
             end = terminal;
-            break;
+            // One more pass before breaking: the events that ended the run can commit between this pass's
+            // `events` read and its `history` read (measured under a loaded suite, where a scripted turn settles
+            // inside the same millisecond). Breaking here streamed the input but not the settlement, and the
+            // report's usage missed the `attempt_recorded` event (0 requests for a turn that ran). The second
+            // pass reads events again from the same watermark — the settle is already known, so it cannot loop.
+            settled_passes += 1;
+            if settled_passes > 1 {
+                break;
+            }
+            continue;
         }
         if Instant::now() > deadline {
             break;

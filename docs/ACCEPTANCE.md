@@ -1,19 +1,19 @@
 # Acceptance matrix (A01–A36)
 
-Baseline: [the design and acceptance baseline](DESIGN.md) §12/§16. Current implementation checked on
-**2026-10-17** for D-452 local regression and independent review acceptance; D-451 product, PTY and formal
-checks retain their **2026-10-11** dates. Historical real-model probe dates remain attached to their
-individual rows; the current local regression does not renew real-service acceptance.
+Baseline: [the design and acceptance baseline](DESIGN.md) §12/§16. Current source inspection and local
+regression: **2026-10-21, f78a6709 plus the D-461 working-tree follow-up**. This is not a new independent acceptance audit or real-model run.
+The D-451 product/installation receipts and the D-452 independent audit retain their original source/date
+boundaries; later source changes do not inherit those results.
 
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 137 / engine 399 / tui 79 test targets), rechecked in the D-452 independent audit
-on 2026-10-17. `make pty` last passed on 2026-10-11: `pty v2 smoke: ok`, rc 0, credential-free, including
-Leader-only input, explicit approvals, interrupt/exit, resize and draft ownership (D-445); both are
-preconditions for every item below. `make check` includes `make language-check`, which fails on non-English
-characters outside the two documented exceptions (`README.zh-CN.md` and the frozen material under
-`review/eval`).
+`make check` is green (core 137 / engine 405 / tui 81 test targets), rerun on 2026-10-21.
+`make pty` passed the same day: v2 smoke plus blocks and Kitty-protocol graphics smoke, all rc 0 and
+credential-free. PTY checks cover protocol bytes, input ownership, resize and cleanup, not a complete
+actual graphical-terminal or OS matrix. These gates do not renew real-provider, OAuth, sandbox-service,
+formal-proof or cross-product coding acceptance. `make check` includes `make language-check`, which
+rejects CJK characters outside README.zh-CN.md and the frozen evaluation exceptions.
 
 D-451 adds evidence for A01/A06/A08/A11/A16/A21/A28/A29/A36: immutable file/image inputs, transactional
 pending revisions/cancellation, local export/search and bounded display processes. The
@@ -22,14 +22,25 @@ pending revisions/cancellation, local export/search and bounded display processe
 Five scripted-provider coding cases use actual daemons/runners, files and SQLite; PTY checks cover draft and
 input ownership. These are deterministic runtime results, not real-model quality, publication or Pi parity.
 The report keeps ranked gaps and an unexecuted native-context/budget proposal; independent round acceptance
-is recorded by the completed session's durable goal audit. Source-only features postdate the last public release; no public release is currently published.
+is recorded by the completed session's durable goal audit. D-457 subsequently removed every public
+release/tag; source builds are the current distribution path.
 
 D-452 closed the review-fix round at commit 6f8a7402: human/JSON inputs CLI, strict pre-load payload byte
 budget and pagination, immediate failed-attachment cleanup, serialized concurrent attachment submissions,
 subprocess group cleanup and consistent client-command history. All six criteria passed the independent
 read-only audit, including the final oversized-input regression. This is a recorded audit outcome, not a new
-real-service or installation measurement. The latest D-452 entry in `docs/DECISIONS.md` records the behavior,
-regressions and toolchain inspection; the new-session entry in `AGENTS.md` leads to the development handoff.
+real-service or installation measurement. That audit's recorded counts were core 134 / engine 387 / tui 75,
+not today's suite sizes. Current follow-up entries cover D-453 through D-459; [HANDOFF.md](HANDOFF.md)
+identifies their source anchors. The [daily-coding comparison](PRODUCT-COMPARISON.md) separates implemented
+features, absent features, intentional differences and candidate acceptance work.
+
+D-461 adds read-only diagnostics for A06/A13/A22/A28 and explicit recovery, not automatic reminders.
+Evidence: engine/src/v2/diagnostics/tests.rs (five projection tests), the extended daemon/CLI cancellation
+and restart test, the explicit-input recovery test in engine/tests/v2_daemon.rs, and two TUI tests in
+tui/tests/minimal.rs. The same gate run found and fixed a pre-existing `exec --stream-json` settle race that
+could omit `goal_completed` and under-report usage; its existing test now asserts both. Repeated observation
+and daemon restart add no model calls; explicit input or task
+cancellation recovers the existing workflow. No live-service or performance result is claimed.
 
 ## Requirements (Q1–Q19) and their evidence
 
@@ -153,7 +164,29 @@ decides from its own stored receipts, so a check added later would never run —
   `tui::cli_flags::the_tui_refuses_the_flags_it_cannot_honour`; the first also asserts that no daemon socket was
   created, so a refused argument has no side effect).
 
-## Known gaps (found while auditing the documented surface, 2026-09-25)
+## Known gaps and resolution history
+
+The table below is the current summary at f78a6709. Proposed work and its acceptance methods live once in
+[PRODUCT-COMPARISON.md §2](PRODUCT-COMPARISON.md#2-candidate-improvements-in-priority-order); those candidates
+are not confirmed design changes. The expandable history retains re-runnable findings, corrections and
+unresolved policy dependencies without presenting every former gap as current.
+
+| Current boundary | Evidence / candidate |
+|---|---|
+| Idle worker with unsettled task; cancellation, interruption and termination retain distinct effects | D-461 delivers DD-01 option A: read-only diagnosis and explicit recovery instructions. Automatic reminders are excluded; real-user effectiveness remains unmeasured |
+| Rust-specific sandbox toolchain mounts; skill text access does not expose all support resources | engine/src/tools.rs; DD-02 |
+| No matched current Pi coding-success/intervention/cost comparison | existing A/B/C arms are internal; DD-03; Q16 success-form question remains separate from D-264's latency finding |
+| Instruction files are explicit, despite upward trusted-project configuration discovery | D-246/D-434, engine/src/config.rs; DD-04 |
+| Single-replacement default edit schema; ordered per-instance tools; MCP-only synchronous codemode | engine/src/reference.rs, engine/src/v2/driver.rs, engine/src/codemode.rs; DD-05 |
+| No message-level branches, separate follow-up queue or interactive model/effort switch; fork requires a stopped source daemon | engine/src/v2/sessions.rs, tui/src/v2app.rs; DD-06 |
+| Cache telemetry is implemented; priced cost/attribution and reviewer model usage in goal budgets are not | D-458/D-459; DD-07 |
+| Live selected provider/image/OAuth/Docker and wider terminal/security evidence remains partial | individual A rows and dated reports; DD-08 |
+| No MCP resource browsing or general SDK/extension interface; provider auth coverage is narrower than Pi | DD-09; existing Unix protocol and hooks are real capabilities, not equivalent extension APIs |
+| No public release; installation receipts cover their exact historical artifact | D-457; DD-10 |
+| Artifact policy and references remain a decision boundary | D-438; D-436 implements owner release after the configured retention window, not arbitrary deletion |
+
+<details>
+<summary>Historical findings and resolutions since 2026-09-25</summary>
 
 - ~~**There is no `fork` of a session.**~~ **Delivered since D-365.** `teamagents sessions fork --id ID
   [--name NAME]` snapshots the session's database with `VACUUM INTO` (a read-only source, refused while a daemon
@@ -273,7 +306,7 @@ decides from its own stored receipts, so a check added later would never run —
   **four**, and the key omitted sends the default's count — measured 2026-09-27 in 14 s, and the audit that
   recorded the gap (`review/config_keys.py`'s `MASKED` table) reported the new receiver the moment the wiring
   landed, which is how the entry came out.
-- **`[retention] history_days` is applied since D-245; `archived_days` still is not.** DESIGN §9 promises
+- **Retention is implemented: history_days since D-245, archived_days since D-435.** DESIGN §9 promises
   ordinary history is "archived or cleaned per user configuration" while live references and evaluation
   evidence are never evicted; D-192 modelled that rule first (`verification/tla/V2Retention.tla` with four
   refuted controls) and D-245 implemented it against that model: a session's boot drops events and *applied*
@@ -389,12 +422,10 @@ design decision **for the user**.
   upgrades are migrate-or-refuse), while a foreign, unstamped or newer-stamped database is still refused with the
   reason named. `TEAMAGENTS_LOG_SURFACE=1` stays as the live witness it always was.
 
-- **A worker needs the user's grant for the shared-workspace shell** (D-61): a spawned worker holds no
-  `shell@workspace` (§5.1), so until the user runs `teamagents authority grant --subject <id> --action shell
-  --scope workspace` it works with the file, web and skill tools only. The surface exists and is verified, but
-  whether the *default* should be different — workers getting the shell, or the Leader being allowed to hand
-  out the authority it holds — is a design decision that changes §5.1's spawn contract and needs the user's
-  call; both options are recorded in `docs/DECISIONS.md` D-61 ("Left open").
+- **The per-worker manual-shell-grant question is resolved by D-455.** D-61's no-ambient-shell default
+  remains; a user-issued delegable parent can now authorize an attenuated task-scoped child through an
+  explicit spawn/delegate capability request. Without a covering parent the task waits for a user decision.
+  The measurements below explain why this mattered; they predate D-455 and do not measure its benefit.
   **And since D-441 the surface states it instead of leaving it to be inferred**: `teamagents authority` (and its
   `--json` report, as `gaps`) names every ACTIVE instance missing `shell@workspace` and prints the exact `grant`
   that would fix it, computed with the runtime's own vocabulary and covering rule (`capability::scope_covers`,
@@ -408,19 +439,28 @@ design decision **for the user**.
   leader ran every acceptance command itself — 20–23 requests against group B's 6–10 for the same work. The
   harness now issues the user's grant to each member as round 5's treatment half (`D-256`), which makes the
   members verify their own work (measured: 1–5 executions each) but does *not* remove the leader's
-  integration cost — so the open question is what a product default should be, not whether the grant works.
-- **The project config is read, since D-244 — with two limits worth recording.** `config::load_user_config_for`
-  merges `<cwd>/.teamagents/config.toml` under one gate (`[permissions] trust_project = true` in the user's own
-  config; without it the repository's models, tools, skills paths and instruction files are refused, and
-  `[permissions]`, `hooks`, `checks`, `retention` and `limits` stay the user's own even when trusted), the
-  daemon, `doctor` and the client all load it, and `python3 review/dogfood/project_config.py` measures the gate
-  over a real session (the offered-surface witness in the daemon log). The two limits: the file is looked for in
-  the session's **own directory only** — a monorepo root config is not seen from a subdirectory, where Codex and
-  Pi walk up — and the opt-in is one flag in the user config, so trusting one repository trusts every repository
-  a session starts in; a per-project trust list is the upgrade path, and a design decision of its own. One
-  earlier consequence stays closed: because that loader is the only caller of the path validator, a bad
-  `skills_paths` / `instruction_files` entry in the *user* config used to be silent — `doctor` reports what they
-  resolve to and warns when a configured path is missing (D-66).
+  integration cost. D-455 changes the authorization workflow, not those historical measurements.
+- **The project config is read, since D-244; discovery and per-project trust arrived in D-434.**
+  config::load_user_config_for now discovers the nearest ancestor project config and checks the canonical
+  root against trusted_projects, or the user's explicit trust-all setting. User-only policy still cannot
+  come from a project file. The loader tests and `python3 review/dogfood/project_config.py` cover this path;
+  D-66's doctor diagnostics still report unreadable configured paths. Automatic AGENTS instruction discovery
+  is a distinct remaining feature, not a failure of project-config loading.
+
+</details>
+
+## Recent source additions and their evidence limits
+
+| Change | Implemented evidence | Still not established |
+|---|---|---|
+| D-453 governed updater | engine/src/update.rs and engine/tests/update.rs: journal, validation, switch/rollback and live local daemon exercise | public distribution acceptance while D-457 freezes releases |
+| External editor | tui/src/editor.rs success/failure test; composer/effect wiring in tui/src/v2app.rs and tui/src/main.rs | full editor crash/resize/reconnect matrix; completion menu still omits /edit |
+| D-456 DeepSeek web tools | engine/src/tools.rs response/binding/credential/private-address tests | fresh live Search/Fetch service acceptance; historical backend probes are not renewed |
+| D-458 automatic operation review | core review-decision test, engine/src/v2/reviewer.rs tests and v2_driver scripted-provider/real-shell case | reviewer billing in goal limits, independent adversarial/live-model review |
+| D-459 cache prefix and telemetry | kernel usage/masking tests, provider body/usage tests and exec aggregation tests | new service hit-rate/cost improvement; no warming or price table |
+
+D-455's detailed contract coverage follows. The 2026-10-21 gate covers the current source tests, not all
+external-service or historical experiment paths listed elsewhere in this ledger.
 
 ## Daily capability delegation (D-455)
 

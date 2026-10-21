@@ -68,8 +68,8 @@ audits — each one a claim the tree makes about itself, each with the decision 
   in hygiene since D-130); `review/env_knobs.py` keeps the `TEAMAGENTS_*` table
   below equal to the code's reads; `review/project_config_claim.py` checks the one fact every document states —
   the project config is read, under the user's opt-in (D-133, wired by D-244), and `review/release_artifact.py` does the same for the second one —
-  whether published tags contain the current architecture (D-203 originally caught pre-v2 tags; v0.2.0
-  contains v2 but predates D-451 source features); `review/silent_skips.py` fails a test that returns from a capability
+  whether the release claims match published tags (D-203 originally caught pre-v2 tags; D-457 now
+  requires the explicit no-public-release state); `review/silent_skips.py` fails a test that returns from a capability
   guard without saying why (D-121).
 * **the config surface, both directions**: `review/config_keys.py` reports a config field whose only readers
   are the loader, the validator, the doctor surface and the argv parser — a key this build accepts and never
@@ -288,6 +288,37 @@ as real-model or real-provider acceptance.
   survives a target unless it was killed mid-run — a `review/tmp/tla/` or `verification/tla/states/` left
   behind is scratch and may be deleted.
 
+## Documentation maintenance
+
+Keep document roles separate:
+
+| Document | Owns | Does not imply |
+|---|---|---|
+| README and its Chinese mirror | Short introduction, current install path and important boundaries | Complete reference or comparative acceptance |
+| USER-GUIDE and INSTALL | Behavior and commands users can use now | A future feature or a historical installer is available today |
+| DESIGN and DECISIONS | Confirmed requirements, contracts and dated decisions | An older entry overrides a newer decision |
+| ACCEPTANCE and CAPABILITIES | Per-item evidence/local baseline and its concise capability map | A green Cargo gate is real-service or comparator acceptance |
+| PRODUCT-COMPARISON | Dated comparator scope and one prioritized candidate queue | Implementation, spend or publication authorization |
+| HANDOFF | Latest inspected source, regression entry points and preservation rules | Remote synchronization or installed-binary identity |
+| Dated review reports/manifests | Evidence of their exact recorded sources and runs | A later source passed the same experiment |
+
+When behavior changes, update its user-facing home, evidence boundary and handoff together. Link to the
+candidate queue rather than copying it into several pages. Record the inspected commit and actual run date;
+do not attach new suite counts to an older independent audit. Mark implemented, partially verified, absent
+and intentionally excluded capabilities separately. Correct current summaries while preserving immutable
+receipts and historical decisions; add a dated clarification rather than silently regrading a run.
+
+Use one H1, meaningful section names, relative links and consistent status terms. Code/docs remain English
+except the Chinese README and frozen evidence. Keep README headings, links and CLI examples mirrored.
+Generated blocks in CONFIG/EVENTS/PROTOCOL/TOOLS come from their catalogues: do not manually edit a schema
+quote to describe a wished-for behavior. Reconcile the implementation first when such a change is approved.
+A documentation-only correction to surrounding prose needs no regeneration.
+
+Run `make hygiene` and `git diff --check` for documentation edits; run the full `make check` before a commit.
+If documentation exposes an already implemented key missing from an audit's vocabulary, extend that check
+without suppressing its source-handler validation. The audit checks structure, not every semantic claim:
+manual source review is still required. D-460 records the current cleanup and candidate-queue separation.
+
 ## Dependencies, toolchain and releases
 
 Each crate commits its own `Cargo.lock`, and both the regular checks and the release build use `--locked`.
@@ -296,7 +327,11 @@ need; when upgrading one, update only the affected lock files and re-run the int
 `make check`. Upgrading Rust means editing the version in `rust-toolchain.toml` and re-running `make fmt`,
 `make check` and `make pty`; CI and the release workflow pick the new version up automatically.
 
-**Cutting a release** (the steps `.github/workflows/release.yml` enforces, each one checked locally first):
+**Release freeze (D-457).** No public release or tag exists. Source builds are the supported distribution
+path until the user explicitly authorizes publication. The workflow's Publish step additionally requires
+TEAMAGENTS_RELEASE_APPROVED=true; setting that variable is not a substitute for user authorization.
+
+**After authorization**, the release procedure is:
 
 1. **Bump all three crates and their lock files.** Each `Cargo.lock` carries its crate's own version, and both
    `make check` and the release build run `--locked`, so a missed lock is a build failure. `review/release_artifact.py`
@@ -309,16 +344,17 @@ need; when upgrading one, update only the affected lock files and re-run the int
 3. **Push the `vX.Y.Z` tag.** The workflow refuses a tag that is not `v<version>`, reads the toolchain from
    `rust-toolchain.toml`, builds musl-static binaries, packages them with `README.md`, `config.example.toml`,
    `install.sh`, `docs/`, `examples/` and `AGENTS.md`, checksums the archive and the installer, smoke-installs the
-   exact archive (install, `init` writing a config, and the TUI binary executable), and publishes the assets.
+   exact archive (install, `init` writing a config, and the TUI binary executable), and publishes only when
+   the explicit repository-variable gate is enabled.
    `review/build_references.py` reads the same workflow and fails on a file it copies that the repository does not
    carry — D-216 found the one that did, which would have stopped the release at that step.
    The same path can be run before the tag without publishing: `make release-rehearsal` (D-217) runs the version
    gate, the musl-static release build of both binaries, the archive, the checksums and the smoke against the tree,
    and prints the archive's size. A build, not a check — a cold run is minutes, so it stays out of `make check`.
-4. **Update release freshness claims.** v0.2.0 already delivers the v2 architecture; it predates D-451.
-   After publication, update the dated freshness notes in `docs/INSTALL.md`, both READMEs and
-   `docs/ACCEPTANCE.md` to match the exact tagged artifact. `review/release_artifact.py` and
-   `review/install_check.py` compare the release surface; do not relabel earlier tags as pre-v2.
+4. **Update release freshness claims.** After an authorized publication, update INSTALL, both READMEs,
+   ACCEPTANCE, CAPABILITIES and HANDOFF to name the exact artifact and its source. Until then they must
+   state that no public release exists. `review/release_artifact.py` checks that state and
+   `review/install_check.py` exercises a published artifact when one is available; neither relabels history.
 5. **Verify the published artifact**: the SHA-256 from the public URL, the install, `init` keeping an existing
    config and a real TUI start.
 

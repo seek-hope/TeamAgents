@@ -9,6 +9,7 @@ pub mod attachments;
 pub mod authority;
 pub mod automations;
 pub mod daemon;
+mod diagnostics;
 pub mod driver;
 pub mod exec;
 pub mod goals;

@@ -463,6 +463,7 @@ fn read_only<T>(
 /// Snapshot query shared by `checkpoint` (same read transaction as the
 /// watermark) — instances with lifecycle/phase plus the single-goal view.
 fn read_snapshot(conn: &rusqlite::Connection, mcp: &Json, sessions: &Json) -> Result<Json, String> {
+    let work = super::diagnostics::read(conn, false)?;
     // `model` rides along (D-69): a team can span providers (`spawn(model = …)`),
     // and without it no client can say which member runs on what.
     // `reason` rides along too (D-165): the last lifecycle transition's own words, which is what answers "why
@@ -525,7 +526,7 @@ fn read_snapshot(conn: &rusqlite::Connection, mcp: &Json, sessions: &Json) -> Re
             let can_shell = shells.get(&id).copied().unwrap_or(false);
             Ok(json!({"id": id, "lifecycle": row.get::<_, String>(1)?,
                       "phase": row.get::<_, String>(2)?, "model": profile["model"], "reason": reason,
-                      "can_run_shell": can_shell}))
+                      "can_run_shell": can_shell, "diagnosis": work.activities.get(&id)}))
         })
         .map_err(|e| format!("snapshot query: {e}"))?;
     let mut instances = Vec::new();
@@ -561,14 +562,16 @@ fn read_snapshot(conn: &rusqlite::Connection, mcp: &Json, sessions: &Json) -> Re
         .and_then(|payload| serde_json::from_str::<Json>(&payload).ok())
         .and_then(|payload| payload["completion"]["summary"].as_str().map(str::to_string))
         .filter(|text| !text.trim().is_empty());
-    Ok(json!({"instances": instances, "goal": goal.map(|(_, status, usage, unknown, limits, deadline)|
+    let goal = goal.map(|(_, status, usage, unknown, limits, deadline)| {
         json!({"status": status, "known_usage": serde_json::from_str::<Json>(&usage).unwrap_or(Json::Null),
                "summary": summary,
                "unknown_usage": unknown,
                "limits": serde_json::from_str::<Json>(&limits).unwrap_or(Json::Null),
                // the absolute deadline (D-64): a client that shows limits must be able
                // to say when the goal stops accepting new requests
-               "deadline": deadline})),
+               "deadline": deadline})
+    });
+    Ok(json!({"instances": instances, "tasks": work.tasks, "goal": goal,
         // D-413: the configured MCP services and their credential state, so a client that cannot read this
         // machine's config (the TUI is one) can still tell a user what the session bound and what to do next.
         "mcp": mcp,
@@ -779,17 +782,10 @@ fn read_method(
             Ok(json!({"instance_id": instance, "inputs": inputs, "next_after": next}))
         }
         "tasks" => {
-            let mut stmt = conn
-                .prepare("SELECT id, goal_id, assignee, status FROM tasks ORDER BY rowid")
-                .map_err(|e| format!("tasks prepare: {e}"))?;
-            let rows = stmt
-                .query_map([], |row| {
-                    Ok(json!({"id": row.get::<_, String>(0)?, "goal_id": row.get::<_, String>(1)?,
-                              "assignee": row.get::<_, String>(2)?, "status": row.get::<_, String>(3)?}))
-                })
-                .map_err(|e| format!("tasks query: {e}"))?;
-            let tasks: Vec<Json> = rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("tasks: {e}"))?;
-            Ok(json!({"tasks": tasks}))
+            let tx = conn.unchecked_transaction().map_err(|e| format!("tasks tx: {e}"))?;
+            let work = super::diagnostics::read(&tx, true)?;
+            tx.commit().map_err(|e| format!("tasks commit: {e}"))?;
+            Ok(json!({"tasks": work.tasks}))
         }
         // pending approvals with the operation's fixed intent (§9 first
         // version: approvals and unknown outcomes) — the client renders a preview and

@@ -55,8 +55,11 @@ make verify-kani                         # Kani proofs (paging arithmetic)
 python3 review/eval/r2-p6/run.py --phase pilot --out <new date directory>  # real-model A/B/C comparison (needs credentials)
 ```
 
-- Baseline (2026-10-17, D-452): `make check` is green — core 137 / engine 399 / tui 79. Raw evaluation JSONL lives
-  in `review/eval/r2-p6/runs/`, per-item evidence in `docs/ACCEPTANCE.md`.
+- Local baseline (2026-10-21, f78a6709 plus D-461): `make check` is green — core 137 / engine 405 / tui 81;
+  `make pty` passes. This is not a renewal of D-452's independent audit or historical real-service results.
+  Raw evaluation JSONL lives in `review/eval/r2-p6/runs/`, per-item evidence in `docs/ACCEPTANCE.md`.
+  Candidate daily-coding work has one home, `docs/PRODUCT-COMPARISON.md`. D-461 approves and implements
+  DD-01 option A (read-only diagnosis and explicit recovery); automatic reminders and other candidates are not approved.
 - Skipped checks and the current baseline are collected in `docs/ACCEPTANCE.md`. A green Cargo run is not a
   real-service acceptance result.
 - Real-model evaluation always uses the model's native context window and records the value and its source;

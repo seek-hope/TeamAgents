@@ -142,6 +142,8 @@ pub struct V2App {
     pub queue: Option<crate::queue::Queue>,
     pub session_id: String,
     pub instances: Vec<InstanceInfo>,
+    /// Read-only checkpoint observations, never instructions to the model.
+    work_diagnostics: Vec<(String, Json)>,
     pub entries: Vec<ChatEntry>,
     pub transcript: crate::transcript::Transcript,
     pub graphics: crate::graphics::Graphics,
@@ -177,6 +179,7 @@ impl V2App {
             queue: None,
             session_id: session_id.to_string(),
             instances: vec![],
+            work_diagnostics: vec![],
             entries: vec![],
             transcript: crate::transcript::Transcript::default(),
             graphics: crate::graphics::Graphics::default(),
@@ -293,6 +296,14 @@ impl V2App {
                 model: i["model"].as_str().unwrap_or("").to_string(),
                 reason: i["reason"].as_str().unwrap_or("").to_string(),
             })
+            .collect();
+        self.work_diagnostics = snapshot["instances"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .chain(snapshot["tasks"].as_array().into_iter().flatten().filter(|task| task["status"] == "BLOCKED"))
+            .filter(|row| row["diagnosis"].is_object())
+            .map(|row| (row["id"].as_str().unwrap_or("?").to_string(), row["diagnosis"].clone()))
             .collect();
         self.goal = snapshot.get("goal").and_then(|g| {
             if g.is_null() {
@@ -447,7 +458,14 @@ impl V2App {
                     refresh.checkpoint = true;
                     self.note(format!("instance {} created", event["scope"].as_str().unwrap_or("?")));
                 }
-                "task_delegated" | "task_started" | "task_completed" => {
+                "task_delegated"
+                | "task_started"
+                | "task_completed"
+                | "wait_satisfied"
+                | "inbox_drained"
+                | "capability_requested"
+                | "capability_approved"
+                | "capability_denied" => {
                     refresh.checkpoint = true;
                 }
                 "task_blocked" => {
@@ -468,8 +486,10 @@ impl V2App {
                 }
                 "approval_requested" | "approval_granted" | "approval_denied" => {
                     refresh.approvals = true;
+                    refresh.checkpoint = true;
                 }
                 "operation_completed" if payload["status"].as_str() == Some("OUTCOME_UNKNOWN") => {
+                    refresh.checkpoint = true;
                     self.note(format!(
                         "operation {} has an unknown outcome (not replayed)",
                         event["scope"].as_str().unwrap_or("?")
@@ -697,9 +717,11 @@ Ctrl+Q or /queue shows pending Leader inputs; Enter edits, Delete asks to cancel
 Attachments: eight files, 1 MiB UTF-8 text or 5 MiB PNG/JPEG/GIF/WebP, 16 MiB total; symlinks are refused.
 Ctrl+O expands or folds tool previews; /sessions shows full stored results.
 Ctrl+G switches graphics previews and source; image files stay unchanged.
-Developer tools: teamagents --help; teamagents status --json; teamagents history --id ID.",
+Developer tools: teamagents --help; teamagents status --json; teamagents history --id ID.
+{}",
                 self.session_id,
-                self.active_instance().map(|i| i.model.as_str()).unwrap_or("unavailable")
+                self.active_instance().map(|i| i.model.as_str()).unwrap_or("unavailable"),
+                self.diagnostic_details()
             )),
             "/attach" => self.command_note(format!(
                 "Staged attachments: {:?}. Use /attach PATH; Tab lists workspace paths.",
@@ -873,6 +895,35 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
         self.chat_scroll = self.chat_scroll.saturating_sub(lines);
     }
 
+    fn diagnostic_details(&self) -> String {
+        let mut lines =
+            vec!["Snapshot diagnostics (read only; use the same --state-root/--session in CLI commands):".to_string()];
+        for (id, diagnostic) in self.work_diagnostics.iter().take(20) {
+            lines.push(format!("{id}: {}", diagnostic["summary"].as_str().unwrap_or("unknown")));
+            if let Some(reason) = diagnostic["reason"].as_str() {
+                lines.push(format!("  reason: {reason}"));
+            }
+            lines.push(format!(
+                "  {}",
+                diagnostic["next_steps"].as_str().unwrap_or("Inspect teamagents status --json.")
+            ));
+            for wait in diagnostic["waits"].as_array().into_iter().flatten().take(4) {
+                lines.push(format!(
+                    "  wait {} mode={} timer_at={} conditions={}",
+                    wait["id"], wait["mode"], wait["timer_at"], wait["conditions"]
+                ));
+            }
+        }
+        if self.work_diagnostics.len() > 20 {
+            lines.push(format!(
+                "{} more diagnostic rows omitted; use the CLI for all rows.",
+                self.work_diagnostics.len() - 20
+            ));
+        }
+        lines.push("INSTANCE/TASK mean the row ids. Full diagnostics: teamagents instances; teamagents tasks; teamagents status --json. No automatic retry or cancellation.".into());
+        lines.join("\n")
+    }
+
     pub fn status_line(&self) -> String {
         if self.disconnected {
             return "Disconnected · reconnecting".into();
@@ -890,6 +941,12 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
         let Some(leader) = self.active_instance() else { return "Connecting to the Leader".into() };
         if leader.lifecycle != "ACTIVE" {
             return format!("{} · {} · teamagents instances", leader.lifecycle, leader.reason);
+        }
+        if let Some((id, diagnostic)) = self.work_diagnostics.iter().find(|(_, d)| d["attention"] == true) {
+            return format!(
+                "{id}: {} · /help",
+                diagnostic["code"].as_str().unwrap_or("inspect status").replace('_', " ")
+            );
         }
         let state = match leader.phase.as_str() {
             "READY" => "Ready",
@@ -920,7 +977,13 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
                 }
             })
             .unwrap_or_default();
-        format!("{state}{usage}{deadline}")
+        let wait = self
+            .work_diagnostics
+            .iter()
+            .find(|(id, d)| id == "i-leader" && d["code"] == "waiting")
+            .map(|(_, d)| format!(" · {} · /help", d["summary"].as_str().unwrap_or("")))
+            .unwrap_or_default();
+        format!("{state}{usage}{deadline}{wait}")
     }
 
     pub fn footer_hint(&self) -> String {

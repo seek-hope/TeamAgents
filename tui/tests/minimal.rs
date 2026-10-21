@@ -129,6 +129,59 @@ fn a_waiting_capability_member_is_visible_in_the_status_line() {
 }
 
 #[test]
+fn diagnostics_are_local_visible_and_replaced_on_reconnect() {
+    let mut app = app();
+    app.composer.set_text("keep typing");
+    app.apply_checkpoint(json!({"instances": [
+        {"id": "i-leader", "lifecycle": "ACTIVE", "phase": "WAITING"},
+        {"id": "worker", "lifecycle": "ACTIVE", "phase": "READY", "diagnosis": {
+            "code": "idle_unsettled", "summary": "Assignee idle with RUNNING task(s) not settled.",
+            "attention": true, "next_steps": "Use instances send --id INSTANCE --prompt TEXT or tasks cancel --id TASK."}}
+    ]}), 20);
+    assert_eq!(app.composer.text(), "keep typing");
+    assert_eq!(app.focus, Focus::Composer);
+    assert!(app.status_line().contains("idle unsettled"));
+    let mut terminal = Terminal::new(TestBackend::new(120, 20)).unwrap();
+    terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
+    let frame: String = terminal.backend().buffer().content.iter().map(|cell| cell.symbol()).collect();
+    assert!(frame.contains("idle unsettled") && frame.contains("/help"), "{frame}");
+    app.composer.set_text("/help");
+    assert!(app.handle_key(key(KeyCode::Enter)).is_none(), "help never dispatches recovery");
+    let help = &app.entries.last().unwrap().text;
+    assert!(help.contains("instances send") && help.contains("tasks cancel") && help.contains("same --state-root"));
+    app.mark_disconnected("test");
+    assert!(app.status_line().contains("Disconnected"));
+    app.mark_connected();
+    app.apply_checkpoint(json!({"instances": [{"id": "i-leader", "lifecycle": "ACTIVE", "phase": "READY"}]}), 21);
+    assert!(!app.status_line().contains("idle unsettled"), "fresh/older-daemon snapshots clear stale diagnostics");
+}
+
+#[test]
+fn blocked_task_and_wait_diagnostics_refresh_without_stealing_approvals() {
+    let mut app = app();
+    app.apply_checkpoint(json!({"instances": [{"id": "i-leader", "lifecycle": "ACTIVE", "phase": "WAITING", "diagnosis": {
+        "code": "waiting", "summary": "Waiting; no timer is recorded.", "attention": false,
+        "next_steps": "Inspect tasks; do not infer deadlock.", "waits": [{"id": "w", "mode": "ALL", "conditions": [], "timer_at": null}]}}],
+        "tasks": [{"id": "blocked-task", "status": "BLOCKED", "diagnosis": {
+            "code": "blocked", "summary": "Task BLOCKED; does not satisfy a task wait.", "attention": true, "reason": "outcome_unknown",
+            "next_steps": "Verify unknown effects before retrying; tasks cancel does not stop commands."}}]}), 2);
+    assert!(app.status_line().contains("blocked-task"));
+    app.composer.set_text("/help");
+    assert!(app.handle_key(key(KeyCode::Enter)).is_none());
+    assert!(app.entries.last().unwrap().text.contains("outcome_unknown"));
+    assert!(app.entries.last().unwrap().text.contains("timer_at=null"));
+    app.apply_approvals(json!({"approvals": [{"id": "approval"}]}));
+    assert!(app.status_line().contains("Approval needed"));
+    assert_eq!(app.focus, Focus::Composer);
+    for kind in ["wait_satisfied", "inbox_drained", "approval_denied", "capability_approved"] {
+        assert!(app.apply_events(&[json!({"kind": kind, "payload": {}})]).checkpoint, "{kind}");
+    }
+    assert!(
+        app.apply_events(&[json!({"kind":"operation_completed", "payload":{"status":"OUTCOME_UNKNOWN"}})]).checkpoint
+    );
+}
+
+#[test]
 fn ctrl_e_edits_the_current_draft_and_slash_edit_is_local() {
     let mut app = app();
     app.composer.set_text("draft to edit");

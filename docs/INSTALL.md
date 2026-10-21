@@ -1,77 +1,65 @@
 # Installing, first run and upgrades
 
-> **No public release currently (2026-10-18).** All release tags and assets were removed. Build from source
-> using the README until a release is authorized; the installer/archive sections below describe the future release path.
+TeamAgents currently targets **Linux x86_64**. **No public release is published**: all release tags/assets
+were removed on 2026-10-18 (D-457), and publication requires explicit user authorization. Build the current
+source; do not follow historical latest-release or old-version download instructions.
 
-TeamAgents currently supports **Linux x86_64**. Release archives are statically linked against musl and need
-neither Rust, Python nor Node.js. Model services require your own credentials.
+## 1. Build and install from source
 
-## 1. Download and install
-
-> **No published release is currently available.** The last release tags and assets were removed on
-> 2026-10-18. The v0.2.0 material below is historical; the current source is installed by building both
-> binaries from source. The current-source musl archive was installed and exercised under isolated
-> HOME/XDG/bin roots by `python3 review/maturity-2026-10-11/install.py`; hashes and scope are recorded in the
-> [maturity report](../review/maturity-2026-10-11/REPORT.md). This is an unpublished Linux x86_64 rehearsal,
-> not a published release or proof of other platforms.
-
-When a release is authorized, the installer picks the latest release, verifies SHA-256 and installs
-`teamagents` and `teamagents-tui` into `~/.local/bin`. Both programs must come from the same version and
-live in the same directory. Until then, build both from source as described above.
-
-The repository is public, so no GitHub account or clone is needed. The installer prefers a logged-in `gh` and
-falls back to `curl`; it supports Linux x86_64 only and fails before downloading on anything else.
-
-**Custom installs:** replace `sh "$installer"` from the README with any of these:
+Run these commands from the repository root. Rust is pinned by rust-toolchain.toml; Cargo builds core as
+a dependency of the two executable crates. The first build may download the toolchain and locked dependencies.
 
 ```bash
-sh "$installer" --version 0.1.2             # pin a version (a leading "v" is accepted)
-sh "$installer" --bin-dir "$HOME/bin"      # custom directory (TEAMAGENTS_BIN_DIR also works)
-sh "$installer" --archive /path/to/teamagents-VERSION-x86_64-unknown-linux-musl.tar.gz
-```
-
-A local install needs no network but requires the matching `SHA256SUMS` next to the archive. The installer
-verifies only the archive for the current platform, so a manifest listing other platforms is fine. If
-verification fails or the archive is incomplete, already installed programs stay untouched; if replacing the
-second binary fails, the previous one is restored. The installer never calls sudo and never edits shell
-startup files.
-
-**Browser download (after a release is authorized):** download `install.sh`, the `.tar.gz` and
-`SHA256SUMS` from the release into the same empty directory, then run:
-
-```bash
-# Replace VERSION with the version you downloaded.
-sh install.sh --archive ./teamagents-VERSION-x86_64-unknown-linux-musl.tar.gz
+cargo build --locked --release --manifest-path engine/Cargo.toml --bin teamagents
+cargo build --locked --release --manifest-path tui/Cargo.toml --bin teamagents-tui
+mkdir -p ~/.local/bin
+install -m755 engine/target/release/teamagents tui/target/release/teamagents-tui ~/.local/bin/
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-The v0.1.1 archives ship no installer; download `install.sh` from the source address used in the README and
-install locally.
+Add `--offline` once dependencies are cached. Both binaries must come from the same source and be installed
+in the same directory. Before replacing an existing installation, finish or explicitly stop its work and
+follow section 3; closing the TUI alone does not stop the daemon. If the destination uses a versioned
+installation with symlinks, preserve that layout rather than copying through its active links.
 
-**Building from source:** see the [README](../README.md#building-from-source). Only `engine` and `tui` need
-to be built; Cargo builds `core` automatically.
+The [README](../README.md#building-from-source) gives the short path. Build and test conventions are in
+[DEVELOPMENT.md](DEVELOPMENT.md); no root Cargo workspace manifest is required.
+
+### Local archives and future releases
+
+The installer also accepts a locally built Linux x86_64 musl archive with its matching SHA256SUMS beside it:
+
+```bash
+# Replace VERSION with the version in your locally built archive.
+sh install.sh --archive /path/to/teamagents-VERSION-x86_64-unknown-linux-musl.tar.gz
+```
+
+This requires the matching installer and archive, not a nonexistent public download. A musl archive does
+not need Rust, Python or Node.js merely to run the product; tools and MCP services may need their own
+runtimes. The installer verifies checksums, installs both binaries together, never invokes sudo and never
+edits shell startup files. Use `--bin-dir "$HOME/bin"` for another destination. A missing checksum or
+incomplete archive is a refusal, not permission to bypass verification.
+
+The [D-451 maturity report](../review/maturity-2026-10-11/REPORT.md) records an unpublished installation
+rehearsal on its pinned source. That is not acceptance of every later source build. A future public
+release needs a fresh exact-artifact rehearsal and separate publication authorization.
 
 ## 2. First configuration and start
-
-The built-in template writes a minimal config, so there is no example file to hunt for:
 
 ```bash
 teamagents init
 ```
 
-The config lives at `${XDG_CONFIG_HOME:-$HOME/.config}/teamagents/config.toml`. Running it again keeps any
-existing file, symlinks included. The new file is mode `0600` and holds no credentials. `init` also prepares the state root: it creates `v2/session.sqlite` with the schema and prints the database and socket paths. It starts no daemon and opens no conversation, so there is nothing to clean up before your first goal.
-The default profile is `leader_main` with the model `deepseek-flash` (context 1,000,000, reasoning effort
-max). For another service, edit `provider`, `protocol`, `model`, `base_url` and `api_key_env` (see the
-[user guide](USER-GUIDE.md#2-configuration)) and set that model's native `context_window` at the same time.
-Only the credential's environment-variable name goes into the file; web search and MCP are configured from
-the example file that ships as `config.example.toml` in the release archive (`examples/config.toml` in the
-source tree) when needed.
+The config lives at `${XDG_CONFIG_HOME:-$HOME/.config}/teamagents/config.toml`. Repeating init preserves
+an existing file, including symlinks. A new file is mode 0600 and contains no credential values. Init also
+prepares the state root and session database; it starts no daemon or conversation.
 
-v0.1.1 has no `init`; its installer copies a template when the config is missing, so setting the credential
-is enough.
+The generated model profile is leader_main with deepseek-flash, a 1,000,000-token context and max reasoning
+effort. For another service, set the protocol, model, endpoint, credential variable and native context
+window together; see [configuration](USER-GUIDE.md#2-configuration). Additional bindings are illustrated in
+[examples/config.toml](../examples/config.toml). Never put API key values in tracked files.
 
-Shell isolation needs bubblewrap — pick the line for your distribution:
+The default approved_scope shell needs working bubblewrap:
 
 | Distribution | Command |
 |---|---|
@@ -79,50 +67,70 @@ Shell isolation needs bubblewrap — pick the line for your distribution:
 | Fedora | `sudo dnf install bubblewrap` |
 | Arch Linux | `sudo pacman -S bubblewrap` |
 
-Set the credential and start in the same terminal:
-
 ```bash
 export DEEPSEEK_API_KEY='your key'
 teamagents doctor
 teamagents --cwd /path/to/project
 ```
 
-Replace `/path/to/project` with your project; omitting `--cwd` uses the current directory. Then just type a
-goal. `teamagents --help` lists every argument. For a non-interactive terminal or a script use
-`teamagents exec "…"` (`--json` prints a machine-readable summary).
+Omit `--cwd` to use the current directory for a new daemon. A client joining an existing daemon keeps that
+session's workspace; use an explicit named session or another state root for another project.
+`teamagents --help` lists management commands. For scripts, use `teamagents exec "Explain this repository"`;
+`--json` returns a machine-readable report.
 
-`doctor` verifies the local machine and sends no model request. `FAIL` needs fixing; `WARN` marks an optional
-capability. The diagnostics of v0.1.1 were coarse enough to report a missing Codex CLI as a failure; from
-v0.1.2 on they are more precise, and the current version does not probe Codex at all.
+Doctor sends no model request. Fix required failures before starting; warnings identify optional or
+unconfigured capabilities. User-home development environments are not automatically available in the
+sandbox: Rust toolchain/cache mounts exist, but Node/Python/Go installations may need explicit environment
+preparation. See [permissions and isolation](USER-GUIDE.md#4-permissions-and-isolation), not full_auto as an
+implicit fallback.
 
 ## 3. Upgrade and uninstall
 
-Quit a running TeamAgents, then run the README install command again: both programs update together. It never
-overwrites the config or deletes sessions. Afterwards run `teamagents version` and `teamagents doctor`. New
-config fields are edited by hand — `init` neither migrates nor merges an existing config. Installing an
-earlier version rolls the binaries back, but cross-version session compatibility depends on that release's
-notes.
+For a manual source upgrade:
 
-Uninstall the programs:
+1. Review the target source, schema compatibility and [acceptance limits](ACCEPTANCE.md); build both new
+   binaries before touching the installation. Preserve the old binaries and make a consistent backup of
+   any session you cannot afford to lose. A binary rollback is not a database-schema rollback.
+2. Finish work or explicitly terminate the relevant instances. Ctrl+D only detaches; task cancellation
+   does not stop a running command. A graceful daemon stop allows committed runners to finish, so it is
+   not a substitute for stopping active work.
+3. Stop each affected daemon using its state root, then replace both binaries from the same build:
+
+   ```bash
+   teamagents --state-root /path/to/session-state daemon --stop
+   ```
+
+4. Run `teamagents version` and `teamagents doctor`, then reconnect to the intended session. Init preserves
+   existing configuration; it does not merge new fields into it. Edit those fields deliberately.
+
+D-453 provides a separately tested, governed updater with health-check rollback and a journal. Agent
+update requests are disabled by default and require the user's concrete approval when enabled; the
+reviewer cannot authorize them. This mechanism does not create a release target while publication is frozen.
+See the update configuration in [CONFIG.md](CONFIG.md) and D-453 in [DECISIONS.md](DECISIONS.md).
+
+To uninstall a simple two-binary source installation, first finish/stop its work and daemons, then remove
+only its launchers:
 
 ```bash
 rm -f ~/.local/bin/teamagents ~/.local/bin/teamagents-tui
 ```
 
-The config and sessions stay behind in `${XDG_CONFIG_HOME:-$HOME/.config}/teamagents` and
-`${XDG_STATE_HOME:-$HOME/.local/state}/teamagents`; delete those directories yourself only when you are sure
-you no longer need them.
+Configuration and sessions remain under `${XDG_CONFIG_HOME:-$HOME/.config}/teamagents` and
+`${XDG_STATE_HOME:-$HOME/.local/state}/teamagents`. A versioned installation can also retain binaries and
+its update journal. Do not broadly delete those directories or existing sessions as part of uninstall.
 
 ## 4. Troubleshooting
 
 | Symptom | What to do |
 |---|---|
-| `teamagents: command not found` | Run `export PATH="$HOME/.local/bin:$PATH"` and add it to your shell's startup file (`~/.bashrc`, `~/.zshrc`) |
-| `teamagents-tui` is missing | Install both programs into the same directory; do not copy `teamagents` alone |
-| Config missing / no model configured | Create it as in section 2; the self-check prints the path it used |
-| Credential unset or empty | Export the referenced variable in the same terminal that starts TeamAgents |
-| Download 404 / no release | Check the version, the network and the release list; a private fork also needs GitHub account permissions |
-| SHA-256 verification failed | Stop, clear this download and fetch the archive plus its checksum file again |
-| bwrap is installed but the probe fails | The container, kernel or distribution restricts unprivileged user namespaces; member shells cannot run there |
-| macOS / Windows / Linux ARM | No archive exists yet; do not try to run the x86_64 Linux build natively |
-| `session.sqlite` appears in the current directory | An *empty* `--state-root`/`XDG_STATE_HOME` (often `--state-root "$VAR"` with `VAR` unset) — the flag is refused with the reason; pass a path or omit it |
+| Command not found | Add the chosen bin directory to PATH in your terminal and shell startup file |
+| TUI binary missing or mismatched | Install both binaries from the same source into the same directory |
+| Config/model missing | Run init and check the config path printed by doctor |
+| Credential missing | Export the configured variable in the terminal that starts the daemon |
+| Public download returns 404 | Expected while no release is published; build from source |
+| Local archive checksum fails | Stop; obtain the matching archive/checksum pair and verify provenance |
+| Bubblewrap probe fails | Check kernel/container restrictions on unprivileged namespaces; no host fallback occurs |
+| Build tool exists on host but not in sandbox | Check workspace-local/system installation and the documented toolchain mounts |
+| macOS / Windows / Linux ARM | No supported distribution is established by the Linux x86_64 checks |
+| Wrong workspace after changing directory | You joined an existing session; select the intended named session or state root |
+| State path is wrong | The state root is a directory, not the session.sqlite file; empty path arguments are refused |

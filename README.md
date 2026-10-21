@@ -19,7 +19,7 @@ and reports back; you watch progress and approve anything that leaves the sandbo
 | Document | Contents |
 |---|---|
 | [User guide](docs/USER-GUIDE.md) | Getting started, configuration, permissions, Skills/MCP, recovery and cleanup |
-| [Comparison with Codex CLI and Pi](docs/PRODUCT-COMPARISON.md) | a dated, sourced snapshot of how this product compares, and the decisions it surfaces |
+| [Daily coding readiness and comparison](docs/PRODUCT-COMPARISON.md) | current Pi comparison, evidence limits and prioritized candidate improvements; dated Codex reference |
 | [Acceptance](docs/ACCEPTANCE.md) | Per-item evidence for the A01–A36 acceptance matrix, plus known gaps |
 | [Capabilities](docs/CAPABILITIES.md) | One row per capability: the check behind it, the boundary that check measured, and what is still open |
 | [Design baseline](docs/DESIGN.md) | Confirmed requirements, architecture and protocol constraints, A01–A36, definition of done |
@@ -52,8 +52,8 @@ you ──goal (natural language)──▶ Leader ──spawn / delegate──�
                                    └── finish: the goal is done when the Leader passes the completion checks
 ```
 
-- You **always** talk to the Leader and never direct instances yourself; whether to split work and how many
-  instances to use is the Leader's call (a team of one is legal).
+- The TUI talks to the Leader; whether to split work and how many instances to use is the Leader's call
+  (a team of one is legal). Direct member input and intervention are available through the developer CLI.
 - Every instance has its own model, tool bindings, workspace policy and budget. Work that exceeds its scope
   becomes an **approval request** while the rest of the team keeps working.
 - Runtime facts (who is doing what, where a task is stuck, why a turn ended) all land in the session
@@ -65,8 +65,8 @@ you ──goal (natural language)──▶ Leader ──spawn / delegate──�
   re-checked at dispatch; the session grants the Leader its team authority by default (`manage` / `delegate` /
   `message` over the session), and a grant can be revoked at any time — revocation cascades, and limited
   delegation, timeouts and unknown outcomes all have recovery classifications. The tool surface follows the
-  grants, so an instance is offered only what it can dispatch — a worker the Leader spawned holds no shell until
-  you grant it `shell@workspace` (D-60).
+  grants, so an instance is offered only what it can dispatch. A spawned worker has no ambient shell;
+  D-455 adds explicit task-scoped delegation from a user-issued delegable grant, or a pending capability request.
 - **Workspace policies**: `spawn` can give an instance the shared project directory, a private isolated
   directory or its own Git worktree and branch. Termination retires the workspace from its record; a
   directory with uncommitted or unmerged work is never deleted automatically, only reported. A worktree's
@@ -84,8 +84,8 @@ you ──goal (natural language)──▶ Leader ──spawn / delegate──�
   `full_auto` (user-only, host shell); an approval binds one concrete operation, its argument hash and its
   permission revision, so it is used up by that single dispatch.
 - **Completion gate**: `finish` only accepts honest outcomes; the `[[checks]]` in **your own** config must
-  actually pass before a goal settles. A project file cannot add one yet — the merge loader exists but no entry
-  point calls it (see *Configuration and team*).
+  actually pass before a goal can settle successfully. Project configuration is loaded when trusted, but
+  cannot supply checks: acceptance policy remains user-owned (see *Configuration and team*).
 - **Long-context compaction**: triggered by real window usage; the summary keeps the original request, user
   revisions, acceptance criteria and open questions, while the full text stays retrievable through
   `read_history`. Compaction calls count against the goal budget.
@@ -104,7 +104,8 @@ D-451 adds explicit text/image attachments (`/attach PATH` or `exec --attach PAT
 completion, revision-checked pending input (`/queue` or `inputs`), browser search and complete local
 Markdown/JSON session export. Rendering runs in bounded Rust display processes with safe source fallback.
 See the [user guide](docs/USER-GUIDE.md) for limits and controls and the [maturity report](review/maturity-2026-10-11/REPORT.md)
-for deterministic local evidence and remaining gaps. These source features are newer than the last public release; no release is currently published.
+for its pinned deterministic local evidence. Current source also includes an external editor, task-scoped
+capability delegation, optional operation auto-review and provider cache telemetry. No release is currently published.
 
 ## Install
 
@@ -141,7 +142,8 @@ teamagents --cwd /path/to/project     # your project directory; omit --cwd to us
 ```
 
 `init` follows the XDG layout; the default model is DeepSeek Flash (1M context) and the generated TOML can be
-edited for anything else. Upgrading from v0.1.1 copies a config template, so `init` can be skipped.
+edited for another service. Existing configuration is preserved; review it with `doctor` rather than assuming
+that init merges new fields into it.
 
 Then just state your goal:
 
@@ -185,15 +187,19 @@ request that would pass the usage ceiling and `deadline_minutes` refuses one pas
 session runs until you stop it, which `doctor` says out loud. See
 [docs/USER-GUIDE.md](docs/USER-GUIDE.md) §2.2.
 
-**Capabilities are yours to hand out.** The Leader gets the authority its own team tools need; a worker it
-spawns gets none of it, so it works with the file, web and skill tools until you grant it more — for example
-the shared-workspace shell a coding task usually needs:
+**Capabilities are yours to hand out.** Workers do not inherit ambient authority. You can grant one worker
+its shared-workspace shell, or explicitly allow the Leader to delegate it for tasks that request it:
 
 ```bash
-teamagents authority                                    # instances and grants, with the ids
+teamagents authority                                    # grants and pending capability requests
 teamagents authority grant --subject i-worker-1 --action shell --scope workspace
+teamagents authority grant --subject i-leader --action shell --scope workspace --delegable
 teamagents authority revoke --grant g-1a2b3c4d          # final; takes derived grants with it
 ```
+
+The delegable option is a user choice, not a default. A child grant cannot widen its parent or be delegated
+again, and expires with its task or instance. Without a covering parent, declared capability needs wait for
+the user's decision instead of starting a worker that cannot execute its task.
 
 Grants are checked again at every dispatch, so a revocation stops work that was already queued, and the tool
 leaves the model's surface at its next request. The surface refuses what could never do anything (an unknown
@@ -230,8 +236,10 @@ input and walks multiline drafts; `PageUp`/`PageDown` and the wheel scroll histo
 work continue); `Ctrl+D` exits while the session keeps running. `Ctrl+S` or `/sessions` opens session
 history and switching: select with arrows, Enter switches, brackets page history, and `d` then `y` deletes
 the selected session. Deleting the current session succeeds before the TUI exits. Esc cancels/returns.
-Client commands: `/help`, `/sessions`, `/interrupt`, `/quit`. Drafts survive resizing and session switches;
-approval arrival never takes typing focus.
+Client commands: `/help`, `/sessions`, `/interrupt`, `/quit`, `/attach`, `/detach`, `/queue` and `/edit`.
+`Ctrl+E` opens the draft in `VISUAL` or `EDITOR`; successful edits return to the composer without sending.
+The `/edit` suffix after draft text opens the same editor; `/edit` alone explains it and is not in the
+completion menu. Drafts survive resizing and session switches; approvals never take typing focus.
 
 Developer inspection: `teamagents status --json` reads the running session's checkpoint;
 `teamagents history --id INSTANCE --limit 400 --json` reads a bounded tail of stored messages, including
@@ -240,14 +248,13 @@ see the [developer command map](docs/USER-GUIDE.md#1-quick-start).
 
 ## Configuration and team
 
-- A session reads two config files: yours, `$XDG_CONFIG_HOME/teamagents/config.toml`, and — for the directory it
-  works in — the repository's `<cwd>/.teamagents/config.toml`. The repository's contributes **nothing** until you
-  opt in with `[permissions] trust_project = true` in your own config; then its models, tools, skills paths and
-  instruction files merge in (your definitions of a name always win), while `[permissions]`, hooks, checks,
-  retention and limits stay yours. `doctor`'s `project config` row reports what the merge did (see
-  `docs/ACCEPTANCE.md` for the two limits). `[permissions] sandbox` picks the isolation backend for
-  `approved_scope` (`bubblewrap`, the default, or `docker` with `sandbox_image`); an unavailable backend refuses
-  the command instead of running it on the host (D-369).
+- A session reads your `$XDG_CONFIG_HOME/teamagents/config.toml` and discovers the nearest ancestor
+  `.teamagents/config.toml`. Project settings contribute **nothing** until you trust that canonical project
+  root through `[permissions] trusted_projects`, or explicitly trust all projects with `trust_project = true`.
+  Models, tools, skills paths and instruction files then merge in (your definitions win); permissions, hooks,
+  checks, retention, limits and update policy stay yours. `doctor` reports the trust/merge result.
+  Instruction files must be configured explicitly; discovering project configuration does not automatically
+  load AGENTS.md. The sandbox may be bubblewrap, Docker or SSH, with the boundaries in the user guide.
 - A model profile selects its wire format with `protocol = "responses" | "anthropic" | "openai" |
   "deepseek"`; `base_url` plus `model` decide the actual service, and credentials are only referenced by
   environment-variable name.
@@ -261,10 +268,14 @@ see the [developer command map](docs/USER-GUIDE.md#1-quick-start).
 
 ## Status and limits
 
-- Linux only; instance shell isolation uses `bubblewrap` (the default) or Docker (`[permissions] sandbox` +
-  `sandbox_image`) and fails loudly when the selected backend is missing or unusable.
-- Releases are x86_64 (musl) only; no Windows/macOS, distributed execution, remote instance protocol or
-  browser automation.
+- Linux x86_64 is the supported distribution target; no public release is published. There is no supported
+  Windows/macOS build, distributed instance protocol or built-in browser automation.
+- The selected bubblewrap, Docker or SSH shell backend fails closed when unavailable. SSH runs a remote
+  shell, not a distributed agent, and does not guarantee remote cancellation or enforce network isolation.
+- Controlled daily coding use is possible; equivalence to Pi as a sole general-purpose driver remains
+  unestablished. Read-only work diagnostics and explicit recovery are available in CLI/TUI (D-461), without
+  automatic model reminders. Remaining priorities are development/skill environments and paired coding
+  evidence, followed by instruction discovery, tool composition, session controls and complete accounting.
 - The four protocol families of DESIGN §7 (Chat Completions — the `openai` and `chat/completions` names —
   DeepSeek extensions, Anthropic and responses) each have a local fake-server regression test
   (`engine/tests/providers_fake.rs`), and `python3 review/dogfood/protocols.py` accepts each one against a real

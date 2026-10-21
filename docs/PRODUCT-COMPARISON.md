@@ -1,72 +1,139 @@
-# How this product compares with Codex CLI and Pi
+# Daily coding readiness and product comparison
 
-Updated **2026-10-08** from fixed Codex source and installed Pi 1.1.0. This is a capability-surface
-comparison, not evidence of equivalent task success, performance or reliability. The detailed twelve-dimension
-matrix, inspected source receipts and ranked next-cycle acceptance plans are in the
-[comparison report](../review/parity-2026-10-08/REPORT.md).
+Updated **2026-10-21** against TeamAgents **f78a6709 plus the D-461 working-tree follow-up** and installed **Pi 1.3.0**. This is a
+source/documentation comparison with local regression checks, not a cross-product coding benchmark.
+The Codex comparison remains the dated [2026-10-08 report](../review/parity-2026-10-08/REPORT.md);
+Codex was not re-investigated in this refresh.
 
-The previous 2026-09-30 comparison also discussed Hermes. That dated snapshot remains in Git history;
-Hermes was not re-investigated in this Codex/Pi cycle and is not silently treated as current evidence.
+**Assessment:** TeamAgents can perform real coding work and is a candidate for a controlled daily-driver
+trial on Linux with configured models and development environments. The evidence does not yet establish
+an interchangeable, sole replacement for Pi across general development workflows. Persistent execution,
+scoped collaboration and required checks are useful capabilities; their existence does not establish
+higher task success, lower cost or less operator intervention than another product.
 
-## 1. Evidence and current differences
+This page owns the **candidate improvement queue**. [USER-GUIDE.md](USER-GUIDE.md) describes how the current
+product works; [ACCEPTANCE.md](ACCEPTANCE.md) owns regression and acceptance evidence;
+[DECISIONS.md](DECISIONS.md) owns confirmed behavior. D-461 delivers the user's selected DD-01 option A
+(read-only diagnosis and explicit recovery), with automatic reminders excluded. Other candidates remain
+unapproved implementation scope.
 
-| Product | Reference | What was actually checked |
+## 1. Current capability comparison
+
+| Area | Pi 1.3.0 reference | TeamAgents at the inspected source | Boundary |
+|---|---|---|---|
+| Coding tools | File/shell tools, multiple disjoint edits in one edit call, callable tools in codemode | Read/search/write/edit, revision checks, atomic file replacement and persistent shell state | Default `edit_file` schema replaces one occurrence; the internal batch-edit branch is not in the default schema |
+| Tool composition | Extensions document parallel tool execution and nested tool calls | Instances can work concurrently; one instance's ordinary tool batch is dispatched in order; codemode composes bound MCP tools | Codemode's MCP host bridge is synchronous, not a parallel native-file/shell composition API |
+| Input | File/image inputs, external editor, steering and follow-up queues | Explicit attachments, path completion, revision-checked pending input edit/cancel; external editor through Ctrl+E and the /edit suffix | Input enters at a safe boundary; no separate after-completion follow-up queue. External editing is implemented, not an open feature gap |
+| Intervention | Abort and queued-message controls | Model interruption, task cancellation, instance termination and UI detachment are distinct | Ctrl+C does not stop tools/delegated work; cancelling a task does not stop its running command |
+| Sessions | Directory-grouped sessions, tree navigation, message-level fork and clone | Named sessions, search, history, session-level fork, local Markdown/JSON export | Fork refuses a source with a live daemon; no message-level branch tree or HTML export; no automatic per-directory session selection |
+| Instructions | Automatic context-file discovery, including ancestor AGENTS files | The product reads repository-local configuration under trust; explicit `instruction_files` reach every member at request preparation | Project-config discovery walks upward; automatic AGENTS instruction-file discovery is a separate, absent feature |
+| Models | Interactive model/reasoning selection, provider-specific credentials and cloud/OAuth flows | Configured Chat Completions/DeepSeek, Responses and Anthropic adapters; mixed models across members | No equivalent interactive hot-switch surface or full provider-auth catalog. MCP OAuth is not model-provider OAuth |
+| Skills | Advertised skill descriptions/paths and access to supporting files | Configured registry search and SKILL.md reading | The skill read result is bounded text, without a resource-reading API or root-path metadata; support files outside the workspace are not automatically exposed |
+| MCP/extensions | Tools, resources, dynamic exposure, executable extensions and SDK | Stdio/HTTP tools, MCP OAuth, codemode, veto/notification hooks and local daemon protocol | No MCP resource browsing, general extension API or embedding SDK; hooks and MCP do not make Pi extensions compatible |
+| Development environment | Tools use the Pi process's permissions unless externally isolated | Fail-closed bubblewrap/Docker/SSH selection; explicit Rust toolchain/cache mounts for bubblewrap | User-home Node/Python/Go environments and caches are not automatically mounted; SSH does not enforce remote network isolation or guaranteed remote cancellation |
+| Collaboration/recovery | Subagents are an ecosystem capability; sessions are resumable | Persistent governed teams, task-scoped capability delegation, worktrees, SQLite authority, independent daemon and durable receipts | D-461 diagnoses idle-unsettled work and offers explicit recovery without automatic reminders; no cross-product collaboration-success or recovery ranking was measured |
+| Context/accounting | Context/cost display, compaction and provider cache usage | Native windows, compaction, readback, token budgets and cache hit/miss/write telemetry | No priced cost table; automatic approval-review calls are not charged to the goal yet |
+| Verification/distribution | Published installation paths; extensible run-settlement hooks | Required checks gate successful settlement; local source and PTY gates pass | No public release under D-457; checks cannot settle a task whose model never calls finish; local tests do not establish service parity |
+
+Current implementation anchors: [tool schemas](TOOLS.md), [tool executor](../engine/src/tools.rs),
+[codemode](../engine/src/codemode.rs), [driver](../engine/src/v2/driver.rs),
+[external editor](../tui/src/editor.rs), [session fork](../engine/src/v2/sessions.rs),
+[configuration loader](../engine/src/config.rs), [providers](../engine/src/providers/mod.rs) and
+[approval reviewer](../engine/src/v2/reviewer.rs). These are inspected code paths, not inferred absences
+from file names alone. Native image attachments and view_image can reach supported models; codemode's
+image helper still produces a marker rather than forwarding native image content.
+
+## 2. Candidate improvements, in priority order
+
+Priorities express daily-development impact, not delivery promises. **P0** blocks a general sole-driver
+recommendation; **P1** reduces recurring friction; **P2** depends on the user's actual workflow. Each scope
+needs agreement before implementation, and model spend, external services and publication need separate approval.
+
+| ID / priority | Current gap and proposed direction | Acceptance to agree before work |
 |---|---|---|
-| Codex CLI | official commit `9b738582b13c2cdbeff54af0afd04c50c3e7ba09` | CLI/exec parsers, command popup, highlighting, config, compaction, subagent code and app-server documentation; no installed binary or live comparator trial |
-| Pi | installed 1.1.0 | installed version, bundled CLI/session/security/MCP/extension documentation, distributed autocomplete and highlighting; no comparator model-success or crash trial |
-| TeamAgents | baseline `a76722da`, D-450 candidate | repository source, before/after fixed fixtures, Rust tests, terminal probes and formal safety models; per-capability limits remain in [ACCEPTANCE.md](ACCEPTANCE.md) |
+| DD-01 / P0 (A delivered) | D-461: user-confirmed read-only diagnosis and explicit recovery in CLI/TUI. RUNNING/idle, BLOCKED, approvals, registered waits and execution are distinguished; option B automatic model reminders was rejected | Projection, daemon restart, explicit send/cancel and TUI frame tests cover A. No observation-triggered model call, task transition or replay. Actual user intervention/cost benefit remains unmeasured |
+| DD-02 / P0 | Development environments and complete skill workflows: explicitly authorize toolchain/cache roots and skill support resources instead of requiring full_auto | Real Rust, Python and Node edit/build/test workflows; a skill with relative references and a script outside the workspace; denied paths, symlink escape, missing tools and revocation tested. Secrets remain outside exposed roots |
+| DD-03 / P0 | Actual Pi replacement evidence: compare held-out daily coding tasks under matched conditions, not internal reference-loop ablations | Frozen product versions/tasks, same model/native window/effort/authority/budget, paired repeated trials; hidden tests, honest settlement, manual interventions, time and complete cost accounting. Report failures and uncertainty |
+| DD-04 / P1 | Reliable repository instructions: automatic discovery with explicit scope, trust, precedence and loaded-source visibility | Parent/repository/subdirectory rules, worktrees, workers, missing/untrusted files and edits between turns; no implicit project permission or executable-hook escalation |
+| DD-05 / P1 | Native tool composition and batch edits: expose bounded multi-edit operations and consider independent read parallelism/native tools in codemode | Multiple edits match the same original, stale revisions/overlap fail safely; permission, veto, cancellation and receipt paths stay intact. Measure latency/tokens before claiming a gain; do not promise crash-atomic multi-file changes without a journal |
+| DD-06 / P1 | High-frequency session controls: model/effort selection, explicit steering versus follow-up, project/session selection and message-level branching | No lost draft/input or implicit send; deterministic queued-input ordering and branch lineage; model/provider changes preserve valid context and accounting. A conversation branch does not roll back workspace files |
+| DD-07 / P1 | Complete accounting and approval review: include reviewer usage in budget/deadline/unknown-usage handling; add context/compaction and per-member/request attribution | All model-call classes accounted for, missing provider usage remains unknown, prices have a source/date, cache read/write pricing is distinguished. Independent adversarial review of auto-review; substring denials are not a complete safety policy |
+| DD-08 / P1 | Wider operational acceptance: actual selected provider/image/MCP OAuth/Docker paths and the user's terminal stack | Isolated real round trips with denial/revocation/restart and cleanup; Kitty with zsh and chosen tmux/Zellij/SSH cases. PTY protocol checks alone do not establish graphical rendering or every platform |
+| DD-09 / P2 | Provider and integration coverage: only the model auth, MCP resources, SDK/client or extension interfaces the user needs | Versioned contracts and runnable examples; provider authentication/refresh, resource URI/size/auth checks, lifecycle/cancellation and untrusted-extension boundaries. Existing Unix protocol remains an integration path |
+| DD-10 / P2 | Distribution and documentation freshness: installable, matching binaries and accurate user-facing instructions | Exact authorized artifact, clean-host install/update/rollback, retained configuration and source-to-artifact identity. Release publication remains prohibited until explicitly authorized (D-457) |
 
-[The source manifest](../review/parity-2026-10-08/manifest.json) records dates, hashes, selected line receipts
-and reproduction instructions. The report explicitly labels source-confirmed, documented, executed,
-unknown and intentional differences. A missing file name does not establish a missing capability.
+Remaining policy questions are not silently resolved by this ordering: artifact lifetime versus history
+retention and conversation references (D-438), and whether the narrower measured collaboration-latency gain
+satisfies Q16's success wording (D-264). Their history and other decision dependencies remain in
+[ACCEPTANCE.md](ACCEPTANCE.md). D-455 closes the former blanket per-worker manual-shell-grant question:
+opt-in, attenuated task-scoped delegation exists; ambient inheritance still does not.
 
-| Dimension | Codex / Pi reference | TeamAgents position |
-|---|---|---|
-| Input | Codex has a selectable command popup; Pi documents slash/path completion, file references, external editor and two queue types | D-451 adds explicit engine-owned text/image attachments, workspace path selection and revision-checked pending input edit/cancel; external editor and alternative queue semantics remain gaps |
-| Code/media | Codex uses grammar highlighting with size/line guards; Pi uses explicit-language coloring with fallback | D-451 moves grammar/diagram/image parsing into bounded terminable Rust helpers; D-450 viewport scheduling and twenty-media revisit remain verified. Linux process isolation is tested; arbitrary terminal/OS parity is not |
-| Sessions | Codex resume/fork/archive/delete; Pi picker, branch tree, fork/clone and export | D-451 adds complete local Markdown/JSON snapshot export and optional-browser search snippets/navigation. Message-level branches and HTML export remain gaps |
-| Tools | File/shell/tool providers, with different extension and review surfaces | Files/shell/web/MCP/skills/codemode pass through control-plane operations and receipts. Tool names alone do not compare coding quality |
-| Headless/protocol | Codex exec JSON/schema plus app-server; Pi print, JSONL, RPC and SDK | Exec JSON/stream-JSON and local Unix protocol exist. No general embedding SDK |
-| Config/instructions | Both support user/project configuration and instruction discovery | Validated CLI overrides (D-428); reads repository-local configuration at the nearest trusted project (D-434), plus instruction files. Project config requires user opt-in and cannot supply permissions, hooks, checks, retention or limits. CLI management is deliberate; the user TUI stays minimal |
-| MCP/Skills/extensions | Both have MCP; Pi additionally exposes executable TypeScript extensions, packages and resource tools | MCP transports/OAuth, Skills and hooks exist. Resource browsing and programmable UI/provider extension APIs remain distinct gaps |
-| Permissions/sandbox | Codex has configured sandbox/approval policy; Pi documents direct process permissions plus external isolation | Bound grants/approvals; bubblewrap, Docker and SSH. Micro-VM support is absent; Docker live evidence is less complete than bubblewrap evidence |
-| Teams | Codex source has spawn/send/wait/resume/close subagent operations; Pi leaves subagents to packages | Persistent governed teams and shared/isolated/worktree policies. No measured cross-product collaboration-success ranking |
-| Persistence/recovery | Codex stores threads; Pi stores resumable branches and compaction entries | SQLite state, independent daemon and recovery by durable location. Existing crash probes establish local behavior, not superiority over untested comparators |
-| Context/usage | Both have compaction; Pi documents context/cost and branch summaries | Native context windows, compaction, usage/deadline/check accounting and explicit memory tools. Automatic cross-session injection remains outside the design |
-| Acceptance/release | Codex has review; Pi offers extensible settlement hooks; both publish installation paths | Required checks gate settlement, independent verification is available. v0.2.0 delivers v2 (D-343), but its 2026-09-29 tag predates subsequent changes; this iteration is not released |
+Not prerequisites for a personal Linux trial: a plugin marketplace, automatic cross-session injection,
+distributed/multi-tenant execution, HTML sharing, every provider or every operating system. The first three
+remain outside the confirmed design. LSP, repository indexing or a larger TUI should not be added merely
+because they sound like parity features; first identify a measured workflow that needs them.
 
-## 2. Implemented this cycle and remaining decisions
+## 3. Preserve the product's contracts
 
-D-450 implements local completion, code highlighting and the media-cache repair. In the baseline fixture,
-figures 16 through 19 of twenty never received previews. The same fixture now checks every visible placement,
-including revisiting an evicted image; its receipt and timing conditions live in the report.
+Keep the Rust control plane, one authoritative SQLite database per session, independent daemon, minimal
+Leader conversation and scriptable management. A model interruption, cancelling a task, terminating an
+instance and detaching a UI remain different operations. Task-result waits and message waits are distinct;
+BLOCKED is not a terminal task-wait result. No automatic replay of unknown effects, implicit capability
+inheritance, project-supplied acceptance policy or credential exposure is proposed here.
 
-D-451 implements attachments, pending-input revision/cancellation, local export/search and terminable rendering.
-The [maturity report](../review/maturity-2026-10-11/REPORT.md) records deterministic real-local-runtime workflows,
-process fault tests and an unpublished installed-artifact rehearsal. These results do not measure model coding
-quality or cross-product gains. External editor, message branching/HTML export, MCP resources, embedding APIs,
-context/cost observability, terminal coverage and live sandbox/provider evidence remain ranked follow-up work.
+Changing those semantics, instruction trust/discovery, branch lineage or extension authority requires a
+user-confirmed design decision. This documentation refresh authorizes no such code change.
 
-Automatic cross-session context injection, distributed/multi-tenant execution and a plugin marketplace remain
-explicit design exclusions; they need a user-confirmed design change. Explicit append-only memory and session
-search already exist and are not the same as automatic injection. A release requires its own publication
-authorization. No optional backlog item is silently bundled into this iteration.
+## 4. Evidence and reproduction
 
-## 3. Product choices preserved
+| Evidence | Source and limit |
+|---|---|
+| Current TeamAgents inspection | f78a6709 plus D-461 diagnostics; includes D-455/D-458/D-459 and the external editor; inspect the anchors above |
+| Current local gates | On 2026-10-21, make check passed: core 137 / engine 405 / tui 81. make pty passed v2, blocks and Kitty-protocol smoke checks. These are local regression results, not an independent acceptance or paid-model trial |
+| Pi reference | Installed npm package @earendil-works/pi-coding-agent 1.3.0; bundled usage, sessions, configuration, providers, skills, MCP, extensions and SDK docs; distributed edit-tool declaration. Documentation/source only, not comparator execution |
+| Older comparison | [D-450 report and manifest](../review/parity-2026-10-08/REPORT.md): Pi 1.1.0 and Codex commit 9b738582b13c2cdbeff54af0afd04c50c3e7ba09. Historical, not refreshed by this document |
+| Deterministic workflows | [D-451 maturity report](../review/maturity-2026-10-11/REPORT.md), pinned to its recorded source; fake model responses, actual local daemon/runner/files/PTY and an unpublished installation rehearsal |
+| Real coding results | [Capability evidence](CAPABILITIES.md) and [benchmark ledger](../review/benchmark/README.md). Historical runs do not become measurements of this source or Pi by being linked here |
 
-TeamAgents retains a Rust-native control plane, one authoritative database per session, an independent daemon,
-permission-scoped collaboration and required acceptance checks. The minimal Leader conversation and optional
-session page remain the user interface; comprehensive developer controls stay in the CLI. Interrupting a model
-request, detaching the TUI and deleting a session remain different operations.
+Recheck TeamAgents without model credentials:
 
-These choices have tests and bounded formal evidence. They do not justify claiming that other products lack
-formal methods, durability, multi-agent capability or equivalent outcomes without investigating those claims.
+```bash
+git status --short
+git show --stat f78a6709
+make check
+make pty
+```
 
-## 4. Limits and rechecking
+For the Pi comparison, inspect the exact installed 1.3.0 package, not latest online documentation.
+The following SHA-256 values identify selected bundled documents relative to that package; no package or
+credentials were copied into this repository. A different hash requires a fresh inspection.
 
-The report and manifest are the current evidence. The older `review/codex_surface.py` and
-`review/comparison_sources.py` are hand-run historical surface probes; their earlier dates/counts are not the
-source of the refreshed table. Use the pinned capture script and manifest to reproduce this snapshot.
-Uninspected package ecosystems, live vendor OAuth behavior, arbitrary graphical terminals and relative task
-success remain unmeasured. Existing benchmark results are in [CAPABILITIES.md](CAPABILITIES.md) and were not
-rerun, regraded or improved by this UI comparison.
+| Bundled document | SHA-256 |
+|---|---|
+| docs/usage.md | 6dfe7446c81d601d5ebef5769523115229f802da364fe90fcdf96e322ae9fbcd |
+| docs/sessions.md | 152d6489f61a6de9349c8ceaade95d5498fbc74f21771f41ba8e87ce0e5d8936 |
+| docs/configuration.md | fc48d1ce7d885c5253222415fb7a4b46d75f80e6431eb924174657ff775099eb |
+| docs/providers.md | bc8798e4cc3209e455e3dc50c6652ae73c057d40122a4a741d8b5b65a041c2f1 |
+| docs/skills.md | 5b9805525b194474ef1fe5455a0917ef15ed7f710aa9bec2eee11879556469e5 |
+| docs/mcp.md | 23b9cca35d1340e8adce6bed8b495da0ebb58931179a937db87d610a1b40b9bf |
+| docs/extensions.md | a2b5ff0f95e7e470ed0846d7c4fbfc5781fe7e694b8e7f51ea08859f3ad7325d |
+| docs/sdk.md | d9034ccbf2219a58712d8dd4fcdf47e687d77131e71dd5d119d8a71e9bd2a2e8 |
+
+## 5. Proposed daily-driver trial
+
+Start with held-out bug fixes, multi-file features, refactors and tests, then add mid-task redirection,
+long-command cancellation, reconnect/recovery, Skills/MCP and multi-project work. Fix versions, hidden checks,
+budgets and failure classifications before either product sees the tasks. Use fresh isolated sessions and
+paired randomized order; retain every attempt, intervention and side-effect receipt.
+
+The existing [A/B/C evaluation](../review/eval/README.md) compares a direct reference loop, a persistent
+single instance and collaboration **inside TeamAgents**; it is not a Pi comparison. The D-451 report's
+[unexecuted evaluation proposal](../review/maturity-2026-10-11/REPORT.md#unexecuted-real-model-evaluation-proposal)
+is a starting method, not an approved task set, spend cap or completed result. Calibrate costs separately,
+then obtain authorization for the selected models and full trial. Use native windows, including the
+user-confirmed 1M DeepSeek Flash window; never shrink them to force compaction.
+
+A useful primary outcome is tests passing with honest settlement and no unauthorized modification within
+the agreed budget. Report manual intervention, wrong completion, duplicate/lost effects, elapsed time and
+provider usage/cost alongside it. Choose the replacement threshold before running; do not infer parity
+from one green repository, a synthetic recovery fixture, test counts or a historical best score.
