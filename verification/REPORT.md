@@ -5,7 +5,7 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
-## 0. Gate status (re-run 2026-10-21 at `05e41989`)
+## 0. Gate status (re-run 2026-10-21 at `f6b37b0b`)
 
 * **Every claim now names a refutation, or is on the record as not having one.** The audit had asked only that
   each module have *some* counterexample configuration (D-220); it never asked which claim that control refutes.
