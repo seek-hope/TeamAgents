@@ -873,19 +873,27 @@ async fn auto_review_allows_one_operation_without_a_user_decision() {
     config.require_shell_approval = true;
     config.approvals_reviewer = "auto_review".into();
     config.permissions = "approved_scope".into();
+    // `approved_scope` runs the command inside the sandbox (D-369). Without a usable one — bwrap absent (the CI
+    // runner) or present but unable to create a namespace (D-113/D-114) — the approval still goes through, and
+    // the command is refused instead of run on the host, so only the positive half is machine-dependent.
+    let sandbox = teamagents_engine::tools::sandbox_usable();
     let handle = start(config).await.expect("start");
     handle.input("touch inside the workspace").await.expect("input");
     let reviewed = wait_event(&handle, "approval_reviewed", 10_000).await;
     assert_eq!(reviewed["payload"]["outcome"], json!("allow"));
     assert_eq!(reviewed["payload"]["review"]["decided_by"], json!("auto_review"));
-    for _ in 0..200 {
-        if marker.exists() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    assert!(marker.exists(), "an auto-reviewed command must run");
     assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    if sandbox {
+        for _ in 0..200 {
+            if marker.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(marker.exists(), "an auto-reviewed command must run");
+    } else {
+        assert!(!marker.exists(), "without a usable sandbox the approved command is refused, never run on the host");
+    }
     handle.shutdown().await.expect("shutdown");
 }
 
