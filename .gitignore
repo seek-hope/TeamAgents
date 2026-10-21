@@ -17,5 +17,8 @@ __pycache__/
 # adapter now points that cwd at the run's own output directory, and this keeps a stray run out of the tree.
 /logs/
 /review/tmp/
+# CodeGraph's local index: a ~40 MB SQLite database plus its socket, pid files and daemon log. It is a
+# per-machine query cache over the sources, never repository content.
+/.codegraph/
 /verification/tla/states/
 /states/
