@@ -104,6 +104,9 @@ RERUN = re.compile(r"Gate status \(re-run (\d{4}-\d{2}-\d{2}) at `([0-9a-f]{7,40
 # (D-462) The one claim a counterexample configuration is shown to refute, and the ledger of the rest.
 EXPECTS = re.compile(r"^\\\* expects: ([A-Za-z_][A-Za-z0-9_]*)\s*$", re.M)
 LEDGER = re.compile(r"^\|\s*`(V2[A-Za-z0-9_]*)`\s*\|\s*`([A-Za-z_][A-Za-z0-9_]*)`\s*\|\s*([^|]*?)\s*\|\s*$", re.M)
+# D-462: the composite `TypeOK*` predicates are excluded from *behavioural* counterfactuals, and the exclusion
+# is a list the audit checks in both directions (a skipped claim must appear there, and nothing else may).
+TYPE_LEDGER = re.compile(r"^\|\s*`(V2[A-Za-z0-9_]*)`\s*\|\s*`([A-Za-z_][A-Za-z0-9_]*)`\s*\|\s*$", re.M)
 
 
 def git(*args: str) -> tuple[int, str]:
@@ -406,15 +409,17 @@ def main(argv) -> int:
         if ledger.is_file():
             old = {(module, claim): status for module, claim, status in LEDGER.findall(ledger.read_text(encoding="utf-8"))}
         rows_out = []
+        type_rows = []
         for spec in on_disk_specs:
             module = spec.removesuffix(".tla")
             for claim in sorted(checked.get(module, set()) - covered.get(module, set())):
                 if claim.startswith("TypeOK"):
+                    type_rows.append((module, claim))
                     continue
                 rows_out.append((module, claim, old.get((module, claim), "needs-control")))
         needs_now = sum(1 for _, _, status in rows_out if status == "needs-control")
         head = ["# Claims without a refuting control", "",
-                "`review/verification_catalogue.py` requires every claim a positive configuration checks to be",
+                "`review/verification_catalogue.py` requires every **behavioural** claim a positive configuration checks to be",
                 "either the `expects:` target of a counterexample configuration (that control is then shown to",
                 "refute it, D-462) or a row here with a status. **%d** claims are in this state today: they are" % needs_now,
                 "enumerated exhaustively by TLC, but no configuration is shown to break them, so a claim that",
@@ -425,6 +430,13 @@ def main(argv) -> int:
                 "Regenerate with `python3 review/verification_catalogue.py --write-coverage`.", "",
                 "| Module | Claim | Status |", "|---|---|---|"]
         head += [f"| `{module}` | `{claim}` | {status} |" for module, claim, status in rows_out]
+        head += ["", "## Composite type claims (excluded from behavioural counterfactuals)", "",
+                 "A `TypeOK*` predicate says the module's variables stay inside their declared ranges. A violation is",
+                 "a defect in the model's own next-state relation, which TLC reports as an error rather than a reachable",
+                 "product state (that is exactly how D-462 found one control refuting `TypeOK`), so no `expects:` control",
+                 "targets one. This list is the whole exclusion: the audit fails if a skipped claim is missing here, or if",
+                 "a row here is not a `TypeOK*` claim.", "", "| Module | Composite claim |", "|---|---|"]
+        head += [f"| `{module}` | `{claim}` |" for module, claim in type_rows]
         ledger.write_text("\n".join(head) + "\n")
     if not ledger.is_file():
         findings.append("verification/COVERAGE.md is missing: the claims no control refutes have to be recorded "
@@ -433,11 +445,21 @@ def main(argv) -> int:
     else:
         rows = LEDGER.findall(ledger.read_text(encoding="utf-8"))
     recorded = {(module, claim) for module, claim, _ in rows}
+    typed = TYPE_LEDGER.findall(ledger.read_text(encoding="utf-8")) if ledger.is_file() else []
+    skipped = {(spec.removesuffix(".tla"), claim) for spec in on_disk_specs
+               for claim in checked.get(spec.removesuffix(".tla"), set()) - covered.get(spec.removesuffix(".tla"), set())
+               if claim.startswith("TypeOK")}
+    if set(typed) != skipped:
+        missing = sorted(skipped - set(typed))
+        extra = sorted(set(typed) - skipped)
+        findings.append("verification/COVERAGE.md's composite-type table does not match the skipped claims "
+                        f"(missing: {missing}; not a skipped TypeOK* claim: {extra}): the exclusion has to be a list "
+                        "the audit checks in both directions (D-462)")
     for spec in on_disk_specs:
         module = spec.removesuffix(".tla")
         for claim in sorted(checked.get(module, set()) - covered.get(module, set())):
             if claim.startswith("TypeOK"):
-                continue          # a type claim composes the others and is refuted only by a broken action
+                continue          # type claims are excluded from behavioural counterfactuals; the table above names them
             if (module, claim) not in recorded:
                 findings.append(f"{module}::{claim} is checked by a positive configuration and no control refutes "
                                 "it, and verification/COVERAGE.md has no row for it (D-462)")

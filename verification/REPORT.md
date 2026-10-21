@@ -886,10 +886,14 @@ alone**, and conversely formal coverage does not excuse an item from sample or r
    **D-462 closed that divergence by construction**: `engine/src/v2/readiness.rs::opens_a_turn` is the one rule,
    `driver::step_ready` and the projection both call it, and its truth table is a test. The projection itself
    is still outside `V2Control`'s state, and how a real user acts on a diagnosis is unmeasured.
-9. **The governed updater (`D-453`, `engine/src/update.rs`) has no model.** Its journal, validation, switch and
-   health-check rollback are a state machine that replaces the running binaries, and a crash between the switch
-   and the rollback is exactly the shape a bounded enumeration would pin. Nothing in `verification/tla` covers
-   it; `engine/tests/update.rs` drives the real transactions.
+9. **The governed updater has a model, with stated boundaries (D-453, `engine/src/update.rs`).** `V2Update.tla`
+   (D-462) models the journal's monotone revision and single writer, the switch only after a validated artifact,
+   exactly one active version, a rollback that needs a previous version, a failed health check that never
+   completes the update, the crash window before the switch and the one during the rollback; eight controls
+   refute those claims and `tla/MC_update.cfg` verifies. What it does **not** cover is the bytes and the OS: the
+   journal's hash chain and artifact hashing, the symlink/rename syscalls, the stop/start handshake with the
+   daemon, the release download, and the product's own transaction order — `engine/tests/update.rs` exercises
+   those against the real journal.
 10. **Automatic review (`review_decision`)**: D-458 lets a read-only reviewer turn one pending operation approval into a decision when `[permissions] approvals_reviewer = "auto_review"`. The control plane's finality, single-use and revision checks are covered by `core` tests, and the reviewer's fail-closed paths by `engine` tests, but the reviewer's own judgement is not modelled by `V2Approval.tla` and its output is not a proof of safety.
 11. **Hooks, session export and the MCP transport are outside the models.** `V2Codemode` pins the `pre_tool`
    veto for *nested* codemode calls; a direct tool call's veto, the `notify` stream, the export snapshot's
