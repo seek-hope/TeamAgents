@@ -19,25 +19,38 @@
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets
 
-CONSTANTS Instances,       \* {"L"} or {"L","W"}
-          Ops,             \* operations of one decision, e.g. {"o1","o2"}
-          ReqIds,          \* request slots, e.g. 1..3
-          AttIds,          \* attempt slots, e.g. 1..2
-          ApprovalOps,     \* subset of Ops needing user approval
-          TokenLimit,      \* goal budget limit
-          AllowMidTurnInput, \* counterfactual: apply input while a request is in flight (pre-D-63)
-          PerInstanceFairness, \* counterfactual: fairness as one disjunction over instances (pre-D-63)
+CONSTANTS Instances,  \* {"L"} or {"L","W"}
+          Ops,  \* operations of one decision, e.g. {"o1","o2"}
+          ReqIds,  \* request slots, e.g. 1..3
+          AttIds,  \* attempt slots, e.g. 1..2
+          ApprovalOps,  \* subset of Ops needing user approval
+          TokenLimit,  \* goal budget limit
+          AllowMidTurnInput,  \* counterfactual: apply input while a request is in flight (pre-D-63)
+          PerInstanceFairness,  \* counterfactual: fairness as one disjunction over instances (pre-D-63)
           IgnoreDeadline,  \* counterfactual: a runtime that ignores the goal deadline (A35)
-          ReleaseOnCancel, \* counterfactual: a runtime that closes a spent goal and leaves the instance its
-                           \* refusal parked where it was (D-341/D-344)
-          ReaskAfterReply, \* counterfactual: re-open a turn when the last word is the model's own (D-65)
-          RuntimeTailIsWork, \* counterfactual: treat the runtime's own closing note as unaddressed (D-71)
-          MaxEpoch,        \* bound on ResetInstance (keeps the state graph finite)
-          MaxUnknown,      \* bound on lost-attempt accounting
-          WarnLate,        \* counterfactual: warn a goal that is already past its deadline (D-410)
+          ReleaseOnCancel,  \* counterfactual: a runtime that closes a spent goal and leaves the instance its
+          ReaskAfterReply,  \* counterfactual: re-open a turn when the last word is the model's own (D-65)
+          RuntimeTailIsWork,  \* counterfactual: treat the runtime's own closing note as unaddressed (D-71)
+          MaxEpoch,  \* bound on ResetInstance (keeps the state graph finite)
+          MaxUnknown,  \* bound on lost-attempt accounting
+          WarnLate,  \* counterfactual: warn a goal that is already past its deadline (D-410)
           WarnRepeatedly,  \* counterfactual: warn one goal more than once (D-410)
-          MaxWarns         \* bound on the warnings one goal may receive
-
+          MaxWarns,  \* bound on the warnings one goal may receive
+          BadAdmission,
+          BadActiveRequest,
+          EffectBeforeDispatch,
+          KeepClosedReservation,
+          OverReserve,
+          SelectIncomplete,
+          StaleExecutor,
+          DoubleEffect,
+          RewriteTerminalOp,
+          RewriteTerminalGoal,
+          CrossEpochReceipt,
+          EffectUnauthorized,
+          EffectOnTerminated,
+          EffectAfterCancel,
+          PreparedEffect
 ASSUME Instances # {} /\ Ops # {} /\ ReqIds # {} /\ AttIds # {} /\ ApprovalOps \subseteq Ops
 
 OpNonTerminal == {"PREPARED", "DISPATCH_COMMITTED", "RUNNING"}
@@ -395,7 +408,100 @@ SetLifecycle(i, l) ==
 \* an idle step keeps the model open-ended (TLC then reports no false deadlock)
 Stutter == UNCHANGED vars
 
+
+\* D-462 counterfactuals: each is the mistake itself, one reachable step, disabled unless its constant is set.
+
+BadAdmissionStep ==
+  /\ BadAdmission
+  /\ ( \E i \in Instances : inst[i].phase # "MODEL_PENDING" /\ inst' = [inst EXCEPT ![i].phase = "MODEL_PENDING"] /\ goal' = [goal EXCEPT !.known = TokenLimit] )
+  /\ UNCHANGED <<requests, attempts, ops, approvals, dead, nearDeadline, warns>>
+
+BadActiveRequestStep ==
+  /\ BadActiveRequest
+  /\ ( \E i \in Instances : inst' = [inst EXCEPT ![i].phase = "MODEL_PENDING", ![i].activeReq = nil] )
+  /\ UNCHANGED <<goal, requests, attempts, ops, approvals, dead, nearDeadline, warns>>
+
+EffectBeforeDispatchStep ==
+  /\ EffectBeforeDispatch
+  /\ ( \E o \in Ops : ops' = [ops EXCEPT ![o].effect = 1, ![o].dispatched = FALSE] )
+  /\ UNCHANGED <<inst, goal, requests, attempts, approvals, dead, nearDeadline, warns>>
+
+KeepClosedReservationStep ==
+  /\ KeepClosedReservation
+  /\ ( \E r \in ReqIds : requests' = [requests EXCEPT ![r].status = "COMPLETE"] /\ goal' = [goal EXCEPT !.reserved = @ \cup {<<r, requests[r].est>>}] )
+  /\ UNCHANGED <<inst, attempts, ops, approvals, dead, nearDeadline, warns>>
+
+OverReserveStep ==
+  /\ OverReserve
+  /\ ( \E r \in ReqIds : goal' = [goal EXCEPT !.reserved = @ \cup {<<r, TokenLimit + 1>>}] )
+  /\ UNCHANGED <<inst, requests, attempts, ops, approvals, dead, nearDeadline, warns>>
+
+SelectIncompleteStep ==
+  /\ SelectIncomplete
+  /\ ( \E r \in ReqIds : requests' = [requests EXCEPT ![r].selected = TRUE] )
+  /\ UNCHANGED <<inst, goal, attempts, ops, approvals, dead, nearDeadline, warns>>
+
+StaleExecutorStep ==
+  /\ StaleExecutor
+  /\ ( \E i \in Instances : inst' = [inst EXCEPT ![i].phase = "MODEL_PENDING", ![i].revision = @ + 1] )
+  /\ UNCHANGED <<goal, requests, attempts, ops, approvals, dead, nearDeadline, warns>>
+
+DoubleEffectStep ==
+  /\ DoubleEffect
+  /\ ( \E o \in Ops : ops' = [ops EXCEPT ![o].effect = 2] )
+  /\ UNCHANGED <<inst, goal, requests, attempts, approvals, dead, nearDeadline, warns>>
+
+RewriteTerminalOpStep ==
+  /\ RewriteTerminalOp
+  /\ ( \E o \in Ops : ops[o].status \in OpTerminal /\ ops' = [ops EXCEPT ![o].status = "RUNNING"] )
+  /\ UNCHANGED <<inst, goal, requests, attempts, approvals, dead, nearDeadline, warns>>
+
+RewriteTerminalGoalStep ==
+  /\ RewriteTerminalGoal
+  /\ ( goal.status # "ACTIVE" /\ goal' = [goal EXCEPT !.status = "ACTIVE"] )
+  /\ UNCHANGED <<inst, requests, attempts, ops, approvals, dead, nearDeadline, warns>>
+
+CrossEpochReceiptStep ==
+  /\ CrossEpochReceipt
+  /\ ( \E o \in Ops : ops' = [ops EXCEPT ![o].status = "SUCCEEDED", ![o].epoch = @ + 1] )
+  /\ UNCHANGED <<inst, goal, requests, attempts, approvals, dead, nearDeadline, warns>>
+
+EffectUnauthorizedStep ==
+  /\ EffectUnauthorized
+  /\ ( \E o \in ApprovalOps : approvals[o] # "APPROVED" /\ ops' = [ops EXCEPT ![o].effect = 1] )
+  /\ UNCHANGED <<inst, goal, requests, attempts, approvals, dead, nearDeadline, warns>>
+
+EffectOnTerminatedStep ==
+  /\ EffectOnTerminated
+  /\ ( \E o \in Ops : inst' = [inst EXCEPT ![ops[o].instance].lifecycle = "TERMINATED"] /\ ops' = [ops EXCEPT ![o].effect = 1] )
+  /\ UNCHANGED <<goal, requests, attempts, approvals, dead, nearDeadline, warns>>
+
+EffectAfterCancelStep ==
+  /\ EffectAfterCancel
+  /\ ( \E o \in Ops : ops' = [ops EXCEPT ![o].status = "CANCELLED_BEFORE_START", ![o].effect = 1] )
+  /\ UNCHANGED <<inst, goal, requests, attempts, approvals, dead, nearDeadline, warns>>
+
+PreparedEffectStep ==
+  /\ PreparedEffect
+  /\ ( \E o \in Ops : ops' = [ops EXCEPT ![o].status = "PREPARED", ![o].effect = 1] )
+  /\ UNCHANGED <<inst, goal, requests, attempts, approvals, dead, nearDeadline, warns>>
+
 Next ==
+  \/ BadAdmissionStep
+  \/ BadActiveRequestStep
+  \/ EffectBeforeDispatchStep
+  \/ KeepClosedReservationStep
+  \/ OverReserveStep
+  \/ SelectIncompleteStep
+  \/ StaleExecutorStep
+  \/ DoubleEffectStep
+  \/ RewriteTerminalOpStep
+  \/ RewriteTerminalGoalStep
+  \/ CrossEpochReceiptStep
+  \/ EffectUnauthorizedStep
+  \/ EffectOnTerminatedStep
+  \/ EffectAfterCancelStep
+  \/ PreparedEffectStep
   \/ DeadlinePasses
   \/ DeadlineNears
   \/ \E i \in Instances : Warn(i)

@@ -32,7 +32,12 @@ CONSTANTS Slots,   \* entry slots in index order, non-negative, e.g. {0,1,2,3}
           Reqs,    \* compression request slots, e.g. {"r1"}
           DeleteCoveredEntries,  \* counterfactual: the originals are deleted, not covered
           ReopenCoveredEntries,  \* counterfactual: a commit lifts coverage of entries it hides
-          ReopenClosedRequest    \* counterfactual: a late failure rewrites a closed request
+          ReopenClosedRequest,   \* counterfactual: a late failure rewrites a closed request
+          AppendInHole,          \* D-462: append at any free slot, not the tail
+          KeepReservation,       \* D-462: a closed request keeps its reservation
+          CoverBackwards,        \* D-462: a covered entry points at itself
+          CoverToNonSummary,     \* D-462: a covered entry points at a non-summary slot
+          CoverSelf              \* D-462: the new summary covers itself
 
 ASSUME Slots # {} /\ Reqs # {}
 
@@ -67,15 +72,19 @@ NextFree == CHOOSE s \in Slots : entry[s] = "none" /\ \A t \in Slots : t < s => 
 
 \* ------------------------------------------------------------------- actions --
 \* an ordinary context entry lands at the tail
-AppendEntry ==
-  /\ \E s \in Slots : entry[s] = "none"
-  /\ LET s == NextFree IN
-     /\ entry' = [entry EXCEPT ![s] = "live"]
-     /\ isSummary' = [isSummary EXCEPT ![s] = FALSE]
-     /\ lost' = lost
-     /\ uncovered' = uncovered
-     /\ reopened' = reopened
+\* One append at a named free slot (shared by the rule and its counterfactual, so the two cannot drift).
+AppendAt(s) ==
+  /\ entry[s] = "none"
+  /\ entry' = [entry EXCEPT ![s] = "live"]
+  /\ isSummary' = [isSummary EXCEPT ![s] = FALSE]
+  /\ lost' = lost
+  /\ uncovered' = uncovered
+  /\ reopened' = reopened
   /\ UNCHANGED <<summaryOf, requestStatus, reserved>>
+
+AppendEntry ==
+  \/ (~AppendInHole /\ \E s \in Slots : entry[s] = "none" /\ AppendAt(NextFree))
+  \/ (AppendInHole /\ \E s \in Slots : entry[s] = "none" /\ AppendAt(s))
 
 \* begin_compression: a compression request opens, reserving budget. The
 \* deadline/budget gate itself is V2Control's AdmissionGate (same code path).
@@ -106,11 +115,16 @@ CommitCompression(r, keep) ==
                                 ELSE IF e \in covered THEN "covered"
                                 ELSE entry[e] ]
      /\ isSummary' = [isSummary EXCEPT ![s] = TRUE]
-     /\ summaryOf' = [ e \in Slots |-> IF e \in relifted THEN nocover
-                                      ELSE IF e \in covered THEN s
-                                      ELSE summaryOf[e] ]
+     /\ summaryOf' = [ e \in Slots |->
+            IF e \in relifted THEN nocover
+            ELSE IF e \in covered THEN
+                 IF CoverBackwards THEN e
+                 ELSE IF CoverToNonSummary THEN (IF s + 1 \in Slots THEN s + 1 ELSE s)
+                 ELSE s
+            ELSE IF e = s /\ CoverSelf THEN s
+            ELSE summaryOf[e] ]
      /\ requestStatus' = [requestStatus EXCEPT ![r] = "COMPLETE"]
-     /\ reserved' = [reserved EXCEPT ![r] = FALSE]
+     /\ reserved' = [reserved EXCEPT ![r] = KeepReservation]
      /\ lost' = lost \cup deleted
      /\ uncovered' = uncovered \cup relifted
      /\ reopened' = reopened
@@ -120,7 +134,7 @@ CommitCompression(r, keep) ==
 FailCompression(r) ==
   /\ requestStatus[r] = "PENDING" \/ (ReopenClosedRequest /\ requestStatus[r] = "COMPLETE")
   /\ requestStatus' = [requestStatus EXCEPT ![r] = "FAILED"]
-  /\ reserved' = [reserved EXCEPT ![r] = FALSE]
+  /\ reserved' = [reserved EXCEPT ![r] = KeepReservation]
   /\ lost' = lost
   /\ uncovered' = uncovered
   /\ reopened' = IF requestStatus[r] = "COMPLETE" THEN reopened \cup {r} ELSE reopened
@@ -132,7 +146,7 @@ FailCompression(r) ==
 CancelCompression(r) ==
   /\ requestStatus[r] = "PENDING"
   /\ requestStatus' = [requestStatus EXCEPT ![r] = "CANCELLED"]
-  /\ reserved' = [reserved EXCEPT ![r] = FALSE]
+  /\ reserved' = [reserved EXCEPT ![r] = KeepReservation]
   /\ lost' = lost
   /\ uncovered' = uncovered
   /\ reopened' = reopened

@@ -8,7 +8,7 @@ boundaries; later source changes do not inherit those results.
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 137 / engine 405 / tui 81 test targets), rerun on 2026-10-21.
+`make check` is green (core 137 / engine 406 / tui 81 test targets), rerun on 2026-10-21.
 `make pty` passed the same day: v2 smoke plus blocks and Kitty-protocol graphics smoke, all rc 0 and
 credential-free. PTY checks cover protocol bytes, input ownership, resize and cleanup, not a complete
 actual graphical-terminal or OS matrix. These gates do not renew real-provider, OAuth, sandbox-service,
@@ -37,7 +37,7 @@ features, absent features, intentional differences and candidate acceptance work
 D-461 adds read-only diagnostics for A06/A13/A22/A28 and explicit recovery, not automatic reminders.
 Evidence: engine/src/v2/diagnostics/tests.rs (five projection tests), the extended daemon/CLI cancellation
 and restart test, the explicit-input recovery test in engine/tests/v2_daemon.rs, and two TUI tests in
-tui/tests/minimal.rs. The same gate run found and fixed a pre-existing `exec --stream-json` settle race that
+D-462 then removed the divergence the entry had listed as a risk: `engine/src/v2/readiness.rs::opens_a_turn` is the single rule the driver and the projection both call, with a truth-table test, so `idle_unsettled` and "the driver would open a turn" cannot disagree. The projection remains outside `V2Control`'s state, and real-user effect is still unmeasured. tui/tests/minimal.rs. The same gate run found and fixed a pre-existing `exec --stream-json` settle race that
 could omit `goal_completed` and under-report usage; its existing test now asserts both. Repeated observation
 and daemon restart add no model calls; explicit input or task
 cancellation recovers the existing workflow. No live-service or performance result is claimed.

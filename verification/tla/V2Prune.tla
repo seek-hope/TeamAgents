@@ -51,16 +51,16 @@
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets
 
-CONSTANTS Sessions,        \* the *archived* sessions a prune may consider (a registry's rows, archived)
-          WindowPassed,    \* Sessions: those archived longer ago than the configured window
-          Dated,           \* Sessions: those carrying a recorded archive time
-          Served,          \* Sessions: those a daemon is still answering
-          Marked,          \* Sessions: those carrying the EVIDENCE marker
-          IgnoreWindow,    \* counterfactual: age is not consulted
-          IgnoreDating,    \* counterfactual: an undated row is taken
-          IgnoreLive,      \* counterfactual: a served session is taken
-          IgnoreEvidence   \* counterfactual: a marked root is taken
-
+CONSTANTS Sessions,  \* the *archived* sessions a prune may consider (a registry's rows, archived)
+          WindowPassed,  \* Sessions: those archived longer ago than the configured window
+          Dated,  \* Sessions: those carrying a recorded archive time
+          Served,  \* Sessions: those a daemon is still answering
+          Marked,  \* Sessions: those carrying the EVIDENCE marker
+          IgnoreWindow,  \* counterfactual: age is not consulted
+          IgnoreDating,  \* counterfactual: an undated row is taken
+          IgnoreLive,  \* counterfactual: a served session is taken
+          IgnoreEvidence,  \* counterfactual: a marked root is taken
+          KeepPresent
 ASSUME Sessions # {}
 ASSUME WindowPassed \subseteq Sessions
 ASSUME Dated \subseteq Sessions
@@ -95,7 +95,7 @@ vars == <<present, taken, badlyTaken>>
 PruneOne(s) ==
   /\ s \in present
   /\ MayBeTakenByDecision(s)
-  /\ present' = present \ {s}
+  /\ present' = IF KeepPresent THEN present ELSE present \ {s}
   /\ taken' = taken \cup {s}
   /\ badlyTaken' = badlyTaken \cup (IF MayBeTaken(s) THEN {} ELSE {s})
 

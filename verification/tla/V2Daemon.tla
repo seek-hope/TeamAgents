@@ -50,7 +50,14 @@ CONSTANTS Clients,     \* client slots, e.g. {"c1"}
           StopBeforeReceipt,      \* counterfactual (D-248): the daemon leaves with a stop request unanswered
           KeepServingAfterReceipt, \* counterfactual (D-248): an answered stop leaves the daemon serving
           SkipAnEvent,            \* counterfactual (D-249): a batch hands over the log minus one event
-          DeliverTwice            \* counterfactual (D-249): a batch hands one event over twice
+          DeliverTwice,           \* counterfactual (D-249): a batch hands one event over twice
+          \* D-462 counterfactuals, one per claim:
+          SplitCheckpoint,        \* the snapshot is read after the watermark, so it leads the cursor
+          ViewFromSnapshot,       \* the view is the snapshot's version rather than the cursor's
+          CursorAhead,            \* the cursor moves past the log
+          ApplyWithoutReceipt,    \* a command is applied with no receipt recorded
+          ReceiptBeyondLog,       \* the receipt names a version the log does not hold
+          ApplyOnAnotherVersion   \* a command submitted on another wire version is applied
 
 ASSUME Clients # {} /\ Commands # {} /\ Versions # {} /\ MaxLog > 0
 
@@ -105,12 +112,13 @@ RuntimeEvent ==
 \* already applied is not applied twice.
 Submit(c, cmd, payload, v) ==
   /\ v \in Versions
-  /\ v = Wire
+  /\ (ApplyOnAnotherVersion \/ v = Wire)
   /\ ~applied[cmd]
   /\ logLength < MaxLog
   /\ logLength' = logLength + 1
   /\ applied' = [applied EXCEPT ![cmd] = TRUE]
-  /\ receipt' = [receipt EXCEPT ![cmd] = logLength + 1]
+  /\ receipt' = [receipt EXCEPT ![cmd] =
+        IF ApplyWithoutReceipt THEN noreceipt ELSE logLength + 1 + (IF ReceiptBeyondLog THEN 1 ELSE 0)]
   /\ payloadOf' = [payloadOf EXCEPT ![cmd] = payload]
   /\ versionOf' = [versionOf EXCEPT ![cmd] = v]
   /\ shrank' = shrank
@@ -176,9 +184,9 @@ Reclaim(c) ==
 \* transaction, so the client always learns exactly which version its snapshot
 \* is consistent with.
 Checkpoint(c) ==
-  /\ snapshot' = [snapshot EXCEPT ![c] = logLength]
-  /\ cursor' = [cursor EXCEPT ![c] = logLength]
-  /\ view' = [view EXCEPT ![c] = logLength]
+  /\ snapshot' = [snapshot EXCEPT ![c] = logLength + (IF SplitCheckpoint THEN 1 ELSE 0)]
+  /\ cursor' = [cursor EXCEPT ![c] = logLength + (IF CursorAhead THEN 1 ELSE 0)]
+  /\ view' = [view EXCEPT ![c] = IF ViewFromSnapshot THEN snapshot[c] ELSE cursor'[c]]
   /\ shrank' = shrank
   /\ drift' = drift
   /\ UNCHANGED lifecycle

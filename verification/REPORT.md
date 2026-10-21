@@ -19,9 +19,14 @@ in [README.md](README.md); the fix ledger is in
   `MC_capabilities_settle_keeps_child.cfg` and `MC_capabilities_revoke_keeps_child.cfg` refute
   `ChildNonDelegable`, `TaskSettleRevokes` and `ParentRevokeCascades` through three counterfactual constants the
   module now carries.
-* **Re-run at `b8bbcd64`, on top of `b9fd5b16`**: `make verify-model-all` verifies all **45** configurations and
-  `make verify-model-counterexamples` refutes all **141** negative controls (138 before D-462 plus the three
-  above), each by the claim its marker names. Kani was not re-run here (its toolchain is absent on this
+* **Re-run at `b8bbcd64`, on top of `b9fd5b16`**: `make verify-model-all` verifies all **47** configurations and
+  `make verify-model-counterexamples` refutes all **250** negative controls (138 before D-462 plus 112:
+  three for the D-455 claims, ten for `V2Grants`, four for `V2Authority`, seven for `V2Checks`, six for
+  `V2Daemon`, six for `V2Wait`, two for `V2Store`, two for `V2Memory`, four for `V2Images`, eight for
+  `V2Artifact`, five for `V2Compress` and eight for the new `V2Update` model), each by the claim its marker names.
+  The `V2Grants`/`V2Authority` batch also made the task-scoped path reachable at all
+  (`tla/MC_grants_task.cfg`), so `TaskScopedGrantsAreNonDelegable` and `TaskScopedGrantsHaveParents` stopped
+  being vacuously true. Kani was not re-run here (its toolchain is absent on this
   machine); its subject files are unchanged since `b4e9f1f9`, where the last run reported
   `Complete - 7 successfully verified harnesses, 0 failures, 7 total`.
 
@@ -875,11 +880,11 @@ alone**, and conversely formal coverage does not excuse an item from sample or r
    README's later phases.
 
 8. **Work diagnostics (`D-461`) are a read-only projection, so they carry no new transition to model.** The
-   risk they do carry is a disagreement with the runtime's own readiness rule — a diagnosis that says
-   `idle_unsettled` while the driver would still open a turn, which would invite the user to cancel progress.
-   Today that agreement rests on two witnesses (`engine/src/v2/diagnostics/tests.rs` mirrors the driver's
-   ordering, and the daemon test walks a real idle worker), not on a model, and the projection is not in
-   `V2Control`'s state.
+   risk they carry is disagreement with the runtime's own readiness rule — a diagnosis that says
+   `idle_unsettled` while the driver would still open a turn, which would invite a user to cancel progress.
+   **D-462 closed that divergence by construction**: `engine/src/v2/readiness.rs::opens_a_turn` is the one rule,
+   `driver::step_ready` and the projection both call it, and its truth table is a test. The projection itself
+   is still outside `V2Control`'s state, and how a real user acts on a diagnosis is unmeasured.
 9. **The governed updater (`D-453`, `engine/src/update.rs`) has no model.** Its journal, validation, switch and
    health-check rollback are a state machine that replaces the running binaries, and a crash between the switch
    and the rollback is exactly the shape a bounded enumeration would pin. Nothing in `verification/tla` covers

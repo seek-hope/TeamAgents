@@ -21,7 +21,15 @@ CONSTANTS Artifacts,  \* artifact slots, e.g. {"a1","a2"}
           Aged,       \* ...and which are older than the `[retention] history_days` window: ordinary history
           GcIgnoresHolders,  \* counterfactual: GC claims an artifact that still has references
           ReleaseLiveOwner,  \* counterfactual: a hold is released although its owner has not finished
-          ReleaseFreshArtifact \* counterfactual: a hold is released inside the retention window
+          ReleaseFreshArtifact, \* counterfactual: a hold is released inside the retention window
+          \* D-462 counterfactuals, one per claim:
+          ReferenceUnpersisted, \* a reference attaches while the bytes are absent
+          ReleaseDeletesBytes,  \* dropping a hold also deletes the bytes
+          CollectorKeepsGhost,  \* the collector leaves the row behind
+          ReferenceToStaging,   \* a reference attaches to a STAGING artifact
+          DeleteAnyone,         \* bytes are deleted from a row that is not DELETING
+          ClaimAnyone,          \* GC claims a row that is not LIVE
+          LiveWithoutReference  \* the LIVE flip carries no reference
 
 ASSUME Artifacts # {} /\ Owners # {}
 
@@ -56,31 +64,47 @@ StageRow(id) ==
 
 \* 3) the referencing transaction: LIVE flip and the reference commit together
 PublishWithReference(id, who) ==
-  /\ row[id] = "STAGING" /\ disk[id] = "present"
+  /\ (ReferenceToStaging \/ row[id] = "STAGING") /\ (ReferenceUnpersisted \/ disk[id] = "present")
   /\ who \in Owners \ holders[id]
-  /\ row' = [row EXCEPT ![id] = "LIVE"]
-  /\ holders' = [holders EXCEPT ![id] = @ \cup {who}]
+  /\ row' = [row EXCEPT ![id] = IF ReferenceToStaging THEN "STAGING" ELSE "LIVE"]
+  /\ holders' = [holders EXCEPT ![id] = IF LiveWithoutReference THEN holders[id] ELSE @ \cup {who}]
   /\ owner' = [owner EXCEPT ![id] = FALSE]
   /\ UNCHANGED <<disk, staged, released>>
 
+\* D-462 counterfactual: the bytes of a LIVE artifact disappear while the row stays.
+GhostDelete(id) ==
+  /\ CollectorKeepsGhost
+  /\ disk[id] = "present"
+  /\ disk' = [disk EXCEPT ![id] = "absent"]
+  /\ UNCHANGED <<row, holders, owner, staged, released>>
+
+\* D-462 counterfactual: a row goes LIVE and takes a reference although no bytes were ever written.
+PublishWithoutBytes(id, who) ==
+  /\ ReferenceUnpersisted
+  /\ row[id] = "none" /\ disk[id] = "absent"
+  /\ who \in Owners \ holders[id]
+  /\ row' = [row EXCEPT ![id] = "LIVE"]
+  /\ holders' = [holders EXCEPT ![id] = @ \cup {who}]
+  /\ UNCHANGED <<disk, owner, staged, released>>
+
 \* add another reference to an already live artifact (new owner attaches)
 AddReference(id, who) ==
-  /\ row[id] = "LIVE" /\ disk[id] = "present"
+  /\ row[id] = "LIVE" /\ (ReferenceUnpersisted \/ disk[id] = "present")
   /\ who \in Owners \ holders[id]
   /\ holders' = [holders EXCEPT ![id] = @ \cup {who}]
   /\ UNCHANGED <<row, disk, owner, staged, released>>
 
 \* GC claim: only ownerless, unreferenced LIVE artifacts become DELETING
 GcClaim(id) ==
-  /\ row[id] = "LIVE" /\ (GcIgnoresHolders \/ holders[id] = {}) /\ ~owner[id]
+  /\ (ClaimAnyone \/ row[id] = "LIVE") /\ (GcIgnoresHolders \/ holders[id] = {}) /\ ~owner[id]
   /\ row' = [row EXCEPT ![id] = "DELETING"]
   /\ UNCHANGED <<disk, holders, owner, staged, released>>
 
 \* GC delete: the file goes away, the row leaves the catalog
 GcDelete(id) ==
-  /\ row[id] = "DELETING" /\ holders[id] = {}
+  /\ (DeleteAnyone \/ row[id] = "DELETING") /\ holders[id] = {}
   /\ disk' = [disk EXCEPT ![id] = "absent"]
-  /\ row' = [row EXCEPT ![id] = "none"]
+  /\ row' = [row EXCEPT ![id] = IF CollectorKeepsGhost THEN "LIVE" ELSE "none"]
   /\ staged' = [staged EXCEPT ![id] = FALSE]
   /\ UNCHANGED <<holders, owner, released>>
 
@@ -103,7 +127,8 @@ DropOwner(id) ==
   /\ (ReleaseFreshArtifact \/ id \in Aged)
   /\ owner' = [owner EXCEPT ![id] = FALSE]
   /\ released' = released \cup (IF id \in Spent /\ id \in Aged THEN {} ELSE {id})
-  /\ UNCHANGED <<row, disk, holders, staged>>
+  /\ disk' = [disk EXCEPT ![id] = IF ReleaseDeletesBytes THEN "absent" ELSE disk[id]]
+  /\ UNCHANGED <<row, holders, staged>>
 
 \* ---------------------------------------------------------------------- spec --
 \* an idle step keeps the model open-ended (TLC then reports no false deadlock)
@@ -114,6 +139,8 @@ Next ==
   \/ \E id \in Artifacts : StageRow(id)
   \/ \E id \in Artifacts : \E who \in Owners : PublishWithReference(id, who)
   \/ \E id \in Artifacts : \E who \in Owners : AddReference(id, who)
+  \/ \E id \in Artifacts : \E who \in Owners : PublishWithoutBytes(id, who)
+  \/ \E id \in Artifacts : GhostDelete(id)
   \/ \E id \in Artifacts : GcClaim(id)
   \/ \E id \in Artifacts : GcDelete(id)
   \/ \E id \in Artifacts : Abandon(id)

@@ -25,7 +25,9 @@
 EXTENDS Naturals
 
 CONSTANTS Vision,          \* did the model profile declare `images = true`?
-          BlindSendsParts  \* counterfactual (D-392): expand without consulting the capability
+          BlindSendsParts, \* counterfactual (D-392): expand without consulting the capability
+          SilentUnreadable, \* D-462 counterfactual: an unreadable reference is sent as plain text
+          SendUnloadedParts \* D-462 counterfactual: the parts branch is taken without loaded bytes
 
 ASSUME Vision \in BOOLEAN
 
@@ -70,6 +72,8 @@ Expand ==
   /\ wire = "none"
   /\ IF loaded
        THEN IF Vision \/ BlindSendsParts THEN wire' = "parts" ELSE wire' = "placeholder"
+       ELSE IF SendUnloadedParts THEN wire' = "parts"
+       ELSE IF SilentUnreadable THEN wire' = "text"
        ELSE IF Vision \/ BlindSendsParts THEN wire' = "error_text" ELSE wire' = "placeholder"
   /\ leaked' = (leaked \/ (wire' = "parts" /\ ~Vision))
   /\ unbacked' = (unbacked \/ (wire' = "parts" /\ ~loaded))

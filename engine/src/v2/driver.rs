@@ -1551,9 +1551,15 @@ that delegated it learns the outcome only from a settlement.";
         // committed tail: the runtime has just said everything there is to say
         // about that turn, and asking the model to answer it would be the runtime
         // inventing work — the same mistake in a new place.
-        if entries.last().is_none_or(|entry| matches!(entry.kind, EntryKind::Assistant | EntryKind::Runtime))
-            && self.oldest_task("PENDING").await?.is_none()
-        {
+        // D-462: one readiness rule, shared with the work diagnostics (`readiness::opens_a_turn`), so a
+        // diagnosis and this loop can never disagree about whether a turn would open. `false` for the first
+        // argument because this runs after the drain above: queued input has already been applied.
+        let pending_task = self.oldest_task("PENDING").await?.is_some();
+        // An empty context is nothing to answer: the runtime has no word of its own to avoid re-asking, so it
+        // counts as addressed here — the pre-D-462 condition (`is_none_or` + no pending task) returned idle.
+        let tail_is_addressed =
+            entries.last().is_none_or(|entry| matches!(entry.kind, EntryKind::Assistant | EntryKind::Runtime));
+        if !super::readiness::opens_a_turn(false, tail_is_addressed, pending_task) {
             return Ok(false);
         }
         // adopt assigned work: the turn that addresses a PENDING task also

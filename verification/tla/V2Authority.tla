@@ -44,7 +44,15 @@ CONSTANTS Instances,     \* e.g. {"leader", "worker"}
                          \* {"id", "issuer", "subject", "action", "scope", "revoked"}
           Granter,       \* the identity a user grant records, e.g. "user"
           TrustSurface,  \* counterfactual: dispatch trusts the cached surface
-          RefreshSurface \* counterfactual: an instance refreshes its surface
+          RefreshSurface, \* counterfactual: an instance refreshes its surface
+          \* D-462 counterfactuals, one per claim:
+          CascadeOverReaches,      \* a revocation takes grants outside the named subtree
+          SurfaceFromAnotherInstance, \* an instance adopts another's entitlement
+          SpawnDelegable,          \* the leader's spawn-derived grant is delegable
+          TaskChildDelegable,      \* the spawn-derived task grant is minted delegable
+          \* D-462 counterfactuals, one per claim:
+          GhostGrant, ExtraBootstrap, OrphanChild, WiderChild, TwoEffects, ListGhost, DeadPair,
+          StaleEffect, ReviveOnRevoke
 
 ASSUME {"g1", "g2", "g3"} \subseteq GrantIds
 ASSUME {"leader", "worker"} \subseteq Instances
@@ -96,6 +104,7 @@ GrantablePairs ==
     <<"manage", "session">>, <<"manage", "instance">>,
     <<"message", "session">>, <<"message", "instance">>,
     <<"delegate", "session">>, <<"delegate", "instance">> }
+      \cup (IF DeadPair THEN {<<"shell", "instance">>} ELSE {})
 
 \* The session's default authority (the bootstrap, D-58/D-60): the leader holds
 \* the shared-workspace shell and the team authority it manages with (its fourth
@@ -203,6 +212,9 @@ Init ==
                   THEN [subject |-> BootstrapGrants[g].subject, action |-> BootstrapGrants[g].action,
                         scope |-> BootstrapGrants[g].scope, parent |-> "none",
                         issuer |-> Granter, delegable |-> FALSE, task |-> "none", live |-> TRUE]
+                  ELSE IF ExtraBootstrap /\ g = "g4"
+                  THEN [subject |-> "worker", action |-> "shell", scope |-> "workspace", parent |-> "none",
+                        issuer |-> Granter, delegable |-> FALSE, task |-> "none", live |-> TRUE]
                   ELSE [subject |-> "none", action |-> "none", scope |-> CHOOSE s \in Scopes : TRUE,
                         parent |-> "none", issuer |-> Granter, delegable |-> FALSE, task |-> "none", live |-> FALSE] ]
   /\ revision = 0
@@ -215,7 +227,7 @@ Init ==
 \* `teamagents authority`: the user reads the session's grants. A grant is
 \* nameable from the view only if the view carries the id at all.
 List ==
-  /\ listed' = IF CarriesIds THEN {g \in GrantIds : UsedFor(grants, g)} ELSE {}
+  /\ listed' = IF ListGhost THEN {"g4"} ELSE IF CarriesIds THEN {g \in GrantIds : UsedFor(grants, g)} ELSE {}
   /\ UNCHANGED <<grants, revision, offered, ops, revokedIds, staleOps>>
 
 \* `authority grant [--parent G]`: the user issues one scoped grant. The surface
@@ -253,7 +265,8 @@ Spawn(g) ==
                         /\ grants' = [grants EXCEPT ![g] =
                               [subject |-> "leader", action |-> "delegate",
                                scope |-> "instance:worker", parent |-> m,
-                               issuer |-> "leader", delegable |-> FALSE, task |-> "none", live |-> TRUE]]
+                               issuer |-> "leader", delegable |-> (SpawnDelegable \/ TaskChildDelegable),
+                               task |-> (IF TaskChildDelegable THEN "t1" ELSE "none"), live |-> TRUE]]
   /\ revision' = revision + 1
   /\ UNCHANGED <<offered, listed, ops, revokedIds, staleOps>>
 
@@ -264,9 +277,12 @@ Spawn(g) ==
 UserRevokes(g) ==
   /\ g \in listed
   /\ LiveFor(grants, g)
-  /\ LET gone == SubtreeFor(grants, g)
+  /\ LET gone == IF ReviveOnRevoke THEN {}
+                  ELSE IF OrphanChild THEN {g}
+                  ELSE SubtreeFor(grants, g)
+          dying == IF CascadeOverReaches THEN GrantIds ELSE gone
      IN grants' = [h \in GrantIds |->
-                     IF h \in gone THEN [grants[h] EXCEPT !.live = FALSE] ELSE grants[h]]
+                     IF h \in dying THEN [grants[h] EXCEPT !.live = FALSE] ELSE grants[h]]
   /\ revision' = revision + 1
   /\ revokedIds' = revokedIds \union SubtreeFor(grants, g)
   /\ UNCHANGED <<offered, listed, ops, staleOps>>
@@ -277,7 +293,10 @@ UserRevokes(g) ==
 \* and in `offered` at the next turn, which is what makes the two properties below
 \* say something.
 Observe(i) ==
-  /\ offered' = IF RefreshSurface THEN [offered EXCEPT ![i] = SurfaceOf(grants, i)] ELSE offered
+  /\ offered' =
+       IF SurfaceFromAnotherInstance
+       THEN [offered EXCEPT ![i] = SurfaceOf(grants, CHOOSE j \in Instances : j # i)]
+       ELSE IF RefreshSurface THEN [offered EXCEPT ![i] = SurfaceOf(grants, i)] ELSE offered
   /\ UNCHANGED <<grants, revision, listed, ops, revokedIds, staleOps>>
 
 \* Every instance takes its next turn. This is the fairness the liveness property
@@ -300,10 +319,10 @@ Prepare(o) ==
 \* negative control must refute `AuthorizedEffectsOnly`.
 Dispatch(o) ==
   /\ ops[o].effects = 0
-  /\ ops[o].stamp = revision
+  /\ (StaleEffect \/ ops[o].stamp = revision)
   /\ (IF TrustSurface THEN ToolOf(o.action) \in offered[o.owner]
                       ELSE Covers2For(grants, o.owner, o.action, o.scope))
-  /\ ops' = [ops EXCEPT ![o] = [ops[o] EXCEPT !.effects = 1]]
+  /\ ops' = [ops EXCEPT ![o] = [ops[o] EXCEPT !.effects = 1 + (IF TwoEffects THEN 1 ELSE 0)]]
   /\ UNCHANGED <<grants, revision, offered, listed, revokedIds, staleOps>>
 
 \* A dispatch attempt at an outdated revision: refused, recorded, no effect.
@@ -312,6 +331,22 @@ RefusedDispatch(o) ==
   /\ ops[o].stamp # revision
   /\ staleOps' = staleOps \union {o}
   /\ UNCHANGED <<grants, revision, offered, listed, ops, revokedIds>>
+
+\* D-462 counterfactuals: each is the mistake itself, one reachable step.
+GhostAuthority ==
+  /\ GhostGrant /\ \E g \in GrantIds : ~UsedFor(grants, g)
+  /\ \E g \in GrantIds :
+        ~UsedFor(grants, g) /\
+        grants' = [grants EXCEPT ![g] = [subject |-> "worker", action |-> "shell", scope |-> "workspace",
+                   parent |-> "none", issuer |-> "leader", delegable |-> FALSE, task |-> "none", live |-> TRUE]]
+  /\ UNCHANGED <<revision, offered, listed, ops, revokedIds, staleOps>>
+
+WiderChildGrant ==
+  /\ WiderChild /\ \E g, p \in GrantIds :
+        ~UsedFor(grants, g) /\ LiveFor(grants, p) /\ grants[p].action = "manage" /\
+        grants' = [grants EXCEPT ![g] = [subject |-> "leader", action |-> "shell", scope |-> "workspace",
+                   parent |-> p, issuer |-> "leader", delegable |-> FALSE, task |-> "none", live |-> TRUE]]
+  /\ UNCHANGED <<revision, offered, listed, ops, revokedIds, staleOps>>
 
 Next ==
   \/ List
@@ -323,6 +358,7 @@ Next ==
   \/ \E i \in Instances : Observe(i)
   \/ ObserveAll
   \/ \E o \in Ops : Prepare(o)
+  \/ GhostAuthority \/ WiderChildGrant
   \/ \E o \in Ops : Dispatch(o)
   \/ \E o \in Ops : RefusedDispatch(o)
   \/ UNCHANGED monVars   \* the session idles: the model stays non-terminating

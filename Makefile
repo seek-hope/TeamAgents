@@ -174,7 +174,7 @@ verify-model: verify-tools
 # configuration that fell through the `*)` default would silently run the wrong module (the rule
 # `review/verification_catalogue.py` enforces). The control families are matched by prefix, after the
 # exact arms, because shell `case` takes the first match.
-CFG_CASE = case $$cfg in MC.cfg|MC_control_two.cfg) echo V2Control.tla;; MC_artifact*) echo V2Artifact.tla;; MC_wait*) echo V2Wait.tla;; MC_task*) echo V2Task.tla;; MC_approval*) echo V2Approval.tla;; MC_compress*) echo V2Compress.tla;; MC_daemon*) echo V2Daemon.tla;; MC_checks*) echo V2Checks.tla;; MC_trust*) echo V2Trust.tla;; MC_projecttrust*) echo V2ProjectTrust.tla;; MC_prune*) echo V2Prune.tla;; MC_tui*) echo V2Tui.tla;; MC_presentation*) echo V2Presentation.tla;; MC_inputqueue*) echo V2InputQueue.tla;; MC_displayworker*) echo V2DisplayWorker.tla;; MC_prompt*) echo V2Prompt.tla;; MC_retry*) echo V2Retry.tla;; MC_grants*) echo V2Grants.tla;; MC_capabilities*) echo V2Capabilities.tla;; MC_authority*) echo V2Authority.tla;; MC_store.cfg|MC_store_adopt.cfg) echo V2Store.tla;; MC_retention*) echo V2Retention.tla;; MC_history*) echo V2History.tla;; MC_sessionui*) echo V2SessionUi.tla;; MC_sessions*) echo V2Sessions.tla;; MC_schedule*) echo V2Schedule.tla;; MC_isolation*) echo V2Isolation.tla;; MC_codemode*) echo V2Codemode.tla;; MC_images*) echo V2Images.tla;; MC_memory*) echo V2Memory.tla;; MC_oauth*) echo V2Oauth.tla;; MC_jobs*) echo V2Jobs.tla;; MC_inbox*) echo V2Inbox.tla;; MC_diskfull*) echo V2DiskFull.tla;; MC_coordinator*) echo V2Coordinator.tla;; MC_workspace*) echo V2Workspace.tla;; MC_concurrency*) echo V2Concurrency.tla;; MC_control*) echo V2Control.tla;; MC_wide.cfg) echo V2Control.tla;; *) echo V2Artifact.tla;; esac
+CFG_CASE = case $$cfg in MC.cfg|MC_control*) echo V2Control.tla;; MC_artifact*) echo V2Artifact.tla;; MC_wait*) echo V2Wait.tla;; MC_task*) echo V2Task.tla;; MC_approval*) echo V2Approval.tla;; MC_compress*) echo V2Compress.tla;; MC_daemon*) echo V2Daemon.tla;; MC_checks*) echo V2Checks.tla;; MC_trust*) echo V2Trust.tla;; MC_projecttrust*) echo V2ProjectTrust.tla;; MC_prune*) echo V2Prune.tla;; MC_tui*) echo V2Tui.tla;; MC_presentation*) echo V2Presentation.tla;; MC_inputqueue*) echo V2InputQueue.tla;; MC_displayworker*) echo V2DisplayWorker.tla;; MC_prompt*) echo V2Prompt.tla;; MC_retry*) echo V2Retry.tla;; MC_grants*) echo V2Grants.tla;; MC_capabilities*) echo V2Capabilities.tla;; MC_authority*) echo V2Authority.tla;; MC_store*) echo V2Store.tla;; MC_retention*) echo V2Retention.tla;; MC_history*) echo V2History.tla;; MC_sessionui*) echo V2SessionUi.tla;; MC_sessions*) echo V2Sessions.tla;; MC_schedule*) echo V2Schedule.tla;; MC_isolation*) echo V2Isolation.tla;; MC_codemode*) echo V2Codemode.tla;; MC_images*) echo V2Images.tla;; MC_memory*) echo V2Memory.tla;; MC_update*) echo V2Update.tla;; MC_oauth*) echo V2Oauth.tla;; MC_jobs*) echo V2Jobs.tla;; MC_inbox*) echo V2Inbox.tla;; MC_diskfull*) echo V2DiskFull.tla;; MC_coordinator*) echo V2Coordinator.tla;; MC_workspace*) echo V2Workspace.tla;; MC_concurrency*) echo V2Concurrency.tla;; MC_control*) echo V2Control.tla;; MC_wide.cfg) echo V2Control.tla;; *) echo V2Artifact.tla;; esac
 
 # (D-293) TLC's meta directory is `states/` under the spec's directory, suffixed with the *run's timestamp*, and
 # `FileUtil.makeMetaDir` asserts that directory does not already exist (`!dir.exists()`, then `mkdirs()`): a
@@ -186,7 +186,7 @@ TLA_METADIR ?= $(CURDIR)/review/tmp/tla
 
 # small exhaustive configurations for every module (seconds; the wide config is verify-model-wide)
 verify-model-all: verify-tools
-	@cd verification/tla && for cfg in MC.cfg MC_control_two.cfg MC_control_warn.cfg MC_oauth.cfg MC_artifact.cfg MC_wait.cfg MC_task.cfg MC_task_two.cfg MC_approval.cfg MC_compress.cfg MC_daemon.cfg MC_daemon_stop.cfg MC_checks.cfg MC_checks_briefing.cfg MC_checks_independent.cfg MC_memory.cfg MC_grants.cfg MC_capabilities.cfg MC_authority.cfg MC_store.cfg MC_retention.cfg MC_history.cfg MC_sessions.cfg MC_schedule.cfg MC_isolation.cfg MC_isolation_ssh.cfg MC_codemode.cfg MC_images.cfg MC_images_blind_model.cfg MC_jobs.cfg MC_inbox.cfg MC_diskfull.cfg MC_coordinator.cfg MC_trust.cfg MC_prompt.cfg MC_retry.cfg MC_workspace.cfg MC_concurrency.cfg MC_projecttrust.cfg MC_prune.cfg MC_tui.cfg MC_sessionui.cfg MC_presentation.cfg MC_inputqueue.cfg MC_displayworker.cfg; do \
+	@cd verification/tla && for cfg in MC.cfg MC_control_two.cfg MC_control_warn.cfg MC_oauth.cfg MC_artifact.cfg MC_wait.cfg MC_task.cfg MC_task_two.cfg MC_approval.cfg MC_compress.cfg MC_daemon.cfg MC_daemon_stop.cfg MC_checks.cfg MC_checks_briefing.cfg MC_checks_independent.cfg MC_memory.cfg MC_grants.cfg MC_grants_task.cfg MC_capabilities.cfg MC_authority.cfg MC_store.cfg MC_retention.cfg MC_history.cfg MC_sessions.cfg MC_schedule.cfg MC_isolation.cfg MC_isolation_ssh.cfg MC_codemode.cfg MC_images.cfg MC_images_blind_model.cfg MC_update.cfg MC_jobs.cfg MC_inbox.cfg MC_diskfull.cfg MC_coordinator.cfg MC_trust.cfg MC_prompt.cfg MC_retry.cfg MC_workspace.cfg MC_concurrency.cfg MC_projecttrust.cfg MC_prune.cfg MC_tui.cfg MC_sessionui.cfg MC_presentation.cfg MC_inputqueue.cfg MC_displayworker.cfg; do \
 		echo "== $$cfg =="; \
 		meta="$(TLA_METADIR)/$$cfg-$$$$"; rm -rf "$$meta"; \
 		out=$$(java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
@@ -215,62 +215,64 @@ verify-model-counterexamples: verify-tools
 		MC_capabilities_bad.cfg:V2Capabilities.tla MC_capabilities_delegable_child.cfg:V2Capabilities.tla \
 		MC_capabilities_settle_keeps_child.cfg:V2Capabilities.tla MC_capabilities_revoke_keeps_child.cfg:V2Capabilities.tla \
 		MC_authority_badview.cfg:V2Authority.tla MC_authority_trustsurface.cfg:V2Authority.tla \
-		MC_authority_stalesurface.cfg:V2Authority.tla MC_control_cancel.cfg:V2Control.tla \
+		MC_authority_stalesurface.cfg:V2Authority.tla MC_authority_cascade_over_reaches.cfg:V2Authority.tla MC_authority_surface_foreign.cfg:V2Authority.tla MC_authority_spawn_delegable.cfg:V2Authority.tla MC_authority_task_child_delegable.cfg:V2Authority.tla MC_authority_ghost_grant.cfg:V2Authority.tla MC_authority_extra_bootstrap.cfg:V2Authority.tla MC_authority_orphan_child.cfg:V2Authority.tla MC_authority_wider_child.cfg:V2Authority.tla MC_authority_two_effects.cfg:V2Authority.tla MC_authority_list_ghost.cfg:V2Authority.tla MC_authority_dead_pair.cfg:V2Authority.tla MC_authority_stale_effect.cfg:V2Authority.tla MC_authority_revive_on_revoke.cfg:V2Authority.tla \
+		MC_control_cancel.cfg:V2Control.tla \
 		MC_control_midturninput.cfg:V2Control.tla \
 		MC_control_two_disjunction.cfg:V2Control.tla MC_control_deadline.cfg:V2Control.tla \
 		MC_control_reask.cfg:V2Control.tla MC_control_runtimeTail.cfg:V2Control.tla \
-		MC_control_warn_late.cfg:V2Control.tla MC_control_warn_repeat.cfg:V2Control.tla \
-		MC_checks_brief_without.cfg:V2Checks.tla \
+		MC_control_warn_late.cfg:V2Control.tla MC_control_warn_repeat.cfg:V2Control.tla MC_control_BadAdmission.cfg:V2Control.tla MC_control_BadActiveRequest.cfg:V2Control.tla MC_control_EffectBeforeDispatch.cfg:V2Control.tla MC_control_KeepClosedReservation.cfg:V2Control.tla MC_control_OverReserve.cfg:V2Control.tla MC_control_SelectIncomplete.cfg:V2Control.tla MC_control_StaleExecutor.cfg:V2Control.tla MC_control_DoubleEffect.cfg:V2Control.tla MC_control_RewriteTerminalOp.cfg:V2Control.tla MC_control_RewriteTerminalGoal.cfg:V2Control.tla MC_control_CrossEpochReceipt.cfg:V2Control.tla MC_control_EffectUnauthorized.cfg:V2Control.tla MC_control_EffectOnTerminated.cfg:V2Control.tla MC_control_EffectAfterCancel.cfg:V2Control.tla MC_control_PreparedEffect.cfg:V2Control.tla \
+		MC_checks_brief_without.cfg:V2Checks.tla MC_checks_brief_twice.cfg:V2Checks.tla MC_checks_late_join.cfg:V2Checks.tla MC_checks_round_without_claim.cfg:V2Checks.tla MC_checks_upgrade_candidate.cfg:V2Checks.tla MC_checks_unverified_accept.cfg:V2Checks.tla MC_checks_unbounded_rounds.cfg:V2Checks.tla MC_checks_block_without_cause.cfg:V2Checks.tla \
 		MC_oauth_wrong_resource.cfg:V2Oauth.tla MC_oauth_reuses_code.cfg:V2Oauth.tla \
 		MC_oauth_verifier_leaks.cfg:V2Oauth.tla MC_oauth_uses_expired.cfg:V2Oauth.tla \
 		MC_oauth_logout_ignored.cfg:V2Oauth.tla \
-		MC_control_landing.cfg:V2Control.tla MC_store_adopt.cfg:V2Store.tla \
+		MC_control_landing.cfg:V2Control.tla MC_store_adopt.cfg:V2Store.tla MC_store_refuse_and_write.cfg:V2Store.tla MC_store_foreign_stamp.cfg:V2Store.tla MC_store_accept_unstamped.cfg:V2Store.tla MC_store_interrupt_foreign.cfg:V2Store.tla MC_store_strand_interrupted.cfg:V2Store.tla MC_memory_accept_beyond_cap.cfg:V2Memory.tla MC_memory_recall_beyond_cap.cfg:V2Memory.tla \
 		MC_retention_evicts_live.cfg:V2Retention.tla MC_retention_evicts_evidence.cfg:V2Retention.tla \
-		MC_retention_evicts_young.cfg:V2Retention.tla MC_retention_runs_disabled.cfg:V2Retention.tla \
+		MC_retention_evicts_young.cfg:V2Retention.tla MC_retention_runs_disabled.cfg:V2Retention.tla MC_retention_ignores_live_only.cfg:V2Retention.tla \
 		MC_history_leaks.cfg:V2History.tla MC_history_system_reads.cfg:V2History.tla \
 		MC_sessions_shared_path.cfg:V2Sessions.tla MC_sessions_archive_held.cfg:V2Sessions.tla \
-		MC_sessions_archive_default.cfg:V2Sessions.tla \
+		MC_sessions_archive_default.cfg:V2Sessions.tla MC_sessions_archive_while_held.cfg:V2Sessions.tla \
 		MC_schedule_duplicate.cfg:V2Schedule.tla MC_schedule_overlap.cfg:V2Schedule.tla \
 		MC_schedule_disabled.cfg:V2Schedule.tla MC_schedule_early.cfg:V2Schedule.tla \
 		MC_isolation_fallback.cfg:V2Isolation.tla MC_isolation_unavailable.cfg:V2Isolation.tla \
 		MC_isolation_ssh_unreachable.cfg:V2Isolation.tla MC_isolation_ssh_fallback.cfg:V2Isolation.tla \
-		MC_codemode_leak.cfg:V2Codemode.tla MC_codemode_veto.cfg:V2Codemode.tla \
+		MC_codemode_leak.cfg:V2Codemode.tla MC_codemode_veto.cfg:V2Codemode.tla MC_codemode_silent.cfg:V2Codemode.tla \
 		MC_jobs_guess_notrun.cfg:V2Jobs.tla MC_jobs_double_go.cfg:V2Jobs.tla \
 		MC_jobs_late_go.cfg:V2Jobs.tla MC_jobs_spawn_first.cfg:V2Jobs.tla \
 		MC_jobs_retires_a_running_command.cfg:V2Jobs.tla \
-		MC_jobs_service_signals_a_stranger.cfg:V2Jobs.tla \
+		MC_jobs_service_signals_a_stranger.cfg:V2Jobs.tla MC_jobs_effect_before_accept.cfg:V2Jobs.tla MC_jobs_guess_not_run_effect.cfg:V2Jobs.tla MC_jobs_keep_runner.cfg:V2Jobs.tla \
 		MC_jobs_service_signals_a_live_command.cfg:V2Jobs.tla \
 		MC_workspace_merges_a_dirty_checkout.cfg:V2Workspace.tla \
 		MC_workspace_merges_mid_turn.cfg:V2Workspace.tla \
 		MC_workspace_retires_with_work.cfg:V2Workspace.tla \
 		MC_inbox_no_dedup.cfg:V2Inbox.tla MC_inbox_drop_when_full.cfg:V2Inbox.tla \
-		MC_inbox_unbounded.cfg:V2Inbox.tla MC_inbox_stale_applied.cfg:V2Inbox.tla \
+		MC_inbox_unbounded.cfg:V2Inbox.tla MC_inbox_out_of_order.cfg:V2Inbox.tla MC_inbox_stale_applied.cfg:V2Inbox.tla \
 		MC_inbox_foreign_drain.cfg:V2Inbox.tla \
-		MC_diskfull_keep_driving.cfg:V2DiskFull.tla MC_diskfull_fake_success.cfg:V2DiskFull.tla \
+		MC_diskfull_keep_driving.cfg:V2DiskFull.tla MC_diskfull_fake_success.cfg:V2DiskFull.tla MC_diskfull_never_park.cfg:V2DiskFull.tla \
 		MC_diskfull_park_silently.cfg:V2DiskFull.tla MC_diskfull_clear_anyway.cfg:V2DiskFull.tla \
 		MC_coordinator_report.cfg:V2Coordinator.tla MC_coordinator_inherit.cfg:V2Coordinator.tla \
 		MC_coordinator_shared.cfg:V2Coordinator.tla \
-		MC_coordinator_sweep_beside_a_session.cfg:V2Coordinator.tla \
+		MC_coordinator_sweep_beside_a_session.cfg:V2Coordinator.tla MC_coordinator_never_recovers.cfg:V2Coordinator.tla \
 		MC_task_delegates_to_settled.cfg:V2Task.tla MC_task_bills_settled.cfg:V2Task.tla \
-		MC_task_unordered_dependency.cfg:V2Task.tla MC_task_terminate_leaves_tasks.cfg:V2Task.tla \
-		MC_compress_deletes_originals.cfg:V2Compress.tla MC_compress_lifts_coverage.cfg:V2Compress.tla \
+		MC_task_unordered_dependency.cfg:V2Task.tla MC_task_self_dependency.cfg:V2Task.tla MC_task_stale_active_goal.cfg:V2Task.tla MC_task_stranger_writes.cfg:V2Task.tla MC_task_return_path_closed.cfg:V2Task.tla MC_task_rewrite_settled.cfg:V2Task.tla MC_task_system_settles.cfg:V2Task.tla MC_task_terminate_leaves_tasks.cfg:V2Task.tla \
+		MC_compress_deletes_originals.cfg:V2Compress.tla MC_compress_append_in_hole.cfg:V2Compress.tla MC_compress_keep_reservation.cfg:V2Compress.tla MC_compress_cover_backwards.cfg:V2Compress.tla MC_compress_cover_to_non_summary.cfg:V2Compress.tla MC_compress_cover_self.cfg:V2Compress.tla MC_compress_lifts_coverage.cfg:V2Compress.tla \
 		MC_compress_rewrites_closed.cfg:V2Compress.tla MC_daemon_rewrites_receipt.cfg:V2Daemon.tla \
 		MC_daemon_rolls_back_log.cfg:V2Daemon.tla MC_daemon_reclaims_events.cfg:V2Daemon.tla \
 		MC_daemon_stop_before_receipt.cfg:V2Daemon.tla \
-		MC_daemon_keeps_serving_after_receipt.cfg:V2Daemon.tla \
+		MC_daemon_keeps_serving_after_receipt.cfg:V2Daemon.tla MC_daemon_split_checkpoint.cfg:V2Daemon.tla MC_daemon_view_from_snapshot.cfg:V2Daemon.tla MC_daemon_cursor_ahead.cfg:V2Daemon.tla MC_daemon_apply_without_receipt.cfg:V2Daemon.tla MC_daemon_receipt_beyond_log.cfg:V2Daemon.tla MC_daemon_apply_on_another_version.cfg:V2Daemon.tla \
 		MC_daemon_skips_an_event.cfg:V2Daemon.tla \
 		MC_daemon_delivers_twice.cfg:V2Daemon.tla \
 		MC_checks_rewinds_rounds.cfg:V2Checks.tla MC_checks_late_require.cfg:V2Checks.tla \
-		MC_images_blind_parts.cfg:V2Images.tla MC_checks_self_verified.cfg:V2Checks.tla \
+		MC_images_blind_parts.cfg:V2Images.tla MC_images_leaked.cfg:V2Images.tla MC_images_unbacked.cfg:V2Images.tla MC_images_parts_from_loaded.cfg:V2Images.tla MC_images_unreadable_ok.cfg:V2Images.tla MC_update_ignore_lock.cfg:V2Update.tla MC_update_rewrite_journal.cfg:V2Update.tla MC_update_skip_validation.cfg:V2Update.tla MC_update_keep_both_active.cfg:V2Update.tla MC_update_fresh_install.cfg:V2Update.tla MC_update_pre_switch_crash.cfg:V2Update.tla MC_update_finish_anyway.cfg:V2Update.tla MC_update_rollback_crash.cfg:V2Update.tla MC_checks_self_verified.cfg:V2Checks.tla \
 		MC_memory_evicts.cfg:V2Memory.tla \
 		MC_approval_drops_the_expiry.cfg:V2Approval.tla \
 		MC_approval_rewrites_a_decision.cfg:V2Approval.tla \
 		MC_approval_keeps_pending_on_close.cfg:V2Approval.tla \
-		MC_approval_parks_without_a_row.cfg:V2Approval.tla \
-		MC_artifact_gc_ignores_references.cfg:V2Artifact.tla MC_wait_closes_without_answering.cfg:V2Wait.tla \
+		MC_approval_parks_without_a_row.cfg:V2Approval.tla MC_approval_unapproved.cfg:V2Approval.tla \
+		MC_artifact_gc_ignores_references.cfg:V2Artifact.tla MC_artifact_reference_unpersisted.cfg:V2Artifact.tla MC_artifact_live_unpersisted.cfg:V2Artifact.tla MC_artifact_release_deletes_bytes.cfg:V2Artifact.tla MC_artifact_collector_ghost.cfg:V2Artifact.tla MC_artifact_reference_to_staging.cfg:V2Artifact.tla MC_artifact_delete_anyone.cfg:V2Artifact.tla MC_artifact_claim_anyone.cfg:V2Artifact.tla MC_artifact_live_without_reference.cfg:V2Artifact.tla MC_wait_closes_without_answering.cfg:V2Wait.tla \
 		MC_wait_widens_a_message.cfg:V2Wait.tla MC_wait_wakes_on_report.cfg:V2Wait.tla \
-		MC_wait_wakes_on_idle.cfg:V2Wait.tla \
+		MC_wait_wakes_on_idle.cfg:V2Wait.tla MC_wait_answer_twice.cfg:V2Wait.tla MC_wait_answer_unresolved.cfg:V2Wait.tla MC_wait_pending_while_ready.cfg:V2Wait.tla MC_wait_park_after_answer.cfg:V2Wait.tla MC_wait_answer_unused_slot.cfg:V2Wait.tla MC_wait_close_without_holding.cfg:V2Wait.tla MC_wait_mismatch_answer_call.cfg:V2Wait.tla MC_wait_never_sweep.cfg:V2Wait.tla \
 		MC_grants_stale_offered_surface.cfg:V2Grants.tla \
+		MC_grants_effect_twice.cfg:V2Grants.tla MC_grants_stale_dispatch.cfg:V2Grants.tla MC_grants_mint_beyond_parent.cfg:V2Grants.tla MC_grants_runtime_issues.cfg:V2Grants.tla MC_grants_revoke_keeps_live.cfg:V2Grants.tla MC_grants_cascade_keeps_children.cfg:V2Grants.tla MC_grants_instance_delegable.cfg:V2Grants.tla MC_grants_bootstrap_extra.cfg:V2Grants.tla MC_grants_task_child_delegable.cfg:V2Grants.tla MC_grants_task_child_orphan.cfg:V2Grants.tla MC_grants_unauthorized_effect.cfg:V2Grants.tla \
 		MC_trust_models_always_merge.cfg:V2Trust.tla MC_trust_project_overrides_user.cfg:V2Trust.tla \
 		MC_trust_project_sets_policy.cfg:V2Trust.tla MC_trust_project_grants_itself.cfg:V2Trust.tla \
 		MC_trust_refuses_silently.cfg:V2Trust.tla \
@@ -280,7 +282,7 @@ verify-model-counterexamples: verify-tools
 		MC_prune_window.cfg:V2Prune.tla \
 		MC_prune_dating.cfg:V2Prune.tla \
 		MC_prune_live.cfg:V2Prune.tla \
-		MC_prune_evidence.cfg:V2Prune.tla \
+		MC_prune_evidence.cfg:V2Prune.tla MC_prune_keep_present.cfg:V2Prune.tla \
 		MC_artifact_release_live_owner.cfg:V2Artifact.tla \
 		MC_artifact_release_fresh.cfg:V2Artifact.tla \
 		MC_prompt_members_use_their_profile.cfg:V2Prompt.tla \
@@ -300,14 +302,14 @@ verify-model-counterexamples: verify-tools
 			tlc2.TLC -config $$cfg -fp 64 -workers 4 -metadir "$$meta" $$spec 2>&1); status=$$?; rm -rf "$$meta"; \
 		if printf '%s' "$$out" | grep -q "Warning:"; then \
 			echo "$$cfg carried a TLC warning: an inconsistent model is a defect, not a note (see above)" >&2; exit 1; fi; \
-		if printf '%s' "$$out" | grep -qE "is violated|properties were violated"; then \
-			if printf '%s' "$$out" | grep -qE "(Invariant|Action property) $$expect is violated"; then :; \
+		if printf '%s' "$$out" | grep -qE "is violated|properties were violated|is equal to FALSE"; then \
+			if printf '%s' "$$out" | grep -qE "(Invariant|Action property) $$expect (is violated|is equal to FALSE)|invariant of $$expect is equal to FALSE"; then :; \
 			elif printf '%s' "$$out" | grep -q "Temporal properties were violated"; then \
 				:; \
 			else \
 				echo "$$cfg was refuted, but not by $$expect: the marker and the violated property disagree (D-462)" >&2; \
 				echo "$$out" | grep -E "is violated|properties were violated" >&2; exit 1; fi; \
-			echo "$$out" | grep -E "is violated|properties were violated"; \
+			echo "$$out" | grep -E "is violated|properties were violated|is equal to FALSE"; \
 		elif printf '%s' "$$out" | grep -q "states generated"; then \
 			echo "$$cfg verified instead of refuting $$expect: the property it should break may be vacuous" >&2; \
 			echo "$$out" | tail -5 >&2; exit 1; \

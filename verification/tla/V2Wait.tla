@@ -37,7 +37,15 @@ CONSTANTS Waits,      \* wait slots (one row per registered wait), e.g. {"w1"}
           MessageCond,        \* the condition standing for a chat message from a sender
           WidenMessageToTaskResults, \* D-255(a)/D-341: a runtime that lets a task result satisfy a message condition
           WakeOnReport,              \* D-255(b)/D-341: a runtime that treats a reported BLOCKED as a settlement
-          WakeOnIdle                 \* D-257/D-341: a runtime that wakes a delegator whose assignee went idle
+          WakeOnIdle          \* D-257/D-341: a runtime that wakes a delegator whose assignee went idle
+          , AnswerTwice          \* D-462: a sweep answers the same wait twice
+          , AnswerUnresolved     \* D-462: a wait answers without reaching a resolved state
+          , PendingWhileReady    \* D-462: a pending wait whose owner is not parked
+          , ParkAfterAnswer      \* D-462: the owner parks although its wait resolved
+          , AnswerUnusedSlot     \* D-462: a retired slot keeps its answer
+          , NeverSweep           \* D-462: the parked drain never runs
+          , CloseWithoutHolding  \* D-462: a sweep satisfies a wait whose conditions do not hold
+          , MismatchAnswerCall   \* D-462: the answer names another wait's call
 
 ASSUME Waits # {} /\ Conds # {} /\ Instances # {}
 
@@ -94,10 +102,11 @@ PhaseAfter(f, t) ==
 \* answer in the same transaction; a replay is a no-op because a closed wait is
 \* no longer PENDING
 Sweep(f, t) ==
-  /\ waitState' = [ w \in Waits |-> IF Closable(w, f, t) THEN "SATISFIED" ELSE waitState[w] ]
-  /\ answers' = [ w \in Waits |-> IF Closable(w, f, t) THEN 1 ELSE answers[w] ]
-  /\ answerCall' = [ w \in Waits |-> IF Closable(w, f, t) THEN waitCall[w] ELSE answerCall[w] ]
-  /\ phase' = PhaseAfter(f, t)
+  /\ waitState' = [ w \in Waits |-> IF (Closable(w, f, t) \/ CloseWithoutHolding) /\ ~NeverSweep THEN "SATISFIED" ELSE waitState[w] ]
+  /\ answers' = [ w \in Waits |-> IF Closable(w, f, t) /\ ~NeverSweep THEN (IF AnswerTwice THEN 2 ELSE 1) ELSE answers[w] ]
+  /\ answerCall' = [ w \in Waits |-> IF Closable(w, f, t) /\ ~NeverSweep
+        THEN (IF MismatchAnswerCall THEN nocall ELSE waitCall[w]) ELSE answerCall[w] ]
+  /\ phase' = IF NeverSweep THEN phase ELSE PhaseAfter(f, t)
 
 \* ------------------------------------------------------------------- actions --
 \* Registration (§5.3/A23): the wait is checked against the facts that already
@@ -114,9 +123,11 @@ ArmWait(w, i, mode, conds, call) ==
   /\ waitOwner' = [waitOwner EXCEPT ![w] = i]
   /\ LET satisfied == HoldsWith(mode, conds, w, facts, timers) IN
      /\ waitState' = [waitState EXCEPT ![w] = IF satisfied THEN "SATISFIED" ELSE "PENDING"]
-     /\ answers' = [answers EXCEPT ![w] = IF satisfied /\ ~CloseWithoutAnswer THEN 1 ELSE 0]
+     /\ answers' = [answers EXCEPT ![w] = IF (satisfied /\ ~CloseWithoutAnswer) \/ AnswerUnresolved THEN 1 ELSE 0]
      /\ answerCall' = [answerCall EXCEPT ![w] = IF satisfied /\ ~CloseWithoutAnswer THEN call ELSE nocall]
-     /\ phase' = [phase EXCEPT ![i] = IF satisfied THEN "READY" ELSE "WAITING"]
+     /\ phase' = [phase EXCEPT ![i] =
+          IF satisfied THEN (IF ParkAfterAnswer THEN "WAITING" ELSE "READY")
+          ELSE (IF PendingWhileReady THEN "READY" ELSE "WAITING")]
   /\ UNCHANGED <<facts, timers, reported, idle>>
 
 \* Environment: a message is delivered / a task or operation reaches a terminal
@@ -195,7 +206,7 @@ Retire(w) ==
   /\ waitConds' = [waitConds EXCEPT ![w] = {}]
   /\ waitCall' = [waitCall EXCEPT ![w] = nocall]
   /\ waitOwner' = [waitOwner EXCEPT ![w] = "none"]
-  /\ answers' = [answers EXCEPT ![w] = 0]
+  /\ answers' = [answers EXCEPT ![w] = IF AnswerUnusedSlot THEN 1 ELSE 0]
   /\ answerCall' = [answerCall EXCEPT ![w] = nocall]
   /\ UNCHANGED <<phase, facts, timers, reported, idle>>
 

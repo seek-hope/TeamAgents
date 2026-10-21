@@ -79,7 +79,8 @@ CONSTANTS GuessNotRun,       \* counterfactual: a dead runner is judged "did not
           SpawnBeforeAccept, \* counterfactual: the command starts before its acceptance is persisted
           RetireWithAChild,  \* counterfactual (D-250): the `runners` lever retires a runner whose command is in
                              \* flight — a listing tool taking work away
-          SignalWithoutChecking \* counterfactual (D-251): `runners stop --service` signals the recorded group id
+          SignalWithoutChecking, \* counterfactual (D-251): `runners stop --service` signals the recorded group id
+          KeepRunner             \* D-462: a settled journal never lets its runner go
                              \* without checking that it is the job's own (an unsettled job, or a recycled id)
 
 Phases == {"READY", "START_ACCEPTED", "RUNNING", "CANCEL_REQUESTED",
@@ -206,6 +207,7 @@ CrashRunner ==
 \* D-153: once the job is settled a runner adds nothing, so it goes away.
 StopRunner ==
   /\ runner = "alive"
+  /\ ~KeepRunner
   /\ journal \in Terminal
   /\ runner' = "dead"
   /\ UNCHANGED <<journal, started, effect, readJournal, readEffect, readVerdict, lateGoStarted, takenAway, service, recycled, stranger, liveService>>

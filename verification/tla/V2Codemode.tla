@@ -44,12 +44,12 @@
 (***************************************************************************)
 EXTENDS FiniteSets
 
-CONSTANTS Runs,      \* codemode runs, e.g. {"r1","r2"}
-          Tools,     \* the bound MCP tools, e.g. {"t1","t2"}
-          Vetoed,    \* tools the user's pre_tool hook denies, e.g. {"t1"}
-          IgnoreVeto, \* negative control: the veto is not applied to nested calls
-          LeakNested \* negative control: a run pushes its nested payloads into the context
-
+CONSTANTS Runs,  \* codemode runs, e.g. {"r1","r2"}
+          Tools,  \* the bound MCP tools, e.g. {"t1","t2"}
+          Vetoed,  \* tools the user's pre_tool hook denies, e.g. {"t1"}
+          IgnoreVeto,  \* negative control: the veto is not applied to nested calls
+          LeakNested,  \* negative control: a run pushes its nested payloads into the context
+          SilentScript
 ToolNames == Tools \union {"none"}
 Items == [kind : {"script", "nested"}, run : Runs, tool : ToolNames]
 Calls == [run : Runs, tool : Tools]
@@ -76,7 +76,7 @@ Run(r) ==
     /\ r \notin done
     /\ done' = done \union {r}
     /\ called' = called \union {[run |-> r, tool |-> t] : t \in executed}
-    /\ context' = {ScriptItem(r)}
+    /\ context' = (IF SilentScript THEN {} ELSE {ScriptItem(r)})
                   \union context
                   \union (IF LeakNested THEN {NestedItem(r, t) : t \in executed} ELSE {})
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The formal-verification material, against the targets that drive it and the report that counts it (D-185).
 
-`verification/tla/` holds thirty-seven TLA+ modules and one-hundred-and-eighty-seven configurations — and **these numbers are
+`verification/tla/` holds thirty-eight TLA+ modules and two-hundred-and-ninety-eight configurations — and **these numbers are
 checked against the directory by this script's own rule**, because the sentence that said "forty" was the
 kind of count nothing looked at (the module count in this line and the two the report states are all
 compared with what the tree holds); `verification/REPORT.md`
@@ -450,7 +450,17 @@ def main(argv) -> int:
         elif claim in covered.get(module, set()):
             findings.append(f"verification/COVERAGE.md still records {module}::{claim} while a control refutes it "
                             "now: delete the row (D-462)")
-        elif status != "needs-control" and not status.startswith(("entailed-by:", "structural:")):
+        elif status.startswith("entailed-by:"):
+            target = status.split(":", 1)[1].strip()
+            if target not in covered.get(module, set()):
+                findings.append(f"verification/COVERAGE.md says {module}::{claim} is entailed by {target!r}, and no "
+                                "control of that module refutes a claim of that name: an entailment has to rest on a "
+                                "refuted claim, or it is a second unproven statement (D-462)")
+        elif status.startswith("structural:"):
+            if len(status.split(":", 1)[1].strip()) < 8:
+                findings.append(f"verification/COVERAGE.md gives {module}::{claim} the status {status!r}: a structural "
+                                "argument has to say what makes the claim a property of the definition (D-462)")
+        elif status != "needs-control":
             findings.append(f"verification/COVERAGE.md gives {module}::{claim} the status {status!r}: it must say "
                             "`needs-control`, or justify the row with `entailed-by: <Claim>` or `structural: "
                             "<reason>` (D-462)")

@@ -54,9 +54,9 @@
 EXTENDS Naturals
 
 CONSTANTS ReportInsteadOfWaiting,  \* counterfactual: a restart refuses in the fork window instead of waiting
-          ChildKeepsLock,          \* counterfactual: the child's descriptor survives exec
-          NotExclusive             \* counterfactual: two coordinators may hold the lock
-
+          ChildKeepsLock,  \* counterfactual: the child's descriptor survives exec
+          NotExclusive,  \* counterfactual: two coordinators may hold the lock
+          NeverRecover
 ChildPhases == {"none", "forked", "execd"}
 Outcomes == {"none", "acquired", "waited", "refused-window", "refused-real"}
 
@@ -96,6 +96,7 @@ SweepFinishes ==
 \* The first coordinator takes a free lock (one reference: its own descriptor).
 AcquireFree ==
   /\ references = 0
+  /\ ~NeverRecover
   /\ daemon = "gone"
   /\ daemon' = "live"
   /\ references' = 1

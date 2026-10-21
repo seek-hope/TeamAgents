@@ -27,13 +27,13 @@
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets
 
-CONSTANTS Ops,             \* operation slots, e.g. {"o1","o2"}
-          MaxTime,         \* the clock's bound (keeps the state space finite)
-          DropsExpiryCheck,    \* counterfactual: dispatch ignores the horizon
-          RewritesDecisions,   \* counterfactual: a decided approval is rewritten
-          KeepsPendingOnClose, \* counterfactual: a closing operation leaves its approval pending
-          ParksWithoutARow     \* counterfactual: parking the operation creates no approval row
-
+CONSTANTS Ops,  \* operation slots, e.g. {"o1","o2"}
+          MaxTime,  \* the clock's bound (keeps the state space finite)
+          DropsExpiryCheck,  \* counterfactual: dispatch ignores the horizon
+          RewritesDecisions,  \* counterfactual: a decided approval is rewritten
+          KeepsPendingOnClose,  \* counterfactual: a closing operation leaves its approval pending
+          ParksWithoutARow,  \* counterfactual: parking the operation creates no approval row
+          EffectUnapproved
 ASSUME Ops # {} /\ MaxTime > 0
 
 ApprStatus == {"none", "PENDING", "APPROVED", "DENIED", "EXPIRED"}
@@ -131,7 +131,14 @@ RewriteDecision(o, s) ==
 
 Stutter == UNCHANGED monVars
 
+\* D-462 counterfactual: an effect lands with the approval not APPROVED.
+UnapprovedEffect(o) ==
+  /\ EffectUnapproved /\ effect[o] = 0
+  /\ effect' = [effect EXCEPT ![o] = 1]
+  /\ UNCHANGED <<apprStatus, opStatus, horizon, clock, lateEffect, rewritten>>
+
 Next ==
+  \/ \E o \in Ops : UnapprovedEffect(o)
   \/ \E o \in Ops : \E h \in 0..MaxTime : Park(o, h)
   \/ \E o \in Ops : \E h \in 0..MaxTime : Approve(o, h)
   \/ \E o \in Ops : Deny(o)

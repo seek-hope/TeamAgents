@@ -32,7 +32,14 @@ CONSTANTS AllChecks,   \* every check a client could require, e.g. {"k1","k2"}
           MaxRounds,   \* repair-round budget, e.g. 2
           RewindRounds, \* counterfactual (D-219): opening a round resets the counter instead of advancing it
           LateRequire, \* counterfactual (D-385): a check may join after a claim, so no round covers it
-          BriefWithoutChecks \* counterfactual (D-418): the instance is told about checks the goal does not require
+          BriefWithoutChecks, \* counterfactual (D-418): the instance is told about checks the goal does not require
+          \* D-462 counterfactuals, one per claim:
+          BriefTwice,         \* the instance is briefed a second time
+          RoundWithoutClaim,  \* a round is registered for a candidate that claims nothing
+          UpgradeCandidate,   \* a failed candidate settles as SUCCEEDED
+          UnverifiedAccept,   \* a success settles with no passing verdict at all
+          UnboundedRounds,    \* a round opens past the repair budget
+          BlockWithoutCause   \* the goal blocks with no exhausted budget and no stale check
 
 ASSUME AllChecks # {} /\ MaxRounds > 0
 
@@ -75,8 +82,8 @@ monVars == <<vars, upgrades, lateRound, rewound, lateJoin, nonSuccessSuccess>>
 Brief ==
   /\ goalStatus = "ACTIVE"
   /\ (BriefWithoutChecks \/ required # {})
-  /\ briefings = 0
-  /\ briefings' = 1
+  /\ (BriefTwice \/ briefings = 0)
+  /\ briefings' = IF BriefTwice THEN briefings + 1 ELSE 1
   /\ UNCHANGED <<candidate, goalStatus, required, round, openOps, result, roundChecks, registrar, lastVerdict,
                  roundOpen, upgrades, lateRound, rewound, lateJoin, nonSuccessSuccess>>
 
@@ -113,12 +120,12 @@ StoreCandidate(outcome) ==
 SettleWithoutChecks ==
   /\ candidate \in {"failed", "blocked"}
   /\ goalStatus = "ACTIVE"
-  /\ goalStatus' = IF candidate = "failed" THEN "FAILED" ELSE "BLOCKED"
+  /\ goalStatus' = IF UpgradeCandidate THEN "SUCCEEDED" ELSE (IF candidate = "failed" THEN "FAILED" ELSE "BLOCKED")
   /\ upgrades' = upgrades
   /\ lateRound' = lateRound
   /\ rewound' = rewound
   /\ lateJoin' = lateJoin
-  /\ nonSuccessSuccess' = nonSuccessSuccess
+  /\ nonSuccessSuccess' = IF UpgradeCandidate THEN TRUE ELSE nonSuccessSuccess
   /\ UNCHANGED <<candidate, required, round, openOps, result, roundChecks, lastVerdict, roundOpen, registrar, briefings>>
 
 \* A claimed success with an empty contract settles on the candidate alone
@@ -139,11 +146,11 @@ SettleSuccessWithoutChecks ==
 \* contract *as it stands now*, with newly observed inputs for every check
 \* (rounds < budget).
 RegisterRound ==
-  /\ candidate = "success"
+  /\ (RoundWithoutClaim \/ candidate = "success")
   /\ goalStatus = "ACTIVE"
   /\ required # {}
   /\ ~roundOpen
-  /\ round < MaxRounds
+  /\ (UnboundedRounds \/ round < MaxRounds)
   /\ round' = IF RewindRounds /\ round > 0 THEN 0 ELSE round + 1
   /\ roundOpen' = TRUE
   /\ openOps' = 1
@@ -189,6 +196,15 @@ LandResult(k, r) ==
   /\ nonSuccessSuccess' = nonSuccessSuccess
   /\ UNCHANGED <<candidate, goalStatus, required, round, openOps, roundChecks, lastVerdict, roundOpen, registrar, briefings>>
 
+\* D-462 counterfactual: a claimed success settles with no passing verdict.
+AcceptUnverified ==
+  /\ UnverifiedAccept
+  /\ goalStatus = "ACTIVE"
+  /\ goalStatus' = "SUCCEEDED"
+  /\ upgrades' = TRUE
+  /\ UNCHANGED <<candidate, required, round, openOps, result, roundChecks, lastVerdict, roundOpen, registrar,
+                 briefings, lateRound, rewound, lateJoin, nonSuccessSuccess>>
+
 NextCheck ==
   /\ roundOpen
   /\ openOps > 0
@@ -226,7 +242,7 @@ BlockForInfra ==
   /\ goalStatus = "ACTIVE"
   \* a stale observation means the verification path itself is unavailable —
   \* like a refused dispatch, the model cannot repair it
-  /\ \E k \in roundChecks : result[k] = "stale"
+  /\ \E k \in roundChecks : (BlockWithoutCause \/ result[k] = "stale")
   /\ goalStatus' = "BLOCKED"
   /\ roundOpen' = FALSE
   /\ lastVerdict' = "stale"
@@ -305,6 +321,7 @@ Next ==
   \/ ComputeVerdict
   \/ BlockForInfra
   \/ Accept
+  \/ AcceptUnverified
   \/ Repair
   \/ BlockWhenExhausted
   \/ Stutter

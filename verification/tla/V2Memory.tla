@@ -22,7 +22,9 @@ EXTENDS Naturals, FiniteSets, Sequences
 
 CONSTANTS MaxNotes,   \* the store's cap (the code's MAX_NOTES)
           RecallMax,  \* the most notes one recall returns (RECALL_MAX)
-          Evicts      \* counterfactual (D-405): at the cap, drop the oldest to make room
+          Evicts,     \* counterfactual (D-405): at the cap, drop the oldest to make room
+          AcceptBeyondCap, \* D-462 counterfactual: remember past the cap
+          RecallBeyondCap  \* D-462 counterfactual: a recall returns more than RecallMax
 
 ASSUME MaxNotes > 0 /\ RecallMax > 0
 
@@ -40,7 +42,7 @@ monVars == <<vars, recalled, lost>>
 \* `remember`: a new id is appended with a fresh sequence number. Refused at the cap.
 Remember(n) ==
   /\ n \notin notes
-  /\ Cardinality(notes) < MaxNotes
+  /\ (AcceptBeyondCap \/ Cardinality(notes) < MaxNotes)
   /\ notes' = notes \cup {n}
   /\ freshest' = Append(freshest, n)
   /\ result' = result
@@ -61,7 +63,7 @@ EvictOldest ==
 \* `recall`: at most RecallMax of the newest notes, none invented.
 Recall(q) ==
   /\ q \subseteq notes
-  /\ Cardinality(q) <= RecallMax
+  /\ (RecallBeyondCap \/ Cardinality(q) <= RecallMax)
   /\ result' = q
   /\ recalled' = TRUE
   /\ notes' = notes

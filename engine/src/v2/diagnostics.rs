@@ -98,8 +98,9 @@ fn read_sql(conn: &Connection, include_settled: bool) -> rusqlite::Result<View> 
                 )
                 .optional()?;
         }
-        let runnable =
-            incoming || pending > 0 || tail.as_deref().is_some_and(|kind| !matches!(kind, "assistant" | "runtime"));
+        // Same rule as the driver: no visible entry is nothing to answer, so it counts as addressed.
+        let tail_is_addressed = tail.as_deref().is_none_or(|kind| matches!(kind, "assistant" | "runtime"));
+        let runnable = super::readiness::opens_a_turn(incoming, tail_is_addressed, pending > 0);
         let mut activity = match (lifecycle.as_str(), phase.as_str()) {
             ("TERMINATED", _) => diagnosis("terminated", "Instance terminated; it cannot resume.", false,
                 "Assign any remaining work to a new instance; inspect receipts before retrying effects."),

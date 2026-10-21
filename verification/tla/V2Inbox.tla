@@ -68,13 +68,13 @@
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets, Sequences
 
-CONSTANTS MaxInbox,            \* the recipient's capacity (DEFAULT_MAX_INBOX in the code)
-          ApplyWithoutDedup,   \* counterfactual: the append ignores the id it already applied
-          DropWhenFull,        \* counterfactual: a full inbox discards what is queued
-          OverflowInbox,       \* counterfactual: the inbox has no bound at all
-          ApplySealed,         \* counterfactual: a stale-epoch envelope is applied, not sealed
-          AnyInstanceDrains    \* counterfactual: an instance may drain another's inbox
-
+CONSTANTS MaxInbox,  \* the recipient's capacity (DEFAULT_MAX_INBOX in the code)
+          ApplyWithoutDedup,  \* counterfactual: the append ignores the id it already applied
+          DropWhenFull,  \* counterfactual: a full inbox discards what is queued
+          OverflowInbox,  \* counterfactual: the inbox has no bound at all
+          ApplySealed,  \* counterfactual: a stale-epoch envelope is applied, not sealed
+          AnyInstanceDrains,  \* counterfactual: an instance may drain another's inbox
+          AppendOutOfOrder
 ASSUME MaxInbox >= 1
 
 Ids == 1..3                    \* envelope ids, in sequence order
@@ -153,7 +153,8 @@ Apply(actor, i) ==
   /\ i \in Accepted
   /\ i = LowestPending
   /\ birth[i] = epoch
-  /\ log' = IF i \in LogIds /\ ~ApplyWithoutDedup THEN log ELSE Append(log, i)
+  /\ log' = IF i \in LogIds /\ ~ApplyWithoutDedup THEN log
+              ELSE Append(log, IF AppendOutOfOrder /\ i > 1 THEN i - 1 ELSE i)
   /\ state' = [state EXCEPT ![i] = "applied"]
   /\ drainedByOther' = (drainedByOther \/ (actor = "other"))
   /\ UNCHANGED <<birth, epoch, everAccepted, appliedStale, acceptedOverCap>>

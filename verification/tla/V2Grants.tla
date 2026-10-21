@@ -32,12 +32,23 @@
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets, Sequences
 
-CONSTANTS Instances,   \* e.g. {"leader", "child"}
-          Actions,     \* e.g. {"shell", "manage", "delegate", "message"}
-          GrantIds,    \* grant slots, e.g. {"g1", ..., "g6"}
-          BaseTools,   \* tools that need no grant (the instance's bindings)
-          OfferedLagsRevocation  \* counterfactual (D-220): the revoke path leaves the offered surface as it was
-
+CONSTANTS Instances,  \* e.g. {"leader", "child"}
+          Actions,  \* e.g. {"shell", "manage", "delegate", "message"}
+          GrantIds,  \* grant slots, e.g. {"g1", ..., "g6"}
+          BaseTools,  \* tools that need no grant (the instance's bindings)
+          OfferedLagsRevocation,  \* counterfactual (D-220): the revoke path leaves the offered surface as it was
+          EffectTwice,  \* a dispatch counts two effects
+          DispatchWithStaleStamp,  \* an operation prepared at an older revision still dispatches
+          MintBeyondParent,  \* an instance mints a grant its parent does not cover
+          AuthorityFromRuntime,  \* a live grant with no user-issued ancestor appears
+          RevokeLeavesGrantsLive,  \* revocation records the id but leaves the grant live
+          CascadeKeepsSiblings,  \* revoking a parent leaves its children live
+          InstanceMintsDelegable,  \* an instance mints a delegable grant
+          TaskChildDelegable,  \* a task-scoped child is minted delegable
+          TaskChildWithoutParent,  \* a task-scoped child is minted without its parent
+          BootstrappedWithExtra,  \* the boot table carries authority D-58 does not promise
+          MintTaskChildren,  \* enable the task-scoped minting actions at all
+          EffectWithoutAuthority
 \* The scope vocabulary the code uses: the shared workspace, the session, and one
 \* scope per instance ("instance:<id>", the scope a spawn derivation targets).
 Scopes == {"session", "workspace"} \union {"instance:" \o i : i \in Instances}
@@ -148,6 +159,9 @@ Init ==
                   THEN [subject |-> BootstrapGrants[g].subject, action |-> BootstrapGrants[g].action,
                         scope |-> BootstrapGrants[g].scope, parent |-> "none",
                         issuer |-> "user", delegable |-> (g = "g1"), task |-> "none", live |-> TRUE]
+                  ELSE IF BootstrappedWithExtra /\ g = "g5"
+                  THEN [subject |-> "child", action |-> "shell", scope |-> "workspace",
+                        parent |-> "none", issuer |-> "user", delegable |-> FALSE, task |-> "none", live |-> TRUE]
                   ELSE [subject |-> "none", action |-> "none", scope |-> CHOOSE s \in Scopes : TRUE,
                         parent |-> "none", issuer |-> "user", delegable |-> FALSE, task |-> "none", live |-> FALSE] ]
   /\ revision = 0
@@ -183,10 +197,10 @@ InstanceMints(g, parent, action, scope) ==
   /\ grants[parent].subject \in Instances
   /\ \/ grants[parent].action = action
      \/ grants[parent].action = "manage" /\ action \in {"message", "delegate"}
-  /\ <<grants[parent].scope, scope>> \in Covers
+  /\ (MintBeyondParent \/ <<grants[parent].scope, scope>> \in Covers)
   /\ grants' = [grants EXCEPT ![g] = [subject |-> grants[parent].subject, action |-> action,
                                      scope |-> scope, parent |-> parent,
-                                     issuer |-> grants[parent].subject, delegable |-> FALSE,
+                                     issuer |-> grants[parent].subject, delegable |-> InstanceMintsDelegable,
                                      task |-> "none", live |-> TRUE]]
   /\ revision' = revision + 1
   /\ offered' = [i \in Instances |-> EntitledIn(grants', i)]
@@ -198,10 +212,11 @@ InstanceMintsCapability(g, parent, action, scope, task) ==
   /\ grants[parent].subject \in Instances /\ task \in Tasks
   /\ \/ grants[parent].action = action
      \/ grants[parent].action = "manage" /\ action \in {"message", "delegate"}
-  /\ <<grants[parent].scope, scope>> \in Covers
+  /\ (MintBeyondParent \/ <<grants[parent].scope, scope>> \in Covers)
   /\ grants' = [grants EXCEPT ![g] = [subject |-> grants[parent].subject, action |-> action,
-                                     scope |-> scope, parent |-> parent,
-                                     issuer |-> grants[parent].subject, delegable |-> FALSE,
+                                     scope |-> scope,
+                                     parent |-> (IF TaskChildWithoutParent THEN "none" ELSE parent),
+                                     issuer |-> grants[parent].subject, delegable |-> TaskChildDelegable,
                                      task |-> task, live |-> TRUE]]
   /\ revision' = revision + 1
   /\ offered' = [i \in Instances |-> EntitledIn(grants', i)]
@@ -228,8 +243,10 @@ Revoke(g) ==
   /\ LiveFor(grants, g)
   /\ \E actor \in Instances \union {"user"} : actor = "user" \/ actor = grants[g].issuer
   /\ LET gone == SubtreeFor(grants, g)
+          dying == IF CascadeKeepsSiblings THEN {g} ELSE gone
      IN grants' = [h \in GrantIds |->
-                     IF h \in gone THEN [grants[h] EXCEPT !.live = FALSE] ELSE grants[h]]
+                     IF h \in dying /\ ~RevokeLeavesGrantsLive THEN [grants[h] EXCEPT !.live = FALSE]
+                     ELSE grants[h]]
   /\ revision' = revision + 1
   /\ offered' = [i \in Instances |-> EntitledIn(IF OfferedLagsRevocation THEN grants ELSE grants', i)]
   /\ revokedIds' = revokedIds \union SubtreeFor(grants, g)
@@ -259,10 +276,21 @@ Prepare(o) ==
 \* covering grant must exist right now.
 Dispatch(o) ==
   /\ ops[o].effects = 0
-  /\ ops[o].stamp = revision
+  /\ (DispatchWithStaleStamp \/ ops[o].stamp = revision)
   /\ Covers2For(grants, o.owner, o.action, o.scope)
-  /\ ops' = [ops EXCEPT ![o] = [ops[o] EXCEPT !.effects = 1]]
+  /\ ops' = [ops EXCEPT ![o] = [ops[o] EXCEPT !.effects = ops[o].effects + (IF EffectTwice THEN 2 ELSE 1)]]
   /\ UNCHANGED <<grants, revision, offered, revokedIds, staleOps>>
+
+\* D-462 counterfactual: a live grant that no user-issued ancestor explains.
+RuntimeIssues(g, subject, action, scope) ==
+  /\ AuthorityFromRuntime
+  /\ ~UsedFor(grants, g)
+  /\ grants' = [grants EXCEPT ![g] = [subject |-> subject, action |-> action, scope |-> scope,
+                                     parent |-> "none", issuer |-> "leader", delegable |-> FALSE,
+                                     task |-> "none", live |-> TRUE]]
+  /\ revision' = revision + 1
+  /\ offered' = [i \in Instances |-> EntitledIn(grants', i)]
+  /\ UNCHANGED <<ops, revokedIds, staleOps>>
 
 \* A dispatch attempt at an outdated revision: refused, recorded, no effect.
 RefusedDispatch(o) ==
@@ -278,18 +306,28 @@ CapabilityChild(g) ==
   /\ LiveFor(grants, "g1") /\ grants["g1"].delegable
   /\ grants' = [grants EXCEPT ![g] =
         [subject |-> "child", action |-> "shell", scope |-> "workspace",
-         parent |-> "g1", issuer |-> "leader", delegable |-> FALSE,
-         task |-> "t1", live |-> TRUE]]
+         parent |-> (IF TaskChildWithoutParent THEN "none" ELSE "g1"), issuer |-> "leader",
+         delegable |-> TaskChildDelegable, task |-> "t1", live |-> TRUE]]
   /\ revision' = revision + 1
   /\ offered' = [i \in Instances |-> EntitledIn(grants', i)]
   /\ UNCHANGED <<ops, revokedIds, staleOps>>
 
+\* D-462 counterfactual: an effect lands with no authority behind it.
+UnauthorizedEffect(o) ==
+  /\ EffectWithoutAuthority /\ ops[o].effects = 0
+  /\ ops' = [ops EXCEPT ![o] = [ops[o] EXCEPT !.effects = 1]]
+  /\ UNCHANGED <<grants, revision, offered, revokedIds, staleOps>>
+
 Next ==
+  \/ \E o \in Ops : UnauthorizedEffect(o)
   \/ \E g \in GrantIds, subject \in Instances, action \in Actions, scope \in Scopes :
        UserIssues(g, subject, action, scope)
   \/ \E g, parent \in GrantIds, action \in Actions, scope \in Scopes : InstanceMints(g, parent, action, scope)
   \/ \E g \in GrantIds, child \in Instances : Spawn(g, child)
   \/ \E g \in GrantIds : Revoke(g)
+  \/ \E g \in GrantIds, subject \in Instances, action \in Actions, scope \in Scopes :
+       RuntimeIssues(g, subject, action, scope)
+  \/ (MintTaskChildren /\ \E g \in GrantIds : CapabilityChild(g))
   \/ \E o \in Ops : Prepare(o)
   \/ \E o \in Ops : Dispatch(o)
   \/ \E o \in Ops : RefusedDispatch(o)

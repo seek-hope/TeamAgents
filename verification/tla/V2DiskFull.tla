@@ -52,11 +52,11 @@
 (***************************************************************************)
 EXTENDS Naturals
 
-CONSTANTS KeepDriving,   \* counterfactual: the driver keeps running steps while latched
-          FakeSuccess,   \* counterfactual: a step whose write failed is reported as succeeded
+CONSTANTS KeepDriving,  \* counterfactual: the driver keeps running steps while latched
+          FakeSuccess,  \* counterfactual: a step whose write failed is reported as succeeded
           ParkSilently,  \* counterfactual: the park lands without naming the in-flight loss
-          ClearAnyway    \* counterfactual: the latch clears although the store is still full
-
+          ClearAnyway,  \* counterfactual: the latch clears although the store is still full
+          NeverPark
 Stores == {"ok", "full"}
 Lifecycles == {"active", "parked"}
 Outcomes == {"none", "persisted", "lost"}
@@ -150,6 +150,7 @@ DriveWhileLatched ==
 \* write can land, and it names the in-flight loss when there was one.
 ParkWhileLatched ==
   /\ latched
+  /\ ~NeverPark
   /\ lifecycle = "active"
   /\ inFlight = "none"
   /\ store = "ok"

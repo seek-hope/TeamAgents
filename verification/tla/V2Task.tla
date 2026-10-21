@@ -51,15 +51,20 @@
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets
 
-CONSTANTS Tasks,        \* task slots, e.g. {"t1","t2"}
-          Instances,    \* instances, e.g. {"L","W"}
-          Goals,        \* goals, e.g. {"g1"}
-          MaxOps,       \* open-operation bound per goal (keeps the state finite)
-          DelegateToSettledGoal,    \* counterfactual (D-218): delegation ignores the goal's status (finding V-G1)
-          BillSettledGoal,          \* counterfactual: a request bills a goal that has already settled
-          AllowUnorderedDependency, \* counterfactual: a prerequisite may be the task itself or a later one
-          LeaveTasksOnTerminate     \* counterfactual: terminating an instance leaves its open tasks open
-
+CONSTANTS Tasks,  \* task slots, e.g. {"t1","t2"}
+          Instances,  \* instances, e.g. {"L","W"}
+          Goals,  \* goals, e.g. {"g1"}
+          MaxOps,  \* open-operation bound per goal (keeps the state finite)
+          DelegateToSettledGoal,  \* counterfactual (D-218): delegation ignores the goal's status (finding V-G1)
+          BillSettledGoal,  \* counterfactual: a request bills a goal that has already settled
+          AllowUnorderedDependency,  \* counterfactual: a prerequisite may be the task itself or a later one
+          LeaveTasksOnTerminate,  \* counterfactual: terminating an instance leaves its open tasks open
+          SelfDependency,
+          StaleActiveGoal,
+          StrangerWrites,
+          ReturnPathClosed,
+          RewriteSettled,
+          SystemSettles
 ASSUME Tasks # {} /\ Instances # {} /\ Goals # {} /\ MaxOps > 0
 
 nobody == "none"        \* sentinel owner/actor for not-yet-created tasks
@@ -274,16 +279,52 @@ NextBase ==
 \* ------------------------------------------------------------- monitors --
 \* The three transition facts worth checking are recorded instead of being
 \* written as temporal action formulas (which TLC rejects outside <>[]/[]<>).
+\* D-462 counterfactuals: each is the mistake itself, one reachable step, disabled unless its constant is set.
+SelfDependencyStep ==
+  /\ SelfDependency /\ \E t \in Tasks : deps' = [deps EXCEPT ![t] = @ \cup {t}]
+  /\ UNCHANGED <<taskStatus, assignee, requester, taskGoal, created, lastActor, returnPath, goalStatus,
+                 openOps, live, activeGoal, requestGoal, clock, rewritten, lateTask, lateRequest>>
+
+StaleActiveGoalStep ==
+  /\ StaleActiveGoal
+  /\ \E i \in Instances : activeGoal[i] \in Goals /\ goalStatus' = [goalStatus EXCEPT ![activeGoal[i]] = "SUCCEEDED"]
+  /\ UNCHANGED <<taskStatus, assignee, requester, taskGoal, deps, created, lastActor, returnPath,
+                 openOps, live, activeGoal, requestGoal, clock, rewritten, lateTask, lateRequest>>
+
+StrangerWritesStep ==
+  /\ StrangerWrites /\ \E t \in Tasks, s \in Instances :
+        s # assignee[t] /\ s # requester[t] /\ lastActor' = [lastActor EXCEPT ![t] = s]
+  /\ UNCHANGED <<taskStatus, assignee, requester, taskGoal, deps, created, returnPath, goalStatus,
+                 openOps, live, activeGoal, requestGoal, clock, rewritten, lateTask, lateRequest>>
+
+ReturnPathClosedStep ==
+  /\ ReturnPathClosed
+  /\ \E t \in Tasks : returnPath[t] = "present" /\ taskStatus' = [taskStatus EXCEPT ![t] = "SUCCEEDED"]
+  /\ UNCHANGED <<assignee, requester, taskGoal, deps, created, lastActor, returnPath, goalStatus,
+                 openOps, live, activeGoal, requestGoal, clock, rewritten, lateTask, lateRequest>>
+
+RewriteSettledStep ==
+  /\ RewriteSettled /\ \E t \in Tasks : rewritten' = {t}
+  /\ UNCHANGED <<taskStatus, assignee, requester, taskGoal, deps, created, lastActor, returnPath,
+                 goalStatus, openOps, live, activeGoal, requestGoal, clock, lateTask, lateRequest>>
+
+SystemSettlesStep ==
+  /\ SystemSettles
+  /\ \E t \in Tasks : lastActor[t] # "system"
+       /\ lastActor' = [lastActor EXCEPT ![t] = "system"]
+       /\ taskStatus' = [taskStatus EXCEPT ![t] = "SUCCEEDED"]
+  /\ UNCHANGED <<assignee, requester, taskGoal, deps, created, returnPath, goalStatus, openOps, live,
+                 activeGoal, requestGoal, clock, rewritten, lateTask, lateRequest>>
+
 Next ==
-  /\ NextBase
-  /\ rewritten' = rewritten \cup { t \in Tasks : taskStatus[t] \in Settled /\ taskStatus'[t] # taskStatus[t] }
-  /\ lateTask' = ( lateTask \/
-        (\E t \in Tasks : taskStatus[t] = "none" /\ taskStatus'[t] = "PENDING"
-                          /\ taskGoal'[t] \in Goals
-                          /\ goalStatus[taskGoal'[t]] # "ACTIVE") )
-  /\ lateRequest' = ( lateRequest \/
-        (\E i \in Instances : requestGoal[i] = "none" /\ requestGoal'[i] \in Goals
-                              /\ goalStatus[requestGoal'[i]] # "ACTIVE") )
+  \/ (NextBase
+      /\ rewritten' = rewritten \cup { t \in Tasks : taskStatus[t] \in Settled /\ taskStatus'[t] # taskStatus[t] }
+      /\ lateTask' = ( lateTask \/ (\E t \in Tasks : taskStatus[t] = "none" /\ taskStatus'[t] = "PENDING"
+                          /\ taskGoal'[t] \in Goals /\ goalStatus[taskGoal'[t]] # "ACTIVE") )
+      /\ lateRequest' = ( lateRequest \/ (\E i \in Instances : requestGoal[i] = "none" /\ requestGoal'[i] \in Goals
+                          /\ goalStatus[requestGoal'[i]] # "ACTIVE") ))
+  \/ (\/ SelfDependencyStep \/ StaleActiveGoalStep \/ StrangerWritesStep
+      \/ ReturnPathClosedStep \/ RewriteSettledStep \/ SystemSettlesStep)
 
 Init ==
   /\ taskStatus = [ t \in Tasks |-> "none" ]

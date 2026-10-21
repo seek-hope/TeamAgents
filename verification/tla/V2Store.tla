@@ -29,7 +29,11 @@ EXTENDS Naturals, FiniteSets
 
 CONSTANTS OurTables,      \* the tables SCHEMA creates, e.g. {"meta","goals","events"}
           ForeignTables,  \* tables of some other program, e.g. {"users"}
-          IgnoreForeign   \* counterfactual: skip the foreign-table guard (pre-D-87)
+          IgnoreForeign,  \* counterfactual: skip the foreign-table guard (pre-D-87)
+          RefusalWrites,  \* D-462 counterfactual: a refused open writes to the file anyway
+          AcceptUnstamped,   \* D-462: an accepted open leaves the file unstamped
+          InterruptWithForeign, \* D-462: the schema batch lands on foreign tables
+          StrandInterrupted   \* D-462: an interrupted initialization is never completed
 
 ASSUME OurTables # {} /\ ForeignTables # {} /\ OurTables \cap ForeignTables = {}
 
@@ -74,14 +78,14 @@ OpenRead ==
   /\ lastOpen' = IF stamp = "v2" THEN "accepted"
                    ELSE IF stamp = "other" THEN "refused-format"
                    ELSE "refused-unstamped"
-  /\ lastWrote' = FALSE
+  /\ lastWrote' = RefusalWrites
   /\ adoptedForeign' = adoptedForeign
   /\ UNCHANGED <<tables, stamp>>
 
 \* open(create = true) on a stamped v2 file: verify the schema, no identity
 \* decision (CREATE TABLE IF NOT EXISTS writes nothing new).
 AcceptStamped ==
-  /\ stamp = "v2"
+  /\ (AcceptUnstamped \/ stamp = "v2")
   /\ lastOpen' = "accepted"
   /\ lastWrote' = TRUE
   /\ adoptedForeign' = adoptedForeign
@@ -91,7 +95,7 @@ AcceptStamped ==
 RefuseForeignFormat ==
   /\ stamp = "other"
   /\ lastOpen' = "refused-format"
-  /\ lastWrote' = FALSE
+  /\ lastWrote' = RefusalWrites
   /\ adoptedForeign' = adoptedForeign
   /\ UNCHANGED <<tables, stamp>>
 
@@ -101,13 +105,14 @@ RefuseForeignTables ==
   /\ tables \cap ForeignTables # {}
   /\ ~IgnoreForeign
   /\ lastOpen' = "refused-foreign"
-  /\ lastWrote' = FALSE
+  /\ lastWrote' = RefusalWrites
   /\ adoptedForeign' = adoptedForeign
   /\ UNCHANGED <<tables, stamp>>
 
 \* Unstamped and ours to take: write the schema and stamp it in one step.
 InitializeOurs ==
   /\ stamp = "none"
+  /\ ~(StrandInterrupted /\ tables # {})
   /\ (IgnoreForeign \/ tables \cap ForeignTables = {})
   /\ tables' = tables \cup OurTables
   /\ stamp' = "v2"
@@ -120,7 +125,7 @@ InitializeOurs ==
 \* our tables without a stamp — the state the next open has to complete.
 WriteSchemaThenCrash ==
   /\ stamp = "none"
-  /\ (IgnoreForeign \/ tables \cap ForeignTables = {})
+  /\ (InterruptWithForeign \/ IgnoreForeign \/ tables \cap ForeignTables = {})
   /\ tables' = tables \cup OurTables
   /\ lastOpen' = "interrupted"
   /\ lastWrote' = TRUE
