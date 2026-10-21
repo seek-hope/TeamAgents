@@ -79,6 +79,8 @@ monVars == <<vars, coordinators, wronglyRefused>>
 SweepAcquires ==
   /\ sweep = "none"
   /\ (references = 0 \/ NotExclusive)
+  /\ references < 3          \* D-462: keep within TypeOK, so this control can only break its own claim
+  /\ coordinators < 3
   /\ sweep' = "running"
   /\ references' = references + 1
   /\ coordinators' = coordinators + 1
@@ -114,6 +116,8 @@ AcquireHeldByDaemon ==
 AcquireAnyway ==
   /\ NotExclusive
   /\ daemon = "live"
+  /\ references < 3          \* D-462: TypeOK is the abstraction's bound, not a claim to refute here
+  /\ coordinators < 3
   /\ daemon' = "live"
   /\ references' = references + 1
   /\ outcome' = "acquired"
@@ -125,6 +129,7 @@ AcquireAnyway ==
 ForkChild ==
   /\ daemon = "live"
   /\ child = "none"
+  /\ references < 3          \* D-462: the fork window is one extra reference, inside TypeOK's range
   /\ child' = "forked"
   /\ references' = references + 1
   /\ UNCHANGED <<daemon, outcome, coordinators, wronglyRefused, sweep>>

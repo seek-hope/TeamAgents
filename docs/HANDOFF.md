@@ -23,6 +23,12 @@ this document does not assert that a remote branch or installed binary matches t
 | b4e9f1f9, 90ca30d8 | D-459 stable prompt-cache prefix/telemetry and the formal report's source pin | Cache usage is not a dollar estimate; no cache warming was added |
 | f78a6709 | Rust toolchain pin 1.99.1 | Read rust-toolchain.toml and the lockfiles before building |
 
+D-462 added the verification gate and ledger: every counterexample configuration names the claim it must
+refute (`expects:` marker, compared with TLC's output), every checked claim that no control refutes is a row in
+`verification/COVERAGE.md`, and the count there (**105**) is the remaining work for full coverage. A control that
+was silently refuting `TypeOK` was found and fixed. `make verify-model-all` verifies 45 configurations and
+`make verify-model-counterexamples` refutes 141; Kani is not installed on this machine.
+
 D-461 implements the user's selected DD-01 option A: read-only work diagnostics and explicit recovery.
 Option B (automatic model reminders) was explicitly rejected. The shared projection lives in
 engine/src/v2/diagnostics.rs; checkpoint, instances, tasks and local TUI /help expose it. Tests cover query-only

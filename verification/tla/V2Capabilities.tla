@@ -8,7 +8,7 @@
 (***************************************************************************)
 EXTENDS Naturals
 
-CONSTANTS Tasks, AllowUndelegableMint
+CONSTANTS Tasks, AllowUndelegableMint, AllowDelegableChild, SettleKeepsChild, RevokeKeepsChild
 
 VARIABLES
   parent_grant,
@@ -50,7 +50,7 @@ MintChild ==
   /\ child_exists' = TRUE
   /\ child_live' = TRUE
   /\ child_task' = CHOOSE t \in Tasks : TRUE
-  /\ child_delegable' = FALSE
+  /\ child_delegable' = AllowDelegableChild    \* D-462 counterfactual: a child the parent could re-delegate
   /\ child_parent' = parent_grant
   /\ UNCHANGED <<parent_grant, parent_live, parent_delegable, settled>>
 
@@ -58,7 +58,7 @@ MintChild ==
 Settle ==
   /\ child_exists /\ ~settled
   /\ settled' = TRUE
-  /\ child_live' = FALSE
+  /\ child_live' = SettleKeepsChild             \* D-462 counterfactual: settlement leaves the grant alive
   /\ UNCHANGED <<parent_grant, parent_live, parent_delegable, child_exists,
                  child_task, child_delegable, child_parent>>
 
@@ -66,7 +66,7 @@ Settle ==
 RevokeParent ==
   /\ parent_live
   /\ parent_live' = FALSE
-  /\ child_live' = FALSE
+  /\ child_live' = RevokeKeepsChild             \* D-462 counterfactual: revocation does not cascade
   /\ UNCHANGED <<parent_grant, parent_delegable, child_exists, child_task,
                  child_delegable, child_parent, settled>>
 

@@ -212,7 +212,9 @@ verify-model-counterexamples: verify-tools
 		MC_displayworker_stale.cfg:V2DisplayWorker.tla MC_displayworker_deadline.cfg:V2DisplayWorker.tla MC_displayworker_leak.cfg:V2DisplayWorker.tla MC_displayworker_apply.cfg:V2DisplayWorker.tla MC_displayworker_overflow.cfg:V2DisplayWorker.tla MC_displayworker_drop.cfg:V2DisplayWorker.tla \
 		MC_presentation_dispatch.cfg:V2Presentation.tla MC_presentation_erase.cfg:V2Presentation.tla MC_presentation_eager.cfg:V2Presentation.tla MC_presentation_overflow.cfg:V2Presentation.tla MC_presentation_stale.cfg:V2Presentation.tla \
 		MC_sessionui_confirm.cfg:V2SessionUi.tla MC_sessionui_switch.cfg:V2SessionUi.tla MC_sessionui_earlyexit.cfg:V2SessionUi.tla MC_sessionui_keepopen.cfg:V2SessionUi.tla \
-		MC_capabilities_bad.cfg:V2Capabilities.tla MC_authority_badview.cfg:V2Authority.tla MC_authority_trustsurface.cfg:V2Authority.tla \
+		MC_capabilities_bad.cfg:V2Capabilities.tla MC_capabilities_delegable_child.cfg:V2Capabilities.tla \
+		MC_capabilities_settle_keeps_child.cfg:V2Capabilities.tla MC_capabilities_revoke_keeps_child.cfg:V2Capabilities.tla \
+		MC_authority_badview.cfg:V2Authority.tla MC_authority_trustsurface.cfg:V2Authority.tla \
 		MC_authority_stalesurface.cfg:V2Authority.tla MC_control_cancel.cfg:V2Control.tla \
 		MC_control_midturninput.cfg:V2Control.tla \
 		MC_control_two_disjunction.cfg:V2Control.tla MC_control_deadline.cfg:V2Control.tla \
@@ -290,15 +292,24 @@ verify-model-counterexamples: verify-tools
 		MC_retry_parks_early.cfg:V2Retry.tla; do \
 		cfg=$${pair%%:*}; spec=$${pair##*:}; \
 		echo "== $$cfg (must be refuted) =="; \
+		expect=$$(sed -n 's/^\\\* expects: \([A-Za-z_][A-Za-z0-9_]*\).*/\1/p' $$cfg | head -1); \
+		if [ -z "$$expect" ]; then \
+			echo "$$cfg carries no 'expects:' marker: a control has to name the property it must refute, or a refutation of some other property would pass for it (D-462)" >&2; exit 1; fi; \
 		meta="$(TLA_METADIR)/$$cfg-$$$$"; rm -rf "$$meta"; \
 		out=$$(java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
 			tlc2.TLC -config $$cfg -fp 64 -workers 4 -metadir "$$meta" $$spec 2>&1); status=$$?; rm -rf "$$meta"; \
 		if printf '%s' "$$out" | grep -q "Warning:"; then \
 			echo "$$cfg carried a TLC warning: an inconsistent model is a defect, not a note (see above)" >&2; exit 1; fi; \
 		if printf '%s' "$$out" | grep -qE "is violated|properties were violated"; then \
+			if printf '%s' "$$out" | grep -qE "(Invariant|Action property) $$expect is violated"; then :; \
+			elif printf '%s' "$$out" | grep -q "Temporal properties were violated"; then \
+				:; \
+			else \
+				echo "$$cfg was refuted, but not by $$expect: the marker and the violated property disagree (D-462)" >&2; \
+				echo "$$out" | grep -E "is violated|properties were violated" >&2; exit 1; fi; \
 			echo "$$out" | grep -E "is violated|properties were violated"; \
 		elif printf '%s' "$$out" | grep -q "states generated"; then \
-			echo "$$cfg verified instead of refuting: the property it should break may be vacuous" >&2; \
+			echo "$$cfg verified instead of refuting $$expect: the property it should break may be vacuous" >&2; \
 			echo "$$out" | tail -5 >&2; exit 1; \
 		else \
 			echo "$$cfg did not run: TLC exited $$status without a verdict (a start failure, not a vacuous property)" >&2; \

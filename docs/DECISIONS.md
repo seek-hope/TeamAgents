@@ -26,6 +26,42 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Retention | history_days applies at boot under V2Retention guards; archived_days is applied by sessions prune under V2Prune guards; live state and evidence stay protected | D-245, D-435, D-436 |
 | Prompt cache | cache hit/miss/write are provider-reported and visible; the L1 frontier is fixed between compactions; Anthropic gets explicit breakpoints and OpenAI a stable key; DeepSeek stays automatic | D-459 |
 
+## D-462 Formal-verification coverage: every claim refutes, or is on the record (2026-10-21)
+
+**Why.** The user asked whether formal-verification coverage is comprehensive. A read-only audit found the
+material broad (37 modules, 45 exhaustive configurations, 138 controls) but with three defects: a control only
+had to produce *some* violation, 125 checked claims had never been the target of a refutation, and the ledger
+understated coverage it had (A31/A33). The user then asked for a goal that closes it.
+
+**Gate.** (1) Every counterexample configuration carries exactly one `\* expects: <Claim>` marker;
+`make verify-model-counterexamples` fails unless TLC's reported violation (or, for a temporal property, the
+configuration's single `PROPERTIES` entry) is that claim. The first run found a live defect:
+`MC_coordinator_sweep_beside_a_session.cfg` was refuted by `TypeOK`, because its counterfactual also ran past
+the abstraction's bounds — the three bounded transitions (`SweepAcquires`, `AcquireAnyway`, `ForkChild`) now hold
+their references/coordinators inside `TypeOK`, and the control refutes `SweepWaitsForTheSession` deterministically
+at four workers. (2) `verification/COVERAGE.md` records every claim a positive configuration checks that no
+control refutes, with a status (`needs-control`, `entailed-by: <Claim>`, or `structural: <reason>`); the audit
+requires a row for each, rejects stale rows, and recomputes the stated count, so the number can only move by
+adding a control or justifying the row. `--write-coverage` regenerates the rows from the audit's own mapping.
+
+**Material.** `V2Capabilities.tla` gained three counterfactual constants (`AllowDelegableChild`,
+`SettleKeepsChild`, `RevokeKeepsChild`) and the configurations that refute `ChildNonDelegable`,
+`TaskSettleRevokes` and `ParentRevokeCascades` — the three D-455 claims that had no witness. The ledger to date
+is **105** claims, ordered in `verification/COVERAGE.md`; the goal is complete when that number is zero, and the
+remaining work is adding a control (or a justified entailment) per row.
+
+**Ledger corrections.** `verification/REPORT.md` §4 now records the formal coverage A31 (`V2DiskFull`) and A33
+(`V2Coordinator`) already had, states A12's partial coverage, the subtotal moves 26 → 28, and the unproven list
+is renumbered with three entries the audit produced: D-461's projection needs no transition model but its
+disagreement risk with the driver rule is untested beyond two witnesses; the D-453 updater has no model at all;
+hooks, export and the MCP transport remain sample-tested.
+
+**Evidence.** `make verify-model-all` verifies **45** configurations; `make verify-model-counterexamples` refutes
+**141** controls, each by the claim its marker names; `python3 review/verification_catalogue.py` reports 187
+configurations, 37 modules and the 105-claim ledger. This is model-level evidence, not a refinement proof and not
+a real-service result; Kani was not re-run here (toolchain absent) and its subject is unchanged since
+`b4e9f1f9`.
+
 ## D-461 Read-only work diagnostics and explicit recovery (2026-10-21)
 
 **Confirmed scope.** After discussing DD-01, the user selected option A (diagnosis plus explicit recovery)

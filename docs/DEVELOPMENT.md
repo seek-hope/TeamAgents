@@ -89,7 +89,9 @@ audits — each one a claim the tree makes about itself, each with the decision 
   heading's commit against the newest change to the material a re-run covers (D-202: the heading named a commit
   that predated `MC_retention.cfg`), that every marked claim is listed by a configuration that runs its module
   (D-212/D-215) and named in `verification/README.md` (D-222), and that every module is the spec of at least one
-  counterexample configuration (D-220).
+  counterexample configuration (D-220), names the one claim it is shown to refute in an `expects:` marker
+  (the harness compares that name with what TLC reports, D-462), and every checked claim that no control refutes
+  is recorded with a status in `verification/COVERAGE.md` (the audit recomputes that count).
 * **the shell, before any of that**: it rejects non-English characters (the two documented exceptions), tracked
   compile caches, Python caches and SQLite temporaries, and checks the syntax of `install.sh`.
 

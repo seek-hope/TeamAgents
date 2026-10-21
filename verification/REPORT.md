@@ -5,14 +5,33 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
+## 0. Gate status (D-462, 2026-10-21)
+
+* **Every claim now names a refutation, or is on the record as not having one.** The audit had asked only that
+  each module have *some* counterexample configuration (D-220); it never asked which claim that control refutes.
+  Measured today, 125 of the claims a positive configuration checks had never been the target of a refutation,
+  and one control — `MC_coordinator_sweep_beside_a_session.cfg` — was refuted by `TypeOK` (its counterfactual
+  also ran past the abstraction's bounds), not by the `SweepWaitsForTheSession` claim it was written for. Both
+  halves are fixed: each control carries a `\* expects: <Claim>` marker that `make verify-model-counterexamples`
+  compares with what TLC reports, and every checked claim that no control refutes is a row in
+  [COVERAGE.md](COVERAGE.md) with a status (105 rows, `needs-control` today; the audit recomputes that number).
+* **The D-455 claims are no longer vacuous witnesses.** `MC_capabilities_delegable_child.cfg`,
+  `MC_capabilities_settle_keeps_child.cfg` and `MC_capabilities_revoke_keeps_child.cfg` refute
+  `ChildNonDelegable`, `TaskSettleRevokes` and `ParentRevokeCascades` through three counterfactual constants the
+  module now carries.
+* **Re-run today at `b9fd5b16`**: `make verify-model-all` verifies all **45** configurations and
+  the full regression verifies all **45** configurations and refutes all **141** negative controls (138 before
+  D-462 plus the three above), each by the claim its marker names. Kani was not re-run (its toolchain is absent on this machine); its subject files
+  are unchanged since `b4e9f1f9`, whose run stands.
+
 ## 0. Gate status (re-run 2026-10-19 at `b4e9f1f9`)
 
 * **D-459 prompt-cache stability touched the Kani subject and the provider edge.** `core/src/kernel/types.rs` gained the cache fields and `core/src/kernel/instance.rs` froze the L1 frontier; the provider changes are sample-tested. The full regression verifies all **45** configurations and refutes all **138** negative controls; Kani reports `Complete - 7 successfully verified harnesses, 0 failures, 7 total`. The re-run is pinned at `b4e9f1f9`, after the cache material; no TLA+ semantics changed.
 
-* **D-455 models capability delegation with a small, focused transition model.** `V2Capabilities.tla` checks `NoChildWithoutParent`, `ChildNonDelegable`, `TaskSettleRevokes` and `ParentRevokeCascades`; `MC_capabilities_bad.cfg` refutes `NoChildWithoutParent`, so the claims are not vacuous. The authority models carry the delegable/task fields and their invariants. The full regression verifies all **45** configurations and refutes all **138** negative controls.
+* **D-455 models capability delegation with a small, focused transition model.** `V2Capabilities.tla` checks `NoChildWithoutParent`, `ChildNonDelegable`, `TaskSettleRevokes` and `ParentRevokeCascades`; `MC_capabilities_bad.cfg` refutes `NoChildWithoutParent`, so the claims are not vacuous. The authority models carry the delegable/task fields and their invariants. That run verified **45** configurations and refuted **138** controls; D-462's three controls bring the count to 141.
 
 * **D-451 models immutable input admission/revisions and owned display processes.** The full regression
-  verifies all **45** configurations and refutes all **138** negative controls. Kani reports
+  verified **45** configurations and refuted the **138** controls. Kani reports
   `Complete - 7 successfully verified harnesses, 0 failures, 7 total`.
   `V2InputQueue.tla` explores 196 generated / 64 distinct states; `V2DisplayWorker.tla` explores
   9,079 generated / 1,601 distinct states. Twelve new controls refute their intended safety properties.
@@ -761,7 +780,7 @@ The "formal layer" column lists only what the model, the code-level corresponden
 | A09 | unknown external outcome | `V2Control`: an unknown outcome is never replayed | the code-level task-parking path |
 | A10 | duplicate dispatch / GO | `V2Control`: effect at most once | the job layer |
 | A11 | daemon and runner crash separately | the `V2Control` recovery path | process/job layer |
-| A12 | a service outlives an exit | — | real process evidence (D-41) |
+| A12 | a service outlives an exit | `V2Jobs` models the runner's own exit and the guards on signalling: `SettledRunnerLeaves`, `NothingInFlightWasRetired`, `OnlyTheJobsOwnGroupIsSignalled` (D-206/D-251) — the *service* surviving is not modelled | real process evidence (D-41) |
 | A13 | cancel / timeout / completion races | `V2Control`: `CancelledBeforeStartHasNoEffect`, `TerminalOpStable` | — |
 | A14 | bubblewrap unavailable | — | real isolation-environment evidence |
 | A15 | environment identity | — | process-identity evidence |
@@ -780,21 +799,20 @@ The "formal layer" column lists only what the model, the code-level corresponden
 | A28 | disconnect, slow client, reconnect | all 14 `V2Daemon` claims — including the gap-free handover D-249 made refutable (`HandoversAreTheFullRange`, `NothingIsServedTwice`) — plus code-level receipt stability, replay inertia and append-only logs | the real socket layer (covered by the daemon tests and `review/dogfood/stream_json.py`, which measures the delivered lines against it) |
 | A29 | session isolation and a shared project | the single-session constraint in `V2Control` | shared-directory authorization |
 | A30 | artifact and DB write boundaries | all 8 `V2Artifact` properties plus code-level "LIVE has bytes" | real power loss |
-| A31 | write failure / disk full | — | `StorageFull` classification and real SQLite FULL injection |
+| A31 | write failure / disk full | `V2DiskFull` (6 claims): the latch, the stop on failed steps, the honest report of the lost in-flight call, no faked success and the clear (D-208) | real SQLite FULL injection |
 | A32 | very large history measurement | pure-function seamless paging reconstruction (the coordinate semantics of readback) | the performance numbers themselves |
-| A33 | two daemons / stale lock | — | real lock and second-daemon evidence |
+| A33 | two daemons / stale lock | `V2Coordinator` (5 claims): one coordinator per root, no held lock without a holder, the fork window is not mistaken for a holder, and the D-253 maintenance pass waits for the session (D-210) | real lock and second-daemon evidence |
 | A34 | incompatible schema | `V2Store` (a foreign database is never stamped as ours, a refusal writes nothing, a half-initialized database is completed rather than stranded) plus the refuted control `MC_store_adopt.cfg` | byte-level evidence in `review/dogfood/boundary.py` and migration sample tests |
 | A35 | goal deadline | the deadline gates in `V2Control` (`AdmissionGate` plus a hard dispatch refusal) | real clock boundaries |
 | A36 | install / init / doctor / cleanup | — | CLI and cleanup evidence |
 
-Subtotal: **26 items** have a non-empty "formal coverage" entry (A01–A04, A06–A11, A13, A16–A20, A22–A25,
-A28–A30, A32, A34, A35) and the remaining **10** (A05, A12, A14, A15, A21, A26, A27, A31, A33, A36) have
-**only** sample tests and real-environment evidence today. **No item claims to be finished by formal means
+Subtotal: **28 items** have a non-empty "formal coverage" entry (A01–A04, A06–A11, A13, A16–A20, A22–A25,
+A28–A33, A34, A35) and the remaining **8** (A05, A14, A15, A21, A26, A27, A36) have **only** sample tests and
+real-environment evidence today. A12 is modelled in part (its runner/retirement half) and states that limit. **No item claims to be finished by formal means
 alone**, and conversely formal coverage does not excuse an item from sample or real-environment acceptance.
 
 ## 5. Unproven list (honest boundaries)
 
-8. **Automatic review (`review_decision`)**: D-458 lets a read-only reviewer turn one pending operation approval into a decision when `[permissions] approvals_reviewer = "auto_review"`. The control plane's finality, single-use and revision checks are covered by `core` tests, and the reviewer's fail-closed paths by `engine` tests, but the reviewer's own judgement is not modelled by `V2Approval.tla` and its output is not a proof of safety.
 
 1. **The model is not the code.** The model is an abstract state machine; the code-level correspondence is
    bounded exploration, not a refinement proof. Crossing that line would require mapping every invariant onto
@@ -854,6 +872,21 @@ alone**, and conversely formal coverage does not excuse an item from sample or r
    hand-written proof scripts, and this round prioritised one more protocol surface, the code-level
    correspondence and applying Kani where it converges on the published function; the upgrade path is in the
    README's later phases.
+
+8. **Work diagnostics (`D-461`) are a read-only projection, so they carry no new transition to model.** The
+   risk they do carry is a disagreement with the runtime's own readiness rule — a diagnosis that says
+   `idle_unsettled` while the driver would still open a turn, which would invite the user to cancel progress.
+   Today that agreement rests on two witnesses (`engine/src/v2/diagnostics/tests.rs` mirrors the driver's
+   ordering, and the daemon test walks a real idle worker), not on a model, and the projection is not in
+   `V2Control`'s state.
+9. **The governed updater (`D-453`, `engine/src/update.rs`) has no model.** Its journal, validation, switch and
+   health-check rollback are a state machine that replaces the running binaries, and a crash between the switch
+   and the rollback is exactly the shape a bounded enumeration would pin. Nothing in `verification/tla` covers
+   it; `engine/tests/update.rs` drives the real transactions.
+10. **Automatic review (`review_decision`)**: D-458 lets a read-only reviewer turn one pending operation approval into a decision when `[permissions] approvals_reviewer = "auto_review"`. The control plane's finality, single-use and revision checks are covered by `core` tests, and the reviewer's fail-closed paths by `engine` tests, but the reviewer's own judgement is not modelled by `V2Approval.tla` and its output is not a proof of safety.
+11. **Hooks, session export and the MCP transport are outside the models.** `V2Codemode` pins the `pre_tool`
+   veto for *nested* codemode calls; a direct tool call's veto, the `notify` stream, the export snapshot's
+   consistency and the MCP wire are covered by sample tests and probes only.
 
 ## 6. Re-running and what would invalidate this
 

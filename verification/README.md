@@ -54,6 +54,8 @@ The first run downloads the pinned `tla2tools.jar` (TLC v1.7.1, SHA-256 in the M
 `$TLA_TOOLS_DIR` (default `~/.local/share/teamagents-verify`) and verifies it; the toolchain never enters the
 repository and never enters `make check`. Java is required (this machine uses OpenJDK 27).
 
+<!-- maps: verification/COVERAGE.md reader=evidence -->
+
 ## Specs and configurations
 
 | File | Contents |
@@ -109,6 +111,14 @@ Two control-plane configurations exist: `MC.cfg` (one instance, the default in `
 liveness assumption testable, which the slower wide configuration cannot). The environment (tool results,
 approval timing, crash points, and whether a turn is in flight when input arrives) is **non-deterministic** in
 the model; that is exactly what is enumerated.
+
+## Claims without a refuting control
+
+Every claim a positive configuration checks is either the `expects:` target of a counterexample configuration
+(that control is then shown to refute it, D-462) or a row in [COVERAGE.md](COVERAGE.md). That file is the
+backlog: **105** claims are enumerated exhaustively and no configuration is shown to break them, so the list is
+the measure of how far "every claim can fail" has come. `review/verification_catalogue.py` recomputes the count
+and fails when a new claim lands in neither place, and `--write-coverage` regenerates the rows.
 
 ## Verified properties and their code anchors
 
@@ -224,8 +234,11 @@ questions that only exist once the user can. Each claim is paired with the contr
 `tla/V2Capabilities.tla` + `tla/MC_capabilities.cfg` model the new delegation transition: the user marks a
 parent delegable, the leader mints one attenuated task child, settlement revokes it and parent revocation
 cascades. Its claims are `NoChildWithoutParent`, `ChildNonDelegable`, `TaskSettleRevokes` and
-`ParentRevokeCascades`; `tla/MC_capabilities_bad.cfg` must refute `NoChildWithoutParent` by minting without a
-delegable parent. The authority models carry the same fields and add `DelegableGrantsAreUserIssued`,
+`ParentRevokeCascades`, and each has its own control since D-462:
+`tla/MC_capabilities_bad.cfg` mints without a delegable parent, `tla/MC_capabilities_delegable_child.cfg`
+mints a re-delegable child, `tla/MC_capabilities_settle_keeps_child.cfg` leaves the grant alive after
+settlement and `tla/MC_capabilities_revoke_keeps_child.cfg` revokes the parent without cascading. Every one is
+listed by its `expects:` marker, so a control that stops refuting its own claim fails the target (D-462). The authority models carry the same fields and add `DelegableGrantsAreUserIssued`,
 `TaskScopedGrantsAreNonDelegable` and `TaskScopedGrantsHaveParents` (the latter two in V2Grants; the first two
 also in V2Authority). Both `make verify-model-all` and `make verify-model-counterexamples` run the new
 configuration.

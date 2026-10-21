@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The formal-verification material, against the targets that drive it and the report that counts it (D-185).
 
-`verification/tla/` holds thirty-seven TLA+ modules and one-hundred-and-eighty-four configurations — and **these numbers are
+`verification/tla/` holds thirty-seven TLA+ modules and one-hundred-and-eighty-seven configurations — and **these numbers are
 checked against the directory by this script's own rule**, because the sentence that said "forty" was the
 kind of count nothing looked at (the module count in this line and the two the report states are all
 compared with what the tree holds); `verification/REPORT.md`
@@ -101,6 +101,9 @@ DEFN = re.compile(r"^([A-Z][A-Za-z0-9_]*)\s*==", re.M)
 SPEC = re.compile(r"\b(V2[A-Za-z0-9_]*\.tla)\b")
 PATH_ATTR = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
 RERUN = re.compile(r"Gate status \(re-run (\d{4}-\d{2}-\d{2}) at `([0-9a-f]{7,40})`\)")
+# (D-462) The one claim a counterexample configuration is shown to refute, and the ledger of the rest.
+EXPECTS = re.compile(r"^\\\* expects: ([A-Za-z_][A-Za-z0-9_]*)\s*$", re.M)
+LEDGER = re.compile(r"^\|\s*`(V2[A-Za-z0-9_]*)`\s*\|\s*`([A-Za-z_][A-Za-z0-9_]*)`\s*\|\s*([^|]*?)\s*\|\s*$", re.M)
 
 
 def git(*args: str) -> tuple[int, str]:
@@ -178,6 +181,8 @@ def main(argv) -> int:
     parser.add_argument("--makefile", default="Makefile")
     parser.add_argument("--report", default="verification/REPORT.md")
     parser.add_argument("--mapping", default="verification/README.md")
+    parser.add_argument("--write-coverage", action="store_true",
+                        help="regenerate verification/COVERAGE.md from the tree (D-462)")
     parser.add_argument("--tla", default=TLA,
                         help="the TLA+ directory to read (a copy is the control)")
     args = parser.parse_args(argv)
@@ -372,6 +377,95 @@ def main(argv) -> int:
         if unnamed:
             findings.append(f"{tla}/{spec} marks {', '.join(unnamed)}, which {args.mapping} never names: the "
                             "mapping is what the report sends a reader to for what a module proves (D-222)")
+    # (D-462) Two rules close "a claim nothing refutes" one level below D-220, which asked only that *some*
+    # control exists per module. Measured 2026-10-21: 125 of the claims a positive configuration checks were
+    # never the target of a refutation, and one control (`MC_coordinator_sweep_beside_a_session.cfg`) was
+    # refuted by `TypeOK` instead of the claim it was written for, because its counterfactual also ran past the
+    # abstraction's bounds. So: a control names the claim it must refute and the harness checks the name, and
+    # every other checked claim is recorded in verification/COVERAGE.md with a status.
+    positive = set(CFG.findall(drivers.get("verify-model-all", "")))
+    covered: dict[str, set] = {}
+    for cfg, spec in sorted(pairs.items()):
+        markers = EXPECTS.findall((REPO / tla / cfg).read_text(encoding="utf-8"))
+        if len(markers) != 1:
+            findings.append(f"{tla}/{cfg} carries {len(markers)} `expects:` marker(s): a control has to name the "
+                            "one claim it is shown to refute, or a refutation of something else passes for it "
+                            "(D-462)")
+            continue
+        if markers[0] not in checked.get(spec, set()):
+            findings.append(f"{tla}/{cfg} expects {markers[0]} to be refuted, and no positive configuration lists "
+                            f"that claim for {spec}: the marker names a claim nothing checks (D-462)")
+            continue
+        covered.setdefault(spec, set()).add(markers[0])
+    ledger = (REPO / "verification" / "COVERAGE.md")
+    if args.write_coverage:
+        # One implementation of the answer: the audit's own module mapping decides which claim belongs where,
+        # so the ledger cannot drift from the check that reads it (D-462). Existing justified statuses survive a
+        # rewrite; a row whose claim is now refuted by a control is dropped, which is the only way the count moves.
+        old = {}
+        if ledger.is_file():
+            old = {(module, claim): status for module, claim, status in LEDGER.findall(ledger.read_text(encoding="utf-8"))}
+        rows_out = []
+        for spec in on_disk_specs:
+            module = spec.removesuffix(".tla")
+            for claim in sorted(checked.get(module, set()) - covered.get(module, set())):
+                if claim.startswith("TypeOK"):
+                    continue
+                rows_out.append((module, claim, old.get((module, claim), "needs-control")))
+        needs_now = sum(1 for _, _, status in rows_out if status == "needs-control")
+        head = ["# Claims without a refuting control", "",
+                "`review/verification_catalogue.py` requires every claim a positive configuration checks to be",
+                "either the `expects:` target of a counterexample configuration (that control is then shown to",
+                "refute it, D-462) or a row here with a status. **%d** claims are in this state today: they are" % needs_now,
+                "enumerated exhaustively by TLC, but no configuration is shown to break them, so a claim that",
+                "became vacuous would still verify. The number is recomputed and compared by the audit; it can only",
+                "go down by adding a control (and then deleting the row) or by replacing the row with a justified",
+                "status: `entailed-by: <Claim>` (the named claim is refuted by a control and implies this one) or",
+                "`structural: <reason>` (a property of the definition, not of a reachable state).", "",
+                "Regenerate with `python3 review/verification_catalogue.py --write-coverage`.", "",
+                "| Module | Claim | Status |", "|---|---|---|"]
+        head += [f"| `{module}` | `{claim}` | {status} |" for module, claim, status in rows_out]
+        ledger.write_text("\n".join(head) + "\n")
+    if not ledger.is_file():
+        findings.append("verification/COVERAGE.md is missing: the claims no control refutes have to be recorded "
+                        "where a reader finds them (D-462)")
+        rows = []
+    else:
+        rows = LEDGER.findall(ledger.read_text(encoding="utf-8"))
+    recorded = {(module, claim) for module, claim, _ in rows}
+    for spec in on_disk_specs:
+        module = spec.removesuffix(".tla")
+        for claim in sorted(checked.get(module, set()) - covered.get(module, set())):
+            if claim.startswith("TypeOK"):
+                continue          # a type claim composes the others and is refuted only by a broken action
+            if (module, claim) not in recorded:
+                findings.append(f"{module}::{claim} is checked by a positive configuration and no control refutes "
+                                "it, and verification/COVERAGE.md has no row for it (D-462)")
+    for module, claim, status in rows:
+        if module not in {spec.removesuffix(".tla") for spec in on_disk_specs}:
+            findings.append(f"verification/COVERAGE.md names module {module}, which {tla} does not hold")
+        elif claim not in checked.get(module, set()):
+            findings.append(f"verification/COVERAGE.md records {module}::{claim}, which no positive configuration "
+                            "checks: the row is stale")
+        elif claim in covered.get(module, set()):
+            findings.append(f"verification/COVERAGE.md still records {module}::{claim} while a control refutes it "
+                            "now: delete the row (D-462)")
+        elif status != "needs-control" and not status.startswith(("entailed-by:", "structural:")):
+            findings.append(f"verification/COVERAGE.md gives {module}::{claim} the status {status!r}: it must say "
+                            "`needs-control`, or justify the row with `entailed-by: <Claim>` or `structural: "
+                            "<reason>` (D-462)")
+    needs = sum(1 for row in rows if row[2] == "needs-control")
+    stated = re.search(r"\*\*(\d+)\*\* claims are in this state",
+                       ledger.read_text(encoding="utf-8") if ledger.is_file() else "")
+    if stated is None:
+        findings.append("verification/COVERAGE.md no longer states its own count, so this audit cannot compare "
+                        "it with the tree (D-462)")
+    else:
+        if int(stated.group(1)) != needs:
+            findings.append(f"verification/COVERAGE.md says **{stated.group(1)}** claims have no control, the rows "
+                            f"hold {needs}: the number is one the audit recomputes (D-462)")
+        notes.append(f"verification/COVERAGE.md: {needs} claim(s) still without a refuting control")
+
     # (D-362) Every control-plane method is modelled, or declared unproven with a reason. `Control::submit`'s
     # dispatcher is the protocol surface the runtime reaches; a method that lands without a row in the mapping's
     # surface table would be a surface nothing models and nothing lists. The inventory is checked in both

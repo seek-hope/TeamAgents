@@ -88,7 +88,7 @@ unless the line records it as archived or its file is the upstream-comparison no
 numbers are the compared platform's own).
 
 This docstring states counts of the current tree as well, and nothing looked at them either (D-208's pattern, one
-file over): **28** markdown files and **127** Rust files carry **1398** citations, **157** relative links, **776** `make` commands and **1067** `§`-section references, all five recomputed and compared here.
+file over): **29** markdown files and **127** Rust files carry **1404** citations, **159** relative links, **783** `make` commands and **1068** `§`-section references, all five recomputed and compared here.
 """
 
 import pathlib
