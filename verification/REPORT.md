@@ -5,7 +5,7 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
-## 0. Gate status (D-462, 2026-10-21)
+## 0. Gate status (re-run 2026-10-21 at `b8bbcd64`)
 
 * **Every claim now names a refutation, or is on the record as not having one.** The audit had asked only that
   each module have *some* counterexample configuration (D-220); it never asked which claim that control refutes.
@@ -19,10 +19,11 @@ in [README.md](README.md); the fix ledger is in
   `MC_capabilities_settle_keeps_child.cfg` and `MC_capabilities_revoke_keeps_child.cfg` refute
   `ChildNonDelegable`, `TaskSettleRevokes` and `ParentRevokeCascades` through three counterfactual constants the
   module now carries.
-* **Re-run today at `b9fd5b16`**: `make verify-model-all` verifies all **45** configurations and
-  the full regression verifies all **45** configurations and refutes all **141** negative controls (138 before
-  D-462 plus the three above), each by the claim its marker names. Kani was not re-run (its toolchain is absent on this machine); its subject files
-  are unchanged since `b4e9f1f9`, whose run stands.
+* **Re-run at `b8bbcd64`, on top of `b9fd5b16`**: `make verify-model-all` verifies all **45** configurations and
+  `make verify-model-counterexamples` refutes all **141** negative controls (138 before D-462 plus the three
+  above), each by the claim its marker names. Kani was not re-run here (its toolchain is absent on this
+  machine); its subject files are unchanged since `b4e9f1f9`, where the last run reported
+  `Complete - 7 successfully verified harnesses, 0 failures, 7 total`.
 
 ## 0. Gate status (re-run 2026-10-19 at `b4e9f1f9`)
 
