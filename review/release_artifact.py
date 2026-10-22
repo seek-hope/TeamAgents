@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """One fact, checked against every document that states it: is the published release this product? (D-203)
 
-`docs/INSTALL.md` §1 tells a reader that the latest published release is the earlier implementation, and
-`review/install_check.py` shows it live: the artifact's help still offers `validate`, `sessions prune`,
-`--plain`, `--resume` and `--team`, verbs D-52/D-73 removed. The fact needs no network here — every release tag
+`docs/INSTALL.md` §1 used to tell a reader that the latest published release was the earlier implementation,
+and `review/install_check.py` showed it live: that artifact's help offered `validate`, `--plain`, `--resume`
+and `--team`, verbs D-52/D-73 removed. (`sessions prune` was removed then and re-added as the retention verb
+by D-435, so it is part of the current surface.) The fact needs no network here — every release tag
 in this repository predates the v2 layout (`git ls-tree <tag> -- core/src/v2` is empty, while the current tree
 is built on it), so whatever the newest tag published is not the product the documents describe.
 

@@ -45,10 +45,14 @@ musl-static archive, `install.sh` and `SHA256SUMS`, smoke-installs the exact arc
 repository variable `TEAMAGENTS_RELEASE_APPROVED=true` is the workflow gate, not a substitute for the user's
 authorization.
 
-**Evidence.** `make release-rehearsal` passed locally (0.2.0 packages, installs, `init` and the TUI binary);
-the tag workflow repeats the exact-archive install smoke and publishes the artifact. The release page records
-the archive hash and `SHA256SUMS`; `review/install_check.py` verifies the published latest release. The
-artifact is Linux x86_64 only; real-model acceptance and Pi parity are unchanged by a release.
+**Evidence.** `make release-rehearsal` passed locally (0.2.0 packages, installs, `init` and the TUI binary).
+The tag workflow run [39814054408](https://github.com/seek-hope/TeamAgents/actions/runs/39814054408) succeeded
+on `a92531a7`; the published archive is `teamagents-0.2.0-x86_64-unknown-linux-musl.tar.gz` with SHA-256
+`56e1222bcd011b120c929937e7f456246fd68d359e5a783875a316fc3a5dcebd` and `install.sh` with
+`d0160effba0fdb140b5a4a867e601b416644673edd4b5548baf4fbaef6099ac4`. `python3 review/install_check.py
+--version 0.2.0` installs the published release and confirms the current surface (including D-435's
+`sessions prune`). The artifact is Linux x86_64 only; real-model acceptance and Pi parity are unchanged by a
+release.
 
 **Boundaries.** A release packages the current source; it does not widen the evidence boundaries in
 ACCEPTANCE/CAPABILITIES. Future tags need the same explicit authorization; nothing publishes automatically.
