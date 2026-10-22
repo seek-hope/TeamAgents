@@ -12,6 +12,11 @@ The code's generated references are four documents, each checked against the cod
 <!-- maps: docs/EVENTS.md reader=developer -->
 <!-- maps: docs/PROTOCOL.md reader=developer -->
 <!-- maps: docs/TOOLS.md reader=developer -->
+<!-- maps: docs/RUST-SANDBOX.md reader=developer -->
+
+The sandbox's Rust-native backend is designed in [RUST-SANDBOX.md](RUST-SANDBOX.md): the contract a backend owes
+(Landlock+seccomp vs a DSec-style namespaces/cgroups design), its bounded acceptance plan and its non-claims.
+It is a design note; no fourth backend is implemented.
 
 ## Environment and the single entry point
 
