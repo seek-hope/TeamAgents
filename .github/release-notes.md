@@ -1,5 +1,5 @@
-> Unpublished release-note template. D-457 still freezes publication; the download instructions below
-> apply only after an explicitly authorized release. Until then, build from source as described in INSTALL.
+> TeamAgents **v0.2.0** is the first public release: Linux x86_64, musl-static, and no Rust toolchain
+> is needed to run the published archive.
 
 ### What is in this release
 
@@ -21,14 +21,25 @@
   previews that remain available beyond sixteen images in long histories (D-450).
 - Explicit engine-owned file/image snapshots and path completion, pending-input edit/cancel, local
   Markdown/JSON export and session-browser search (D-451). Display grammar/image/diagram parsing runs in
-  resource-bounded terminable Rust helpers. The D-451 pinned-source archive was rehearsed locally;
-  these notes do not publish an artifact.
+  resource-bounded terminable Rust helpers.
 - Read-only work diagnostics with explicit recovery instructions in CLI/TUI (D-461); observation never
   prompts a model, settles a task or stops an operation.
-- Installer, `teamagents init`, `doctor` and `exec` as documented in the [install guide](https://github.com/seek-hope/TeamAgents/blob/main/docs/INSTALL.md).
+- Two sandbox modes: `none` (the default, explicit host execution) or `approved_scope` with bubblewrap,
+  Docker or SSH; a configured backend fails closed when unavailable (D-466).
+- Repository `AGENTS.md` discovery from the trusted boundary to the cwd (D-467), bounded skill support
+  resources (D-468), and disjoint multi-file edits plus parallel read-only batches (D-469).
+- Session controls: the Leader model/effort menu (D-473), an explicit `after = "turn"` follow-up queue
+  (D-470), web domain grants, and cancel-versus-stop diagnosis; Ctrl+Q quits, Ctrl+P opens the queue and
+  Ctrl+M opens the model/effort menu.
+- Terminal-independent `make pty` matrix across xterm/screen/tmux/Kitty profiles (D-472); acceptance checks
+  follow the session's shell mode (D-471); the generated profile defaults to `high` reasoning effort (D-474).
+- Installer, `teamagents init`, `doctor` and `exec` as documented in the
+  [install guide](https://github.com/seek-hope/TeamAgents/blob/main/docs/INSTALL.md).
 
 Local regression for this release: `make check` green (core 147 / engine 415 / tui 82) plus `make pty`;
-real-model acceptance is reported separately in [docs/ACCEPTANCE.md](https://github.com/seek-hope/TeamAgents/blob/main/docs/ACCEPTANCE.md).
+the tag workflow smoke-installs the exact archive before publishing it. Real-model acceptance is reported
+separately in [docs/ACCEPTANCE.md](https://github.com/seek-hope/TeamAgents/blob/main/docs/ACCEPTANCE.md);
+a release packages the current source and does not widen those evidence boundaries.
 
 ### Install and first run
 

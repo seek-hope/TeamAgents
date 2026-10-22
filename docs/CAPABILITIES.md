@@ -84,7 +84,7 @@ no more than a decision's own wording, the row says so.
 | Interventions: pause, resume, terminate, cancel a task | `review/dogfood/lifecycle_run.py`, `cancel.py`; D-68's headless path | **cancelling a task is not stopping its work**: the assignee's command runs until its own timeout unless the instance is terminated (D-88) | — |
 | Automations: a schedule that starts a goal on its own | `V2Schedule.tla` (`NoDuplicateRun`, `AtMostOneRunPerAutomation`, `DisabledNeverRuns`, `OnlyDueSlotsRun`) with four refuted controls | safety only: a run need not ever happen | — |
 | Workspace policies: shared, isolated, git worktree | `workspace::tests::shared_and_isolated_roots`, `worktree_lifecycle_and_guards`; `review/dogfood/workspace.py` | retirement refuses anything with uncommitted or unmerged work, and says why | — |
-| Install, init, doctor, cleanup, reopen | `engine/tests/install.rs`; `review/dogfood/boundary.py`; `make release-rehearsal`; D-451 installed-artifact probe | the D-451 pinned-source musl archive was installed and exercised locally; all public releases/tags were subsequently removed (D-457); current use requires source builds | a separately authorized release; untested platforms |
+| Install, init, doctor, cleanup, reopen | `engine/tests/install.rs`; `review/dogfood/boundary.py`; `make release-rehearsal`; D-451 installed-artifact probe | the D-451 pinned-source musl archive was installed and exercised locally; v0.2.0 is the first public release (Linux x86_64), and source builds remain available | a separately authorized release; untested platforms |
 
 ## 6. Evaluation standing: three benchmarks, DeepSeek Flash
 
@@ -140,8 +140,7 @@ priority list. The major unclosed evidence boundaries are:
 - Real selected provider/image/OAuth/Docker paths, full skill support resources and user-home development
   environments; local serialization and scripted-provider tests establish different facts.
 - Adversarial review of auto-approval and other boundaries; broader graphical terminal/platform coverage.
-- Exact-artifact installation and update acceptance after a separately authorized release; no public
-  release currently exists (D-457).
+- Exact-artifact installation and update acceptance for the authorized v0.2.0 release (D-475).
 - Long-horizon memory where facts are not already files; D-406's fixture and D-409's real-task null result
   do not establish general benefit.
 - Q16's collaboration-success form: the narrower paired latency result is confirmed in D-264, not a

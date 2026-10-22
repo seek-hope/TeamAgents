@@ -1,6 +1,6 @@
 # Development handoff
 
-Updated **2026-10-22** against source **02be286d** (through D-474). This is the current entry point for a new development
+Updated **2026-10-22** against source **02be286d** (through D-475). This is the current entry point for a new development
 session, not an authorization to implement the candidate backlog. Recheck Git status and recent commits;
 this document does not assert that a remote branch or installed binary matches the working tree.
 
@@ -26,6 +26,7 @@ this document does not assert that a remote branch or installed binary matches t
 | c6dcc8a5, e1d842d1 | D-466 two-mode pluggable sandbox, D-467 AGENTS.md discovery, D-468 skill resources, D-469 multi-edit/read batch, D-470 profile/web/deferred input/cancel-vs-stop | `sandbox = none` is the explicit host mode; a configured backend still fails closed |
 | 9b29c8b5, 3b7ea4a1 | D-471 acceptance checks follow the session's shell mode; CI fixtures follow `none`, transient ETXTBSY retry | `exec --check` and goal `[[checks]]` run on the host in `none` mode; the bubblewrap refusal stays covered |
 | f00a2a31, 122fc628, 02be286d | D-472 terminal-agnostic PTY matrix; D-473 Ctrl+Q/Ctrl+P and the Leader model/effort menu; D-474 default reasoning effort high | PTY profiles are protocol checks, not a GUI matrix; a profile change applies at the next turn; `init` never rewrites an existing config |
+| v0.2.0 | first public release: Linux x86_64 musl-static archive, installer and SHA256SUMS | The tag workflow smoke-installs the exact archive; `review/install_check.py` verifies the published latest release; real-model/Pi evidence is unchanged |
 
 D-462 added the verification gate and ledger: every counterexample configuration names the claim it must
 refute (`expects:` marker, compared with TLC's output), every checked claim that no control refutes is a row in
@@ -46,8 +47,9 @@ comparison, actual graphical-terminal matrix, installed-artifact acceptance or r
 
 The [D-451 maturity report](../review/maturity-2026-10-11/REPORT.md) retains its immutable manifests and
 receipts. The [formal report](../verification/REPORT.md) carries its own source and run boundary. Neither
-is renewed by a documentation edit or a Cargo pass. All public releases/tags were removed under D-457;
-source builds are the current distribution path. Publication requires separate user authorization.
+is renewed by a documentation edit or a Cargo pass. D-457 removed the earlier tags; **v0.2.0** is the first
+public release of this implementation (2026-10-22). Source builds remain available; future publication
+requires separate authorization and the repository variable.
 
 ## Behavior and focused regression entry points
 

@@ -1,8 +1,26 @@
 # Installing, first run and upgrades
 
-TeamAgents currently targets **Linux x86_64**. **No public release is published**: all release tags/assets
-were removed on 2026-10-18 (D-457), and publication requires explicit user authorization. Build the current
-source; do not follow historical latest-release or old-version download instructions.
+TeamAgents targets **Linux x86_64**. The first public release is **v0.2.0**, a musl-static archive that
+needs no Rust toolchain to run. The installer resolves the latest release and verifies its SHA-256; build
+from source when developing (§1).
+
+### Published release (v0.2.0)
+
+Run the installer from a working directory, then initialize:
+
+```bash
+(
+  set -eu
+  installer="$(mktemp)"
+  trap 'rm -f "$installer"' EXIT
+  curl -fsSL https://raw.githubusercontent.com/seek-hope/TeamAgents/main/install.sh -o "$installer"
+  sh "$installer"
+)
+export PATH="$HOME/.local/bin:$PATH"
+teamagents init
+```
+
+Then continue at §2 for configuration, or use the source build in §1.
 
 ## 1. Build and install from source
 
@@ -25,7 +43,7 @@ installation with symlinks, preserve that layout rather than copying through its
 The [README](../README.md#building-from-source) gives the short path. Build and test conventions are in
 [DEVELOPMENT.md](DEVELOPMENT.md); no root Cargo workspace manifest is required.
 
-### Local archives and future releases
+### Local archives and release assets
 
 The installer also accepts a locally built Linux x86_64 musl archive with its matching SHA256SUMS beside it:
 
@@ -34,15 +52,16 @@ The installer also accepts a locally built Linux x86_64 musl archive with its ma
 sh install.sh --archive /path/to/teamagents-VERSION-x86_64-unknown-linux-musl.tar.gz
 ```
 
-This requires the matching installer and archive, not a nonexistent public download. A musl archive does
+This requires the matching installer and archive; a local archive is an alternative to the published download. A musl archive does
 not need Rust, Python or Node.js merely to run the product; tools and MCP services may need their own
 runtimes. The installer verifies checksums, installs both binaries together, never invokes sudo and never
 edits shell startup files. Use `--bin-dir "$HOME/bin"` for another destination. A missing checksum or
 incomplete archive is a refusal, not permission to bypass verification.
 
-The [D-451 maturity report](../review/maturity-2026-10-11/REPORT.md) records an unpublished installation
-rehearsal on its pinned source. That is not acceptance of every later source build. A future public
-release needs a fresh exact-artifact rehearsal and separate publication authorization.
+The [D-451 maturity report](../review/maturity-2026-10-11/REPORT.md) records a pinned-source installation
+rehearsal; that evidence stays historical. The v0.2.0 tree passed `make release-rehearsal` locally, and
+the tag workflow repeats the exact-archive install smoke before publishing. Neither widens the report's
+original evidence boundary.
 
 ## 2. First configuration and start
 
@@ -105,7 +124,7 @@ For a manual source upgrade:
 
 D-453 provides a separately tested, governed updater with health-check rollback and a journal. Agent
 update requests are disabled by default and require the user's concrete approval when enabled; the
-reviewer cannot authorize them. This mechanism does not create a release target while publication is frozen.
+reviewer cannot authorize them. This mechanism does not create a release target; publication remains a separate authorized tag.
 See the update configuration in [CONFIG.md](CONFIG.md) and D-453 in [DECISIONS.md](DECISIONS.md).
 
 To uninstall a simple two-binary source installation, first finish/stop its work and daemons, then remove
@@ -127,7 +146,7 @@ its update journal. Do not broadly delete those directories or existing sessions
 | TUI binary missing or mismatched | Install both binaries from the same source into the same directory |
 | Config/model missing | Run init and check the config path printed by doctor |
 | Credential missing | Export the configured variable in the terminal that starts the daemon |
-| Public download returns 404 | Expected while no release is published; build from source |
+| Public download returns 404 | Check the requested version and asset; v0.2.0 is published, so a wrong version or network failure is the likely cause |
 | Local archive checksum fails | Stop; obtain the matching archive/checksum pair and verify provenance |
 | Bubblewrap probe fails | Check kernel/container restrictions on unprivileged namespaces; no host fallback occurs |
 | Build tool exists on host but not in sandbox | Check workspace-local/system installation and the documented toolchain mounts |

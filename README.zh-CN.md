@@ -23,7 +23,7 @@
 | [安装指南](docs/INSTALL.md) | 下载安装与升级 |
 | [形式化验证](verification/README.md) | TLA+ 规格与 Kani 证明：性质 ↔ 代码 ↔ 验收编号、未证明清单 |
 
-> **首次使用：** [安装指南](docs/INSTALL.md)。当前没有公开发行版。
+> **首次使用：** [安装指南](docs/INSTALL.md)。首个公开版本为 **v0.2.0**（Linux x86_64）。
 
 ## 怎么工作
 
@@ -70,16 +70,31 @@
 
 要求：Linux（x86_64）；沙箱后端可选（默认 `none`）；模型密钥从环境变量读，不写进配置。
 
-### 当前没有公开发行版
+### 安装已发布版本
 
-所有 GitHub release 和 tag 已于 2026-10-18 删除。在用户明确授权之前不会发布新版本；请从源码构建。
+首个公开版本为 **v0.2.0**（Linux x86_64，musl 静态包，无需 Rust 工具链）：
+
+```bash
+(
+  set -eu
+  installer="$(mktemp)"
+  trap 'rm -f "$installer"' EXIT
+  curl -fsSL https://raw.githubusercontent.com/seek-hope/TeamAgents/main/install.sh -o "$installer"
+  sh "$installer"
+)
+export PATH="$HOME/.local/bin:$PATH"
+teamagents init
+```
+
+安装器会解析最新 release、校验发布页的 `SHA256SUMS`，并一起安装 `teamagents` 与 `teamagents-tui`；
+再次运行会升级并保留现有配置和会话。`--version`、`--bin-dir` 与本地归档用法见[安装指南](docs/INSTALL.md)。
 
 D-451 源码新增显式文本/图片附件（`/attach PATH` 或 `exec --attach PATH`）、工作区路径补全、
 待消费输入的修订和取消（`/queue` 或 `inputs`）、会话浏览器搜索以及完整的本地 Markdown/JSON 导出。
 展示解析在有资源和超时限制的 Rust 辅助进程中运行，失败时保留源码。使用方式见
 [用户指南](docs/USER-GUIDE.md)，确定性本地验证和剩余缺口见
 [成熟度报告](review/maturity-2026-10-11/REPORT.md)，其中证据只对应其固定源码。当前源码还包含外部编辑器、
-任务级能力下授、可选的操作自动审查与供应商缓存统计。当前没有公开发行版。
+任务级能力下授、可选的操作自动审查与供应商缓存统计。当前首个公开发行版为 v0.2.0。
 
 ### 从源码构建
 
@@ -216,7 +231,7 @@ Enter 切换，方括号翻页，`d` 后按 `y` 确认删除，Esc 取消或返�
 
 ## 现状与限制
 
-- 支持的分发目标是 Linux x86_64，当前没有公开发行版。没有已支持的 Windows/macOS 构建、分布式成员协议或内置浏览器自动化。
+- 支持的分发目标是 Linux x86_64；首个公开发行版为 v0.2.0。没有已支持的 Windows/macOS 构建、分布式成员协议或内置浏览器自动化。
 - 选定的 bubblewrap、Docker 或 SSH 后端不可用时会拒绝执行，不会静默退回本地主机。
   SSH 是远程 shell，不是分布式 agent；它不保证远端进程取消，也不能强制远端网络隔离。
 - 可以开展受控的日常编码试用，但尚未证明能够作为唯一通用主力平替 Pi。
@@ -234,4 +249,4 @@ Enter 切换，方括号翻页，`d` 后按 `y` 确认删除，Esc 取消或返�
 
 开发先运行 `make check`；完整流程见 [开发与维护](docs/DEVELOPMENT.md)，仓库约定见 [AGENTS.md](AGENTS.md)。
 缺陷、审查与评测证据记录在 `review/`，形式化验证证据在 `verification/`。
-打 `v*` tag 只会构建发行包；发布由仓库变量 `TEAMAGENTS_RELEASE_APPROVED` 控制，当前未授权任何 release。
+打 `v*` tag 会构建发行包；v0.2.0 已发布。后续发布仍由仓库变量 `TEAMAGENTS_RELEASE_APPROVED` 控制。

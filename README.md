@@ -38,7 +38,7 @@ and reports back; you watch progress and approve anything that leaves the sandbo
 <!-- maps: docs/PRODUCT-COMPARISON.md reader=user -->
 <!-- maps: docs/USER-GUIDE.md reader=user -->
 
-> **First time here:** [install guide](docs/INSTALL.md). No public release is currently published.
+> **First time here:** [install guide](docs/INSTALL.md). The first public release is **v0.2.0** for Linux x86_64.
 
 ## How it works
 
@@ -105,17 +105,33 @@ completion, revision-checked pending input (`/queue` or `inputs`), browser searc
 Markdown/JSON session export. Rendering runs in bounded Rust display processes with safe source fallback.
 See the [user guide](docs/USER-GUIDE.md) for limits and controls and the [maturity report](review/maturity-2026-10-11/REPORT.md)
 for its pinned deterministic local evidence. Current source also includes an external editor, task-scoped
-capability delegation, optional operation auto-review and provider cache telemetry. No release is currently published.
+capability delegation, optional operation auto-review and provider cache telemetry. v0.2.0 is the first public release.
 
 ## Install
 
 Requirements: Linux (x86_64); a sandbox backend is optional (the default is `none`). Model credentials are read from environment variables and
 never written into the config.
 
-### No public release currently
+### Install the published release
 
-All GitHub releases and tags were removed on 2026-10-18. No release will be published until the user
-authorizes one; build from source below.
+The first public release is **v0.2.0** for Linux x86_64 (musl static; no Rust toolchain needed to run):
+
+```bash
+(
+  set -eu
+  installer="$(mktemp)"
+  trap 'rm -f "$installer"' EXIT
+  curl -fsSL https://raw.githubusercontent.com/seek-hope/TeamAgents/main/install.sh -o "$installer"
+  sh "$installer"
+)
+export PATH="$HOME/.local/bin:$PATH"
+teamagents init
+```
+
+The installer resolves the latest release, verifies the published `SHA256SUMS`, and installs
+`teamagents` and `teamagents-tui` together. Running it again upgrades them and keeps the existing
+config and sessions. See the [install guide](docs/INSTALL.md) for `--version`, `--bin-dir` and local
+archives.
 
 ### Building from source
 
@@ -272,7 +288,7 @@ see the [developer command map](docs/USER-GUIDE.md#1-quick-start).
 
 ## Status and limits
 
-- Linux x86_64 is the supported distribution target; no public release is published. There is no supported
+- Linux x86_64 is the supported distribution target; v0.2.0 is the first public release. There is no supported
   Windows/macOS build, distributed instance protocol or built-in browser automation.
 - A selected sandbox backend fails closed when unavailable. SSH runs a remote
   shell, not a distributed agent, and does not guarantee remote cancellation or enforce network isolation.
@@ -293,6 +309,6 @@ see the [developer command map](docs/USER-GUIDE.md#1-quick-start).
 Run `make check` before anything else; the full workflow is in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) and
 the repository conventions in [AGENTS.md](AGENTS.md). Defects, reviews and evaluation evidence live in
 `review/`, formal-verification evidence in `verification/`. A `v*` tag builds the release archive, but publication is gated by the
-`TEAMAGENTS_RELEASE_APPROVED` repository variable; no release is currently authorized.
+`TEAMAGENTS_RELEASE_APPROVED` repository variable; v0.2.0 is published, and future releases remain gated by that variable.
 
 Chinese documentation: [README.zh-CN.md](README.zh-CN.md)

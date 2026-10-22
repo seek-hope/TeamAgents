@@ -73,8 +73,7 @@ audits — each one a claim the tree makes about itself, each with the decision 
   in hygiene since D-130); `review/env_knobs.py` keeps the `TEAMAGENTS_*` table
   below equal to the code's reads; `review/project_config_claim.py` checks the one fact every document states —
   the project config is read, under the user's opt-in (D-133, wired by D-244), and `review/release_artifact.py` does the same for the second one —
-  whether the release claims match published tags (D-203 originally caught pre-v2 tags; D-457 now
-  requires the explicit no-public-release state); `review/silent_skips.py` fails a test that returns from a capability
+  whether the release claims match published tags (D-203 originally caught pre-v2 tags; v0.2.0 is the first v2 release, so the caveat state flipped to published); `review/silent_skips.py` fails a test that returns from a capability
   guard without saying why (D-121).
 * **the config surface, both directions**: `review/config_keys.py` reports a config field whose only readers
   are the loader, the validator, the doctor surface and the argv parser — a key this build accepts and never
@@ -334,11 +333,11 @@ need; when upgrading one, update only the affected lock files and re-run the int
 `make check`. Upgrading Rust means editing the version in `rust-toolchain.toml` and re-running `make fmt`,
 `make check` and `make pty`; CI and the release workflow pick the new version up automatically.
 
-**Release freeze (D-457).** No public release or tag exists. Source builds are the supported distribution
-path until the user explicitly authorizes publication. The workflow's Publish step additionally requires
+**Published release (v0.2.0).** D-457 removed the earlier tags; **v0.2.0** is the first public release
+(2026-10-22, Linux x86_64 musl-static). The workflow's Publish step still requires
 TEAMAGENTS_RELEASE_APPROVED=true; setting that variable is not a substitute for user authorization.
 
-**After authorization**, the release procedure is:
+**For a future release**, the procedure is:
 
 1. **Bump all three crates and their lock files.** Each `Cargo.lock` carries its crate's own version, and both
    `make check` and the release build run `--locked`, so a missed lock is a build failure. `review/release_artifact.py`
@@ -359,9 +358,9 @@ TEAMAGENTS_RELEASE_APPROVED=true; setting that variable is not a substitute for 
    gate, the musl-static release build of both binaries, the archive, the checksums and the smoke against the tree,
    and prints the archive's size. A build, not a check — a cold run is minutes, so it stays out of `make check`.
 4. **Update release freshness claims.** After an authorized publication, update INSTALL, both READMEs,
-   ACCEPTANCE, CAPABILITIES and HANDOFF to name the exact artifact and its source. Until then they must
-   state that no public release exists. `review/release_artifact.py` checks that state and
-   `review/install_check.py` exercises a published artifact when one is available; neither relabels history.
+   ACCEPTANCE, CAPABILITIES and HANDOFF to name the exact artifact and its source. `review/release_artifact.py`
+   checks the published state and `review/install_check.py` exercises the published artifact; neither
+   relabels history.
 5. **Verify the published artifact**: the SHA-256 from the public URL, the install, `init` keeping an existing
    config and a real TUI start.
 

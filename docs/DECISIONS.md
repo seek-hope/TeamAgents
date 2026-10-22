@@ -14,11 +14,11 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Usage visibility | turn and goal usage/budget are visible in the TUI and in events | D-24 |
 | MCP | both transports, stdio and streamable HTTP; calls go through the shared permission, approval, budget, cancellation and receipt entry points | D-25 |
 | Web tools | `web_search` and `web_fetch` call DeepSeek Search/Fetch (`/v1/tools/search`, `/v1/tools/fetch`) with the same bearer key; no AnySearch backend | D-456 |
-| Release publication | no public release exists; all release tags/assets were removed on 2026-10-18, and the publish job is gated by `TEAMAGENTS_RELEASE_APPROVED` until the user authorizes a release | D-457 |
+| Release publication | v0.2.0 is the first public release (Linux x86_64, musl static); future tags still need explicit user authorization and `TEAMAGENTS_RELEASE_APPROVED=true` | D-457, D-475 |
 | Context compaction | triggered by real window usage; the summary keeps the original request and acceptance criteria, and the full text stays retrievable | D-28 |
 | Task priority | complex coding and long-horizon stability come first | D-35 |
 | Native context | real-model evaluation always uses the model's native window and records the value and its source | D-36 |
-| Install and first config | source builds while publication is frozen; init writes a minimal config and never overwrites an existing file; local archives require matching checksums | D-37, D-457; docs/INSTALL.md |
+| Install and first config | source builds or the published v0.2.0 archive; init writes a minimal config and never overwrites an existing file; local archives require matching checksums | D-37, D-457, D-475; docs/INSTALL.md |
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | Sandbox mode | `[permissions] sandbox` selects `none` (default: host shell, no shell approval) or a backend (`approved_scope` + sandbox, fail-closed); D-466 | D-41, D-466 |
 | Repository instructions | explicit `instruction_files` come first; a trusted repository's `AGENTS.md` files are discovered from its boundary down to the cwd, outermost first (D-467) | D-246, D-467 |
@@ -34,6 +34,24 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Prompt cache | cache hit/miss/write are provider-reported and visible; the L1 frontier is fixed between compactions; Anthropic gets explicit breakpoints and OpenAI a stable key; DeepSeek stays automatic | D-459 |
 | Command idempotency | a replay with the same `command_id` returns the stored receipt for control-plane state, and the authoritative check runs under the write lock (D-463); result bodies are shared by content digest and zstd-compressed (D-464), while the receipt **rows** remain one per command | D-463, D-464 |
 | Model actions and code windows | a deciding read shares the write's transaction, or the guard is a predicate on the write itself; `verification/REPORT.md` §6 lists the protocol transitions and the three engine windows that span two transactions with their predicates | D-465 |
+
+## D-475 Publish v0.2.0 as the first public release (2026-10-22)
+
+**Authorization.** The user asked to publish the first release after the D-474 assessment. D-457's freeze
+required separate authorization; this is that authorization.
+
+**What.** Tag `v0.2.0` on the release-notes/docs commit; the release workflow builds the Linux x86_64
+musl-static archive, `install.sh` and `SHA256SUMS`, smoke-installs the exact archive and publishes it. The
+repository variable `TEAMAGENTS_RELEASE_APPROVED=true` is the workflow gate, not a substitute for the user's
+authorization.
+
+**Evidence.** `make release-rehearsal` passed locally (0.2.0 packages, installs, `init` and the TUI binary);
+the tag workflow repeats the exact-archive install smoke and publishes the artifact. The release page records
+the archive hash and `SHA256SUMS`; `review/install_check.py` verifies the published latest release. The
+artifact is Linux x86_64 only; real-model acceptance and Pi parity are unchanged by a release.
+
+**Boundaries.** A release packages the current source; it does not widen the evidence boundaries in
+ACCEPTANCE/CAPABILITIES. Future tags need the same explicit authorization; nothing publishes automatically.
 
 ## D-474 The generated profile defaults to high reasoning effort (2026-10-22)
 
