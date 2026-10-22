@@ -193,8 +193,9 @@ happened. Diagnostics go to stderr, the outcome to stdout (`--json` prints one J
   of one stdout) and `--stream-json` is an `exec` mode — the read verbs print one report and have no stream to
   follow. A consumer that closes the pipe (`teamagents exec --stream-json … | head -3`) ends the stream, not
   the run: the run still finishes and keeps its own exit code, with no write error.
-- **`--check COMMAND`** (repeatable): your own acceptance command, run after the turn ends in order in the
-  isolated shell (bubblewrap) inside your workspace (`--cwd`, else the current directory). The first failure
+- **`--check COMMAND`** (repeatable): your own acceptance command, run after the turn ends in order through the
+  session's shell mode (`sandbox = none`, the default, runs it on the host; a configured backend runs it inside
+  that backend) inside your workspace (`--cwd`, else the current directory). The first failure
   stops the list; the verdicts are printed, written to `<state root>/verification.json` and included in the
   `--json` report. A failed check makes the run fail (`1`) even when the goal itself settled. Checks are
   skipped when the turn is not finished — the run stopped for an approval, your own `--timeout` deadline
@@ -419,8 +420,8 @@ timeout = 900                    # optional seconds (default: the shell tool's o
 network = false                  # optional: the sandbox is offline by default
 ```
 
-- The runtime runs them in the isolated shell at the completion boundary, so a goal cannot settle while a
-  check fails. A failure returns the work for repair (bounded rounds) and then blocks the goal with the
+- The runtime runs them through the session's shell mode at the completion boundary (D-471), so a goal cannot
+  settle while a check fails. A failure returns the work for repair (bounded rounds) and then blocks the goal with the
   failing ids; the check's output lands in the conversation as a tool result.
 - `inputs` are workspace-relative paths without `..` escapes. Their hashes are taken when the check runs and
   re-verified before completion, so a check that passed against files that then changed does not count — and a
@@ -587,7 +588,8 @@ pre_tool = ["/home/you/bin/policy.sh"]            # policy hook before tool call
   outcomes, and the required checks you define must really pass.
 - **Required checks** come from `[[checks]]` in your config (§2.1) and are carried on the goal itself
   (`create_goal limits.required_checks`, which only the user or the project bootstrap may predefine). The
-  runtime runs them in the isolated shell at the completion boundary: a failure sends the work into a bounded
+  runtime runs them through the session's shell mode at the completion boundary (D-471): a failure sends the
+  work into a bounded
   repair loop and then blocks the goal with the failing ids. Their output appears in the conversation like any
   other tool result, so the reason is visible instead of reported as an unexplained "done".
 - The headless client's `--check` (§1.1) is a *different* thing: it is your own acceptance command, executed

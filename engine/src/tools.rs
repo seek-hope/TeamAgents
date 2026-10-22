@@ -1731,6 +1731,16 @@ pub(crate) enum ShellMode {
 }
 
 impl ShellMode {
+    /// D-471: the mode a caller that already resolved the sandbox should use (acceptance checks): `none` is the
+    /// host, any configured backend is the sandbox with its fail-closed probe.
+    pub(crate) fn from_sandbox(sandbox: SandboxBackend) -> Self {
+        if sandbox.is_none() {
+            Self::Host
+        } else {
+            Self::Sandbox(sandbox)
+        }
+    }
+
     pub(crate) fn from_permissions(mode: Option<&str>, sandbox: SandboxBackend) -> Result<Self, String> {
         match mode {
             Some("approved_scope") if !sandbox.is_none() => Ok(Self::Sandbox(sandbox)),
@@ -2215,6 +2225,28 @@ pub fn shell_run_stateful(
         shell_state,
         control,
         ShellMode::Sandbox(SandboxBackend::bubblewrap()),
+    )
+}
+
+/// D-471: the same runner in a caller-chosen mode. The acceptance checks use this so `sandbox = none` really
+/// runs them on the host; a configured backend keeps the fail-closed refusal.
+pub(crate) fn shell_run_in_mode(
+    command: &str,
+    workdir: &Path,
+    timeout_s: u64,
+    network: bool,
+    artifacts: Option<&Path>,
+    mode: ShellMode,
+) -> Result<String, String> {
+    shell_run_at(
+        command,
+        workdir,
+        timeout_s,
+        network,
+        OutputLocation { root: artifacts, prefix: ARTIFACTS_PREFIX },
+        None,
+        &TurnControl::default(),
+        mode,
     )
 }
 

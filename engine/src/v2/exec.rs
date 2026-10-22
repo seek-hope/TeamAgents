@@ -716,7 +716,11 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
     {
         Vec::new()
     } else {
-        run_checks(&options.checks, &options.workspace, options.timeout_s)
+        // D-471: checks follow the session's shell mode; `none` runs them on the host, a configured backend
+        // keeps the fail-closed refusal.
+        let sandbox = crate::config::sandbox_from_config().map_err(|e| (2, format!("exec: {e}")))?;
+        let mode = crate::tools::ShellMode::from_sandbox(sandbox);
+        run_checks(&options.checks, &options.workspace, options.timeout_s, mode)
     };
     let verification_path = write_verification(&client.state_root, &verification);
     let checks_ok = verification.iter().all(|entry| entry["ok"] == json!(true));
@@ -1015,21 +1019,27 @@ fn print_checks(report: &Json) {
 
 /// Run the user's acceptance commands in order (v1 contract): the first failure
 /// stops the list, since later commands may depend on earlier ones.
-pub fn run_checks(commands: &[String], workspace: &Path, timeout_s: u64) -> Vec<Json> {
+pub(crate) fn run_checks(
+    commands: &[String],
+    workspace: &Path,
+    timeout_s: u64,
+    mode: crate::tools::ShellMode,
+) -> Vec<Json> {
     let mut results = Vec::new();
     for command in commands {
         let marker = format!("__TEAMAGENTS_CHECK_RC_{}__", uuid::Uuid::new_v4().simple());
         // the command runs in a subshell so that its own `exit` cannot skip the
         // marker: the marker, not the rendered transcript, is the verdict
         let wrapped = format!("( {command} ); rc=$?; printf '\\n%s%s\\n' '{marker}' \"$rc\"; exit $rc");
-        let (output, exit_code, note) = match crate::tools::shell_run(&wrapped, workspace, timeout_s, false, None) {
-            Ok(text) => {
-                let (output, code) = parse_check_result(&text, &marker);
-                (output, code, None)
-            }
-            // isolation/setup/timeout: the command never produced a status
-            Err(reason) => (String::new(), -1, Some(reason)),
-        };
+        let (output, exit_code, note) =
+            match crate::tools::shell_run_in_mode(&wrapped, workspace, timeout_s, false, None, mode.clone()) {
+                Ok(text) => {
+                    let (output, code) = parse_check_result(&text, &marker);
+                    (output, code, None)
+                }
+                // isolation/setup/timeout: the command never produced a status
+                Err(reason) => (String::new(), -1, Some(reason)),
+            };
         let ok = exit_code == 0;
         results.push(json!({
             "command": command,
@@ -1440,7 +1450,12 @@ mod tests {
             // no isolation anywhere: every check must be refused, the list must stop at the first one, and no
             // command output may appear (the command never ran)
             let refused = vec!["echo one".to_string(), "true".to_string()];
-            let checks = run_checks(&refused, workspace, 60);
+            let checks = run_checks(
+                &refused,
+                workspace,
+                60,
+                crate::tools::ShellMode::Sandbox(crate::tools::SandboxBackend::bubblewrap()),
+            );
             assert_eq!(checks.len(), 1, "the first refusal stops the list: {checks:?}");
             assert_eq!(checks[0]["ok"], json!(false), "a check that cannot run is not a pass: {checks:?}");
             assert_eq!(checks[0]["exit_code"], json!(-1), "{checks:?}");
@@ -1450,17 +1465,41 @@ mod tests {
             return;
         }
         let commands = vec!["echo first; exit 3".to_string(), "echo second".to_string()];
-        let checks = run_checks(&commands, workspace, 60);
+        let checks = run_checks(
+            &commands,
+            workspace,
+            60,
+            crate::tools::ShellMode::Sandbox(crate::tools::SandboxBackend::bubblewrap()),
+        );
         assert_eq!(checks.len(), 1, "the first failure stops the list: {checks:?}");
         assert_eq!(checks[0]["ok"], json!(false));
         assert_eq!(checks[0]["exit_code"], json!(3));
         assert!(checks[0]["output"].as_str().unwrap().contains("first"), "{checks:?}");
 
         let passing = vec!["echo one".to_string(), "true".to_string()];
-        let checks = run_checks(&passing, workspace, 60);
+        let checks = run_checks(
+            &passing,
+            workspace,
+            60,
+            crate::tools::ShellMode::Sandbox(crate::tools::SandboxBackend::bubblewrap()),
+        );
         assert_eq!(checks.len(), 2);
         assert!(checks.iter().all(|check| check["ok"] == json!(true)), "{checks:?}");
         assert_eq!(checks[0]["exit_code"], json!(0));
+    }
+
+    /// D-471: an acceptance command follows the session's shell mode; with `none` it really runs on the host,
+    /// even where no sandbox exists.
+    #[test]
+    fn acceptance_commands_follow_the_host_mode() {
+        let workspace = std::env::temp_dir().join(format!("ta-check-host-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&workspace);
+        std::fs::create_dir_all(&workspace).unwrap();
+        let checks = run_checks(&["touch host-check".to_string()], &workspace, 60, crate::tools::ShellMode::Host);
+        assert_eq!(checks.len(), 1, "{checks:?}");
+        assert_eq!(checks[0]["ok"], Json::from(true), "{checks:?}");
+        assert!(workspace.join("host-check").is_file(), "the check ran on the host");
+        std::fs::remove_dir_all(&workspace).unwrap();
     }
 
     /// A25's "prefix decision", as the surfaces actually share it: `approvals`, `authority`, `instances` and

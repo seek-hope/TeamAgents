@@ -1419,7 +1419,8 @@ fn an_unisolated_shell_refuses_instead_of_running_on_the_host() {
     std::fs::write(
         config_home.join("teamagents/config.toml"),
         "[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\n\
-         api_key_env = \"TA_ISOLATION_KEY\"\nbase_url = \"http://127.0.0.1:1/v1\"\n",
+         api_key_env = \"TA_ISOLATION_KEY\"\nbase_url = \"http://127.0.0.1:1/v1\"\n\
+         \n[permissions]\nsandbox = \"bubblewrap\"\n",
     )
     .unwrap();
 
@@ -1463,11 +1464,29 @@ fn an_unisolated_shell_refuses_instead_of_running_on_the_host() {
     assert!(error.contains("IsolationUnavailable"), "the refusal names the isolation failure: {report}");
     assert!(!workspace.join("ran-unisolated").exists(), "the check ran somewhere: {report}");
     assert!(std::fs::read_dir(&workspace).unwrap().next().is_none(), "and it must have left nothing behind");
+    // D-471: with `sandbox = "none"` the check follows the session mode and really runs on the host, even
+    // where no sandbox exists (the same empty PATH).
+    std::fs::write(
+        config_home.join("teamagents/config.toml"),
+        "[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\n\
+         api_key_env = \"TA_ISOLATION_KEY\"\nbase_url = \"http://127.0.0.1:1/v1\"\n\
+         \n[permissions]\nsandbox = \"none\"\n",
+    )
+    .unwrap();
+    let host_workspace = root.join("ws-host");
+    std::fs::create_dir_all(&host_workspace).unwrap();
+    let host_state = root.join("root-host");
+    // the host mode runs the check with the host's own PATH (the empty bin exists to model "no bwrap", not to
+    // remove the tools the check needs)
+    let host_path = std::env::var("PATH").unwrap_or_default();
+    let host_report = run(&host_workspace, &host_state, std::path::Path::new(&host_path));
+    assert_eq!(host_report["verification"][0]["ok"], serde_json::json!(true), "{host_report}");
+    assert!(host_workspace.join("ran-unisolated").is_file(), "none mode runs the check on the host: {host_report}");
     // `exec` detaches the daemon it starts — that is its contract, the session outlives the client — so the
     // test has to stop both of them (the same rule the `Daemon` guard at the top of this file states): two
     // leaked daemons per run stay behind, holding their coordinator locks, and the state root cannot be
     // removed. Asserting they are gone is what keeps this from being a silent leak again.
-    for state in [&control_state, &state] {
+    for state in [&control_state, &state, &host_state] {
         // no assertion here: the control state has a daemon only where the sandbox exists (`if have_sandbox`
         // above), and this loop runs on both kinds of machine — the socket assertion below is what proves the
         // stop worked. Stopping is still by pid, never by pattern (D-144/D-148/D-150).

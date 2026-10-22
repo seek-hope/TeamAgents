@@ -46,6 +46,18 @@ And a key whose struct carries `#[serde(default = "fn")]` shows *that* function'
 calls it when the key is missing, so the column would otherwise be wrong for exactly the keys that have a considered
 default (D-239).
 
+### `[permissions]`
+
+These keys are hand-read rather than one of the generated struct tables; they decide the session's execution and
+trust posture.
+
+| Key | Meaning |
+|---|---|
+| `sandbox` | `none` (the default): the host shell, with no shell approval. `bubblewrap`, `docker` or `ssh`: `approved_scope` inside that backend, which refuses a command when it cannot start (D-466). |
+| `trust_project`, `trusted_projects` | Whether a repository-local config contributes models/tools/skills/instructions, and for exactly which canonical roots (D-244, D-434). |
+| `approvals_reviewer`, `reviewer_model` | `user` (the default) or `auto_review`, and the optional model the reviewer uses (D-458). |
+| `sandbox_image`, `sandbox_ssh_target`, `sandbox_ssh_workdir`, `sandbox_ssh_options` | Backend settings for docker and ssh (D-369, D-437). |
+
 <!-- generated: begin -->
 
 ### `[models.<name>]`

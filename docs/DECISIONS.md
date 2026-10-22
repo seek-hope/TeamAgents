@@ -22,14 +22,35 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
 | Sandbox mode | `[permissions] sandbox` selects `none` (default: host shell, no shell approval) or a backend (`approved_scope` + sandbox, fail-closed); D-466 | D-41, D-466 |
 | Repository instructions | explicit `instruction_files` come first; a trusted repository's `AGENTS.md` files are discovered from its boundary down to the cwd, outermost first (D-467) | D-246, D-467 |
-| Multi-edit and read parallelism | the default schema offers `edit_files` (disjoint, revision-checked, atomic batch); a batch of independent read-only calls runs its tool work concurrently while dispatch, veto and receipts stay ordered (D-469) | D-469 |
+| Multi-edit and read parallelism | the default schema's `edit_file` accepts `edits` (disjoint, revision-checked, atomic batch; `edit_files` is an unadvertised alias); a batch of independent read-only calls runs its tool work concurrently while dispatch, veto and receipts stay ordered (D-469) | D-469 |
 | Session controls and web domains | user-only model/effort switch at a READY/WAITING boundary, an explicit `after = "turn"` follow-up queue, and `web` grants with `domain:` scopes; cancelling a task does not stop its command (D-470) | D-470 |
+| Acceptance checks | `exec --check` and goal `[[checks]]` run through the session's shell mode: `sandbox = none` on the host, a configured backend fail-closed (D-471) | D-471 |
 | Capability delegation | user remains the authority root; spawned instances still hold no shell by default; a user grant may be marked `delegable`, and only such a parent may produce attenuated, task-scoped, non-delegable child grants; missing capabilities become a visible pending approval, not a silent idle | D-455 |
 | Repository-local config | nearest ancestor config is discovered; canonical-root trusted_projects or explicit trust_project admits it; permissions, hooks, checks, retention, limits and update policy stay user-only; instruction files remain explicit | D-244, D-246, D-434 |
 | Retention | history_days applies at boot under V2Retention guards; archived_days is applied by sessions prune under V2Prune guards; live state and evidence stay protected | D-245, D-435, D-436 |
 | Prompt cache | cache hit/miss/write are provider-reported and visible; the L1 frontier is fixed between compactions; Anthropic gets explicit breakpoints and OpenAI a stable key; DeepSeek stays automatic | D-459 |
 | Command idempotency | a replay with the same `command_id` returns the stored receipt for control-plane state, and the authoritative check runs under the write lock (D-463); result bodies are shared by content digest and zstd-compressed (D-464), while the receipt **rows** remain one per command | D-463, D-464 |
 | Model actions and code windows | a deciding read shares the write's transaction, or the guard is a predicate on the write itself; `verification/REPORT.md` §6 lists the protocol transitions and the three engine windows that span two transactions with their predicates | D-465 |
+
+## D-471 Acceptance checks follow the session's shell mode (2026-10-22)
+
+**Why.** The audit found the headless `exec --check` path still ran checks through `shell_run_stateful`, which
+hardcodes a bubblewrap sandbox, so `sandbox = none` was ignored there. The goal's `[[checks]]` already followed the
+session mode through the driver's `execute_shell`.
+
+**What.** `run_checks` takes the `ShellMode`; `exec` derives it from `[permissions] sandbox`
+(`sandbox_from_config`, default `none`) through the new `ShellMode::from_sandbox`, and runs each check with
+`shell_run_in_mode`. With `sandbox = none` the check runs on the host; a configured backend keeps the fail-closed
+`IsolationUnavailable` refusal. Goal `[[checks]]` and `verify_goal` continue to use the session mode through the
+driver's `execute_shell`.
+
+**Boundaries.** Checks are the user's own commands, not model output. The check mode is the config's mode (the
+headless client has no separate check-mode flag); a backend that cannot start refuses the check and never falls
+back to the host.
+
+**Acceptance.** `exec::tests::acceptance_commands_follow_the_host_mode` (a Host-mode check runs and leaves its
+marker); the CLI test `an_unisolated_shell_refuses_instead_of_running_on_the_host` configures
+`sandbox = "bubblewrap"` for the refusal and adds a `sandbox = "none"` case that runs on the host.
 
 ## D-470 Session controls, web grants, and cancel-vs-stop (2026-10-21)
 
@@ -59,7 +80,7 @@ diagnostics test asserts the cancel-vs-stop text.
 
 **Why.** The default edit tool replaced exactly one occurrence, and a batch of independent reads ran one at a time.
 
-**What.** `edit_files` is offered by default: edits are grouped by path, each `old_string` must match exactly once,
+**What.** `edit_file` accepts an `edits` array (the unadvertised `edit_files` alias shares the same body): edits are grouped by path, each `old_string` must match exactly once,
 ranges must not overlap, `expected_sha256` is checked per edit, and the whole batch is staged under one lock set and
 committed or rolled back atomically through the existing `StagedWrite`/`commit_batch` path. `driver::step_read_batch`
 runs a batch of at least two PREPARED read-only calls (`read_file`, `read_artifact`, `grep`, `glob`, `skill`)
