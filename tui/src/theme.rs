@@ -1,20 +1,28 @@
-//! Fullscreen dark palette: quiet surfaces, readable secondary text and a
-//! single blue accent. State colours are reserved for actionable status.
+//! ANSI palette matching oh-my-zsh's default `robbyrussell` theme: bold green
+//! success, bold red failure, cyan directory, bold blue git and yellow dirt.
+//! Only the terminal's 16 colours are used, so the TUI follows the same palette
+//! as the user's shell instead of imposing an RGB one.
 
 use ratatui::style::Color;
 
-pub const FG: Color = Color::Rgb(0xe6, 0xe9, 0xef);
-pub const GREY: Color = Color::Rgb(0x8b, 0x93, 0xa1);
-pub const MUTED: Color = Color::Rgb(0x5d, 0x66, 0x74);
-pub const BG: Color = Color::Rgb(0x0b, 0x0d, 0x10);
-pub const PANEL_BG: Color = Color::Rgb(0x14, 0x17, 0x1d);
-pub const CHIP_BG: Color = Color::Rgb(0x1f, 0x25, 0x2e);
-pub const BORDER: Color = Color::Rgb(0x2c, 0x33, 0x3d);
-pub const ACCENT: Color = Color::Rgb(0x7a, 0xa2, 0xf7);
-pub const USER_BG: Color = Color::Rgb(0x19, 0x21, 0x2d);
-pub const CODE: Color = Color::Rgb(0xbf, 0xce, 0xde);
-pub const ADDED: Color = Color::Rgb(0x8f, 0xc9, 0x8f);
-pub const NOTICE: Color = Color::Rgb(0xa8, 0xb0, 0xbc);
-pub const ERROR: Color = Color::Rgb(0xe0, 0x6c, 0x75);
-pub const WARNING: Color = Color::Rgb(0xe5, 0xc0, 0x7b);
-pub const SUCCESS: Color = Color::Rgb(0x8f, 0xc9, 0x8f);
+/// Default terminal text (`%f` in the shell prompt).
+pub const FG: Color = Color::White;
+pub const GREY: Color = Color::DarkGray;
+pub const MUTED: Color = Color::DarkGray;
+pub const BG: Color = Color::Black;
+pub const PANEL_BG: Color = Color::Black;
+pub const CHIP_BG: Color = Color::DarkGray;
+pub const BORDER: Color = Color::DarkGray;
+/// `%{$fg_bold[blue]%}`: the git segment and the single accent.
+pub const ACCENT: Color = Color::LightBlue;
+pub const USER_BG: Color = Color::DarkGray;
+/// `%{$fg[cyan]%}`: the directory segment.
+pub const CODE: Color = Color::Cyan;
+/// `%{$fg_bold[green]%}`.
+pub const ADDED: Color = Color::LightGreen;
+pub const NOTICE: Color = Color::White;
+/// `%{$fg_bold[red]%}`.
+pub const ERROR: Color = Color::LightRed;
+/// `%{$fg[yellow]%}`.
+pub const WARNING: Color = Color::Yellow;
+pub const SUCCESS: Color = Color::LightGreen;
