@@ -206,9 +206,9 @@ fn render_entry(entry: &ChatEntry, width: usize, tool_limit: Option<usize>) -> V
         return assistant(&entry.text, &entry.who, width, false);
     }
     let (label, color) = match entry.kind {
-        ChatKind::User => ("You", FG),
+        ChatKind::User => ("You", ACCENT),
         ChatKind::Tool => ("Tool result · call outside this history page", GREY),
-        ChatKind::Runtime => ("Runtime", GREY),
+        ChatKind::Runtime => ("Runtime", MUTED),
         ChatKind::Context => ("Team note", GREY),
         ChatKind::Summary => ("Conversation compacted", GREY),
         ChatKind::Error => ("Error", ERROR),
@@ -238,11 +238,11 @@ fn render_entry(entry: &ChatEntry, width: usize, tool_limit: Option<usize>) -> V
 
 fn render_tool(tool: &ToolInfo, width: usize, limit: Option<usize>) -> Vec<Line<'static>> {
     let status = if tool.output.is_some() { "result received" } else { "awaiting result" };
-    let mut out = markdown::plain(
-        &format!("› {} · {status}", tool.name),
-        width,
-        Style::default().fg(GREY).add_modifier(Modifier::BOLD),
-    );
+    let mut out = vec![Line::from(vec![
+        Span::styled("› ", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+        Span::styled(tool.name.clone(), Style::default().fg(FG).add_modifier(Modifier::BOLD)),
+        Span::styled(format!(" · {status}"), Style::default().fg(MUTED)),
+    ])];
     let args: Json = serde_json::from_str(&tool.arguments).unwrap_or(Json::Null);
     let detail = if limit != Some(4) {
         if args.is_null() {
@@ -295,7 +295,7 @@ fn render_tool(tool: &ToolInfo, width: usize, limit: Option<usize>) -> Vec<Line<
     }
     for mut line in body {
         if width > 2 {
-            line.spans.insert(0, Span::styled("  ", Style::default().fg(GREY)));
+            line.spans.insert(0, Span::styled("  ", Style::default().fg(MUTED)));
         }
         out.push(line);
     }

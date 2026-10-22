@@ -4,7 +4,7 @@ use crate::{
     theme::*,
     wrap::wrap_line,
 };
-use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
@@ -113,7 +113,7 @@ impl Writer {
     fn inline(&mut self, event: Event<'_>) {
         match event {
             Event::Text(text) | Event::Html(text) | Event::InlineHtml(text) => self.text(text.to_string()),
-            Event::Code(text) => self.spans.push(Span::styled(text.to_string(), self.style().fg(CODE).bg(PANEL_BG))),
+            Event::Code(text) => self.spans.push(Span::styled(text.to_string(), self.style().fg(CODE).bg(CHIP_BG))),
             Event::SoftBreak => self.text(" "),
             Event::HardBreak => self.flush(),
             Event::Start(Tag::Emphasis) => self.push_style(Style::default().add_modifier(Modifier::ITALIC)),
@@ -169,9 +169,13 @@ pub fn render_media(text: &str, width: usize, mut graphics: Option<&mut Graphics
                     w.blank();
                 }
             }
-            Event::Start(Tag::Heading { .. }) => {
+            Event::Start(Tag::Heading { level, .. }) => {
                 w.blank();
-                w.push_style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD));
+                let mut style = Style::default().fg(ACCENT).add_modifier(Modifier::BOLD);
+                if level == HeadingLevel::H1 {
+                    style = style.add_modifier(Modifier::UNDERLINED);
+                }
+                w.push_style(style);
             }
             Event::End(TagEnd::Heading(_)) => {
                 w.flush();

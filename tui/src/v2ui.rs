@@ -5,7 +5,7 @@
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 use ratatui::Frame;
 
 use crate::theme::*;
@@ -16,8 +16,9 @@ use crate::viewport::{item_at, window};
 fn panel(title: impl Into<String>) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .title(Span::styled(title.into(), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)))
-        .border_style(Style::default().fg(GREY))
+        .border_style(Style::default().fg(BORDER))
         .style(Style::default().bg(PANEL_BG).fg(FG))
 }
 
@@ -157,11 +158,24 @@ pub fn render(frame: &mut Frame, app: &mut V2App) {
 }
 
 fn render_status(frame: &mut Frame, app: &V2App, area: Rect) {
-    let style = Style::default().fg(if app.disconnected { ERROR } else { NOTICE });
     let name: String = app.session_name.chars().take(32).collect();
-    let title = if name.is_empty() { "TeamAgents".to_string() } else { format!("TeamAgents · {name}") };
-    let text = format!(" {title}  ·  {}", app.status_line());
-    frame.render_widget(Paragraph::new(text).style(style), area);
+    let status = app.status_line();
+    let status_style = if app.disconnected {
+        Style::default().fg(ERROR)
+    } else if !app.approvals.is_empty() {
+        Style::default().fg(WARNING)
+    } else if status.starts_with("Ready") {
+        Style::default().fg(SUCCESS)
+    } else {
+        Style::default().fg(NOTICE)
+    };
+    let mut spans = vec![Span::styled(" TeamAgents ", Style::default().fg(BG).bg(ACCENT).add_modifier(Modifier::BOLD))];
+    if !name.is_empty() {
+        spans.push(Span::styled(format!(" {name}"), Style::default().fg(FG)));
+    }
+    spans.push(Span::styled("  ·  ", Style::default().fg(MUTED)));
+    spans.push(Span::styled(status, status_style));
+    frame.render_widget(Paragraph::new(Line::from(spans)).style(Style::default().bg(PANEL_BG)), area);
 }
 
 fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
@@ -180,7 +194,10 @@ fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
     let lines = &mut document.lines;
     if lines.is_empty() && app.active_preview().is_none() {
         lines.push(Line::from(""));
-        lines.push(Line::styled("What would you like to build?", Style::default().fg(FG).add_modifier(Modifier::BOLD)));
+        lines.push(Line::styled(
+            "What would you like to build?",
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ));
         lines.push(Line::from(""));
         lines.extend(crate::markdown::plain(
             "Ask the Leader to explore, fix or create something in your project.",
@@ -242,7 +259,7 @@ fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(None)
                 .end_symbol(None)
-                .thumb_style(Style::default().fg(GREY))
+                .thumb_style(Style::default().fg(ACCENT))
                 .thumb_symbol("▏")
                 .track_symbol(None),
             Rect::new(area.right(), area.y, 1, area.height),
@@ -257,7 +274,7 @@ fn render_approvals(frame: &mut Frame, app: &V2App, area: Rect) {
     }
     let focused = app.focus == Focus::Approvals;
     let title = if focused { "approvals (focused)" } else { "approvals" };
-    let block = panel(title).border_style(Style::default().fg(if focused { WARNING } else { ACCENT }));
+    let block = panel(title).border_style(Style::default().fg(if focused { WARNING } else { BORDER }));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let (start, count) = window(app.approvals.len(), app.approval_sel, inner.height as usize);
@@ -268,9 +285,22 @@ fn render_approvals(frame: &mut Frame, app: &V2App, area: Rect) {
         .skip(start)
         .take(count)
         .map(|(i, a)| {
-            let marker = if focused && i == app.approval_sel { "▶" } else { " " };
-            let style = if focused && i == app.approval_sel { selection() } else { Style::default().fg(FG) };
-            Line::from(Span::styled(format!("{marker} {} · {} · {}", a.id, a.tool, a.preview), style))
+            let selected = focused && i == app.approval_sel;
+            let marker = if selected { "▶" } else { " " };
+            if selected {
+                return Line::from(Span::styled(
+                    format!("{marker} {} · {} · {}", a.id, a.tool, a.preview),
+                    selection(),
+                ));
+            }
+            Line::from(vec![
+                Span::styled(marker.to_string(), Style::default().fg(ACCENT)),
+                Span::styled(format!(" {} ", a.id), Style::default().fg(MUTED)),
+                Span::styled("· ", Style::default().fg(MUTED)),
+                Span::styled(a.tool.clone(), Style::default().fg(FG).add_modifier(Modifier::BOLD)),
+                Span::styled(" · ", Style::default().fg(MUTED)),
+                Span::styled(a.preview.clone(), Style::default().fg(GREY)),
+            ])
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), inner);
@@ -324,14 +354,17 @@ fn render_composer(frame: &mut Frame, app: &V2App, area: Rect) {
     } else {
         format!("Message · {} attachments (/attach lists)", app.attachments.paths.len())
     };
-    let block = panel(title).border_style(Style::default().fg(if focused { ACCENT } else { GREY }));
+    let block = panel(title).border_style(Style::default().fg(if focused { ACCENT } else { BORDER }));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let (lines, row, col) = app.composer.visual_lines(inner.width as usize);
     let (start, count) = window(lines.len(), row, inner.height as usize);
     let visible = lines.into_iter().skip(start).take(count).map(Line::raw).collect::<Vec<_>>();
     if app.composer.text().is_empty() {
-        frame.render_widget(Paragraph::new("Message the Leader").style(Style::default().fg(GREY)), inner);
+        frame.render_widget(
+            Paragraph::new("Message the Leader").style(Style::default().fg(MUTED).add_modifier(Modifier::ITALIC)),
+            inner,
+        );
     } else {
         frame.render_widget(Paragraph::new(visible), inner);
     }
@@ -346,6 +379,23 @@ fn render_footer(frame: &mut Frame, app: &V2App, area: Rect) {
     } else {
         app.footer_hint()
     };
-    let style = Style::default().fg(GREY);
-    frame.render_widget(Paragraph::new(hint).style(style), area);
+    frame.render_widget(Paragraph::new(hint_line(&hint)).style(Style::default().bg(PANEL_BG)), area);
+}
+
+/// The hint text is unchanged; only the key token of each `key action` pair is highlighted.
+fn hint_line(hint: &str) -> Line<'static> {
+    let mut spans = Vec::new();
+    for (index, part) in hint.split(" · ").enumerate() {
+        if index > 0 {
+            spans.push(Span::styled(" · ", Style::default().fg(MUTED)));
+        }
+        match part.split_once(' ') {
+            Some((key, action)) => {
+                spans.push(Span::styled(key.to_string(), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)));
+                spans.push(Span::styled(format!(" {action}"), Style::default().fg(GREY)));
+            }
+            None => spans.push(Span::styled(part.to_string(), Style::default().fg(ACCENT))),
+        }
+    }
+    Line::from(spans)
 }
