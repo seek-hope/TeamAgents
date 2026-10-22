@@ -24,7 +24,7 @@ fn panel(title: impl Into<String>) -> Block<'static> {
 
 /// A selected list row: dark text on the accent surface (v1's selection look).
 fn selection() -> Style {
-    Style::default().fg(PANEL_BG).bg(ACCENT).add_modifier(Modifier::BOLD)
+    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
 }
 
 /// Screen regions shared by rendering and hit-testing.
@@ -169,7 +169,7 @@ fn render_status(frame: &mut Frame, app: &V2App, area: Rect) {
     } else {
         Style::default().fg(NOTICE)
     };
-    let mut spans = vec![Span::styled(" TeamAgents ", Style::default().fg(BG).bg(ACCENT).add_modifier(Modifier::BOLD))];
+    let mut spans = vec![Span::styled(" TeamAgents ", Style::default().fg(CODEX).add_modifier(Modifier::BOLD))];
     if !name.is_empty() {
         spans.push(Span::styled(format!(" {name}"), Style::default().fg(FG)));
     }

@@ -473,7 +473,9 @@ pub fn render(
                 Line::styled(
                     crate::markdown::clean(&format!("  {session}  {instance}:{idx}  {snippet}")),
                     if start + offset == browser.search_selected {
-                        Style::default().fg(PANEL_BG).bg(ACCENT)
+                        Style::default()
+                            .fg(ACCENT)
+                            .add_modifier(ratatui::style::Modifier::BOLD | ratatui::style::Modifier::UNDERLINED)
                     } else {
                         Style::default().fg(FG)
                     },
@@ -500,7 +502,9 @@ pub fn render(
                         }
                     ),
                     if start + offset == browser.selected {
-                        Style::default().fg(PANEL_BG).bg(ACCENT)
+                        Style::default()
+                            .fg(ACCENT)
+                            .add_modifier(ratatui::style::Modifier::BOLD | ratatui::style::Modifier::UNDERLINED)
                     } else {
                         Style::default().fg(FG)
                     },
