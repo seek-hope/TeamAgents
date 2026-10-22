@@ -3,6 +3,10 @@ name: Rust CI
 on:
   push:
   pull_request:
+  # D-466 follow-up: a watchdog for the gate itself. CI sat red from 2026-10-19 to 2026-10-21 because nothing
+  # ran the suite between pushes; the same jobs now run once a day even when nobody pushes.
+  schedule:
+    - cron: "17 4 * * *"
 
 permissions:
   contents: read

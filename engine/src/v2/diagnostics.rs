@@ -129,7 +129,7 @@ fn read_sql(conn: &Connection, include_settled: bool) -> rusqlite::Result<View> 
             ("ACTIVE", "READY") if runnable => diagnosis("ready", "Unaddressed input or a pending task is ready for processing.", false,
                 "Allow the coordinator to process it; this snapshot does not prove a model request has started."),
             ("ACTIVE", "READY") if running > 0 => diagnosis("idle_unsettled", "Assignee idle with RUNNING task(s) not settled.", true,
-                "Send an explicit instruction with instances send --id INSTANCE --prompt TEXT, or tasks cancel --id TASK if the result is no longer needed. No automatic retry occurs; task cancellation does not stop tools."),
+                "Send an explicit instruction with instances send --id INSTANCE --prompt TEXT, or tasks cancel --id TASK if the result is no longer needed. Cancelling a task does not stop its running command; instances terminate --id INSTANCE --yes stops its process group. No automatic retry occurs."),
             ("ACTIVE", "READY") => diagnosis("idle", "No unaddressed work is visible at this snapshot.", false, "Send a new instruction when needed."),
             _ => diagnosis("unknown", "Unrecognized lifecycle or phase; no progress inference made.", true, "Inspect status and history."),
         };
@@ -161,7 +161,7 @@ fn read_sql(conn: &Connection, include_settled: bool) -> rusqlite::Result<View> 
             "missing_assignee", "Task assignee is missing.", true, "Inspect history; cancel obsolete work explicitly.",
         ));
         let mut diagnostic = match status.as_str() {
-            "SUCCEEDED" | "FAILED" | "CANCELLED" => diagnosis("settled", "Task settled; its assignee may still have running work.", false, "Inspect assignee activity before assuming any command stopped."),
+            "SUCCEEDED" | "FAILED" | "CANCELLED" => diagnosis("settled", "Task settled; its assignee may still have running work.", false, "Inspect assignee activity before assuming any command stopped; tasks cancel does not stop a command, instances terminate --id INSTANCE --yes does."),
             "BLOCKED" => diagnosis("blocked", "Task BLOCKED; it does not satisfy a task-result wait.", true,
                 "Inspect history and assignee activity. Verify unknown effects first; cancel obsolete work with tasks cancel --id TASK and delegate replacement work explicitly. Cancellation does not stop commands."),
             _ => activity.clone(),

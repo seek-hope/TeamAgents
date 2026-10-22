@@ -357,6 +357,14 @@ pub fn doctor(state_root: Option<PathBuf>, overrides: &[String]) -> i32 {
     // FAIL row of its own; the probe is the same one the shell tool uses, so doctor and the first command agree.
     match crate::config::sandbox_from_config() {
         Err(reason) => check(&mut results, "sandbox", false, reason),
+        Ok(backend) if backend.is_none() => {
+            check(
+                &mut results,
+                "sandbox",
+                true,
+                "sandbox = \"none\": shell commands run on the host, with no isolation (D-466)".into(),
+            );
+        }
         Ok(backend) => {
             let sandbox = crate::tools::sandbox_state_for(&backend);
             let bwrap = bwrap_available();
@@ -1013,7 +1021,11 @@ fn daemon_boot(
     // on where the session lives, or the default entry cannot find the daemon
     let state_root = state_root.map(PathBuf::from).unwrap_or_else(crate::v2_root);
     require_state_root_dir(&state_root)?;
-    let permissions = if full_auto { "full_auto".to_string() } else { crate::config::permission_mode_from_config()? };
+    // D-466: one key selects the mode. `--full-auto` is the explicit host override; otherwise the user's
+    // `[permissions] sandbox` decides — `none` runs on the host, a backend is `approved_scope` inside it.
+    let sandbox = if full_auto { crate::tools::SandboxBackend::none() } else { crate::config::sandbox_from_config()? };
+    let permissions = if sandbox.is_none() { "full_auto".to_string() } else { "approved_scope".to_string() };
+    let requires_approval = permissions == "approved_scope";
     // D-453: a restart must preserve the arguments this daemon was started with.
     // The record holds no credentials; only the workspace, model key, mode and
     // the user's own `-c` overrides.
@@ -1044,16 +1056,12 @@ fn daemon_boot(
             },
             state_root: state_root.clone(),
             workspace,
-            // The mode is the user's decision and there are two places to make it:
-            // the flag asks for host execution *now*, and `[permissions] mode` in the
-            // user's own config sets the session default (a project file never can —
-            // `permission_mode_from_config` reads the user config only). D-75: the
-            // config key was parsed, validated and then ignored, so a user who wrote
-            // `mode = "full_auto"` silently ran in approved_scope.
+            // D-466: the mode comes from the `sandbox` key in the user's own config (a project file never
+            // supplies it), and `--full-auto` asks for the host for this boot.
             permissions,
             approvals_reviewer: crate::config::approval_reviewer_from_config()?,
             reviewer_model: crate::config::reviewer_model_from_config()?,
-            sandbox: crate::config::sandbox_from_config()?,
+            sandbox,
             catalog,
             bindings: default_bindings(),
             // the fallback for an instance whose profile the catalog cannot resolve; each instance's own
@@ -1063,7 +1071,7 @@ fn daemon_boot(
             poll: Duration::from_millis(100),
             // the user's acceptance checks gate every goal this session runs
             goal_limits: crate::config::goal_limits(&catalog_for_factory)?,
-            require_shell_approval: !full_auto,
+            require_shell_approval: requires_approval,
             provider_factory: move |id: &str, profile: &KernelProfile| {
                 // Never panic here: this runs inside the supervisor's discovery
                 // loop, where a panic stops every instance from being driven

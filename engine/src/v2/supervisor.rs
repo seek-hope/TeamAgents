@@ -31,7 +31,7 @@ pub struct SupervisorConfig<P, F> {
     pub workspace: PathBuf,
     /// The sandbox `approved_scope` runs commands in (D-369), from the user's own config.
     pub sandbox: crate::tools::SandboxBackend,
-    /// Trusted session permission mode ("approved_scope" | "full_auto"), D-41.
+    /// Derived from `[permissions] sandbox` (D-466): `full_auto` for the host, `approved_scope` for a backend.
     pub permissions: String,
     /// Who decides an operation approval: the user or the auto-reviewer.
     pub approvals_reviewer: String,

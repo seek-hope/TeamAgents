@@ -20,13 +20,127 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Native context | real-model evaluation always uses the model's native window and records the value and its source | D-36 |
 | Install and first config | source builds while publication is frozen; init writes a minimal config and never overwrites an existing file; local archives require matching checksums | D-37, D-457; docs/INSTALL.md |
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
-| full_auto | user-only host shell (D-41); the default `approved_scope` runs under bubblewrap | D-41 |
+| Sandbox mode | `[permissions] sandbox` selects `none` (default: host shell, no shell approval) or a backend (`approved_scope` + sandbox, fail-closed); D-466 | D-41, D-466 |
+| Repository instructions | explicit `instruction_files` come first; a trusted repository's `AGENTS.md` files are discovered from its boundary down to the cwd, outermost first (D-467) | D-246, D-467 |
+| Multi-edit and read parallelism | the default schema offers `edit_files` (disjoint, revision-checked, atomic batch); a batch of independent read-only calls runs its tool work concurrently while dispatch, veto and receipts stay ordered (D-469) | D-469 |
+| Session controls and web domains | user-only model/effort switch at a READY/WAITING boundary, an explicit `after = "turn"` follow-up queue, and `web` grants with `domain:` scopes; cancelling a task does not stop its command (D-470) | D-470 |
 | Capability delegation | user remains the authority root; spawned instances still hold no shell by default; a user grant may be marked `delegable`, and only such a parent may produce attenuated, task-scoped, non-delegable child grants; missing capabilities become a visible pending approval, not a silent idle | D-455 |
 | Repository-local config | nearest ancestor config is discovered; canonical-root trusted_projects or explicit trust_project admits it; permissions, hooks, checks, retention, limits and update policy stay user-only; instruction files remain explicit | D-244, D-246, D-434 |
 | Retention | history_days applies at boot under V2Retention guards; archived_days is applied by sessions prune under V2Prune guards; live state and evidence stay protected | D-245, D-435, D-436 |
 | Prompt cache | cache hit/miss/write are provider-reported and visible; the L1 frontier is fixed between compactions; Anthropic gets explicit breakpoints and OpenAI a stable key; DeepSeek stays automatic | D-459 |
 | Command idempotency | a replay with the same `command_id` returns the stored receipt for control-plane state, and the authoritative check runs under the write lock (D-463); result bodies are shared by content digest and zstd-compressed (D-464), while the receipt **rows** remain one per command | D-463, D-464 |
 | Model actions and code windows | a deciding read shares the write's transaction, or the guard is a predicate on the write itself; `verification/REPORT.md` §6 lists the protocol transitions and the three engine windows that span two transactions with their predicates | D-465 |
+
+## D-470 Session controls, web grants, and cancel-vs-stop (2026-10-21)
+
+**Why.** Three daily-use gaps remained: no model/effort switch, no explicit follow-up queue, no domain allowlist,
+and "cancel a task" was easy to read as "stop the work".
+
+**What.** (1) `set_instance_profile` (user-only) updates an instance's `model` and `options.reasoning_effort` only
+at a READY/WAITING boundary; the driver reloads the profile before each request, so an in-flight turn keeps its
+profile and the next turn uses the new one. `teamagents instances model --id ID [--model KEY] [--effort E]` is the
+CLI. (2) `submit_input` accepts `after = "turn"`: the envelope is stored `DEFERRED` and promoted to `ACCEPTED` when
+that turn's decision is consumed, so the next drain applies it; `instances send --after-turn` is the CLI. (3) `web`
+is a grant action with `domain:<host>` scopes (`session` allows every domain); the driver collects the instance's
+live web scopes and gives them to the web tool, which refuses a `web_fetch` host outside the list. No `web` grant
+means no allowlist (the historical behavior). (4) The `idle_unsettled` and settled-task diagnostics name the lever:
+cancelling a task releases the delegator but does not stop the command; `instances terminate --id ID --yes` stops
+its process group.
+
+**Boundaries.** The switch is user-only and boundary-only (no mid-turn swap); a follow-up is input, not a new goal;
+domain matching is exact or `*.suffix`, not a URL-path policy; the diagnosis is advice, not an automatic action.
+
+**Acceptance.** core tests `a_user_can_switch_model_and_effort_at_a_boundary` and
+`a_deferred_follow_up_enters_after_the_turn_closes`; tool test
+`the_web_domain_allowlist_is_optional_exact_or_wildcard`; capability test `a_web_grant_carries_a_domain_scope`; the
+diagnostics test asserts the cancel-vs-stop text.
+
+## D-469 Disjoint multi-edit and parallel read-only tools (2026-10-21)
+
+**Why.** The default edit tool replaced exactly one occurrence, and a batch of independent reads ran one at a time.
+
+**What.** `edit_files` is offered by default: edits are grouped by path, each `old_string` must match exactly once,
+ranges must not overlap, `expected_sha256` is checked per edit, and the whole batch is staged under one lock set and
+committed or rolled back atomically through the existing `StagedWrite`/`commit_batch` path. `driver::step_read_batch`
+runs a batch of at least two PREPARED read-only calls (`read_file`, `read_artifact`, `grep`, `glob`, `skill`)
+concurrently in `spawn_blocking`; dispatch, the pre_tool veto and completion/receipts stay sequential and in call
+order, and any other batch falls back to the ordinary per-operation loop.
+
+**Boundaries.** No crash-atomic multi-file guarantee beyond the staged batch (no journal); overlap or ambiguity
+fails the whole batch unchanged; only read-only calls are parallel, writes keep their order.
+
+**Acceptance.** `tools::tests::edit_files_applies_disjoint_edits_and_refuses_overlap_or_stale_input`;
+`v2_driver::a_read_only_batch_runs_together_and_keeps_call_order`.
+
+## D-468 Skill support resources: bounded read and a read-only sandbox mount (2026-10-21)
+
+**Why.** The skill workflow stopped at `SKILL.md`: a skill's scripts, references and assets were inaccessible, so
+a skill that needs a runnable companion file could only describe it.
+
+**What.** The `skill` tool's `read` action gains an optional `path` argument. It must be a relative path inside the
+skill's own directory: absolute paths, `.`/`..`, empty components, credential-shaped names (`.env`, `.ssh`,
+`.git`, `.netrc`, `id_rsa`, `id_ed25519`, `credentials`, `secrets`, `token`, `*.pem`, `*.key`, `*.p12`) and any
+canonical target that leaves the skill root are refused; only regular files are read; the text is capped at
+32,000 characters and reports `truncated`. The configured skill roots (`skills_paths`, the allowlist) are mounted
+read-only at `/skills/<n>` inside the bubblewrap command, so a support script can be executed there. Docker and
+ssh do not mount them; the tool read still works on the host for those backends.
+
+**Boundaries.** Only files under a registered skill directory; no directory listing, no binary streaming (text,
+lossy UTF-8, truncated), the mount is read-only, and a skill instruction still grants nothing by itself.
+
+**Acceptance.** `tools::tests::skill_read_exposes_relative_resources_and_refuses_escapes` (allowed read, traversal,
+absolute path, credential name, symlink escape, directory, oversized truncation) and
+`tools::tests::bwrap_argv_mounts_skill_roots_read_only`.
+
+## D-467 Repository AGENTS.md discovery (2026-10-21)
+
+**Why.** Daily work happens in repositories that carry an `AGENTS.md`; requiring every one to be listed in the
+user's `instruction_files` was recurring friction, and the previous documentation said discovery was not
+implemented.
+
+**What.** `engine/src/config.rs` computes the boundary (`instruction_boundary`: the project-config root when it is
+above the cwd, otherwise the nearest git root, otherwise the cwd), decides trust about that boundary with the same
+`trust_decision` rule repository config uses, and discovers `AGENTS.md` regular files from the boundary down to
+the cwd. Order is the precedence: the user's `instruction_files`, then a trusted project config's own list, then
+the discovered files outermost first, so the nearest directory's file is the most specific. A file already listed
+by canonical path is not added twice. An untrusted repository contributes nothing and the refusal is recorded in
+the merge outcome (`refused`), which `doctor` and the daemon log show. The files are text appended to the prompt;
+they cannot grant a permission, install a hook or supply checks.
+
+**Boundaries.** Only a file named `AGENTS.md` is discovered (no other names, no globs). Discovery never walks
+above the boundary, so a worktree-like checkout with its own `.git`/config does not pull in a parent repository's
+rules. Missing files are simply absent; unreadable ones are named by the existing instruction loader (`D-246`)
+rather than dropped in silence. The trust rule is the repository-config rule: `trust_project = true` or the
+canonical path in `trusted_projects`.
+
+**Acceptance.** `config::project_config_tests::agents_files_are_discovered_from_the_trusted_boundary_to_the_cwd`
+(order: user file, then the repository root's `AGENTS.md`, then the subdirectory's; untrusted contributes none and
+records the refusal) and `agents_discovery_stops_at_the_worktree_boundary` (a worktree's own config/`AGENTS.md`,
+no parent rules).
+
+## D-466 One sandbox key, two modes, default none (2026-10-21)
+
+**Why.** The user's judgement: Pi has no sandbox and feels better than a sandboxed agent, so isolation should be a
+pluggable choice rather than the default shape. The user chose two modes — `none` (default) and
+`approved_scope + sandbox` — and a Rust-native backend as the direction for the sandboxed mode.
+
+**What.** `[permissions] sandbox` is the only mode key. `none` (the default) runs shell commands on the host with
+no shell approval. `bubblewrap`, `docker` or `ssh` select `approved_scope`: the command runs inside that backend,
+and a configured-but-unavailable backend refuses the command (D-113/D-114, unchanged). The user-facing `mode`
+key, `full_auto` and `require_shell_approval` retire; the internal permission string is derived from the sandbox
+(`none` → `full_auto`, a backend → `approved_scope`). `doctor`, `init`, CONFIG, USER-GUIDE, DESIGN and README
+state the mode in one place.
+
+**Boundaries.** `none` is host execution and claims no isolation; there is no shell approval gate in it.
+Approvals for updates and capabilities are unaffected (they are not shell approvals). The auto-review reviewer
+remains available in the sandbox mode and still needs a usable backend. The Rust-native backend is a design
+spike (T2), not an implemented backend: bubblewrap/docker/ssh remain the first implementations behind the same
+selection key.
+
+**Acceptance.** `config::project_config_tests::the_sandbox_backend_is_read_and_refused_when_unusable` (default
+none, explicit none, a backend flips the mode), `tools::tests::the_none_backend_is_the_host_and_a_backend_is_the_sandbox`,
+the doctor CLI tests (default passes without bwrap; a configured bubblewrap still fails closed), and the
+`full_auto_reaches_a_started_daemon…` test (config `none`/`bubblewrap` and the `--full-auto` override).
 
 ## D-465 Model actions and code windows: the guard belongs to the write (2026-10-21)
 
@@ -107,7 +221,10 @@ id. (2) `dispatch_operation` deliberately uses a fresh id per attempt so an `APP
 wedge the operation; the operation state machine is that anchor. (3) A failed command stores no receipt, so a
 retry re-executes — safe only because dispatch touches the database alone. (4) A replay returns the stored
 answer **without re-validating current grants, deadlines or state**; it is a record of what happened, not a
-fresh authorization.
+fresh authorization. (5) A `drain_inbox` that applies no envelope, seals none and wakes no wait stores **no
+receipt at all** (D-466 follow-up): it is a read of the inbox, and a retry re-runs it, which applies nothing
+while nothing is pending. This is the one deliberate exception to "every command has a receipt"; the measurement
+that forced it is in D-464 (94% of a real session's rows were such polls).
 
 **Why the model did not catch it.** `V2Daemon.tla` does model this replay (`command_id → payload_hash` + stored
 result, with `ReplayRewritesReceipt` as a counterfactual), but a TLA+ step is atomic: the check and the write

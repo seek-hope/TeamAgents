@@ -55,7 +55,7 @@ make verify-kani                         # Kani proofs (paging arithmetic)
 python3 review/eval/r2-p6/run.py --phase pilot --out <new date directory>  # real-model A/B/C comparison (needs credentials)
 ```
 
-- Local baseline (2026-10-21, f78a6709 plus D-461): `make check` is green — core 143 / engine 406 / tui 81;
+- Local baseline (2026-10-21, f78a6709 plus D-461): `make check` is green — core 147 / engine 414 / tui 81;
   `make pty` passes. This is not a renewal of D-452's independent audit or historical real-service results.
   Raw evaluation JSONL lives in `review/eval/r2-p6/runs/`, per-item evidence in `docs/ACCEPTANCE.md`.
   Candidate daily-coding work has one home, `docs/PRODUCT-COMPARISON.md`. D-461 approves and implements

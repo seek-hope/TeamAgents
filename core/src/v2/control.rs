@@ -78,6 +78,15 @@ fn decode_result(body: &[u8]) -> Result<Json, String> {
     serde_json::from_slice(&text).map_err(|e| format!("stored receipt: {e}"))
 }
 
+/// A drain whose result says no envelope was applied or sealed and no wait woke changed nothing: it is a read
+/// of the inbox, not a state change, and it keeps no receipt (D-466 follow-up, recorded in D-463's boundary).
+/// A missing field counts as "changed", so an unforeseen result shape stays conservative.
+fn drain_changed_nothing(result: &Json) -> bool {
+    result["applied"].as_i64().unwrap_or(1) == 0
+        && result["sealed"].as_i64().unwrap_or(1) == 0
+        && result["woken"].as_array().is_some_and(|woken| woken.is_empty())
+}
+
 /// D-463: the one receipt lookup, used both by the fast pre-check and by the authoritative check inside the
 /// write transaction. A row without `result_digest` predates D-464 and still holds its own copy.
 fn receipt_lookup(conn: &Connection, command_id: &str, hash: &str) -> Result<Option<Json>, String> {
@@ -200,6 +209,14 @@ impl Control {
             return Err("input attachments must be snapshotted by the engine".into());
         }
         let result = dispatch(&tx, &self.session_id, &method, &params, &identity)?;
+        // D-466 follow-up: a poll that changed nothing is a read. Storing a receipt per poll made 94% of a real
+        // session's 4.8M command rows (D-464 measured 4,562,833 `drain_inbox` receipts at 38.4/s). Replaying
+        // such an id re-runs the drain, which applies nothing while nothing is pending; the narrowing is
+        // recorded in D-463's boundary.
+        if method == "drain_inbox" && drain_changed_nothing(&result) {
+            tx.commit().map_err(|e| format!("commit: {e}"))?;
+            return Ok(result);
+        }
         let (digest, body) = encode_result(&result)?;
         tx.execute(
             "INSERT OR IGNORE INTO command_results (digest, body) VALUES (?1, ?2)",
@@ -238,6 +255,7 @@ fn dispatch(
         "require_checks" => require_checks(tx, session_id, params, identity),
         "send_message" => send_message(tx, session_id, params, identity),
         "drain_inbox" => drain_inbox(tx, session_id, params, identity),
+        "set_instance_profile" => set_instance_profile(tx, session_id, params, identity),
         "delegate_task" => delegate_task(tx, session_id, params, identity),
         "start_task" => start_task(tx, session_id, params, identity),
         "complete_task" => complete_task(tx, session_id, params, identity),
@@ -1115,6 +1133,58 @@ fn envelope_text(kind: &str, sender: &str, correlation: Option<&str>, payload: &
 /// envelope of the current epoch applies once in sequence order — the
 /// apply-dedup makes a replayed drain a no-op — and stale-epoch leftovers
 /// seal as SUPERSEDED instead of leaking into the new epoch.
+/// D-470: user-only model/effort switch at a safe boundary. The driver reloads the instance profile before its
+/// next request, so the change lands on the next turn and never inside an in-flight one.
+fn set_instance_profile(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
+    require_user(identity)?;
+    let instance_id = params["instance_id"].as_str().ok_or("set_instance_profile.instance_id required")?;
+    let (session, _, lifecycle, phase, _) = load_instance(tx, instance_id)?;
+    if session != session_id {
+        return Err(format!("instance {instance_id} does not belong to this session"));
+    }
+    if lifecycle == "TERMINATED" {
+        return Err(format!("instance {instance_id} is terminated"));
+    }
+    if matches!(phase.as_str(), "MODEL_PENDING" | "TOOLS_PENDING" | "COMPLETION_PENDING") {
+        return Err(format!(
+            "instance {instance_id} has a turn in flight; change the profile at a READY or WAITING boundary"
+        ));
+    }
+    let text: String = tx
+        .query_row("SELECT profile_json FROM instances WHERE id = ?1", [instance_id], |row| row.get(0))
+        .map_err(|e| format!("instance profile {instance_id}: {e}"))?;
+    let mut profile: Json = serde_json::from_str(&text).map_err(|e| format!("instance profile {instance_id}: {e}"))?;
+    if let Some(model) = params["model"].as_str().filter(|model| !model.trim().is_empty()) {
+        profile["model"] = json!(model);
+    }
+    if let Some(effort) = params["effort"].as_str().filter(|effort| !effort.trim().is_empty()) {
+        if !profile["options"].is_object() {
+            profile["options"] = json!({});
+        }
+        profile["options"]["reasoning_effort"] = json!(effort);
+    }
+    if !profile["model"].is_string() {
+        return Err("the instance profile has no model".into());
+    }
+    tx.execute(
+        "UPDATE instances SET profile_json = ?1, revision = revision + 1 WHERE id = ?2",
+        rusqlite::params![profile.to_string(), instance_id],
+    )
+    .map_err(|e| format!("instance profile update: {e}"))?;
+    event(
+        tx,
+        session_id,
+        "instance_profile_changed",
+        instance_id,
+        &json!({"model": profile["model"], "effort": profile["options"]["reasoning_effort"]}),
+    )?;
+    let revision: i64 = tx
+        .query_row("SELECT revision FROM instances WHERE id = ?1", [instance_id], |row| row.get(0))
+        .map_err(|e| format!("instance revision {instance_id}: {e}"))?;
+    Ok(json!({"instance_id": instance_id, "model": profile["model"],
+               "effort": profile["options"]["reasoning_effort"], "revision": revision}))
+}
+
 fn drain_inbox(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
     let instance_id = params["instance_id"].as_str().ok_or("drain_inbox.instance_id required")?;
     match identity {
@@ -2090,14 +2160,24 @@ fn submit_input(tx: &Connection, session_id: &str, params: &Json, identity: &Ide
             row.get(0)
         })
         .map_err(|e| format!("envelope sequence: {e}"))?;
+    // D-470: an explicit follow-up (`after = "turn"`) enters at the next READY boundary once the current turn's
+    // decision is consumed; without it the input is applied now (or at the boundary a turn in flight leaves).
+    let deferred = params["after"].as_str() == Some("turn");
+    let state = if deferred { "DEFERRED" } else { "ACCEPTED" };
     tx.execute(
         "INSERT INTO envelopes
          (id, session_id, sender, recipient, epoch, kind, correlation_id, payload_json, sequence, state)
-         VALUES (?1, ?2, ?3, ?4, ?5, 'user_input', NULL, ?6, ?7, 'ACCEPTED')",
-        rusqlite::params![envelope_id, session_id, sender, instance_id, epoch, payload.to_string(), sequence],
+         VALUES (?1, ?2, ?3, ?4, ?5, 'user_input', NULL, ?6, ?7, ?8)",
+        rusqlite::params![envelope_id, session_id, sender, instance_id, epoch, payload.to_string(), sequence, state],
     )
     .map_err(|e| format!("envelope {envelope_id}: {e}"))?;
     record_input_revision(tx, envelope_id, 0, "submitted", &payload)?;
+    if deferred {
+        publish_list(tx, session_id, params)?;
+        event(tx, session_id, "input_queued", instance_id, &json!({"envelope_id": envelope_id, "deferred": true}))?;
+        return Ok(json!({"envelope_id": envelope_id, "applied": false, "queued": true, "deferred": true,
+                         "instance_revision": revision}));
+    }
     // A turn in flight has a *fixed* request that cannot include this input, so
     // applying it now would store it behind that request's own reply: the model
     // would read its answer as the answer to an input it never saw, and the idle
@@ -3586,6 +3666,12 @@ fn consume_if_closed(tx: &Connection, session_id: &str, decision_id: &str) -> Re
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .map_err(|e| format!("decision instance: {e}"))?;
+    // D-470: a deferred follow-up enters at the next READY boundary once this turn's decision is consumed.
+    tx.execute(
+        "UPDATE envelopes SET state = 'ACCEPTED' WHERE recipient = ?1 AND epoch = ?2 AND state = 'DEFERRED'",
+        rusqlite::params![instance, epoch],
+    )
+    .map_err(|e| format!("follow-up promotion: {e}"))?;
     let operations: Vec<(String, String, Option<String>)> = {
         let mut stmt = tx
             .prepare("SELECT operation_id, intent_json, receipt_json FROM operations WHERE decision_id = ?1 ORDER BY tool_index")
@@ -5630,6 +5716,129 @@ mod tests {
             .unwrap();
         assert_eq!(completed, 1, "one completion event");
         drop(ctl);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn a_user_can_switch_model_and_effort_at_a_boundary() {
+        let (mut ctl, path) = control("set-profile");
+        create_instance(&mut ctl, "i1");
+        let changed = ctl
+            .submit(
+                cmd(
+                    "sp-1",
+                    "set_instance_profile",
+                    json!({"instance_id": "i1", "model": "new-model", "effort": "high"}),
+                ),
+                Identity::User,
+            )
+            .expect("switch");
+        assert_eq!(changed["model"], json!("new-model"));
+        assert_eq!(changed["effort"], json!("high"));
+        let text: String = ctl
+            .connection()
+            .query_row("SELECT profile_json FROM instances WHERE id = 'i1'", [], |row| row.get(0))
+            .unwrap();
+        let profile: Json = serde_json::from_str(&text).unwrap();
+        assert_eq!(profile["model"], json!("new-model"));
+        assert_eq!(profile["options"]["reasoning_effort"], json!("high"));
+        // a turn in flight refuses the switch
+        ctl.connection().execute("UPDATE instances SET phase = 'MODEL_PENDING' WHERE id = 'i1'", []).unwrap();
+        let err = ctl
+            .submit(cmd("sp-2", "set_instance_profile", json!({"instance_id": "i1", "model": "other"})), Identity::User)
+            .unwrap_err();
+        assert!(err.contains("in flight"), "{err}");
+        // user-only
+        let err = ctl
+            .submit(
+                cmd("sp-3", "set_instance_profile", json!({"instance_id": "i1", "model": "x"})),
+                Identity::Instance("i1".into()),
+            )
+            .unwrap_err();
+        assert!(err.contains("user"), "{err}");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn a_deferred_follow_up_enters_after_the_turn_closes() {
+        let (mut ctl, path) = control("follow-up");
+        create_instance(&mut ctl, "i1");
+        let queued = ctl
+            .submit(
+                cmd(
+                    "fu-1",
+                    "submit_input",
+                    json!({"instance_id": "i1", "envelope_id": "e1", "text": "later", "after": "turn"}),
+                ),
+                Identity::User,
+            )
+            .expect("queue");
+        assert_eq!(queued["applied"], json!(false));
+        assert_eq!(queued["deferred"], json!(true));
+        assert_eq!(context_count(&ctl, "i1"), 0);
+        let state: String =
+            ctl.connection().query_row("SELECT state FROM envelopes WHERE id = 'e1'", [], |row| row.get(0)).unwrap();
+        assert_eq!(state, "DEFERRED");
+        // close a turn: open a decision, dispatch and complete its operation
+        open_decision(&mut ctl, "fu", "i1", 0, 1);
+        ctl.submit(
+            cmd("dp-fu", "dispatch_operation", json!({"operation_id": "d-fu:0", "approval_required": false})),
+            Identity::System,
+        )
+        .expect("dispatch");
+        ctl.submit(
+            cmd(
+                "done-fu",
+                "complete_operation",
+                json!({"operation_id": "d-fu:0", "status": "SUCCEEDED", "receipt": {"ok": true}}),
+            ),
+            Identity::System,
+        )
+        .expect("complete");
+        let state: String =
+            ctl.connection().query_row("SELECT state FROM envelopes WHERE id = 'e1'", [], |row| row.get(0)).unwrap();
+        assert_eq!(state, "ACCEPTED", "the follow-up enters when the turn closes");
+        let before = context_count(&ctl, "i1");
+        let drained = ctl
+            .submit(cmd("drain-fu", "drain_inbox", json!({"instance_id": "i1"})), Identity::Instance("i1".into()))
+            .expect("drain");
+        assert_eq!(drained["applied"], json!(1));
+        assert_eq!(context_count(&ctl, "i1"), before + 1, "the follow-up lands as one user entry");
+        let last: String = ctl
+            .connection()
+            .query_row(
+                "SELECT message_json FROM context_entries WHERE instance_id = 'i1' AND kind = 'user'
+                 ORDER BY idx DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(last.contains("later"), "{last}");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn a_no_op_drain_keeps_no_receipt_but_a_changing_one_does() {
+        let (mut ctl, path) = control("drain-receipts");
+        create_instance(&mut ctl, "i1");
+        let receipts = |ctl: &Control| -> i64 {
+            ctl.connection().query_row("SELECT COUNT(*) FROM commands", [], |row| row.get(0)).unwrap()
+        };
+        assert_eq!(receipts(&ctl), 1, "create_instance's own receipt");
+        let drain = |ctl: &mut Control, id: &str| {
+            ctl.submit(cmd(id, "drain_inbox", json!({"instance_id": "i1"})), Identity::Instance("i1".into()))
+                .expect("drain")
+        };
+        let first = drain(&mut ctl, "d1");
+        assert_eq!(first["applied"], json!(0), "{first}");
+        assert_eq!(first["sealed"], json!(0), "{first}");
+        assert_eq!(first["woken"], json!([]), "{first}");
+        drain(&mut ctl, "d2");
+        assert_eq!(receipts(&ctl), 1, "a no-op drain is a read and keeps no receipt");
+        ctl.submit(cmd("sm", "send_message", json!({"recipient": "i1", "text": "go"})), Identity::User).expect("send");
+        let applied = drain(&mut ctl, "d3");
+        assert_eq!(applied["applied"], json!(1), "{applied}");
+        assert_eq!(receipts(&ctl), 3, "the drain that applied a message keeps its receipt");
         cleanup(&path);
     }
 

@@ -738,7 +738,7 @@ mod tests {
         // and the keys the reference lists still parse, both permission keys included
         let ok = parse_user_config(&format!(
             "skills_paths = [\"/tmp/skills\"]\ninstruction_files = []\n{model}\n\
-             [permissions]\nmode = \"full_auto\"\ntrust_project = true\n"
+             [permissions]\nsandbox = \"none\"\ntrust_project = true\n"
         ))
         .expect("the documented keys parse");
         assert_eq!(ok.skills_paths, vec!["/tmp/skills".to_string()]);
@@ -1145,8 +1145,9 @@ provider = "deepseek"
             .unwrap_err()
             .contains("must be true/false"));
         assert!(parse_user_config("permissions = 1\n").unwrap_err().contains("must be a table"));
-        assert!(parse_user_config("[permissions]\nmode = \"yolo\"\n").unwrap_err().contains("invalid permission mode"));
-        assert!(parse_user_config("[permissions]\ntrust_project = true\nmode = \"full_auto\"\n").is_ok());
+        // D-466: `mode` is gone; the two modes are selected by `sandbox`, so the old key is an unknown key
+        assert!(parse_user_config("[permissions]\nmode = \"yolo\"\n").unwrap_err().contains("unknown key"));
+        assert!(parse_user_config("[permissions]\ntrust_project = true\nsandbox = \"none\"\n").is_ok());
         assert!(parse_user_config("[permissions]\napprovals_reviewer = \"auto_review\"\n").is_ok());
         assert!(parse_user_config("[permissions]\napprovals_reviewer = \"maybe\"\n")
             .unwrap_err()
@@ -1187,7 +1188,6 @@ pub fn project_config_path(cwd: &Path) -> PathBuf {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Permissions {
     pub trust_all: bool,
-    pub mode: String,
     pub approvals_reviewer: String,
     pub reviewer_model: Option<String>,
     pub trusted_projects: Vec<PathBuf>,
@@ -1201,6 +1201,48 @@ pub fn project_root_of(cwd: &Path) -> PathBuf {
     let root =
         configured.parent().and_then(|dir| dir.parent()).map(Path::to_path_buf).unwrap_or_else(|| cwd.to_path_buf());
     std::fs::canonicalize(&root).unwrap_or(root)
+}
+
+/// D-467: the directory that bounds repository instruction discovery. When a project config exists above the
+/// cwd, its root is the boundary (the same root the trust decision was made about). Without one, the nearest
+/// git root is the boundary, and trust is decided about that root; otherwise the cwd itself.
+fn instruction_boundary(cwd: &Path, project_root: &Path) -> PathBuf {
+    if project_root != cwd && cwd.starts_with(project_root) {
+        return project_root.to_path_buf();
+    }
+    let mut dir = cwd.to_path_buf();
+    loop {
+        if dir.join(".git").exists() {
+            return dir;
+        }
+        match dir.parent() {
+            Some(parent) => dir = parent.to_path_buf(),
+            None => return cwd.to_path_buf(),
+        }
+    }
+}
+
+/// D-467: the `AGENTS.md` files from the boundary down to the cwd, outermost first (a repository's rules, then
+/// each more specific directory's). Only regular files; the caller decides trust. The order is the precedence:
+/// a later file is the more specific rule, and the user's own `instruction_files` stay before all of them.
+fn discover_agents(boundary: &Path, cwd: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut dir = cwd.to_path_buf();
+    loop {
+        let candidate = dir.join("AGENTS.md");
+        if candidate.is_file() {
+            found.push(candidate.clone());
+        }
+        if dir == boundary {
+            break;
+        }
+        match dir.parent() {
+            Some(parent) if parent.starts_with(boundary) || parent == boundary => dir = parent.to_path_buf(),
+            _ => break,
+        }
+    }
+    found.reverse();
+    found
 }
 
 /// What the project-config merge decided (D-244).
@@ -1393,6 +1435,33 @@ pub fn load_user_config_for_with(cwd: &Path, overrides: &[String]) -> Result<(Us
             outcome.refused.push(format!("{key} ({untrusted})"));
         }
     }
+    // D-467: a trusted repository contributes its AGENTS.md files, from the boundary down to the cwd, after the
+    // user's own instruction files. Untrusted repositories contribute nothing and the refusal is reported; the
+    // files are text only, so this cannot grant a permission or install a hook.
+    let boundary = instruction_boundary(cwd, &root);
+    let (agents_trusted, _) = trust_decision(&boundary, &permissions);
+    let agents = discover_agents(&boundary, cwd);
+    if !agents.is_empty() {
+        if agents_trusted {
+            for path in agents {
+                let text = path.to_string_lossy().into_owned();
+                if instructions.iter().any(|value| {
+                    value.as_str().is_some_and(|listed| {
+                        std::fs::canonicalize(expand_home(listed)).ok() == std::fs::canonicalize(&path).ok()
+                    })
+                }) {
+                    continue; // already listed by the user or the project config
+                }
+                outcome.accepted.push(format!("AGENTS.md:{}", path.display()));
+                instructions.push(toml::Value::String(text));
+            }
+        } else {
+            outcome.refused.push(format!(
+                "AGENTS.md files under {} (the project is untrusted: add it to [permissions] trusted_projects)",
+                boundary.display()
+            ));
+        }
+    }
     merged.insert("skills_paths".into(), toml::Value::Array(skills));
     merged.insert("instruction_files".into(), toml::Value::Array(instructions));
     // hooks and checks run commands, retention deletes data and limits bound the session: all four are the
@@ -1429,7 +1498,6 @@ fn project_permissions(user: &toml::Value) -> Result<Permissions, String> {
     let Some(permissions) = user.get("permissions") else {
         return Ok(Permissions {
             trust_all: false,
-            mode: "approved_scope".into(),
             approvals_reviewer: "user".into(),
             reviewer_model: None,
             trusted_projects: Vec::new(),
@@ -1439,8 +1507,7 @@ fn project_permissions(user: &toml::Value) -> Result<Permissions, String> {
     // the same rule as the top level: `mod = "full_auto"` (a typo of `mode`, a *safety* setting) used to leave
     // `doctor` green and the session in `approved_scope` (measured 2026-09-27, D-161)
     for key in table.keys() {
-        if key != "mode"
-            && key != "trust_project"
+        if key != "trust_project"
             && key != "trusted_projects"
             && key != "sandbox"
             && key != "sandbox_image"
@@ -1451,7 +1518,7 @@ fn project_permissions(user: &toml::Value) -> Result<Permissions, String> {
             && key != "reviewer_model"
         {
             return Err(format!(
-                "{} ([permissions] takes mode, trust_project, trusted_projects, sandbox, sandbox_image, \
+                "{} ([permissions] takes trust_project, trusted_projects, sandbox, sandbox_image, \
                  sandbox_ssh_target, sandbox_ssh_workdir, sandbox_ssh_options, approvals_reviewer and reviewer_model)",
                 unknown_key(key)
             ));
@@ -1480,16 +1547,6 @@ fn project_permissions(user: &toml::Value) -> Result<Permissions, String> {
             value.as_bool().ok_or_else(|| format!("permissions.trust_project must be true/false, got {value}"))?
         }
     };
-    let mode = match table.get("mode") {
-        None => "approved_scope".to_string(),
-        Some(value) => value
-            .as_str()
-            .map(str::to_string)
-            .ok_or_else(|| format!("permissions.mode must be a string, got {value}"))?,
-    };
-    if mode != "approved_scope" && mode != "full_auto" {
-        return Err(format!("invalid permission mode {mode:?} in user config"));
-    }
     let approvals_reviewer = match table.get("approvals_reviewer") {
         None => "user".to_string(),
         Some(value) => value
@@ -1510,7 +1567,7 @@ fn project_permissions(user: &toml::Value) -> Result<Permissions, String> {
                 .ok_or_else(|| format!("permissions.reviewer_model must be a non-empty model key, got {value}"))?,
         ),
     };
-    Ok(Permissions { trust_all: trusted, mode, approvals_reviewer, reviewer_model, trusted_projects })
+    Ok(Permissions { trust_all: trusted, approvals_reviewer, reviewer_model, trusted_projects })
 }
 
 /// Full-auto must be user-chosen in config or CLI; never from a project file.
@@ -1532,15 +1589,6 @@ pub fn reviewer_model_from_config() -> Result<Option<String>, String> {
     Ok(project_permissions(&user)?.reviewer_model)
 }
 
-pub fn permission_mode_from_config() -> Result<String, String> {
-    let text = std::fs::read_to_string(user_config_path()).unwrap_or_default();
-    if text.trim().is_empty() {
-        return Ok("approved_scope".into());
-    }
-    let user: toml::Value = text.parse().map_err(|e| format!("bad TOML: {e}"))?;
-    Ok(project_permissions(&user)?.mode)
-}
-
 /// The sandbox backend the user's own config selects (D-369), or bubblewrap. It is a *safety* setting, so a typo
 /// is refused rather than silently defaulting (the shape D-161 established for `mode`), and a Docker selection
 /// without an image is refused at load.
@@ -1551,21 +1599,22 @@ pub fn sandbox_from_config() -> Result<crate::tools::SandboxBackend, String> {
     use crate::tools::{SandboxBackend, SandboxKind};
     let text = std::fs::read_to_string(user_config_path()).unwrap_or_default();
     if text.trim().is_empty() {
-        return Ok(SandboxBackend::bubblewrap());
+        return Ok(SandboxBackend::none());
     }
     let parsed: toml::Value = text.parse().map_err(|e| format!("bad TOML: {e}"))?;
     let Some(table) = parsed.get("permissions").and_then(|value| value.as_table()) else {
-        return Ok(SandboxBackend::bubblewrap());
+        return Ok(SandboxBackend::none());
     };
     let kind = match table.get("sandbox") {
-        None => SandboxKind::Bubblewrap,
+        None => SandboxKind::None,
         Some(value) => match value.as_str() {
+            Some("none") => SandboxKind::None,
             Some("bubblewrap") => SandboxKind::Bubblewrap,
             Some("docker") => SandboxKind::Docker,
             Some("ssh") => SandboxKind::Ssh,
             other => {
                 return Err(format!(
-                    "invalid sandbox {other:?} in user config: this build serves bubblewrap, docker and ssh"
+                    "invalid sandbox {other:?} in user config: this build serves none, bubblewrap, docker and ssh"
                 ))
             }
         },
@@ -1700,8 +1749,16 @@ mod project_config_tests {
         std::fs::create_dir_all(&home).unwrap();
         std::env::set_var("XDG_CONFIG_HOME", home.join(".config"));
         std::env::set_var("XDG_STATE_HOME", home.join(".state"));
-        // the default is bubblewrap
-        assert_eq!(sandbox_from_config().unwrap(), crate::tools::SandboxBackend::bubblewrap());
+        // D-466: the default is no sandbox; a backend is an explicit choice
+        assert_eq!(sandbox_from_config().unwrap(), crate::tools::SandboxBackend::none());
+        assert!(sandbox_from_config().unwrap().is_none());
+        assert!(sandbox_from_config().unwrap().is_none());
+        // an explicit `none` is the same mode, and it is a documented value
+        write(&user_config_path(), "[permissions]\nsandbox = \"none\"\n");
+        assert!(sandbox_from_config().unwrap().is_none());
+        // a backend flips the mode to approved_scope
+        write(&user_config_path(), "[permissions]\nsandbox = \"bubblewrap\"\n");
+        assert!(!sandbox_from_config().unwrap().is_none());
         // docker needs an image
         write(&user_config_path(), "[permissions]\nsandbox = \"docker\"\n");
         assert!(sandbox_from_config().unwrap_err().contains("sandbox_image"));
@@ -1762,7 +1819,7 @@ model = "project-loses"
         let catalog = load_user_config_for(&project).unwrap().0;
         assert!(catalog.models.contains_key("project_model"), "project adds models");
         assert_eq!(catalog.models["shared"].model, "user-wins", "user definitions win");
-        assert_eq!(permission_mode_from_config().unwrap(), "approved_scope");
+        assert!(sandbox_from_config().unwrap().is_none(), "the project cannot change the sandbox");
 
         // without the opt-in the project tools stay out
         let mut user_text = std::fs::read_to_string(user_config_path()).unwrap();
@@ -1996,7 +2053,7 @@ deadline_minutes = 5
         write(&user_config_path(), "[models.mine]\nprovider = \"openai\"\nmodel = \"m\"\n");
         write(
             &project_config_path(&project),
-            "[permissions]\nmode = \"full_auto\"\ntrust_project = true\n\n[models.theirs]\nprovider = \"openai\"\nmodel = \"evil\"\n",
+            "[permissions]\nsandbox = \"none\"\ntrust_project = true\n\n[models.theirs]\nprovider = \"openai\"\nmodel = \"evil\"\n",
         );
         let (catalog, outcome) = load_user_config_for(&project).unwrap();
         assert!(!outcome.trusted, "the project cannot grant itself trust: {outcome:?}");
@@ -2005,13 +2062,96 @@ deadline_minutes = 5
             outcome.refused.iter().any(|entry| entry.starts_with("permissions (")),
             "the ignored table is named: {outcome:?}"
         );
-        assert_eq!(permission_mode_from_config().unwrap(), "approved_scope", "the mode stays the user's");
+        assert!(sandbox_from_config().unwrap().is_none(), "the mode stays the user's");
 
         // and a *broken* project `[permissions]` table is refused like the user's own (D-232's rule): a repo
         // shipping a typo there must not be told its config was fine
         write(&project_config_path(&project), "[permissions]\ntrust_project_tool = true\n");
         let error = load_user_config_for(&project).expect_err("a typo in the project's table is refused");
         assert!(error.contains("trust_project_tool") && error.contains("[permissions]"), "{error}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// D-467: a trusted repository contributes its AGENTS.md files from the boundary down to the cwd, outermost
+    /// first; an untrusted one contributes nothing and says why. The files are text only.
+    #[test]
+    fn agents_files_are_discovered_from_the_trusted_boundary_to_the_cwd() {
+        let _env = crate::env_lock();
+        let root = std::env::temp_dir().join(format!("ta-agents-{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (home, repo) = (root.join("home"), root.join("repo"));
+        let sub = repo.join("a/b");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", home.join(".config"));
+        std::env::set_var("XDG_STATE_HOME", home.join(".state"));
+        write(&repo.join(".teamagents/config.toml"), "[models.m]\nprovider = \"openai\"\nmodel = \"m\"\n");
+        write(&repo.join("AGENTS.md"), "root rules\n");
+        write(&repo.join("a/AGENTS.md"), "a rules\n");
+        write(&home.join("custom.md"), "user rules\n");
+        write(
+            &user_config_path(),
+            &format!(
+                "instruction_files = [\"{}\"]\n[permissions]\ntrusted_projects = [\"{}\"]\n",
+                home.join("custom.md").display(),
+                repo.display()
+            ),
+        );
+        let (catalog, outcome) = load_user_config_for(&sub).unwrap();
+        assert!(outcome.trusted, "{outcome:?}");
+        let files = catalog.instruction_files.clone();
+        let position = |suffix: &str| files.iter().position(|file| file.ends_with(suffix));
+        let custom = position("custom.md").expect("user file kept");
+        let outer = position("repo/AGENTS.md").expect("repository AGENTS.md");
+        let inner = position("a/AGENTS.md").expect("subdirectory AGENTS.md");
+        assert!(custom < outer, "user files come first: {files:?}");
+        assert!(outer < inner, "outermost first: {files:?}");
+        let (text, unreadable) = instruction_text(&files);
+        assert!(text.contains("root rules") && text.contains("a rules") && text.contains("user rules"), "{text}");
+        assert!(unreadable.is_empty(), "{unreadable:?}");
+        assert!(outcome.accepted.iter().any(|entry| entry.starts_with("AGENTS.md:")), "{outcome:?}");
+
+        // untrusted: nothing is discovered, and the refusal names the files
+        write(&user_config_path(), "[permissions]\ntrust_project = false\n");
+        let (catalog, outcome) = load_user_config_for(&sub).unwrap();
+        assert!(!outcome.trusted, "{outcome:?}");
+        assert!(
+            !catalog.instruction_files.iter().any(|file| file.ends_with("AGENTS.md")),
+            "{:?}",
+            catalog.instruction_files
+        );
+        assert!(outcome.refused.iter().any(|entry| entry.contains("AGENTS.md")), "{outcome:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// D-467: a worktree-like checkout has its own config and AGENTS.md; discovery stops at that boundary and does
+    /// not pull in a parent repository's instructions.
+    #[test]
+    fn agents_discovery_stops_at_the_worktree_boundary() {
+        let _env = crate::env_lock();
+        let root = std::env::temp_dir().join(format!("ta-agents-wt-{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (home, repo, worktree) = (root.join("home"), root.join("repo"), root.join("wt"));
+        std::fs::create_dir_all(worktree.join("sub")).unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", home.join(".config"));
+        std::env::set_var("XDG_STATE_HOME", home.join(".state"));
+        write(&repo.join(".teamagents/config.toml"), "[models.m]\nprovider = \"openai\"\nmodel = \"m\"\n");
+        write(&repo.join("AGENTS.md"), "parent rules\n");
+        write(&worktree.join(".git"), "gitdir: ../repo/.git/worktrees/wt\n");
+        write(&worktree.join(".teamagents/config.toml"), "[models.m]\nprovider = \"openai\"\nmodel = \"m\"\n");
+        write(&worktree.join("AGENTS.md"), "worktree rules\n");
+        write(&user_config_path(), &format!("[permissions]\ntrusted_projects = [\"{}\"]\n", worktree.display()));
+        let (catalog, outcome) = load_user_config_for(&worktree.join("sub")).unwrap();
+        assert!(outcome.trusted, "{outcome:?}");
+        assert!(
+            catalog.instruction_files.iter().any(|file| file.ends_with("wt/AGENTS.md")),
+            "{:?}",
+            catalog.instruction_files
+        );
+        assert!(
+            !catalog.instruction_files.iter().any(|file| file.ends_with("repo/AGENTS.md")),
+            "{:?}",
+            catalog.instruction_files
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }

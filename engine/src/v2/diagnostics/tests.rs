@@ -51,6 +51,9 @@ fn idle_unsettled_diagnostics_are_read_only_and_survive_reopen() {
     assert_eq!(first.tasks[0]["status"], "RUNNING");
     assert_eq!(first.tasks[0]["diagnosis"]["code"], "idle_unsettled");
     assert!(first.tasks[0]["diagnosis"]["next_steps"].as_str().unwrap().contains("instances send"));
+    // D-470: the diagnosis distinguishes cancelling a task from stopping its command
+    let hint = first.activities["worker"]["next_steps"].as_str().unwrap_or("");
+    assert!(hint.contains("instances terminate") && hint.contains("does not stop"), "{hint}");
     assert_eq!(first.tasks, f.view(false).tasks);
     assert_eq!(before, f.conn.total_changes());
     let reopened = teamagents_core::v2::store::open_read_only(&f.dir.join("session.sqlite")).unwrap();

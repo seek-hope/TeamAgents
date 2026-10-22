@@ -164,14 +164,15 @@ Write a text file in your workspace, creating parent directories. /artifacts/ is
 
 *Offered by `reference::session_tool_schemas` (the profile's tools; the web half only for the kinds the config declares — §5.2/D-79/D-168).*
 
-Replace exactly one occurrence of old_string. Ambiguous matches fail unchanged. Pass expected_sha256 from read_file to reject concurrent changes.
+Replace one occurrence of old_string, or apply several disjoint edits with `edits`. Ambiguous or overlapping matches fail the whole call unchanged. Pass expected_sha256 (or per-edit expected_sha256) from read_file to reject concurrent changes.
 
 | Parameter | Type | Required | Meaning |
 |---|---|---|---|
-| `path` | `string` | yes | — |
-| `old_string` | `string` | yes | — |
-| `new_string` | `string` | yes | — |
+| `path` | `string` | no | — |
+| `old_string` | `string` | no | — |
+| `new_string` | `string` | no | — |
 | `expected_sha256` | `string` | no | — |
+| `edits` | `array` | no | — |
 
 ### `delete`
 
@@ -209,7 +210,7 @@ Search workspace files for a pattern; returns matching lines (max 100).
 
 *Offered by `reference::session_tool_schemas` (the profile's tools; the web half only for the kinds the config declares — §5.2/D-79/D-168).*
 
-Run Bash in the current shell_environment mode. approved_scope uses bwrap: network=true needs approval; temporary files/background processes end with the call. full_auto uses the host filesystem/network; services may survive CLI exit. For services redirect stdin/stdout/stderr, record PID, verify in a later call, and stop explicitly. Timeout/cancel kills the active process group. cwd/exports persist separately per mode; a missing cwd skips this call and resets to workspace root. Inspect nonzero exits. Page long output with read_file under /artifacts/ (exec-*.log). /artifacts/ is a virtual file-tool path and belongs to your member alone.
+Run Bash in the configured shell mode. sandbox = "none" (the default) runs on the host filesystem/network; a configured sandbox backend runs the command isolated and needs approval (network=true also needs it); temporary files/background processes end with the call. Services may survive CLI exit; For services redirect stdin/stdout/stderr, record PID, verify in a later call, and stop explicitly. Timeout/cancel kills the active process group. cwd/exports persist separately per mode; a missing cwd skips this call and resets to workspace root. Inspect nonzero exits. Page long output with read_file under /artifacts/ (exec-*.log). /artifacts/ is a virtual file-tool path and belongs to your member alone.
 
 | Parameter | Type | Required | Meaning |
 |---|---|---|---|
@@ -244,13 +245,14 @@ Fetch a web page and return title, source URL, fetch time and the readable text 
 
 *Offered by `reference::session_tool_schemas` (the profile's tools; the web half only for the kinds the config declares — §5.2/D-79/D-168).*
 
-Discover and load agent skills. action='search' with query keywords lists matching skills (name â summary); action='read' with a skill name loads its full instructions. Read a skill before applying it.
+Discover and load agent skills. action='search' with query keywords lists matching skills (name â summary); action='read' with a skill name loads its full instructions; add path='scripts/run.sh' to read one support file relative to the skill's directory (bounded to 32,000 characters; paths outside the skill and credential-shaped names are refused). Read a skill before applying it.
 
 | Parameter | Type | Required | Meaning |
 |---|---|---|---|
 | `action` | `string` | yes | — |
 | `query` | `string` | no | — |
 | `name` | `string` | no | — |
+| `path` | `string` | no | — |
 
 ### `view_image`
 

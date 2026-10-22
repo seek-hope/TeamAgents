@@ -731,6 +731,117 @@ fn workspace_executor_with_control(
                 open_member_file(&root, &member_path(key)?)
             }
         };
+        // D-469: the multi-edit body is shared by the unadvertised `edit_files` alias and by `edit_file`
+        // when it carries `edits`, so the offered tool surface does not grow (frozen evaluation manifests pin it).
+        let edit_batch = |args: &Json| -> Result<Json, String> {
+            let _guard = FILE_WRITES.lock().map_err(|_| "file mutation lock poisoned")?;
+            control.check()?;
+            let edits = args.get("edits").and_then(Json::as_array).cloned().unwrap_or_default();
+            if edits.is_empty() {
+                return Err("edits must be a non-empty array".into());
+            }
+            // D-469: group by path. A group may hold several edits in one file; they must be disjoint.
+            struct Group {
+                key: String,
+                path: PathBuf,
+                file_root: PathBuf,
+                edits: Vec<(String, String, Option<String>)>,
+            }
+            let mut groups: Vec<Group> = vec![];
+            for edit in &edits {
+                let key = edit.get("path").and_then(Json::as_str).unwrap_or("");
+                if key.is_empty() {
+                    return Err("each edit needs a path".into());
+                }
+                let path = member_path(key)?;
+                let old = edit.get("old_string").and_then(Json::as_str).unwrap_or("");
+                let new = edit.get("new_string").and_then(Json::as_str).ok_or("each edit needs new_string")?;
+                if old.is_empty() {
+                    return Err(format!("{key}: old_string must not be empty"));
+                }
+                let expected = edit.get("expected_sha256").and_then(Json::as_str).map(str::to_string);
+                let file_root: PathBuf = if key.starts_with(ARTIFACTS_PREFIX) {
+                    artifacts.own.as_deref().ok_or("no artifact directory for this member")?.to_path_buf()
+                } else {
+                    root.clone()
+                };
+                match groups.iter_mut().find(|group| group.path == path) {
+                    Some(group) => group.edits.push((old.into(), new.into(), expected)),
+                    None => groups.push(Group {
+                        key: key.into(),
+                        path,
+                        file_root,
+                        edits: vec![(old.into(), new.into(), expected)],
+                    }),
+                }
+            }
+            // Phase 1: validate against the original content. Nothing is written until the whole batch is
+            // known-good (no half-applied refactor); edits in one file must not overlap.
+            let mut planned: Vec<(PathBuf, PathBuf, String, String, String, String)> = vec![];
+            for group in groups {
+                let text = cap_read(member_file(&group.key)?)?;
+                let hash = format!("{:x}", Sha256::digest(text.as_bytes()));
+                for (_, _, expected) in &group.edits {
+                    if expected.as_deref().is_some_and(|expected| !expected.eq_ignore_ascii_case(&hash)) {
+                        return Err(format!(
+                            "{}: file conflict: expected_sha256 no longer matches; read the file again",
+                            group.key
+                        ));
+                    }
+                }
+                let mut ranges: Vec<(usize, usize, String, String)> = vec![];
+                for (old, new, _) in &group.edits {
+                    let mut positions = text.match_indices(old).map(|(at, _)| at);
+                    let at = positions.next().ok_or_else(|| format!("{}: old_string not found", group.key))?;
+                    if positions.next().is_some() {
+                        return Err(format!(
+                            "{}: old_string matches multiple locations; include more context",
+                            group.key
+                        ));
+                    }
+                    ranges.push((at, at + old.len(), old.clone(), new.clone()));
+                }
+                ranges.sort_by_key(|range| range.0);
+                for pair in ranges.windows(2) {
+                    if pair[0].1 > pair[1].0 {
+                        return Err(format!("{}: edits overlap; split them or include more context", group.key));
+                    }
+                }
+                let mut content = text.clone();
+                for (start, end, _, new) in ranges.iter().rev() {
+                    content.replace_range(*start..*end, new);
+                }
+                if content.len() as u64 > MAX_FILE_BYTES {
+                    return Err(format!("{}: content too large", group.key));
+                }
+                planned.push((
+                    group.file_root,
+                    group.path,
+                    content,
+                    format!("{} edit(s) in {}", group.edits.len(), group.key),
+                    hash,
+                    text,
+                ));
+            }
+            // Hold every path lock until the batch commits or rolls back.
+            planned.sort_by(|a, b| a.1.cmp(&b.1));
+            let mut locks = vec![];
+            for (_, path, ..) in &planned {
+                control.check()?;
+                locks.push(acquire_path_lock(lock_dir.as_deref(), path)?);
+            }
+            let mut staged = vec![];
+            for (file_root, path, content, _, hash, original) in &planned {
+                control.check()?;
+                let write = StagedWrite::new(file_root, path, content.as_bytes())?;
+                write.check(Some(hash), control)?;
+                let rollback = StagedWrite::new(file_root, path, original.as_bytes())?;
+                staged.push((write, rollback, format!("{:x}", Sha256::digest(content.as_bytes()))));
+            }
+            commit_batch(&mut staged, &planned.iter().map(|edit| edit.4.as_str()).collect::<Vec<_>>(), control)?;
+            Ok(json!(planned.iter().map(|edit| edit.3.as_str()).collect::<Vec<_>>().join("\n")))
+        };
+
         match tool {
             "ls" => {
                 let key = if arg("path").is_empty() { ".".to_string() } else { arg("path") };
@@ -779,6 +890,9 @@ fn workspace_executor_with_control(
                 Ok(json!(format!("wrote {}", path.display())))
             }
             "edit_file" => {
+                if args.get("edits").is_some() {
+                    return edit_batch(args);
+                }
                 let _guard = FILE_WRITES.lock().map_err(|_| "file mutation lock poisoned")?;
                 control.check()?;
                 let path = member_path(&arg("path"))?;
@@ -814,73 +928,7 @@ fn workspace_executor_with_control(
                 )?;
                 Ok(json!(edit_diff(&path, &text, at, &old, new)))
             }
-            "edit_files" => {
-                let _guard = FILE_WRITES.lock().map_err(|_| "file mutation lock poisoned")?;
-                control.check()?;
-                let edits = args.get("edits").and_then(Json::as_array).cloned().unwrap_or_default();
-                if edits.is_empty() {
-                    return Err("edits must be a non-empty array".into());
-                }
-                // phase 1: validate every edit against the current file content.
-                // Nothing is written until the whole batch is known-good, which is
-                // the point of a multi-file edit: no half-applied refactor.
-                let mut planned: Vec<(PathBuf, PathBuf, String, String, String, String)> = vec![];
-                for edit in &edits {
-                    let key = edit.get("path").and_then(Json::as_str).unwrap_or("");
-                    if key.is_empty() {
-                        return Err("each edit needs a path".into());
-                    }
-                    let path = member_path(key)?;
-                    if planned.iter().any(|(_, existing, ..)| existing == &path) {
-                        return Err(format!("{key}: at most one edit per file per call"));
-                    }
-                    let text = cap_read(member_file(key)?)?;
-                    let old = edit.get("old_string").and_then(Json::as_str).unwrap_or("");
-                    let new = edit.get("new_string").and_then(Json::as_str).ok_or("each edit needs new_string")?;
-                    if old.is_empty() {
-                        return Err("old_string must not be empty".into());
-                    }
-                    let at = text.find(old).ok_or_else(|| format!("{key}: old_string not found"))?;
-                    // Count overlapping matches too (e.g. 'aa' in 'aaa').
-                    if text[at + old.chars().next().expect("non-empty").len_utf8()..].contains(old) {
-                        return Err(format!("{key}: old_string matches multiple locations; include more context"));
-                    }
-                    let hash = format!("{:x}", Sha256::digest(text.as_bytes()));
-                    if expected_hash(edit)?.is_some_and(|expected| !expected.eq_ignore_ascii_case(&hash)) {
-                        return Err(format!(
-                            "{key}: file conflict: expected_sha256 no longer matches; read the file again"
-                        ));
-                    }
-                    let file_root: PathBuf = if key.starts_with(ARTIFACTS_PREFIX) {
-                        artifacts.own.as_deref().ok_or("no artifact directory for this member")?.to_path_buf()
-                    } else {
-                        root.clone()
-                    };
-                    let diff = edit_diff(&path, &text, at, old, new);
-                    let content = text.replacen(old, new, 1);
-                    if content.len() as u64 > MAX_FILE_BYTES {
-                        return Err(format!("{key}: content too large"));
-                    }
-                    planned.push((file_root, path, content, diff, hash, text));
-                }
-                // Hold every path lock until the batch commits or rolls back.
-                planned.sort_by(|a, b| a.1.cmp(&b.1));
-                let mut locks = vec![];
-                for (_, path, ..) in &planned {
-                    control.check()?;
-                    locks.push(acquire_path_lock(lock_dir.as_deref(), path)?);
-                }
-                let mut staged = vec![];
-                for (file_root, path, content, _, hash, original) in &planned {
-                    control.check()?;
-                    let write = StagedWrite::new(file_root, path, content.as_bytes())?;
-                    write.check(Some(hash), control)?;
-                    let rollback = StagedWrite::new(file_root, path, original.as_bytes())?;
-                    staged.push((write, rollback, format!("{:x}", Sha256::digest(content.as_bytes()))));
-                }
-                commit_batch(&mut staged, &planned.iter().map(|edit| edit.4.as_str()).collect::<Vec<_>>(), control)?;
-                Ok(json!(planned.iter().map(|edit| edit.3.as_str()).collect::<Vec<_>>().join("\n")))
-            }
+            "edit_files" => edit_batch(args),
             "delete" => {
                 let _guard = FILE_WRITES.lock().map_err(|_| "file mutation lock poisoned")?;
                 control.check()?;
@@ -1020,7 +1068,7 @@ pub(crate) fn web_tools(
 /// Skills registry roots: user-configured `skills_paths` only (project and
 /// member skill dirs live inside the workspace and are readable with `files`).
 /// Read-only by construction (§7: selected skills are pre-authorized reads).
-fn skill_roots(catalog: &teamagents_core::models::UserConfig) -> Vec<PathBuf> {
+pub(crate) fn skill_roots(catalog: &teamagents_core::models::UserConfig) -> Vec<PathBuf> {
     catalog.skills_paths.iter().map(|p| crate::config::expand_home(p)).filter(|p| p.is_dir()).collect()
 }
 
@@ -1081,6 +1129,34 @@ fn skill_blurb(path: &Path) -> String {
 
 /// `skill` tool: action "search" (keyword match over name+blurb; empty query
 /// lists, capped) or "read" (exact name -> full SKILL.md, capped).
+/// D-468: a skill's support file. The path must stay inside the skill directory: absolute paths, `.`/`..`,
+/// empty components, credential-shaped names and anything whose canonical target leaves the root are refused.
+/// The caller bounds how much it reads.
+fn skill_resource(root: &Path, rel: &str) -> Result<PathBuf, String> {
+    const DENIED_SEGMENTS: &[&str] =
+        &[".env", ".ssh", ".git", ".netrc", "id_rsa", "id_ed25519", "credentials", "secrets", "token"];
+    if rel.is_empty()
+        || rel.starts_with('/')
+        || rel.split('/').any(|part| part.is_empty() || part == "." || part == "..")
+    {
+        return Err(format!("skill path {rel:?} must be a relative path inside the skill"));
+    }
+    if rel.split('/').any(|part| DENIED_SEGMENTS.contains(&part))
+        || [".pem", ".key", ".p12"].iter().any(|suffix| rel.ends_with(suffix))
+    {
+        return Err(format!("skill path {rel:?} is credential-shaped; refusing"));
+    }
+    let root = std::fs::canonicalize(root).map_err(|e| format!("skill root: {e}"))?;
+    let target = std::fs::canonicalize(root.join(rel)).map_err(|e| format!("skill file {rel:?}: {e}"))?;
+    if !target.starts_with(&root) {
+        return Err(format!("skill path {rel:?} escapes the skill root"));
+    }
+    if !std::fs::metadata(&target).map_err(|e| e.to_string())?.is_file() {
+        return Err(format!("skill path {rel:?} is not a regular file"));
+    }
+    Ok(target)
+}
+
 fn skill_tool(catalog: &teamagents_core::models::UserConfig, args: &Json) -> Result<Json, String> {
     const READ_CAP: usize = 32_000;
     let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("");
@@ -1095,8 +1171,23 @@ fn skill_tool(catalog: &teamagents_core::models::UserConfig, args: &Json) -> Res
                 let known: Vec<&str> = index.iter().map(|(n, _)| n.as_str()).collect();
                 return Err(format!("unknown skill {name:?}; known: {}", known.join(", ")));
             };
-            let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-            Ok(Json::String(text.chars().take(READ_CAP).collect()))
+            let rel = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            if rel.is_empty() {
+                let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+                return Ok(Json::String(text.chars().take(READ_CAP).collect()));
+            }
+            let root = path.parent().ok_or("skill directory")?;
+            let target = skill_resource(root, rel)?;
+            let mut bytes = Vec::new();
+            std::fs::File::open(&target)
+                .map_err(|e| e.to_string())?
+                .take(READ_CAP as u64 + 1)
+                .read_to_end(&mut bytes)
+                .map_err(|e| e.to_string())?;
+            let truncated = bytes.len() > READ_CAP;
+            bytes.truncate(READ_CAP);
+            Ok(json!({"skill": name, "path": rel, "truncated": truncated,
+                      "text": String::from_utf8_lossy(&bytes)}))
         }
         "search" => {
             let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
@@ -1227,6 +1318,16 @@ pub(crate) fn member_executor_with_control(
                 return Err(format!("unsupported web provider {provider:?} (this build serves deepseek)"));
             }
             let url = args.get("url").and_then(|v| v.as_str()).unwrap_or("");
+            if let Ok(parsed) = url::Url::parse(url) {
+                if let Some(host) = parsed.host_str() {
+                    if !control.domain_allowed(host) {
+                        return Err(format!(
+                            "web_fetch: {host} is not in this member's allowed domains (a `web` grant with a \
+                             domain: scope restricts the targets)"
+                        ));
+                    }
+                }
+            }
             let max = args.get("max_bytes").and_then(|v| v.as_u64()).unwrap_or(2_000_000) as usize;
             let allow_private = binding.env.get("allow_private").map(|v| v == "1").unwrap_or(false);
             web_fetch(url, max, allow_private, binding.url.as_deref(), binding.api_key_env.as_deref())
@@ -1434,6 +1535,7 @@ pub fn sandbox_state_for(backend: &SandboxBackend) -> Result<(), String> {
 
 fn probe_sandbox(backend: &SandboxBackend) -> Result<(), String> {
     match backend.kind {
+        SandboxKind::None => Ok(()),
         SandboxKind::Bubblewrap => probe_bubblewrap(),
         // D-437: the probe answers the only question the fail-closed rule depends on — does a command *reach* the
         // configured host right now? `BatchMode=yes` turns a missing key or an unknown host into a fast refusal
@@ -1489,6 +1591,7 @@ fn probe_sandbox(backend: &SandboxBackend) -> Result<(), String> {
 /// `glob` use; this is the fail-closed gate the command path needs.
 fn backend_available(backend: &SandboxBackend) -> Result<(), String> {
     match backend.kind {
+        SandboxKind::None => Ok(()),
         SandboxKind::Bubblewrap => {
             if bwrap_available() {
                 Ok(())
@@ -1543,6 +1646,9 @@ const SHELL_STATE_SANDBOX: &str = "/tmp/.teamagents-shell";
 /// model tool argument; `full_auto` bypasses it entirely (the host shell is the explicit opt-out, D-41).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SandboxKind {
+    /// D-466: no sandbox. The default: the command runs on the host, exactly as a plain shell would. It is a
+    /// deliberate, visible mode, not a fallback — a configured backend that cannot start still fails closed.
+    None,
     Bubblewrap,
     Docker,
     /// D-437: the command runs on **another host** over ssh. The isolation here is not a namespace: it is the
@@ -1582,6 +1688,21 @@ impl SandboxBackend {
         }
     }
 
+    /// D-466: the default backend — the command runs on the host.
+    pub fn none() -> Self {
+        SandboxBackend {
+            kind: SandboxKind::None,
+            image: String::new(),
+            ssh_target: String::new(),
+            ssh_workdir: String::new(),
+            ssh_options: Vec::new(),
+        }
+    }
+
+    pub fn is_none(&self) -> bool {
+        self.kind == SandboxKind::None
+    }
+
     pub fn bubblewrap() -> Self {
         SandboxBackend {
             kind: SandboxKind::Bubblewrap,
@@ -1594,6 +1715,7 @@ impl SandboxBackend {
 
     pub fn name(&self) -> &'static str {
         match self.kind {
+            SandboxKind::None => "none",
             SandboxKind::Bubblewrap => "bubblewrap",
             SandboxKind::Docker => "docker",
             SandboxKind::Ssh => "ssh",
@@ -1611,8 +1733,8 @@ pub(crate) enum ShellMode {
 impl ShellMode {
     pub(crate) fn from_permissions(mode: Option<&str>, sandbox: SandboxBackend) -> Result<Self, String> {
         match mode {
-            Some("approved_scope") => Ok(Self::Sandbox(sandbox)),
-            Some("full_auto") => Ok(Self::Host),
+            Some("approved_scope") if !sandbox.is_none() => Ok(Self::Sandbox(sandbox)),
+            Some("approved_scope") | Some("full_auto") => Ok(Self::Host),
             _ => {
                 Err("ShellPermissionUnavailable: the session permission mode is unreadable, the command was not run"
                     .into())
@@ -1805,11 +1927,32 @@ const DOCKER_SHELL_STATE: &str = "/teamagents-shell";
 
 /// Read-only system mounts, sanitized env, private
 /// /tmp, no network unless the call was approved for it.
-pub fn bwrap_argv(workdir: &Path, network: bool, command: &str, shell_state: Option<&Path>) -> Vec<String> {
+pub fn bwrap_argv(
+    workdir: &Path,
+    network: bool,
+    command: &str,
+    shell_state: Option<&Path>,
+    skills: &[PathBuf],
+) -> Vec<String> {
     let mut argv: Vec<String> = vec!["bwrap".into()];
     for path in ["/usr", "/etc", "/opt"] {
         if Path::new(path).exists() {
             argv.extend(["--ro-bind".into(), path.into(), path.into()]);
+        }
+    }
+    // D-468: the skill roots are visible read-only at /skills/<n>, so a skill's scripts and assets can be run
+    // without copying them into the workspace. The tool API reads them on the host either way.
+    if !skills.is_empty() {
+        argv.extend(["--dir".into(), "/skills".into()]);
+        for (index, root) in skills.iter().enumerate() {
+            let target = format!("/skills/{index}");
+            argv.extend([
+                "--dir".into(),
+                target.clone(),
+                "--ro-bind".into(),
+                root.to_string_lossy().into_owned(),
+                target,
+            ]);
         }
     }
     for (target, link) in [("usr/lib", "/lib"), ("usr/lib64", "/lib64"), ("usr/bin", "/bin"), ("usr/bin", "/sbin")] {
@@ -2168,6 +2311,7 @@ pub(crate) fn shell_command_spec(
     network: bool,
     shell_state: Option<&Path>,
     mode: ShellMode,
+    skills: &[PathBuf],
 ) -> Result<ShellCommandSpec, SpecError> {
     if let ShellMode::Sandbox(backend) = &mode {
         if let Err(reason) = backend_available(backend) {
@@ -2201,8 +2345,15 @@ pub(crate) fn shell_command_spec(
     };
     let cwd = std::fs::canonicalize(workdir).unwrap_or_else(|_| workdir.to_path_buf());
     let (program, args, docker_client) = match &mode {
+        // D-466: unreachable through the config (`none` maps to Host), but a `Sandbox(None)` value has no
+        // wrapper to build. Refuse instead of silently running it as a host command.
+        ShellMode::Sandbox(SandboxBackend { kind: SandboxKind::None, .. }) => {
+            return Err(SpecError::isolation(
+                "IsolationUnavailable: the none backend selected a sandbox wrapper; refusing to run",
+            ));
+        }
         ShellMode::Sandbox(SandboxBackend { kind: SandboxKind::Bubblewrap, .. }) => {
-            let argv = bwrap_argv(&cwd, network, &wrapped, shell_state);
+            let argv = bwrap_argv(&cwd, network, &wrapped, shell_state, skills);
             let Some(executable) = which("bwrap") else {
                 return Err(SpecError::isolation("IsolationUnavailable: bwrap disappeared before execution"));
             };
@@ -2296,7 +2447,7 @@ pub(crate) fn shell_outcome_at(
         Ok(sink) => Arc::new(Mutex::new(sink)),
         Err(e) => return not_started("capture", e),
     };
-    let spec = match shell_command_spec(command, workdir, network, shell_state, mode.clone()) {
+    let spec = match shell_command_spec(command, workdir, network, shell_state, mode.clone(), &[]) {
         Ok(spec) => spec,
         Err(error) => return not_started(error.class, error.reason),
     };
@@ -3094,9 +3245,28 @@ fn receipt_error_class(text: &str) -> &'static str {
 pub struct TurnControl {
     cancelled: AtomicBool,
     active: Mutex<()>,
+    /// D-470: the hosts this member's live `web` grants allow; empty means no allowlist.
+    domains: Vec<String>,
 }
 
 impl TurnControl {
+    pub fn with_domains(domains: Vec<String>) -> Self {
+        TurnControl { cancelled: AtomicBool::new(false), active: Mutex::new(()), domains }
+    }
+
+    /// D-470: an empty allowlist means unrestricted (the historical behavior); otherwise the host must match an
+    /// entry exactly, or match a `*.suffix` entry as a subdomain.
+    pub fn domain_allowed(&self, host: &str) -> bool {
+        if self.domains.is_empty() {
+            return true;
+        }
+        let host = host.trim_end_matches('.').to_ascii_lowercase();
+        self.domains.iter().any(|pattern| {
+            let pattern = pattern.trim_end_matches('.').to_ascii_lowercase();
+            pattern == host || (pattern.starts_with("*.") && host.ends_with(&pattern[1..]))
+        })
+    }
+
     pub fn check(&self) -> Result<(), String> {
         if self.cancelled.load(Ordering::SeqCst) {
             Err("turn interrupted".into())
@@ -3156,6 +3326,38 @@ mod bounded_timeout_tests {
 
 #[cfg(test)]
 mod tests {
+
+    /// D-466: the two modes. `none` is the host even when the session was built for `approved_scope`; a real
+    /// backend is the sandbox; `full_auto` stays the host.
+    /// D-470: an empty allowlist is unrestricted; otherwise an exact host or a `*.suffix` subdomain matches.
+    #[test]
+    fn the_web_domain_allowlist_is_optional_exact_or_wildcard() {
+        assert!(TurnControl::default().domain_allowed("anything.example"));
+        let control = TurnControl::with_domains(vec!["example.com".into(), "*.docs.example.com".into()]);
+        assert!(control.domain_allowed("example.com"));
+        assert!(!control.domain_allowed("evil.example.com"));
+        assert!(control.domain_allowed("api.docs.example.com"));
+        assert!(!control.domain_allowed("docs.example.com"), "the wildcard covers subdomains, not the bare host");
+    }
+
+    #[test]
+    fn the_none_backend_is_the_host_and_a_backend_is_the_sandbox() {
+        assert_eq!(
+            ShellMode::from_permissions(Some("approved_scope"), SandboxBackend::none()).expect("none"),
+            ShellMode::Host
+        );
+        assert_eq!(
+            ShellMode::from_permissions(Some("full_auto"), SandboxBackend::bubblewrap()).expect("full_auto"),
+            ShellMode::Host
+        );
+        assert!(matches!(
+            ShellMode::from_permissions(Some("approved_scope"), SandboxBackend::bubblewrap()).expect("sandbox"),
+            ShellMode::Sandbox(_)
+        ));
+        assert_eq!(SandboxBackend::none().name(), "none");
+        assert!(SandboxBackend::none().is_none());
+        assert_eq!(sandbox_state_for(&SandboxBackend::none()), Ok(()));
+    }
     use super::*;
 
     /// The product builds an executor through `V2Toolkit::new`, which resolves the member's own
@@ -3182,6 +3384,46 @@ mod tests {
         move |tool, args| {
             executor(tool, args, &TurnControl::default(), ShellMode::Sandbox(SandboxBackend::bubblewrap()))
         }
+    }
+
+    /// D-469: disjoint edits in one file apply atomically; overlapping edits and a stale revision fail the
+    /// whole batch unchanged.
+    #[test]
+    fn edit_files_applies_disjoint_edits_and_refuses_overlap_or_stale_input() {
+        let root = std::env::temp_dir().join(format!("ta-multiedit-{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("f.txt"), "one two three\n").unwrap();
+        let executor = workspace_executor(root.clone(), None);
+        let out = executor(
+            "edit_file",
+            &json!({"edits": [
+                {"path": "f.txt", "old_string": "one", "new_string": "ONE"},
+                {"path": "f.txt", "old_string": "three", "new_string": "THREE"}
+            ]}),
+        )
+        .expect("disjoint edits");
+        assert!(out.as_str().unwrap_or("").contains("2 edit(s)"), "{out}");
+        assert_eq!(std::fs::read_to_string(root.join("f.txt")).unwrap(), "ONE two THREE\n");
+        let err = executor(
+            "edit_file",
+            &json!({"edits": [
+                {"path": "f.txt", "old_string": "ONE two", "new_string": "x"},
+                {"path": "f.txt", "old_string": "two THREE", "new_string": "y"}
+            ]}),
+        )
+        .unwrap_err();
+        assert!(err.contains("overlap"), "{err}");
+        assert_eq!(std::fs::read_to_string(root.join("f.txt")).unwrap(), "ONE two THREE\n");
+        let err = executor(
+            "edit_file",
+            &json!({"edits": [
+                {"path": "f.txt", "old_string": "ONE", "new_string": "1", "expected_sha256": "deadbeef"}
+            ]}),
+        )
+        .unwrap_err();
+        assert!(err.contains("conflict"), "{err}");
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -3581,6 +3823,52 @@ mod tests {
         assert!(err.contains("refusing private address"), "{err}");
     }
 
+    /// D-468: a skill's support files are readable through a bounded, root-confined path.
+    #[test]
+    fn skill_read_exposes_relative_resources_and_refuses_escapes() {
+        let root = std::env::temp_dir().join(format!("ta-skillres-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("demo/scripts")).unwrap();
+        std::fs::write(root.join("demo/SKILL.md"), "---\nname: demo\ndescription: d\n---\nbody").unwrap();
+        std::fs::write(root.join("demo/scripts/run.sh"), "echo hi").unwrap();
+        std::fs::write(root.join("outside.txt"), "secret").unwrap();
+        std::fs::write(root.join("demo/.env"), "KEY=x").unwrap();
+        std::fs::create_dir_all(root.join("demo/dir")).unwrap();
+        std::os::unix::fs::symlink(root.join("outside.txt"), root.join("demo/link")).unwrap();
+        std::fs::write(root.join("demo/big.txt"), "x".repeat(40_000)).unwrap();
+        let catalog = teamagents_core::models::UserConfig {
+            skills_paths: vec![root.to_string_lossy().into_owned()],
+            ..Default::default()
+        };
+        let read = |path: &str| skill_tool(&catalog, &json!({"action": "read", "name": "demo", "path": path}));
+        let ok = read("scripts/run.sh").expect("a support file");
+        assert_eq!(ok["text"], json!("echo hi"));
+        assert_eq!(ok["truncated"], json!(false));
+        for bad in ["../outside.txt", "/etc/passwd", ".env", "link", "dir", "scripts/../.env"] {
+            let error = read(bad).expect_err(bad);
+            assert!(error.contains("skill path"), "{bad}: {error}");
+        }
+        let big = read("big.txt").expect("a large file");
+        assert_eq!(big["truncated"], json!(true));
+        assert_eq!(big["text"].as_str().unwrap().len(), 32_000);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn bwrap_argv_mounts_skill_roots_read_only() {
+        let dir = std::env::temp_dir();
+        let skills = std::env::temp_dir().join(format!("ta-bwrap-skills-{}", std::process::id()));
+        std::fs::create_dir_all(&skills).unwrap();
+        let rendered = skills.to_string_lossy().into_owned();
+        let argv = bwrap_argv(&dir, false, "echo hi", None, std::slice::from_ref(&skills));
+        assert!(
+            argv.windows(3).any(|w| w[0] == "--ro-bind" && w[1] == rendered.as_str() && w[2] == "/skills/0"),
+            "{argv:?}"
+        );
+        assert!(argv.windows(2).any(|w| w[0] == "--dir" && w[1] == "/skills"), "{argv:?}");
+        std::fs::remove_dir_all(&skills).unwrap();
+    }
+
     #[test]
     fn skill_tool_searches_and_reads_registry() {
         let root = std::env::temp_dir().join(format!("ta-skilltool-{}", std::process::id()));
@@ -3868,13 +4156,13 @@ mod tests {
     #[test]
     fn bwrap_argv_is_stable_and_runs_isolated() {
         let dir = std::env::temp_dir();
-        let argv = bwrap_argv(&dir, false, "echo hi", None);
+        let argv = bwrap_argv(&dir, false, "echo hi", None, &[]);
         assert!(argv.iter().any(|a| a == "--unshare-net"), "network off by default");
         assert!(argv.windows(3).any(|w| w == ["--ro-bind", "/usr", "/usr"]));
         assert!(argv.windows(3).any(|w| w == ["--symlink", "usr/bin", "/bin"]));
         assert!(argv.windows(2).any(|w| w[0] == "--chdir" && w[1] == dir.to_string_lossy()));
         assert_eq!(&argv[argv.len() - 4..], ["--", "/bin/bash", "-lc", "echo hi"]);
-        assert!(!bwrap_argv(&dir, true, "x", None).iter().any(|a| a == "--unshare-net"));
+        assert!(!bwrap_argv(&dir, true, "x", None, &[]).iter().any(|a| a == "--unshare-net"));
         if sandbox_usable() {
             let out = shell_run("echo isolated-ok && id -u", &dir, 30, false, None).unwrap();
             assert!(out.contains("isolated-ok"), "{out}");

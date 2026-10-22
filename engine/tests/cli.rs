@@ -696,9 +696,18 @@ fn doctor_probes_isolation_and_config_errors() {
     let run = |state: &std::path::Path| -> String { run_status(state).1 };
     let clean = run(&home.join("state"));
     assert!(clean.contains("user config"), "{clean}");
-    assert!(clean.contains("bubblewrap isolation"), "{clean}");
+    // D-466: the default is `sandbox = "none"`, reported as a mode rather than an isolation probe
+    assert!(clean.contains("[ok  ] sandbox") && clean.contains("sandbox = \"none\""), "{clean}");
+    // a configured backend is still probed for real
+    std::fs::write(
+        config.join("config.toml"),
+        "[models.m]\nprovider=\"openai\"\nmodel=\"x\"\n\n[permissions]\nsandbox = \"bubblewrap\"\n",
+    )
+    .unwrap();
+    let sandboxed = run(&home.join("state"));
+    assert!(sandboxed.contains("bubblewrap isolation"), "{sandboxed}");
     if teamagents_engine::tools::sandbox_usable() {
-        assert!(clean.contains("[ok  ] bubblewrap isolation"), "the isolation probe really runs: {clean}");
+        assert!(sandboxed.contains("[ok  ] bubblewrap isolation"), "the isolation probe really runs: {sandboxed}");
     }
 
     // hooks fail silently at event time, so doctor checks the programs
@@ -950,8 +959,19 @@ fn doctor_fresh_install_reports_the_missing_requirements() {
         "[models.leader_main]\nprovider='openai'\nmodel='test'\napi_key_env='TA_DOCTOR_TEST_KEY'\n",
     )
     .unwrap();
+    // D-466: `none` is the default, so a fresh install needs no bwrap and the sandbox row is a mode row
     let (ok, text) = run("test-value");
-    assert!(!ok, "missing required bubblewrap must fail doctor: {text}");
+    assert!(ok, "a fresh install with sandbox = none passes doctor: {text}");
+    assert!(text.contains("[ok  ] sandbox"), "{text}");
+    // ...and a configured bubblewrap still fails closed when it is missing
+    std::fs::write(
+        &config,
+        "[models.leader_main]\nprovider='openai'\nmodel='test'\napi_key_env='TA_DOCTOR_TEST_KEY'\n\n\
+         [permissions]\nsandbox = 'bubblewrap'\n",
+    )
+    .unwrap();
+    let (ok, text) = run("test-value");
+    assert!(!ok, "missing bubblewrap must fail doctor when it is configured: {text}");
     let failures: Vec<_> = text.lines().filter(|line| line.contains("[FAIL]")).collect();
     assert_eq!(failures.len(), 1, "only missing bubblewrap must fail doctor: {text}");
     assert!(failures[0].contains("bubblewrap isolation"), "{text}");
@@ -1540,15 +1560,13 @@ fn full_auto_reaches_a_started_daemon_and_is_reported_against_a_live_one() {
         "the daemon must stop so the test leaks nothing"
     );
 
-    // D-75: the mode is also a config decision — `[permissions] mode` in the user's
-    // own file is the session default, and the flag still wins over it. The key used
-    // to be parsed, validated and ignored, so a user who wrote `full_auto` silently
-    // ran in approved_scope.
-    let write_config = |mode: &str| {
+    // D-466: the mode is the sandbox key — `none` is the host, a backend is approved_scope.
+    // `--full-auto` still wins for one boot.
+    let write_config = |sandbox: &str| {
         std::fs::write(
             config_home.join("teamagents/config.toml"),
             format!(
-                "[permissions]\nmode = \"{mode}\"\n\n[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\n\
+                "[permissions]\nsandbox = \"{sandbox}\"\n\n[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\n\
                  api_key_env = \"TA_FULL_AUTO_KEY\"\nbase_url = \"http://127.0.0.1:1/v1\"\n"
             ),
         )
@@ -1563,10 +1581,10 @@ fn full_auto_reaches_a_started_daemon_and_is_reported_against_a_live_one() {
         assert!(stop_detached_daemon(state), "the daemon this test started is stopped by pid, not by pattern");
         greeting["permissions"].as_str().unwrap_or("").to_string()
     };
-    write_config("full_auto");
-    assert_eq!(boot_with(&[], &root.join("configured")), "full_auto", "the config sets the session's mode");
-    write_config("approved_scope");
-    assert_eq!(boot_with(&[], &root.join("default")), "approved_scope", "the documented default stays");
+    write_config("none");
+    assert_eq!(boot_with(&[], &root.join("configured")), "full_auto", "sandbox = none selects the host");
+    write_config("bubblewrap");
+    assert_eq!(boot_with(&[], &root.join("default")), "approved_scope", "a backend selects approved_scope");
     assert_eq!(
         boot_with(&["--full-auto"], &root.join("flagged")),
         "full_auto",

@@ -59,7 +59,7 @@ effort. For another service, set the protocol, model, endpoint, credential varia
 window together; see [configuration](USER-GUIDE.md#2-configuration). Additional bindings are illustrated in
 [examples/config.toml](../examples/config.toml). Never put API key values in tracked files.
 
-The default approved_scope shell needs working bubblewrap:
+The default `sandbox = "none"` needs no sandbox. If you select the bubblewrap backend, install it:
 
 | Distribution | Command |
 |---|---|

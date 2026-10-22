@@ -1108,6 +1108,7 @@ async fn explicit_input_recovers_an_idle_unsettled_worker_without_automatic_prom
             command: InterventionCommand::SendInput {
                 id: "i-worker".into(),
                 text: "Settle your task honestly now.".into(),
+                deferred: false,
             },
         })
     })

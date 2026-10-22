@@ -1762,7 +1762,22 @@ mod follow_up_tests {
             daemon_pid: std::process::id(),
             created_at: 0.0,
         };
-        submit_follow_up(&layout, &request).unwrap();
+        // The helper spawns a real (fake) binary; a loaded runner can transiently fail the spawn right after the
+        // script was written (ETXTBSY), so retry the spawn a few times. The assertion below stays deterministic.
+        let mut last = None;
+        for _ in 0..5 {
+            match submit_follow_up(&layout, &request) {
+                Ok(()) => {
+                    last = None;
+                    break;
+                }
+                Err(error) => {
+                    last = Some(error);
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+            }
+        }
+        assert!(last.is_none(), "the follow-up could not be submitted: {last:?}");
         let args = std::fs::read_to_string(&log).unwrap();
         assert!(args.contains("instances"), "{args}");
         assert!(args.contains("send"), "{args}");

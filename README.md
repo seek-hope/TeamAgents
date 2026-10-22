@@ -80,8 +80,8 @@ you ──goal (natural language)──▶ Leader ──spawn / delegate──�
 - **Single source of truth**: one SQLite database per session (WAL with `synchronous=FULL`). Crash recovery
   is classified by persisted location — known results are reused, in-flight losses are recorded honestly
   (`OUTCOME_UNKNOWN`), and nothing is **replayed on a guess**.
-- **Permission gate**: `approved_scope` (default: bubblewrap isolation, approvals for out-of-scope work) and
-  `full_auto` (user-only, host shell); an approval binds one concrete operation, its argument hash and its
+- **Permission gate**: `[permissions] sandbox` selects two modes — `none` (the default: host shell, no shell
+  approval) or a backend (`bubblewrap`/`docker`/`ssh`: approvals for out-of-scope work); an approval binds one concrete operation, its argument hash and its
   permission revision, so it is used up by that single dispatch.
 - **Completion gate**: `finish` only accepts honest outcomes; the `[[checks]]` in **your own** config must
   actually pass before a goal can settle successfully. Project configuration is loaded when trusted, but
@@ -97,8 +97,8 @@ you ──goal (natural language)──▶ Leader ──spawn / delegate──�
 - **User hooks (`[hooks]`)**: `notify` forwards events (`tool_call` / `team_action` / `run_*`) to your own
   program; `pre_tool` can veto any native tool call before it runs (exit 2 denies, stderr is the reason),
   and a broken hook only logs instead of stalling the team.
-- **Isolation**: under `approved_scope` instance shells run in `bubblewrap`; when it is missing the command
-  fails loudly instead of silently degrading to unsandboxed execution.
+- **Isolation**: `sandbox = "none"` (the default) runs on the host by design; a configured backend runs
+  instance shells inside it, and when it is missing the command fails loudly instead of silently degrading.
 
 D-451 adds explicit text/image attachments (`/attach PATH` or `exec --attach PATH`), workspace path
 completion, revision-checked pending input (`/queue` or `inputs`), browser search and complete local
@@ -109,7 +109,7 @@ capability delegation, optional operation auto-review and provider cache telemet
 
 ## Install
 
-Requirements: Linux (x86_64) plus `bubblewrap`; model credentials are read from environment variables and
+Requirements: Linux (x86_64); a sandbox backend is optional (the default is `none`). Model credentials are read from environment variables and
 never written into the config.
 
 ### No public release currently
@@ -131,8 +131,8 @@ This needs a Rust toolchain pinned by `rust-toolchain.toml`; add `--offline` onc
 
 ## Quick start
 
-Install `bubblewrap` (Debian/Ubuntu: `sudo apt install bubblewrap`; other distributions are covered in the
-install guide), then run in one terminal:
+The default `sandbox = "none"` needs no sandbox. If you want the bubblewrap backend, install it
+(Debian/Ubuntu: `sudo apt install bubblewrap`; other distributions are in the install guide), then run in one terminal:
 
 ```bash
 teamagents init                       # write a minimal config and prepare the state root; never overwrites
@@ -218,7 +218,7 @@ instead. Details, the full action vocabulary and the exit codes are in
 | `--every MINUTES` / `--prompt TEXT` | `automations add`: the period and the prompt each run submits (D-367) |
 | `--query TEXT` / `--limit N` | `sessions search`: the substring to look for and the most hits to return (default 20, D-368) |
 | `--full-auto` | user-only full-auto mode (out-of-scope work is approved instead of requested); it applies to the session this command starts — a session that is already running keeps the mode it booted with, and the client prints that mode instead of pretending |
-| `init` / `doctor` / `daemon` / `daemon --stop` / `exec` / `authority` / `approvals` / `instances` / `tasks` / `runners` / `artifacts` / `sessions` / `automations` / `version` / `--help` | config and state root / self-check (config, credentials, state root, skills, goal limits, checks, hooks, bubblewrap) / run the daemon alone (its output goes to `<state root>/daemon.log`) / stop the session that owns this state root, addressed by its socket (no pid; `--cwd`/`--model`/`--full-auto` are refused) / headless input / list, grant and revoke capabilities / list and decide approvals / pause, resume, interrupt, terminate, merge a worktree member's branch and list instances / list and cancel tasks / list the job runners a state root still carries and ask the settled ones to retire / list a state root's artifacts (bytes, owner, presence) and collect the ones nothing references (`runners stop --service --yes` instead signals the process group a settled command left behind) / list, create, fork, rename, restore, search, archive and delete named sessions under the base (D-364/D-365/D-368) / list, create, pause, resume and delete schedules that start a goal on their own (D-367) / version / usage |
+| `init` / `doctor` / `daemon` / `daemon --stop` / `exec` / `authority` / `approvals` / `instances` / `tasks` / `runners` / `artifacts` / `sessions` / `automations` / `version` / `--help` | config and state root / self-check (config, credentials, state root, skills, goal limits, checks, hooks, sandbox mode) / run the daemon alone (its output goes to `<state root>/daemon.log`) / stop the session that owns this state root, addressed by its socket (no pid; `--cwd`/`--model`/`--full-auto` are refused) / headless input / list, grant and revoke capabilities / list and decide approvals / pause, resume, interrupt, terminate, merge a worktree member's branch and list instances / list and cancel tasks / list the job runners a state root still carries and ask the settled ones to retire / list a state root's artifacts (bytes, owner, presence) and collect the ones nothing references (`runners stop --service --yes` instead signals the process group a settled command left behind) / list, create, fork, rename, restore, search, archive and delete named sessions under the base (D-364/D-365/D-368) / list, create, pause, resume and delete schedules that start a goal on their own (D-367) / version / usage |
 
 Conversations render Markdown, fenced code, lists and tables, with distinct user messages and compact
 tool results. `Ctrl+O` expands or folds tool previews; full stored content remains in the session page (D-447).
@@ -253,8 +253,8 @@ see the [developer command map](docs/USER-GUIDE.md#1-quick-start).
   root through `[permissions] trusted_projects`, or explicitly trust all projects with `trust_project = true`.
   Models, tools, skills paths and instruction files then merge in (your definitions win); permissions, hooks,
   checks, retention, limits and update policy stay yours. `doctor` reports the trust/merge result.
-  Instruction files must be configured explicitly; discovering project configuration does not automatically
-  load AGENTS.md. The sandbox may be bubblewrap, Docker or SSH, with the boundaries in the user guide.
+  Instruction files may be listed explicitly; a trusted repository's `AGENTS.md` files are also discovered from
+  its boundary down to the working directory (D-467). The sandbox may be none, bubblewrap, Docker or SSH.
 - A model profile selects its wire format with `protocol = "responses" | "anthropic" | "openai" |
   "deepseek"`; `base_url` plus `model` decide the actual service, and credentials are only referenced by
   environment-variable name.
@@ -270,7 +270,7 @@ see the [developer command map](docs/USER-GUIDE.md#1-quick-start).
 
 - Linux x86_64 is the supported distribution target; no public release is published. There is no supported
   Windows/macOS build, distributed instance protocol or built-in browser automation.
-- The selected bubblewrap, Docker or SSH shell backend fails closed when unavailable. SSH runs a remote
+- A selected sandbox backend fails closed when unavailable. SSH runs a remote
   shell, not a distributed agent, and does not guarantee remote cancellation or enforce network isolation.
 - Controlled daily coding use is possible; equivalence to Pi as a sole general-purpose driver remains
   unestablished. Read-only work diagnostics and explicit recovery are available in CLI/TUI (D-461), without

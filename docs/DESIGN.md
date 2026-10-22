@@ -22,7 +22,7 @@ is tabulated in [ACCEPTANCE](ACCEPTANCE.md) under "Requirements (Q1–Q19) and t
 | Q1 | Task success rate and long-horizon reliability at the same model and budget matter equally | Success rate, wrong completions, recovery correctness, cost and duration all count |
 | Q2 | Language and component boundaries may change if the design argues the choice | Free choice at the time; the user then selected the Rust-native architecture |
 | Q3 | Scope may be re-cut; deliver the kernel and the runtime first | Capabilities added to the first release are listed in Q6, Q12 and Q13 |
-| Q4 | Context, message and tool access are isolated by default; full_auto shell may bypass the logical boundary | Permissions are enforced at runtime; context isolation is never advertised as a security boundary between host processes of the same user |
+| Q4 | Context, message and tool access are isolated by default; the host mode (`sandbox = none`) may bypass the logical boundary | Permissions are enforced at runtime; context isolation is never advertised as a security boundary between host processes of the same user |
 | Q5 | The Leader manages instances and connections by default and may delegate part of that authority | Authorized instances may communicate directly; instances never chat privately, collaboration goes through control-plane-granted messages and shared space |
 | Q6 | Ship a minimal user TUI for Leader conversation, progress, approvals, interruption and session history/switch/delete; the developer CLI owns comprehensive management (D-445/D-446) | One conversation, conditional approvals, distinct interrupt/exit and an optional session browser; member, task, goal, session and diagnostic controls remain scriptable |
 | Q7 | Closing the UI keeps work running, and the user can reconnect and intervene | The background runtime is independent of the front-end lifetime |
@@ -41,9 +41,11 @@ is tabulated in [ACCEPTANCE](ACCEPTANCE.md) under "Requirements (Q1–Q19) and t
 
 The user then selected the Rust-native architecture explicitly, replacing the earlier idea of LangGraph owning
 persistence. A team of one, governed communication, arbitrary connection topologies, a small model loop and
-long-horizon stability remain in force. D-41's semantics stay: full_auto uses the host shell, a service started
-by a successful command survives, timeout/cancellation stops the command's process group, and model credentials
-never enter the tool environment automatically; `approved_scope` keeps using bubblewrap.
+long-horizon stability remain in force. D-466 updates D-41 into one key with two modes: `[permissions] sandbox = "none"` (the default) uses the host
+shell, while a configured backend runs `approved_scope` inside it and fails closed when unavailable. A service
+started by a successful command survives, timeout/cancellation stops the command's process group, and model
+credentials never enter the tool environment automatically. A Rust-native backend (Landlock + seccomp, with a
+DSec-style namespace/cgroup alternative) is designed in [RUST-SANDBOX.md](RUST-SANDBOX.md); it is not implemented.
 
 The first release targets a single machine and a single system user; the TUI, basic tools, MCP, Skills,
 multiple providers and on-demand multi-instance behaviour are all part of it. Distributed execution,
@@ -242,7 +244,7 @@ observe" never means "must inject into the model".
 
 The shared project directory counts as an explicitly granted resource, while isolated directories and
 worktrees are created on demand. Files in the shared project are readable by authorized instances anyway, so
-the design never claims that all information must pass through messages. full_auto's host shell keeps the
+the design never claims that all information must pass through messages. the host mode (`sandbox = "none"`) keeps the
 logical isolation boundary the user accepted.
 
 Least privilege is measured by the effective scope and lifetime of a capability, not by the number of
@@ -424,7 +426,7 @@ never dressed up as an optimisation.
 
 A shell receipt carries whether the command actually started, the execution mode, cwd, exit code or signal,
 duration, output reference and the cancel/timeout reason. A failed isolation start is not a non-zero exit, and
-full_auto and approved_scope keep separate working directories and environments. Verification runs in the same
+the host and sandbox modes keep separate working directories and environments. Verification runs in the same
 real target environment. A tool is available only when the current identity is allowed to execute it, and an
 environment failure is never probed by creating another instance with the same capability.
 
@@ -584,7 +586,7 @@ suite is never manufactured by deleting failing cases.
 | A02 | A→B→C→A communication | delivery on a granted channel, executions independent |
 | A03 | limited delegation and parent revocation | scope cannot widen and derived grants expire correctly |
 | A04 | a queued action meets a revocation | re-checked and refused before the linearization point; in-flight actions have explicit cancellation semantics |
-| A05 | an agent reads another instance's history | the controlled entry refuses it while the user may look; full_auto claims no strong isolation |
+| A05 | an agent reads another instance's history | the controlled entry refuses it while the user may look; the host mode claims no strong isolation |
 | A06 | a message applied across a restart | no message or context lost and no duplicate application |
 | A07 | permanent start failure | input kept, one notification, parked, no turn storm |
 | A08 | crash after a tool succeeded but before model consumption | the same result is reused and no side effect repeats |

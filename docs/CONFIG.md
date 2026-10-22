@@ -14,7 +14,7 @@ Three rules decide whether a key is *honoured*:
   (exactly those repositories, compared by canonical path) in your own config; the loader looks for the project
   file in the working directory and then up through its parents (D-434). With the opt-in its `models`, `tools`,
   `skills_paths` and `instruction_files` merge in, and your own definitions of the same name always win.
-  `[permissions]` (mode, trust and automatic-review keys), `hooks`, `checks`, `retention`, `limits` and
+  `[permissions]` (sandbox, trust and automatic-review keys), `hooks`, `checks`, `retention`, `limits` and
   `update` may only ever come from your config, trusted or not. USER-GUIDE §2 describes this boundary;
   ACCEPTANCE records current coverage. `python3 review/project_config_claim.py` checks the basic loading
   claim, while the loader tests cover ancestor discovery and canonical-root trust (D-434).
@@ -29,8 +29,8 @@ Three rules decide whether a key is *honoured*:
   `mcp_execution` one it can honour. In a `doctor` row instead, when the value is one a *session* would fail on
   later and the user can still fix it: `mcp_transport` and a mistyped MCP command (D-74's "where the user can
   still fix it without reading a daemon log"). A typo is a config error, never a silent default — measured before the rule was complete (2026-09-27):
-  `skills_pathes = []` left `doctor` green and the path never loaded, and `[permissions] mod = "full_auto"` (a typo
-  of `mode`, a *safety* setting) silently ran the session in `approved_scope` (D-161). The one deliberate exception
+  `skills_pathes = []` left `doctor` green and the path never loaded, and `[permissions] sandbxo = "bubblewrap"` (a typo
+  of `sandbox`, a *safety* setting) silently ran the session in the host mode (D-161). The one deliberate exception
   is a value that is free-form by design: `generation_options` is a `HashMap` the provider passes through, so its
   keys are the service's, not this build's.
 
@@ -54,7 +54,7 @@ default (D-239).
 |---|---|---|---|---|
 | `provider` | `String` | empty | `engine/src/providers/mod.rs`, `engine/src/tools.rs` … (3 files) | The vendor hint: `deepseek` selects that service's defaults (the reasoning echo, the deepseek protocol) while `protocol` is unset, and any other value is a label for a compatible service — the wire is decided by `protocol`/`base_url`, never by this name (D-40, D-229). |
 | `protocol` | `String` | "openai" | `engine/src/providers/mod.rs`, `engine/src/v2/attachments.rs` … (3 files) | — |
-| `model` | `String` | empty | `core/src/kernel/instance.rs`, `core/src/kernel/mod.rs` … (15 files) | — |
+| `model` | `String` | empty | `core/src/kernel/instance.rs`, `core/src/kernel/mod.rs` … (16 files) | — |
 | `base_url` | `Option<String>` | unset (the reader applies its own) | `engine/src/providers/mod.rs` | — |
 | `api_key_env` | `Option<String>` | unset (the reader applies its own) | `engine/src/providers/mod.rs`, `engine/src/tools.rs` | — |
 | `timeout` | `i64` | 120 | `core/src/v2/control.rs`, `engine/src/mcp.rs` … (10 files) | — |

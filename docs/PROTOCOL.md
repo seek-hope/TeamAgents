@@ -77,62 +77,63 @@ the handler re-checks who may do this rather than trusting the request.
 
 | Method | Parameters the handler reads | Identity checked | Handled at |
 |---|---|---|---|
-| `create_instance` | `id`, `profile`, `workspace_ref` | yes | `core/src/v2/control.rs:228` |
-| `spawn_instance` | `acceptance_refs`, `capabilities`, `goal_id`, `instance_id`, `instructions`, `profile`, `task`, `task_id`, `workspace_ref` | yes | `core/src/v2/control.rs:229` |
-| `issue_grant` | `action`, `delegable`, `parent_grant_id`, `resource_scope`, `subject`, `task_id` | yes | `core/src/v2/control.rs:230` |
-| `revoke_grant` | `grant_id` | yes | `core/src/v2/control.rs:231` |
-| `capability_requests` | — | yes | `core/src/v2/control.rs:232` |
-| `approve_capability` | `request_id` | yes | `core/src/v2/control.rs:233` |
-| `deny_capability` | `request_id` | yes | `core/src/v2/control.rs:234` |
-| `reauthorize_operation` | `operation_id` | yes | `core/src/v2/control.rs:235` |
-| `reset_instance` | `instance_id`, `reason` | yes | `core/src/v2/control.rs:236` |
-| `create_goal` | `deadline`, `id`, `instance_id`, `limits`, `original_request_ref` | yes | `core/src/v2/control.rs:237` |
-| `require_checks` | `checks`, `goal_id` | yes | `core/src/v2/control.rs:238` |
-| `send_message` | `correlation_id`, `max_inbox`, `recipient`, `text` | yes | `core/src/v2/control.rs:239` |
-| `drain_inbox` | `instance_id` | yes | `core/src/v2/control.rs:240` |
-| `delegate_task` | `acceptance_refs`, `assignee`, `dependencies`, `description`, `goal_id`, `task_id` | yes | `core/src/v2/control.rs:241` |
-| `start_task` | `task_id` | yes | `core/src/v2/control.rs:242` |
-| `complete_task` | `result_refs`, `status`, `summary`, `task_id` | yes | `core/src/v2/control.rs:243` |
-| `cancel_task` | `reason`, `task_id` | yes | `core/src/v2/control.rs:244` |
-| `read_history` | `epoch`, `instance_id`, `limit` | yes | `core/src/v2/control.rs:245` |
-| `fire_timer` | `now` | yes | `core/src/v2/control.rs:246` |
-| `blocked_report` | — | yes | `core/src/v2/control.rs:247` |
-| `submit_input` | `envelope_id`, `instance_id`, `text` | yes | `core/src/v2/control.rs:248` |
-| `edit_input` | `envelope_id`, `instance_id`, `revision`, `text` | yes | `core/src/v2/control.rs:249` |
-| `cancel_input` | `envelope_id`, `instance_id`, `revision`, `text` | yes | `core/src/v2/control.rs:250` |
-| `begin_request` | `est_prompt_tokens`, `instance_id`, `offered_tools`, `request_id`, `request_ref`, `revision`, `surface_authorized` | yes | `core/src/v2/control.rs:251` |
-| `record_attempt` | `attempt_id`, `elapsed_ms`, `error_class`, `request_id`, `response_ref`, `status`, `stream`, `unknown_usage`, `usage` | yes | `core/src/v2/control.rs:252` |
-| `begin_compression` | `est_prompt_tokens`, `instance_id`, `request_id`, `request_ref` | yes | `core/src/v2/control.rs:253` |
-| `compress_context` | `attempt_id`, `instance_id`, `keep_ids`, `request_id`, `summary` | yes | `core/src/v2/control.rs:254` |
-| `fail_compression` | `reason`, `request_id` | yes | `core/src/v2/control.rs:255` |
-| `import_response` | `completion`, `decision_id`, `entry`, `grant_revision`, `intents`, `notes`, `request_id`, `wait` | yes | `core/src/v2/control.rs:256` |
-| `dispatch_operation` | `approval_required`, `operation_id`, `permission_revision` | no | `core/src/v2/control.rs:257` |
-| `complete_operation` | `operation_id`, `receipt`, `status` | no | `core/src/v2/control.rs:258` |
-| `cancel_operation` | `operation_id`, `reason` | yes | `core/src/v2/control.rs:259` |
-| `approve` | `approval_id`, `expires_at` | yes | `core/src/v2/control.rs:260` |
-| `deny` | `approval_id` | yes | `core/src/v2/control.rs:261` |
-| `review_decision` | `approval_id`, `outcome`, `rationale`, `reviewer_model`, `risk_level`, `user_authorization` | yes | `core/src/v2/control.rs:262` |
-| `fail_request` | `park`, `reason`, `request_id` | no | `core/src/v2/control.rs:263` |
-| `cancel_request` | `reason`, `request_id` | yes | `core/src/v2/control.rs:264` |
-| `interrupt_instance` | `instance_id`, `reason` | yes | `core/src/v2/control.rs:265` |
-| `complete_goal` | `goal_id`, `instance_id` | yes | `core/src/v2/control.rs:266` |
-| `register_check_runs` | — | yes | `core/src/v2/control.rs:267` |
-| `register_verification` | — | yes | `core/src/v2/control.rs:268` |
-| `repair_completion` | `failures`, `goal_id`, `instance_id`, `round` | yes | `core/src/v2/control.rs:269` |
-| `block_goal` | `goal_id`, `instance_id`, `reason` | yes | `core/src/v2/control.rs:270` |
-| `deadline_warning` | `goal_id`, `instance_id` | yes | `core/src/v2/control.rs:271` |
-| `goal_checks_briefing` | `goal_id`, `instance_id` | yes | `core/src/v2/control.rs:272` |
-| `cancel_goal` | `goal_id` | yes | `core/src/v2/control.rs:273` |
-| `close_completion` | `instance_id` | no | `core/src/v2/control.rs:274` |
-| `artifact_abandon` | `id` | yes | `core/src/v2/control.rs:275` |
-| `set_lifecycle` | `instance_id`, `lifecycle`, `reason` | yes | `core/src/v2/control.rs:276` |
-| `artifact_stage` | `digest`, `id`, `kind`, `owner_ref`, `owner_scope`, `size`, `storage_ref` | no | `core/src/v2/control.rs:277` |
-| `artifact_publish` | `id` | no | `core/src/v2/control.rs:278` |
-| `artifact_release_spent_owners` | `days`, `limit` | no | `core/src/v2/control.rs:279` |
-| `artifact_gc_claim` | `limit` | no | `core/src/v2/control.rs:280` |
-| `artifact_collect` | `id` | no | `core/src/v2/control.rs:281` |
-| `prune_history` | `days`, `evidence`, `now` | yes | `core/src/v2/control.rs:282` |
-| `fork_reset` | `keep_instance`, `source_root`, `target_root` | yes | `core/src/v2/control.rs:283` |
+| `create_instance` | `id`, `profile`, `workspace_ref` | yes | `core/src/v2/control.rs:245` |
+| `spawn_instance` | `acceptance_refs`, `capabilities`, `goal_id`, `instance_id`, `instructions`, `profile`, `task`, `task_id`, `workspace_ref` | yes | `core/src/v2/control.rs:246` |
+| `issue_grant` | `action`, `delegable`, `parent_grant_id`, `resource_scope`, `subject`, `task_id` | yes | `core/src/v2/control.rs:247` |
+| `revoke_grant` | `grant_id` | yes | `core/src/v2/control.rs:248` |
+| `capability_requests` | — | yes | `core/src/v2/control.rs:249` |
+| `approve_capability` | `request_id` | yes | `core/src/v2/control.rs:250` |
+| `deny_capability` | `request_id` | yes | `core/src/v2/control.rs:251` |
+| `reauthorize_operation` | `operation_id` | yes | `core/src/v2/control.rs:252` |
+| `reset_instance` | `instance_id`, `reason` | yes | `core/src/v2/control.rs:253` |
+| `create_goal` | `deadline`, `id`, `instance_id`, `limits`, `original_request_ref` | yes | `core/src/v2/control.rs:254` |
+| `require_checks` | `checks`, `goal_id` | yes | `core/src/v2/control.rs:255` |
+| `send_message` | `correlation_id`, `max_inbox`, `recipient`, `text` | yes | `core/src/v2/control.rs:256` |
+| `drain_inbox` | `instance_id` | yes | `core/src/v2/control.rs:257` |
+| `set_instance_profile` | `effort`, `instance_id`, `model` | yes | `core/src/v2/control.rs:258` |
+| `delegate_task` | `acceptance_refs`, `assignee`, `dependencies`, `description`, `goal_id`, `task_id` | yes | `core/src/v2/control.rs:259` |
+| `start_task` | `task_id` | yes | `core/src/v2/control.rs:260` |
+| `complete_task` | `result_refs`, `status`, `summary`, `task_id` | yes | `core/src/v2/control.rs:261` |
+| `cancel_task` | `reason`, `task_id` | yes | `core/src/v2/control.rs:262` |
+| `read_history` | `epoch`, `instance_id`, `limit` | yes | `core/src/v2/control.rs:263` |
+| `fire_timer` | `now` | yes | `core/src/v2/control.rs:264` |
+| `blocked_report` | — | yes | `core/src/v2/control.rs:265` |
+| `submit_input` | `after`, `envelope_id`, `instance_id`, `text` | yes | `core/src/v2/control.rs:266` |
+| `edit_input` | `envelope_id`, `instance_id`, `revision`, `text` | yes | `core/src/v2/control.rs:267` |
+| `cancel_input` | `envelope_id`, `instance_id`, `revision`, `text` | yes | `core/src/v2/control.rs:268` |
+| `begin_request` | `est_prompt_tokens`, `instance_id`, `offered_tools`, `request_id`, `request_ref`, `revision`, `surface_authorized` | yes | `core/src/v2/control.rs:269` |
+| `record_attempt` | `attempt_id`, `elapsed_ms`, `error_class`, `request_id`, `response_ref`, `status`, `stream`, `unknown_usage`, `usage` | yes | `core/src/v2/control.rs:270` |
+| `begin_compression` | `est_prompt_tokens`, `instance_id`, `request_id`, `request_ref` | yes | `core/src/v2/control.rs:271` |
+| `compress_context` | `attempt_id`, `instance_id`, `keep_ids`, `request_id`, `summary` | yes | `core/src/v2/control.rs:272` |
+| `fail_compression` | `reason`, `request_id` | yes | `core/src/v2/control.rs:273` |
+| `import_response` | `completion`, `decision_id`, `entry`, `grant_revision`, `intents`, `notes`, `request_id`, `wait` | yes | `core/src/v2/control.rs:274` |
+| `dispatch_operation` | `approval_required`, `operation_id`, `permission_revision` | no | `core/src/v2/control.rs:275` |
+| `complete_operation` | `operation_id`, `receipt`, `status` | no | `core/src/v2/control.rs:276` |
+| `cancel_operation` | `operation_id`, `reason` | yes | `core/src/v2/control.rs:277` |
+| `approve` | `approval_id`, `expires_at` | yes | `core/src/v2/control.rs:278` |
+| `deny` | `approval_id` | yes | `core/src/v2/control.rs:279` |
+| `review_decision` | `approval_id`, `outcome`, `rationale`, `reviewer_model`, `risk_level`, `user_authorization` | yes | `core/src/v2/control.rs:280` |
+| `fail_request` | `park`, `reason`, `request_id` | no | `core/src/v2/control.rs:281` |
+| `cancel_request` | `reason`, `request_id` | yes | `core/src/v2/control.rs:282` |
+| `interrupt_instance` | `instance_id`, `reason` | yes | `core/src/v2/control.rs:283` |
+| `complete_goal` | `goal_id`, `instance_id` | yes | `core/src/v2/control.rs:284` |
+| `register_check_runs` | — | yes | `core/src/v2/control.rs:285` |
+| `register_verification` | — | yes | `core/src/v2/control.rs:286` |
+| `repair_completion` | `failures`, `goal_id`, `instance_id`, `round` | yes | `core/src/v2/control.rs:287` |
+| `block_goal` | `goal_id`, `instance_id`, `reason` | yes | `core/src/v2/control.rs:288` |
+| `deadline_warning` | `goal_id`, `instance_id` | yes | `core/src/v2/control.rs:289` |
+| `goal_checks_briefing` | `goal_id`, `instance_id` | yes | `core/src/v2/control.rs:290` |
+| `cancel_goal` | `goal_id` | yes | `core/src/v2/control.rs:291` |
+| `close_completion` | `instance_id` | no | `core/src/v2/control.rs:292` |
+| `artifact_abandon` | `id` | yes | `core/src/v2/control.rs:293` |
+| `set_lifecycle` | `instance_id`, `lifecycle`, `reason` | yes | `core/src/v2/control.rs:294` |
+| `artifact_stage` | `digest`, `id`, `kind`, `owner_ref`, `owner_scope`, `size`, `storage_ref` | no | `core/src/v2/control.rs:295` |
+| `artifact_publish` | `id` | no | `core/src/v2/control.rs:296` |
+| `artifact_release_spent_owners` | `days`, `limit` | no | `core/src/v2/control.rs:297` |
+| `artifact_gc_claim` | `limit` | no | `core/src/v2/control.rs:298` |
+| `artifact_collect` | `id` | no | `core/src/v2/control.rs:299` |
+| `prune_history` | `days`, `evidence`, `now` | yes | `core/src/v2/control.rs:300` |
+| `fork_reset` | `keep_instance`, `source_root`, `target_root` | yes | `core/src/v2/control.rs:301` |
 
 ### Every field the protocol carries in one object, and where it is built
 

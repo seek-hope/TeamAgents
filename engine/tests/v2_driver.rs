@@ -72,6 +72,17 @@ impl Provider for ScriptedProvider {
     }
 }
 
+/// Two read-only calls in one assistant message: the batch the driver can run concurrently (D-469).
+fn two_reads(a: &str, b: &str) -> Json {
+    json!({"role": "assistant", "content": "",
+    "tool_calls": [
+        {"id": "c1", "type": "function",
+         "function": {"name": "read_file", "arguments": json!({"path": a}).to_string()}},
+        {"id": "c2", "type": "function",
+         "function": {"name": "read_file", "arguments": json!({"path": b}).to_string()}}
+    ]})
+}
+
 fn reply(text: &str) -> Json {
     json!({"role": "assistant", "content": text})
 }
@@ -817,6 +828,32 @@ async fn disk_full_stops_dispatch_reports_and_resumes_after_parking() {
         .expect("storage")
         .expect("attempt count");
     assert_eq!(attempts, 1, "the in-flight loss never double-bills");
+    handle.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn a_read_only_batch_runs_together_and_keeps_call_order() {
+    let root = root("read-batch");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    std::fs::write(root.dir.join("ws/a.txt"), "alpha").unwrap();
+    std::fs::write(root.dir.join("ws/b.txt"), "beta").unwrap();
+    let script = vec![Step::Message(two_reads("a.txt", "b.txt")), Step::Message(finish_call("read both"))];
+    let (provider, seen) = recording(script);
+    let mut config = root.config_with(provider);
+    config.bindings = vec!["files".into()];
+    config.profile.tools.push(json!({"type": "function", "function": {
+        "name": "read_file", "description": "read a file",
+        "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}
+    }}));
+    let handle = start(config).await.expect("start");
+    handle.input("read both files").await.expect("input");
+    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    let requests = recorded(&seen);
+    assert!(requests.len() >= 2, "{requests:?}");
+    let text = request_text(&requests[1]);
+    let a = text.find("alpha").expect("the first read result reaches the model");
+    let b = text.find("beta").expect("the second read result reaches the model");
+    assert!(a < b, "receipts keep the call order: {text}");
     handle.shutdown().await.expect("shutdown");
 }
 

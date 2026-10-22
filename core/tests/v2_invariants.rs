@@ -112,6 +112,8 @@ struct Harness {
     sizes: (usize, usize, usize),
     /// the previous step's label (to tell whether it was a replay)
     last_label: String,
+    /// whether the last command stored a receipt (a no-op drain does not; C5/D-463)
+    last_kept_receipt: bool,
     /// Replay coverage: the same id with the same payload succeeded, and the same id with a different payload was refused
     replayed: bool,
     divergent_refused: bool,
@@ -147,6 +149,7 @@ impl Harness {
             last_command: None,
             sizes: (0, 0, 0),
             last_label: String::new(),
+            last_kept_receipt: true,
             replayed: false,
             divergent_refused: false,
             revoked: false,
@@ -199,6 +202,15 @@ impl Harness {
             if command.command_id.is_empty() { Command { command_id: self.id(), ..command } } else { command };
         self.last_label = label.split('(').next().unwrap_or("").to_string();
         let result = self.ctl.submit(command.clone(), identity.clone());
+        // C5/D-463: a drain that changed nothing keeps no receipt by decision, so a replay of it re-executes. Track
+        // that here so the random walk does not demand the receipt contract from a command that has none.
+        let no_op_drain = command.method == "drain_inbox"
+            && result.as_ref().is_ok_and(|value| {
+                value["applied"].as_i64() == Some(0)
+                    && value["sealed"].as_i64() == Some(0)
+                    && value["woken"].as_array().is_some_and(|woken| woken.is_empty())
+            });
+        self.last_kept_receipt = !no_op_drain;
         let outcome = match &result {
             Ok(_) => "ok".to_string(),
             Err(error) => format!("err({})", error.chars().take(48).collect::<String>()),
@@ -1316,8 +1328,12 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity,
             })
         }
-        // 35: counterexample probe - the same command id with a different payload (the spec requires a refusal)
+        // 35: counterexample probe - the same command id with a different payload (the spec requires a refusal).
+        // A no-op drain keeps no receipt (C5/D-463), so this step has no premise after one; the walk picks another.
         35 => {
+            if !harness.last_kept_receipt {
+                return None;
+            }
             let (last, identity) = harness.last_command.clone()?;
             let mut params = last.params.clone();
             if let Some(map) = params.as_object_mut() {

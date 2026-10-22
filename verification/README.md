@@ -345,6 +345,7 @@ module the method's rule is checked in; the property-by-property anchors above s
 | `cancel_operation` | `V2Control.tla` |
 | `approve` | `V2Approval.tla` |
 | `review_decision` | `unproven`: D-458 automatic review decides one pending operation approval; the control boundary and the reviewer adapter are tested, but no TLA model covers the reviewer |
+| `set_instance_profile` | `unproven`: D-470 user-only model/effort switch at a READY/WAITING boundary, with the driver reloading the profile before each request; the control-plane guard and the reload are covered by core tests, but no TLA model covers the switch |
 | `deny` | `V2Approval.tla` |
 | `fail_request` | `V2Control.tla` |
 | `cancel_request` | `V2Control.tla` |

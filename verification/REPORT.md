@@ -898,6 +898,10 @@ alone**, and conversely formal coverage does not excuse an item from sample or r
 11. **Hooks, session export and the MCP transport are outside the models.** `V2Codemode` pins the `pre_tool`
    veto for *nested* codemode calls; a direct tool call's veto, the `notify` stream, the export snapshot's
    consistency and the MCP wire are covered by sample tests and probes only.
+12. **Model/effort switch (`set_instance_profile`)**: D-470 updates an instance's `profile_json` at a
+    READY/WAITING boundary and the driver reloads the model/options before each request. The control-plane guard,
+    the reload and the CLI path are covered by core tests and the web-grant/TurnControl tests cover the adjacent
+    domain allowlist, but no TLA model covers the profile switch itself.
 
 ## 6. Atomic model actions and their implementation windows (D-465)
 

@@ -152,7 +152,7 @@ pub struct DriverConfig<P> {
     /// resolves its workspace policy against this directory.
     pub instances_dir: PathBuf,
     pub workspace: PathBuf,
-    /// Trusted session permission mode ("approved_scope" | "full_auto"), D-41.
+    /// Derived from `[permissions] sandbox` (D-466): `full_auto` for the host, `approved_scope` for a backend.
     pub permissions: String,
     /// Operation approvals are decided by the user or by the reviewer.
     pub approvals_reviewer: String,
@@ -1649,8 +1649,35 @@ that delegated it learns the outcome only from a settlement.";
 
     /// MODEL_PENDING: transport attempts with single-owner retry, then the
     /// atomic response import (§4.2).
+    /// D-470: reload the instance profile before each request, so a user's model/effort switch lands on the next
+    /// turn (the control plane only accepts it at a READY/WAITING boundary).
+    async fn refresh_profile(&mut self) -> Result<(), String> {
+        let instance = self.config.instance_id.clone();
+        let text: Option<String> = self
+            .storage
+            .call(move |control| {
+                control
+                    .connection()
+                    .query_row("SELECT profile_json FROM instances WHERE id = ?1", [&instance], |row| row.get(0))
+                    .ok()
+            })
+            .await?;
+        if let Some(text) = text {
+            if let Ok(profile) = serde_json::from_str::<Json>(&text) {
+                if let Some(model) = profile["model"].as_str().filter(|model| !model.is_empty()) {
+                    self.config.profile.model = model.to_string();
+                }
+                if profile.get("options").is_some_and(Json::is_object) {
+                    self.config.profile.options = profile["options"].clone();
+                }
+            }
+        }
+        Ok(())
+    }
+
     async fn step_model(&mut self, snapshot: &Snapshot) -> Result<(), String> {
         let request_id = snapshot.active_request.clone().ok_or("MODEL_PENDING without active request")?;
+        self.refresh_profile().await?;
         // recovery: a selected complete attempt is imported from its artifact,
         // never re-requested (§6.3)
         let selected: Option<(String, Option<String>)> = self
@@ -2074,6 +2101,99 @@ that delegated it learns the outcome only from a settlement.";
         Ok(assessment.outcome == Verdict::Allow)
     }
 
+    /// D-469: independent read-only calls in one model batch. Dispatch and receipt writes stay sequential and in
+    /// order; only the tool work runs concurrently. Returns true when the whole batch was handled here.
+    async fn step_read_batch(&mut self, ops: &[(String, String, String, bool)]) -> Result<bool, String> {
+        const READ_ONLY: &[&str] = &["read_file", "read_artifact", "grep", "glob", "skill"];
+        if ops.len() < 2 || ops.iter().any(|(_, status, _, _)| status != "PREPARED") {
+            return Ok(false);
+        }
+        let mut intents = Vec::with_capacity(ops.len());
+        for (operation_id, _, intent_json, _) in ops {
+            let intent: Json = serde_json::from_str(intent_json).map_err(|e| format!("intent {operation_id}: {e}"))?;
+            if !READ_ONLY.contains(&intent["name"].as_str().unwrap_or("")) {
+                return Ok(false);
+            }
+            intents.push((operation_id.clone(), intent));
+        }
+        let mut dispatched = Vec::new();
+        for (operation_id, intent) in intents {
+            let name = intent["name"].as_str().unwrap_or("").to_string();
+            let args = intent["args"].clone();
+            if let Some(reason) = self.pre_tool_denied(&name, &args).await {
+                self.notify_tool_call(&name, &args, false, Some(reason.clone()));
+                let message = format!("denied by pre_tool hook: {reason}");
+                self.complete_with_error(&operation_id, &intent, "hook_denied", &message).await?;
+                continue;
+            }
+            let dispatched_result = self
+                .submit(
+                    self.command(
+                        format!("dispatch-{operation_id}-{}", uuid::Uuid::new_v4()),
+                        "dispatch_operation",
+                        json!({"operation_id": operation_id, "approval_required": false, "permission_revision": 0}),
+                    ),
+                    Identity::System,
+                )
+                .await;
+            match dispatched_result {
+                Ok(result) if result["status"] == json!("APPROVAL_REQUIRED") => return Ok(false),
+                Ok(_) => dispatched.push((operation_id, intent)),
+                Err(error) if error.contains("not dispatchable") || error.contains("lost the dispatch race") => {}
+                Err(error) => {
+                    self.complete_with_error(&operation_id, &intent, "dispatch_refused", &error).await?;
+                }
+            }
+        }
+        if dispatched.is_empty() {
+            return Ok(true);
+        }
+        let mode = ShellMode::from_permissions(Some(&self.config.permissions), self.config.sandbox.clone())?;
+        let toolkit = self.toolkit.clone();
+        let mut tasks = Vec::with_capacity(dispatched.len());
+        for (operation_id, intent) in &dispatched {
+            let typed = ToolIntent {
+                index: intent["index"].as_u64().unwrap_or(0) as usize,
+                call_id: intent["call_id"].as_str().unwrap_or("").into(),
+                name: intent["name"].as_str().unwrap_or("").into(),
+                args: intent["args"].clone(),
+                args_hash: intent["args_hash"].as_str().unwrap_or("").into(),
+            };
+            let toolkit = toolkit.clone();
+            let op = operation_id.clone();
+            let mode = mode.clone();
+            tasks.push(tokio::task::spawn_blocking(move || {
+                toolkit.call(&op, &typed, &crate::tools::TurnControl::default(), mode)
+            }));
+        }
+        let joined = futures_util::future::join_all(tasks).await;
+        let mut receipts = Vec::with_capacity(joined.len());
+        for result in joined {
+            receipts.push(result.map_err(|e| format!("tool worker join: {e}"))?);
+        }
+        for ((operation_id, intent), receipt) in dispatched.into_iter().zip(receipts) {
+            let name = intent["name"].as_str().unwrap_or("");
+            let args = intent["args"].clone();
+            self.notify_tool_call(name, &args, receipt.ok, receipt.error.as_ref().map(|e| e.reason.clone()));
+            let mut receipt = receipt;
+            if let Some(error) = receipt.error.as_mut() {
+                if error.reason.starts_with("unknown tool") {
+                    let message = unknown_tool_message(name, &self.offered);
+                    error.reason = message.clone();
+                    receipt.content = serde_json::json!({"error": message}).to_string();
+                }
+            }
+            self.complete_op(
+                &operation_id,
+                if receipt.ok { "SUCCEEDED" } else { "FAILED" },
+                &serde_json::to_value(receipt).unwrap_or(Json::Null),
+                vec![],
+            )
+            .await?;
+        }
+        Ok(true)
+    }
+
     /// TOOLS_PENDING: dispatch/execute the fixed intents in order (§6.2) and
     /// import terminal receipts; DISPATCH_COMMITTED at entry means recovery.
     async fn step_tools(&mut self, snapshot: &Snapshot) -> Result<bool, String> {
@@ -2110,6 +2230,12 @@ that delegated it learns the outcome only from a settlement.";
             .await??;
         if ops.is_empty() {
             return Ok(true); // consumption already flipped the phase; re-read
+        }
+        // D-469: a batch made only of independent read-only tool calls runs its tool work concurrently. The
+        // control-plane transitions stay sequential and in call order, and the pre_tool veto still runs first;
+        // anything else falls through to the ordinary per-operation loop.
+        if self.step_read_batch(&ops).await? {
+            return Ok(true);
         }
         for (operation_id, status, intent_json, _cancel_requested) in ops {
             if self.shared.shutdown.load(Ordering::SeqCst) {
@@ -2247,12 +2373,14 @@ that delegated it learns the outcome only from a settlement.";
             TimeoutSource::Model => crate::tools::bounded_timeout(asked, self.config.catalog.limits.max_tool_seconds),
         };
         let network = intent["args"]["network"].as_bool().unwrap_or(false);
+        let skills = crate::tools::skill_roots(&self.config.catalog);
         let spec = match shell_command_spec(
             command_text,
             &self.config.workspace,
             network,
             Some(&self.shell_state),
             mode.clone(),
+            &skills,
         ) {
             Ok(spec) => spec,
             Err(error) => {
@@ -2788,6 +2916,39 @@ that delegated it learns the outcome only from a settlement.";
     /// Read-only inline tools (web search/fetch): no runner needed (§6.2);
     /// recovery re-executes them because they are idempotent reads.
     /// `pre_tool`: see [`Driver::execute_shell`] — recovery never re-asks.
+    /// D-470: the hosts this member's live `web` grants allow. Empty means no allowlist; a `session` grant allows
+    /// every domain; `domain:<host>` entries restrict the targets.
+    async fn allowed_web_domains(&self) -> Result<Vec<String>, String> {
+        let instance = self.config.instance_id.clone();
+        self.storage
+            .call(move |control| {
+                let mut stmt = control
+                    .connection()
+                    .prepare(
+                        "SELECT resource_scope FROM grants
+                         WHERE subject = ?1 AND action = 'web' AND revoked_at IS NULL",
+                    )
+                    .map_err(|e| format!("web grant prepare: {e}"))?;
+                let rows = stmt
+                    .query_map([&instance], |row| row.get::<_, String>(0))
+                    .map_err(|e| format!("web grant query: {e}"))?;
+                let mut domains = Vec::new();
+                for row in rows {
+                    let scope = row.map_err(|e| format!("web grant row: {e}"))?;
+                    if scope == "session" {
+                        return Ok(Vec::new());
+                    }
+                    if let Some(host) = scope.strip_prefix("domain:") {
+                        if !host.is_empty() {
+                            domains.push(host.to_string());
+                        }
+                    }
+                }
+                Ok(domains)
+            })
+            .await?
+    }
+
     async fn execute_inline(&mut self, operation_id: &str, intent: &Json, pre_tool: bool) -> Result<(), String> {
         let typed = ToolIntent {
             index: intent["index"].as_u64().unwrap_or(0) as usize,
@@ -2808,10 +2969,11 @@ that delegated it learns the outcome only from a settlement.";
         let toolkit = self.toolkit.clone();
         let op = operation_id.to_string();
         let mode = ShellMode::from_permissions(Some(&self.config.permissions), self.config.sandbox.clone())?;
-        let receipt =
-            tokio::task::spawn_blocking(move || toolkit.call(&op, &typed, &crate::tools::TurnControl::default(), mode))
-                .await
-                .map_err(|e| format!("tool worker join: {e}"))?;
+        let domains = self.allowed_web_domains().await?;
+        let control = crate::tools::TurnControl::with_domains(domains);
+        let receipt = tokio::task::spawn_blocking(move || toolkit.call(&op, &typed, &control, mode))
+            .await
+            .map_err(|e| format!("tool worker join: {e}"))?;
         self.notify_tool_call(&name, &args, receipt.ok, receipt.error.as_ref().map(|e| e.reason.clone()));
         let mut receipt = receipt;
         // D-402: the executor answers an unknown name with `unknown tool <name>` and nothing else. The driver knows

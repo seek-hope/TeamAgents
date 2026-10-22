@@ -133,10 +133,21 @@ fn hostile_content_is_bounded_and_next_preview_survives() {
         Source::Diagram { language: "svg".into(), code: "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"999999999\" height=\"999999999\"><image href=\"file:///etc/passwd\"/></svg>".into() },
         Source::Code { language: "rust".into(), code: format!("let value = \"{}\";", "\\\\".repeat(1900)) },
     ];
+    // The assertion is "hostile input does not hang", not a speed claim. Compare with a normal call on the same
+    // machine instead of a fixed 2 s threshold, which flaked when the runner was loaded (D-466 follow-up).
+    let baseline = {
+        let start = Instant::now();
+        assert!(run_helper(&request("mermaid"), &token).is_ok());
+        start.elapsed()
+    };
     for source in sources {
         let start = Instant::now();
         let _ = run_helper(&Request { source, ..request("mermaid") }, &token);
-        assert!(start.elapsed() < Duration::from_secs(2));
+        assert!(
+            start.elapsed() < baseline * 8 + Duration::from_secs(1),
+            "hostile input must not hang: {:?}",
+            start.elapsed()
+        );
         assert!(run_helper(&request("mermaid"), &token).is_ok());
     }
 }

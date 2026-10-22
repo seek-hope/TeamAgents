@@ -35,7 +35,8 @@ usage: teamagents [--cwd DIR] [--state-root PATH] [--session ID] [--model KEY] [
   teamagents inputs edit --id ID --revision N --prompt TEXT [--recipient ID] [--json]  revise pending text\n\
   teamagents inputs cancel --id ID --revision N [--recipient ID] [--json]  cancel pending delivery\n\
   teamagents instances [list] [--json]          the session's instances\n\
-  teamagents instances send --id ID --prompt TEXT [--json]  submit to any member; report accepted/queued, not completion\n\
+  teamagents instances send --id ID --prompt TEXT [--after-turn] [--json]  submit to any member; --after-turn queues it for after the current turn\n\
+  teamagents instances model --id ID [--model KEY] [--effort E] [--json]  switch model/effort at the next turn\n\
   teamagents instances resume|pause --id ID     let a parked instance run again, or stop one\n\
   teamagents instances interrupt --id ID        cancel the running turn so a queued instruction takes over\n\
   teamagents instances terminate --id ID --yes  retire it (workspace and open work handled)\n\
@@ -160,6 +161,10 @@ pub struct Args {
     /// D-364: `--session ID` — attach to a named session recorded in the state root's `sessions.json`.
     pub session: Option<String>,
     pub model: Option<String>,
+    /// D-470: `instances model --effort E` — the reasoning-effort half of the profile switch.
+    pub effort: Option<String>,
+    /// D-470: `instances send --after-turn` — queue the input for after the current turn.
+    pub after_turn: bool,
     pub timeout: Option<u64>,
     pub checks: Vec<String>,
     /// D-385: `exec --accept ID=COMMAND` — goal-level required checks attached to the goal before the input lands.
@@ -256,6 +261,8 @@ fn parse_args() -> Args {
         state_root: None,
         session: None,
         model: None,
+        effort: None,
+        after_turn: false,
         timeout: None,
         checks: Vec::new(),
         accept: Vec::new(),
@@ -405,6 +412,22 @@ fn parse_args() -> Args {
                     .unwrap_or_else(|| needs_a_value("--model"));
                 args.model = Some(v);
                 i += 2;
+            }
+            "--effort" => {
+                if args.effort.is_some() {
+                    given_twice("--effort");
+                }
+                let v = argv
+                    .get(i + 1)
+                    .cloned()
+                    .filter(|v| !v.is_empty() && !v.starts_with('-'))
+                    .unwrap_or_else(|| needs_a_value("--effort"));
+                args.effort = Some(v);
+                i += 2;
+            }
+            "--after-turn" => {
+                args.after_turn = true;
+                i += 1;
             }
             "daemon" => {
                 if args.command.is_some() {
@@ -2356,18 +2379,22 @@ fn run_instances(args: &Args) -> i32 {
                 eprintln!("instances send needs a nonempty --prompt TEXT");
                 return 2;
             };
-            InterventionCommand::SendInput { id, text: text.clone() }
+            InterventionCommand::SendInput { id, text: text.clone(), deferred: args.after_turn }
         }
         ("terminate", Some(id)) => InterventionCommand::Terminate { id },
         // D-252: the worktree member's branch, brought into the session's own tree
         ("merge", Some(id)) => InterventionCommand::Merge { id },
+        // D-470: user-only model/effort switch; the driver reloads the profile at the next request.
+        ("model", Some(id)) => {
+            InterventionCommand::SetProfile { id, model: args.model.clone(), effort: args.effort.clone() }
+        }
         ("list", Some(_)) => {
             eprintln!(
-                "instances list takes no --id; use `instances pause|resume|interrupt|terminate|merge|send --id ID`"
+                "instances list takes no --id; use `instances pause|resume|interrupt|terminate|merge|model|send --id ID`"
             );
             return 2;
         }
-        (verb @ ("pause" | "resume" | "interrupt" | "terminate" | "merge" | "send"), None) => {
+        (verb @ ("pause" | "resume" | "interrupt" | "terminate" | "merge" | "model" | "send"), None) => {
             eprintln!("instances {verb} needs --id ID (see `teamagents instances` for the ids)");
             return 2;
         }

@@ -322,15 +322,15 @@ pub fn basic_tool_schemas(web: bool, skills: bool) -> Vec<Json> {
             json!({"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"integer","minimum":1},"limit":{"type":"integer","minimum":1},"byte_offset":{"type":"integer","minimum":0},"include_sha256":{"type":"boolean"}},"required":["path"]})),
         wrap("write_file", "Write a text file in your workspace, creating parent directories. /artifacts/ is this member's own deliverable directory — teammates cannot read it, so put work the team shares in the workspace. /tool-output/ is private and read-only.",
             json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"},"expected_sha256":{"type":"string"}},"required":["path","content"]})),
-        wrap("edit_file", "Replace exactly one occurrence of old_string. Ambiguous matches fail unchanged. Pass expected_sha256 from read_file to reject concurrent changes.",
-            json!({"type":"object","properties":{"path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"},"expected_sha256":{"type":"string"}},"required":["path","old_string","new_string"]})),
+        wrap("edit_file", "Replace one occurrence of old_string, or apply several disjoint edits with `edits`. Ambiguous or overlapping matches fail the whole call unchanged. Pass expected_sha256 (or per-edit expected_sha256) from read_file to reject concurrent changes.",
+            json!({"type":"object","properties":{"path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"},"expected_sha256":{"type":"string"},"edits":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"},"expected_sha256":{"type":"string"}},"required":["path","old_string","new_string"]}}}})),
         wrap("delete", "Delete a file (a directory when recursive=true) from your workspace.",
             json!({"type":"object","properties":{"path":{"type":"string"},"recursive":{"type":"boolean"}},"required":["path"]})),
         wrap("glob", "Find workspace files matching a glob pattern, e.g. '**/*.py' (max 500 hits).",
             json!({"type":"object","properties":{"pattern":{"type":"string"}},"required":["pattern"]})),
         wrap("grep", "Search workspace files for a pattern; returns matching lines (max 100).",
             json!({"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"}},"required":["pattern"]})),
-        wrap("shell", "Run Bash in the current shell_environment mode. approved_scope uses bwrap: network=true needs approval; temporary files/background processes end with the call. full_auto uses the host filesystem/network; services may survive CLI exit. For services redirect stdin/stdout/stderr, record PID, verify in a later call, and stop explicitly. Timeout/cancel kills the active process group. cwd/exports persist separately per mode; a missing cwd skips this call and resets to workspace root. Inspect nonzero exits. Page long output with read_file under /artifacts/ (exec-*.log). /artifacts/ is a virtual file-tool path and belongs to your member alone.",
+        wrap("shell", "Run Bash in the configured shell mode. sandbox = \"none\" (the default) runs on the host filesystem/network; a configured sandbox backend runs the command isolated and needs approval (network=true also needs it); temporary files/background processes end with the call. Services may survive CLI exit; For services redirect stdin/stdout/stderr, record PID, verify in a later call, and stop explicitly. Timeout/cancel kills the active process group. cwd/exports persist separately per mode; a missing cwd skips this call and resets to workspace root. Inspect nonzero exits. Page long output with read_file under /artifacts/ (exec-*.log). /artifacts/ is a virtual file-tool path and belongs to your member alone.",
             json!({"type":"object","properties":{"command":{"type":"string"},"timeout":{"type":"integer"},"network":{"type":"boolean"}},"required":["command"]})),
     ];
     if web {
@@ -340,8 +340,8 @@ pub fn basic_tool_schemas(web: bool, skills: bool) -> Vec<Json> {
             json!({"type":"object","properties":{"url":{"type":"string"},"max_bytes":{"type":"integer"}},"required":["url"]})));
     }
     if skills {
-        schemas.push(wrap("skill", "Discover and load agent skills. action='search' with query keywords lists matching skills (name — summary); action='read' with a skill name loads its full instructions. Read a skill before applying it.",
-            json!({"type":"object","properties":{"action":{"type":"string","enum":["search","read"]},"query":{"type":"string"},"name":{"type":"string"}},"required":["action"]})));
+        schemas.push(wrap("skill", "Discover and load agent skills. action='search' with query keywords lists matching skills (name — summary); action='read' with a skill name loads its full instructions; add path='scripts/run.sh' to read one support file relative to the skill's directory (bounded to 32,000 characters; paths outside the skill and credential-shaped names are refused). Read a skill before applying it.",
+            json!({"type":"object","properties":{"action":{"type":"string","enum":["search","read"]},"query":{"type":"string"},"name":{"type":"string"},"path":{"type":"string"}},"required":["action"]})));
     }
     schemas
 }

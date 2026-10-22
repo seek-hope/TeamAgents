@@ -18,7 +18,7 @@
 /// and `task_result` (one task). The control plane stores any string, so a
 /// client that accepts input from a human should validate against this list
 /// instead of writing rows nothing will ever read.
-pub const ACTIONS: &[&str] = &["shell", "message", "delegate", "manage", "task_result"];
+pub const ACTIONS: &[&str] = &["shell", "message", "delegate", "manage", "task_result", "web"];
 
 /// The shape of a `resource_scope`: the code builds every scope it asks about
 /// from one of these (`"session"`, `"workspace"`, `format!("instance:{id}")`,
@@ -33,6 +33,8 @@ pub enum ScopeShape {
     Instance,
     /// One task, `task:<id>`.
     Task,
+    /// One web target, `domain:<host>` (D-470).
+    Domain,
 }
 
 impl ScopeShape {
@@ -43,6 +45,9 @@ impl ScopeShape {
             "workspace" => Some(ScopeShape::Workspace),
             _ if scope.strip_prefix("instance:").is_some_and(|id| !id.is_empty()) => Some(ScopeShape::Instance),
             _ if scope.strip_prefix("task:").is_some_and(|id| !id.is_empty()) => Some(ScopeShape::Task),
+            _ if scope.strip_prefix("domain:").is_some_and(|host| !host.is_empty() && !host.contains('/')) => {
+                Some(ScopeShape::Domain)
+            }
             _ => None,
         }
     }
@@ -55,6 +60,7 @@ impl ScopeShape {
             ScopeShape::Workspace => "workspace",
             ScopeShape::Instance => "instance:<id>",
             ScopeShape::Task => "task:<id>",
+            ScopeShape::Domain => "domain:<host>",
         }
     }
 }
@@ -68,6 +74,7 @@ pub fn asks_about(action: &str) -> Option<ScopeShape> {
         "shell" => Some(ScopeShape::Workspace),
         "manage" | "message" | "delegate" => Some(ScopeShape::Instance),
         "task_result" => Some(ScopeShape::Task),
+        "web" => Some(ScopeShape::Domain),
         _ => None,
     }
 }
@@ -102,6 +109,17 @@ mod tests {
     /// same set (V2Authority's `NoDeadGrantPair`, pinned here): anything the
     /// authority surface accepts, some check consults; anything it refuses, none
     /// does.
+    #[test]
+    fn a_web_grant_carries_a_domain_scope() {
+        use super::{authorizes_something, ScopeShape};
+        assert!(authorizes_something("web", "domain:example.com"));
+        assert!(authorizes_something("web", "session"));
+        assert!(!authorizes_something("web", "instance:i1"));
+        assert_eq!(ScopeShape::of("domain:example.com"), Some(ScopeShape::Domain));
+        assert_eq!(ScopeShape::of("domain:"), None);
+        assert_eq!(ScopeShape::of("domain:a/b"), None);
+    }
+
     #[test]
     fn the_grantable_pairs_are_exactly_the_asked_ones() {
         let accepted = [
@@ -153,6 +171,6 @@ mod tests {
         }
         assert_eq!(asks_about("shell"), Some(ScopeShape::Workspace));
         assert_eq!(asks_about("nonsense"), None);
-        assert_eq!(ACTIONS.len(), 5);
+        assert_eq!(ACTIONS.len(), 6);
     }
 }

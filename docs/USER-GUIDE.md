@@ -634,6 +634,11 @@ The action vocabulary is exactly what some check consults — nothing else can a
 | `message` | `instance:<id>` | send a message to that instance |
 | `delegate` | `instance:<id>` | hand a task to that instance |
 | `task_result` | `task:<id>` | settle that delegated task back |
+| `web` | `domain:<host>` | reach that host with web_search/web_fetch; `session` covers every domain |
+
+`web` grants with `domain:<host>` scopes are an optional allowlist: when the instance has a live `web` grant
+whose scope is not `session`, `web_fetch` refuses a host outside the list (exact match, or `*.suffix` for
+subdomains). No `web` grant means no allowlist.
 
 `session` is the widest scope: it covers every resource below it, so `--scope session` grants the capability
 everywhere in this session, while `--scope instance:i-worker-1` grants it for that peer only. `--parent G`
@@ -664,8 +669,8 @@ and the short grant id; task delegation relationships are available through `tea
 
 | Mode | Behaviour |
 |---|---|
-| `approved_scope` (default) | Shell runs under bubblewrap; network access and out-of-scope writes need user approval, bound to the concrete operation and its argument hash |
-| `full_auto` | Host shell (D-41): long commands and background services survive across calls, and `exec` exiting does not stop an already started service |
+| `sandbox = "none"` (default) | Host shell: the command runs as you, with your filesystem and network; there is no shell approval gate |
+| `sandbox = "bubblewrap"` / `"docker"` / `"ssh"` | `approved_scope`: the command runs inside that backend; network access and out-of-scope writes need user approval, bound to the concrete operation and its argument hash |
 
 A service a command leaves behind (`dev-server &`) belongs to **you**, not to the session: the product does not
 adopt it, does not restart it and does not clean it up when the client, the daemon or the member exits — that is
@@ -674,37 +679,36 @@ settles (D-112). Stop such a service the way you would from a shell: have the co
 echo $!`) and `kill` it, or keep the command short-lived. What the session *does* stop is the command itself —
 `instances terminate` cancels an operation that is still running, and its receipt says `class: cancelled`.
 
-The mode belongs to the **session**, not to the client, and you choose it in two places: the flag
-(`teamagents --full-auto`, `teamagents --full-auto --state-root …`, `teamagents daemon --full-auto`) asks for host
-execution for that boot, and `mode` in `[permissions]` of **your own** config makes it the default for the
-sessions you start:
+The mode belongs to the **session**. The flag (`teamagents --full-auto`, `teamagents --full-auto --state-root …`,
+`teamagents daemon --full-auto`) asks for host execution for that boot; otherwise `sandbox` in `[permissions]` of
+**your own** config selects it for the sessions you start:
 
 ```toml
 [permissions]
-mode = "full_auto"            # or "approved_scope" (the default); the flag still wins
+sandbox = "none"              # the default: host shell. Or "bubblewrap" / "docker" / "ssh" for approved_scope
 # approvals_reviewer = "auto_review"  # operation approvals go to a read-only reviewer instead of the user
 # reviewer_model = "leader_main"       # optional; the member's model is the fallback
-# sandbox = "bubblewrap"      # or "docker" (D-369) or "ssh" (D-437); the backend for approved_scope
 # sandbox_image = "debian:stable-slim"   # required for docker; the image must be present locally
 # sandbox_ssh_target = "user@host"       # required for ssh: one destination, or an alias from ~/.ssh/config
 # sandbox_ssh_workdir = "/srv/work"      # optional for ssh: where the remote command runs (default: the session's own path)
 # sandbox_ssh_options = ["-p", "2222"]   # optional for ssh: extra argv for the client (port, key, jump host)
 ```
 
-`approvals_reviewer = "auto_review"` is a middle ground between asking for every operation and `full_auto`: the
+`approvals_reviewer = "auto_review"` is a middle ground between asking for every operation and the host mode: the
 runtime sends the exact parked operation and recent user context to a separate, read-only reviewer, which may
 allow or deny it. It does **not** approve capability requests (those remain user-only) and it is not a security
 boundary; a failed review leaves the approval pending, so a headless run exits 3 without an effect. The audit
-event is `approval_reviewed`. `full_auto` bypasses it entirely. The review has a 30-second timeout;
+event is `approval_reviewed`. The host mode (`sandbox = "none"`) bypasses it entirely. The review has a 30-second timeout;
 its model usage is not yet charged to the goal, so goal totals and token limits do not cover that extra
 spend. The deterministic hard-denial layer is a substring check, not a complete shell-policy parser.
 Treat auto-review as an opt-in convenience, not evidence that arbitrary unattended commands are safe.
 
-`sandbox` picks the backend `approved_scope` runs commands in: `bubblewrap` (the default), `docker`, which also
-needs `sandbox_image` naming a locally present image, or `ssh`, which needs `sandbox_ssh_target` and runs the
-command on that host. A missing or unusable backend refuses the command (`IsolationUnavailable`, or the ssh
+`sandbox` selects the mode: `none` (the default) runs on the host; `bubblewrap`, `docker` (which also needs
+`sandbox_image` naming a locally present image) or `ssh` (which needs `sandbox_ssh_target` and runs the command
+on that host) run `approved_scope` inside that backend. A missing or unusable backend refuses the command (`IsolationUnavailable`, or the ssh
 client's own connection error) — **it never runs on the host**, and `doctor` reports the selected backend.
 Workspace MCP servers are not served under `docker` or `ssh` yet (`mcp_execution = "host"` or bubblewrap).
+A Rust-native backend is designed in [RUST-SANDBOX.md](RUST-SANDBOX.md) but not implemented.
 
 What `ssh` does not promise, because a reader of the setting is owed the statement: it is not a namespace —
 `network = false` cannot be enforced on the remote, and a cancelled call may leave the remote process running
@@ -733,7 +737,7 @@ A missing development tool is an environment issue, not an implicit authorizatio
 
 ### 4.1 Approving a call from the CLI (D-67)
 
-In `approved_scope` (the default) an out-of-scope call parks on **your** decision, and the operation is bound
+In the sandbox mode an out-of-scope call parks on **your** decision, and the operation is bound
 to it — the hash of the exact command or arguments is part of it, so a modified call needs a new decision
 (§6.2).
 
@@ -760,11 +764,14 @@ in a script: a run that exits `3` is not a failure, it is a question — answer 
 The developer CLI owns instance and task management (D-445), including these recovery paths.
 `instances send --id ID --prompt TEXT` preserves direct member input: it returns the accepted/queued
 receipt immediately, uses a fresh envelope per invocation and does not wait for completion. Read
-`history --id ID` to follow the member's stored messages. A rejected target is reported by the daemon:
+`history --id ID` to follow the member's stored messages. Cancelling a task releases the delegator but does not stop its running command;
+`instances terminate --id ID --yes` stops its process group. A rejected target is reported by the daemon:
 
 ```bash
 teamagents instances                    # id, lifecycle, phase, model and reason
 teamagents instances send --id i-worker --prompt "Review the failure" --json  # accepted/queued input, not completion
+teamagents instances send --id i-worker --prompt "Then run the tests" --after-turn  # queued for after the current turn
+teamagents instances model --id i-worker --model deepseek-flash --effort high  # next turn; an in-flight turn keeps its profile
 teamagents instances resume --id i-leader      # a parked instance runs again (budget, an unusable model, …)
 teamagents instances pause  --id i-worker-1    # stop driving it at the next safe boundary
 teamagents instances interrupt --id i-leader   # cancel its running turn; a queued instruction enters next
@@ -877,15 +884,18 @@ teamagents goals cancel --id g-spent    # close a goal nothing can spend (its ce
   naming the file, and it is read per turn, so an edit lands on the next turn (D-102 recorded the promise,
   D-246 delivers it). `doctor` counts what a session will deliver — `1 file(s), 141 byte(s) reach every member's
   prompt` — and warns, naming it, when a declared file cannot be read. Keep these files for rules that must hold
-  for the whole team; a member's own profile text still comes first. Files must be listed explicitly:
-  automatic AGENTS.md/ancestor instruction discovery is not implemented. Do not confuse it with the upward
-  project-config search in section 2.
-- **Skill resource boundary**: search matches names/descriptions and returns at most ten hits; read returns
-  at most 32,000 characters of SKILL.md text. It does not return a skill-root metadata object or expose
-  arbitrary references/scripts/assets under that root. A skill registered outside the workspace can be
-  found while its supporting files remain inaccessible to file tools or the default shell sandbox.
-  Review resource paths and prepare authorized workspace resources explicitly; a loaded instruction is
-  never a grant to read the host home or execute its scripts.
+  for the whole team; a member's own profile text still comes first. A trusted repository's `AGENTS.md` files are
+  discovered automatically: from the repository/trust boundary down to the working directory, outermost first, so
+  the nearest file is the most specific, with user `instruction_files` before all of them. An untrusted repository
+  contributes none and the refusal is reported (D-467). Do not confuse it with the upward project-config search
+  in §2.
+- **Skill resource boundary**: search matches names/descriptions and returns at most ten hits; `read` returns
+  at most 32,000 characters of SKILL.md text. Add `path` to read one support file relative to the skill's
+  directory: it must stay inside that directory (absolute paths, `..`, symlinks that leave it, directories and
+  credential-shaped names such as `.env`/`id_rsa`/`*.pem` are refused) and is truncated at 32,000 characters.
+  The configured skill roots are mounted read-only at `/skills/<n>` inside the bubblewrap sandbox, so a skill's
+  scripts and assets can run there; docker and ssh do not mount them (the tool read still works on the host).
+  A loaded instruction is never a grant to read the host home or execute arbitrary host scripts.
 - The tools themselves — every function a model may be offered, with its parameters and the model-facing
   description, split by the layer that decides it (the profile's tools, the instance's grants, the session's
   bindings) — are catalogued in [docs/TOOLS.md](TOOLS.md), generated from the schemas.
@@ -1032,7 +1042,7 @@ prove a command stopped. Missing historical reasons remain unavailable. No autom
 | A worktree member finished and I want its work in my tree | `teamagents instances merge --id <member>` (D-252). It refuses while the member has a turn in flight or its checkout has uncommitted changes, and reports a conflicting merge with git's message, leaving the merge in progress |
 | A member is stuck in a long or endless command and cancelling its task changed nothing | `tasks cancel` is delegation-level and does not touch the assignee's operation (D-88). Stop the work with `teamagents instances terminate --id … --yes` (the process group dies within seconds, and the receipt says `class: cancelled`) or wait for the command's own tool timeout. If it is the *thinking* you want to stop rather than a running command, `teamagents instances interrupt --id …` cancels just the current turn (D-363) |
 | An instance is parked | `teamagents instances` shows which **and why** (the reason rides on the row, D-165); resume it with `instances resume --id` once that cause is gone |
-| A command under `approved_scope` waits for approval | Decide it with `teamagents approvals` (§4.1) or in the TUI approvals panel; `--full-auto` (host execution, D-41) skips the gate |
+| A command under a configured sandbox waits for approval | Decide it with `teamagents approvals` (§4.1) or in the TUI approvals panel; `--full-auto` (host execution, D-41) skips the gate |
 | A command left a service running (`dev-server &`) | By design the session does not manage it (D-41/D-112): it survives the client, the daemon and the member. Stop it yourself with the pid the command printed (`sleep 300 & echo $!`, then `kill <pid>`), or start such work in a command that exits when you are done. `instances terminate` stops an *operation that is still running*, not a service left behind by one that finished |
 | A member says it cannot run shell commands although you granted it | Turn the offer into a witness: start the session with `TEAMAGENTS_LOG_SURFACE=1` and the driver writes one line per request into `<state root>/daemon.log` — `driver: surface <instance> shell=yes\|no tools=…`. `shell=no` after a live `authority grant` is a bug worth reporting; `shell=yes` with no attempt means the model had the tool and did not use it (§3.1, D-143/D-157) |
 | `exec: the daemon's socket was lost …` | The daemon stopped while this run was waiting — by your own `kill` (§1) or because it crashed. The session and its committed state are kept: start it again (`teamagents` or `exec`) and the work is where it was (D-150) |

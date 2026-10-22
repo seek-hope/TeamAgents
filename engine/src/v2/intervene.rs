@@ -27,7 +27,7 @@ pub enum InterventionCommand {
     /// The session's instances with their lifecycle and phase.
     ListInstances,
     /// Direct user input to a selected member (D-445), with the ordinary queue boundary.
-    SendInput { id: String, text: String },
+    SendInput { id: String, text: String, deferred: bool },
     /// Stop driving an instance at its next safe boundary (§5.4).
     Pause { id: String },
     /// Let a parked or paused instance run again.
@@ -50,6 +50,9 @@ pub enum InterventionCommand {
     /// operation on the session's working tree — not a session-state transition — so it runs here, in the
     /// client, and the daemon is only read (for the member's live phase).
     Merge { id: String },
+    /// D-470: user-only model/effort switch for one instance; the driver reloads the profile at the next
+    /// request, so an in-flight turn keeps the profile it started with.
+    SetProfile { id: String, model: Option<String>, effort: Option<String> },
 }
 
 pub struct InterventionOptions {
@@ -164,7 +167,7 @@ pub fn execute(options: &InterventionOptions) -> Result<Json, (i32, String)> {
                 "instance_id": resolved, "lifecycle": row["lifecycle"], "instance": row, "result": result,
             }))
         }
-        InterventionCommand::SendInput { id, text } => {
+        InterventionCommand::SendInput { id, text, deferred } => {
             if text.trim().is_empty() {
                 return Err((2, "instances send: empty prompt".into()));
             }
@@ -172,15 +175,32 @@ pub fn execute(options: &InterventionOptions) -> Result<Json, (i32, String)> {
             let row = resolve_prefix(&rows, "id", id, "instance", "teamagents instances")?;
             let resolved = row["id"].as_str().unwrap_or_default();
             let envelope = format!("env-{}", uuid::Uuid::new_v4());
+            let mut params = json!({"instance_id": resolved, "envelope_id": envelope, "text": text});
+            if *deferred {
+                params["after"] = json!("turn");
+            }
             let result = client
-                .command(
-                    &format!("input-{envelope}"),
-                    "submit_input",
-                    json!({"instance_id": resolved, "envelope_id": envelope, "text": text}),
-                )
+                .command(&format!("input-{envelope}"), "submit_input", params)
                 .map_err(|e| (1, format!("instances send: {e}")))?;
             Ok(json!({"session_id": session["session_id"], "state_root": session["state_root"],
                 "instance_id": resolved, "envelope_id": envelope, "result": result}))
+        }
+        InterventionCommand::SetProfile { id, model, effort } => {
+            let rows = instances(&mut client)?;
+            let row = resolve_prefix(&rows, "id", id, "instance", "teamagents instances")?;
+            let resolved = row["id"].as_str().unwrap_or_default();
+            let mut params = json!({"instance_id": resolved});
+            if let Some(model) = model {
+                params["model"] = json!(model);
+            }
+            if let Some(effort) = effort {
+                params["effort"] = json!(effort);
+            }
+            let result = client
+                .command(&format!("profile-{}", uuid::Uuid::new_v4()), "set_instance_profile", params)
+                .map_err(|e| (1, format!("instances model: {e}")))?;
+            Ok(json!({"session_id": session["session_id"], "state_root": session["state_root"],
+                "instance_id": resolved, "result": result}))
         }
         InterventionCommand::CancelTask { id } => {
             let rows = tasks(&mut client)?;
@@ -436,8 +456,20 @@ fn print_report(options: &InterventionOptions, report: &Json) {
         InterventionCommand::SendInput { .. } => println!(
             "{}: input {} ({}); this is an input receipt, not a completion verdict",
             report["instance_id"].as_str().unwrap_or(""),
-            if report["result"]["queued"] == json!(true) { "queued" } else { "accepted" },
+            if report["result"]["deferred"] == json!(true) {
+                "queued for after this turn"
+            } else if report["result"]["queued"] == json!(true) {
+                "queued"
+            } else {
+                "accepted"
+            },
             report["envelope_id"].as_str().unwrap_or("")
+        ),
+        InterventionCommand::SetProfile { .. } => println!(
+            "{}: model {} effort {} (applies to the next turn; an in-flight turn keeps its profile)",
+            report["instance_id"].as_str().unwrap_or(""),
+            report["result"]["model"].as_str().unwrap_or("unchanged"),
+            report["result"]["effort"].as_str().unwrap_or("unchanged")
         ),
         InterventionCommand::CancelTask { .. } => println!(
             "cancelled {} (was {}): a delegator waiting on it is released",
