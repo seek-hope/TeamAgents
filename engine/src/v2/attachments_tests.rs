@@ -53,6 +53,7 @@ fn attachment_budgets_paths_and_types_fail_closed() {
     assert!(prepare(&root.0, &p("linkdir/file"), true).is_err());
     assert!(prepare(&root.0, &p("directory"), true).is_err());
     let fifo = std::ffi::CString::new(root.0.join("fifo").to_str().unwrap()).unwrap();
+    // SAFETY: `fifo` is a valid NUL-terminated path buffer owned by the test.
     assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
     assert!(prepare(&root.0, &p("fifo"), true).is_err());
     let paths = candidates(&root.0, "spa").unwrap();

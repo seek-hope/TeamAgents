@@ -148,6 +148,8 @@ impl Runner {
                     if !self.test_hooks {
                         return Err("test hooks disabled".into());
                     }
+                    // SAFETY: this is the test hook's deliberate SIGKILL of its own process; the hook only
+                    // runs when explicitly enabled, and the following abort is unreachable.
                     unsafe { libc::kill(libc::getpid(), libc::SIGKILL) };
                     std::process::abort();
                 }

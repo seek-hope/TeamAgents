@@ -17,9 +17,9 @@ struct OwnedChild {
 impl Drop for OwnedChild {
     fn drop(&mut self) {
         if self.kill_group {
-            // The child is its process-group leader (capture sets process_group(0)); a negative
-            // pid signals the group, reaping grandchildren a plain kill would leave behind.
-            // If the group is already gone this fails with ESRCH, which is fine.
+            // SAFETY: the child is this process's own and leads the group (`process_group(0)`), and a
+            // negative pid signals the group, reaping grandchildren a plain kill would leave behind. If the
+            // group is already gone this fails with ESRCH, which is fine.
             unsafe { libc::kill(-(self.child.id() as i32), libc::SIGKILL) };
         }
         // wait also reaps an already-exited child. No pipe reader must join first.

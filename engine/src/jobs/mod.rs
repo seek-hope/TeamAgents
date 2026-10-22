@@ -131,6 +131,8 @@ pub fn signal_group(journal: &Journal, signal: i32) -> Result<(), String> {
     if journal.boot_id != boot_id()? || journal.start_ticks != Some(start_ticks(pid)?) {
         return Err("process identity changed, refusing to signal".into());
     }
+    // SAFETY: `pid` came from this job's own journal, its boot id and start ticks were re-checked above, and a
+    // negative pid signals the process group the runner created — never a pid taken from outside (§6.2).
     let result = unsafe { libc::kill(-(pid as i32), signal) };
     if result != 0 {
         return Err(format!("signal group -{pid}: {}", std::io::Error::last_os_error()));
@@ -236,6 +238,8 @@ pub fn group_members(table: &[Proc], group: u32) -> Vec<Proc> {
 }
 
 fn clock_ticks() -> u64 {
+    // SAFETY: `sysconf` has no pointer arguments and only reads a process-wide constant; 100 is the
+    // conservative fallback when the value is unavailable.
     let ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
     if ticks > 0 {
         ticks as u64
@@ -295,6 +299,8 @@ pub fn stop_leftover_group(journal: &Journal, signal: i32) -> Result<usize, Stri
             ));
         }
     }
+    // SAFETY: every member was checked above (its start time is not after the job finished), and a negative
+    // pid signals the group this job created.
     let result = unsafe { libc::kill(-(pid as i32), signal) };
     if result != 0 {
         return Err(format!("signal group -{pid}: {}", std::io::Error::last_os_error()));

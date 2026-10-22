@@ -174,8 +174,9 @@ that closes the pipe (`| head`) ends the stream, not the run.
 
 Exit codes: `0` settled, `1` failed or unfinished, `3` an approval is pending (a headless run has nobody to
 answer it, so it reports instead of waiting), `124` the `--timeout` deadline passed, `2` usage or
-infrastructure (no daemon, no model profile). Each `--check COMMAND` runs after the turn ends, in order, in
-the isolated shell inside your workspace (`--cwd` or the current directory); the first failure stops the list
+infrastructure (no daemon, no model profile). Each `--check COMMAND` runs after the turn ends, in order, through the session's shell mode (`sandbox =
+"none"`, the default, is the host) inside your workspace (`--cwd` or the current directory); the first failure
+stops the list
 and makes the run fail. The verdicts are printed, written to `<state root>/verification.json` and included in
 the `--json` report as `verification`. Each `--accept ID=COMMAND`, by contrast, is attached to the *goal*
 before the input lands (`teamagents goals open --check ID=COMMAND` does the same for a goal you open yourself),
@@ -259,7 +260,8 @@ see the [developer command map](docs/USER-GUIDE.md#1-quick-start).
   "deepseek"`; `base_url` plus `model` decide the actual service, and credentials are only referenced by
   environment-variable name.
 - `[[checks]]` in the user config (never in a project file) are the machine contracts a goal must satisfy:
-  the runtime runs them in the isolated shell at the completion boundary, so a failing check returns the work
+  the runtime runs them through the session's shell mode at the completion boundary (D-471), so a failing check
+  returns the work
   for repair instead of letting a summary claim success.
 - The Leader forms the team at runtime (`spawn` / `delegate` / `send` / `wait`); there is no static team
   definition file.

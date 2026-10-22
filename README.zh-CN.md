@@ -51,8 +51,9 @@
   一个团队可以混用条目。条目不认识时该工具调用直接报错；永远起不来的实例会被 park 并给出原因，不会拖住整个会话。
 - **唯一权威状态**：每会话单 SQLite（WAL + `synchronous=FULL`）。崩溃恢复按持久化位置分类——
   已知结果复用、在途丢失诚实记账（`OUTCOME_UNKNOWN`）、**不猜测重放**。
-- **权限门**：`approved_scope`（默认，bubblewrap 隔离，越权需批准）与 `full_auto`（仅用户可开，D-41
-  主机 Shell）；一条批准绑定一个具体操作、其参数散列与权限 revision，只对那一次派发生效。
+- **权限门**：`[permissions] sandbox` 选两种模式：`none`（默认：主机 Shell，无 shell 审批，D-466）或
+  后端（`bubblewrap`/`docker`/`ssh`，越权需批准）；一条批准绑定一个具体操作、其参数散列与权限
+  revision，只对那一次派发生效。
 - **完成检查闸门**：`finish` 只接受诚实结论；目标成功结算前必须真实通过的是**你自己**配置里的 `[[checks]]`。
   可信项目配置已经会被加载，但不能提供验收检查；验收策略始终由用户掌握（见下文「配置与团队」）。
 - **长上下文压缩**：按实际窗口占用触发，摘要保留原始要求、用户修订、验收与未决问题；
@@ -62,11 +63,12 @@
   网页搜索与抓取（DeepSeek Search/Fetch）、MCP（stdio 与 streamable HTTP）、Skills（`~/.agents/skills`）。
 - **用户钩子（`[hooks]`）**：`notify` 把事件（`tool_call`/`team_action`/`run_*`）通知给你自己的程序；
   `pre_tool` 能在任何原生工具执行前拦截（exit 2 拒绝，stderr 作原因），坏钩子只记日志不卡团队。
-- **隔离**：`approved_scope` 下实例 shell 走 `bubblewrap`；缺失时明确报错，不会静默退化成不隔离执行。
+- **隔离**：`sandbox = "none"`（默认）明确在主机执行；配置了后端时实例 shell 走该后端，后端不可用会
+  明确报错，不会静默退化成主机执行。
 
 ## 安装
 
-要求：Linux（x86_64）+ `bubblewrap`；模型密钥从环境变量读，不写进配置。
+要求：Linux（x86_64）；沙箱后端可选（默认 `none`）；模型密钥从环境变量读，不写进配置。
 
 ### 当前没有公开发行版
 
@@ -94,8 +96,8 @@ export PATH="$HOME/.local/bin:$PATH"
 
 ## 快速开始
 
-安装 `bubblewrap`（Debian/Ubuntu：`sudo apt install bubblewrap`；其他发行版见安装指南），
-然后在同一个终端中执行：
+默认 `sandbox = none` 不需要沙箱。若要用 bubblewrap 后端，先安装它（Debian/Ubuntu：
+`sudo apt install bubblewrap`；其他发行版见安装指南），然后在同一个终端中执行：
 
 ```bash
 teamagents init                       # 创建内置最小配置；已有配置不会覆盖
@@ -206,7 +208,8 @@ Enter 切换，方括号翻页，`d` 后按 `y` 确认删除，Esc 取消或返�
 - 模型 profile 用 `protocol = "responses" | "anthropic" | "openai" | "deepseek"` 选线上格式，
   `base_url` + `model` 决定实际接哪家；密钥只写环境变量名。
 - 用户配置里的 `[[checks]]` 是"完成验收"的机器契约（只允许写在用户配置，项目文件不能定义）：
-  目标声称完成时运行时会在隔离 shell 里执行这些命令，检查不过就打回修复，而不是让总结直接算成功。
+  目标声称完成时运行时会在会话的 shell 模式里执行这些命令（`sandbox = none` 即主机），检查不过就打回
+  修复，而不是让总结直接算成功。
 - 组队由 Leader 在运行时按目标决定（`spawn`/`delegate`/`send`/`wait`），没有静态团队定义文件。
 - 工具绑定即授权、批准语义、Skills/MCP、会话保留策略、故障处理：见
   [用户指南](docs/USER-GUIDE.md)。

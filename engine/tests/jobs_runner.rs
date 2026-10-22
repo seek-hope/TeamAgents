@@ -452,6 +452,7 @@ async fn a_successful_commands_service_outlives_the_job() {
     assert!(alive(), "the service survives job completion");
     client::shutdown(&dir).await.expect("shutdown");
     assert!(alive(), "the service survives the runner shutdown");
+    // SAFETY: the fixture spawned this pid and has not reaped it; the signal targets that process only.
     unsafe { libc::kill(pid, libc::SIGKILL) };
 }
 

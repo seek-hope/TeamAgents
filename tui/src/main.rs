@@ -480,12 +480,7 @@ fn run_v2(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, mut client
     }
 }
 
-#[link(name = "c")]
-extern "C" {
-    #[link_name = "isatty"]
-    fn libc_isatty(fd: i32) -> i32;
-}
-
 fn atty_stdout() -> bool {
-    unsafe { libc_isatty(1) == 1 }
+    use std::io::IsTerminal;
+    std::io::stdout().is_terminal()
 }

@@ -18,10 +18,11 @@ pub fn process_metric(key: &str) -> u64 {
 
 pub fn cpu_us() -> u64 {
     let mut usage = std::mem::MaybeUninit::<libc::rusage>::uninit();
-    // Linux fills the complete structure on success.
+    // SAFETY: `usage` is a valid, writable `rusage`; the call initializes it on success.
     if unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) } != 0 {
         return 0;
     }
+    // SAFETY: the call above succeeded, so the kernel initialized the whole structure.
     let usage = unsafe { usage.assume_init() };
     ((usage.ru_utime.tv_sec + usage.ru_stime.tv_sec) * 1_000_000 + usage.ru_utime.tv_usec + usage.ru_stime.tv_usec)
         as u64

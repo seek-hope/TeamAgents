@@ -113,6 +113,7 @@ impl JournalLock {
             .truncate(false)
             .open(path)
             .map_err(|e| format!("cannot open update lock {}: {e}", path.display()))?;
+        // SAFETY: `file` owns a valid descriptor for the lock file; `flock` only reads it.
         let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
         if rc != 0 {
             return Err(format!("another updater holds {}", path.display()));
@@ -123,6 +124,7 @@ impl JournalLock {
 
 impl Drop for JournalLock {
     fn drop(&mut self) {
+        // SAFETY: `self.file` still owns the descriptor until after this call, and unlocking is idempotent.
         unsafe {
             libc::flock(self.file.as_raw_fd(), libc::LOCK_UN);
         }

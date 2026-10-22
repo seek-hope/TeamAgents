@@ -1,6 +1,6 @@
 # Development handoff
 
-Updated **2026-10-21** against source **f78a6709 plus the D-461 working-tree follow-up**. This is the current entry point for a new development
+Updated **2026-10-22** against source **3b7ea4a1** (through D-471). This is the current entry point for a new development
 session, not an authorization to implement the candidate backlog. Recheck Git status and recent commits;
 this document does not assert that a remote branch or installed binary matches the working tree.
 
@@ -22,21 +22,25 @@ this document does not assert that a remote branch or installed binary matches t
 | 11929da6 | D-455 task-scoped capability delegation, D-458 operation auto-review, D-453 updater, external editor, D-456 web tools and D-457 release freeze | Includes governed updater, external editor, DeepSeek web tools and release freeze; distinguish implemented mechanisms from real-service acceptance |
 | b4e9f1f9, 90ca30d8 | D-459 stable prompt-cache prefix/telemetry and the formal report's source pin | Cache usage is not a dollar estimate; no cache warming was added |
 | f78a6709 | Rust toolchain pin 1.99.1 | Read rust-toolchain.toml and the lockfiles before building |
+| bdae43e2, 47546b9b | D-463/D-464 idempotent command ids and shared result digests; D-465 atomic-action windows with concurrency tests | Result bodies are derived, not authoritative; the session database stays the source of truth |
+| c6dcc8a5, e1d842d1 | D-466 two-mode pluggable sandbox, D-467 AGENTS.md discovery, D-468 skill resources, D-469 multi-edit/read batch, D-470 profile/web/deferred input/cancel-vs-stop | `sandbox = none` is the explicit host mode; a configured backend still fails closed |
+| 9b29c8b5, 3b7ea4a1 | D-471 acceptance checks follow the session's shell mode; CI fixtures follow `none`, transient ETXTBSY retry | `exec --check` and goal `[[checks]]` run on the host in `none` mode; the bubblewrap refusal stays covered |
 
 D-462 added the verification gate and ledger: every counterexample configuration names the claim it must
 refute (`expects:` marker, compared with TLC's output), every checked claim that no control refutes is a row in
-`verification/COVERAGE.md`, and the count there (**105**) is the remaining work for full coverage. A control that
-was silently refuting `TypeOK` was found and fixed. `make verify-model-all` verifies 45 configurations and
-`make verify-model-counterexamples` refutes 141; Kani is not installed on this machine.
+`verification/COVERAGE.md`, and the count there is **0** — every behavioural claim now has a refuting control
+or a justified `entailed-by`/`structural` status. A control that was silently refuting `TypeOK` was found and
+fixed. `make verify-model-all` verifies 47 configurations and `make verify-model-counterexamples` refutes 250
+controls; Kani is not installed on this machine.
 
 D-461 implements the user's selected DD-01 option A: read-only work diagnostics and explicit recovery.
 Option B (automatic model reminders) was explicitly rejected. The shared projection lives in
 engine/src/v2/diagnostics.rs; checkpoint, instances, tasks and local TUI /help expose it. Tests cover query-only
 reopen, real daemon restart without additional model calls, explicit input/cancellation recovery and TUI frames.
 
-Local checks rerun on 2026-10-21: **make check passed, core 137 / engine 405 / tui 81**;
-**make pty passed** the v2, blocks and Kitty-protocol smoke checks. The accompanying documentation refresh
-is preserved separately from D-461's diagnostic-only behavior change. These results are local regressions, not a new independent audit, real-model
+Local checks rerun on 2026-10-22 at `3b7ea4a1`: **make check passed, core 147 / engine 415 / tui 81**,
+**make check-nobwrap passed** (the CI runner's bwrap-free condition) and **make pty passed** the v2, blocks and
+Kitty-protocol smoke checks. These results are local regressions, not a new independent audit, real-model
 comparison, actual graphical-terminal matrix, installed-artifact acceptance or release.
 
 The [D-451 maturity report](../review/maturity-2026-10-11/REPORT.md) retains its immutable manifests and
