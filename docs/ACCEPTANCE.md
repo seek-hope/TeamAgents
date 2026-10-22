@@ -174,11 +174,11 @@ unresolved policy dependencies without presenting every former gap as current.
 | Current boundary | Evidence / candidate |
 |---|---|
 | Idle worker with unsettled task; cancellation, interruption and termination retain distinct effects | D-461 delivers DD-01 option A: read-only diagnosis and explicit recovery instructions. Automatic reminders are excluded; real-user effectiveness remains unmeasured |
-| Rust-specific sandbox toolchain mounts; skill text access does not expose all support resources | engine/src/tools.rs; DD-02 |
+| Rust-specific sandbox toolchain mounts; skill support files are readable but only bubblewrap mounts them | D-468, engine/src/tools.rs; DD-02 |
 | No matched current Pi coding-success/intervention/cost comparison | existing A/B/C arms are internal; DD-03; Q16 success-form question remains separate from D-264's latency finding |
 | Repository AGENTS.md discovery, trust, precedence and refusal are implemented; loaded-source visibility and edit-between-turn behavior remain unmeasured | D-467, engine/src/config.rs; DD-04 |
 | Multi-edit and parallel read-only batches are implemented; ordered per-instance tools and MCP-only synchronous codemode remain | D-469, engine/src/reference.rs, engine/src/v2/driver.rs, engine/src/codemode.rs; DD-05 |
-| Message-level branches, a separate follow-up queue and fork-while-live remain; the interactive model/effort switch is implemented (D-473), and fork requires a stopped source daemon | engine/src/v2/sessions.rs, tui/src/v2app.rs; DD-06 |
+| Message-level branches and fork-while-live remain; the interactive model/effort switch (D-473) and explicit after-turn follow-up queue (D-470) are implemented, and fork requires a stopped source daemon | engine/src/v2/sessions.rs, tui/src/v2app.rs; DD-06 |
 | Cache telemetry is implemented; priced cost/attribution and reviewer model usage in goal budgets are not | D-458/D-459; DD-07 |
 | Live selected provider/image/OAuth/Docker and wider terminal/security evidence remains partial | individual A rows and dated reports; DD-08 |
 | No MCP resource browsing or general SDK/extension interface; provider auth coverage is narrower than Pi | DD-09; existing Unix protocol and hooks are real capabilities, not equivalent extension APIs |
