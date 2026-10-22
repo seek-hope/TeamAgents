@@ -171,7 +171,7 @@ pub fn render_media(text: &str, width: usize, mut graphics: Option<&mut Graphics
             }
             Event::Start(Tag::Heading { level, .. }) => {
                 w.blank();
-                let mut style = Style::default().fg(ACCENT).add_modifier(Modifier::BOLD);
+                let mut style = Style::default().fg(CODEX).add_modifier(Modifier::BOLD);
                 if level == HeadingLevel::H1 {
                     style = style.add_modifier(Modifier::UNDERLINED);
                 }

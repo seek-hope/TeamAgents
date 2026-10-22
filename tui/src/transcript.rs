@@ -156,7 +156,7 @@ impl Transcript {
                         self.document.lines.extend(markdown::plain(
                             label,
                             width,
-                            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                            Style::default().fg(CODEX).add_modifier(Modifier::BOLD),
                         ));
                         self.document.append(markdown::render_media(&entry.text, width, Some(g), &origin));
                     } else {
@@ -190,7 +190,7 @@ impl Transcript {
 pub fn assistant(text: &str, who: &str, width: usize, streaming: bool) -> Vec<Line<'static>> {
     let who = if who == "i-leader" || who.is_empty() { "Leader" } else { who };
     let label = if streaming { format!("{who} · streaming") } else { who.to_string() };
-    let mut out = markdown::plain(&label, width, Style::default().fg(ACCENT).add_modifier(Modifier::BOLD));
+    let mut out = markdown::plain(&label, width, Style::default().fg(CODEX).add_modifier(Modifier::BOLD));
     out.extend(markdown::render(text, width));
     out
 }
@@ -206,7 +206,7 @@ fn render_entry(entry: &ChatEntry, width: usize, tool_limit: Option<usize>) -> V
         return assistant(&entry.text, &entry.who, width, false);
     }
     let (label, color) = match entry.kind {
-        ChatKind::User => ("You", ACCENT),
+        ChatKind::User => ("You", USER),
         ChatKind::Tool => ("Tool result · call outside this history page", GREY),
         ChatKind::Runtime => ("Runtime", MUTED),
         ChatKind::Context => ("Team note", GREY),
