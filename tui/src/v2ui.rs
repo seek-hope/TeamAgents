@@ -5,7 +5,7 @@
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 use ratatui::Frame;
 
 use crate::theme::*;
@@ -155,6 +155,41 @@ pub fn render(frame: &mut Frame, app: &mut V2App) {
     render_completion(frame, app, geo.completion);
     render_composer(frame, app, geo.composer);
     render_footer(frame, app, geo.footer);
+    render_profile(frame, app, area);
+}
+
+/// D-473: a centered model/effort menu over the conversation; keys are routed by `V2App::profile_key`.
+fn render_profile(frame: &mut Frame, app: &V2App, area: Rect) {
+    let Some(menu) = &app.profile else { return };
+    if area.width < 24 || area.height < 7 {
+        return;
+    }
+    let width = area.width.clamp(24, 64);
+    let height = 7;
+    let popup = Rect::new(area.x + (area.width - width) / 2, area.y + (area.height - height) / 2, width, height);
+    frame.render_widget(Clear, popup);
+    let block = panel("Model & effort").border_style(Style::default().fg(ACCENT));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    let model = menu
+        .models
+        .get(menu.model_ix)
+        .map(|model| format!("‹ {} ({}) ›", model.key, model.model))
+        .unwrap_or_else(|| "‹ unavailable ›".into());
+    let effort = menu.efforts.get(menu.effort_ix).cloned().unwrap_or_else(|| "?".into());
+    let lines = vec![
+        Line::from(vec![
+            Span::styled("Model   ", Style::default().fg(GREY)),
+            Span::styled(model, Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(vec![
+            Span::styled("Effort  ", Style::default().fg(GREY)),
+            Span::styled(format!("‹ {effort} ›"), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("↑/↓ model · ←/→ effort · Enter apply · Esc cancel", Style::default().fg(MUTED))),
+    ];
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn render_status(frame: &mut Frame, app: &V2App, area: Rect) {

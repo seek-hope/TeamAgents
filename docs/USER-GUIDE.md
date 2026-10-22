@@ -28,9 +28,9 @@ teamagents                           # open the TUI (starts this session's daemo
   the error. Nothing is sent automatically. Appending /edit to nonempty draft text and pressing Enter opens
   the same editor; /edit alone shows instructions. Staged attachments are separate from the edited text.
   The editor is a trusted local program running with the user's permissions, not a model sandbox tool.
-- **Interrupt and exit**: Ctrl+C or /interrupt cancels the Leader's in-flight model request. The receipt
+- **Interrupt and quit**: Ctrl+C or /interrupt cancels the Leader's in-flight model request. The receipt
   says whether anything was interrupted. Running tools and delegated work continue; developer controls are
-  listed below. Ctrl+D or /quit detaches the TUI while the daemon keeps running.
+  listed below. Ctrl+Q or /quit quits the TUI while the daemon keeps running.
 - **Approvals appear only when needed**: Ctrl+A focuses the approval list; a approves once, d denies,
   Esc returns to the draft. Approval arrival never steals typing focus, and a click only selects a row.
 - **Readable conversations (D-447)**: shaded user messages, Leader Markdown, headings, lists, quotes, links,
@@ -85,7 +85,7 @@ teamagents                           # open the TUI (starts this session's daemo
   source deletion. Text is quoted; images require a model declaring `images = true` and stay native image
   content on supported protocols. Drafts retain staged paths across session switches and failed sends.
   Headless equivalent: `teamagents exec --attach 'src/file name.rs' --attach image.png "Review these files"`.
-- **Pending inputs (D-451)**: Ctrl+Q or `/queue` lists unconsumed Leader inputs. Enter opens a separate text
+- **Pending inputs (D-451)**: Ctrl+P or `/queue` lists unconsumed Leader inputs. Enter opens a separate text
   editor; Enter saves, Ctrl+J inserts a line and Esc discards the edit. Attachments remain unchanged.
   Delete then y cancels the captured envelope/revision; Esc keeps it. Use r to refresh and n for the next page.
   The conversation draft stays separate. Consumed, cancelled, old-epoch or stale-revision input is refused.
@@ -104,7 +104,11 @@ teamagents                           # open the TUI (starts this session's daemo
   Existing destinations are refused. The export is limited to 256 MiB with a 16 MiB record limit; exceeding
   either fails explicitly. Ctrl+C removes unpublished temporary output; a publication that already completed
   returns success. Pruned records cannot be recovered. Export stays in the developer CLI.
-- **Client commands**: /help, /sessions, /interrupt, /quit, /attach, /detach, /queue and /edit. The first
+- **Model and effort (D-473)**: Ctrl+M or `/model` opens the Leader's menu: Up/Down chooses a `[models]`
+  catalog entry, Left/Right the reasoning effort, Enter applies and Esc cancels. The change lands at the next
+  READY/WAITING turn; an in-flight turn keeps its profile. On terminals that encode Ctrl+M as Enter, use
+  `/model` instead. The catalog comes from the daemon's checkpoint, never from the TUI reading your config.
+- **Client commands**: /help, /sessions, /interrupt, /quit, /model, /attach, /detach, /queue and /edit. The first
   seven appear in the completion menu; /edit is recognized separately. Unknown or retired commands stay
   local and point to `teamagents --help`; they are never sent to the model.
 - **Developer CLI**: all management is also available through scriptable commands, using `--state-root PATH` or

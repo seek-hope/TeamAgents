@@ -199,6 +199,7 @@ def main():
     expect("Message", "composer")
     expect("Enter", "footer")
     expect("Ctrl+C interrupt", "interrupt hint")
+    expect("Ctrl+Q quit", "quit hint")
 
     # Ctrl+J inserts a newline in the composer (0x0A in raw mode), the composer
     # box grows, and the whole two-line text is what gets submitted
@@ -348,7 +349,7 @@ def main():
 
     # Exit detaches only; it sends no daemon-side business command.
     before_exit = sum("command_id" in f for f in daemon.frames)
-    os.write(fd, b"\x04")
+    os.write(fd, b"\x11")
     scr.feed(read_all(fd, 0.8).decode("utf-8", "replace"))
     done, status = os.waitpid(pid, os.WNOHANG)
     for _ in range(40):
@@ -359,7 +360,7 @@ def main():
     if done != pid:
         os.kill(pid, 15)
         os.waitpid(pid, 0)
-        failures.append("Ctrl+D did not exit")
+        failures.append("Ctrl+Q did not quit")
     elif os.waitstatus_to_exitcode(status) != 0:
         failures.append("TUI exit was not clean")
     if before_exit != sum("command_id" in f for f in daemon.frames):

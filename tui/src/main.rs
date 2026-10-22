@@ -323,6 +323,27 @@ fn run_v2_effect(effect: V2Effect, client: &mut DaemonClient, app: &mut V2App, s
                 Err(e) => app.command_failed(&e),
             }
         }
+        V2Effect::SetProfile { instance, model, effort } => {
+            let mut params = json!({"instance_id": instance});
+            if let Some(model) = model {
+                params["model"] = json!(model);
+            }
+            if let Some(effort) = effort {
+                params["effort"] = json!(effort);
+            }
+            match client.command(&format!("profile-{}", uuid::Uuid::new_v4()), "set_instance_profile", params) {
+                Ok(reply) => {
+                    app.command_note(format!(
+                        "Profile: model {} · effort {}. It applies at the next turn; an in-flight turn keeps \
+                         its profile.",
+                        reply["model"].as_str().unwrap_or("?"),
+                        reply["effort"].as_str().unwrap_or("?")
+                    ));
+                    v2_sync_checkpoint(client, app);
+                }
+                Err(error) => app.command_note(format!("The profile change was refused: {error}")),
+            }
+        }
         V2Effect::EditDraft { .. } => {}
         V2Effect::Quit => {}
     }

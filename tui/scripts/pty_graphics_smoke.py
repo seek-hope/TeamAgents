@@ -116,7 +116,7 @@ def run(force):
                 else:
                     wait(lambda s: "unsent-graphics-draft" in s and "▀" in s, "resized image and draft")
             assert not any(f.get("command_id") for f in daemon.frames), "rendering emitted a business command"
-            os.write(fd, b"\x04")
+            os.write(fd, b"\x11")
             for _ in range(60):
                 drain()
                 done, status = os.waitpid(pid, os.WNOHANG)

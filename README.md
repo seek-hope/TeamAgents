@@ -234,10 +234,12 @@ TUI keys: `Enter` sends to the Leader; `Ctrl+J` or `Shift+Enter` inserts a newli
 input and walks multiline drafts; `PageUp`/`PageDown` and the wheel scroll history. `Ctrl+W` deletes a word;
 `Ctrl+←`/`Ctrl+→` moves by word. `Ctrl+A` focuses pending approvals: `a` approves once, `d` denies,
 `Esc` returns to the draft. `Ctrl+C` interrupts the Leader's model request (running tools and delegated
-work continue); `Ctrl+D` exits while the session keeps running. `Ctrl+S` or `/sessions` opens session
-history and switching: select with arrows, Enter switches, brackets page history, and `d` then `y` deletes
-the selected session. Deleting the current session succeeds before the TUI exits. Esc cancels/returns.
-Client commands: `/help`, `/sessions`, `/interrupt`, `/quit`, `/attach`, `/detach`, `/queue` and `/edit`.
+work continue); `Ctrl+Q` or `/quit` quits the TUI while the session keeps running. `Ctrl+M` or `/model`
+opens the Leader's model and reasoning-effort menu (arrows choose, Enter applies at the next turn, Esc
+cancels); `Ctrl+P` or `/queue` lists pending inputs. `Ctrl+S` or `/sessions` opens session history and
+switching: select with arrows, Enter switches, brackets page history, and `d` then `y` deletes the selected
+session. Deleting the current session succeeds before the TUI quits. Esc cancels/returns.
+Client commands: `/help`, `/sessions`, `/interrupt`, `/quit`, `/model`, `/attach`, `/detach`, `/queue` and `/edit`.
 `Ctrl+E` opens the draft in `VISUAL` or `EDITOR`; successful edits return to the composer without sending.
 The `/edit` suffix after draft text opens the same editor; `/edit` alone explains it and is not in the
 completion menu. Drafts survive resizing and session switches; approvals never take typing focus.

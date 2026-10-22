@@ -26,12 +26,35 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Session controls and web domains | user-only model/effort switch at a READY/WAITING boundary, an explicit `after = "turn"` follow-up queue, and `web` grants with `domain:` scopes; cancelling a task does not stop its command (D-470) | D-470 |
 | Acceptance checks | `exec --check` and goal `[[checks]]` run through the session's shell mode: `sandbox = none` on the host, a configured backend fail-closed (D-471) | D-471 |
 | PTY verification | `make pty` runs a terminal-profile matrix in isolated ptys (xterm-256color, screen-256color, tmux-256color, xterm-kitty, Kitty under tmux) with auto graphics-mode assertions, plus forced blocks/kitty protocol bounds | D-472 |
+| TUI keys | Ctrl+Q quits, Ctrl+P opens pending inputs, Ctrl+M opens the Leader's model/effort menu (`/quit`, `/model`); the profile applies at the next turn | D-473 |
 | Capability delegation | user remains the authority root; spawned instances still hold no shell by default; a user grant may be marked `delegable`, and only such a parent may produce attenuated, task-scoped, non-delegable child grants; missing capabilities become a visible pending approval, not a silent idle | D-455 |
 | Repository-local config | nearest ancestor config is discovered; canonical-root trusted_projects or explicit trust_project admits it; permissions, hooks, checks, retention, limits and update policy stay user-only; instruction files remain explicit | D-244, D-246, D-434 |
 | Retention | history_days applies at boot under V2Retention guards; archived_days is applied by sessions prune under V2Prune guards; live state and evidence stay protected | D-245, D-435, D-436 |
 | Prompt cache | cache hit/miss/write are provider-reported and visible; the L1 frontier is fixed between compactions; Anthropic gets explicit breakpoints and OpenAI a stable key; DeepSeek stays automatic | D-459 |
 | Command idempotency | a replay with the same `command_id` returns the stored receipt for control-plane state, and the authoritative check runs under the write lock (D-463); result bodies are shared by content digest and zstd-compressed (D-464), while the receipt **rows** remain one per command | D-463, D-464 |
 | Model actions and code windows | a deciding read shares the write's transaction, or the guard is a predicate on the write itself; `verification/REPORT.md` §6 lists the protocol transitions and the three engine windows that span two transactions with their predicates | D-465 |
+
+## D-473 Quit on Ctrl+Q and a model/effort menu on Ctrl+M (2026-10-22)
+
+**Why.** `Ctrl+D` was the exit binding and the label said "exit"; the user asked for "quit" on `Ctrl+Q`. The
+profile switch (D-470) existed only in the CLI, so a TUI user had to leave the conversation to change the Leader's
+model or reasoning effort.
+
+**What.** Ctrl+Q quits (the session keeps running), Ctrl+P opens the pending-input queue (it was Ctrl+Q), and
+Ctrl+M opens a model/effort menu for the Leader. The daemon's checkpoint now carries the `[models]` catalog
+(key/model/provider) and each instance's `reasoning_effort`; the menu cycles the catalog and the effort levels,
+Enter sends `set_instance_profile`, Esc cancels. The change applies at the next READY/WAITING turn as D-470
+already enforces. `/quit` and `/model` are the command aliases.
+
+**Boundaries.** Only the Leader is offered; the control plane still refuses an in-flight turn or a non-user
+identity, and the menu reads the catalog from the daemon rather than the filesystem. Ctrl+M is the same byte as
+Enter on terminals that do not negotiate keyboard enhancement, so those terminals should use `/model`. Effort
+levels are suggestions; the provider normalizes them (`normalize_effort`) and a rejecting model reports it at the
+next request.
+
+**Acceptance.** `tui/tests/minimal.rs::ctrl_m_opens_the_model_menu_and_enter_changes_the_profile`; the PTY matrix
+quits with Ctrl+Q and sees the `Ctrl+Q quit` hint; `set_instance_profile` stays covered by the D-470 tests and the
+CLI.
 
 ## D-472 Terminal-agnostic PTY verification (2026-10-22)
 

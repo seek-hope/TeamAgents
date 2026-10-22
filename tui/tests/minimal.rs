@@ -2,7 +2,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{backend::TestBackend, layout::Rect, Terminal};
 use serde_json::json;
 use teamagents_tui::{
-    v2app::{Focus, InstanceInfo, V2App, V2Effect},
+    v2app::{Focus, InstanceInfo, ModelInfo, V2App, V2Effect},
     v2ui,
 };
 
@@ -34,8 +34,33 @@ fn interruption_and_exit_are_distinct_and_keep_the_draft() {
     app.apply_approvals(json!({"approvals": [{"id": "ap-1"}]}));
     app.handle_key(ctrl('a'));
     assert_eq!(app.handle_key(ctrl('c')), Some(V2Effect::Interrupt { instance: "i-leader".into() }));
-    assert_eq!(app.handle_key(ctrl('d')), Some(V2Effect::Quit));
+    assert_eq!(app.handle_key(ctrl('q')), Some(V2Effect::Quit));
     assert!(app.quit);
+}
+
+#[test]
+fn ctrl_m_opens_the_model_menu_and_enter_changes_the_profile() {
+    let mut app = app();
+    app.models = vec![ModelInfo { key: "leader_main".into(), model: "test".into(), provider: "compatible".into() }];
+    app.efforts = vec!["low".into(), "high".into()];
+    app.apply_checkpoint(
+        json!({"instances": [{"id": "i-leader", "lifecycle": "ACTIVE", "phase": "READY",
+                              "model": "leader_main", "effort": "low"}]}),
+        2,
+    );
+    assert!(app.handle_key(ctrl('m')).is_none());
+    assert!(app.profile.is_some(), "Ctrl+M opens the menu");
+    assert!(app.handle_key(key(KeyCode::Right)).is_none());
+    let effect = app.handle_key(key(KeyCode::Enter));
+    match effect {
+        Some(V2Effect::SetProfile { instance, model, effort }) => {
+            assert_eq!(instance, "i-leader");
+            assert_eq!(model.as_deref(), Some("leader_main"));
+            assert_eq!(effort.as_deref(), Some("high"));
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(app.profile.is_none(), "Enter closes the menu");
 }
 
 #[test]
@@ -124,6 +149,7 @@ fn a_waiting_capability_member_is_visible_in_the_status_line() {
         phase: "WAITING_CAPABILITY".into(),
         model: String::new(),
         reason: String::new(),
+        effort: String::new(),
     });
     assert!(app.status_line().contains("waiting for capability approval"), "{}", app.status_line());
 }

@@ -91,7 +91,7 @@ For a manual source upgrade:
 1. Review the target source, schema compatibility and [acceptance limits](ACCEPTANCE.md); build both new
    binaries before touching the installation. Preserve the old binaries and make a consistent backup of
    any session you cannot afford to lose. A binary rollback is not a database-schema rollback.
-2. Finish work or explicitly terminate the relevant instances. Ctrl+D only detaches; task cancellation
+2. Finish work or explicitly terminate the relevant instances. Ctrl+Q only quits the TUI; task cancellation
    does not stop a running command. A graceful daemon stop allows committed runners to finish, so it is
    not a substitute for stopping active work.
 3. Stop each affected daemon using its state root, then replace both binaries from the same build:

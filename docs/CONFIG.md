@@ -64,9 +64,9 @@ trust posture.
 
 | Key | Type | Absent | Read by | Meaning |
 |---|---|---|---|---|
-| `provider` | `String` | empty | `engine/src/providers/mod.rs`, `engine/src/tools.rs` … (3 files) | The vendor hint: `deepseek` selects that service's defaults (the reasoning echo, the deepseek protocol) while `protocol` is unset, and any other value is a label for a compatible service — the wire is decided by `protocol`/`base_url`, never by this name (D-40, D-229). |
+| `provider` | `String` | empty | `engine/src/providers/mod.rs`, `engine/src/tools.rs` … (5 files) | The vendor hint: `deepseek` selects that service's defaults (the reasoning echo, the deepseek protocol) while `protocol` is unset, and any other value is a label for a compatible service — the wire is decided by `protocol`/`base_url`, never by this name (D-40, D-229). |
 | `protocol` | `String` | "openai" | `engine/src/providers/mod.rs`, `engine/src/v2/attachments.rs` … (3 files) | — |
-| `model` | `String` | empty | `core/src/kernel/instance.rs`, `core/src/kernel/mod.rs` … (16 files) | — |
+| `model` | `String` | empty | `core/src/kernel/instance.rs`, `core/src/kernel/mod.rs` … (18 files) | — |
 | `base_url` | `Option<String>` | unset (the reader applies its own) | `engine/src/providers/mod.rs` | — |
 | `api_key_env` | `Option<String>` | unset (the reader applies its own) | `engine/src/providers/mod.rs`, `engine/src/tools.rs` | — |
 | `timeout` | `i64` | 120 | `core/src/v2/control.rs`, `engine/src/mcp.rs` … (10 files) | — |
@@ -82,7 +82,7 @@ trust posture.
 |---|---|---|---|---|
 | `kind` | `String` | empty | `core/src/kernel/mod.rs`, `core/src/v2/control.rs` … (28 files) | — |
 | `required` | `bool` | false | `core/src/kernel/mod.rs`, `engine/src/bound.rs` … (5 files) | — |
-| `provider` | `Option<String>` | unset (the reader applies its own) | `engine/src/providers/mod.rs`, `engine/src/tools.rs` … (3 files) | — |
+| `provider` | `Option<String>` | unset (the reader applies its own) | `engine/src/providers/mod.rs`, `engine/src/tools.rs` … (5 files) | — |
 | `api_key_env` | `Option<String>` | unset (the reader applies its own) | `engine/src/providers/mod.rs`, `engine/src/tools.rs` | — |
 | `mcp_server` | `Option<String>` | unset (the reader applies its own) | `engine/src/bound.rs` | — |
 | `mcp_transport` | `Option<String>` | unset (the reader applies its own) | `engine/src/bound.rs`, `engine/src/mcp_auth.rs` … (3 files) | — |
@@ -107,7 +107,7 @@ trust posture.
 
 | Key | Type | Absent | Read by | Meaning |
 |---|---|---|---|---|
-| `models` | `HashMap<String, ModelProfile>` | empty | `engine/src/providers/mod.rs`, `engine/src/v2/driver.rs` | — |
+| `models` | `HashMap<String, ModelProfile>` | empty | `engine/src/providers/mod.rs`, `engine/src/v2/daemon.rs` … (5 files) | — |
 | `tools` | `HashMap<String, ToolBinding>` | empty | `core/src/kernel/instance.rs`, `core/src/kernel/mod.rs` … (14 files) | — |
 | `skills_paths` | `Vec<String>` | empty | `engine/src/tools.rs` | Directories the `skill` tool searches for `SKILL.md` entries. An entry must exist and be a directory; the default (`~/.agents/skills`) is used only when the key is unset (D-232). |
 | `instruction_files` | `Vec<String>` | empty | `engine/src/v2/driver.rs` | Files whose text is appended to **every** member's system prompt (the leader's and each child's), in this order, each under a heading naming the file: read per turn, so an edit lands on the next turn, and a file that cannot be read is named by `doctor` and on the daemon's log rather than skipped in silence (D-102 recorded the promise, D-246 delivers it). |

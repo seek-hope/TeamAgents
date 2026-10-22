@@ -10,7 +10,7 @@ use serde_json::Value as Json;
 use crate::text::Composer;
 
 /// The slash commands the composer understands (D-370), shown while a `/` draft is open and by `/help`.
-const SLASH_HELP: &str = "commands: /help · /edit · /sessions · /queue · /interrupt · /quit";
+const SLASH_HELP: &str = "commands: /help · /edit · /sessions · /queue · /interrupt · /model · /quit";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Focus {
@@ -67,6 +67,28 @@ pub struct InstanceInfo {
     /// running — a park reason, or the user's own pause. Empty for an ACTIVE member
     /// and for a transition recorded without words.
     pub reason: String,
+    /// The instance's `reasoning_effort`, when its profile carries one (D-473).
+    pub effort: String,
+}
+
+/// One entry of the daemon's `[models]` catalog, offered by the Ctrl+M menu (D-473).
+#[derive(Clone, Debug)]
+pub struct ModelInfo {
+    /// The `[models.<key>]` name that `set_instance_profile` accepts.
+    pub key: String,
+    /// The wire model the catalog entry resolves to, for display beside the key.
+    pub model: String,
+    pub provider: String,
+}
+
+/// The Ctrl+M menu: the Leader's model and reasoning effort, applied at the next turn.
+#[derive(Clone, Debug)]
+pub struct ProfileMenu {
+    pub instance: String,
+    pub models: Vec<ModelInfo>,
+    pub efforts: Vec<String>,
+    pub model_ix: usize,
+    pub effort_ix: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -120,6 +142,12 @@ pub enum V2Effect {
     Interrupt {
         instance: String,
     },
+    /// D-473: change the Leader's model/effort; the control plane applies it at the next READY/WAITING boundary.
+    SetProfile {
+        instance: String,
+        model: Option<String>,
+        effort: Option<String>,
+    },
     Quit,
 }
 
@@ -140,6 +168,10 @@ pub struct V2App {
     pub session_name: String,
     pub browser: Option<crate::sessions::SessionBrowser>,
     pub queue: Option<crate::queue::Queue>,
+    /// D-473: the daemon's `[models]` catalog and the open profile menu.
+    pub models: Vec<ModelInfo>,
+    pub efforts: Vec<String>,
+    pub profile: Option<ProfileMenu>,
     pub session_id: String,
     pub instances: Vec<InstanceInfo>,
     /// Read-only checkpoint observations, never instructions to the model.
@@ -177,6 +209,9 @@ impl V2App {
             session_name: String::new(),
             browser: None,
             queue: None,
+            models: vec![],
+            efforts: vec!["minimal".into(), "low".into(), "medium".into(), "high".into()],
+            profile: None,
             session_id: session_id.to_string(),
             instances: vec![],
             work_diagnostics: vec![],
@@ -295,6 +330,7 @@ impl V2App {
                 phase: i["phase"].as_str().unwrap_or("").to_string(),
                 model: i["model"].as_str().unwrap_or("").to_string(),
                 reason: i["reason"].as_str().unwrap_or("").to_string(),
+                effort: i["effort"].as_str().unwrap_or("").to_string(),
             })
             .collect();
         self.work_diagnostics = snapshot["instances"]
@@ -322,6 +358,19 @@ impl V2App {
                 }),
             })
         });
+        if let Some(rows) = snapshot["models"].as_array() {
+            self.models = rows
+                .iter()
+                .filter_map(|row| {
+                    let key = row["key"].as_str()?.to_string();
+                    Some(ModelInfo {
+                        model: row["model"].as_str().unwrap_or(&key).to_string(),
+                        provider: row["provider"].as_str().unwrap_or("").to_string(),
+                        key,
+                    })
+                })
+                .collect();
+        }
         self.watermark = self.watermark.max(watermark);
         // a fresh checkpoint supersedes earlier UI-level notes — runtime chatter, not a command's answer
         // (D-433: `Command` entries are what a user asked for and stay until they scroll away)
@@ -575,8 +624,29 @@ impl V2App {
 
     pub fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> Option<V2Effect> {
         use crossterm::event::{KeyCode, KeyModifiers};
+        if self.profile.is_some() {
+            if key.modifiers.contains(KeyModifiers::CONTROL) {
+                match key.code {
+                    KeyCode::Char('q') => {
+                        self.quit = true;
+                        return Some(V2Effect::Quit);
+                    }
+                    KeyCode::Char('c') => return self.interrupt(),
+                    KeyCode::Char('g') => {
+                        self.graphics.toggle();
+                        return None;
+                    }
+                    KeyCode::Char('m') => {
+                        self.profile = None;
+                        return None;
+                    }
+                    _ => {}
+                }
+            }
+            return self.profile_key(key);
+        }
         if self.queue.is_some()
-            && !(key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c' | 'd' | 'g')))
+            && !(key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c' | 'q' | 'g')))
         {
             let queue = self.queue.as_mut()?;
             if key.code == KeyCode::Esc {
@@ -588,7 +658,7 @@ impl V2App {
             return queue.key(key).map(V2Effect::Queue);
         }
         if self.browser.is_some()
-            && !(key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c' | 'd' | 'g')))
+            && !(key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c' | 'q' | 'g')))
         {
             let browser = self.browser.as_mut()?;
             if key.code == KeyCode::Esc && !browser.busy && browser.confirmation.is_none() && !browser.search_active() {
@@ -600,7 +670,13 @@ impl V2App {
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
                 KeyCode::Char('s') => return self.open_sessions(),
-                KeyCode::Char('q') if self.focus == Focus::Composer => return self.open_queue(),
+                KeyCode::Char('p') if self.focus == Focus::Composer => return self.open_queue(),
+                KeyCode::Char('m') if self.focus == Focus::Composer => return self.open_profile(),
+                KeyCode::Enter if self.focus == Focus::Composer => return self.open_profile(),
+                KeyCode::Char('q') => {
+                    self.quit = true;
+                    return Some(V2Effect::Quit);
+                }
                 KeyCode::Char('g') => {
                     self.graphics.toggle();
                     return None;
@@ -610,10 +686,6 @@ impl V2App {
                     return None;
                 }
                 KeyCode::Char('c') => return self.interrupt(),
-                KeyCode::Char('d') => {
-                    self.quit = true;
-                    return Some(V2Effect::Quit);
-                }
                 KeyCode::Char('a') => {
                     if !self.approvals.is_empty() {
                         self.focus = Focus::Approvals;
@@ -637,6 +709,65 @@ impl V2App {
     fn open_sessions(&mut self) -> Option<V2Effect> {
         self.browser = Some(crate::sessions::SessionBrowser::default());
         Some(V2Effect::Sessions(crate::sessions::SessionAction::List))
+    }
+
+    /// D-473: the Leader's model/effort menu. The catalog comes from the checkpoint; a daemon that does not
+    /// report one still offers the current model so the effort can be changed.
+    fn open_profile(&mut self) -> Option<V2Effect> {
+        let Some(leader) = self.active_instance().cloned() else {
+            self.command_note("No Leader is connected, so there is no profile to change.");
+            return None;
+        };
+        let mut models = self.models.clone();
+        if models.is_empty() {
+            models.push(ModelInfo { key: leader.model.clone(), model: leader.model.clone(), provider: String::new() });
+        }
+        let model_ix =
+            models.iter().position(|model| model.key == leader.model || model.model == leader.model).unwrap_or(0);
+        let mut efforts = self.efforts.clone();
+        if !leader.effort.is_empty() && !efforts.iter().any(|effort| effort == &leader.effort) {
+            efforts.push(leader.effort.clone());
+        }
+        if efforts.is_empty() {
+            efforts.push("medium".into());
+        }
+        let effort_ix = efforts.iter().position(|effort| effort == &leader.effort).unwrap_or(0);
+        self.profile = Some(ProfileMenu { instance: leader.id, models, efforts, model_ix, effort_ix });
+        None
+    }
+
+    fn profile_key(&mut self, key: crossterm::event::KeyEvent) -> Option<V2Effect> {
+        use crossterm::event::KeyCode;
+        let menu = self.profile.as_mut()?;
+        match key.code {
+            KeyCode::Esc => {
+                self.profile = None;
+                None
+            }
+            KeyCode::Up => {
+                menu.model_ix = (menu.model_ix + menu.models.len() - 1) % menu.models.len();
+                None
+            }
+            KeyCode::Down => {
+                menu.model_ix = (menu.model_ix + 1) % menu.models.len();
+                None
+            }
+            KeyCode::Left => {
+                menu.effort_ix = (menu.effort_ix + menu.efforts.len() - 1) % menu.efforts.len();
+                None
+            }
+            KeyCode::Right => {
+                menu.effort_ix = (menu.effort_ix + 1) % menu.efforts.len();
+                None
+            }
+            KeyCode::Enter => {
+                let menu = self.profile.take()?;
+                let model = menu.models.get(menu.model_ix)?.key.clone();
+                let effort = menu.efforts.get(menu.effort_ix)?.clone();
+                Some(V2Effect::SetProfile { instance: menu.instance, model: Some(model), effort: Some(effort) })
+            }
+            _ => None,
+        }
     }
 
     fn interrupt(&mut self) -> Option<V2Effect> {
@@ -710,9 +841,10 @@ Up/Down recalls input; PageUp/PageDown or the wheel reads history.
 A slash prefix shows commands: Up/Down selects, Tab/Enter fills, Esc cancels; Enter submits the filled command.
 Ctrl+C or /interrupt cancels the Leader's model request; running tools and delegated work continue.
 Ctrl+A focuses pending approvals; a approves once, d denies, Esc returns.
-Ctrl+D or /quit exits; the session keeps running.
+Ctrl+Q or /quit quits the TUI; the session keeps running.
 Ctrl+S or /sessions opens session history, switching and confirmed deletion; / searches stored messages.
-Ctrl+Q or /queue shows pending Leader inputs; Enter edits, Delete asks to cancel, Esc returns to the draft.
+Ctrl+P or /queue shows pending Leader inputs; Enter edits, Delete asks to cancel, Esc returns to the draft.
+Ctrl+M or /model changes the Leader's model and reasoning effort at its next turn.
 /attach PATH stages a workspace file; Tab lists paths; Enter fills, another Enter stages. /detach INDEX removes it.
 Attachments: eight files, 1 MiB UTF-8 text or 5 MiB PNG/JPEG/GIF/WebP, 16 MiB total; symlinks are refused.
 Ctrl+O expands or folds tool previews; /sessions shows full stored results.
@@ -732,6 +864,7 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
             "/sessions" => return self.open_sessions(),
             "/queue" => return self.open_queue(),
             "/interrupt" => return self.interrupt(),
+            "/model" => return self.open_profile(),
             "/quit" => {
                 self.quit = true;
                 return Some(V2Effect::Quit);
@@ -997,8 +1130,8 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
             return SLASH_HELP.into();
         }
         if !self.approvals.is_empty() {
-            return "Ctrl+A review · Enter send · Ctrl+C interrupt · Ctrl+D exit".into();
+            return "Ctrl+A review · Enter send · Ctrl+C interrupt · Ctrl+Q quit".into();
         }
-        "Enter send · Ctrl+S sessions · Ctrl+C interrupt · Ctrl+D exit · /help".into()
+        "Enter send · Ctrl+M model · Ctrl+S sessions · Ctrl+C interrupt · Ctrl+Q quit · /help".into()
     }
 }

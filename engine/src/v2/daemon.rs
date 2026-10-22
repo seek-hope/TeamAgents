@@ -113,6 +113,14 @@ where
             Err(_) => Json::Array(vec![]),
         }
     };
+    let mut catalog_models: Vec<_> = config.supervisor.catalog.models.iter().collect();
+    catalog_models.sort_by(|a, b| a.0.cmp(b.0));
+    let models = Json::Array(
+        catalog_models
+            .iter()
+            .map(|(key, profile)| json!({"key": key, "model": profile.model, "provider": profile.provider}))
+            .collect(),
+    );
     let facts = Arc::new(SessionFacts {
         session_id: session_id.clone(),
         state_root: state_root.to_string_lossy().into_owned(),
@@ -121,6 +129,7 @@ where
         goal_limits: config.supervisor.goal_limits.clone(),
         mcp,
         sessions,
+        models,
     });
     // D-227: refuse before binding, so the answer names the limit and the fix instead of the OS's
     // `bind …: path must be shorter than SUN_LEN` (`cli::require_socket_path_fits` holds the boundary).
@@ -245,6 +254,9 @@ struct SessionFacts {
     /// checkpoint because the registry lives beside the state root, not inside it, and a TUI has no business
     /// reading the filesystem (D-364's registry is the daemon's own knowledge).
     sessions: Json,
+    /// D-473: the user's `[models]` catalog (key, wire model, provider) so the TUI can offer a model menu instead
+    /// of asking the user to remember config keys. Static for the session's lifetime.
+    models: Json,
 }
 
 async fn accept_loop(
@@ -405,7 +417,7 @@ async fn handle(request: &Json, supervisor: &SupervisorHandle, session_db: &Path
                 Json::Null
             };
             match read_only(session_db, session_id, |conn| {
-                read_method(method, &params, conn, &previews, &mcp, &facts.sessions)
+                read_method(method, &params, conn, &previews, &mcp, &facts.sessions, &facts.models)
             }) {
                 Ok(result) => reply(true, result),
                 Err(error) => reply(false, json!(error)),
@@ -462,7 +474,7 @@ fn read_only<T>(
 
 /// Snapshot query shared by `checkpoint` (same read transaction as the
 /// watermark) — instances with lifecycle/phase plus the single-goal view.
-fn read_snapshot(conn: &rusqlite::Connection, mcp: &Json, sessions: &Json) -> Result<Json, String> {
+fn read_snapshot(conn: &rusqlite::Connection, mcp: &Json, sessions: &Json, models: &Json) -> Result<Json, String> {
     let work = super::diagnostics::read(conn, false)?;
     // `model` rides along (D-69): a team can span providers (`spawn(model = …)`),
     // and without it no client can say which member runs on what.
@@ -526,6 +538,7 @@ fn read_snapshot(conn: &rusqlite::Connection, mcp: &Json, sessions: &Json) -> Re
             let can_shell = shells.get(&id).copied().unwrap_or(false);
             Ok(json!({"id": id, "lifecycle": row.get::<_, String>(1)?,
                       "phase": row.get::<_, String>(2)?, "model": profile["model"], "reason": reason,
+                      "effort": profile["options"]["reasoning_effort"],
                       "can_run_shell": can_shell, "diagnosis": work.activities.get(&id)}))
         })
         .map_err(|e| format!("snapshot query: {e}"))?;
@@ -576,7 +589,9 @@ fn read_snapshot(conn: &rusqlite::Connection, mcp: &Json, sessions: &Json) -> Re
         // machine's config (the TUI is one) can still tell a user what the session bound and what to do next.
         "mcp": mcp,
         // D-429: the named sessions under this base, so a TUI can offer them without reading the filesystem
-        "sessions": sessions}))
+        "sessions": sessions,
+        // D-473: the configured model catalog, for the TUI's model/effort menu
+        "models": models}))
 }
 
 fn read_events(conn: &rusqlite::Connection, since: i64) -> Result<Vec<Json>, String> {
@@ -639,6 +654,7 @@ fn read_method(
     previews: &Json,
     mcp: &Json,
     sessions: &Json,
+    models: &Json,
 ) -> Result<Json, String> {
     match method {
         // §9: the text each instance is streaming right now. It is a transient read the supervisor answers from
@@ -651,7 +667,7 @@ fn read_method(
         // the client learns exactly which point its snapshot is consistent with
         "checkpoint" => {
             let tx = conn.unchecked_transaction().map_err(|e| format!("checkpoint tx: {e}"))?;
-            let snapshot = read_snapshot(&tx, mcp, sessions)?;
+            let snapshot = read_snapshot(&tx, mcp, sessions, models)?;
             let watermark = watermark(&tx)?;
             tx.commit().map_err(|e| format!("checkpoint commit: {e}"))?;
             Ok(json!({"snapshot": snapshot, "watermark": watermark}))

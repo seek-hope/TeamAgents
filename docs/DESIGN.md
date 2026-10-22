@@ -24,7 +24,7 @@ is tabulated in [ACCEPTANCE](ACCEPTANCE.md) under "Requirements (Q1–Q19) and t
 | Q3 | Scope may be re-cut; deliver the kernel and the runtime first | Capabilities added to the first release are listed in Q6, Q12 and Q13 |
 | Q4 | Context, message and tool access are isolated by default; the host mode (`sandbox = none`) may bypass the logical boundary | Permissions are enforced at runtime; context isolation is never advertised as a security boundary between host processes of the same user |
 | Q5 | The Leader manages instances and connections by default and may delegate part of that authority | Authorized instances may communicate directly; instances never chat privately, collaboration goes through control-plane-granted messages and shared space |
-| Q6 | Ship a minimal user TUI for Leader conversation, progress, approvals, interruption and session history/switch/delete; the developer CLI owns comprehensive management (D-445/D-446) | One conversation, conditional approvals, distinct interrupt/exit and an optional session browser; member, task, goal, session and diagnostic controls remain scriptable |
+| Q6 | Ship a minimal user TUI for Leader conversation, progress, approvals, interruption and session history/switch/delete; the developer CLI owns comprehensive management (D-445/D-446) | One conversation, conditional approvals, distinct interrupt/quit and an optional session browser; member, task, goal, session and diagnostic controls remain scriptable |
 | Q7 | Closing the UI keeps work running, and the user can reconnect and intervene | The background runtime is independent of the front-end lifetime |
 | Q8 | The user talks to the Leader by default and may read other instances' history, talk to them directly, pause or cancel | The user has a global view; agents stay isolated from each other by permissions |
 | Q9 | Instances are reused and retained within a session; they can be terminated or reset; sessions are isolated by default | Instances, tasks and turns have separate lifetimes |
@@ -526,7 +526,7 @@ stream all stored history/revisions/references from one read snapshot to an expl
 Display grammar/diagram/image work runs in a Rust helper with bounded I/O and deadlines, resource limits,
 closed inherited descriptors and a Linux syscall allowlist before parsing. It has no model/tool/config authority;
 unsupported isolation falls back to source. Cancellation advances a generation, stops active parsing and rejects
-stale results. These presentation changes preserve approval input ownership and session/interrupt/exit semantics.
+stale results. These presentation changes preserve approval input ownership and session/interrupt/quit semantics.
 
 Traces are complete but organised by reference and increment: every request/response, tool argument/receipt,
 retry, compaction, control action and usage record carries a stable identifier and a timestamp, and the
