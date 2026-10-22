@@ -576,7 +576,23 @@ fn path_relative(path: &Path, root: &Path) -> PathBuf {
 }
 
 fn binary_version(binary: &Path) -> Option<String> {
-    let output = std::process::Command::new(binary).arg("version").output().ok()?;
+    // ETXTBSY is transient: another thread may have forked while a just-written binary was still open for
+    // writing (the update fixtures write a script and execute it at once; an updater can also run while the
+    // daemon forks). Retry briefly instead of recording the version as "unknown".
+    let mut output = None;
+    for attempt in 0..5 {
+        match std::process::Command::new(binary).arg("version").output() {
+            Ok(out) => {
+                output = Some(out);
+                break;
+            }
+            Err(error) if error.raw_os_error() == Some(26) && attempt < 4 => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(_) => return None,
+        }
+    }
+    let output = output?;
     if !output.status.success() {
         return None;
     }

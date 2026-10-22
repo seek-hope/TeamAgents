@@ -157,14 +157,23 @@ fn a_config_override_reaches_the_config_and_a_bad_one_is_refused() {
     };
     // a valid override is accepted (the config row does not fail)
     let (code, text) = run(&["doctor", "-c", "limits.tool_output_chars=8000"]);
-    let failures: Vec<_> = text.lines().filter(|line| line.contains("[FAIL]")).collect();
-    if teamagents_engine::tools::sandbox_usable() {
-        assert_eq!(code, Some(0), "{text}");
-        assert!(failures.is_empty(), "{text}");
-    } else {
-        assert_eq!(code, Some(1), "{text}");
-        assert_eq!(failures.len(), 1, "{text}");
-        assert!(failures[0].contains("bubblewrap isolation"), "{text}");
+    // D-466: without `[permissions] sandbox` the session is the host (`none`), so doctor is green even where
+    // bubblewrap is missing; only asking for bubblewrap fails closed.
+    assert_eq!(code, Some(0), "{text}");
+    assert!(!text.contains("[FAIL]"), "{text}");
+    assert!(text.contains("sandbox = \"none\""), "{text}");
+    if !teamagents_engine::tools::sandbox_usable() {
+        std::fs::write(
+            config_home.join("teamagents/config.toml"),
+            "[models.leader_main]\nprovider = \"compatible\"\nmodel = \"test\"\n\
+             api_key_env = \"TA_OVERRIDE_KEY\"\n\n[permissions]\nsandbox = \"bubblewrap\"\n",
+        )
+        .unwrap();
+        let (bad_code, bad_text) = run(&["doctor"]);
+        assert_eq!(bad_code, Some(1), "{bad_text}");
+        let failures: Vec<_> = bad_text.lines().filter(|line| line.contains("[FAIL]")).collect();
+        assert_eq!(failures.len(), 1, "{bad_text}");
+        assert!(failures[0].contains("bubblewrap isolation"), "{bad_text}");
     }
     assert!(text.contains("[ok  ] user config"), "{text}");
     // a key this build does not serve
@@ -1295,18 +1304,12 @@ fn exec_takes_the_prompt_from_stdin_and_runs_the_acceptance_check() {
     let ledger: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(state.join("verification.json")).unwrap()).unwrap();
     assert_eq!(ledger["verification"][0]["command"], "echo accepted");
-    if teamagents_engine::tools::sandbox_usable() {
-        assert!(stdout.contains("check 1: ok (exit 0)  echo accepted"), "{stdout}");
-        assert_eq!(ledger["verification"][0]["ok"], true);
-    } else {
-        // No sandbox on this machine (the GitHub runner, D-113): the same run must report the check as failed
-        // *closed* — never as a pass, and never by running the command on the host.
-        assert!(stdout.contains("check 1: FAILED (exit -1)  echo accepted"), "{stdout}");
-        assert_eq!(ledger["verification"][0]["ok"], false);
-        assert_eq!(ledger["verification"][0]["exit_code"], -1);
-        let error = ledger["verification"][0]["error"].as_str().unwrap_or("");
-        assert!(error.contains("IsolationUnavailable"), "the refusal names the isolation: {ledger}");
-    }
+    // D-471: the acceptance check follows the session's shell mode. This config has no `[permissions] sandbox`,
+    // so the check runs on the host even where bubblewrap is missing; the fail-closed path is covered by
+    // `an_unisolated_shell_refuses_instead_of_running_on_the_host` with `sandbox = "bubblewrap"`.
+    assert!(stdout.contains("check 1: ok (exit 0)  echo accepted"), "{stdout}");
+    assert_eq!(ledger["verification"][0]["ok"], true);
+    assert!(ledger["verification"][0]["error"].is_null(), "{ledger}");
     // the piped prompt really reached the leader's context (§4.2 accept boundary)
     let mut client = teamagents_engine::v2::exec::Client::connect(&socket).expect("client");
     let history = client.history("i-leader").expect("history");
