@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""D-448: real PTY graphics, protocol bounds, toggling and resize; no model request."""
+"""D-448/D-472: PTY graphics per terminal profile, protocol bounds, toggling and resize; no model request.
+
+`auto` asserts the mode the TUI actually selects from TERM and the multiplexer
+variables (graphics.rs::terminal): native Kitty only for xterm-kitty outside
+tmux/zellij, blocks everywhere else. `blocks`/`kitty` force one path so the
+protocol bounds stay covered regardless of the host terminal.
+"""
 import base64
 import binascii
 import fcntl
@@ -9,6 +15,7 @@ import pty
 import re
 import signal
 import struct
+import sys
 import tempfile
 import termios
 import time
@@ -18,6 +25,13 @@ from pty_v2_smoke import FakeDaemon, BIN
 from pty_screen import Screen, read_all
 
 APC = re.compile(rb"\x1b_G.*?\x1b\\", re.S)
+TERM = os.environ.get("TA_PTY_TERM", "xterm-256color")
+
+
+def expected_mode() -> str:
+    """The mode the TUI's auto-detection should choose in this pty."""
+    native = TERM == "xterm-kitty" and "TMUX" not in os.environ and "ZELLIJ" not in os.environ
+    return "kitty" if native else "blocks"
 
 
 def png():
@@ -28,7 +42,9 @@ def png():
             + chunk(b"IDAT", zlib.compress(pixels)) + chunk(b"IEND", b""))
 
 
-def run(mode):
+def run(force):
+    effective = force or expected_mode()
+    label = f"forced {force}" if force else f"auto -> {effective}"
     with tempfile.TemporaryDirectory(prefix="graphics-pty-") as directory:
         root = pathlib.Path(directory)
         (root / "plot.png").write_bytes(png())
@@ -42,7 +58,7 @@ def run(mode):
             time.sleep(.02)
         pid, fd = pty.fork()
         if pid == 0:
-            env = dict(os.environ, TERM="xterm-256color", TEAMAGENTS_GRAPHICS=mode)
+            env = dict(os.environ, TERM=TERM, TEAMAGENTS_GRAPHICS=force or "auto")
             os.execvpe(BIN, [BIN, "--daemon", daemon.sock_path], env)
         rows, cols = 30, 90
         fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, cols * 10, rows * 20))
@@ -62,10 +78,10 @@ def run(mode):
                 shown = drain()
                 if predicate(shown):
                     return shown
-            raise AssertionError(f"{mode}: {label}\n{drain()}")
+            raise AssertionError(f"{label}\n{drain()}")
 
         try:
-            if mode == "kitty":
+            if effective == "kitty":
                 wait(lambda _: b"a=p,i=" in raw, "Mermaid PNG placement")
                 chunks = re.findall(rb"\x1b_G(?:a=t,[^;]+|m=[01]);([^\x1b]*)\x1b\\", bytes(raw))
                 decoded = base64.b64decode(b"".join(chunks))
@@ -77,13 +93,13 @@ def run(mode):
                 assert b"\x1b_G" not in raw
             os.write(fd, b"unsent-graphics-draft\x07")
             wait(lambda s: "flowchart" in s and "unsent-graphics-draft" in s, "source toggle keeps draft")
-            if mode == "kitty":
+            if effective == "kitty":
                 assert b"a=d,d=I,i=" in raw
             os.write(fd, b"\x07")
             daemon.history = [{"kind": "assistant", "workspace": str(root), "message": {"content": "![Blue chart](plot.png)"}}]
             daemon.emit("response_imported", "i-leader", {})
             before = len(raw)
-            if mode == "kitty":
+            if effective == "kitty":
                 wait(lambda _: b"a=t,f=100" in raw[before:], "local image PNG")
             else:
                 wait(lambda s: "▀" in s, "half-block image")
@@ -91,7 +107,7 @@ def run(mode):
                 before = len(raw)
                 fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, cols * 10, rows * 20))
                 os.kill(pid, signal.SIGWINCH)
-                if mode == "kitty":
+                if effective == "kitty":
                     wait(lambda _: b"a=p,i=" in raw[before:], "resized image placement")
                     for y, x, command in re.findall(rb"\x1b\[(\d+);(\d+)H\x1b_G(a=p,[^;]+);", bytes(raw[before:])):
                         fields = dict(pair.split(b"=", 1) for pair in command.split(b","))
@@ -109,7 +125,7 @@ def run(mode):
                     assert os.waitstatus_to_exitcode(status) == 0
                     break
             assert reaped, "TUI did not exit"
-            if mode == "kitty":
+            if effective == "kitty":
                 assert b"a=d,d=I,i=" in raw and b"d=A" not in raw
             assert daemon.error is None, daemon.error
         finally:
@@ -117,9 +133,14 @@ def run(mode):
                 os.kill(pid, signal.SIGTERM)
                 os.waitpid(pid, 0)
             os.close(fd)
-    print(f"graphics PTY ({mode}): diagrams, image bytes, source toggle, draft, resize, bounds, cleanup: ok")
+    print(f"graphics PTY ({label}, {TERM}): diagrams, image bytes, source toggle, draft, resize, bounds, cleanup: ok")
 
 
 if __name__ == "__main__":
-    run("blocks")
-    run("kitty")
+    mode = sys.argv[1] if len(sys.argv) > 1 else "auto"
+    if mode == "auto":
+        run(None)
+    elif mode in ("blocks", "kitty"):
+        run(mode)
+    else:
+        raise SystemExit("usage: pty_graphics_smoke.py [auto|blocks|kitty]")

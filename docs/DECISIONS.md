@@ -25,12 +25,33 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Multi-edit and read parallelism | the default schema's `edit_file` accepts `edits` (disjoint, revision-checked, atomic batch; `edit_files` is an unadvertised alias); a batch of independent read-only calls runs its tool work concurrently while dispatch, veto and receipts stay ordered (D-469) | D-469 |
 | Session controls and web domains | user-only model/effort switch at a READY/WAITING boundary, an explicit `after = "turn"` follow-up queue, and `web` grants with `domain:` scopes; cancelling a task does not stop its command (D-470) | D-470 |
 | Acceptance checks | `exec --check` and goal `[[checks]]` run through the session's shell mode: `sandbox = none` on the host, a configured backend fail-closed (D-471) | D-471 |
+| PTY verification | `make pty` runs a terminal-profile matrix in isolated ptys (xterm-256color, screen-256color, tmux-256color, xterm-kitty, Kitty under tmux) with auto graphics-mode assertions, plus forced blocks/kitty protocol bounds | D-472 |
 | Capability delegation | user remains the authority root; spawned instances still hold no shell by default; a user grant may be marked `delegable`, and only such a parent may produce attenuated, task-scoped, non-delegable child grants; missing capabilities become a visible pending approval, not a silent idle | D-455 |
 | Repository-local config | nearest ancestor config is discovered; canonical-root trusted_projects or explicit trust_project admits it; permissions, hooks, checks, retention, limits and update policy stay user-only; instruction files remain explicit | D-244, D-246, D-434 |
 | Retention | history_days applies at boot under V2Retention guards; archived_days is applied by sessions prune under V2Prune guards; live state and evidence stay protected | D-245, D-435, D-436 |
 | Prompt cache | cache hit/miss/write are provider-reported and visible; the L1 frontier is fixed between compactions; Anthropic gets explicit breakpoints and OpenAI a stable key; DeepSeek stays automatic | D-459 |
 | Command idempotency | a replay with the same `command_id` returns the stored receipt for control-plane state, and the authoritative check runs under the write lock (D-463); result bodies are shared by content digest and zstd-compressed (D-464), while the receipt **rows** remain one per command | D-463, D-464 |
 | Model actions and code windows | a deciding read shares the write's transaction, or the guard is a predicate on the write itself; `verification/REPORT.md` §6 lists the protocol transitions and the three engine windows that span two transactions with their predicates | D-465 |
+
+## D-472 Terminal-agnostic PTY verification (2026-10-22)
+
+**Why.** `make pty` ran the v2 smoke under one hardcoded `TERM=xterm-256color` and the graphics smoke only as forced
+`blocks`/`kitty`; the output read like a Kitty-only gate and nothing checked auto-detection for the managers users
+actually run (the dev host moved from Kitty to Alacritty).
+
+**What.** `tui/scripts/pty_matrix.py` drives both smokes through a profile matrix, each in its own pty:
+`xterm-256color` (Alacritty, xterm, GNOME Terminal, iTerm2, VS Code), `screen-256color` and `tmux-256color`
+(tmux/screen), `xterm-kitty`, and Kitty under tmux (which must fall back). `pty_graphics_smoke.py auto` asserts the
+mode the TUI selects from `TERM` and the multiplexer variables (native Kitty only for `xterm-kitty` outside
+tmux/zellij, blocks everywhere else); forced `blocks`/`kitty` remain as protocol-bound checks. `--describe` reports
+the live terminal's profile and resolved mode. `make pty` runs the matrix.
+
+**Boundaries.** The matrix uses synthetic `TERM` values and a byte-level VT parser; it proves the client's protocol
+and screen, not a GUI terminal's pixels. The Kitty path is a protocol test, not a claim about a Kitty window;
+Alacritty has no image protocol, so `blocks` is the honest fallback.
+
+**Acceptance.** `make pty` on the dev host (Alacritty) prints one line per profile and passes all of them plus both
+forced modes; the `xterm-kitty` and `xterm-kitty`+`TMUX` profiles are covered by the same run.
 
 ## D-471 Acceptance checks follow the session's shell mode (2026-10-22)
 

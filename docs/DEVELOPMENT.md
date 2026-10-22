@@ -32,7 +32,7 @@ make check-nobwrap                # the same gate with the GitHub runner's condi
 make check-broken-sandbox         # ... and with a bwrap that cannot start a sandbox (Ubuntu 24.04 default, D-114)
 make fmt                          # apply the shared formatting
 make build                        # build the CLI and the TUI into the usual target paths
-make pty                          # real-terminal check with an isolated config and no model credentials
+make pty                          # terminal-profile matrix in isolated ptys, no model credentials
 ```
 
 `make test` wraps the three crate suites in `review/leak_guard.py` (snapshot before, audit after): the two ways

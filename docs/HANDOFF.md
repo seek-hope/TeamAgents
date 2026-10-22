@@ -39,8 +39,8 @@ engine/src/v2/diagnostics.rs; checkpoint, instances, tasks and local TUI /help e
 reopen, real daemon restart without additional model calls, explicit input/cancellation recovery and TUI frames.
 
 Local checks rerun on 2026-10-22 at `3b7ea4a1`: **make check passed, core 147 / engine 415 / tui 81**,
-**make check-nobwrap passed** (the CI runner's bwrap-free condition) and **make pty passed** the v2, blocks and
-Kitty-protocol smoke checks. These results are local regressions, not a new independent audit, real-model
+**make check-nobwrap passed** (the CI runner's bwrap-free condition) and **make pty passed** the terminal-profile
+matrix (xterm/tmux/kitty profiles, auto graphics) plus both forced protocol modes. These results are local regressions, not a new independent audit, real-model
 comparison, actual graphical-terminal matrix, installed-artifact acceptance or release.
 
 The [D-451 maturity report](../review/maturity-2026-10-11/REPORT.md) retains its immutable manifests and

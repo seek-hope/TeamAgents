@@ -9,7 +9,7 @@ boundaries; later source changes do not inherit those results.
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
 `make check` is green (core 147 / engine 415 / tui 81 test targets), rerun on 2026-10-21.
-`make pty` passed the same day: v2 smoke plus blocks and Kitty-protocol graphics smoke, all rc 0 and
+`make pty` passed the same day: the terminal-profile matrix (xterm-256color, screen-256color, tmux-256color, xterm-kitty and Kitty under tmux) plus both forced graphics protocols, all rc 0 and
 credential-free. PTY checks cover protocol bytes, input ownership, resize and cleanup, not a complete
 actual graphical-terminal or OS matrix. These gates do not renew real-provider, OAuth, sandbox-service,
 formal-proof or cross-product coding acceptance. `make check` includes `make language-check`, which

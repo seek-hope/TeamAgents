@@ -11,7 +11,11 @@ Requires: built tui binary (tui/target/debug/teamagents-tui).
 import atexit, fcntl, json, os, pty, re, shutil, socket, struct, subprocess, sys, tempfile, termios, threading, time, unicodedata
 
 BIN = os.path.join(os.path.dirname(__file__), "..", "target", "debug", "teamagents-tui")
-ENV = dict(os.environ, TERM="xterm-256color")
+PROFILE = os.environ.get("TA_PTY_TERM", "xterm-256color")
+TERM_PROGRAM = os.environ.get("TA_PTY_TERM_PROGRAM", "")
+ENV = dict(os.environ, TERM=PROFILE, TEAMAGENTS_GRAPHICS="auto")
+if TERM_PROGRAM:
+    ENV["TERM_PROGRAM"] = TERM_PROGRAM
 
 INSTANCES = [
     {"id": "i-leader", "lifecycle": "ACTIVE", "phase": "READY"},
@@ -368,7 +372,7 @@ def main():
         for failure in failures:
             print(f"  - {failure}")
         return 1
-    print("pty v2 smoke: ok")
+    print(f"pty v2 smoke ({PROFILE}): ok")
     return 0
 
 

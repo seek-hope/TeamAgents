@@ -47,7 +47,7 @@ cargo test --offline --manifest-path engine/Cargo.toml  # engine (phase machine,
 cargo test --offline --manifest-path tui/Cargo.toml     # TUI logic + TestBackend frames
 engine/target/debug/teamagents {init,doctor,daemon,exec,version}  # CLI entry points
 engine/target/debug/teamagents exec --json --timeout 180 "…"      # headless turn (starts the daemon if needed)
-make pty                                 # real-terminal smoke check (tui/scripts/pty_v2_smoke.py)
+make pty                                 # real-terminal matrix (tui/scripts/pty_matrix.py, one pty per profile)
 make check-nobwrap                       # `make check` with no bwrap in PATH: the CI runner's condition (D-113)
 make check-broken-sandbox                # `make check` with a bwrap that cannot start a sandbox (Ubuntu 24.04, D-114)
 make verify-model-all                    # small TLA+ configurations for all modules (see verification/README.md)

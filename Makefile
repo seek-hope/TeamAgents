@@ -35,7 +35,7 @@ help:
 	@echo 'make fmt       format the three crates'
 	@echo 'make build     build the CLI and the TUI'
 	@echo 'make release-rehearsal  rehearse the release workflow locally, short of publishing (a musl release build; minutes)'
-	@echo 'make pty       real-terminal smoke check with an isolated config (needs Python 3)'
+	@echo 'make pty       real-terminal smoke matrix (xterm/tmux/kitty profiles; needs Python 3)'
 	@echo 'make probe-offline  the credential-free dogfood probes: the real product, no model, no credential'
 	@echo 'make probe-models   the model-requiring probes: every live half, one after another (~7 min)'
 	@echo 'make language-check  reject non-English characters in code and docs (AGENTS.md rule)'
@@ -114,8 +114,7 @@ pty: build
 		printf '%s\n' '[models.leader_main]' 'provider = "openai"' 'model = "test"' \
 			'api_key_env = "TEAMAGENTS_PTY_MISSING_KEY"' 'base_url = "http://127.0.0.1:1/v1"' \
 			> "$$XDG_CONFIG_HOME/teamagents/config.toml"; \
-		python3 tui/scripts/pty_v2_smoke.py; \
-		python3 tui/scripts/pty_graphics_smoke.py
+		python3 tui/scripts/pty_matrix.py
 
 # The credential-free dogfood probes in one command (D-138): the real product driven end to end — the built
 # CLI, real session daemons and the real TUI — with no model and no credential. It guards the two ways a probe
