@@ -1,6 +1,6 @@
 # Daily coding readiness and product comparison
 
-Updated **2026-10-21** against TeamAgents **f78a6709 plus the D-461 working-tree follow-up** and installed **Pi 1.3.0**. This is a
+Updated **2026-10-22** against TeamAgents **02be286d through D-474** and installed **Pi 1.3.0**. This is a
 source/documentation comparison with local regression checks, not a cross-product coding benchmark.
 The Codex comparison remains the dated [2026-10-08 report](../review/parity-2026-10-08/REPORT.md);
 Codex was not re-investigated in this refresh.
@@ -54,11 +54,11 @@ needs agreement before implementation, and model spend, external services and pu
 | DD-01 / P0 (A delivered) | D-461: user-confirmed read-only diagnosis and explicit recovery in CLI/TUI. RUNNING/idle, BLOCKED, approvals, registered waits and execution are distinguished; option B automatic model reminders was rejected | Projection, daemon restart, explicit send/cancel and TUI frame tests cover A. No observation-triggered model call, task transition or replay. Actual user intervention/cost benefit remains unmeasured |
 | DD-02 / P0 | Development environments and complete skill workflows: explicitly authorize toolchain/cache roots and skill support resources instead of requiring full_auto | Real Rust, Python and Node edit/build/test workflows; a skill with relative references and a script outside the workspace; denied paths, symlink escape, missing tools and revocation tested. Secrets remain outside exposed roots |
 | DD-03 / P0 | Actual Pi replacement evidence: compare held-out daily coding tasks under matched conditions, not internal reference-loop ablations | Frozen product versions/tasks, same model/native window/effort/authority/budget, paired repeated trials; hidden tests, honest settlement, manual interventions, time and complete cost accounting. Report failures and uncertainty |
-| DD-04 / P1 | Reliable repository instructions: automatic discovery with explicit scope, trust, precedence and loaded-source visibility | Parent/repository/subdirectory rules, worktrees, workers, missing/untrusted files and edits between turns; no implicit project permission or executable-hook escalation |
-| DD-05 / P1 | Native tool composition and batch edits: expose bounded multi-edit operations and consider independent read parallelism/native tools in codemode | Multiple edits match the same original, stale revisions/overlap fail safely; permission, veto, cancellation and receipt paths stay intact. Measure latency/tokens before claiming a gain; do not promise crash-atomic multi-file changes without a journal |
-| DD-06 / P1 | High-frequency session controls: model/effort selection, explicit steering versus follow-up, project/session selection and message-level branching | No lost draft/input or implicit send; deterministic queued-input ordering and branch lineage; model/provider changes preserve valid context and accounting. A conversation branch does not roll back workspace files |
+| DD-04 / P1 (discovery delivered) | Reliable repository instructions: automatic discovery with explicit scope, trust, precedence and loaded-source visibility. D-467 implements discovery from the trusted boundary to the cwd; loaded-source visibility and edit-between-turn behavior remain | Parent/repository/subdirectory rules, worktrees, workers, missing/untrusted files and edits between turns; no implicit project permission or executable-hook escalation |
+| DD-05 / P1 (multi-edit/read batches delivered) | Native tool composition and batch edits: expose bounded multi-edit operations and consider independent read parallelism/native tools in codemode. D-469 implements the disjoint `edits` array and parallel read-only batches; ordered per-instance tools and codemode composition remain | Multiple edits match the same original, stale revisions/overlap fail safely; permission, veto, cancellation and receipt paths stay intact. Measure latency/tokens before claiming a gain; do not promise crash-atomic multi-file changes without a journal |
+| DD-06 / P1 (model/effort switch delivered) | High-frequency session controls: model/effort selection, explicit steering versus follow-up, project/session selection and message-level branching. D-473 adds Ctrl+M or `/model` for the Leader; message-level branches, a separate follow-up queue and fork-while-live remain | No lost draft/input or implicit send; deterministic queued-input ordering and branch lineage; model/provider changes preserve valid context and accounting. A conversation branch does not roll back workspace files |
 | DD-07 / P1 | Complete accounting and approval review: include reviewer usage in budget/deadline/unknown-usage handling; add context/compaction and per-member/request attribution | All model-call classes accounted for, missing provider usage remains unknown, prices have a source/date, cache read/write pricing is distinguished. Independent adversarial review of auto-review; substring denials are not a complete safety policy |
-| DD-08 / P1 | Wider operational acceptance: actual selected provider/image/MCP OAuth/Docker paths and the user's terminal stack | Isolated real round trips with denial/revocation/restart and cleanup; Kitty with zsh and chosen tmux/Zellij/SSH cases. PTY protocol checks alone do not establish graphical rendering or every platform |
+| DD-08 / P1 | Wider operational acceptance: actual selected provider/image/MCP OAuth/Docker paths and the user's terminal stack | Isolated real round trips with denial/revocation/restart and cleanup; Alacritty with zsh and chosen tmux/Zellij/SSH cases. PTY protocol checks alone do not establish graphical rendering or every platform |
 | DD-09 / P2 | Provider and integration coverage: only the model auth, MCP resources, SDK/client or extension interfaces the user needs | Versioned contracts and runnable examples; provider authentication/refresh, resource URI/size/auth checks, lifecycle/cancellation and untrusted-extension boundaries. Existing Unix protocol remains an integration path |
 | DD-10 / P2 | Distribution and documentation freshness: installable, matching binaries and accurate user-facing instructions | Exact authorized artifact, clean-host install/update/rollback, retained configuration and source-to-artifact identity. Release publication remains prohibited until explicitly authorized (D-457) |
 
@@ -88,8 +88,8 @@ user-confirmed design decision. This documentation refresh authorizes no such co
 
 | Evidence | Source and limit |
 |---|---|
-| Current TeamAgents inspection | f78a6709 plus D-461 diagnostics; includes D-455/D-458/D-459 and the external editor; inspect the anchors above |
-| Current local gates | On 2026-10-21, make check passed: core 137 / engine 405 / tui 81. make pty passed v2, blocks and Kitty-protocol smoke checks. These are local regression results, not an independent acceptance or paid-model trial |
+| Current TeamAgents inspection | 02be286d through D-474; includes D-455/D-458/D-459, the external editor, AGENTS.md discovery, multi-edit/read batches, terminal-matrix PTY checks and the Ctrl+M model/effort menu; inspect the anchors above |
+| Current local gates | On 2026-10-22, make check passed: core 147 / engine 415 / tui 82. make pty passed the five-profile terminal matrix and both forced graphics protocols (D-472/D-473). These are local regression results, not an independent acceptance or paid-model trial |
 | Pi reference | Installed npm package @earendil-works/pi-coding-agent 1.3.0; bundled usage, sessions, configuration, providers, skills, MCP, extensions and SDK docs; distributed edit-tool declaration. Documentation/source only, not comparator execution |
 | Older comparison | [D-450 report and manifest](../review/parity-2026-10-08/REPORT.md): Pi 1.1.0 and Codex commit 9b738582b13c2cdbeff54af0afd04c50c3e7ba09. Historical, not refreshed by this document |
 | Deterministic workflows | [D-451 maturity report](../review/maturity-2026-10-11/REPORT.md), pinned to its recorded source; fake model responses, actual local daemon/runner/files/PTY and an unpublished installation rehearsal |
@@ -99,7 +99,7 @@ Recheck TeamAgents without model credentials:
 
 ```bash
 git status --short
-git show --stat f78a6709
+git show --stat 02be286d
 make check
 make pty
 ```

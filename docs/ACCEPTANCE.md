@@ -1,14 +1,14 @@
 # Acceptance matrix (A01–A36)
 
 Baseline: [the design and acceptance baseline](DESIGN.md) §12/§16. Current source inspection and local
-regression: **2026-10-21, f78a6709 plus the D-461 working-tree follow-up**. This is not a new independent acceptance audit or real-model run.
+regression: **2026-10-22, 02be286d through D-474**. This is not a new independent acceptance audit or real-model run.
 The D-451 product/installation receipts and the D-452 independent audit retain their original source/date
 boundaries; later source changes do not inherit those results.
 
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 147 / engine 415 / tui 82 test targets), rerun on 2026-10-21.
+`make check` is green (core 147 / engine 415 / tui 82 test targets), rerun on 2026-10-22.
 `make pty` passed the same day: the terminal-profile matrix (xterm-256color, screen-256color, tmux-256color, xterm-kitty and Kitty under tmux) plus both forced graphics protocols, all rc 0 and
 credential-free. PTY checks cover protocol bytes, input ownership, resize and cleanup, not a complete
 actual graphical-terminal or OS matrix. These gates do not renew real-provider, OAuth, sandbox-service,
@@ -166,7 +166,7 @@ decides from its own stored receipts, so a check added later would never run —
 
 ## Known gaps and resolution history
 
-The table below is the current summary at f78a6709. Proposed work and its acceptance methods live once in
+The table below is the current summary at 02be286d. Proposed work and its acceptance methods live once in
 [PRODUCT-COMPARISON.md §2](PRODUCT-COMPARISON.md#2-candidate-improvements-in-priority-order); those candidates
 are not confirmed design changes. The expandable history retains re-runnable findings, corrections and
 unresolved policy dependencies without presenting every former gap as current.
@@ -176,9 +176,9 @@ unresolved policy dependencies without presenting every former gap as current.
 | Idle worker with unsettled task; cancellation, interruption and termination retain distinct effects | D-461 delivers DD-01 option A: read-only diagnosis and explicit recovery instructions. Automatic reminders are excluded; real-user effectiveness remains unmeasured |
 | Rust-specific sandbox toolchain mounts; skill text access does not expose all support resources | engine/src/tools.rs; DD-02 |
 | No matched current Pi coding-success/intervention/cost comparison | existing A/B/C arms are internal; DD-03; Q16 success-form question remains separate from D-264's latency finding |
-| Instruction files are explicit, despite upward trusted-project configuration discovery | D-246/D-434, engine/src/config.rs; DD-04 |
-| Single-replacement default edit schema; ordered per-instance tools; MCP-only synchronous codemode | engine/src/reference.rs, engine/src/v2/driver.rs, engine/src/codemode.rs; DD-05 |
-| No message-level branches, separate follow-up queue or interactive model/effort switch; fork requires a stopped source daemon | engine/src/v2/sessions.rs, tui/src/v2app.rs; DD-06 |
+| Repository AGENTS.md discovery, trust, precedence and refusal are implemented; loaded-source visibility and edit-between-turn behavior remain unmeasured | D-467, engine/src/config.rs; DD-04 |
+| Multi-edit and parallel read-only batches are implemented; ordered per-instance tools and MCP-only synchronous codemode remain | D-469, engine/src/reference.rs, engine/src/v2/driver.rs, engine/src/codemode.rs; DD-05 |
+| Message-level branches, a separate follow-up queue and fork-while-live remain; the interactive model/effort switch is implemented (D-473), and fork requires a stopped source daemon | engine/src/v2/sessions.rs, tui/src/v2app.rs; DD-06 |
 | Cache telemetry is implemented; priced cost/attribution and reviewer model usage in goal budgets are not | D-458/D-459; DD-07 |
 | Live selected provider/image/OAuth/Docker and wider terminal/security evidence remains partial | individual A rows and dated reports; DD-08 |
 | No MCP resource browsing or general SDK/extension interface; provider auth coverage is narrower than Pi | DD-09; existing Unix protocol and hooks are real capabilities, not equivalent extension APIs |

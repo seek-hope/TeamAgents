@@ -1,6 +1,6 @@
 # Development handoff
 
-Updated **2026-10-22** against source **3b7ea4a1** (through D-471). This is the current entry point for a new development
+Updated **2026-10-22** against source **02be286d** (through D-474). This is the current entry point for a new development
 session, not an authorization to implement the candidate backlog. Recheck Git status and recent commits;
 this document does not assert that a remote branch or installed binary matches the working tree.
 
@@ -25,6 +25,7 @@ this document does not assert that a remote branch or installed binary matches t
 | bdae43e2, 47546b9b | D-463/D-464 idempotent command ids and shared result digests; D-465 atomic-action windows with concurrency tests | Result bodies are derived, not authoritative; the session database stays the source of truth |
 | c6dcc8a5, e1d842d1 | D-466 two-mode pluggable sandbox, D-467 AGENTS.md discovery, D-468 skill resources, D-469 multi-edit/read batch, D-470 profile/web/deferred input/cancel-vs-stop | `sandbox = none` is the explicit host mode; a configured backend still fails closed |
 | 9b29c8b5, 3b7ea4a1 | D-471 acceptance checks follow the session's shell mode; CI fixtures follow `none`, transient ETXTBSY retry | `exec --check` and goal `[[checks]]` run on the host in `none` mode; the bubblewrap refusal stays covered |
+| f00a2a31, 122fc628, 02be286d | D-472 terminal-agnostic PTY matrix; D-473 Ctrl+Q/Ctrl+P and the Leader model/effort menu; D-474 default reasoning effort high | PTY profiles are protocol checks, not a GUI matrix; a profile change applies at the next turn; `init` never rewrites an existing config |
 
 D-462 added the verification gate and ledger: every counterexample configuration names the claim it must
 refute (`expects:` marker, compared with TLC's output), every checked claim that no control refutes is a row in
@@ -38,9 +39,9 @@ Option B (automatic model reminders) was explicitly rejected. The shared project
 engine/src/v2/diagnostics.rs; checkpoint, instances, tasks and local TUI /help expose it. Tests cover query-only
 reopen, real daemon restart without additional model calls, explicit input/cancellation recovery and TUI frames.
 
-Local checks rerun on 2026-10-22 at `3b7ea4a1`: **make check passed, core 147 / engine 415 / tui 81**,
+Local checks rerun on 2026-10-22 at `02be286d`: **make check passed, core 147 / engine 415 / tui 82**,
 **make check-nobwrap passed** (the CI runner's bwrap-free condition) and **make pty passed** the terminal-profile
-matrix (xterm/tmux/kitty profiles, auto graphics) plus both forced protocol modes. These results are local regressions, not a new independent audit, real-model
+matrix (xterm-256color, screen-256color, tmux-256color, xterm-kitty and Kitty under tmux; auto graphics) plus both forced protocol modes. These results are local regressions, not a new independent audit, real-model
 comparison, actual graphical-terminal matrix, installed-artifact acceptance or release.
 
 The [D-451 maturity report](../review/maturity-2026-10-11/REPORT.md) retains its immutable manifests and
@@ -114,7 +115,7 @@ to make current code appear to have passed an older run; new acceptance needs ne
 
 Prioritize the agreed items from the comparison queue rather than copying its whole backlog into a goal.
 DD-01 option A is implemented; do not add automatic reminders under that authorization. The next candidates
-are real development/skill environments and a paired coding evaluation; instruction discovery, tool composition, session controls and complete accounting follow.
+are real development/skill environments, a paired coding evaluation and complete accounting; instruction discovery, tool composition and session controls are implemented (D-467, D-469, D-473) with the boundaries their decisions state.
 External editing, capability delegation and cache telemetry are already implemented, with remaining
 coverage limits stated separately. Paid trials and releases require concrete scope and authorization.
 
@@ -123,6 +124,6 @@ management. Interrupt cancels a model request, not tools; exit detaches; deletio
 approvals do not steal the composer; unknown effects are not replayed. Automatic cross-session injection,
 distributed/multi-tenant execution and a marketplace remain excluded. Design deviations need confirmation.
 
-The user's terminal is Kitty with zsh. Keep graphical-terminal evidence separate from PTY protocol tests
+The user's terminal is Alacritty with zsh (xterm-256color; D-472). Keep graphical-terminal evidence separate from PTY protocol tests
 and preserve owned-image cleanup. Code/docs are English except README.zh-CN.md and frozen evidence.
 Generated references and their inventories must remain synchronized; never weaken a gate to hide drift.

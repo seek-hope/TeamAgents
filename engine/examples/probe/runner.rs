@@ -46,6 +46,8 @@ fn signal_group(journal: &Journal, signal: i32) -> Result<()> {
         "process identity changed; refusing to signal",
     )?;
     // The group was created by this runner. Never signal a user-supplied PID.
+    // SAFETY: `pid` is this runner's own recorded child, its identity was re-checked above, and a negative
+    // pid signals the group this runner created — never a pid taken from outside.
     let result = unsafe { libc::kill(-(pid as i32), signal) };
     if result != 0 {
         return Err(std::io::Error::last_os_error().into());
@@ -158,6 +160,8 @@ pub async fn serve(root: &Path) -> Result<()> {
                             journal.state="START_ACCEPTED".into();
                             persist(root,&journal,fail_writes)?;
                             if request.method=="go-crash-after-accept" {
+                                // SAFETY: fault injection in a probe binary: the runner kills itself with SIGKILL
+                                // to exercise crash recovery; no pointers or shared state are involved.
                                 unsafe { libc::kill(libc::getpid(),libc::SIGKILL); }
                                 std::process::abort();
                             }

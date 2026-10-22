@@ -3,7 +3,7 @@
 This page is the **map, not the ledger**: one row per capability, the strongest check behind it, what that check
 measured as the capability's *boundary*, and what still has no evidence. Every row points into a ledger that
 carries the detail, and nothing here overrides one of them. Current behavior was checked against source
-f78a6709 plus the D-461 working-tree follow-up on 2026-10-21; historical measurement dates below have not been renewed. The prioritized candidate
+02be286d through D-474 on 2026-10-22; historical measurement dates below have not been renewed. The prioritized candidate
 queue lives in [PRODUCT-COMPARISON.md](PRODUCT-COMPARISON.md), not in duplicate feature lists here.
 
 | For | Read |

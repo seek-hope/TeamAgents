@@ -1,6 +1,6 @@
 # TeamAgents user guide
 
-This guide describes source f78a6709 plus the D-461 diagnostic follow-up, checked on 2026-10-21. For installation,
+This guide describes source 02be286d through D-474, checked on 2026-10-22. For installation,
 see [INSTALL.md](INSTALL.md); for evidence and candidate improvements, see
 [ACCEPTANCE.md](ACCEPTANCE.md) and [PRODUCT-COMPARISON.md](PRODUCT-COMPARISON.md). Historical decisions and
 recorded experiments are not instructions for the current product.

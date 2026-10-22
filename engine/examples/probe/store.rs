@@ -218,6 +218,8 @@ fn validate_id(id: &str) -> Result<()> {
 
 fn kill_self() {
     // Fault injection only, never called by the production backend.
+    // SAFETY: this probe signals its own process with SIGKILL; no pointers or shared state are involved, and
+    // the process is expected to die here.
     unsafe {
         libc::kill(libc::getpid(), libc::SIGKILL);
     }
