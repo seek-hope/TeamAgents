@@ -16,7 +16,19 @@ CREATE TABLE IF NOT EXISTS commands (
     command_id TEXT PRIMARY KEY,
     payload_hash TEXT NOT NULL,
     result_json TEXT NOT NULL,
+    -- D-464: the result body's content digest once bodies are shared. NULL means this row still carries
+    -- its own copy in `result_json` (every receipt written before D-464, and any database an older build
+    -- left behind); the retention sweep compacts those in bounded batches.
+    result_digest TEXT,
     created REAL NOT NULL
+);
+
+-- D-464: one body per distinct command result. A polled command returns the same JSON many times
+-- (measured in a real session: 4,838,901 receipts, 11,577 distinct results), so the digest is the
+-- identity and the compressed body is written once.
+CREATE TABLE IF NOT EXISTS command_results (
+    digest TEXT PRIMARY KEY,
+    body BLOB NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS events (
@@ -296,6 +308,7 @@ pub fn open(path: &Path, create: bool) -> Result<Connection, String> {
             }
             apply_store_pragmas(&conn, path)?;
             conn.execute_batch(SCHEMA).map_err(|e| format!("create schema: {e}"))?;
+            ensure_columns(&conn)?;
             conn.execute(
                 "INSERT INTO meta (key, value) VALUES ('format_id', ?1), ('schema_version', ?2)",
                 rusqlite::params![V2_FORMAT_ID, V2_SCHEMA_VERSION.to_string()],
@@ -322,6 +335,7 @@ pub fn open(path: &Path, create: bool) -> Result<Connection, String> {
                 migrate(&conn, parsed)?;
             }
             conn.execute_batch(SCHEMA).map_err(|e| format!("verify schema: {e}"))?;
+            ensure_columns(&conn)?;
         }
     }
     Ok(conn)
@@ -467,6 +481,23 @@ fn column_present(conn: &Connection, table: &str, column: &str) -> Result<bool, 
         }
     }
     Ok(false)
+}
+
+/// D-464: `commands.result_digest` arrived after the first v2 databases existed, so a database from before
+/// this build gains the column in place. Additive and idempotent, like the D-165 event index: no format or
+/// schema-version change. A34's rule is about *interpreting* state, and a nullable column reinterprets nothing;
+/// rows written before it keep their inline result and are compacted by the retention sweep.
+fn ensure_columns(conn: &Connection) -> Result<(), String> {
+    let present: i64 = conn
+        .query_row("SELECT COUNT(*) FROM pragma_table_info('commands') WHERE name = 'result_digest'", [], |row| {
+            row.get(0)
+        })
+        .map_err(|e| format!("inspect commands columns: {e}"))?;
+    if present == 0 {
+        conn.execute_batch("ALTER TABLE commands ADD COLUMN result_digest TEXT")
+            .map_err(|e| format!("add commands.result_digest: {e}"))?;
+    }
+    Ok(())
 }
 
 fn migrate(conn: &Connection, from: i64) -> Result<(), String> {

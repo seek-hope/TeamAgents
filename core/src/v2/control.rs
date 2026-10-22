@@ -5,7 +5,7 @@
 //! filled here — never taken from model or client fields.
 
 use super::store;
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 use serde_json::{json, Value as Json};
 use std::path::Path;
 
@@ -39,6 +39,69 @@ pub struct Command {
 pub struct Control {
     conn: Connection,
     pub session_id: String,
+}
+
+/// D-464: the encoding byte of a stored command result. Compression only pays above a few hundred bytes,
+/// so a small receipt stays raw and the replay path does not pay for a decoder it does not need.
+const RESULT_RAW: u8 = 0;
+const RESULT_ZSTD: u8 = 1;
+const COMPRESS_ABOVE: usize = 512;
+
+/// D-464: a result is identified by the digest of its JSON text, and stored once. The text is what the
+/// replay returns, so the digest is over exactly the bytes a client would have received.
+fn encode_result(result: &Json) -> Result<(String, Vec<u8>), String> {
+    let text = result.to_string();
+    let digest = {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(text.as_bytes());
+        format!("{:x}", hasher.finalize())
+    };
+    let mut body = Vec::with_capacity(text.len() + 1);
+    if text.len() >= COMPRESS_ABOVE {
+        body.push(RESULT_ZSTD);
+        body.extend(zstd::encode_all(text.as_bytes(), 3).map_err(|e| format!("compress result: {e}"))?);
+    } else {
+        body.push(RESULT_RAW);
+        body.extend_from_slice(text.as_bytes());
+    }
+    Ok((digest, body))
+}
+
+fn decode_result(body: &[u8]) -> Result<Json, String> {
+    let (encoding, payload) = body.split_first().ok_or("stored command result is empty")?;
+    let text: Vec<u8> = match *encoding {
+        RESULT_RAW => payload.to_vec(),
+        RESULT_ZSTD => zstd::decode_all(payload).map_err(|e| format!("decompress result: {e}"))?,
+        other => return Err(format!("stored command result has unknown encoding {other}")),
+    };
+    serde_json::from_slice(&text).map_err(|e| format!("stored receipt: {e}"))
+}
+
+/// D-463: the one receipt lookup, used both by the fast pre-check and by the authoritative check inside the
+/// write transaction. A row without `result_digest` predates D-464 and still holds its own copy.
+fn receipt_lookup(conn: &Connection, command_id: &str, hash: &str) -> Result<Option<Json>, String> {
+    let existing: Option<(String, Option<String>, String)> = conn
+        .query_row(
+            "SELECT payload_hash, result_digest, result_json FROM commands WHERE command_id = ?1",
+            [command_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .map_err(|e| format!("command dedup read: {e}"))?;
+    match existing {
+        Some((stored, Some(digest), _)) if stored == hash => {
+            let body: Vec<u8> = conn
+                .query_row("SELECT body FROM command_results WHERE digest = ?1", [&digest], |row| row.get(0))
+                .map_err(|e| format!("stored receipt body {digest}: {e}"))?;
+            decode_result(&body).map(Some)
+        }
+        Some((stored, None, result)) if stored == hash => {
+            serde_json::from_str(&result).map(Some).map_err(|e| format!("stored receipt: {e}"))
+        }
+        Some(_) => Err(format!("command_id {command_id} was already used with a different payload")),
+        None => Ok(None),
+    }
 }
 
 fn payload_hash(method: &str, params: &Json, identity: &Identity) -> String {
@@ -97,22 +160,7 @@ impl Control {
     /// Inspect dedup before filesystem work, including a retry after files vanished.
     pub fn command_receipt(&self, command: &Command, identity: &Identity) -> Result<Option<Json>, String> {
         let hash = payload_hash(&command.method, &command.params, identity);
-        let existing: Option<(String, String)> = self
-            .conn
-            .query_row(
-                "SELECT payload_hash, result_json FROM commands WHERE command_id = ?1",
-                [&command.command_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()
-            .map_err(|e| format!("command dedup read: {e}"))?;
-        match existing {
-            Some((stored, result)) if stored == hash => {
-                serde_json::from_str(&result).map(Some).map_err(|e| format!("stored receipt: {e}"))
-            }
-            Some(_) => Err(format!("command_id {} was already used with a different payload", command.command_id)),
-            None => Ok(None),
-        }
+        receipt_lookup(&self.conn, &command.command_id, &hash)
     }
 
     fn submit_inner(
@@ -125,12 +173,26 @@ impl Control {
             return Err("command_id must not be empty".into());
         }
         let hash = payload_hash(&command.method, &command.params, &identity);
-        if let Some(result) = self.command_receipt(&command, &identity)? {
+        // D-463: this read-only check is the fast path (it also avoids filesystem work on a retry whose
+        // staged inputs are gone). The authoritative one runs inside the write transaction below.
+        if let Some(result) = receipt_lookup(&self.conn, &command.command_id, &hash)? {
             return Ok(result);
         }
         let method = command.method.clone();
         let mut params = command.params.clone();
-        let tx = self.conn.transaction().map_err(|e| format!("begin tx: {e}"))?;
+        // D-463: IMMEDIATE takes the write lock before the check, so two connections submitting the same
+        // command id serialize: the second commit sees the first receipt and returns it. A deferred
+        // transaction let both pre-checks miss and made the loser fail on the *effect's* unique
+        // constraint (measured: `create_instance i1: UNIQUE constraint failed: instances.id`) instead of
+        // returning the receipt its retry asked for.
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|e| format!("begin tx: {e}"))?;
+        if let Some(result) = receipt_lookup(&tx, &command.command_id, &hash)? {
+            tx.commit().map_err(|e| format!("commit: {e}"))?;
+            return Ok(result);
+        }
         if let Some(snapshots) = snapshots {
             bind_input_attachments(&tx, &self.session_id, &command, &snapshots)?;
             params["attachments"] = json!(snapshots);
@@ -138,9 +200,16 @@ impl Control {
             return Err("input attachments must be snapshotted by the engine".into());
         }
         let result = dispatch(&tx, &self.session_id, &method, &params, &identity)?;
+        let (digest, body) = encode_result(&result)?;
         tx.execute(
-            "INSERT INTO commands (command_id, payload_hash, result_json, created) VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![command.command_id, hash, result.to_string(), crate::models::now()],
+            "INSERT OR IGNORE INTO command_results (digest, body) VALUES (?1, ?2)",
+            rusqlite::params![digest, body],
+        )
+        .map_err(|e| format!("command result body: {e}"))?;
+        tx.execute(
+            "INSERT INTO commands (command_id, payload_hash, result_json, result_digest, created) \
+             VALUES (?1, ?2, '', ?3, ?4)",
+            rusqlite::params![command.command_id, hash, digest, crate::models::now()],
         )
         .map_err(|e| format!("command receipt: {e}"))?;
         tx.commit().map_err(|e| format!("commit: {e}"))?;
@@ -5138,8 +5207,47 @@ fn prune_history(tx: &Connection, session_id: &str, params: &Json) -> Result<Jso
             rusqlite::params![session_id, cutoff, head_envelopes],
         )
         .map_err(|e| format!("prune deliveries: {e}"))?;
-    event(tx, session_id, "history_pruned", "", &json!({"events": events, "deliveries": deliveries, "days": days}))?;
-    Ok(json!({"events": events, "deliveries": deliveries}))
+    // D-464: receipts written before result bodies were shared are moved to the content-addressed table here,
+    // a bounded batch per sweep, so an old session shrinks without a separate migration command. A crash rolls
+    // the whole sweep back: no row is ever left half-moved. Rows that do not parse (a foreign or corrupt
+    // receipt) are left exactly as they are.
+    let mut compacted = 0u64;
+    {
+        let mut stmt = tx
+            .prepare(
+                "SELECT command_id, result_json FROM commands
+                  WHERE result_digest IS NULL AND result_json != '' LIMIT 20000",
+            )
+            .map_err(|e| format!("compact commands prepare: {e}"))?;
+        let rows: Vec<(String, String)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|e| format!("compact commands query: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("compact commands collect: {e}"))?;
+        for (command_id, text) in rows {
+            let Ok(value) = serde_json::from_str::<Json>(&text) else { continue };
+            let (digest, body) = encode_result(&value)?;
+            tx.execute(
+                "INSERT OR IGNORE INTO command_results (digest, body) VALUES (?1, ?2)",
+                rusqlite::params![digest, body],
+            )
+            .map_err(|e| format!("compact body {command_id}: {e}"))?;
+            tx.execute(
+                "UPDATE commands SET result_json = '', result_digest = ?1 WHERE command_id = ?2",
+                rusqlite::params![digest, command_id],
+            )
+            .map_err(|e| format!("compact receipt {command_id}: {e}"))?;
+            compacted += 1;
+        }
+    }
+    event(
+        tx,
+        session_id,
+        "history_pruned",
+        "",
+        &json!({"events": events, "deliveries": deliveries, "compacted": compacted, "days": days}),
+    )?;
+    Ok(json!({"events": events, "deliveries": deliveries, "compacted": compacted}))
 }
 
 fn artifact_collect(tx: &Connection, session_id: &str, params: &Json) -> Result<Json, String> {
@@ -5342,6 +5450,83 @@ mod tests {
         let err = ctl.submit(cmd("", "create_instance", json!({"id": "i3"})), Identity::User).unwrap_err();
         assert!(err.contains("empty"), "{err}");
         cleanup(&path);
+    }
+
+    #[test]
+    fn concurrent_duplicate_commands_share_one_receipt() {
+        // D-463: two connections may submit the same command id at the same moment. With a deferred
+        // transaction both read-only pre-checks missed and the loser failed on the effect's unique
+        // constraint; IMMEDIATE plus the in-transaction re-check makes the second one return the receipt.
+        use std::sync::{Arc, Barrier};
+        let (ctl, path) = control("race");
+        drop(ctl);
+        let barrier = Arc::new(Barrier::new(2));
+        let handles: Vec<_> = (0..2)
+            .map(|_| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let mut ctl = Control::open(&path, "s1", false).expect("open the same session");
+                    barrier.wait();
+                    ctl.submit(
+                        cmd("race-1", "create_instance", json!({"id": "i1", "workspace_ref": "/tmp/ws"})),
+                        Identity::User,
+                    )
+                })
+            })
+            .collect();
+        let results: Vec<Result<Json, String>> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        assert!(results.iter().all(Result::is_ok), "both submits must return a receipt: {results:?}");
+        assert_eq!(results[0].as_ref().unwrap(), results[1].as_ref().unwrap());
+        let ctl = Control::open(&path, "s1", false).expect("reopen");
+        let instances: i64 =
+            ctl.connection().query_row("SELECT COUNT(*) FROM instances", [], |row| row.get(0)).unwrap();
+        assert_eq!(instances, 1, "the duplicate must not create a second instance");
+        let receipts: i64 = ctl.connection().query_row("SELECT COUNT(*) FROM commands", [], |row| row.get(0)).unwrap();
+        assert_eq!(receipts, 1, "one receipt for one command id");
+        drop(ctl);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn command_results_are_stored_once_per_content_digest() {
+        let (mut ctl, path) = control("results-dedup");
+        let first = ctl.submit(cmd("cap-1", "capability_requests", json!({})), Identity::User).expect("first read");
+        let second = ctl.submit(cmd("cap-2", "capability_requests", json!({})), Identity::User).expect("second read");
+        assert_eq!(first, second, "the same state must produce the same result");
+        let (bodies, receipts, inline): (i64, i64, i64) = ctl
+            .connection()
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM command_results),
+                        (SELECT COUNT(*) FROM commands),
+                        (SELECT COUNT(*) FROM commands WHERE result_json != '' OR result_digest IS NULL)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(bodies, 1, "one body per distinct result");
+        assert_eq!(receipts, 2);
+        assert_eq!(inline, 0, "both receipts point at the shared body");
+        // replay still decodes the shared body, and a different payload under the same id is still refused
+        let replayed = ctl.submit(cmd("cap-2", "capability_requests", json!({})), Identity::User).expect("replay");
+        assert_eq!(replayed, second);
+        let err = ctl.submit(cmd("cap-2", "capability_requests", json!({"x": 1})), Identity::User).unwrap_err();
+        assert!(err.contains("different payload"), "{err}");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn result_frames_round_trip_raw_and_compressed() {
+        let small = json!({"a": 1});
+        let (digest, body) = encode_result(&small).unwrap();
+        assert_eq!(body[0], RESULT_RAW);
+        assert_eq!(decode_result(&body).unwrap(), small);
+        let big = json!({"text": "x".repeat(4096)});
+        let (digest_big, body_big) = encode_result(&big).unwrap();
+        assert_eq!(body_big[0], RESULT_ZSTD);
+        assert!(body_big.len() < 1024, "a repetitive body compresses: {} bytes", body_big.len());
+        assert_ne!(digest, digest_big);
+        assert_eq!(decode_result(&body_big).unwrap(), big);
     }
 
     #[test]

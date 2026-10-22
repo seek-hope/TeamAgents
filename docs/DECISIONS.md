@@ -25,6 +25,70 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Repository-local config | nearest ancestor config is discovered; canonical-root trusted_projects or explicit trust_project admits it; permissions, hooks, checks, retention, limits and update policy stay user-only; instruction files remain explicit | D-244, D-246, D-434 |
 | Retention | history_days applies at boot under V2Retention guards; archived_days is applied by sessions prune under V2Prune guards; live state and evidence stay protected | D-245, D-435, D-436 |
 | Prompt cache | cache hit/miss/write are provider-reported and visible; the L1 frontier is fixed between compactions; Anthropic gets explicit breakpoints and OpenAI a stable key; DeepSeek stays automatic | D-459 |
+| Command idempotency | a replay with the same `command_id` returns the stored receipt for control-plane state, and the authoritative check runs under the write lock (D-463); result bodies are shared by content digest and zstd-compressed (D-464), while the receipt **rows** remain one per command | D-463, D-464 |
+
+## D-464 Command receipts share one content-addressed result body (2026-10-21)
+
+**Why.** Measured on a real 1.3 GB session: 4,838,901 receipts, 948 MB in `commands`, 94% of them
+`drain_inbox` polls at 38.4 per second, and only 11,577 distinct `(payload_hash, result)` pairs — 99.76% of
+the stored payload was duplicated.
+
+**What.** `command_results(digest PRIMARY KEY, body BLOB)` plus `commands.result_digest`. A result is stored
+once per SHA-256 of the exact JSON text a client receives; bodies of 512 bytes or more are zstd-compressed
+with a leading frame byte (0 raw, 1 zstd). Replay reads both shapes: a row with a digest loads the shared
+body, a row without one (written before this change) keeps its inline JSON. The schema change is additive
+(`CREATE TABLE IF NOT EXISTS`, and `ALTER TABLE … ADD COLUMN` only when the column is missing), so an existing
+state root opens unchanged and nothing is reinterpreted (A34).
+
+**Backfill.** The boot retention sweep moves up to 20,000 old receipts per call into the shared bodies inside
+the same transaction as its existing deletes: a crash rolls the whole sweep back, and a receipt that does not
+parse is left exactly as it was. Bodies referenced by any receipt are never deleted; there is no body GC.
+
+**Measured on a copy of that session.** 4,838,729 receipts compacted into 11,578 bodies: the payload shrank
+from 330 MB of inline text to 2.0 MB (161×), with zero inline rows left; the full compaction took about 11
+minutes (one boot sweep does 20,000 rows). `VACUUM` then took the file from 1268 MB to 1193 MB — **because the
+remaining size is the receipt rows themselves** (4.8M rows at roughly 200 bytes each including indexes), not
+the payload. Payload sharing is therefore necessary but not sufficient for the disk problem; removing the poll
+receipts (the declined option B) or giving them a stable id is the next lever, and it needs the semantic
+decision D-463 describes.
+
+**Acceptance.** `command_results_are_stored_once_per_content_digest` and
+`result_frames_round_trip_raw_and_compressed` in `core/src/v2/control.rs`; the size numbers above came from a
+temporary probe on a copy, deleted after the run.
+
+## D-463 Command idempotency: one receipt per id, and where the guarantee stops (2026-10-21)
+
+**Why.** The storage plan (D-464) only changes how a result is stored, but the decision behind it leaned on
+"any command is idempotent". The user asked for that assumption to be strictly verified before relying on it.
+A read-only audit plus a temporary two-connection probe found the narrow truth and one real defect.
+
+**What holds.** `core/src/v2/control.rs::submit_inner` hashes `method + params + identity` into `payload_hash`,
+writes the effect and the receipt in **one** transaction, and returns the stored result on a replay without
+re-dispatching; the same id with a different payload is refused. Tests cover `create_instance`, `submit_input`
+(including across a reopen), and `complete_operation`.
+
+**The defect.** The dedup check ran *before* the transaction. Two connections submitting the same id could both
+miss it; the loser then failed on the effect's own unique constraint — measured: `create_instance i1: UNIQUE
+constraint failed: instances.id` instead of the receipt its retry asked for. The fix takes the write lock first
+(`BEGIN IMMEDIATE`) and re-checks the receipt *inside* the transaction, so the second commit sees the first
+receipt and returns it. Regression test: `concurrent_duplicate_commands_share_one_receipt`.
+
+**Where the guarantee stops.** (1) It covers control-plane database state; job directories, runner processes,
+artifact blobs, workspace writes and hooks are anchored by `operation_id` and the job journal, not by a command
+id. (2) `dispatch_operation` deliberately uses a fresh id per attempt so an `APPROVAL_REQUIRED` replay cannot
+wedge the operation; the operation state machine is that anchor. (3) A failed command stores no receipt, so a
+retry re-executes — safe only because dispatch touches the database alone. (4) A replay returns the stored
+answer **without re-validating current grants, deadlines or state**; it is a record of what happened, not a
+fresh authorization.
+
+**Why the model did not catch it.** `V2Daemon.tla` does model this replay (`command_id → payload_hash` + stored
+result, with `ReplayRewritesReceipt` as a counterfactual), but a TLA+ step is atomic: the check and the write
+are one action. The implementation had split them across the transaction boundary, a refinement gap the model
+cannot see. The measured race did not double-apply anything — the model's safety claim held — it broke the
+*answer* contract ("a duplicate returns the receipt"), which no model claimed. The fix makes the code match the
+model's atomic step rather than adding a new model action.
+
+**Acceptance.** `cargo test --offline --manifest-path core/Cargo.toml`; the temporary probe was deleted.
 
 ## D-462 Formal-verification coverage: every claim refutes, or is on the record (2026-10-21)
 
