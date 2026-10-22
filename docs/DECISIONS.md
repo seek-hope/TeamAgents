@@ -26,6 +26,34 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Retention | history_days applies at boot under V2Retention guards; archived_days is applied by sessions prune under V2Prune guards; live state and evidence stay protected | D-245, D-435, D-436 |
 | Prompt cache | cache hit/miss/write are provider-reported and visible; the L1 frontier is fixed between compactions; Anthropic gets explicit breakpoints and OpenAI a stable key; DeepSeek stays automatic | D-459 |
 | Command idempotency | a replay with the same `command_id` returns the stored receipt for control-plane state, and the authoritative check runs under the write lock (D-463); result bodies are shared by content digest and zstd-compressed (D-464), while the receipt **rows** remain one per command | D-463, D-464 |
+| Model actions and code windows | a deciding read shares the write's transaction, or the guard is a predicate on the write itself; `verification/REPORT.md` §6 lists the protocol transitions and the three engine windows that span two transactions with their predicates | D-465 |
+
+## D-465 Model actions and code windows: the guard belongs to the write (2026-10-21)
+
+**Why.** D-463's defect was a check that ran before the write transaction. The model could not see it because a
+TLA+ step is atomic, so verification alone will never surface that class. The answer is a standing inventory of
+where each protocol transition's deciding read sits relative to its write.
+
+**What.** `verification/REPORT.md` §6 is that inventory: for each protocol-critical transition it names the
+model action or property, the code entry point, the transaction shape, and whether a check can be separated from
+its write. Seven rows are **closed** (the read and the write share the `submit` transaction, or the guard is a
+`WHERE` predicate on the write); three rows are **open by design** because the engine necessarily spans two
+transactions — the driver's snapshot → command step (guarded by a revision/status predicate on the submitted
+command), attachment staging → input binding (guarded by `owner_ref = command_id AND status = 'STAGING'`), and
+dispatch → job journal (the journal is the anchor, and an in-flight loss becomes `OUTCOME_UNKNOWN`).
+
+**Rule.** A read that decides a write belongs to the same transaction as that write, or the guard is a predicate
+on the write itself; a read outside the transaction is advisory only and can never be the sole reason a mutating
+step proceeds. A new dispatch arm that reads outside `submit_inner` must either move the read in or name its
+predicate in the table.
+
+**Tests.** `concurrent_duplicate_commands_share_one_receipt`, `concurrent_approval_decisions_apply_once`,
+`concurrent_input_for_one_envelope_applies_once`, and `concurrent_completion_of_one_operation_settles_once`
+(`core/src/v2/control.rs`) pin the four paths the table calls closed.
+
+**Boundary.** The table is an audit by inspection plus those tests, not a TLC result: the models contain no
+read/commit split, so they cannot distinguish a guard in the same action from a guard in a later, predicate-
+carrying action. The open rows stay sound because the second step refuses a stale first read.
 
 ## D-464 Command receipts share one content-addressed result body (2026-10-21)
 

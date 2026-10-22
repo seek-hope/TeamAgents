@@ -5489,6 +5489,151 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_approval_decisions_apply_once() {
+        // V2Approval's `ApprovalDecisionIsFinal`: the winner is one row update, and the loser must see
+        // PENDING gone instead of overwriting the decision.
+        use std::sync::{Arc, Barrier};
+        let (mut ctl, path) = control("approval-race");
+        create_instance(&mut ctl, "i1");
+        open_decision(&mut ctl, "a", "i1", 0, 1);
+        let asked = ctl
+            .submit(
+                cmd("dp-a", "dispatch_operation", json!({"operation_id": "d-a:0", "approval_required": true})),
+                Identity::System,
+            )
+            .expect("dispatch parks for approval");
+        assert_eq!(asked["status"], json!("APPROVAL_REQUIRED"));
+        let approval = asked["approval_id"].as_str().expect("approval id").to_string();
+        drop(ctl);
+        let barrier = Arc::new(Barrier::new(2));
+        let handles: Vec<_> = (0..2)
+            .map(|i| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                let approval = approval.clone();
+                std::thread::spawn(move || {
+                    let mut ctl = Control::open(&path, "s1", false).expect("open");
+                    barrier.wait();
+                    let method = if i == 0 { "approve" } else { "deny" };
+                    ctl.submit(cmd(&format!("decide-{i}"), method, json!({"approval_id": approval})), Identity::User)
+                })
+            })
+            .collect();
+        let results: Vec<Result<Json, String>> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1, "one decision wins: {results:?}");
+        let ctl = Control::open(&path, "s1", false).expect("reopen");
+        let status: String = ctl
+            .connection()
+            .query_row("SELECT status FROM approvals WHERE id = ?1", [&approval], |row| row.get(0))
+            .unwrap();
+        assert!(status == "APPROVED" || status == "DENIED", "{status}");
+        let decided: i64 = ctl
+            .connection()
+            .query_row("SELECT COUNT(*) FROM events WHERE kind IN ('approval_granted', 'approval_denied')", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(decided, 1, "exactly one decision event");
+        drop(ctl);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn concurrent_input_for_one_envelope_applies_once() {
+        // V2Control's envelope dedup under concurrency: the envelope row is the key, so a second
+        // command id for the same envelope is refused even when both arrive together.
+        use std::sync::{Arc, Barrier};
+        let (mut ctl, path) = control("input-race");
+        create_instance(&mut ctl, "i1");
+        drop(ctl);
+        let barrier = Arc::new(Barrier::new(2));
+        let handles: Vec<_> = (0..2)
+            .map(|i| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let mut ctl = Control::open(&path, "s1", false).expect("open");
+                    barrier.wait();
+                    ctl.submit(
+                        cmd(
+                            &format!("in-{i}"),
+                            "submit_input",
+                            json!({"instance_id": "i1", "envelope_id": "e1", "text": "hello"}),
+                        ),
+                        Identity::User,
+                    )
+                })
+            })
+            .collect();
+        let results: Vec<Result<Json, String>> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1, "one submit applies: {results:?}");
+        assert!(
+            results.iter().filter(|r| r.is_err()).all(|r| r.as_ref().unwrap_err().contains("envelope e1")),
+            "{results:?}"
+        );
+        let ctl = Control::open(&path, "s1", false).expect("reopen");
+        let entries: i64 = ctl
+            .connection()
+            .query_row("SELECT COUNT(*) FROM context_entries WHERE instance_id = 'i1' AND kind = 'user'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(entries, 1, "the envelope applies once");
+        drop(ctl);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn concurrent_completion_of_one_operation_settles_once() {
+        // V2Control's operation finality: a second completion with a different command id returns the
+        // stored, replayed state instead of writing the receipt again.
+        use std::sync::{Arc, Barrier};
+        let (mut ctl, path) = control("complete-race");
+        create_instance(&mut ctl, "i1");
+        open_decision(&mut ctl, "c", "i1", 0, 1);
+        ctl.submit(
+            cmd("dp-c", "dispatch_operation", json!({"operation_id": "d-c:0", "approval_required": false})),
+            Identity::System,
+        )
+        .expect("dispatch");
+        drop(ctl);
+        let barrier = Arc::new(Barrier::new(2));
+        let handles: Vec<_> = (0..2)
+            .map(|i| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let mut ctl = Control::open(&path, "s1", false).expect("open");
+                    barrier.wait();
+                    ctl.submit(
+                        cmd(
+                            &format!("done-{i}"),
+                            "complete_operation",
+                            json!({"operation_id": "d-c:0", "status": "SUCCEEDED", "receipt": {"ok": true}}),
+                        ),
+                        Identity::System,
+                    )
+                })
+            })
+            .collect();
+        let results: Vec<Result<Json, String>> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        assert!(results.iter().all(Result::is_ok), "{results:?}");
+        let ctl = Control::open(&path, "s1", false).expect("reopen");
+        let status: String = ctl
+            .connection()
+            .query_row("SELECT status FROM operations WHERE operation_id = 'd-c:0'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(status, "SUCCEEDED");
+        let completed: i64 = ctl
+            .connection()
+            .query_row("SELECT COUNT(*) FROM events WHERE kind = 'operation_completed'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(completed, 1, "one completion event");
+        drop(ctl);
+        cleanup(&path);
+    }
+
+    #[test]
     fn command_results_are_stored_once_per_content_digest() {
         let (mut ctl, path) = control("results-dedup");
         let first = ctl.submit(cmd("cap-1", "capability_requests", json!({})), Identity::User).expect("first read");

@@ -899,7 +899,38 @@ alone**, and conversely formal coverage does not excuse an item from sample or r
    veto for *nested* codemode calls; a direct tool call's veto, the `notify` stream, the export snapshot's
    consistency and the MCP wire are covered by sample tests and probes only.
 
-## 6. Re-running and what would invalidate this
+## 6. Atomic model actions and their implementation windows (D-465)
+
+A TLA+ action is atomic; the code that implements it may not be. D-463 found one such gap (the receipt check ran
+before the write transaction, so two connections could both miss it) and closed it by making the code match the
+model's step. This table records, for the protocol-critical transitions, which code realises the action, where
+the transaction boundary sits, and whether a check can be separated from its write.
+
+**The rule it enforces.** A read that decides a write belongs to the same transaction as that write, or the
+guard must be a predicate on the write itself; a read outside the transaction is advisory only and can never be
+the sole reason a mutating step proceeds.
+
+| Model action / property | Implementation | Transaction shape | Window |
+|---|---|---|---|
+| `V2Daemon` replay (`AppliedAtMostOnce`; a replay returns the stored receipt) | `control.rs::submit_inner` + `receipt_lookup` | `BEGIN IMMEDIATE` → in-transaction receipt re-check → dispatch → body + receipt insert → commit | **closed (D-463)**; the pre-transaction check is a fast path that returns a hit, never a miss |
+| `V2Approval` finality (`ApprovalDecisionIsFinal`) | `approve`, `deny`, `deny_approval`, `review_decision` | one `UPDATE … WHERE status = 'PENDING'`; `changed == 1` decides the winner | **closed** by the row predicate; `concurrent_approval_decisions_apply_once` |
+| `V2Control` dispatch linearization (§6.1/A04) | `dispatch_operation` | status, revision, lifecycle, deadline, capability and approval are read, then `UPDATE … WHERE status = 'PREPARED'`; `changed != 1` → "lost the dispatch race" | **closed** by the write predicate |
+| `V2Control` operation finality | `complete_operation` | terminal check, then a guarded update; a replay returns the stored state only when status and receipt match | **closed**; `concurrent_completion_of_one_operation_settles_once` |
+| `V2Control` envelope dedup (`AtMostOncePerEnvelope`) | `submit_input`, `drain_inbox`, `append_context` | the envelope row is written in the transaction; a second command id for the same envelope fails on its primary key | **closed**; `concurrent_input_for_one_envelope_applies_once` |
+| `V2Grants` revocation and dispatch staleness (`OnceStaleNeverExecutes`) | `issue_grant`, `revoke_grant`, `revoke_grant_tree` | parent chain and revision are read and written in the transaction; dispatch compares `grant_revision` and refuses a mismatch | **closed** by the revision predicate |
+| `V2Checks` completion gate (`SettleWithoutChecks` refuted) | `complete_goal`, `register_check_runs` | round and receipt reads and the settle update share the transaction | **closed** |
+| The driver's snapshot → command step | `driver.rs::step_*` reads a `Snapshot`, then submits one command | **two transactions**: the second carries a `revision`/status predicate from the first | **open by design**; a stale predicate is refused, so the pair composes |
+| Attachment staging → input binding | `artifact_stage` (one command), then `submit_input` + `bind_input_attachments` (another) | staging commits first; binding re-validates `owner_ref = command_id AND status = 'STAGING'` in the second transaction | **open by design**; the ownership predicate is the guard |
+| Job dispatch → receipt | `dispatch_operation`, then `client::spawn` / `go` / `await_job` | the database transition commits before the job starts; the journal records READY/GO, and a lost in-flight result becomes `OUTCOME_UNKNOWN` | **open by design**; the journal is the anchor and the command is never replayed on a guess |
+
+**What the model cannot show.** A TLA+ step sees one state change, so it cannot distinguish "the guard runs in the
+same action" from "the guard runs in a later action that carries the stale value". The three open rows are two
+transactions each; that their composition is sound is an argument by inspection plus the named tests, not a TLC
+result. Keeping the guard in the submitted command — a revision, a status predicate, an ownership row — is what
+makes the second step refuse a stale first read. A new dispatch arm that reads outside `submit_inner` must
+either move the read in or name its predicate here.
+
+## 7. Re-running and what would invalidate this
 
 ```bash
 make verify-model-all     # exhaustive configurations for the twenty-two checked configurations (seconds to ~2 min;
