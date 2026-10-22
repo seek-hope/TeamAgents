@@ -54,7 +54,7 @@ The config lives at `${XDG_CONFIG_HOME:-$HOME/.config}/teamagents/config.toml`. 
 an existing file, including symlinks. A new file is mode 0600 and contains no credential values. Init also
 prepares the state root and session database; it starts no daemon or conversation.
 
-The generated model profile is leader_main with deepseek-flash, a 1,000,000-token context and max reasoning
+The generated model profile is leader_main with deepseek-flash, a 1,000,000-token context and high reasoning
 effort. For another service, set the protocol, model, endpoint, credential variable and native context
 window together; see [configuration](USER-GUIDE.md#2-configuration). Additional bindings are illustrated in
 [examples/config.toml](../examples/config.toml). Never put API key values in tracked files.

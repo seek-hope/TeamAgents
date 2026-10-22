@@ -11,7 +11,7 @@ context_window = 1000000
 api_key_env = "DEEPSEEK_API_KEY"
 timeout = 120
 max_retries = 2
-generation_options = { reasoning_effort = "max" }
+generation_options = { reasoning_effort = "high" }
 
 # Acceptance checks (optional): machine contracts the runtime runs at the
 # completion boundary, in the isolated shell, before a goal may be reported as

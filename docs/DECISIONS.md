@@ -27,12 +27,29 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Acceptance checks | `exec --check` and goal `[[checks]]` run through the session's shell mode: `sandbox = none` on the host, a configured backend fail-closed (D-471) | D-471 |
 | PTY verification | `make pty` runs a terminal-profile matrix in isolated ptys (xterm-256color, screen-256color, tmux-256color, xterm-kitty, Kitty under tmux) with auto graphics-mode assertions, plus forced blocks/kitty protocol bounds | D-472 |
 | TUI keys | Ctrl+Q quits, Ctrl+P opens pending inputs, Ctrl+M opens the Leader's model/effort menu (`/quit`, `/model`); the profile applies at the next turn | D-473 |
+| Default effort | the generated `leader_main` profile defaults to `reasoning_effort = "high"`; existing configs keep their value and a running daemon keeps its boot catalog | D-474 |
 | Capability delegation | user remains the authority root; spawned instances still hold no shell by default; a user grant may be marked `delegable`, and only such a parent may produce attenuated, task-scoped, non-delegable child grants; missing capabilities become a visible pending approval, not a silent idle | D-455 |
 | Repository-local config | nearest ancestor config is discovered; canonical-root trusted_projects or explicit trust_project admits it; permissions, hooks, checks, retention, limits and update policy stay user-only; instruction files remain explicit | D-244, D-246, D-434 |
 | Retention | history_days applies at boot under V2Retention guards; archived_days is applied by sessions prune under V2Prune guards; live state and evidence stay protected | D-245, D-435, D-436 |
 | Prompt cache | cache hit/miss/write are provider-reported and visible; the L1 frontier is fixed between compactions; Anthropic gets explicit breakpoints and OpenAI a stable key; DeepSeek stays automatic | D-459 |
 | Command idempotency | a replay with the same `command_id` returns the stored receipt for control-plane state, and the authoritative check runs under the write lock (D-463); result bodies are shared by content digest and zstd-compressed (D-464), while the receipt **rows** remain one per command | D-463, D-464 |
 | Model actions and code windows | a deciding read shares the write's transaction, or the guard is a predicate on the write itself; `verification/REPORT.md` §6 lists the protocol transitions and the three engine windows that span two transactions with their predicates | D-465 |
+
+## D-474 The generated profile defaults to high reasoning effort (2026-10-22)
+
+**Why.** `teamagents init` wrote `generation_options = { reasoning_effort = "max" }`; a simple turn at max takes
+about 240 s on the reference host, and the user asked for `high` as the default.
+
+**What.** `examples/config.minimal.toml` (the `INITIAL_CONFIG` copied by `init`) and the full sample
+`examples/config.toml` write `high`; `docs/INSTALL.md` says so. `init` still never rewrites an existing file, so an
+existing config keeps its value. A live instance was switched with `instances model --effort high` (D-470); the
+daemon's catalog is loaded at boot, so a restart is what applies the new default to new members and sessions.
+
+**Boundaries.** `high` is a default, not a ceiling: a user can still choose `max` or another level per profile, and
+provider normalization decides what the wire accepts. No model capability is claimed.
+
+**Acceptance.** Both example configs contain `reasoning_effort = "high"`; `docs/INSTALL.md` names high; the live
+Leader answered `effort high` from `instances model`; `make check` passes.
 
 ## D-473 Quit on Ctrl+Q and a model/effort menu on Ctrl+M (2026-10-22)
 

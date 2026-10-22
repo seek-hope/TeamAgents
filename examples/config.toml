@@ -34,7 +34,7 @@ model = "deepseek-flash"
 api_key_env = "DEEPSEEK_API_KEY"
 timeout = 120
 max_retries = 2
-generation_options = { reasoning_effort = "max" }    # default effort; tests use high (max takes ~240s per simple turn)
+generation_options = { reasoning_effort = "high" }    # default effort; max takes ~240s per simple turn
 
 # --- other service samples (enable on demand; each maps a logical name to a real endpoint)
 # [models.research_kimi]
