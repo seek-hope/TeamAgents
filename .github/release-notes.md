@@ -33,6 +33,9 @@
   Ctrl+M opens the model/effort menu.
 - Terminal-independent `make pty` matrix across xterm/screen/tmux/Kitty profiles (D-472); acceptance checks
   follow the session's shell mode (D-471); the generated profile defaults to `high` reasoning effort (D-474).
+- Per-model reasoning-effort menus (D-476): `[models.<key>] efforts` declares the values Ctrl+M offers,
+  defaulting to minimal/low/medium/high/xhigh/max; a model that lacks the current level falls back to the
+  nearest declared level at or below it, and the CLI `--effort` remains an explicit override.
 - Installer, `teamagents init`, `doctor` and `exec` as documented in the
   [install guide](https://github.com/seek-hope/TeamAgents/blob/main/docs/INSTALL.md).
 
