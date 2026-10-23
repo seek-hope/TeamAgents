@@ -1,6 +1,6 @@
 # Development handoff
 
-Updated **2026-10-23** against source **02be286d** (through D-476). This is the current entry point for a new development
+Updated **2026-10-23** against source **02be286d** (through D-477). This is the current entry point for a new development
 session, not an authorization to implement the candidate backlog. Recheck Git status and recent commits;
 this document does not assert that a remote branch or installed binary matches the working tree.
 
@@ -26,7 +26,7 @@ this document does not assert that a remote branch or installed binary matches t
 | c6dcc8a5, e1d842d1 | D-466 two-mode pluggable sandbox, D-467 AGENTS.md discovery, D-468 skill resources, D-469 multi-edit/read batch, D-470 profile/web/deferred input/cancel-vs-stop | `sandbox = none` is the explicit host mode; a configured backend still fails closed |
 | 9b29c8b5, 3b7ea4a1 | D-471 acceptance checks follow the session's shell mode; CI fixtures follow `none`, transient ETXTBSY retry | `exec --check` and goal `[[checks]]` run on the host in `none` mode; the bubblewrap refusal stays covered |
 | f00a2a31, 122fc628, 02be286d | D-472 terminal-agnostic PTY matrix; D-473 Ctrl+Q/Ctrl+P and the Leader model/effort menu; D-474 default reasoning effort high | PTY profiles are protocol checks, not a GUI matrix; a profile change applies at the next turn; `init` never rewrites an existing config |
-| v0.2.0 | first public release: Linux x86_64 musl-static archive, installer and SHA256SUMS | The tag workflow smoke-installs the exact archive; `review/install_check.py` verifies the published latest release; real-model/Pi evidence is unchanged |
+| v0.2.0 | first public release, rebuilt for D-476: Linux x86_64 musl-static archive, installer and SHA256SUMS | Tag `96acfde7`; run 39885779367; `review/install_check.py` verifies the published release; the original artifact's two downloads are not recalled |
 
 D-462 added the verification gate and ledger: every counterexample configuration names the claim it must
 refute (`expects:` marker, compared with TLC's output), every checked claim that no control refutes is a row in

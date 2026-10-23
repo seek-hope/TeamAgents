@@ -14,7 +14,7 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Usage visibility | turn and goal usage/budget are visible in the TUI and in events | D-24 |
 | MCP | both transports, stdio and streamable HTTP; calls go through the shared permission, approval, budget, cancellation and receipt entry points | D-25 |
 | Web tools | `web_search` and `web_fetch` call DeepSeek Search/Fetch (`/v1/tools/search`, `/v1/tools/fetch`) with the same bearer key; no AnySearch backend | D-456 |
-| Release publication | v0.2.0 is the first public release (Linux x86_64, musl static); future tags still need explicit user authorization and `TEAMAGENTS_RELEASE_APPROVED=true` | D-457, D-475 |
+| Release publication | v0.2.0 is the first public release (Linux x86_64, musl static), rebuilt with D-476; future tags still need explicit user authorization and `TEAMAGENTS_RELEASE_APPROVED=true` | D-457, D-475, D-477 |
 | Context compaction | triggered by real window usage; the summary keeps the original request and acceptance criteria, and the full text stays retrievable | D-28 |
 | Task priority | complex coding and long-horizon stability come first | D-35 |
 | Native context | real-model evaluation always uses the model's native window and records the value and its source | D-36 |
@@ -35,6 +35,24 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Prompt cache | cache hit/miss/write are provider-reported and visible; the L1 frontier is fixed between compactions; Anthropic gets explicit breakpoints and OpenAI a stable key; DeepSeek stays automatic | D-459 |
 | Command idempotency | a replay with the same `command_id` returns the stored receipt for control-plane state, and the authoritative check runs under the write lock (D-463); result bodies are shared by content digest and zstd-compressed (D-464), while the receipt **rows** remain one per command | D-463, D-464 |
 | Model actions and code windows | a deciding read shares the write's transaction, or the guard is a predicate on the write itself; `verification/REPORT.md` §6 lists the protocol transitions and the three engine windows that span two transactions with their predicates | D-465 |
+
+## D-477 Replace v0.2.0 with the D-476 build (2026-10-23)
+
+**Authorization.** The user explicitly confirmed replacing the published v0.2.0 after D-476.
+
+**What.** Moved the annotated `v0.2.0` tag from `a92531a7` to `96acfde7`, deleted and recreated the GitHub
+release, and the tag workflow rebuilt and republished the Linux x86_64 archive. The two downloads of the old
+archive are not recalled; the release page now serves the new artifact.
+
+**Evidence.** Run [39885779367](https://github.com/seek-hope/TeamAgents/actions/runs/39885779367) succeeded;
+the published archive `teamagents-0.2.0-x86_64-unknown-linux-musl.tar.gz` has SHA-256
+`81db75929b3423c4ba03f10cf82c5b32b10256c493f7d98376d7570b2cd49beb`; `install.sh` remains
+`d0160effba0fdb140b5a4a867e601b416644673edd4b5548baf4fbaef6099ac4`. `python3 review/install_check.py
+--version 0.2.0` installs the new artifact and confirms the current surface.
+
+**Boundaries.** Same version and platform. A public tag was rewritten only because the user explicitly
+authorized it; future releases remain gated by D-457 and `TEAMAGENTS_RELEASE_APPROVED`. D-475 records the
+first publication and its hashes are historical.
 
 ## D-476 Per-model reasoning-effort menus (2026-10-23)
 
@@ -79,6 +97,9 @@ release.
 
 **Boundaries.** A release packages the current source; it does not widen the evidence boundaries in
 ACCEPTANCE/CAPABILITIES. Future tags need the same explicit authorization; nothing publishes automatically.
+
+**Replaced.** The user authorized replacing this first artifact with the D-476 build on 2026-10-23; the tag now
+points to `96acfde7`, and D-477 records the new run and hashes. The hashes above are historical.
 
 ## D-474 The generated profile defaults to high reasoning effort (2026-10-22)
 

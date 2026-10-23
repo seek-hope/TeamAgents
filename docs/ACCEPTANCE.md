@@ -1,7 +1,7 @@
 # Acceptance matrix (A01–A36)
 
 Baseline: [the design and acceptance baseline](DESIGN.md) §12/§16. Current source inspection and local
-regression: **2026-10-23, 02be286d through D-476**. This is not a new independent acceptance audit or real-model run.
+regression: **2026-10-23, 02be286d through D-477**. This is not a new independent acceptance audit or real-model run.
 The D-451 product/installation receipts and the D-452 independent audit retain their original source/date
 boundaries; later source changes do not inherit those results.
 
@@ -182,7 +182,7 @@ unresolved policy dependencies without presenting every former gap as current.
 | Cache telemetry is implemented; priced cost/attribution and reviewer model usage in goal budgets are not | D-458/D-459; DD-07 |
 | Live selected provider/image/OAuth/Docker and wider terminal/security evidence remains partial | individual A rows and dated reports; DD-08 |
 | No MCP resource browsing or general SDK/extension interface; provider auth coverage is narrower than Pi | DD-09; existing Unix protocol and hooks are real capabilities, not equivalent extension APIs |
-| First public release v0.2.0 (Linux x86_64); installation receipts cover the exact artifact | D-475; DD-10 |
+| First public release v0.2.0 (Linux x86_64), rebuilt with D-476; installation receipts cover the exact artifact | D-477; DD-10 |
 | Artifact policy and references remain a decision boundary | D-438; D-436 implements owner release after the configured retention window, not arbitrary deletion |
 
 <details>

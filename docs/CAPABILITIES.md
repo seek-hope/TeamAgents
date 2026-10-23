@@ -140,7 +140,7 @@ priority list. The major unclosed evidence boundaries are:
 - Real selected provider/image/OAuth/Docker paths, full skill support resources and user-home development
   environments; local serialization and scripted-provider tests establish different facts.
 - Adversarial review of auto-approval and other boundaries; broader graphical terminal/platform coverage.
-- Exact-artifact installation and update acceptance for the authorized v0.2.0 release (D-475).
+- Exact-artifact installation and update acceptance for the authorized v0.2.0 release (D-477).
 - Long-horizon memory where facts are not already files; D-406's fixture and D-409's real-task null result
   do not establish general benefit.
 - Q16's collaboration-success form: the narrower paired latency result is confirmed in D-264, not a
