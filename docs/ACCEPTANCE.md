@@ -1,14 +1,14 @@
 # Acceptance matrix (A01–A36)
 
 Baseline: [the design and acceptance baseline](DESIGN.md) §12/§16. Current source inspection and local
-regression: **2026-10-22, 02be286d through D-474**. This is not a new independent acceptance audit or real-model run.
+regression: **2026-10-23, 02be286d through D-476**. This is not a new independent acceptance audit or real-model run.
 The D-451 product/installation receipts and the D-452 independent audit retain their original source/date
 boundaries; later source changes do not inherit those results.
 
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 147 / engine 415 / tui 82 test targets), rerun on 2026-10-22.
+`make check` is green (core 147 / engine 415 / tui 85 test targets), rerun on 2026-10-23.
 `make pty` passed the same day: the terminal-profile matrix (xterm-256color, screen-256color, tmux-256color, xterm-kitty and Kitty under tmux) plus both forced graphics protocols, all rc 0 and
 credential-free. PTY checks cover protocol bytes, input ownership, resize and cleanup, not a complete
 actual graphical-terminal or OS matrix. These gates do not renew real-provider, OAuth, sandbox-service,

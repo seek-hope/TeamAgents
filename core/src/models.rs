@@ -21,6 +21,10 @@ str_enum!(WorkspacePolicy, "snake_case", Shared, Isolated, GitWorktree);
 
 pub type Json = serde_json::Value;
 
+/// The built-in reasoning-effort order (D-476). A `[models.<key>]` entry may declare a subset in
+/// `efforts`; the TUI menu uses that list, while the CLI keeps an explicit override outside it.
+pub const DEFAULT_EFFORTS: [&str; 6] = ["minimal", "low", "medium", "high", "xhigh", "max"];
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelProfile {
@@ -45,6 +49,11 @@ pub struct ModelProfile {
     pub max_retries: i64,
     #[serde(default)]
     pub generation_options: HashMap<String, Json>,
+    /// Ordered reasoning-effort values this model accepts, for the Ctrl+M menu (D-476). An empty
+    /// list means `DEFAULT_EFFORTS`; the control plane does not treat this as a permission, so the
+    /// CLI may still set an explicit level outside the menu.
+    #[serde(default)]
+    pub efforts: Vec<String>,
     /// Does this model accept images (D-392)? **Fail-closed by default**: only a profile that says
     /// `images = true` may carry an image part to the wire, so a model that was never checked for vision is
     /// sent the placeholder text instead of a block its provider would reject or silently ignore. The declared

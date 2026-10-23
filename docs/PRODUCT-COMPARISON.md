@@ -89,7 +89,7 @@ user-confirmed design decision. This documentation refresh authorizes no such co
 | Evidence | Source and limit |
 |---|---|
 | Current TeamAgents inspection | 02be286d through D-474; includes D-455/D-458/D-459, the external editor, AGENTS.md discovery, multi-edit/read batches, terminal-matrix PTY checks and the Ctrl+M model/effort menu; inspect the anchors above |
-| Current local gates | On 2026-10-22, make check passed: core 147 / engine 415 / tui 82. make pty passed the five-profile terminal matrix and both forced graphics protocols (D-472/D-473). These are local regression results, not an independent acceptance or paid-model trial |
+| Current local gates | On 2026-10-23, make check passed: core 147 / engine 415 / tui 85. make pty passed the five-profile terminal matrix and both forced graphics protocols (D-472/D-473). These are local regression results, not an independent acceptance or paid-model trial |
 | Pi reference | Installed npm package @earendil-works/pi-coding-agent 1.3.0; bundled usage, sessions, configuration, providers, skills, MCP, extensions and SDK docs; distributed edit-tool declaration. Documentation/source only, not comparator execution |
 | Older comparison | [D-450 report and manifest](../review/parity-2026-10-08/REPORT.md): Pi 1.1.0 and Codex commit 9b738582b13c2cdbeff54af0afd04c50c3e7ba09. Historical, not refreshed by this document |
 | Deterministic workflows | [D-451 maturity report](../review/maturity-2026-10-11/REPORT.md), pinned to its recorded source; fake model responses, actual local daemon/runner/files/PTY and an unpublished installation rehearsal |

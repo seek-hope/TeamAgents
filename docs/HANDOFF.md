@@ -1,6 +1,6 @@
 # Development handoff
 
-Updated **2026-10-22** against source **02be286d** (through D-475). This is the current entry point for a new development
+Updated **2026-10-23** against source **02be286d** (through D-476). This is the current entry point for a new development
 session, not an authorization to implement the candidate backlog. Recheck Git status and recent commits;
 this document does not assert that a remote branch or installed binary matches the working tree.
 
@@ -40,7 +40,7 @@ Option B (automatic model reminders) was explicitly rejected. The shared project
 engine/src/v2/diagnostics.rs; checkpoint, instances, tasks and local TUI /help expose it. Tests cover query-only
 reopen, real daemon restart without additional model calls, explicit input/cancellation recovery and TUI frames.
 
-Local checks rerun on 2026-10-22 at `02be286d`: **make check passed, core 147 / engine 415 / tui 82**,
+Local checks rerun on 2026-10-23 at `02be286d`: **make check passed, core 147 / engine 415 / tui 85**,
 **make check-nobwrap passed** (the CI runner's bwrap-free condition) and **make pty passed** the terminal-profile
 matrix (xterm-256color, screen-256color, tmux-256color, xterm-kitty and Kitty under tmux; auto graphics) plus both forced protocol modes. These results are local regressions, not a new independent audit, real-model
 comparison, actual graphical-terminal matrix, installed-artifact acceptance or release.

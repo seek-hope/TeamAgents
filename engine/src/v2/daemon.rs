@@ -18,6 +18,7 @@ use serde_json::{json, Value as Json};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use teamagents_core::models::DEFAULT_EFFORTS;
 use teamagents_core::v2::{Command, Control};
 
 /// Wire version of this protocol; the greeting advertises it and every
@@ -118,7 +119,14 @@ where
     let models = Json::Array(
         catalog_models
             .iter()
-            .map(|(key, profile)| json!({"key": key, "model": profile.model, "provider": profile.provider}))
+            .map(|(key, profile)| {
+                let efforts = if profile.efforts.is_empty() {
+                    DEFAULT_EFFORTS.iter().map(|effort| effort.to_string()).collect::<Vec<_>>()
+                } else {
+                    profile.efforts.clone()
+                };
+                json!({"key": key, "model": profile.model, "provider": profile.provider, "efforts": efforts})
+            })
             .collect(),
     );
     let facts = Arc::new(SessionFacts {

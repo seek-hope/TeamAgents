@@ -79,6 +79,8 @@ pub struct ModelInfo {
     /// The wire model the catalog entry resolves to, for display beside the key.
     pub model: String,
     pub provider: String,
+    /// The ordered effort levels this model declares (D-476), or empty for the built-in list.
+    pub efforts: Vec<String>,
 }
 
 /// The Ctrl+M menu: the Leader's model and reasoning effort, applied at the next turn.
@@ -89,6 +91,56 @@ pub struct ProfileMenu {
     pub efforts: Vec<String>,
     pub model_ix: usize,
     pub effort_ix: usize,
+}
+
+/// The built-in order used when a model declares no `efforts` list (D-476).
+const EFFORT_ORDER: [&str; 6] = ["minimal", "low", "medium", "high", "xhigh", "max"];
+
+fn default_efforts() -> Vec<String> {
+    EFFORT_ORDER.iter().map(|effort| (*effort).to_string()).collect()
+}
+
+fn model_efforts(model: &ModelInfo, fallback: &[String]) -> Vec<String> {
+    if !model.efforts.is_empty() {
+        model.efforts.clone()
+    } else if !fallback.is_empty() {
+        fallback.to_vec()
+    } else {
+        default_efforts()
+    }
+}
+
+fn effort_rank(effort: &str) -> Option<usize> {
+    EFFORT_ORDER.iter().position(|value| value.eq_ignore_ascii_case(effort))
+}
+
+/// Pick the menu index for `current`: keep it when declared; otherwise prefer the highest declared
+/// level at or below it (the “adjacent lower” rule), then the lowest declared level, then the
+/// first entry. Unknown/custom values fall back to the first declared value.
+fn effort_index(efforts: &[String], current: &str) -> usize {
+    if let Some(index) = efforts.iter().position(|effort| effort.eq_ignore_ascii_case(current)) {
+        return index;
+    }
+    let Some(current_rank) = effort_rank(current) else { return 0 };
+    let mut lower: Option<(usize, usize)> = None;
+    let mut lowest: Option<(usize, usize)> = None;
+    for (index, effort) in efforts.iter().enumerate() {
+        let Some(rank) = effort_rank(effort) else { continue };
+        if rank <= current_rank && lower.is_none_or(|(best, _)| rank > best) {
+            lower = Some((rank, index));
+        }
+        if lowest.is_none_or(|(best, _)| rank < best) {
+            lowest = Some((rank, index));
+        }
+    }
+    lower.or(lowest).map(|(_, index)| index).unwrap_or(0)
+}
+
+fn select_model(menu: &mut ProfileMenu, index: usize, fallback: &[String]) {
+    let current = menu.efforts.get(menu.effort_ix).cloned().unwrap_or_default();
+    menu.model_ix = index;
+    menu.efforts = model_efforts(&menu.models[index], fallback);
+    menu.effort_ix = effort_index(&menu.efforts, &current);
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -210,7 +262,7 @@ impl V2App {
             browser: None,
             queue: None,
             models: vec![],
-            efforts: vec!["minimal".into(), "low".into(), "medium".into(), "high".into()],
+            efforts: default_efforts(),
             profile: None,
             session_id: session_id.to_string(),
             instances: vec![],
@@ -363,10 +415,15 @@ impl V2App {
                 .iter()
                 .filter_map(|row| {
                     let key = row["key"].as_str()?.to_string();
+                    let efforts = row["efforts"]
+                        .as_array()
+                        .map(|values| values.iter().filter_map(|e| e.as_str().map(str::to_string)).collect())
+                        .unwrap_or_default();
                     Some(ModelInfo {
                         model: row["model"].as_str().unwrap_or(&key).to_string(),
                         provider: row["provider"].as_str().unwrap_or("").to_string(),
                         key,
+                        efforts,
                     })
                 })
                 .collect();
@@ -720,24 +777,24 @@ impl V2App {
         };
         let mut models = self.models.clone();
         if models.is_empty() {
-            models.push(ModelInfo { key: leader.model.clone(), model: leader.model.clone(), provider: String::new() });
+            models.push(ModelInfo {
+                key: leader.model.clone(),
+                model: leader.model.clone(),
+                provider: String::new(),
+                efforts: vec![],
+            });
         }
         let model_ix =
             models.iter().position(|model| model.key == leader.model || model.model == leader.model).unwrap_or(0);
-        let mut efforts = self.efforts.clone();
-        if !leader.effort.is_empty() && !efforts.iter().any(|effort| effort == &leader.effort) {
-            efforts.push(leader.effort.clone());
-        }
-        if efforts.is_empty() {
-            efforts.push("medium".into());
-        }
-        let effort_ix = efforts.iter().position(|effort| effort == &leader.effort).unwrap_or(0);
+        let efforts = model_efforts(&models[model_ix], &self.efforts);
+        let effort_ix = effort_index(&efforts, &leader.effort);
         self.profile = Some(ProfileMenu { instance: leader.id, models, efforts, model_ix, effort_ix });
         None
     }
 
     fn profile_key(&mut self, key: crossterm::event::KeyEvent) -> Option<V2Effect> {
         use crossterm::event::KeyCode;
+        let fallback = self.efforts.clone();
         let menu = self.profile.as_mut()?;
         match key.code {
             KeyCode::Esc => {
@@ -745,11 +802,13 @@ impl V2App {
                 None
             }
             KeyCode::Up => {
-                menu.model_ix = (menu.model_ix + menu.models.len() - 1) % menu.models.len();
+                let index = (menu.model_ix + menu.models.len() - 1) % menu.models.len();
+                select_model(menu, index, &fallback);
                 None
             }
             KeyCode::Down => {
-                menu.model_ix = (menu.model_ix + 1) % menu.models.len();
+                let index = (menu.model_ix + 1) % menu.models.len();
+                select_model(menu, index, &fallback);
                 None
             }
             KeyCode::Left => {

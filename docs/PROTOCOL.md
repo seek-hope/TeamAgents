@@ -62,16 +62,16 @@ the handler re-checks who may do this rather than trusting the request.
 
 | Method | Parameters | Reply keys | Answered at |
 |---|---|---|---|
-| `previews` | — | `previews` | `engine/src/v2/daemon.rs:662` |
-| `checkpoint` | — | `snapshot`, `watermark` | `engine/src/v2/daemon.rs:668` |
-| `events` | `since` | `events`, `resync_required`, `watermark` | `engine/src/v2/daemon.rs:675` |
-| `history` | `instance_id`, `limit` | `entries`, `envelope_id`, `epoch`, `idx`, `instance_id`, `kind`, `message`, `workspace` | `engine/src/v2/daemon.rs:684` |
-| `surfaces` | `instance_id`, `limit` | `epoch`, `goal_id`, `instance_id`, `kind`, `offered_tools`, `request_id`, `status`, `surface_authorized`, `surfaces` | `engine/src/v2/daemon.rs:717` |
-| `inputs` | — | `envelope_id`, `epoch`, `inputs`, `instance_id`, `next_after`, `payload`, `revision`, `sequence` | `engine/src/v2/daemon.rs:749` |
-| `tasks` | — | `tasks` | `engine/src/v2/daemon.rs:800` |
-| `approvals` | — | `approvals`, `id`, `operation_id`, `preview`, `tool` | `engine/src/v2/daemon.rs:809` |
-| `goals` | — | `attached_instances`, `deadline`, `goals`, `id`, `known_usage`, `limits`, `status`, `summary`, `unknown_usage` | `engine/src/v2/daemon.rs:838` |
-| `grants` | — | `action`, `capability_requests`, `delegable`, `grants`, `id`, `issuer`, `parent_grant_id`, `requester`, `resource_scope`, `revision`, `revoked`, `status`, `subject`, `task_id` | `engine/src/v2/daemon.rs:884` |
+| `previews` | — | `previews` | `engine/src/v2/daemon.rs:670` |
+| `checkpoint` | — | `snapshot`, `watermark` | `engine/src/v2/daemon.rs:676` |
+| `events` | `since` | `events`, `resync_required`, `watermark` | `engine/src/v2/daemon.rs:683` |
+| `history` | `instance_id`, `limit` | `entries`, `envelope_id`, `epoch`, `idx`, `instance_id`, `kind`, `message`, `workspace` | `engine/src/v2/daemon.rs:692` |
+| `surfaces` | `instance_id`, `limit` | `epoch`, `goal_id`, `instance_id`, `kind`, `offered_tools`, `request_id`, `status`, `surface_authorized`, `surfaces` | `engine/src/v2/daemon.rs:725` |
+| `inputs` | — | `envelope_id`, `epoch`, `inputs`, `instance_id`, `next_after`, `payload`, `revision`, `sequence` | `engine/src/v2/daemon.rs:757` |
+| `tasks` | — | `tasks` | `engine/src/v2/daemon.rs:808` |
+| `approvals` | — | `approvals`, `id`, `operation_id`, `preview`, `tool` | `engine/src/v2/daemon.rs:817` |
+| `goals` | — | `attached_instances`, `deadline`, `goals`, `id`, `known_usage`, `limits`, `status`, `summary`, `unknown_usage` | `engine/src/v2/daemon.rs:846` |
+| `grants` | — | `action`, `capability_requests`, `delegable`, `grants`, `id`, `issuer`, `parent_grant_id`, `requester`, `resource_scope`, `revision`, `revoked`, `status`, `subject`, `task_id` | `engine/src/v2/daemon.rs:892` |
 
 ### Commands (executed by the control plane)
 
@@ -144,7 +144,7 @@ literals in `engine/src/v2/daemon.rs` and its diagnostics helper; this table is 
 | Built at | Fields |
 |---|---|
 | `serve` | `id`, `name`, `root`, `active` |
-| `serve` | `key`, `model`, `provider` |
+| `serve` | `key`, `model`, `provider`, `efforts` |
 | `mcp_rows` | `name`, `transport`, `required`, `oauth`, `credential` |
 | `run_scheduler` | `id`, `instance_id` |
 | `serve_client` | `server`, `protocol_version`, `session_id`, `state_root`, `permissions`, `workspace` |

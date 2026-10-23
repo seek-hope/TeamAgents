@@ -41,7 +41,12 @@ fn interruption_and_exit_are_distinct_and_keep_the_draft() {
 #[test]
 fn ctrl_m_opens_the_model_menu_and_enter_changes_the_profile() {
     let mut app = app();
-    app.models = vec![ModelInfo { key: "leader_main".into(), model: "test".into(), provider: "compatible".into() }];
+    app.models = vec![ModelInfo {
+        key: "leader_main".into(),
+        model: "test".into(),
+        provider: "compatible".into(),
+        efforts: vec![],
+    }];
     app.efforts = vec!["low".into(), "high".into()];
     app.apply_checkpoint(
         json!({"instances": [{"id": "i-leader", "lifecycle": "ACTIVE", "phase": "READY",
@@ -61,6 +66,74 @@ fn ctrl_m_opens_the_model_menu_and_enter_changes_the_profile() {
         other => panic!("{other:?}"),
     }
     assert!(app.profile.is_none(), "Enter closes the menu");
+}
+
+#[test]
+fn default_effort_menu_includes_xhigh_and_max() {
+    let app = V2App::new("minimal");
+    assert_eq!(app.efforts, vec!["minimal", "low", "medium", "high", "xhigh", "max"]);
+}
+
+#[test]
+fn a_missing_effort_falls_back_to_the_nearest_lower_level() {
+    let mut app = app();
+    app.models = vec![ModelInfo {
+        key: "leader_main".into(),
+        model: "test".into(),
+        provider: "compatible".into(),
+        efforts: vec!["high".into(), "max".into()],
+    }];
+    app.apply_checkpoint(
+        json!({"instances": [{"id": "i-leader", "lifecycle": "ACTIVE", "phase": "READY",
+                              "model": "leader_main", "effort": "xhigh"}]}),
+        2,
+    );
+    assert!(app.handle_key(ctrl('m')).is_none());
+    let menu = app.profile.as_ref().expect("the model menu opens");
+    assert_eq!(menu.efforts, vec!["high".to_string(), "max".to_string()]);
+    assert_eq!(menu.effort_ix, 0, "xhigh is absent, so high is the nearest lower level");
+    match app.handle_key(key(KeyCode::Enter)) {
+        Some(V2Effect::SetProfile { effort, .. }) => assert_eq!(effort.as_deref(), Some("high")),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn switching_models_rebuilds_efforts_and_applies_the_same_fallback() {
+    let mut app = app();
+    app.models = vec![
+        ModelInfo {
+            key: "wide".into(),
+            model: "wide".into(),
+            provider: "compatible".into(),
+            efforts: vec!["low".into(), "medium".into(), "high".into(), "xhigh".into(), "max".into()],
+        },
+        ModelInfo {
+            key: "narrow".into(),
+            model: "narrow".into(),
+            provider: "compatible".into(),
+            efforts: vec!["high".into(), "max".into()],
+        },
+    ];
+    app.apply_checkpoint(
+        json!({"instances": [{"id": "i-leader", "lifecycle": "ACTIVE", "phase": "READY",
+                              "model": "wide", "effort": "xhigh"}]}),
+        2,
+    );
+    assert!(app.handle_key(ctrl('m')).is_none());
+    assert_eq!(app.profile.as_ref().unwrap().effort_ix, 3);
+    assert!(app.handle_key(key(KeyCode::Down)).is_none());
+    let menu = app.profile.as_ref().unwrap();
+    assert_eq!(menu.model_ix, 1);
+    assert_eq!(menu.efforts, vec!["high".to_string(), "max".to_string()]);
+    assert_eq!(menu.effort_ix, 0);
+    match app.handle_key(key(KeyCode::Enter)) {
+        Some(V2Effect::SetProfile { model, effort, .. }) => {
+            assert_eq!(model.as_deref(), Some("narrow"));
+            assert_eq!(effort.as_deref(), Some("high"));
+        }
+        other => panic!("{other:?}"),
+    }
 }
 
 #[test]

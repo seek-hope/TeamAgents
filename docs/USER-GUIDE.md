@@ -108,6 +108,11 @@ teamagents                           # open the TUI (starts this session's daemo
   catalog entry, Left/Right the reasoning effort, Enter applies and Esc cancels. The change lands at the next
   READY/WAITING turn; an in-flight turn keeps its profile. On terminals that encode Ctrl+M as Enter, use
   `/model` instead. The catalog comes from the daemon's checkpoint, never from the TUI reading your config.
+  The effort list is the selected model's optional `efforts` array, or the built-in
+  `minimal, low, medium, high, xhigh, max` when it is absent. If the current level is absent from a newly
+  selected model, the menu falls back to the nearest declared level at or below it (e.g. `xhigh` with
+  `high, max` becomes `high`); if no declared level is lower, it uses the lowest declared level. The CLI
+  `teamagents instances model --effort VALUE` remains an explicit override outside the menu.
 - **Client commands**: /help, /sessions, /interrupt, /quit, /model, /attach, /detach, /queue and /edit. The first
   seven appear in the completion menu; /edit is recognized separately. Unknown or retired commands stay
   local and point to `teamagents --help`; they are never sent to the model.
@@ -159,7 +164,7 @@ teamagents                           # open the TUI (starts this session's daemo
   them (`note: a session is already running for this state root in … mode` / `that session works in …`).
   Starting a client with a different `--cwd` against a live session therefore does not move it — stop that
   daemon or use another `--state-root`. Sessions are not automatically grouped/selected by repository;
-  select a named session deliberately. There is no interactive model/effort hot-switch command.
+  select a named session deliberately. The interactive model/effort switch is Ctrl+M or `/model` (D-473).
   A `--cwd` that is not an *existing directory* is different: it can never be honoured (the session confines every file and shell command to it), so `exec`, the TUI and
   `daemon` refuse it outright with `--cwd … is not a directory` instead of booting a session whose workspace
   no tool can resolve.
