@@ -377,6 +377,12 @@ pub fn doctor(state_root: Option<PathBuf>, overrides: &[String]) -> i32 {
                     Ok(()) if bubblewrap => {
                         "isolation probe passed: system files visible, home directory hidden".into()
                     }
+                    Ok(()) if backend.kind == crate::tools::SandboxKind::Sbx => {
+                        "sbx isolation probe passed (microVM)".into()
+                    }
+                    Ok(()) if backend.kind == crate::tools::SandboxKind::Ssh => {
+                        format!("ssh isolation probe passed (target {})", backend.ssh_target)
+                    }
                     Ok(()) => format!("docker isolation probe passed (image {})", backend.image),
                     Err(reason) if bubblewrap && bwrap => {
                         // a row is one line, so the machine's own words (bwrap's last line) are what a user needs

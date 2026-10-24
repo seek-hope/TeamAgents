@@ -27,7 +27,7 @@ this document does not assert that a remote branch or installed binary matches t
 | 9b29c8b5, 3b7ea4a1 | D-471 acceptance checks follow the session's shell mode; CI fixtures follow `none`, transient ETXTBSY retry | `exec --check` and goal `[[checks]]` run on the host in `none` mode; the bubblewrap refusal stays covered |
 | f00a2a31, 122fc628, 02be286d | D-472 terminal-agnostic PTY matrix; D-473 Ctrl+Q/Ctrl+P and the Leader model/effort menu; D-474 default reasoning effort high | PTY profiles are protocol checks, not a GUI matrix; a profile change applies at the next turn; `init` never rewrites an existing config |
 | v0.2.0 | first public release, rebuilt for D-476: Linux x86_64 musl-static archive, installer and SHA256SUMS | Tag `96acfde7`; run 39885779367; `review/install_check.py` verifies the published release; the original artifact's two downloads are not recalled |
-| D-478 | Docker Sandboxes (`sbx`) backend; default `none` unchanged; one sandbox per workspace; create/exec through the `sbx` CLI | `sbx` is not installed here; argv/config tests and the missing-CLI refusal are the evidence; no live microVM claim |
+| D-478 | Docker Sandboxes (`sbx`) backend; default `none` unchanged; one sandbox per workspace; create/exec through the `sbx` CLI | `sbx` v0.48.0 installed and logged in; live `exec --check` showed guest kernel `7.0.14` vs host `7.3.0-3-cachyos` and host-owned workspace writes; no repeatable dogfood probe yet |
 
 D-462 added the verification gate and ledger: every counterexample configuration names the claim it must
 refute (`expects:` marker, compared with TLC's output), every checked claim that no control refutes is a row in

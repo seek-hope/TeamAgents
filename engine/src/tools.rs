@@ -1565,12 +1565,23 @@ fn probe_sandbox(backend: &SandboxBackend) -> Result<(), String> {
                 return Err("sbx is not available: refusing to run commands without isolation".into());
             }
             match Command::new("sbx").arg("version").output() {
+                Ok(out) if out.status.success() => {}
+                Ok(out) => {
+                    return Err(format!(
+                        "sbx is not usable (`sbx version` exited {}): {}",
+                        out.status.code().map(|code| code.to_string()).unwrap_or_else(|| "no code".into()),
+                        String::from_utf8_lossy(&out.stderr).trim()
+                    ))
+                }
+                Err(error) => return Err(format!("sbx could not be run: {error}")),
+            }
+            // `sbx ls` is the cheap authenticated read: version alone passes before login, while every
+            // actual create/exec would then fail closed.
+            match Command::new("sbx").arg("ls").output() {
                 Ok(out) if out.status.success() => Ok(()),
-                Ok(out) => Err(format!(
-                    "sbx is not usable (`sbx version` exited {}): {}",
-                    out.status.code().map(|code| code.to_string()).unwrap_or_else(|| "no code".into()),
-                    String::from_utf8_lossy(&out.stderr).trim()
-                )),
+                Ok(out) => {
+                    Err(format!("sbx is not usable (run `sbx login`): {}", String::from_utf8_lossy(&out.stderr).trim()))
+                }
                 Err(error) => Err(format!("sbx could not be run: {error}")),
             }
         }

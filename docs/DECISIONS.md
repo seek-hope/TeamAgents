@@ -45,19 +45,24 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 sandbox (one token; otherwise the name is derived from the workspace path). The first shell call creates one
 sandbox per workspace with `sbx create --name NAME shell WORKSPACE`; commands run through
 `sbx exec NAME /bin/bash -lc 'cd WORKSPACE && …'`. The shell-state file lives inside the sandbox at
-`/tmp/.teamagents-shell`; the host state directory is not created for this backend. The probe checks
-`sbx version`; a missing/unusable CLI, a failed create, or a disappeared CLI refuses with `IsolationUnavailable`
-and never falls back to the host. `network = true` is refused because `sbx` policy owns egress; workspace MCP is
+`/tmp/.teamagents-shell`; the host state directory is not created for this backend. The probe checks `sbx version` and `sbx ls` (login); a missing/unusable CLI, a failed create, or a disappeared
+CLI refuses with `IsolationUnavailable` and never falls back to the host. `network = true` is refused because `sbx` policy owns egress; workspace MCP is
 refused because that path still builds bubblewrap's argv. Existing backends and the `none` default are unchanged.
 
-**Boundaries.** `sbx` is not installed on this host, so the live microVM path is not exercised here; tests cover
-argv, config validation and the missing-CLI refusal. One sandbox is shared by all instances of the same workspace;
-there is no automatic `sbx rm` (the user owns cleanup), no cloud sandboxes, no per-domain network mapping, and no
-workspace MCP. The sandbox's own kernel/Docker daemon/network policy are `sbx`'s claims, not this repository's.
+**Boundaries.** The live path was exercised after the user signed in to Docker: `sbx` v0.48.0 (daemon v0.48.0),
+KVM accessible, global policy `deny-all`. A real TeamAgents `exec --check` ran inside the derived sandbox; the
+workspace write-back was host-owned, and the guest reported hostname `teamagents-b922318df0916572` / kernel
+`7.0.14` against host `Tempest` / `7.3.0-3-cachyos`. One sandbox is shared by all instances of the same
+workspace; there is no automatic `sbx rm` (the user owns cleanup), no cloud sandboxes, no per-domain network
+mapping, and no workspace MCP. The sandbox's own kernel/Docker daemon/network policy are `sbx`'s claims, not this
+repository's. `sbx` was installed from AUR `docker-sbx` because the official installer does not support CachyOS;
+the package wraps the official Docker release tarball.
 
 **Acceptance.** `tools::tests::sbx_argv_uses_the_named_sandbox_and_guards_the_workdir`,
 `tools::tests::an_sbx_backend_without_the_cli_refuses_before_running_on_the_host` and
-`config::project_config_tests::the_sandbox_backend_is_read_and_refused_when_unusable`; the test suite passes.
+`config::project_config_tests::the_sandbox_backend_is_read_and_refused_when_unusable`; the test suite passes,
+and a live `exec --check` wrote the guest hostname/kernel into the host workspace. `doctor` now reports
+`sbx isolation probe passed (microVM)` instead of the Docker label.
 
 ## D-477 Replace v0.2.0 with the D-476 build (2026-10-23)
 
