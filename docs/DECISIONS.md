@@ -20,7 +20,7 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Native context | real-model evaluation always uses the model's native window and records the value and its source | D-36 |
 | Install and first config | source builds or the published v0.2.0 archive; init writes a minimal config and never overwrites an existing file; local archives require matching checksums | D-37, D-457, D-475; docs/INSTALL.md |
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
-| Sandbox mode | `[permissions] sandbox` selects `none` (default: host shell, no shell approval) or a backend (`approved_scope` + sandbox, fail-closed); D-466 | D-41, D-466 |
+| Sandbox mode | `[permissions] sandbox` selects `none` (default: host shell, no shell approval) or a backend (`approved_scope` + sandbox, fail-closed); D-478 adds Docker Sandboxes (`sbx`) as a separate microVM backend | D-41, D-466, D-478 |
 | Repository instructions | explicit `instruction_files` come first; a trusted repository's `AGENTS.md` files are discovered from its boundary down to the cwd, outermost first (D-467) | D-246, D-467 |
 | Multi-edit and read parallelism | the default schema's `edit_file` accepts `edits` (disjoint, revision-checked, atomic batch; `edit_files` is an unadvertised alias); a batch of independent read-only calls runs its tool work concurrently while dispatch, veto and receipts stay ordered (D-469) | D-469 |
 | Session controls and web domains | user-only model/effort switch at a READY/WAITING boundary, an explicit `after = "turn"` follow-up queue, and `web` grants with `domain:` scopes; cancelling a task does not stop its command (D-470) | D-470 |
@@ -35,6 +35,29 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Prompt cache | cache hit/miss/write are provider-reported and visible; the L1 frontier is fixed between compactions; Anthropic gets explicit breakpoints and OpenAI a stable key; DeepSeek stays automatic | D-459 |
 | Command idempotency | a replay with the same `command_id` returns the stored receipt for control-plane state, and the authoritative check runs under the write lock (D-463); result bodies are shared by content digest and zstd-compressed (D-464), while the receipt **rows** remain one per command | D-463, D-464 |
 | Model actions and code windows | a deciding read shares the write's transaction, or the guard is a predicate on the write itself; `verification/REPORT.md` §6 lists the protocol transitions and the three engine windows that span two transactions with their predicates | D-465 |
+
+## D-478 Docker Sandboxes (`sbx`) backend, default none (2026-10-23)
+
+**Why.** The user wants the pluggable sandbox to use Docker's official Sandboxes (`sbx`, microVM) while keeping
+`none` as the default.
+
+**What.** `[permissions] sandbox = "sbx"` selects `SandboxKind::Sbx`; `sandbox_sbx_name` optionally names the
+sandbox (one token; otherwise the name is derived from the workspace path). The first shell call creates one
+sandbox per workspace with `sbx create --name NAME shell WORKSPACE`; commands run through
+`sbx exec NAME /bin/bash -lc 'cd WORKSPACE && …'`. The shell-state file lives inside the sandbox at
+`/tmp/.teamagents-shell`; the host state directory is not created for this backend. The probe checks
+`sbx version`; a missing/unusable CLI, a failed create, or a disappeared CLI refuses with `IsolationUnavailable`
+and never falls back to the host. `network = true` is refused because `sbx` policy owns egress; workspace MCP is
+refused because that path still builds bubblewrap's argv. Existing backends and the `none` default are unchanged.
+
+**Boundaries.** `sbx` is not installed on this host, so the live microVM path is not exercised here; tests cover
+argv, config validation and the missing-CLI refusal. One sandbox is shared by all instances of the same workspace;
+there is no automatic `sbx rm` (the user owns cleanup), no cloud sandboxes, no per-domain network mapping, and no
+workspace MCP. The sandbox's own kernel/Docker daemon/network policy are `sbx`'s claims, not this repository's.
+
+**Acceptance.** `tools::tests::sbx_argv_uses_the_named_sandbox_and_guards_the_workdir`,
+`tools::tests::an_sbx_backend_without_the_cli_refuses_before_running_on_the_host` and
+`config::project_config_tests::the_sandbox_backend_is_read_and_refused_when_unusable`; the test suite passes.
 
 ## D-477 Replace v0.2.0 with the D-476 build (2026-10-23)
 

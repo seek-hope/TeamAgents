@@ -384,7 +384,7 @@ api_key_env = "DEEPSEEK_API_KEY"
 - `teamagents doctor` checks the config item by item, that every model profile's credential resolves, the
   state root (stamp, WAL, read/write) and the paths under it (a directory where `session.sqlite` or
   `daemon.sock` belongs — D-228), the daemon socket path's length (Linux's 108-byte `sun_path` limit,
-  which a deep state root can cross — D-227), the bubblewrap isolation probe and that the programs named
+  which a deep state root can cross — D-227), the configured isolation probe and that the programs named
   in `[hooks]` are executable; it also lists the `[[checks]]` that will gate every goal. An `sessions/` layout
   from an earlier release is reported explicitly and is never migrated.
 - Both `web_search` and `web_fetch` bindings use the DeepSeek Search/Fetch APIs and need a credential:
@@ -681,7 +681,14 @@ and the short grant id; task delegation relationships are available through `tea
 | Mode | Behaviour |
 |---|---|
 | `sandbox = "none"` (default) | Host shell: the command runs as you, with your filesystem and network; there is no shell approval gate |
-| `sandbox = "bubblewrap"` / `"docker"` / `"ssh"` | `approved_scope`: the command runs inside that backend; network access and out-of-scope writes need user approval, bound to the concrete operation and its argument hash |
+| `sandbox = "bubblewrap"` / `"docker"` / `"sbx"` / `"ssh"` | `approved_scope`: the command runs inside that backend; network access and out-of-scope writes need user approval, bound to the concrete operation and its argument hash |
+
+`sbx` is Docker's official Sandboxes CLI (microVM), separate from the `docker` container backend. Install
+`sbx`, run `sbx login`, then set `sandbox = "sbx"`; `sandbox_sbx_name` optionally names the sandbox, otherwise
+TeamAgents derives one per workspace and creates it with `sbx create ... shell <workspace>`. Commands run through
+`sbx exec`; the sandbox owns its own kernel, Docker daemon and network policy. TeamAgents refuses `network = true`
+under `sbx` (configure the sandbox's `sbx policy` instead) and workspace MCP, and it does not delete the sandbox
+automatically—use `sbx rm NAME` when you are done.
 
 A service a command leaves behind (`dev-server &`) belongs to **you**, not to the session: the product does not
 adopt it, does not restart it and does not clean it up when the client, the daemon or the member exits — that is

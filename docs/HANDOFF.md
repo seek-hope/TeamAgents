@@ -1,6 +1,6 @@
 # Development handoff
 
-Updated **2026-10-23** against source **02be286d** (through D-477). This is the current entry point for a new development
+Updated **2026-10-23** against source **02be286d** (through D-478). This is the current entry point for a new development
 session, not an authorization to implement the candidate backlog. Recheck Git status and recent commits;
 this document does not assert that a remote branch or installed binary matches the working tree.
 
@@ -27,6 +27,7 @@ this document does not assert that a remote branch or installed binary matches t
 | 9b29c8b5, 3b7ea4a1 | D-471 acceptance checks follow the session's shell mode; CI fixtures follow `none`, transient ETXTBSY retry | `exec --check` and goal `[[checks]]` run on the host in `none` mode; the bubblewrap refusal stays covered |
 | f00a2a31, 122fc628, 02be286d | D-472 terminal-agnostic PTY matrix; D-473 Ctrl+Q/Ctrl+P and the Leader model/effort menu; D-474 default reasoning effort high | PTY profiles are protocol checks, not a GUI matrix; a profile change applies at the next turn; `init` never rewrites an existing config |
 | v0.2.0 | first public release, rebuilt for D-476: Linux x86_64 musl-static archive, installer and SHA256SUMS | Tag `96acfde7`; run 39885779367; `review/install_check.py` verifies the published release; the original artifact's two downloads are not recalled |
+| D-478 | Docker Sandboxes (`sbx`) backend; default `none` unchanged; one sandbox per workspace; create/exec through the `sbx` CLI | `sbx` is not installed here; argv/config tests and the missing-CLI refusal are the evidence; no live microVM claim |
 
 D-462 added the verification gate and ledger: every counterexample configuration names the claim it must
 refute (`expects:` marker, compared with TLC's output), every checked claim that no control refutes is a row in
@@ -40,7 +41,7 @@ Option B (automatic model reminders) was explicitly rejected. The shared project
 engine/src/v2/diagnostics.rs; checkpoint, instances, tasks and local TUI /help expose it. Tests cover query-only
 reopen, real daemon restart without additional model calls, explicit input/cancellation recovery and TUI frames.
 
-Local checks rerun on 2026-10-23 at `02be286d`: **make check passed, core 147 / engine 415 / tui 85**,
+Local checks rerun on 2026-10-23 at `02be286d`: **make check passed, core 147 / engine 417 / tui 85**,
 **make check-nobwrap passed** (the CI runner's bwrap-free condition) and **make pty passed** the terminal-profile
 matrix (xterm-256color, screen-256color, tmux-256color, xterm-kitty and Kitty under tmux; auto graphics) plus both forced protocol modes. These results are local regressions, not a new independent audit, real-model
 comparison, actual graphical-terminal matrix, installed-artifact acceptance or release.

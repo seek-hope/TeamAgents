@@ -39,7 +39,7 @@
 - Installer, `teamagents init`, `doctor` and `exec` as documented in the
   [install guide](https://github.com/seek-hope/TeamAgents/blob/main/docs/INSTALL.md).
 
-Local regression: `make check` green (core 147 / engine 415 / tui 85) plus `make pty`;
+Local regression: `make check` green (core 147 / engine 417 / tui 85) plus `make pty`;
 the tag workflow smoke-installs the exact archive before publishing it. Real-model acceptance is reported
 separately in [docs/ACCEPTANCE.md](https://github.com/seek-hope/TeamAgents/blob/main/docs/ACCEPTANCE.md);
 a release packages the current source and does not widen those evidence boundaries.

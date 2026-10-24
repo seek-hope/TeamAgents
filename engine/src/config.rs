@@ -1511,6 +1511,7 @@ fn project_permissions(user: &toml::Value) -> Result<Permissions, String> {
             && key != "trusted_projects"
             && key != "sandbox"
             && key != "sandbox_image"
+            && key != "sandbox_sbx_name"
             && key != "sandbox_ssh_target"
             && key != "sandbox_ssh_workdir"
             && key != "sandbox_ssh_options"
@@ -1518,7 +1519,7 @@ fn project_permissions(user: &toml::Value) -> Result<Permissions, String> {
             && key != "reviewer_model"
         {
             return Err(format!(
-                "{} ([permissions] takes trust_project, trusted_projects, sandbox, sandbox_image, \
+                "{} ([permissions] takes trust_project, trusted_projects, sandbox, sandbox_image, sandbox_sbx_name, \
                  sandbox_ssh_target, sandbox_ssh_workdir, sandbox_ssh_options, approvals_reviewer and reviewer_model)",
                 unknown_key(key)
             ));
@@ -1611,15 +1612,17 @@ pub fn sandbox_from_config() -> Result<crate::tools::SandboxBackend, String> {
             Some("none") => SandboxKind::None,
             Some("bubblewrap") => SandboxKind::Bubblewrap,
             Some("docker") => SandboxKind::Docker,
+            Some("sbx") => SandboxKind::Sbx,
             Some("ssh") => SandboxKind::Ssh,
             other => {
                 return Err(format!(
-                    "invalid sandbox {other:?} in user config: this build serves none, bubblewrap, docker and ssh"
+                    "invalid sandbox {other:?} in user config: this build serves none, bubblewrap, docker, sbx and ssh"
                 ))
             }
         },
     };
     let image = table.get("sandbox_image").and_then(|value| value.as_str()).unwrap_or("").to_string();
+    let sbx_name = table.get("sandbox_sbx_name").and_then(|value| value.as_str()).unwrap_or("").to_string();
     let ssh_target = table.get("sandbox_ssh_target").and_then(|value| value.as_str()).unwrap_or("").to_string();
     let ssh_workdir = table.get("sandbox_ssh_workdir").and_then(|value| value.as_str()).unwrap_or("").to_string();
     let ssh_options = table
@@ -1679,6 +1682,25 @@ pub fn sandbox_from_config() -> Result<crate::tools::SandboxBackend, String> {
             }
         }
     }
+    if kind == SandboxKind::Sbx {
+        if !sbx_name.trim().is_empty() && (sbx_name.starts_with('-') || sbx_name.split_whitespace().count() != 1) {
+            return Err(format!(
+                "sandbox_sbx_name {sbx_name:?} must be one sandbox name, not an option and not several words"
+            ));
+        }
+        if let Some(tools) = parsed.get("tools").and_then(|value| value.as_table()) {
+            for (name, tool) in tools {
+                let is_mcp = tool.get("kind").and_then(|value| value.as_str()) == Some("mcp");
+                let execution = tool.get("mcp_execution").and_then(|value| value.as_str()).unwrap_or("workspace");
+                if is_mcp && execution == "workspace" {
+                    return Err(format!(
+                        "[permissions] sandbox = \"sbx\" does not serve workspace MCP execution yet: tools.{name} \
+                         needs mcp_execution = \"host\", or use sandbox = \"bubblewrap\""
+                    ));
+                }
+            }
+        }
+    }
     if kind == SandboxKind::Docker {
         if image.trim().is_empty() {
             return Err("[permissions] sandbox = \"docker\" needs sandbox_image = \"<image>\" (pull it first)".into());
@@ -1696,7 +1718,7 @@ pub fn sandbox_from_config() -> Result<crate::tools::SandboxBackend, String> {
             }
         }
     }
-    Ok(SandboxBackend { kind, image, ssh_target, ssh_workdir, ssh_options })
+    Ok(SandboxBackend { kind, image, ssh_target, ssh_workdir, ssh_options, sbx_name })
 }
 
 /// The text a member's prompt gets from `instruction_files` (D-102 recorded the promise; D-246 delivers it).
@@ -1772,6 +1794,19 @@ mod project_config_tests {
         write(
             &user_config_path(),
             "[permissions]\nsandbox = \"docker\"\nsandbox_image = \"debian:stable-slim\"\n\n[tools.probe]\nkind = \"mcp\"\ncommand = \"/bin/true\"\n",
+        );
+        let error = sandbox_from_config().unwrap_err();
+        assert!(error.contains("workspace MCP") && error.contains("probe"), "{error}");
+        // Docker Sandboxes (sbx) is a separate backend; its name is optional and must be one token.
+        write(&user_config_path(), "[permissions]\nsandbox = \"sbx\"\n");
+        assert_eq!(sandbox_from_config().unwrap().kind, crate::tools::SandboxKind::Sbx);
+        write(&user_config_path(), "[permissions]\nsandbox = \"sbx\"\nsandbox_sbx_name = \"teamagents-test\"\n");
+        assert_eq!(sandbox_from_config().unwrap().sbx_name, "teamagents-test");
+        write(&user_config_path(), "[permissions]\nsandbox = \"sbx\"\nsandbox_sbx_name = \"bad name\"\n");
+        assert!(sandbox_from_config().unwrap_err().contains("sandbox_sbx_name"));
+        write(
+            &user_config_path(),
+            "[permissions]\nsandbox = \"sbx\"\n\n[tools.probe]\nkind = \"mcp\"\ncommand = \"/bin/true\"\n",
         );
         let error = sandbox_from_config().unwrap_err();
         assert!(error.contains("workspace MCP") && error.contains("probe"), "{error}");

@@ -81,7 +81,7 @@ you ──goal (natural language)──▶ Leader ──spawn / delegate──�
   is classified by persisted location — known results are reused, in-flight losses are recorded honestly
   (`OUTCOME_UNKNOWN`), and nothing is **replayed on a guess**.
 - **Permission gate**: `[permissions] sandbox` selects two modes — `none` (the default: host shell, no shell
-  approval) or a backend (`bubblewrap`/`docker`/`ssh`: approvals for out-of-scope work); an approval binds one concrete operation, its argument hash and its
+  approval) or a backend (`bubblewrap`/`docker`/`sbx`/`ssh`: approvals for out-of-scope work); an approval binds one concrete operation, its argument hash and its
   permission revision, so it is used up by that single dispatch.
 - **Completion gate**: `finish` only accepts honest outcomes; the `[[checks]]` in **your own** config must
   actually pass before a goal can settle successfully. Project configuration is loaded when trusted, but
@@ -273,7 +273,7 @@ see the [developer command map](docs/USER-GUIDE.md#1-quick-start).
   Models, tools, skills paths and instruction files then merge in (your definitions win); permissions, hooks,
   checks, retention, limits and update policy stay yours. `doctor` reports the trust/merge result.
   Instruction files may be listed explicitly; a trusted repository's `AGENTS.md` files are also discovered from
-  its boundary down to the working directory (D-467). The sandbox may be none, bubblewrap, Docker or SSH.
+  its boundary down to the working directory (D-467). The sandbox may be none, bubblewrap, Docker, Docker Sandboxes (`sbx`) or SSH.
 - A model profile selects its wire format with `protocol = "responses" | "anthropic" | "openai" |
   "deepseek"`; `base_url` plus `model` decide the actual service, and credentials are only referenced by
   environment-variable name.

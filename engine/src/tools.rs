@@ -3,6 +3,7 @@
 
 use serde_json::{json, Value as Json};
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::OpenOptionsExt;
@@ -1559,6 +1560,20 @@ fn probe_sandbox(backend: &SandboxBackend) -> Result<(), String> {
                 Err(error) => Err(format!("ssh could not be run: {error}")),
             }
         }
+        SandboxKind::Sbx => {
+            if which("sbx").is_none() {
+                return Err("sbx is not available: refusing to run commands without isolation".into());
+            }
+            match Command::new("sbx").arg("version").output() {
+                Ok(out) if out.status.success() => Ok(()),
+                Ok(out) => Err(format!(
+                    "sbx is not usable (`sbx version` exited {}): {}",
+                    out.status.code().map(|code| code.to_string()).unwrap_or_else(|| "no code".into()),
+                    String::from_utf8_lossy(&out.stderr).trim()
+                )),
+                Err(error) => Err(format!("sbx could not be run: {error}")),
+            }
+        }
         SandboxKind::Docker => {
             if which("docker").is_none() {
                 return Err("docker is not available: refusing to run commands without isolation".into());
@@ -1610,6 +1625,13 @@ fn backend_available(backend: &SandboxBackend) -> Result<(), String> {
                 Ok(())
             }
         }
+        SandboxKind::Sbx => {
+            if which("sbx").is_none() {
+                Err("sbx is not available: refusing to run commands without isolation".into())
+            } else {
+                Ok(())
+            }
+        }
         SandboxKind::Docker => {
             if which("docker").is_none() {
                 return Err("docker is not available: refusing to run commands without isolation".into());
@@ -1651,6 +1673,9 @@ pub enum SandboxKind {
     None,
     Bubblewrap,
     Docker,
+    /// D-478: a Docker Sandboxes (`sbx`) microVM. The host-side `sbx` CLI owns the VM; this backend creates or
+    /// reuses one sandbox per workspace and executes each command through `sbx exec`.
+    Sbx,
     /// D-437: the command runs on **another host** over ssh. The isolation here is not a namespace: it is the
     /// remote account, and this backend makes no claim beyond it (the module docstring of `ssh_argv` is the honest
     /// statement of what ssh can and cannot enforce).
@@ -1673,6 +1698,8 @@ pub struct SandboxBackend {
     /// the first value it is given for a parameter, so a user option cannot weaken `BatchMode=yes` (a prompt would
     /// hang a turn) or `StrictHostKeyChecking=accept-new`.
     pub ssh_options: Vec<String>,
+    /// D-478: the configured `sbx` sandbox name; empty means one is derived from the workspace path.
+    pub sbx_name: String,
 }
 
 impl SandboxBackend {
@@ -1685,6 +1712,7 @@ impl SandboxBackend {
             ssh_target: target,
             ssh_workdir: workdir,
             ssh_options: options,
+            sbx_name: String::new(),
         }
     }
 
@@ -1696,6 +1724,7 @@ impl SandboxBackend {
             ssh_target: String::new(),
             ssh_workdir: String::new(),
             ssh_options: Vec::new(),
+            sbx_name: String::new(),
         }
     }
 
@@ -1710,6 +1739,19 @@ impl SandboxBackend {
             ssh_target: String::new(),
             ssh_workdir: String::new(),
             ssh_options: Vec::new(),
+            sbx_name: String::new(),
+        }
+    }
+
+    /// D-478: a Docker Sandboxes microVM; `name` is empty when the name is derived per workspace.
+    pub fn sbx(name: String) -> Self {
+        SandboxBackend {
+            kind: SandboxKind::Sbx,
+            image: String::new(),
+            ssh_target: String::new(),
+            ssh_workdir: String::new(),
+            ssh_options: Vec::new(),
+            sbx_name: name,
         }
     }
 
@@ -1718,6 +1760,7 @@ impl SandboxBackend {
             SandboxKind::None => "none",
             SandboxKind::Bubblewrap => "bubblewrap",
             SandboxKind::Docker => "docker",
+            SandboxKind::Sbx => "sbx",
             SandboxKind::Ssh => "ssh",
         }
     }
@@ -1880,6 +1923,57 @@ pub fn docker_argv(
     argv.push("-lc".into());
     argv.push(command.to_string());
     argv
+}
+
+/// D-478: execute through a Docker Sandboxes microVM. The host-side `sbx` CLI owns the VM; TeamAgents only
+/// creates or reuses one sandbox per workspace and runs each command through `sbx exec`.
+pub fn sbx_argv(name: &str, workdir: &Path, command: &str) -> Vec<String> {
+    let workdir = workdir.to_string_lossy();
+    let script = format!("cd {} && (\n{}\n)", shell_quote(&workdir), command);
+    vec!["sbx".into(), "exec".into(), name.into(), "/bin/bash".into(), "-lc".into(), script]
+}
+
+/// Ensure the workspace's sandbox exists. `sbx create` is headless; if the name already exists, `sbx exec true`
+/// distinguishes that expected refusal from a real setup error. Readiness is cached for this process; a sandbox
+/// removed behind the process's back fails at `sbx exec`, never by falling back to the host.
+fn ensure_sbx(name: &str, workspace: &Path) -> Result<(), String> {
+    static READY: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let ready = READY.get_or_init(|| Mutex::new(HashSet::new()));
+    if ready.lock().map_err(|_| "the sbx readiness lock is poisoned".to_string())?.contains(name) {
+        return Ok(());
+    }
+    let create = Command::new("sbx").args(["create", "--name", name, "shell"]).arg(workspace).output();
+    let mut reason = match &create {
+        Ok(out) if out.status.success() => String::new(),
+        Ok(out) => String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        Err(error) => format!("could not run sbx: {error}"),
+    };
+    if !reason.is_empty() {
+        match Command::new("sbx").args(["exec", name, "true"]).output() {
+            Ok(out) if out.status.success() => reason.clear(),
+            Ok(out) => {
+                let probe = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                if !probe.is_empty() {
+                    reason = probe;
+                }
+            }
+            Err(error) => reason = format!("could not run sbx exec: {error}"),
+        }
+    }
+    if !reason.is_empty() {
+        return Err(format!("sbx sandbox {name:?} could not be created: {reason}"));
+    }
+    ready.lock().map_err(|_| "the sbx readiness lock is poisoned".to_string())?.insert(name.to_string());
+    Ok(())
+}
+
+fn sbx_name_for(configured: &str, workspace: &Path) -> String {
+    let configured = configured.trim();
+    if configured.is_empty() {
+        format!("teamagents-{:016x}", stable_hash(workspace.to_string_lossy().as_bytes()))
+    } else {
+        configured.to_string()
+    }
 }
 
 /// The argv for `kind = Ssh` (D-437): the command runs on the remote host over `ssh`, in `workdir`.
@@ -2349,16 +2443,26 @@ pub(crate) fn shell_command_spec(
         if let Err(reason) = backend_available(backend) {
             return Err(SpecError::isolation(&format!("IsolationUnavailable: {reason}")));
         }
+        if backend.kind == SandboxKind::Sbx && network {
+            return Err(SpecError::isolation(
+                "IsolationUnavailable: sandbox = \"sbx\" does not map network = true; configure the sandbox's sbx network policy instead",
+            ));
+        }
     }
     // Separate snapshots prevent sandbox HOME/PATH/cwd leaking into host
     // commands (and vice versa) after a live permission-mode change.
     let host_state = shell_state.filter(|_| mode == ShellMode::Host).map(|state| state.join("host"));
     let shell_state = host_state.as_deref().or(shell_state);
-    if let Some(state) = shell_state {
-        std::fs::create_dir_all(state).map_err(|e| SpecError::setup(crate::cli::derived_dir_uncreatable(state, &e)))?;
+    let state_is_host_backed = !matches!(&mode, ShellMode::Sandbox(SandboxBackend { kind: SandboxKind::Sbx, .. }));
+    if state_is_host_backed {
+        if let Some(state) = shell_state {
+            std::fs::create_dir_all(state)
+                .map_err(|e| SpecError::setup(crate::cli::derived_dir_uncreatable(state, &e)))?;
+        }
     }
     let state_dir = match (&mode, shell_state) {
         (ShellMode::Host, Some(state)) => state.to_string_lossy().into_owned(),
+        (ShellMode::Sandbox(SandboxBackend { kind: SandboxKind::Sbx, .. }), _) => SHELL_STATE_SANDBOX.to_string(),
         (ShellMode::Sandbox(SandboxBackend { kind: SandboxKind::Docker, .. }), _) => DOCKER_SHELL_STATE.to_string(),
         // D-437: the remote's shell state is **per session**, derived from this member's own state directory.
         // The local backends isolate the state by *mounting* a different directory into each sandbox; ssh has
@@ -2390,6 +2494,16 @@ pub(crate) fn shell_command_spec(
                 return Err(SpecError::isolation("IsolationUnavailable: bwrap disappeared before execution"));
             };
             (executable.to_string_lossy().into_owned(), argv[1..].to_vec(), false)
+        }
+        ShellMode::Sandbox(SandboxBackend { kind: SandboxKind::Sbx, sbx_name, .. }) => {
+            let name = sbx_name_for(sbx_name, &cwd);
+            ensure_sbx(&name, &cwd)
+                .map_err(|reason| SpecError::isolation(&format!("IsolationUnavailable: {reason}")))?;
+            let argv = sbx_argv(&name, &cwd, &wrapped);
+            let Some(executable) = which("sbx") else {
+                return Err(SpecError::isolation("IsolationUnavailable: sbx disappeared before execution"));
+            };
+            (executable.to_string_lossy().into_owned(), argv[1..].to_vec(), true)
         }
         ShellMode::Sandbox(SandboxBackend { kind: SandboxKind::Ssh, ssh_target, ssh_workdir, ssh_options, .. }) => {
             let remote_dir = if ssh_workdir.trim().is_empty() { cwd.clone() } else { PathBuf::from(ssh_workdir) };
@@ -4264,6 +4378,7 @@ mod tests {
             ssh_target: String::new(),
             ssh_workdir: String::new(),
             ssh_options: Vec::new(),
+            sbx_name: String::new(),
         };
         assert!(probe_sandbox(&backend).is_ok(), "the probe accepts a present image: {:?}", probe_sandbox(&backend));
         let probe = std::env::temp_dir().join(format!("ta-docker-{}-{}", std::process::id(), uuid::Uuid::new_v4()));
@@ -4281,6 +4396,28 @@ mod tests {
     }
 
     #[test]
+    fn sbx_argv_uses_the_named_sandbox_and_guards_the_workdir() {
+        let argv = sbx_argv("teamagents-test", Path::new("/work/dir"), "echo hi");
+        assert_eq!(&argv[..4], ["sbx", "exec", "teamagents-test", "/bin/bash"]);
+        assert_eq!(argv[4], "-lc");
+        assert!(argv[5].contains("cd '/work/dir'"), "{argv:?}");
+        assert!(argv[5].contains("echo hi"));
+        let tricky = sbx_argv("n", Path::new("/tmp/it's here"), "true");
+        assert!(tricky[5].contains("'\\''"), "the quote is escaped: {tricky:?}");
+    }
+
+    #[test]
+    fn an_sbx_backend_without_the_cli_refuses_before_running_on_the_host() {
+        if which("sbx").is_some() {
+            eprintln!("skipped: sbx is installed, so the missing-CLI path is not testable here");
+            return;
+        }
+        let backend = SandboxBackend::sbx("teamagents-test".into());
+        let reason = probe_sandbox(&backend).unwrap_err();
+        assert!(reason.contains("sbx is not available"), "{reason}");
+    }
+
+    #[test]
     fn a_docker_backend_without_its_image_refuses_instead_of_running_on_the_host() {
         if which("docker").is_none() {
             eprintln!("skipped: docker is not on PATH");
@@ -4292,6 +4429,7 @@ mod tests {
             ssh_target: String::new(),
             ssh_workdir: String::new(),
             ssh_options: Vec::new(),
+            sbx_name: String::new(),
         };
         let reason = probe_sandbox(&backend).unwrap_err();
         // D-452: an unreachable daemon is a documented fail-closed refusal too (D-369). A sandbox whose
