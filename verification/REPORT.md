@@ -5,6 +5,18 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
+## 0. Gate status (re-run 2026-10-26 at `0e9dcc62`)
+
+* **The store-adoption control now tests one deterministic claim.** `MC_store_adopt.cfg` checks only
+  `NoForeignAdoption`; the crash path and other store claims remain covered by `MC_store` and their dedicated
+  controls. The old shared configuration could report `InterruptedWroteOursOnly` instead, depending on which
+  enabled action TLC explored first. No production or TLA+ model semantics changed.
+* **CI run 40339452117 verified all 47 configurations and refuted all 250 negative controls**, including
+  `NoForeignAdoption` for the repaired control. The focused local check reported that violation in 16/16 runs,
+  and the complete local counterexample suite passed as well.
+* **Kani passed in the same CI run**: `Complete - 7 successfully verified harnesses, 0 failures, 7 total`.
+  The Kani subjects were unchanged by this counterexample-only fix.
+
 ## 0. Gate status (re-run 2026-10-21 at `f6b37b0b`)
 
 * **Every claim now names a refutation, or is on the record as not having one.** The audit had asked only that
