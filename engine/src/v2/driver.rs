@@ -199,6 +199,8 @@ pub(crate) struct Shared {
     /// clients may drop it and re-read; only the complete response becomes a context entry). Cleared at the
     /// start and end of every attempt, so a stale preview can never be mistaken for current output.
     pub(crate) preview: Mutex<String>,
+    /// D-479: last prompt-assembly observation, not an authoritative model-request receipt.
+    pub(crate) instruction_sources: Mutex<Json>,
 }
 
 /// D-415: whether a shell call's `timeout` came from the model (clamped by `[limits] max_tool_seconds`) or from
@@ -662,6 +664,7 @@ pub(crate) fn spawn_driver<P: Provider + 'static>(
         shutdown: AtomicBool::new(false),
         cancel_attempt: Mutex::new(None),
         preview: Mutex::new(String::new()),
+        instruction_sources: Mutex::new(Json::Null),
     });
     // Bound MCP services load at boot: a required service that is unavailable
     // fails the boot honestly, an optional one only drops its capability (§7).
@@ -1357,7 +1360,12 @@ impl<P: Provider> Driver<P> {
         // (`[permissions] trust_project` decides whether a repository's count, D-244) and they are read here, per
         // turn, so an edit lands on the next turn; a file that cannot be read is named on stderr (the daemon's
         // log) and never silently absent.
-        let (rules, unreadable) = crate::config::instruction_text(&self.config.catalog.instruction_files);
+        let (rules, unreadable, sources) =
+            crate::config::instruction_text_report(&self.config.catalog.instruction_files);
+        *self.shared.instruction_sources.lock().unwrap() = json!({
+            "epoch": snapshot.epoch, "observed_at": teamagents_core::models::now(), "files": sources,
+            "meaning": "Last prompt assembly in this driver lifetime; not proof a provider consumed the request."
+        });
         for why in &unreadable {
             eprintln!("teamagents: instruction file not read: {why}");
         }

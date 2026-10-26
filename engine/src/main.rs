@@ -79,6 +79,7 @@ usage: teamagents [--cwd DIR] [--state-root PATH] [--session ID] [--model KEY] [
   teamagents daemon --stop [--state-root PATH]   stop that session's daemon (no pid: the socket is the address)\n\
   teamagents init [--state-root PATH]   write config and prepare the state root\n\
   teamagents doctor [--state-root PATH] check config, credentials, state root and host\n\
+  teamagents doctor environment [--cwd DIR] [--json] inspect host and configured execution tools, without repairs\n\
   teamagents version | --version      print the version\n\
   teamagents --help                   print this help\n\n\
 exec accepts repeated --attach PATH (workspace-relative UTF-8 text or PNG/JPEG/GIF/WebP; eight files,\n\
@@ -466,6 +467,7 @@ fn parse_args() -> Args {
                     args.command.as_deref(),
                     Some(
                         "exec"
+                            | "doctor"
                             | "status"
                             | "history"
                             | "inputs"
@@ -2814,7 +2816,36 @@ fn main() {
             args.overrides.clone(),
         ),
         Some("init") => cli::init(args.state_root.clone().map(PathBuf::from)),
-        Some("doctor") => cli::doctor(args.state_root.clone().map(PathBuf::from), &args.overrides),
+        Some("doctor") => {
+            if args.full_auto || args.model.is_some() {
+                reject("doctor does not apply --full-auto or --model; it never changes a session");
+            }
+            match args.positional.as_deref() {
+                Some("environment") => {
+                    if args.state_root.is_some() || args.session.is_some() {
+                        reject("doctor environment probes current configuration, not --state-root/--session; use status for the running environment");
+                    }
+                    if !args.overrides.is_empty() {
+                        reject("doctor environment reads the configured backend; -c overrides do not apply");
+                    }
+                    let cwd = args.cwd.as_deref().unwrap_or(".");
+                    teamagents_engine::environment::doctor(Path::new(cwd), args.exec_json)
+                }
+                None if !args.exec_json => {
+                    if let Some(cwd) = &args.cwd {
+                        if let Err(error) = std::env::set_current_dir(cwd) {
+                            eprintln!("doctor workspace: {error}");
+                            std::process::exit(2);
+                        }
+                    }
+                    cli::doctor(args.state_root.clone().map(PathBuf::from), &args.overrides)
+                }
+                _ => {
+                    eprintln!("use doctor, or doctor environment [--cwd DIR] [--json]");
+                    2
+                }
+            }
+        }
         Some("version") => cli::version(),
         Some("exec") => run_exec(&args),
         Some("authority") => run_authority(&args),

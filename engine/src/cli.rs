@@ -15,7 +15,7 @@ pub fn init(state_root: Option<PathBuf>) -> i32 {
         Ok(created) => {
             if created {
                 println!("wrote config: {}", path.display());
-                println!("default model: deepseek-flash (context 1,000,000; reasoning effort max).");
+                println!("default model: deepseek-flash (context 1,000,000; reasoning effort high).");
                 println!("export DEEPSEEK_API_KEY in this terminal; edit the config above for other services.");
             } else {
                 println!("kept the existing config: {} (not overwritten)", path.display());
@@ -217,7 +217,7 @@ pub fn doctor(state_root: Option<PathBuf>, overrides: &[String]) -> i32 {
                     format!("{} models={models:?} tools={tools:?}", config_path.display())
                 },
             );
-            if merge.present {
+            if merge.present || !merge.refused.is_empty() || !merge.accepted.is_empty() {
                 optional_check(
                     &mut results,
                     "project config",
@@ -277,6 +277,43 @@ pub fn doctor(state_root: Option<PathBuf>, overrides: &[String]) -> i32 {
     // R27/A36: the v2 state root must be identifiable and usable; the legacy
     // layout is only reported (its cleanup belongs to the archived plan's §14/R28)
     let v2_root = state_root.unwrap_or_else(crate::v2_root);
+    // D-479: inspect a live daemon without starting one or applying the newly read configuration.
+    if v2_root.join("daemon.sock").exists() {
+        match crate::v2::exec::Client::connect(&v2_root.join("daemon.sock")) {
+            Ok(mut client) => match client.call("checkpoint", json!({})) {
+                Ok(reply) => {
+                    let environment = &reply["snapshot"]["environment"];
+                    let changed = environment["configuration"]["restart_required"] == true;
+                    optional_check(
+                        &mut results,
+                        "running session",
+                        !changed && environment["configuration"]["comparison_available"] == true,
+                        format!(
+                            "workspace={:?}; permissions={}; sandbox={}; {}",
+                            client.session_workspace,
+                            client.permissions,
+                            environment["sandbox"].as_str().unwrap_or("unreported by this daemon"),
+                            if changed {
+                                "configuration changed since startup; stop this daemon explicitly and reconnect to apply it"
+                            } else if environment["configuration"]["comparison_available"] != true {
+                                "configuration comparison unavailable; doctor below inspects current files"
+                            } else {
+                                "the running session keeps its boot configuration; doctor below inspects current files"
+                            }
+                        ),
+                    );
+                    optional_check(
+                        &mut results,
+                        "session sources",
+                        environment["sources"].is_object(),
+                        environment["sources"].to_string(),
+                    );
+                }
+                Err(error) => optional_check(&mut results, "running session", false, error),
+            },
+            Err(error) => optional_check(&mut results, "running session", false, error),
+        }
+    }
     let v2_db = v2_root.join("session.sqlite");
     // D-227/D-228: the rows that would have been green in the probes that found them — a root whose socket
     // path cannot be bound, and paths under it whose *kind* is wrong, are FAILs: nothing can use that root.
@@ -432,6 +469,27 @@ pub fn doctor(state_root: Option<PathBuf>, overrides: &[String]) -> i32 {
                 (count, _) => format!("{skills} skill(s) under {count} configured root(s)"),
             },
         );
+        for (raw, path) in &roots {
+            optional_check(
+                &mut results,
+                "skill root",
+                path.is_dir(),
+                format!("{raw:?} -> {} (on-demand; not a sandbox mount guarantee)", path.display()),
+            );
+        }
+        for raw in &catalog.instruction_files {
+            let (text, unreadable) = crate::config::instruction_text(std::slice::from_ref(raw));
+            optional_check(
+                &mut results,
+                "instruction source",
+                unreadable.is_empty(),
+                if unreadable.is_empty() {
+                    format!("{raw:?}: readable now, {} prompt bytes; contents read per turn", text.len())
+                } else {
+                    unreadable.join("; ")
+                },
+            );
+        }
         // D-102 asked for this row to say the truth; since D-246 the truth is that the files *do* reach every
         // member's prompt (the driver composes them into every instance's system text), so the row counts what a
         // session will deliver — bytes and files — and a file it cannot read is a WARN naming it.

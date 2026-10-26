@@ -1731,8 +1731,15 @@ pub fn sandbox_from_config() -> Result<crate::tools::SandboxBackend, String> {
 /// Read per turn, not once per session: instruction files are policy a user edits, and the useful behaviour is
 /// that an edit reaches the *next* turn (the shape D-102 asked for) rather than the next state root.
 pub fn instruction_text(files: &[String]) -> (String, Vec<String>) {
+    let (text, unreadable, _) = instruction_text_report(files);
+    (text, unreadable)
+}
+
+/// D-479: report the same reads used for prompt assembly, without re-reading or exposing contents.
+pub(crate) fn instruction_text_report(files: &[String]) -> (String, Vec<String>, Json) {
     let mut text = String::new();
     let mut unreadable = Vec::new();
+    let mut rows = Vec::new();
     for raw in files {
         match std::fs::read_to_string(expand_home(raw)) {
             Ok(body) => {
@@ -1740,11 +1747,15 @@ pub fn instruction_text(files: &[String]) -> (String, Vec<String>) {
                     text.push_str("\n\n");
                 }
                 text.push_str(&format!("<!-- instruction file: {raw} -->\n{}", body.trim_end()));
+                rows.push(json!({"path": raw, "status": "loaded", "bytes": body.len()}));
             }
-            Err(error) => unreadable.push(format!("{raw}: {error}")),
+            Err(error) => {
+                unreadable.push(format!("{raw}: {error}"));
+                rows.push(json!({"path": raw, "status": "unreadable", "reason": error.to_string()}));
+            }
         }
     }
-    (text, unreadable)
+    (text, unreadable, Json::Array(rows))
 }
 
 pub fn expand_home(path: &str) -> PathBuf {

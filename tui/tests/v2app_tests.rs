@@ -117,7 +117,7 @@ fn word_wise_editing_is_wired() {
 fn a_command_answer_survives_a_checkpoint_and_a_note_does_not() {
     let mut app = V2App::new("s-test");
     app.command_note("goals in this session: turn-2 ACTIVE");
-    app.input_queued("transient-worker");
+    app.apply_events(&[json!({"kind":"instance_created","scope":"transient-worker","sequence":5,"payload":{}})]);
     app.apply_checkpoint(checkpoint(), 6);
     let text: String = app.entries.iter().map(|entry| entry.text.as_str()).collect::<Vec<_>>().join("\n");
     assert!(text.contains("goals in this session: turn-2 ACTIVE"), "the answer must stay: {text}");
@@ -469,10 +469,11 @@ fn frame_shows_status_chat_approvals_composer_and_footer() {
 #[test]
 fn a_queued_input_is_visible_in_the_conversation() {
     let mut app = app();
-    app.input_queued("i-leader");
+    app.input_receipt("env-queued", &json!({"queued":true, "deferred":true}));
+    app.apply_checkpoint(checkpoint(), 6);
     let all = app.entries.iter().map(|entry| entry.text.clone()).collect::<Vec<_>>().join("\n");
-    assert!(all.contains("queued for i-leader"), "{all}");
-    assert!(all.contains("when the running turn ends"), "{all}");
+    assert!(all.contains("Input env-queued: accepted"), "{all}");
+    assert!(all.contains("waiting for the current turn to end"), "{all}");
 }
 
 /// D-366: the streaming preview is a transient line under the conversation, shown only for the active target,

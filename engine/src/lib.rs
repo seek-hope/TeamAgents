@@ -15,6 +15,7 @@ pub mod bound;
 pub mod cli;
 pub mod codemode;
 pub mod config;
+pub mod environment;
 pub mod hooks;
 pub mod jobs;
 pub mod mcp;

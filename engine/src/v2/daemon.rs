@@ -138,6 +138,10 @@ where
         mcp,
         sessions,
         models,
+        sandbox: if config.supervisor.permissions == "full_auto" { "none" } else { config.supervisor.sandbox.name() }
+            .into(),
+        sources: crate::environment::sources(&config.supervisor.catalog),
+        config_watch: crate::environment::ConfigWatch::new(&config.supervisor.workspace),
     });
     // D-227: refuse before binding, so the answer names the limit and the fix instead of the OS's
     // `bind …: path must be shorter than SUN_LEN` (`cli::require_socket_path_fits` holds the boundary).
@@ -265,6 +269,9 @@ struct SessionFacts {
     /// D-473: the user's `[models]` catalog (key, wire model, provider) so the TUI can offer a model menu instead
     /// of asking the user to remember config keys. Static for the session's lifetime.
     models: Json,
+    sandbox: String,
+    sources: Json,
+    config_watch: crate::environment::ConfigWatch,
 }
 
 async fn accept_loop(
@@ -427,7 +434,17 @@ async fn handle(request: &Json, supervisor: &SupervisorHandle, session_db: &Path
             match read_only(session_db, session_id, |conn| {
                 read_method(method, &params, conn, &previews, &mcp, &facts.sessions, &facts.models)
             }) {
-                Ok(result) => reply(true, result),
+                Ok(mut result) => {
+                    if method == "checkpoint" {
+                        result["snapshot"]["environment"] = json!({
+                            "workspace": facts.workspace, "sandbox": facts.sandbox,
+                            "permissions": facts.permissions, "sources": facts.sources,
+                            "leader_instruction_load": supervisor.instruction_sources(),
+                            "configuration": facts.config_watch.report(Path::new(&facts.workspace))
+                        });
+                    }
+                    reply(true, result)
+                }
                 Err(error) => reply(false, json!(error)),
             }
         }
@@ -592,7 +609,20 @@ fn read_snapshot(conn: &rusqlite::Connection, mcp: &Json, sessions: &Json, model
                // to say when the goal stops accepting new requests
                "deadline": deadline})
     });
-    Ok(json!({"instances": instances, "tasks": work.tasks, "goal": goal,
+    // D-479: bounded identity/state-only delivery view for reconnecting clients; no input bodies copied.
+    let mut statement = conn.prepare(
+        "SELECT id, state FROM envelopes WHERE recipient = 'i-leader' AND sender = 'user' AND kind = 'user_input' ORDER BY sequence DESC LIMIT 100"
+    ).map_err(|e| format!("input delivery: {e}"))?;
+    let input_delivery = statement
+        .query_map([], |row| {
+            Ok(json!({
+                "id": row.get::<_, String>(0)?, "state": row.get::<_, String>(1)?
+            }))
+        })
+        .map_err(|e| format!("input delivery: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("input delivery: {e}"))?;
+    Ok(json!({"instances": instances, "tasks": work.tasks, "goal": goal, "input_delivery": input_delivery,
         // D-413: the configured MCP services and their credential state, so a client that cannot read this
         // machine's config (the TUI is one) can still tell a user what the session bound and what to do next.
         "mcp": mcp,

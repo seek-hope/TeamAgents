@@ -27,8 +27,8 @@ error is a human-readable sentence, not a code; the clients turn the ones they k
 (`docs/ACCEPTANCE.md`'s headless contract). A `result` is the handler's own JSON: keys not listed below are for
 that method's caller and may grow, so a client should treat the shape it does not understand as opaque.
 
-**Read methods** are answered from the session database in one read transaction, without involving the
-supervisor; they are the observation surface. `checkpoint` returns a snapshot plus the watermark it is consistent
+**Read methods** are answered from the session database in one read transaction; they are the observation
+surface. Checkpoint also adds explicitly non-transactional process/configuration observations described below. `checkpoint` returns a snapshot plus the watermark it is consistent
 with, and `events` returns what happened since a watermark — the reconnect contract, whose kinds are catalogued in
 [docs/EVENTS.md](EVENTS.md). Every object a reply or the greeting carries — a snapshot's `instances[]` rows and
 its `goal`, a task, an approval, a grant, a history entry, the envelopes themselves — has its fields in the
@@ -52,6 +52,22 @@ tools_pending, checking, inactive, terminated, blocked, settled, missing_assigne
 accept unfamiliar codes and absent fields from older daemons. attention is an inspection hint, never a
 permission or a deadlock verdict. A missing timer and elapsed time alone do not establish a stall.
 
+**Environment and input feedback (D-479).** `snapshot.environment` is an observation outside the database
+watermark: `workspace`, `sandbox`, `permissions` and `sources` describe the session at boot;
+`configuration.files[]` reports each path as `unchanged`, `changed` or `unavailable`.
+`restart_required` means a change was observed, and `comparison_available` is false if any comparison failed.
+No file bytes or fingerprints are exposed. `leader_instruction_load` is null until the current Leader driver
+assembles a prompt, then contains `epoch`, `observed_at`, `files[]` and `meaning`. Each file has `path`,
+`status` (`loaded`/`unreadable`), and `bytes` or `reason`. It comes from the actual reads used for assembly but
+is not a durable request receipt, a provider-consumption claim or a Skill-load audit. Older daemons may omit it.
+
+`snapshot.input_delivery[]` is read in the checkpoint transaction: the latest 100 user-input envelopes for
+the Leader, newest first, with `id` and `state` only. `ACCEPTED` is queued for a safe boundary; `DEFERRED` waits
+for the current turn to end; `APPLIED` means delivered into context, never model/task completion;
+`CANCELLED` and `SUPERSEDED` are terminal undelivered states. Clients must tolerate unknown states.
+The TUI preserves its bounded receipt rows across checkpoint/history refreshes, including reconnect in the
+same process; a newly launched TUI does not recreate all historical acknowledgements.
+
 **Commands** are executed by the control plane under the caller's identity (`Identity::User`) in one database
 transaction, with the permission and budget checks of `core/src/v2/capability.rs`; `identity checked` below means
 the handler re-checks who may do this rather than trusting the request.
@@ -62,16 +78,16 @@ the handler re-checks who may do this rather than trusting the request.
 
 | Method | Parameters | Reply keys | Answered at |
 |---|---|---|---|
-| `previews` | — | `previews` | `engine/src/v2/daemon.rs:670` |
-| `checkpoint` | — | `snapshot`, `watermark` | `engine/src/v2/daemon.rs:676` |
-| `events` | `since` | `events`, `resync_required`, `watermark` | `engine/src/v2/daemon.rs:683` |
-| `history` | `instance_id`, `limit` | `entries`, `envelope_id`, `epoch`, `idx`, `instance_id`, `kind`, `message`, `workspace` | `engine/src/v2/daemon.rs:692` |
-| `surfaces` | `instance_id`, `limit` | `epoch`, `goal_id`, `instance_id`, `kind`, `offered_tools`, `request_id`, `status`, `surface_authorized`, `surfaces` | `engine/src/v2/daemon.rs:725` |
-| `inputs` | — | `envelope_id`, `epoch`, `inputs`, `instance_id`, `next_after`, `payload`, `revision`, `sequence` | `engine/src/v2/daemon.rs:757` |
-| `tasks` | — | `tasks` | `engine/src/v2/daemon.rs:808` |
-| `approvals` | — | `approvals`, `id`, `operation_id`, `preview`, `tool` | `engine/src/v2/daemon.rs:817` |
-| `goals` | — | `attached_instances`, `deadline`, `goals`, `id`, `known_usage`, `limits`, `status`, `summary`, `unknown_usage` | `engine/src/v2/daemon.rs:846` |
-| `grants` | — | `action`, `capability_requests`, `delegable`, `grants`, `id`, `issuer`, `parent_grant_id`, `requester`, `resource_scope`, `revision`, `revoked`, `status`, `subject`, `task_id` | `engine/src/v2/daemon.rs:892` |
+| `previews` | — | `previews` | `engine/src/v2/daemon.rs:700` |
+| `checkpoint` | — | `snapshot`, `watermark` | `engine/src/v2/daemon.rs:706` |
+| `events` | `since` | `events`, `resync_required`, `watermark` | `engine/src/v2/daemon.rs:713` |
+| `history` | `instance_id`, `limit` | `entries`, `envelope_id`, `epoch`, `idx`, `instance_id`, `kind`, `message`, `workspace` | `engine/src/v2/daemon.rs:722` |
+| `surfaces` | `instance_id`, `limit` | `epoch`, `goal_id`, `instance_id`, `kind`, `offered_tools`, `request_id`, `status`, `surface_authorized`, `surfaces` | `engine/src/v2/daemon.rs:755` |
+| `inputs` | — | `envelope_id`, `epoch`, `inputs`, `instance_id`, `next_after`, `payload`, `revision`, `sequence` | `engine/src/v2/daemon.rs:787` |
+| `tasks` | — | `tasks` | `engine/src/v2/daemon.rs:838` |
+| `approvals` | — | `approvals`, `id`, `operation_id`, `preview`, `tool` | `engine/src/v2/daemon.rs:847` |
+| `goals` | — | `attached_instances`, `deadline`, `goals`, `id`, `known_usage`, `limits`, `status`, `summary`, `unknown_usage` | `engine/src/v2/daemon.rs:876` |
+| `grants` | — | `action`, `capability_requests`, `delegable`, `grants`, `id`, `issuer`, `parent_grant_id`, `requester`, `resource_scope`, `revision`, `revoked`, `status`, `subject`, `task_id` | `engine/src/v2/daemon.rs:922` |
 
 ### Commands (executed by the control plane)
 
@@ -152,10 +168,12 @@ literals in `engine/src/v2/daemon.rs` and its diagnostics helper; this table is 
 | `handle` | `request_id`, `ok`, `result` |
 | `handle` | `request_id`, `ok`, `error` |
 | `handle` | — |
+| `handle` | `workspace`, `sandbox`, `permissions`, `sources`, `leader_instruction_load`, `configuration` |
 | `input_paths` arm | `stopping`, `state_root` |
 | `read_snapshot` | `id`, `lifecycle`, `phase`, `model`, `reason`, `effort`, `can_run_shell`, `diagnosis` |
 | `read_snapshot` | `status`, `known_usage`, `summary`, `unknown_usage`, `limits`, `deadline` |
-| `read_snapshot` | `instances`, `tasks`, `goal`, `mcp`, `sessions`, `models` |
+| `read_snapshot` | `id`, `state` |
+| `read_snapshot` | `instances`, `tasks`, `goal`, `input_delivery`, `mcp`, `sessions`, `models` |
 | `read_events` | `sequence`, `kind`, `scope`, `payload` |
 | `apply_session_goal_limits` | — |
 | `previews` arm | `previews` |

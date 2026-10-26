@@ -36,7 +36,7 @@ the log is still a supported way to observe it (and the probes that do assert on
 | `artifact_abandoned` | `id` | `artifact_id` | `core/src/v2/control.rs:4988` | observability only |
 | `artifact_collected` | `id` | `artifact_id` | `core/src/v2/control.rs:5375` | observability only |
 | `artifact_owners_released` | `""` | `released` | `core/src/v2/control.rs:5142` | observability only |
-| `artifacts_gc_claimed` | `""` | `claimed` | `core/src/v2/control.rs:5074` | observability only |
+| `artifacts_gc_claimed` | `""` | `claimed` | `core/src/v2/control.rs:5074` | `engine/tests/v2_daemon.rs` |
 | `attempt_recorded` | `request_id` | `attempt_id`, `selected`, `status`, `stream`, `usage` | `core/src/v2/control.rs:2708` | `engine/src/v2/exec.rs`, `engine/tests/v2_daemon.rs`, `engine/tests/v2_driver.rs`, `review/benchmark/cadence.py` |
 | `budget_refused` | `instance_id` | `est`, `goal_id`, `known`, `max`, `request_id`, `reserved` | `core/src/v2/control.rs:2603` | `engine/src/v2/driver.rs`, `engine/src/v2/exec.rs`, `engine/tests/v2_driver.rs`, `review/dogfood/budget.py` |
 | `capability_approved` | `&subject` | `grant_id`, `request_id`, `subject`, `task_id` | `core/src/v2/control.rs:1686` | `tui/src/v2app.rs`, `tui/tests/minimal.rs` |
@@ -65,8 +65,8 @@ the log is still a supported way to observe it (and the probes that do assert on
 | `history_pruned` | `""` | `compacted`, `days`, `deliveries`, `events` | `core/src/v2/control.rs:5329` | observability only |
 | `inbox_drained` | `instance_id` | `applied`, `sealed` | `core/src/v2/control.rs:1248` | `tui/src/v2app.rs`, `tui/tests/minimal.rs` |
 | `input` | `instance_id` | `applied`, `envelope_id` | `core/src/v2/control.rs:2229` | `tui/scripts/pty_v2_smoke.py`, `tui/src/queue.rs`, `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `engine/src/providers/anthropic.rs`, `engine/src/providers/responses.rs`, `engine/src/v2/attachments.rs`, `engine/src/v2/diagnostics/tests.rs`, `engine/tests/cases/provider_content.rs`, `engine/tests/providers_fake.rs`, `engine/tests/v2_driver.rs`, `engine/tests/v2_mcp.rs`, `engine/tests/v2_spawn_failure.rs`, `engine/tests/v2_supervisor.rs` |
-| `input_queued` | `instance_id` | `deferred`, `envelope_id`, `phase` | `core/src/v2/control.rs:2177`, `core/src/v2/control.rs:2190` | `engine/src/v2/exec.rs`, `engine/tests/v2_daemon.rs`, `review/dogfood/crash.py`, `review/dogfood/queued_input.py` |
-| `instance_created` | `id` | `instance_id` | `core/src/v2/control.rs:951` | `tui/src/v2app.rs`, `review/eval/r2-p6/anatomy.py` |
+| `input_queued` | `instance_id` | `deferred`, `envelope_id`, `phase` | `core/src/v2/control.rs:2177`, `core/src/v2/control.rs:2190` | `tui/src/v2app.rs`, `engine/src/v2/exec.rs`, `engine/tests/v2_daemon.rs`, `review/dogfood/crash.py`, `review/dogfood/queued_input.py` |
+| `instance_created` | `id` | `instance_id` | `core/src/v2/control.rs:951` | `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `review/eval/r2-p6/anatomy.py` |
 | `instance_interrupted` | `instance_id` | `phase`, `reason`, `request_id` | `core/src/v2/control.rs:4222` | observability only |
 | `instance_lifecycle` | `instance` / `instance_id` | `lifecycle`, `reason` | `core/src/v2/control.rs:4067`, `core/src/v2/control.rs:4838` | `tui/scripts/pty_v2_smoke.py`, `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `engine/src/v2/daemon.rs`, `engine/src/v2/diagnostics.rs`, `engine/src/v2/exec.rs`, `engine/tests/cli.rs`, `engine/tests/v2_driver.rs`, `engine/tests/v2_supervisor.rs`, `review/dogfood/budget.py`, `review/dogfood/deadline.py`, `review/dogfood/lifecycle_run.py`, `review/dogfood/mcp_http.py` |
 | `instance_profile_changed` | `instance_id` | `effort`, `model` | `core/src/v2/control.rs:1174` | observability only |

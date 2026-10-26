@@ -10,7 +10,8 @@ recorded experiments are not instructions for the current product.
 ```bash
 teamagents init                      # write the config (kept if it exists) and prepare the state root
 export DEEPSEEK_API_KEY=...          # the environment variable named by api_key_env
-teamagents doctor                    # config, credentials, state root, skills, bubblewrap and host checks
+teamagents doctor                    # config, credentials, running session, sources and selected isolation
+teamagents doctor environment        # explicit host vs configured-environment executable discovery
 teamagents                           # open the TUI (starts this session's daemon when needed)
 ```
 
@@ -98,6 +99,11 @@ teamagents                           # open the TUI (starts this session's daemo
   undelivered failure.
   These actions do not interrupt models or stop running tools/delegations. Ordinary queued input enters
   at the next safe request boundary; there is no separate queue that waits for the entire goal to finish.
+  D-479 adds an acknowledgement in the conversation: accepted/queued, waiting for the current turn to end,
+  received into the Leader's context, cancelled or superseded. Received does not mean the task finished.
+  These receipt rows survive checkpoint/history refresh and reconnect within the same TUI process; a new
+  TUI does not recreate all old receipts. If sending fails without a confirmed reply, the draft is restored
+  and an unchanged retry reuses its input identity. Inspect Ctrl+P/history before editing an uncertain send.
 - **Local session export (D-451)**: `teamagents sessions export --id ID --output FILE --format json`
   (or `markdown`) writes a consistent snapshot of every stored member/context/input revision and reference.
   It preserves tool associations, labels unavailable references and never fetches or embeds external bytes.
@@ -386,7 +392,21 @@ api_key_env = "DEEPSEEK_API_KEY"
   `daemon.sock` belongs — D-228), the daemon socket path's length (Linux's 108-byte `sun_path` limit,
   which a deep state root can cross — D-227), the configured isolation probe and that the programs named
   in `[hooks]` are executable; it also lists the `[[checks]]` that will gate every goal. An `sessions/` layout
-  from an earlier release is reported explicitly and is never migrated.
+  from an earlier release is reported explicitly and is never migrated. If a daemon is already running, doctor
+  reads its actual workspace/backend and configuration-change status without starting a new session.
+- `teamagents doctor environment --cwd DIR [--json]` compares Rust/Cargo, Node/npm, Python/pip and Git
+  locations on the host and in the currently configured environment (D-479). This is a fresh-shell PATH
+  inspection, not a version/build test or a view of a running member's saved exports. Missing tools appear
+  individually; a failed or incomplete backend probe exits 1 and retains the error with a recovery hint.
+  No model is called, dependencies installed, network policy changed or host fallback attempted. Each probe
+  is limited to 20 seconds and 32 KiB. An existing sbx sandbox is required: the report supplies its name and
+  the explicit create recipe if needed; `sbx exec` can start a stopped sandbox. Docker image pulls are disabled.
+  Backend shell startup profiles retain their normal behavior. This command takes current configuration,
+  so `--state-root`, `--session`, `--full-auto`, `--model` and `-c` overrides are refused.
+- The TUI `/help` and `teamagents status --json` expose the running session's environment. Editing config
+  does not hot-reload it: a changed-file warning requests an explicit stop and restart of that daemon.
+  An unavailable comparison is reported separately. Preserve the same workspace, state root/session and
+  launch options when restarting; inspect active work first, since stopping a daemon interrupts its work.
 - Both `web_search` and `web_fetch` bindings use the DeepSeek Search/Fetch APIs and need a credential:
   `api_key_env` names the environment variable (normally `DEEPSEEK_API_KEY`). Without it — not configured, or
   the named variable unset — a call answers with a **capability state** naming what to configure, and no request
@@ -906,13 +926,18 @@ teamagents goals cancel --id g-spent    # close a goal nothing can spend (its ce
   discovered automatically: from the repository/trust boundary down to the working directory, outermost first, so
   the nearest file is the most specific, with user `instruction_files` before all of them. An untrusted repository
   contributes none and the refusal is reported (D-467). Do not confuse it with the upward project-config search
-  in §2.
+  in §2. D-479 adds the boot-selected paths to `/help` and status, and a transient observation of the
+  Leader's last prompt assembly: loaded paths/byte counts or unreadable paths/reasons from the very same
+  reads used for its prompt. This observation is empty after driver restart until another assembly occurs;
+  it does not prove a provider consumed the request. Doctor checks current files, not historical reads.
+  Skill roots are discovery sources; individual Skill content is still read on demand, and host discovery
+  does not imply a Skill script or its dependencies are available in the selected backend.
 - **Skill resource boundary**: search matches names/descriptions and returns at most ten hits; `read` returns
   at most 32,000 characters of SKILL.md text. Add `path` to read one support file relative to the skill's
   directory: it must stay inside that directory (absolute paths, `..`, symlinks that leave it, directories and
   credential-shaped names such as `.env`/`id_rsa`/`*.pem` are refused) and is truncated at 32,000 characters.
   The configured skill roots are mounted read-only at `/skills/<n>` inside the bubblewrap sandbox, so a skill's
-  scripts and assets can run there; docker and ssh do not mount them (the tool read still works on the host).
+  scripts and assets can run there; docker, sbx and ssh do not mount them (the tool read still works on the host).
   A loaded instruction is never a grant to read the host home or execute arbitrary host scripts.
 - The tools themselves — every function a model may be offered, with its parameters and the model-facing
   description, split by the layer that decides it (the profile's tools, the instance's grants, the session's

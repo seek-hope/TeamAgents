@@ -2,6 +2,97 @@
 
 use std::process::Command;
 
+#[test]
+fn environment_doctor_separates_host_and_sbx_without_setup_or_credentials() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = Scratch::new("environment-doctor");
+    let config = root.join("config");
+    let workspace = root.join("project with spaces");
+    let bin = root.join("bin");
+    std::fs::create_dir_all(config.join("teamagents")).unwrap();
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::write(
+        config.join("teamagents/config.toml"),
+        "[permissions]\nsandbox = \"sbx\"\nsandbox_sbx_name = \"test-existing\"\n",
+    )
+    .unwrap();
+    let fake = bin.join("sbx");
+    let log = root.join("calls");
+    std::fs::write(&fake, format!(
+        "#!/bin/sh\nprintf '%s\\n' \"$1\" >> '{}'\n[ \"$1\" = exec ] || exit 90\n[ \"$2\" = test-existing ] || exit 91\n[ -z \"$TA_ENV_SECRET\" ] || exit 92\nprintf 'workspace\\t/guest/project\\nrustc\\tmissing\\ncargo\\tmissing\\nnode\\t/guest/node\\nnpm\\tmissing\\npython3\\t/guest/python3\\npip3\\tmissing\\ngit\\t/guest/git\\n'\n",
+        log.display())).unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let run = || {
+        Command::new(env!("CARGO_BIN_EXE_teamagents"))
+            .args(["doctor", "environment", "--json", "--cwd"])
+            .arg(&workspace)
+            .env("XDG_CONFIG_HOME", &config)
+            .env("XDG_STATE_HOME", root.join("state"))
+            .env("TA_ENV_SECRET", "must-not-be-inherited")
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .output()
+            .unwrap()
+    };
+    let output = run();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["backend"], "sbx");
+    assert_eq!(report["host"]["ok"], true);
+    assert_eq!(report["selected"]["ok"], true);
+    assert!(report["selected"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["name"] == "rustc" && row["available"] == false));
+    assert!(!report.to_string().contains("must-not-be-inherited"));
+    assert_eq!(std::fs::read_to_string(&log).unwrap(), "exec\n");
+    assert!(!root.join("state").exists(), "no daemon or session is started");
+    assert_eq!(std::fs::read_dir(&workspace).unwrap().count(), 0);
+    // A service refusal must remain a refusal, never the successful host result.
+    std::fs::write(&fake, "#!/bin/sh\necho 'daemon socket: connection refused' >&2\nexit 1\n").unwrap();
+    let failed = run();
+    assert_eq!(failed.status.code(), Some(1));
+    let report: serde_json::Value = serde_json::from_slice(&failed.stdout).unwrap();
+    assert_eq!(report["host"]["ok"], true);
+    assert_eq!(report["selected"]["ok"], false);
+    assert!(report["selected"]["hint"].as_str().unwrap().contains("Backend service"));
+    std::fs::write(&fake, "#!/bin/sh\nexit 0\n").unwrap();
+    let incomplete = run();
+    assert_eq!(incomplete.status.code(), Some(1));
+    let report: serde_json::Value = serde_json::from_slice(&incomplete.stdout).unwrap();
+    assert!(report["selected"]["error"].as_str().unwrap().contains("incomplete environment probe"));
+}
+
+#[test]
+fn environment_doctor_rejects_missing_workspaces_and_inapplicable_flags() {
+    let root = Scratch::new("environment-doctor-refusal");
+    std::fs::create_dir_all(&root).unwrap();
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_teamagents"))
+            .args(args)
+            .env("XDG_CONFIG_HOME", root.join("config"))
+            .env("XDG_STATE_HOME", root.join("state"))
+            .current_dir(&root)
+            .output()
+            .unwrap()
+    };
+    let missing = run(&["doctor", "environment", "--cwd", "missing", "--json"]);
+    assert_eq!(missing.status.code(), Some(1));
+    let report: serde_json::Value = serde_json::from_slice(&missing.stdout).unwrap();
+    assert_eq!(report["ok"], false);
+    for args in [
+        vec!["doctor", "environment", "--state-root", "unused"],
+        vec!["doctor", "environment", "--full-auto"],
+        vec!["doctor", "environment", "-c", "skills_paths=[]"],
+        vec!["doctor", "typo"],
+    ] {
+        let output = run(&args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {output:?}");
+    }
+    assert!(!root.join("state").exists());
+}
+
 /// A scratch tree one test owns, removed on **every** exit path including a panic — the `Daemon` guard's
 /// sibling (D-160).
 ///

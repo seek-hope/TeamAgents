@@ -18,6 +18,17 @@ use std::{
 /// Pair results only with a call in the same member and epoch. An orphan remains visible.
 /// Display limits never alter the daemon's stored messages.
 pub fn project(rows: &[Json], member: &str, bounded: bool) -> Vec<ChatEntry> {
+    project_with_receipts(rows, member, bounded, &mut HashMap::new())
+}
+
+/// D-479: place local acknowledgements beside their authoritative user message.
+/// Remove placed receipts so callers can retain off-page and still-pending ones separately.
+pub(crate) fn project_with_receipts(
+    rows: &[Json],
+    member: &str,
+    bounded: bool,
+    receipts: &mut HashMap<String, ChatEntry>,
+) -> Vec<ChatEntry> {
     let mut entries: Vec<ChatEntry> = Vec::new();
     let mut pending = HashMap::new();
     for row in rows {
@@ -76,6 +87,11 @@ pub fn project(rows: &[Json], member: &str, bounded: bool) -> Vec<ChatEntry> {
                 workspace: workspace.clone(),
                 media,
             });
+        }
+        if kind == ChatKind::User {
+            if let Some(receipt) = row["envelope_id"].as_str().and_then(|id| receipts.remove(id)) {
+                entries.push(receipt);
+            }
         }
         if kind == ChatKind::Assistant {
             for call in message["tool_calls"].as_array().into_iter().flatten() {

@@ -279,13 +279,12 @@ fn run_v2_effect(effect: V2Effect, client: &mut DaemonClient, app: &mut V2App, s
             match result {
                 Ok(reply) => {
                     app.attachments.accepted();
-                    if reply["queued"] == json!(true) {
-                        app.input_queued(&instance);
-                    }
+                    app.input_receipt(&envelope, &reply);
                 }
                 Err(e) => {
                     app.composer.set_text(&text);
                     app.submit_failed(&e);
+                    app.command_note("No send acknowledgement: delivery may have succeeded. The draft is restored; retrying it unchanged reuses its input identity. Inspect Ctrl+P/history before changing it.");
                 }
             }
         }

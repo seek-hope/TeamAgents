@@ -1,14 +1,14 @@
 # Acceptance matrix (A01–A36)
 
 Baseline: [the design and acceptance baseline](DESIGN.md) §12/§16. Current source inspection and local
-regression: **2026-10-23, 02be286d through D-478**. This is not a new independent acceptance audit or real-model run.
+regression: **2026-10-26, D-479 additions on e8fb2cc1**. This is not a new independent acceptance audit or real-model run.
 The D-451 product/installation receipts and the D-452 independent audit retain their original source/date
 boundaries; later source changes do not inherit those results.
 
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 147 / engine 417 / tui 85 test targets), rerun on 2026-10-23.
+`make check` is green (core 147 / engine 424 / tui 87 test targets), rerun on 2026-10-26.
 `make pty` passed the same day: the terminal-profile matrix (xterm-256color, screen-256color, tmux-256color, xterm-kitty and Kitty under tmux) plus both forced graphics protocols, all rc 0 and
 credential-free. PTY checks cover protocol bytes, input ownership, resize and cleanup, not a complete
 actual graphical-terminal or OS matrix. These gates do not renew real-provider, OAuth, sandbox-service,
@@ -37,10 +37,25 @@ features, absent features, intentional differences and candidate acceptance work
 D-461 adds read-only diagnostics for A06/A13/A22/A28 and explicit recovery, not automatic reminders.
 Evidence: engine/src/v2/diagnostics/tests.rs (five projection tests), the extended daemon/CLI cancellation
 and restart test, the explicit-input recovery test in engine/tests/v2_daemon.rs, and two TUI tests in
-D-462 then removed the divergence the entry had listed as a risk: `engine/src/v2/readiness.rs::opens_a_turn` is the single rule the driver and the projection both call, with a truth-table test, so `idle_unsettled` and "the driver would open a turn" cannot disagree. The projection remains outside `V2Control`'s state, and real-user effect is still unmeasured. tui/tests/minimal.rs. The same gate run found and fixed a pre-existing `exec --stream-json` settle race that
+tui/tests/minimal.rs. D-462 then removed the divergence the entry had listed as a risk: `engine/src/v2/readiness.rs::opens_a_turn` is the single rule the driver and the projection both call, with a truth-table test, so `idle_unsettled` and "the driver would open a turn" cannot disagree. The projection remains outside `V2Control`'s state, and real-user effect is still unmeasured. The same gate run found and fixed a pre-existing `exec --stream-json` settle race that
 could omit `goal_completed` and under-report usage; its existing test now asserts both. Repeated observation
 and daemon restart add no model calls; explicit input or task
 cancellation recovers the existing workflow. No live-service or performance result is claimed.
+
+D-479 adds environment/source/configuration observations and input receipts for A14/A16/A21/A28/A36.
+The seven new engine tests and two new TUI tests cover no-setup PATH diagnosis, failed/incomplete backend
+responses, private bounded config comparison, bounded capture, boot facts, prompt-assembly reads and
+refresh-safe input feedback. The existing sbx argv test also drives an empty-stderr create refusal and
+subsequent recovery through a fake CLI in a child process. PTY first exposed receipts displacing the newest
+answer; receipts now sit beside their user message, with off-page settled receipts before the current history
+and pending receipts at its end. The unchanged terminal matrix passes with that correction.
+
+A one-off live diagnostic on 2026-10-26 used sbx v0.49.2 and a temporary workspace with spaces: a missing
+sandbox was refused without creation; after explicit creation, host Rust/Cargo were found while the VM
+reported them missing, and Node/npm/Python/pip/Git reported their own locations. No session state or workspace
+files were created, network-policy JSON was identical before/after, and the test sandbox/workspace were removed.
+Reproduce with `teamagents doctor environment --cwd DIR --json` before and after explicitly creating that
+workspace's named sandbox; this is executable discovery, not a build, provider or repeatable sbx dogfood result.
 
 ## Requirements (Q1–Q19) and their evidence
 

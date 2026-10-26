@@ -36,6 +36,56 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Command idempotency | a replay with the same `command_id` returns the stored receipt for control-plane state, and the authoritative check runs under the write lock (D-463); result bodies are shared by content digest and zstd-compressed (D-464), while the receipt **rows** remain one per command | D-463, D-464 |
 | Model actions and code windows | a deciding read shares the write's transaction, or the guard is a predicate on the write itself; `verification/REPORT.md` §6 lists the protocol transitions and the three engine windows that span two transactions with their predicates | D-465 |
 
+## D-479 Explicit environment diagnosis and input delivery feedback (2026-10-26)
+
+**Authorization.** The user approved a bounded round of development-environment diagnostics, actionable errors,
+live configuration/source visibility, input-delivery feedback and clearer stop semantics. No automatic toolchain
+installation, home mounts, credential copying, network-policy changes, host fallback, model reminders or new
+session branching is authorized by this round.
+
+**What.** The explicit CLI command `teamagents doctor environment --cwd DIR [--json]` compares executable
+locations for Rust/Cargo, Node/npm, Python/pip and Git on the host and in the currently configured backend.
+It uses the production shell wrapper and environment, without restoring or writing member shell state. Each
+probe has a 20-second timeout and 32 KiB capture limit. It never creates an sbx sandbox, never pulls a Docker
+image, and never starts a TeamAgents daemon or calls a model. A missing existing sandbox is a diagnostic failure
+with the derived name and an explicit create recipe. The human report compares host and selected locations;
+missing tools are individual rows, not a false backend failure. Incomplete probe output is refused even after
+exit zero. sbx failures retain their original message and add authentication, service, policy or workspace hints;
+a failed create with empty stderr is no longer mistaken for success.
+
+Checkpoint now exposes the running workspace/backend/permission mode, boot-selected instruction/skill paths,
+and a bounded configuration-file comparison. File changes request an explicit daemon restart, never a reload;
+unreadable or oversized files report an unavailable comparison. File bytes and fingerprints stay private.
+The Leader's last prompt-assembly observation comes from the same reads that build its prompt, with loaded or
+unreadable paths and reasons. It is transient, cleared on driver restart, and never claims provider consumption.
+Doctor reports current source readability and trust refusals, including AGENTS.md-only untrusted repositories.
+The TUI shows the live environment and sources in /help using its existing transcript layout.
+
+Input acknowledgements retain envelope identity across checkpoint/history refreshes. A PTY failure exposed
+old receipts pushing the newest answer off screen; receipts now follow the corresponding user message,
+while settled off-page receipts precede the current history and pending receipts remain at the end. Queued, explicitly deferred,
+applied, cancelled and superseded delivery states remain distinct; only stored delivery facts can report received.
+The checkpoint carries the latest 100 Leader input identities/states, without payloads. A transport failure restores
+the draft and explains unchanged retry identity. Help names the existing instance-termination lever and distinguishes
+model interruption, task cancellation and TUI detachment. Colors, geometry, shortcuts and permission rules remain.
+
+**Boundaries.** Executable discovery does not run compilers, verify versions or prove a build works. Backend login
+shell profiles retain their usual behavior; a stopped sbx may start on exec, and SSH retains its remote-cancellation
+and network limitations. Configuration comparison observes file bytes at daemon startup, so even a comment edit
+can request a restart; it is not an atomic snapshot spanning config load and external edits. Command-line overrides
+stay boot-local. The source-load observation describes prompt assembly, not a durable per-request audit or a Skill
+script execution. No real-model performance or cross-product comparison is claimed.
+
+**Regression entry points.** Environment module tests cover private config comparison and bounded capture;
+CLI environment-doctor tests cover host/backend separation, empty-success output, missing workspace, rejected
+flags, credential filtering and no setup/fallback. Daemon tests cover configuration changes without new work and
+instruction edits reaching the next scripted request. TUI tests cover delivery transitions, reconnect-compatible
+refresh, environment/help rendering and preserved key semantics. See the current regression entry in
+[ACCEPTANCE.md](ACCEPTANCE.md) for gate results. The standard full gate, its bwrap-free variant and the
+five-profile PTY matrix passed on 2026-10-26 (core 147 / engine 424 / tui 87). Release-profile source builds
+were installed locally with the user configuration unchanged; the installed CLI passed the one-off sbx probe
+and the installed TUI passed the xterm-256color conversation PTY. No model or public release was involved.
+
 ## D-478 Docker Sandboxes (`sbx`) backend, default none (2026-10-23)
 
 **Why.** The user wants the pluggable sandbox to use Docker's official Sandboxes (`sbx`, microVM) while keeping

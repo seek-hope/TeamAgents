@@ -25,6 +25,74 @@ fn app() -> V2App {
 }
 
 #[test]
+fn input_receipts_survive_refresh_and_follow_authoritative_delivery() {
+    let mut app = app();
+    app.input_receipt("env-visible", &json!({"queued":true}));
+    app.apply_checkpoint(json!({"input_delivery":[{"id":"env-visible","state":"ACCEPTED"}]}), 2);
+    assert!(app.entries.iter().any(|e| e.text.contains("env-visible") && e.text.contains("queued")));
+    app.apply_history(json!({"entries":[{"kind":"user","envelope_id":"env-visible",
+        "message":{"role":"user","content":"work"}}]}));
+    assert!(app.entries.iter().any(|e| e.text.contains("env-visible") && e.text.contains("received into")));
+    app.input_receipt("env-cancelled", &json!({"deferred":true,"queued":true}));
+    assert!(app.entries.iter().any(|e| e.text.contains("waiting for the current turn")));
+    app.apply_checkpoint(json!({"input_delivery":[{"id":"env-cancelled","state":"CANCELLED"}]}), 3);
+    assert!(app.entries.iter().any(|e| e.text.contains("env-cancelled") && e.text.contains("cancelled")));
+    app.input_receipt("env-old", &json!({"queued":true}));
+    app.apply_checkpoint(json!({"input_delivery":[{"id":"env-old","state":"SUPERSEDED"}]}), 4);
+    assert!(app.entries.iter().any(|e| e.text.contains("env-old") && e.text.contains("undelivered")));
+    let refresh = app.apply_events(&[json!({"kind":"input_cancelled","sequence":5,"payload":{}})]);
+    assert!(refresh.checkpoint);
+    app.input_receipt("env-pending", &json!({"queued":true}));
+    app.apply_history(json!({"entries":[
+        {"kind":"user","envelope_id":"env-visible","message":{"content":"work"}},
+        {"kind":"assistant","message":{"content":"latest answer"}}
+    ]}));
+    let position = |needle: &str| app.entries.iter().position(|entry| entry.text.contains(needle)).unwrap();
+    assert!(position("work") < position("env-visible"));
+    assert!(position("env-visible") < position("latest answer"));
+    assert!(
+        position("env-cancelled") < position("latest answer"),
+        "off-page receipts must not hide the latest response"
+    );
+    assert!(position("env-pending") > position("latest answer"), "pending input still needs current feedback");
+}
+
+#[test]
+fn help_reports_live_environment_without_changing_drafts_or_permissions() {
+    let mut app = app();
+    app.apply_checkpoint(
+        json!({"environment":{
+            "workspace":"/project","sandbox":"sbx","permissions":"approved_scope",
+            "configuration":{"restart_required":true},
+            "leader_instruction_load":{"epoch":0,"observed_at":123,"files":[
+                {"path":"/project/AGENTS.md","status":"loaded","bytes":100},
+                {"path":"/missing.md","status":"unreadable","reason":"No such file"}]},
+            "sources":{"instruction_files":["/project/AGENTS.md"],"skills_paths":["/skills"]}
+        }}),
+        2,
+    );
+    app.composer.set_text("/help");
+    assert!(app.handle_key(key(KeyCode::Enter)).is_none());
+    let text = app.entries.iter().map(|e| e.text.as_str()).collect::<Vec<_>>().join("\n");
+    for needle in [
+        "Workspace: /project",
+        "sbx (approved_scope)",
+        "Configuration changed",
+        "Last Leader prompt assembly",
+        "/missing.md: unreadable (No such file)",
+        "/project/AGENTS.md",
+        "/skills",
+        "Cancelling a task does not stop",
+        "doctor environment",
+    ] {
+        assert!(text.contains(needle), "{needle}: {text}");
+    }
+    // Plain rendering on a narrow terminal remains bounded by existing geometry.
+    let mut terminal = Terminal::new(TestBackend::new(48, 18)).unwrap();
+    terminal.draw(|frame| v2ui::render(frame, &mut app)).unwrap();
+}
+
+#[test]
 fn interruption_and_exit_are_distinct_and_keep_the_draft() {
     let mut app = app();
     app.composer.set_text("unfinished instruction");

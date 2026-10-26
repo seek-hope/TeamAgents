@@ -35,7 +35,7 @@ no more than a decision's own wording, the row says so.
 
 | Capability | Strongest evidence | Measured boundary | Open |
 |---|---|---|---|
-| Isolation by default, and a refusal instead of a host fallback | `V2Isolation.tla` (`UnavailableBackendNeverRuns`); `make check-nobwrap`, `make check-broken-sandbox`; `review/nobwrap_path.py` | the Docker and `sbx` backends are selectable and fail-closed (D-369, D-478); a live `sbx` `exec --check` passed (guest kernel `7.0.14`, host `7.3.0-3-cachyos`, host-owned workspace write-back), but neither backend has a repeatable dogfood probe of the bubblewrap weight | end-to-end Docker and repeatable `sbx` probes |
+| Explicit host mode by default; configured isolation refuses instead of falling back | `V2Isolation.tla` (`UnavailableBackendNeverRuns`); `make check-nobwrap`, `make check-broken-sandbox`; `review/nobwrap_path.py` | the Docker and `sbx` backends are selectable and fail-closed (D-369, D-478); a live `sbx` `exec --check` passed (guest kernel `7.0.14`, host `7.3.0-3-cachyos`, host-owned workspace write-back), but neither backend has a repeatable dogfood probe of the bubblewrap weight | end-to-end Docker and repeatable `sbx` probes |
 | Visibility is not delivery, and history is private | A05; `V2History.tla` (`InstancesReadOnlyTheirOwn`, `SystemNeverReads`) | the user's "may read any" is the absence of a restriction and so has no state half to break | — |
 | A call runs because a *binding* authorizes it | `v2_mcp::skill_call_without_the_binding_fails_honestly`; `V2Grants.tla`, `V2Authority.tla` | the binding gate's own refusal message is pinned by a test, so it cannot be reworded for convenience | — |
 | An approval binds one concrete operation, argument hash and permission revision | `review/dogfood/approval.py` (real TUI, approve and deny); `V2Approval.tla` (`NoLateEffect`, `ApprovalDecisionIsFinal`) | an approval is used up by that single dispatch; a leftover is expired automatically or denied by hand | — |
@@ -129,6 +129,11 @@ not a stalled connection, in its sampled long requests; this is not a claim that
 D-424 found that larger prompts were a billing issue rather than the dominant latency source in its sample.
 These results justify measuring cadence and cost, not assuming that a shorter window, longer timeout,
 higher effort or more agents will improve every task. Keep native windows in all real-model evaluations.
+
+D-479 adds explicit host/backend executable discovery through `doctor environment`, live workspace and
+configuration-change visibility, current source diagnosis and the Leader's last prompt-assembly source result.
+TUI input receipts distinguish queuing, deferral, receipt and cancellation; receipt is never a completion claim.
+These diagnostics do not install missing tools, mount extra roots, reload configuration or prove a build works.
 
 ## 7. Remaining evidence and candidate work
 

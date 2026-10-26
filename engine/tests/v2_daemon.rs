@@ -232,6 +232,109 @@ async fn boot(tag: &str, scripts: HashMap<String, Vec<Json>>) -> (Root, DaemonHa
     (root, handle)
 }
 
+#[tokio::test]
+async fn checkpoint_environment_is_boot_scoped_and_diagnostics_do_not_start_work() {
+    let root = root("env-facts");
+    let workspace = root.dir.join("ws");
+    std::fs::create_dir_all(workspace.join(".teamagents")).unwrap();
+    let project = workspace.join(".teamagents/config.toml");
+    std::fs::write(&project, "# original").unwrap();
+    let seen: SeenRequests = Arc::new(Mutex::new(vec![]));
+    let catalog = UserConfig {
+        instruction_files: vec![workspace.join("AGENTS.md").to_string_lossy().into_owned()],
+        skills_paths: vec![workspace.join("skills").to_string_lossy().into_owned()],
+        ..UserConfig::default()
+    };
+    let config = config_recording(&root, HashMap::new(), catalog, vec![], json!({}), &seen);
+    let socket = config.socket.clone();
+    let handle = serve(config).await.unwrap();
+    let mut client = Client::connect(&socket).await;
+    // The daemon and the member each sweep once at boot. Wait for both real receipts,
+    // rather than mistaking the asynchronous member sweep for an observation side effect.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let events = client.call("events", json!({"since":0})).await;
+        let sweeps = events["result"]["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["kind"] == "artifacts_gc_claimed")
+            .count();
+        if sweeps >= 2 {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "boot did not complete: {events}");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let first = client.call("checkpoint", json!({})).await;
+    assert_eq!(first["ok"], true, "{first}");
+    let environment = &first["result"]["snapshot"]["environment"];
+    assert_eq!(environment["sandbox"], "none", "full_auto overrides the configured backend");
+    assert_eq!(environment["configuration"]["restart_required"], false);
+    assert_eq!(environment["sources"]["instruction_files"][0], workspace.join("AGENTS.md").to_string_lossy().as_ref());
+    std::fs::write(&project, "# changed, not reloaded").unwrap();
+    let next = client.call("checkpoint", json!({})).await;
+    assert_eq!(next["result"]["snapshot"]["environment"]["configuration"]["restart_required"], true);
+    assert_eq!(
+        first["result"]["watermark"],
+        next["result"]["watermark"],
+        "{:?}",
+        client.call("events", json!({"since":first["result"]["watermark"]})).await
+    );
+    assert!(seen.lock().unwrap().is_empty(), "observation must not ask the model");
+    drop(client);
+    let mut reconnect = Client::connect(&socket).await;
+    assert_eq!(reconnect.call("checkpoint", json!({})).await["result"]["snapshot"]["environment"]["sandbox"], "none");
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn instruction_load_observation_matches_prompt_and_changes_between_turns() {
+    let root = root("instruction-load");
+    let workspace = root.dir.join("ws");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let rule = workspace.join("AGENTS.md");
+    std::fs::write(&rule, "first-source-marker").unwrap();
+    let missing = workspace.join("missing.md");
+    let seen: SeenRequests = Arc::new(Mutex::new(vec![]));
+    let catalog = UserConfig {
+        instruction_files: vec![rule.to_string_lossy().into_owned(), missing.to_string_lossy().into_owned()],
+        ..UserConfig::default()
+    };
+    let cfg = config_recording(
+        &root,
+        HashMap::from([("i-leader".into(), vec![reply("first"), reply("second")])]),
+        catalog,
+        vec![],
+        json!({}),
+        &seen,
+    );
+    let socket = cfg.socket.clone();
+    let handle = serve(cfg).await.unwrap();
+    let mut client = Client::connect(&socket).await;
+    let initial = client.call("checkpoint", json!({})).await;
+    assert!(initial["result"]["snapshot"]["environment"]["leader_instruction_load"].is_null());
+    for (turn, marker) in [(1, "first-source-marker"), (2, "second-source-marker-longer")] {
+        std::fs::write(&rule, marker).unwrap();
+        let run = headless_result(exec_options(&socket, &workspace, "reply briefly", vec![])).await;
+        assert!(run.is_ok(), "{:?}", run.err());
+        let checkpoint = client.call("checkpoint", json!({})).await;
+        let loaded = &checkpoint["result"]["snapshot"]["environment"]["leader_instruction_load"];
+        assert_eq!(loaded["files"][0]["status"], "loaded");
+        assert_eq!(loaded["files"][0]["bytes"], marker.len());
+        assert_eq!(loaded["files"][1]["status"], "unreadable");
+        assert!(loaded["files"][1]["reason"].is_string());
+        let requests = seen.lock().unwrap();
+        assert_eq!(requests.len(), turn);
+        assert!(requests.last().unwrap().iter().any(|message| message["role"] == "system"
+            && message["content"].as_str().is_some_and(|text| text.contains(marker))));
+        let deliveries = checkpoint["result"]["snapshot"]["input_delivery"].as_array().unwrap();
+        assert_eq!(deliveries.len(), turn);
+        assert!(deliveries.iter().all(|row| row["state"] == "APPLIED"));
+    }
+    handle.shutdown().await.unwrap();
+}
+
 /// D-429: the checkpoint carries the named sessions under this base and marks the one this daemon serves — the
 /// registry lives beside the state root, not inside it, and a TUI has no config loader of its own.
 #[tokio::test]

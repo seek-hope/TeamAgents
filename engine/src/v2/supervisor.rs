@@ -217,6 +217,16 @@ impl SupervisorHandle {
         json!({"previews": rows})
     }
 
+    /// D-479: an observation of the Leader's last prompt assembly. Null after boot until one occurs.
+    pub(crate) fn instruction_sources(&self) -> Json {
+        self.drivers
+            .lock()
+            .unwrap()
+            .get("i-leader")
+            .map(|driver| driver.shared.instruction_sources.lock().unwrap().clone())
+            .unwrap_or(Json::Null)
+    }
+
     /// Session snapshot for status views (read from the same worker).
     pub async fn snapshot(&self) -> Result<Json, String> {
         self.storage

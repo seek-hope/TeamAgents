@@ -6,6 +6,7 @@
 //! and system notes are UI-level annotations on top.
 
 use serde_json::Value as Json;
+use std::collections::{HashMap, HashSet};
 
 use crate::text::Composer;
 
@@ -228,6 +229,8 @@ pub struct V2App {
     pub instances: Vec<InstanceInfo>,
     /// Read-only checkpoint observations, never instructions to the model.
     work_diagnostics: Vec<(String, Json)>,
+    environment: Json,
+    pending_input_receipts: HashSet<String>,
     pub entries: Vec<ChatEntry>,
     pub transcript: crate::transcript::Transcript,
     pub graphics: crate::graphics::Graphics,
@@ -267,6 +270,8 @@ impl V2App {
             session_id: session_id.to_string(),
             instances: vec![],
             work_diagnostics: vec![],
+            environment: Json::Null,
+            pending_input_receipts: HashSet::new(),
             entries: vec![],
             transcript: crate::transcript::Transcript::default(),
             graphics: crate::graphics::Graphics::default(),
@@ -362,6 +367,24 @@ impl V2App {
     /// Checkpoint (connect/reconnect): snapshot state and the watermark the
     /// event stream resumes from — one consistent read (§9).
     pub fn apply_checkpoint(&mut self, snapshot: Json, watermark: i64) {
+        self.environment = snapshot["environment"].clone();
+        for row in snapshot["input_delivery"].as_array().into_iter().flatten() {
+            let Some(envelope) = row["id"].as_str() else { continue };
+            let state = match row["state"].as_str() {
+                Some("APPLIED") => "received into the Leader's context (not a completion verdict)",
+                Some("DEFERRED") => "accepted; waiting for the current turn to end",
+                Some("ACCEPTED") => "accepted; queued for the next safe boundary",
+                Some("CANCELLED") => "pending delivery cancelled; no model interruption was requested",
+                Some("SUPERSEDED") => "undelivered: the instance epoch changed",
+                _ => continue,
+            };
+            self.update_input_receipt(
+                envelope,
+                state,
+                false,
+                matches!(row["state"].as_str(), Some("ACCEPTED" | "DEFERRED")),
+            );
+        }
         if self.session_name.is_empty() {
             if let Some(row) = snapshot["sessions"].as_array().into_iter().flatten().find(|row| row["active"] == true) {
                 self.session_name = if row["id"] == "default" {
@@ -437,17 +460,46 @@ impl V2App {
     /// History of the active instance: the authoritative conversation (§9 —
     /// only renders previews). System notes stay layered on top, newest last.
     pub fn apply_history(&mut self, history: Json) {
-        let rebuilt = crate::transcript::project(
+        for row in history["entries"].as_array().into_iter().flatten() {
+            if let Some(envelope) = row["envelope_id"].as_str() {
+                self.update_input_receipt(
+                    envelope,
+                    "received into the Leader's context (not a completion verdict)",
+                    false,
+                    false,
+                );
+            }
+        }
+        let mut receipts = HashMap::new();
+        let mut receipt_order = Vec::new();
+        let mut notes = Vec::new();
+        for entry in self.entries.drain(..) {
+            if entry.kind == ChatKind::Command && entry.who.starts_with("input:") {
+                let id = entry.who[6..].to_string();
+                receipt_order.push(id.clone());
+                receipts.insert(id, entry);
+            } else if matches!(entry.kind, ChatKind::System | ChatKind::Error | ChatKind::Command) {
+                notes.push(entry);
+            }
+        }
+        let rebuilt = crate::transcript::project_with_receipts(
             history["entries"].as_array().map(Vec::as_slice).unwrap_or(&[]),
             "i-leader",
             true,
+            &mut receipts,
         );
-        let notes: Vec<ChatEntry> = self
-            .entries
-            .drain(..)
-            .filter(|e| matches!(e.kind, ChatKind::System | ChatKind::Error | ChatKind::Command))
-            .collect();
-        self.entries = rebuilt;
+        let mut pending = Vec::new();
+        for id in receipt_order {
+            if let Some(receipt) = receipts.remove(&id) {
+                if self.pending_input_receipts.contains(&id) {
+                    pending.push(receipt);
+                } else {
+                    self.entries.push(receipt);
+                }
+            }
+        }
+        self.entries.extend(rebuilt);
+        self.entries.extend(pending);
         self.entries.extend(notes);
         if self.chat_scroll == 0 {
             self.last_chat_lines = 0; // follow: force the render to re-clamp
@@ -564,7 +616,10 @@ impl V2App {
                     refresh.checkpoint = true;
                     self.note(format!("instance {} created", event["scope"].as_str().unwrap_or("?")));
                 }
-                "task_delegated"
+                "input_queued"
+                | "input_cancelled"
+                | "input_edited"
+                | "task_delegated"
                 | "task_started"
                 | "task_completed"
                 | "wait_satisfied"
@@ -665,12 +720,38 @@ impl V2App {
         self.note_error(format!("send failed: {error}"));
     }
 
-    /// The input is accepted but waits for the running turn's boundary (D-63): it
-    /// cannot be part of a request that is already fixed, so it enters the
-    /// conversation after that turn's own answer. Say so instead of leaving the
-    /// user wondering whether the message was sent at all.
-    pub fn input_queued(&mut self, instance: &str) {
-        self.note(format!("queued for {instance}: it enters when the running turn ends"));
+    /// D-479: retain the acknowledged envelope through refresh/reconnect. History or a checkpoint,
+    /// never a timer, changes 'queued' into 'received'. Retry identity remains owned by Attachments.
+    pub fn input_receipt(&mut self, envelope: &str, reply: &Json) {
+        let state = if reply["deferred"] == true {
+            "accepted; waiting for the current turn to end"
+        } else if reply["queued"] == true {
+            "accepted; queued for the next safe boundary (Ctrl+P inspects pending inputs)"
+        } else if reply["applied"] == true {
+            "received into the Leader's context (not a completion verdict)"
+        } else {
+            "accepted by the daemon; delivery not yet confirmed"
+        };
+        self.update_input_receipt(envelope, state, true, reply["applied"] != true);
+    }
+
+    fn update_input_receipt(&mut self, envelope: &str, state: &str, create: bool, pending: bool) {
+        let who = format!("input:{envelope}");
+        let text = format!("Input {envelope}: {state}.");
+        if let Some(entry) = self.entries.iter_mut().find(|entry| entry.kind == ChatKind::Command && entry.who == who) {
+            entry.text = text;
+        } else if create {
+            self.command_note(text);
+            if let Some(entry) = self.entries.last_mut() {
+                entry.who = who;
+            }
+        }
+        if pending {
+            self.pending_input_receipts.insert(envelope.to_string());
+        } else {
+            self.pending_input_receipts.remove(envelope);
+        }
+        self.pending_input_receipts.retain(|id| self.entries.iter().any(|entry| entry.who == format!("input:{id}")));
     }
 
     pub fn decide_failed(&mut self, error: &str) {
@@ -901,6 +982,8 @@ A slash prefix shows commands: Up/Down selects, Tab/Enter fills, Esc cancels; En
 Ctrl+C or /interrupt cancels the Leader's model request; running tools and delegated work continue.
 Ctrl+A focuses pending approvals; a approves once, d denies, Esc returns.
 Ctrl+Q or /quit quits the TUI; the session keeps running.
+Cancelling a task does not stop its command. To stop executing work, use teamagents instances terminate --id INSTANCE --yes.
+Keep the same --state-root/--session; SSH remote processes may need separate cleanup.
 Ctrl+S or /sessions opens session history, switching and confirmed deletion; / searches stored messages.
 Ctrl+P or /queue shows pending Leader inputs; Enter edits, Delete asks to cancel, Esc returns to the draft.
 Ctrl+M or /model changes the Leader's model and reasoning effort at its next turn.
@@ -909,9 +992,11 @@ Attachments: eight files, 1 MiB UTF-8 text or 5 MiB PNG/JPEG/GIF/WebP, 16 MiB to
 Ctrl+O expands or folds tool previews; /sessions shows full stored results.
 Ctrl+G switches graphics previews and source; image files stay unchanged.
 Developer tools: teamagents --help; teamagents status --json; teamagents history --id ID.
+{}
 {}",
                 self.session_id,
                 self.active_instance().map(|i| i.model.as_str()).unwrap_or("unavailable"),
+                self.environment_details(),
                 self.diagnostic_details()
             )),
             "/attach" => self.command_note(format!(
@@ -1085,6 +1170,60 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
 
     pub fn scroll_chat_back(&mut self, lines: usize) {
         self.chat_scroll = self.chat_scroll.saturating_sub(lines);
+    }
+
+    fn environment_details(&self) -> String {
+        if !self.environment.is_object() {
+            return "Execution environment: not reported by this daemon; use teamagents doctor.".into();
+        }
+        let mut lines = vec![format!(
+            "Workspace: {}\nExecution: {} ({})",
+            self.environment["workspace"].as_str().unwrap_or("unknown"),
+            self.environment["sandbox"].as_str().unwrap_or("unknown"),
+            self.environment["permissions"].as_str().unwrap_or("unknown")
+        )];
+        if self.environment["configuration"]["restart_required"] == true {
+            lines.push(
+                "Configuration changed since startup; explicitly stop this daemon and reconnect to apply it.".into(),
+            );
+        }
+        if self.environment["configuration"]["comparison_available"] == false {
+            lines.push(
+                "Configuration comparison unavailable; inspect teamagents status --json for affected paths.".into(),
+            );
+        }
+        lines.push(
+            "Boot-selected sources (contents read per turn; skills on demand, not proof of script availability):"
+                .into(),
+        );
+        for key in ["instruction_files", "skills_paths"] {
+            let rows = self.environment["sources"][key].as_array();
+            for row in rows.into_iter().flatten().take(20) {
+                lines.push(format!("  {key}: {}", row.as_str().unwrap_or("unknown")));
+            }
+            if rows.is_some_and(|rows| rows.len() > 20) {
+                lines.push(format!("  More {key}: teamagents status --json"));
+            }
+        }
+        let loaded = &self.environment["leader_instruction_load"];
+        if loaded.is_object() {
+            lines.push(format!(
+                "Last Leader prompt assembly: epoch {}, observed at {} (not a provider receipt).",
+                loaded["epoch"], loaded["observed_at"]
+            ));
+            for file in loaded["files"].as_array().into_iter().flatten().take(20) {
+                lines.push(format!(
+                    "  {}: {}{}",
+                    file["path"].as_str().unwrap_or("?"),
+                    file["status"].as_str().unwrap_or("unknown"),
+                    file["reason"].as_str().map(|reason| format!(" ({reason})")).unwrap_or_default()
+                ));
+            }
+        } else {
+            lines.push("No instruction load observed in the current Leader driver lifetime.".into());
+        }
+        lines.push("teamagents doctor shows current source readability/refusals; doctor environment explicitly probes host and configured tools, without repairs.".into());
+        lines.join("\n")
     }
 
     fn diagnostic_details(&self) -> String {

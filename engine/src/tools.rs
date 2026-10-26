@@ -1580,7 +1580,8 @@ fn probe_sandbox(backend: &SandboxBackend) -> Result<(), String> {
             match Command::new("sbx").arg("ls").output() {
                 Ok(out) if out.status.success() => Ok(()),
                 Ok(out) => {
-                    Err(format!("sbx is not usable (run `sbx login`): {}", String::from_utf8_lossy(&out.stderr).trim()))
+                    let reason = String::from_utf8_lossy(&out.stderr);
+                    Err(format!("sbx is not usable: {}; {}", reason.trim(), crate::environment::recovery_hint(&reason)))
                 }
                 Err(error) => Err(format!("sbx could not be run: {error}")),
             }
@@ -1956,7 +1957,7 @@ fn ensure_sbx(name: &str, workspace: &Path) -> Result<(), String> {
     let create = Command::new("sbx").args(["create", "--name", name, "shell"]).arg(workspace).output();
     let mut reason = match &create {
         Ok(out) if out.status.success() => String::new(),
-        Ok(out) => String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        Ok(out) => format!("sbx create exited {}: {}", out.status, String::from_utf8_lossy(&out.stderr).trim()),
         Err(error) => format!("could not run sbx: {error}"),
     };
     if !reason.is_empty() {
@@ -1965,20 +1966,23 @@ fn ensure_sbx(name: &str, workspace: &Path) -> Result<(), String> {
             Ok(out) => {
                 let probe = String::from_utf8_lossy(&out.stderr).trim().to_string();
                 if !probe.is_empty() {
-                    reason = probe;
+                    reason.push_str(&format!("; existing-sandbox probe: {probe}"));
                 }
             }
             Err(error) => reason = format!("could not run sbx exec: {error}"),
         }
     }
     if !reason.is_empty() {
-        return Err(format!("sbx sandbox {name:?} could not be created: {reason}"));
+        return Err(format!(
+            "sbx sandbox {name:?} could not be created: {reason}; {}",
+            crate::environment::recovery_hint(&reason)
+        ));
     }
     ready.lock().map_err(|_| "the sbx readiness lock is poisoned".to_string())?.insert(name.to_string());
     Ok(())
 }
 
-fn sbx_name_for(configured: &str, workspace: &Path) -> String {
+pub(crate) fn sbx_name_for(configured: &str, workspace: &Path) -> String {
     let configured = configured.trim();
     if configured.is_empty() {
         format!("teamagents-{:016x}", stable_hash(workspace.to_string_lossy().as_bytes()))
@@ -2450,9 +2454,33 @@ pub(crate) fn shell_command_spec(
     mode: ShellMode,
     skills: &[PathBuf],
 ) -> Result<ShellCommandSpec, SpecError> {
+    shell_spec(command, workdir, network, shell_state, mode, skills, false)
+}
+
+/// D-479: the ordinary wrapper/environment without setup effects. sbx must already exist;
+/// Docker must use a local image. No persistent shell state is read or written.
+pub(crate) fn diagnostic_shell_spec(
+    command: &str,
+    workdir: &Path,
+    mode: ShellMode,
+) -> Result<ShellCommandSpec, SpecError> {
+    shell_spec(command, workdir, false, None, mode, &[], true)
+}
+
+fn shell_spec(
+    command: &str,
+    workdir: &Path,
+    network: bool,
+    shell_state: Option<&Path>,
+    mode: ShellMode,
+    skills: &[PathBuf],
+    diagnostic: bool,
+) -> Result<ShellCommandSpec, SpecError> {
     if let ShellMode::Sandbox(backend) = &mode {
-        if let Err(reason) = backend_available(backend) {
-            return Err(SpecError::isolation(&format!("IsolationUnavailable: {reason}")));
+        if !diagnostic {
+            if let Err(reason) = backend_available(backend) {
+                return Err(SpecError::isolation(&format!("IsolationUnavailable: {reason}")));
+            }
         }
         if backend.kind == SandboxKind::Sbx && network {
             return Err(SpecError::isolation(
@@ -2508,8 +2536,10 @@ pub(crate) fn shell_command_spec(
         }
         ShellMode::Sandbox(SandboxBackend { kind: SandboxKind::Sbx, sbx_name, .. }) => {
             let name = sbx_name_for(sbx_name, &cwd);
-            ensure_sbx(&name, &cwd)
-                .map_err(|reason| SpecError::isolation(&format!("IsolationUnavailable: {reason}")))?;
+            if !diagnostic {
+                ensure_sbx(&name, &cwd)
+                    .map_err(|reason| SpecError::isolation(&format!("IsolationUnavailable: {reason}")))?;
+            }
             let argv = sbx_argv(&name, &cwd, &wrapped);
             let Some(executable) = which("sbx") else {
                 return Err(SpecError::isolation("IsolationUnavailable: sbx disappeared before execution"));
@@ -2525,7 +2555,10 @@ pub(crate) fn shell_command_spec(
             (executable.to_string_lossy().into_owned(), argv[1..].to_vec(), true)
         }
         ShellMode::Sandbox(SandboxBackend { kind: SandboxKind::Docker, image, .. }) => {
-            let argv = docker_argv(&cwd, network, &wrapped, shell_state, image);
+            let mut argv = docker_argv(&cwd, network, &wrapped, shell_state, image);
+            if diagnostic {
+                argv.insert(2, "--pull=never".into());
+            }
             let Some(executable) = which("docker") else {
                 return Err(SpecError::isolation("IsolationUnavailable: docker disappeared before execution"));
             };
@@ -4408,6 +4441,31 @@ mod tests {
 
     #[test]
     fn sbx_argv_uses_the_named_sandbox_and_guards_the_workdir() {
+        // D-479: isolate PATH in a child, and prove an empty-stderr failure is not cached as readiness.
+        if let Some(root) = std::env::var_os("TA_D479_SBX_PROBE_ROOT") {
+            let root = PathBuf::from(root);
+            let error = ensure_sbx("failure-test", &root).unwrap_err();
+            assert!(error.contains("sbx create exited"), "{error}");
+            assert!(error.contains('7'), "{error}");
+            std::fs::write(root.join("sbx"), "#!/bin/sh\n[ \"$1\" = exec ] && exit 0\nexit 7\n").unwrap();
+            ensure_sbx("failure-test", &root).expect("an existing sandbox can now be used");
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("ta-sbx-failure-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let fake = root.join("sbx");
+        std::fs::write(&fake, "#!/bin/sh\nexit 7\n").unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let child = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tools::tests::sbx_argv_uses_the_named_sandbox_and_guards_the_workdir", "--nocapture"])
+            .env("TA_D479_SBX_PROBE_ROOT", &root)
+            .env("PATH", &root)
+            .output();
+        std::fs::remove_dir_all(&root).unwrap();
+        let child = child.unwrap();
+        assert!(child.status.success(), "{}", String::from_utf8_lossy(&child.stderr));
+        assert!(String::from_utf8_lossy(&child.stdout).contains("1 passed"));
         let argv = sbx_argv("teamagents-test", Path::new("/work/dir"), "echo hi");
         assert_eq!(&argv[..4], ["sbx", "exec", "teamagents-test", "/bin/bash"]);
         assert_eq!(argv[4], "-lc");

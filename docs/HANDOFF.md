@@ -1,6 +1,6 @@
 # Development handoff
 
-Updated **2026-10-23** against source **02be286d** (through D-478). This is the current entry point for a new development
+Updated **2026-10-26** for **D-479 additions on e8fb2cc1**. This is the current entry point for a new development
 session, not an authorization to implement the candidate backlog. Recheck Git status and recent commits;
 this document does not assert that a remote branch or installed binary matches the working tree.
 
@@ -27,6 +27,7 @@ this document does not assert that a remote branch or installed binary matches t
 | 9b29c8b5, 3b7ea4a1 | D-471 acceptance checks follow the session's shell mode; CI fixtures follow `none`, transient ETXTBSY retry | `exec --check` and goal `[[checks]]` run on the host in `none` mode; the bubblewrap refusal stays covered |
 | f00a2a31, 122fc628, 02be286d | D-472 terminal-agnostic PTY matrix; D-473 Ctrl+Q/Ctrl+P and the Leader model/effort menu; D-474 default reasoning effort high | PTY profiles are protocol checks, not a GUI matrix; a profile change applies at the next turn; `init` never rewrites an existing config |
 | v0.2.0 | first public release, rebuilt for D-476: Linux x86_64 musl-static archive, installer and SHA256SUMS | Tag `96acfde7`; run 39885779367; `review/install_check.py` verifies the published release; the original artifact's two downloads are not recalled |
+| D-479 | Explicit environment diagnosis, live workspace/config/source facts, actual Leader instruction-read observations and input-delivery receipts | Local scripted regressions and PTY; one-off sbx v0.49.2 diagnostic separated host/guest tools without a model call or policy change; no toolchain installation or hot reload |
 | D-478 | Docker Sandboxes (`sbx`) backend; default `none` unchanged; one sandbox per workspace; create/exec through the `sbx` CLI | `sbx` v0.48.0 installed and logged in; live `exec --check` showed guest kernel `7.0.14` vs host `7.3.0-3-cachyos` and host-owned workspace writes; no repeatable dogfood probe yet |
 
 D-462 added the verification gate and ledger: every counterexample configuration names the claim it must
@@ -41,10 +42,14 @@ Option B (automatic model reminders) was explicitly rejected. The shared project
 engine/src/v2/diagnostics.rs; checkpoint, instances, tasks and local TUI /help expose it. Tests cover query-only
 reopen, real daemon restart without additional model calls, explicit input/cancellation recovery and TUI frames.
 
-Local checks rerun on 2026-10-23 at `02be286d`: **make check passed, core 147 / engine 417 / tui 85**,
+Local checks rerun on 2026-10-26 for D-479: **make check passed, core 147 / engine 424 / tui 87**,
 **make check-nobwrap passed** (the CI runner's bwrap-free condition) and **make pty passed** the terminal-profile
 matrix (xterm-256color, screen-256color, tmux-256color, xterm-kitty and Kitty under tmux; auto graphics) plus both forced protocol modes. These results are local regressions, not a new independent audit, real-model
-comparison, actual graphical-terminal matrix, installed-artifact acceptance or release.
+comparison, actual graphical-terminal matrix or public release. D-479 release-profile binaries were also
+installed locally with the user configuration unchanged: the installed CLI passed the explicit temporary-sbx
+diagnostic and the installed TUI passed the xterm-256color conversation PTY. No TeamAgents tmux session was
+running at installation, and existing session data was retained. This is a local source-build smoke, not a
+renewal of the historical installed-archive acceptance.
 
 The [D-451 maturity report](../review/maturity-2026-10-11/REPORT.md) retains its immutable manifests and
 receipts. The [formal report](../verification/REPORT.md) carries its own source and run boundary. Neither
@@ -80,6 +85,7 @@ Useful checks, all included in the normal suites:
 | Delegable capabilities and operation-only review | core/src/v2/control.rs tests, engine/tests/v2_driver.rs, engine/src/v2/reviewer.rs |
 | Cache usage, stable prefixes and provider request bodies | core/src/kernel/mod.rs, engine/tests/providers_fake.rs, engine/src/v2/exec.rs |
 | Governed update transactions | engine/src/update.rs, engine/tests/update.rs |
+| Environment probes, config/source observations and input receipts | engine/src/environment.rs, engine/tests/cli.rs, engine/tests/v2_daemon.rs, tui/tests/minimal.rs |
 
 ## Verification and environment
 
@@ -118,7 +124,9 @@ to make current code appear to have passed an older run; new acceptance needs ne
 
 Prioritize the agreed items from the comparison queue rather than copying its whole backlog into a goal.
 DD-01 option A is implemented; do not add automatic reminders under that authorization. The next candidates
-are real development/skill environments, a paired coding evaluation and complete accounting; instruction discovery, tool composition and session controls are implemented (D-467, D-469, D-473) with the boundaries their decisions state.
+are actual development/skill dependency workflows beyond D-479 diagnostics. Paired coding evaluation is
+postponed by the user and monetary accounting is excluded from the current work. Instruction discovery, tool
+composition and session controls are implemented (D-467, D-469, D-473) with the boundaries their decisions state.
 External editing, capability delegation and cache telemetry are already implemented, with remaining
 coverage limits stated separately. Paid trials and releases require concrete scope and authorization.
 
