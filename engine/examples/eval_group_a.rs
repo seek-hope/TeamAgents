@@ -118,7 +118,6 @@ fn main() {
         artifacts: Some(artifacts),
         shell_state: Some(shell_state),
         permissions: if full_auto { "full_auto".into() } else { "approved_scope".into() },
-        sandbox: teamagents_engine::tools::SandboxBackend::bubblewrap(),
         profile: KernelProfile {
             images: false,
             tool_output_chars: None,

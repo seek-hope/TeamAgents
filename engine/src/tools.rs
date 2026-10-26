@@ -1,9 +1,8 @@
-//! File tools confined to the member workspace, mode-aware Shell execution,
+//! File tools confined to the member workspace, automatic host shell execution,
 //! and web fetch with an SSRF guard.
 
 use serde_json::{json, Value as Json};
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::OpenOptionsExt;
@@ -63,7 +62,7 @@ fn prune_artifacts(dir: &Path, budget: u64) -> usize {
     removed
 }
 const PAGE_BYTES: usize = 32_000;
-// Linux flags: this executor already relies on /proc/self/fd and bubblewrap.
+// Linux flags: this executor already relies on /proc/self/fd.
 const O_NONBLOCK: i32 = 0x800;
 const O_DIRECTORY: i32 = 0x10000;
 // ponytail: serialize native mutations in this process; use per-path locks if
@@ -698,18 +697,18 @@ fn resolve_artifact(artifacts: Option<&PathBuf>, key: &str) -> Result<PathBuf, S
     resolve_in_root(root, name)
 }
 
-/// The raw tool dispatch for one root: the file, shell and web tools rooted there, with the turn control
-/// and shell mode passed in per call. The member path wraps this with the binding gate and the member's own
+/// The raw tool dispatch for one root: the file, shell and web tools rooted there, with turn control
+/// passed in per call. The member path wraps this with the binding gate and the member's own
 /// `ArtifactPaths` (`member_executor_with_control`, built by `V2Toolkit::new`).
 fn workspace_executor_with_control(
     root: PathBuf,
     artifacts: ArtifactPaths,
     shell_state: Option<PathBuf>,
     max_tool_seconds: Option<u64>,
-) -> impl Fn(&str, &Json, &TurnControl, ShellMode) -> Result<Json, String> + Send + Sync + 'static {
+) -> impl Fn(&str, &Json, &TurnControl) -> Result<Json, String> + Send + Sync + 'static {
     // cross-process write locks live beside the session state, never in the project
     let lock_dir = artifacts.own.as_ref().and_then(|dir| dir.parent()).map(|state| state.join("locks"));
-    move |tool: &str, args: &Json, control: &TurnControl, mode: ShellMode| -> Result<Json, String> {
+    move |tool: &str, args: &Json, control: &TurnControl| -> Result<Json, String> {
         control.check()?;
         let arg = |key: &str| args.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string();
         let arg_or = |args: &Json, key: &str, default: &str| -> String {
@@ -947,22 +946,14 @@ fn workspace_executor_with_control(
             }
             "glob" => {
                 let pattern = if arg("pattern").is_empty() { "*".to_string() } else { arg("pattern") };
-                // D-114: an installed but broken bubblewrap must report its refusal, not silently
-                // change ignore semantics by falling back to the native walker.
-                let use_rg = match &mode {
-                    ShellMode::Host => true,
-                    ShellMode::Sandbox(backend) if backend.kind == SandboxKind::Bubblewrap => bwrap_available(),
-                    _ => sandbox_ok(&mode),
-                };
-                if use_rg && sandbox_rg_available() {
+                if which("rg").is_some() {
                     // A positive `rg --glob` overrides .gitignore. Filter the
                     // already-ignored file list instead.
                     let command = format!(
                         "set -o pipefail; rg --files -- . | rg --color never -- {}",
                         shell_quote(&glob_regex(&pattern))
                     );
-                    return shell_run_at(&command, &root, 30, false, artifacts.output(), None, control, mode)
-                        .map(Json::String);
+                    return shell_run_at(&command, &root, 30, artifacts.output(), None, control).map(Json::String);
                 }
                 let mut hits = vec![];
                 glob_walk(&root, &root, &pattern, &mut hits, control)?;
@@ -972,29 +963,19 @@ fn workspace_executor_with_control(
                 let pattern = shell_quote(&arg("pattern"));
                 let path = resolve_in_root(&root, &arg_or(args, "path", "."))?;
                 let path = shell_quote(&path.to_string_lossy());
-                let command = if sandbox_rg_available() {
+                let command = if which("rg").is_some() {
                     format!("rg --line-number --no-heading --color never -- {pattern} {path}")
                 } else {
                     format!("grep -rn -- {pattern} {path}")
                 };
-                shell_run_at(&command, &root, 30, false, artifacts.output(), None, control, mode).map(Json::String)
+                shell_run_at(&command, &root, 30, artifacts.output(), None, control).map(Json::String)
             }
             "shell" => {
                 let command = arg("command");
                 // D-415: the model picks this number; the session's ceiling bounds it
                 let timeout = bounded_timeout(args.get("timeout").and_then(|v| v.as_u64()), max_tool_seconds);
-                let network = args.get("network").and_then(|v| v.as_bool()).unwrap_or(false);
-                shell_run_at(
-                    &command,
-                    &root,
-                    timeout,
-                    network,
-                    artifacts.output(),
-                    shell_state.as_deref(),
-                    control,
-                    mode,
-                )
-                .map(Json::String)
+                shell_run_at(&command, &root, timeout, artifacts.output(), shell_state.as_deref(), control)
+                    .map(Json::String)
             }
             other => Err(format!("unknown tool {other}")),
         }
@@ -1066,9 +1047,9 @@ pub(crate) fn web_tools(
     Ok(tools)
 }
 
-/// Skills registry roots: user-configured `skills_paths` only (project and
+/// Skills registry roots: user-configured host `skills_paths` only (project and
 /// member skill dirs live inside the workspace and are readable with `files`).
-/// Read-only by construction (§7: selected skills are pre-authorized reads).
+/// The skill tool only reads these paths; host shell commands use their ordinary host paths.
 pub(crate) fn skill_roots(catalog: &teamagents_core::models::UserConfig) -> Vec<PathBuf> {
     catalog.skills_paths.iter().map(|p| crate::config::expand_home(p)).filter(|p| p.is_dir()).collect()
 }
@@ -1285,10 +1266,10 @@ pub(crate) fn member_executor_with_control(
     shell_state: Option<PathBuf>,
     memory: Option<MemoryScope>,
     max_tool_seconds: Option<u64>,
-) -> impl Fn(&str, &Json, &TurnControl, ShellMode) -> Result<Json, String> + Send + Sync + 'static {
+) -> impl Fn(&str, &Json, &TurnControl) -> Result<Json, String> + Send + Sync + 'static {
     let workspace = workspace_executor_with_control(root, artifacts, shell_state, max_tool_seconds);
     let web: OnceLock<Result<WebTools, String>> = OnceLock::new();
-    move |tool: &str, args: &Json, control: &TurnControl, mode: ShellMode| match tool {
+    move |tool: &str, args: &Json, control: &TurnControl| match tool {
         "web_search" => {
             let binding = web
                 .get_or_init(|| web_tools(&catalog, &bindings))
@@ -1351,30 +1332,13 @@ pub(crate) fn member_executor_with_control(
             if !bindings.iter().any(|b| b == capability) {
                 return Err(format!("tool {other} is not bound to this member"));
             }
-            workspace(other, args, control, mode)
+            workspace(other, args, control)
         }
     }
 }
 
-/// A stable 64-bit FNV-1a hash, for deriving a per-session path that does not change between runs of the same
-/// session (`DefaultHasher` is explicitly not stable across releases, and this name ends up in a remote path).
-fn stable_hash(bytes: &[u8]) -> u64 {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in bytes {
-        hash ^= *byte as u64;
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    hash
-}
-
 fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
-}
-
-fn sandbox_rg_available() -> bool {
-    // Match shell_run's sanitized PATH; a host-only ~/.local binary is not
-    // mounted into the shell sandbox.
-    ["/usr/local/bin/rg", "/usr/bin/rg", "/bin/rg"].iter().any(|path| Path::new(path).is_file())
 }
 
 fn glob_regex(pattern: &str) -> String {
@@ -1498,347 +1462,21 @@ fn segment_match(pattern: &str, name: &str) -> bool {
     pi == p.len()
 }
 
-pub fn bwrap_available() -> bool {
-    which("bwrap").is_some()
-}
-
-/// Why a sandbox is not usable here, or `Ok(())` when one really starts. The capability the product needs is not
-/// "bwrap is in `PATH`" but "a sandbox starts here": a present-but-blocked bwrap — Ubuntu 23.10+/24.04 restricts
-/// unprivileged user namespaces by default, so bwrap dies with `setting up uid map: Permission denied`, and a
-/// locked-down container does the same — looks available to [`bwrap_available`] while every sandboxed call fails
-/// closed. `doctor`, the MCP workspace path and the tests all read this one answer (D-113/D-114), including the
-/// reason, so a refusal can repeat the machine's own complaint instead of a generic sentence. The probe costs one
-/// sandboxed process and its answer cannot change while this process lives, so it is cached.
-pub fn sandbox_state() -> Result<(), String> {
-    static STATE: OnceLock<Result<(), String>> = OnceLock::new();
-    STATE.get_or_init(probe_bubblewrap).clone()
-}
-
-fn probe_bubblewrap() -> Result<(), String> {
-    if !bwrap_available() {
-        return Err("bwrap is not available: refusing to run commands without isolation".into());
-    }
-    match shell_run("test -e /etc/hostname && test ! -e /home", &std::env::temp_dir(), 20, false, None) {
-        Ok(out) if !out.contains("(exit ") => Ok(()),
-        Ok(out) => Err(format!("the isolation probe exited non-zero: {out}")),
-        Err(reason) => Err(reason),
-    }
-}
-
-/// Why the *configured* backend is not usable here (D-369), or `Ok(())`. Bubblewrap is the probe above; Docker
-/// requires a reachable daemon and the configured image **already present** — an implicit pull would need network
-/// or hang, so it is refused with the `docker pull` line instead. Cached like the bubblewrap probe: the answer
-/// cannot change while this process lives.
-pub fn sandbox_state_for(backend: &SandboxBackend) -> Result<(), String> {
-    static STATE: OnceLock<Result<(), String>> = OnceLock::new();
-    STATE.get_or_init(|| probe_sandbox(backend)).clone()
-}
-
-fn probe_sandbox(backend: &SandboxBackend) -> Result<(), String> {
-    match backend.kind {
-        SandboxKind::None => Ok(()),
-        SandboxKind::Bubblewrap => probe_bubblewrap(),
-        // D-437: the probe answers the only question the fail-closed rule depends on — does a command *reach* the
-        // configured host right now? `BatchMode=yes` turns a missing key or an unknown host into a fast refusal
-        // instead of a prompt that would hang a turn.
-        SandboxKind::Ssh => {
-            if which("ssh").is_none() {
-                return Err("ssh is not available: refusing to run commands without isolation".into());
-            }
-            if backend.ssh_target.trim().is_empty() {
-                return Err("sandbox = \"ssh\" needs [permissions] sandbox_ssh_target".into());
-            }
-            let argv = ssh_argv(&backend.ssh_target, Path::new(""), "true", &backend.ssh_options);
-            match std::process::Command::new(&argv[0]).args(&argv[1..]).output() {
-                Ok(out) if out.status.success() => Ok(()),
-                Ok(out) => Err(format!(
-                    "the ssh target {:?} did not answer (`ssh … true` exited {}): {}",
-                    backend.ssh_target,
-                    out.status.code().map(|code| code.to_string()).unwrap_or_else(|| "no code".into()),
-                    String::from_utf8_lossy(&out.stderr).trim()
-                )),
-                Err(error) => Err(format!("ssh could not be run: {error}")),
-            }
-        }
-        SandboxKind::Sbx => {
-            if which("sbx").is_none() {
-                return Err("sbx is not available: refusing to run commands without isolation".into());
-            }
-            match Command::new("sbx").arg("version").output() {
-                Ok(out) if out.status.success() => {}
-                Ok(out) => {
-                    return Err(format!(
-                        "sbx is not usable (`sbx version` exited {}): {}",
-                        out.status.code().map(|code| code.to_string()).unwrap_or_else(|| "no code".into()),
-                        String::from_utf8_lossy(&out.stderr).trim()
-                    ))
-                }
-                Err(error) => return Err(format!("sbx could not be run: {error}")),
-            }
-            // `sbx ls` is the cheap authenticated read: version alone passes before login, while every
-            // actual create/exec would then fail closed.
-            match Command::new("sbx").arg("ls").output() {
-                Ok(out) if out.status.success() => Ok(()),
-                Ok(out) => {
-                    let reason = String::from_utf8_lossy(&out.stderr);
-                    Err(format!("sbx is not usable: {}; {}", reason.trim(), crate::environment::recovery_hint(&reason)))
-                }
-                Err(error) => Err(format!("sbx could not be run: {error}")),
-            }
-        }
-        SandboxKind::Docker => {
-            if which("docker").is_none() {
-                return Err("docker is not available: refusing to run commands without isolation".into());
-            }
-            if backend.image.trim().is_empty() {
-                return Err("sandbox = \"docker\" needs [permissions] sandbox_image".into());
-            }
-            match std::process::Command::new("docker").arg("info").output() {
-                Ok(out) if out.status.success() => {}
-                Ok(out) => {
-                    let reason = String::from_utf8_lossy(&out.stderr);
-                    return Err(format!("the docker daemon is not usable: {}", reason.trim()));
-                }
-                Err(error) => return Err(format!("docker could not be run: {error}")),
-            }
-            match std::process::Command::new("docker").args(["image", "inspect", backend.image.as_str()]).output() {
-                Ok(out) if out.status.success() => Ok(()),
-                _ => Err(format!(
-                    "the sandbox image {:?} is not present locally; pull it first with `docker pull {}`",
-                    backend.image, backend.image
-                )),
-            }
-        }
-    }
-}
-
-/// A cheap "can this backend run here at all" check for the dispatch path. It must **not** run a sandboxed
-/// command: `probe_bubblewrap` does, through `shell_run`, and calling it from `shell_command_spec` would recurse
-/// (`probe_bubblewrap` → `shell_run` → `shell_command_spec`). `sandbox_state_for` is the full probe `doctor` and
-/// `glob` use; this is the fail-closed gate the command path needs.
-fn backend_available(backend: &SandboxBackend) -> Result<(), String> {
-    match backend.kind {
-        SandboxKind::None => Ok(()),
-        SandboxKind::Bubblewrap => {
-            if bwrap_available() {
-                Ok(())
-            } else {
-                Err("bwrap is not available: refusing to run commands without isolation".into())
-            }
-        }
-        // D-437: the cheap gate is "is there an ssh, and does the config name a host". The *connectivity* probe is
-        // `probe_sandbox`'s (it runs `ssh … true`), which the command path must not do per call.
-        SandboxKind::Ssh => {
-            if which("ssh").is_none() {
-                Err("ssh is not available: refusing to run commands without isolation".into())
-            } else if backend.ssh_target.trim().is_empty() {
-                Err("sandbox = \"ssh\" needs [permissions] sandbox_ssh_target".into())
-            } else {
-                Ok(())
-            }
-        }
-        SandboxKind::Sbx => {
-            if which("sbx").is_none() {
-                Err("sbx is not available: refusing to run commands without isolation".into())
-            } else {
-                Ok(())
-            }
-        }
-        SandboxKind::Docker => {
-            if which("docker").is_none() {
-                return Err("docker is not available: refusing to run commands without isolation".into());
-            }
-            if backend.image.trim().is_empty() {
-                return Err("sandbox = \"docker\" needs [permissions] sandbox_image".into());
-            }
-            match std::process::Command::new("docker").args(["image", "inspect", backend.image.as_str()]).output() {
-                Ok(out) if out.status.success() => Ok(()),
-                _ => Err(format!(
-                    "the sandbox image {:?} is not present locally; pull it first with `docker pull {}`",
-                    backend.image, backend.image
-                )),
-            }
-        }
-    }
-}
-
-/// `sandbox_state().is_ok()`: the verdict the tests branch on. `doctor` reports the *detail* (the reason a
-/// sandbox is unusable) through `sandbox_state()` itself, not through this summary.
-pub fn sandbox_usable() -> bool {
-    sandbox_state().is_ok()
-}
-
 pub fn which(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path).map(|dir| dir.join(name)).find(|candidate| candidate.is_file())
 }
 
-/// Where a member's shell state lives inside the sandbox (bound rw).
-const SHELL_STATE_SANDBOX: &str = "/tmp/.teamagents-shell";
-
-/// Which sandbox runs an `approved_scope` command (D-369). Selected from the user's own config, never from a
-/// model tool argument; `full_auto` bypasses it entirely (the host shell is the explicit opt-out, D-41).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SandboxKind {
-    /// D-466: no sandbox. The default: the command runs on the host, exactly as a plain shell would. It is a
-    /// deliberate, visible mode, not a fallback — a configured backend that cannot start still fails closed.
-    None,
-    Bubblewrap,
-    Docker,
-    /// D-478: a Docker Sandboxes (`sbx`) microVM. The host-side `sbx` CLI owns the VM; this backend creates or
-    /// reuses one sandbox per workspace and executes each command through `sbx exec`.
-    Sbx,
-    /// D-437: the command runs on **another host** over ssh. The isolation here is not a namespace: it is the
-    /// remote account, and this backend makes no claim beyond it (the module docstring of `ssh_argv` is the honest
-    /// statement of what ssh can and cannot enforce).
-    Ssh,
-}
-
-/// The selected backend and, for Docker, the image it runs. `image` is empty for bubblewrap.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SandboxBackend {
-    pub kind: SandboxKind,
-    pub image: String,
-    /// D-437: the ssh destination (`user@host`, or an alias from the user's own `~/.ssh/config`), for
-    /// `kind = Ssh`. Empty for the two local backends.
-    pub ssh_target: String,
-    /// D-437: the directory the remote command runs in. Empty means "the session's own workdir path", which is
-    /// what a synced tree wants; a host without that path needs this set (`cd` fails loudly otherwise).
-    pub ssh_workdir: String,
-    /// D-437: extra argv for the ssh *client*, for what a destination string cannot express — a non-default port,
-    /// a specific key, a jump host. They are placed **after** the product's own `-o` list on purpose: OpenSSH uses
-    /// the first value it is given for a parameter, so a user option cannot weaken `BatchMode=yes` (a prompt would
-    /// hang a turn) or `StrictHostKeyChecking=accept-new`.
-    pub ssh_options: Vec<String>,
-    /// D-478: the configured `sbx` sandbox name; empty means one is derived from the workspace path.
-    pub sbx_name: String,
-}
-
-impl SandboxBackend {
-    /// D-437: the ssh backend, built from its three settings (the config validator is what guarantees the target
-    /// is a single destination and the options are single argv items).
-    pub fn ssh(target: String, workdir: String, options: Vec<String>) -> Self {
-        SandboxBackend {
-            kind: SandboxKind::Ssh,
-            image: String::new(),
-            ssh_target: target,
-            ssh_workdir: workdir,
-            ssh_options: options,
-            sbx_name: String::new(),
-        }
-    }
-
-    /// D-466: the default backend — the command runs on the host.
-    pub fn none() -> Self {
-        SandboxBackend {
-            kind: SandboxKind::None,
-            image: String::new(),
-            ssh_target: String::new(),
-            ssh_workdir: String::new(),
-            ssh_options: Vec::new(),
-            sbx_name: String::new(),
-        }
-    }
-
-    pub fn is_none(&self) -> bool {
-        self.kind == SandboxKind::None
-    }
-
-    pub fn bubblewrap() -> Self {
-        SandboxBackend {
-            kind: SandboxKind::Bubblewrap,
-            image: String::new(),
-            ssh_target: String::new(),
-            ssh_workdir: String::new(),
-            ssh_options: Vec::new(),
-            sbx_name: String::new(),
-        }
-    }
-
-    /// D-478: a Docker Sandboxes microVM; `name` is empty when the name is derived per workspace.
-    pub fn sbx(name: String) -> Self {
-        SandboxBackend {
-            kind: SandboxKind::Sbx,
-            image: String::new(),
-            ssh_target: String::new(),
-            ssh_workdir: String::new(),
-            ssh_options: Vec::new(),
-            sbx_name: name,
-        }
-    }
-
-    pub fn name(&self) -> &'static str {
-        match self.kind {
-            SandboxKind::None => "none",
-            SandboxKind::Bubblewrap => "bubblewrap",
-            SandboxKind::Docker => "docker",
-            SandboxKind::Sbx => "sbx",
-            SandboxKind::Ssh => "ssh",
-        }
-    }
-}
-
-/// Selected only from trusted session state, never from model tool arguments.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum ShellMode {
-    Sandbox(SandboxBackend),
-    Host,
-}
-
-impl ShellMode {
-    /// D-471: the mode a caller that already resolved the sandbox should use (acceptance checks): `none` is the
-    /// host, any configured backend is the sandbox with its fail-closed probe.
-    pub(crate) fn from_sandbox(sandbox: SandboxBackend) -> Self {
-        if sandbox.is_none() {
-            Self::Host
-        } else {
-            Self::Sandbox(sandbox)
-        }
-    }
-
-    pub(crate) fn from_permissions(mode: Option<&str>, sandbox: SandboxBackend) -> Result<Self, String> {
-        match mode {
-            Some("approved_scope") if !sandbox.is_none() => Ok(Self::Sandbox(sandbox)),
-            Some("approved_scope") | Some("full_auto") => Ok(Self::Host),
-            _ => {
-                Err("ShellPermissionUnavailable: the session permission mode is unreadable, the command was not run"
-                    .into())
-            }
-        }
-    }
-}
-
-/// Whether the selected sandbox is usable here (`glob`'s branch check).
-pub(crate) fn sandbox_ok(mode: &ShellMode) -> bool {
-    match mode {
-        ShellMode::Sandbox(backend) => sandbox_state_for(backend).is_ok(),
-        ShellMode::Host => true,
-    }
-}
-
-pub(crate) fn sandbox_home(persistent_shell: bool) -> &'static str {
-    if persistent_shell {
-        // ponytail: caches follow session retention; add an explicit cache
-        // quota here if real projects exhaust the member's disk budget.
-        "/tmp/.teamagents-shell/home"
-    } else {
-        // The doctor and some direct callers use /tmp as their workspace.
-        // Keep this home outside that bind so it remains private and writable.
-        "/run/teamagents/home"
-    }
-}
-
-/// A real terminal keeps `cd` and `export` between commands; a fresh sandbox per
-/// call does not. The state travels through a small file the shell writes itself
-/// (and reads next time), which also survives a session resume. It is written to
-/// a temp name and renamed, so a killed command cannot leave a half-written state.
-fn shell_state_preamble(sandbox_dir: &str) -> String {
+/// Preserve `cd` and `export` across calls and session resumes. The shell writes
+/// its state to a temp name and renames it, so a killed command cannot leave a
+/// half-written state.
+fn shell_state_preamble(state_dir: &str) -> String {
     // Legacy snapshots contain an unguarded `cd` followed by exports, so the
     // source command's final status cannot tell whether the directory restored.
     // Catch that failure before any caller command can write in the wrong root.
     // Only migrate an unversioned snapshot's old default HOME. New snapshots
     // preserve deliberate HOME exports, including the workspace itself.
-    let quoted_dir = shell_quote(sandbox_dir);
+    let quoted_dir = shell_quote(state_dir);
     format!(
         r#"mkdir -p {quoted_dir} 2>/dev/null || true
 __ta_state={quoted_dir}/state.sh
@@ -1856,320 +1494,30 @@ if [ -r "$__ta_state" ]; then
     if [ "$__ta_restore_cwd_failed" = 1 ]; then
         printf '%s\n' 'ShellStateUnavailable: the saved working directory cannot be restored, the command was not run.' >&2
         builtin cd -- "$__ta_initial_cwd" || exit 1
-        printf 'later commands start from workspace %s. Sandbox temp files last for one call only; create and use temp copies in the same call.\n' "$PWD" >&2
+        printf 'later commands start from workspace %s.\n' "$PWD" >&2
         false
         {}
     fi
 fi
 "#,
-        shell_state_capture(sandbox_dir)
+        shell_state_capture(state_dir)
     )
 }
 
-fn shell_state_capture(sandbox_dir: &str) -> String {
+fn shell_state_capture(state_dir: &str) -> String {
     // PWD is exported and can be stale or reassigned; ask bash for its actual
     // directory before serializing both the restore recipe and the output hint.
     format!(
         "\n__ta_rc=$?\nif PWD=$(builtin pwd); then\n{{ printf '__ta_home_version=1\\ncd %q\\n' \"$PWD\"; export -p; }} > \"$__ta_state.tmp\" 2>/dev/null && mv \"$__ta_state.tmp\" \"$__ta_state\"\nprintf '%s\\n' \"$PWD\" > {}/cwd 2>/dev/null\nfi\nexit $__ta_rc\n",
-        shell_quote(sandbox_dir)
+        shell_quote(state_dir)
     )
 }
 
 /// Read back the working directory a persistent shell ended in.
 fn shell_state_cwd(state: &Path) -> Option<String> {
-    let text = std::fs::read_to_string(state.join("cwd")).ok()?;
+    let text = std::fs::read_to_string(state.join("host/cwd")).ok()?;
     let cwd = text.trim().to_string();
     (!cwd.is_empty()).then_some(cwd)
-}
-
-/// The Docker backend's argv (D-369): a fresh container per command, the workspace and the member's shell state
-/// bound in, the host user mapped so files written keep their owner, no network unless the call was approved.
-///
-/// Cancellation: the runner stops the process group, and `docker run` proxies SIGTERM to the container, so a
-/// well-behaved command stops with it. The `--name` is unique and printed in the job log, so a container that
-/// ignores SIGTERM can be removed by name (`docker rm -f teamagents-…`) — an explicit lever, never a silent
-/// host run. The image must already be present locally (`sandbox_state_for` refuses otherwise, so a command
-/// never hangs on an implicit pull).
-pub fn docker_argv(
-    workdir: &Path,
-    network: bool,
-    command: &str,
-    shell_state: Option<&Path>,
-    image: &str,
-) -> Vec<String> {
-    use std::os::unix::fs::MetadataExt;
-    let uid = std::fs::metadata("/proc/self").map(|meta| meta.uid()).unwrap_or(0);
-    let gid = std::fs::metadata("/proc/self").map(|meta| meta.gid()).unwrap_or(0);
-    let workdir = workdir.to_string_lossy().into_owned();
-    let name = format!("teamagents-{}", &uuid::Uuid::new_v4().simple().to_string()[..12]);
-    let mut argv: Vec<String> = vec![
-        "docker".into(),
-        "run".into(),
-        "--rm".into(),
-        "--init".into(),
-        "--name".into(),
-        name,
-        "--user".into(),
-        format!("{uid}:{gid}"),
-        "--workdir".into(),
-        workdir.clone(),
-        "--volume".into(),
-        format!("{workdir}:{workdir}"),
-        "--env".into(),
-        "HOME=/tmp".into(),
-        "--env".into(),
-        "TERM=dumb".into(),
-        "--env".into(),
-        "LANG=C.UTF-8".into(),
-    ];
-    if let Some(state) = shell_state {
-        argv.push("--volume".into());
-        argv.push(format!("{}:{DOCKER_SHELL_STATE}", state.to_string_lossy()));
-    }
-    if !network {
-        argv.push("--network".into());
-        argv.push("none".into());
-    }
-    argv.push(image.to_string());
-    argv.push("/bin/bash".into());
-    argv.push("-lc".into());
-    argv.push(command.to_string());
-    argv
-}
-
-/// D-478: execute through a Docker Sandboxes microVM. The host-side `sbx` CLI owns the VM; TeamAgents only
-/// creates or reuses one sandbox per workspace and runs each command through `sbx exec`.
-pub fn sbx_argv(name: &str, workdir: &Path, command: &str) -> Vec<String> {
-    let workdir = workdir.to_string_lossy();
-    let script = format!("cd {} && (\n{}\n)", shell_quote(&workdir), command);
-    vec!["sbx".into(), "exec".into(), name.into(), "/bin/bash".into(), "-lc".into(), script]
-}
-
-/// Ensure the workspace's sandbox exists. `sbx create` is headless; if the name already exists, `sbx exec true`
-/// distinguishes that expected refusal from a real setup error. Readiness is cached for this process; a sandbox
-/// removed behind the process's back fails at `sbx exec`, never by falling back to the host.
-fn ensure_sbx(name: &str, workspace: &Path) -> Result<(), String> {
-    static READY: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-    let ready = READY.get_or_init(|| Mutex::new(HashSet::new()));
-    if ready.lock().map_err(|_| "the sbx readiness lock is poisoned".to_string())?.contains(name) {
-        return Ok(());
-    }
-    let create = Command::new("sbx").args(["create", "--name", name, "shell"]).arg(workspace).output();
-    let mut reason = match &create {
-        Ok(out) if out.status.success() => String::new(),
-        Ok(out) => format!("sbx create exited {}: {}", out.status, String::from_utf8_lossy(&out.stderr).trim()),
-        Err(error) => format!("could not run sbx: {error}"),
-    };
-    if !reason.is_empty() {
-        match Command::new("sbx").args(["exec", name, "true"]).output() {
-            Ok(out) if out.status.success() => reason.clear(),
-            Ok(out) => {
-                let probe = String::from_utf8_lossy(&out.stderr).trim().to_string();
-                if !probe.is_empty() {
-                    reason.push_str(&format!("; existing-sandbox probe: {probe}"));
-                }
-            }
-            Err(error) => reason = format!("could not run sbx exec: {error}"),
-        }
-    }
-    if !reason.is_empty() {
-        return Err(format!(
-            "sbx sandbox {name:?} could not be created: {reason}; {}",
-            crate::environment::recovery_hint(&reason)
-        ));
-    }
-    ready.lock().map_err(|_| "the sbx readiness lock is poisoned".to_string())?.insert(name.to_string());
-    Ok(())
-}
-
-pub(crate) fn sbx_name_for(configured: &str, workspace: &Path) -> String {
-    let configured = configured.trim();
-    if configured.is_empty() {
-        format!("teamagents-{:016x}", stable_hash(workspace.to_string_lossy().as_bytes()))
-    } else {
-        configured.to_string()
-    }
-}
-
-/// The argv for `kind = Ssh` (D-437): the command runs on the remote host over `ssh`, in `workdir`.
-///
-/// What this backend does and does not promise, because a reader of `[permissions] sandbox = "ssh"` is owed the
-/// statement rather than an implication:
-///
-/// * **it is not a namespace.** bubblewrap and Docker confine a process *here*; ssh hands it to another account,
-///   whose own security is the boundary. The product's rule that survives unchanged is the one `V2Isolation.tla`
-///   models: the command runs under the **configured** backend or it does not run at all — an unreachable host is
-///   a refusal, never a local shell, and a lost connection is never retried locally;
-/// * **`network = false` cannot be enforced here.** The remote's network is the remote's business; the probe's
-///   `ssh` line says so in `doctor` rather than pretending. (bubblewrap and Docker do enforce it, which is why
-///   the flag stays meaningful there.)
-/// * **a cancelled call may leave the remote process running.** Killing the local `ssh` closes the channel; the
-///   remote command is not signalled. That is the same ceiling the synchronous shell path documents for a service
-///   that daemonized itself, and it is stated rather than hidden.
-///
-/// `BatchMode=yes` is what makes a missing key or an unreachable host a fast, clear failure instead of a password
-/// prompt that would hang a turn; `StrictHostKeyChecking=accept-new` is the product's own choice of the three
-/// options ssh offers (refusing an unknown host would make the backend useless on first use; accepting *changed*
-/// keys silently would not).
-pub fn ssh_argv(target: &str, workdir: &Path, command: &str, options: &[String]) -> Vec<String> {
-    let workdir = if workdir.as_os_str().is_empty() { ".".to_string() } else { workdir.to_string_lossy().into_owned() };
-    // Two quoting rules meet here, and both were measured on a real sshd before they were written down:
-    //
-    // 1. the whole wrapped script goes inside a subshell, so the `cd` guards *all* of it — `cd X && script` binds
-    //    only to the script's first line, and a preamble line that failed left the rest running in the remote home;
-    // 2. the script travels as **one** argv item. `ssh` concatenates the arguments after the destination into a
-    //    command string, so `ssh host sh -c 'cd … && …'` split into three arguments becomes
-    //    `sh -c cd '…' && …` — the `cd` loses its operand, goes to the remote home, and the command runs there
-    //    (measured: exactly that, and the unit test asserted the broken shape and passed, because it encoded the
-    //    same belief the code did; the probe against a real sshd is what settled it).
-    let script = format!("cd {} && (\n{}\n)", shell_quote(&workdir), command);
-    let remote = format!("sh -c {}", shell_quote(&script));
-    let mut argv: Vec<String> = vec![
-        "ssh".into(),
-        "-o".into(),
-        "BatchMode=yes".into(),
-        "-o".into(),
-        "StrictHostKeyChecking=accept-new".into(),
-        "-o".into(),
-        "ConnectTimeout=10".into(),
-    ];
-    // the user's own extra options come after the ones above (first value wins in OpenSSH, so they cannot relax
-    // what the product needs) and before the destination, which is one argument and never starts with `-`
-    argv.extend(options.iter().cloned());
-    argv.push(target.to_string());
-    argv.push(remote);
-    argv
-}
-
-/// Where a member's shell state is mounted inside a Docker container (outside `/tmp`'s tmpfs).
-const DOCKER_SHELL_STATE: &str = "/teamagents-shell";
-
-/// Read-only system mounts, sanitized env, private
-/// /tmp, no network unless the call was approved for it.
-pub fn bwrap_argv(
-    workdir: &Path,
-    network: bool,
-    command: &str,
-    shell_state: Option<&Path>,
-    skills: &[PathBuf],
-) -> Vec<String> {
-    let mut argv: Vec<String> = vec!["bwrap".into()];
-    for path in ["/usr", "/etc", "/opt"] {
-        if Path::new(path).exists() {
-            argv.extend(["--ro-bind".into(), path.into(), path.into()]);
-        }
-    }
-    // D-468: the skill roots are visible read-only at /skills/<n>, so a skill's scripts and assets can be run
-    // without copying them into the workspace. The tool API reads them on the host either way.
-    if !skills.is_empty() {
-        argv.extend(["--dir".into(), "/skills".into()]);
-        for (index, root) in skills.iter().enumerate() {
-            let target = format!("/skills/{index}");
-            argv.extend([
-                "--dir".into(),
-                target.clone(),
-                "--ro-bind".into(),
-                root.to_string_lossy().into_owned(),
-                target,
-            ]);
-        }
-    }
-    for (target, link) in [("usr/lib", "/lib"), ("usr/lib64", "/lib64"), ("usr/bin", "/bin"), ("usr/bin", "/sbin")] {
-        // the host's /bin is itself a symlink, so only the target is checked
-        if Path::new(&format!("/{target}")).exists() {
-            argv.extend(["--symlink".into(), target.into(), link.into()]);
-        }
-    }
-    let workdir = workdir.to_string_lossy().into_owned();
-    argv.extend(["--proc".into(), "/proc".into(), "--dev".into(), "/dev".into(), "--tmpfs".into(), "/tmp".into()]);
-    // after --tmpfs /tmp: the sandbox is the only place writable enough to hold
-    // these mount points, and $HOME stays invisible.
-    argv.extend(toolchain_binds());
-    // persistent shell state: one rw directory per member, mounted inside the
-    // private /tmp so a command can carry `cd` and exports to the next one
-    if let Some(state) = shell_state {
-        argv.extend(["--bind".into(), state.to_string_lossy().into_owned(), SHELL_STATE_SANDBOX.into()]);
-    }
-    // Create inside the namespace, so an old home symlink cannot make the
-    // engine create directories outside the sandbox. Caches belong to the
-    // member, not to package contents or the shared project.
-    argv.extend(["--dir".into(), sandbox_home(shell_state.is_some()).into()]);
-    argv.extend(["--bind".into(), workdir.clone(), workdir.clone()]);
-    argv.extend(["--chdir".into(), workdir]);
-    argv.extend([
-        "--unshare-pid".into(),
-        "--unshare-ipc".into(),
-        "--unshare-uts".into(),
-        "--die-with-parent".into(),
-        "--new-session".into(),
-    ]);
-    if !network {
-        argv.push("--unshare-net".into());
-    }
-    argv.extend(["--".into(), "/bin/bash".into(), "-lc".into(), command.into()]);
-    argv
-}
-
-/// Where the sandbox mirrors the build toolchains, under the private /tmp.
-const TOOLCHAIN_ROOT: &str = "/tmp/.teamagents-toolchain";
-
-/// Build toolchains live under $HOME, which the sandbox hides on purpose, so the
-/// caches are mirrored read-only instead: every rustup shim on PATH needs
-/// `RUSTUP_HOME` to pick a toolchain at all, and cargo needs its registry/git
-/// caches to build offline. Without this a member can edit a project but never
-/// build or test it, which defeats "verify your own work".
-/// ponytail: Rust only; add go/node caches when a member actually needs them.
-fn toolchain_mounts() -> Vec<(&'static str, PathBuf, PathBuf)> {
-    let mut mounts = vec![];
-    for (key, home, guest) in [("RUSTUP_HOME", ".rustup", "rustup"), ("CARGO_HOME", ".cargo", "cargo")] {
-        let host = std::env::var(key)
-            .map(PathBuf::from)
-            .ok()
-            .unwrap_or_else(|| crate::config::expand_home(&format!("~/{home}")));
-        if host.is_dir() {
-            mounts.push((key, host, PathBuf::from(TOOLCHAIN_ROOT).join(guest)));
-        }
-    }
-    mounts
-}
-
-/// `credentials.toml` and `config.toml` can carry registry tokens, so CARGO_HOME
-/// exposes only its cache subdirectories (plus `bin` for rustup shims).
-fn toolchain_binds() -> Vec<String> {
-    let mut argv = vec![];
-    for (key, host, guest) in toolchain_mounts() {
-        for sub in if key == "CARGO_HOME" { &["bin", "registry", "git"][..] } else { &[""][..] } {
-            let source = if sub.is_empty() { host.clone() } else { host.join(sub) };
-            if !source.exists() {
-                continue;
-            }
-            let target = if sub.is_empty() { guest.clone() } else { guest.join(sub) };
-            argv.extend([
-                "--ro-bind".into(),
-                source.to_string_lossy().into_owned(),
-                target.to_string_lossy().into_owned(),
-            ]);
-        }
-    }
-    argv
-}
-
-fn toolchain_env() -> Vec<(String, String)> {
-    toolchain_mounts()
-        .into_iter()
-        .map(|(key, _, guest)| (key.to_string(), guest.to_string_lossy().into_owned()))
-        .collect()
-}
-
-fn sandbox_path() -> String {
-    let mut path = String::from("/usr/local/bin:/usr/bin:/bin");
-    if let Some((_, host, guest)) = toolchain_mounts().into_iter().find(|(key, _, _)| *key == "CARGO_HOME") {
-        if host.join("bin").is_dir() {
-            path.push(':');
-            path.push_str(&guest.join("bin").to_string_lossy());
-        }
-    }
-    path
 }
 
 struct OutputSink {
@@ -2292,35 +1640,26 @@ fn output_socket() -> Result<(UnixStream, Stdio), String> {
     Ok((reader, Stdio::from(OwnedFd::from(writer))))
 }
 
-/// bwrap-only: missing isolation is an error,
-/// never a silent fallback to unsandboxed execution (§2).
-pub fn shell_run(
-    command: &str,
-    workdir: &Path,
-    timeout_s: u64,
-    network: bool,
-    artifacts: Option<&Path>,
-) -> Result<String, String> {
-    shell_run_with_control(command, workdir, timeout_s, network, artifacts, &TurnControl::default())
+/// Run a host command with bounded output capture.
+pub fn shell_run(command: &str, workdir: &Path, timeout_s: u64, artifacts: Option<&Path>) -> Result<String, String> {
+    shell_run_with_control(command, workdir, timeout_s, artifacts, &TurnControl::default())
 }
 
 fn shell_run_with_control(
     command: &str,
     workdir: &Path,
     timeout_s: u64,
-    network: bool,
     artifacts: Option<&Path>,
     control: &TurnControl,
 ) -> Result<String, String> {
-    shell_run_stateful(command, workdir, timeout_s, network, artifacts, None, control)
+    shell_run_stateful(command, workdir, timeout_s, artifacts, None, control)
 }
 
-/// `shell_state` is the member's persistent shell directory on the host side.
+/// The member's persistent host shell state is stored beneath shell_state/host.
 pub fn shell_run_stateful(
     command: &str,
     workdir: &Path,
     timeout_s: u64,
-    network: bool,
     artifacts: Option<&Path>,
     shell_state: Option<&Path>,
     control: &TurnControl,
@@ -2329,54 +1668,29 @@ pub fn shell_run_stateful(
         command,
         workdir,
         timeout_s,
-        network,
         OutputLocation { root: artifacts, prefix: ARTIFACTS_PREFIX },
         shell_state,
         control,
-        ShellMode::Sandbox(SandboxBackend::bubblewrap()),
-    )
-}
-
-/// D-471: the same runner in a caller-chosen mode. The acceptance checks use this so `sandbox = none` really
-/// runs them on the host; a configured backend keeps the fail-closed refusal.
-pub(crate) fn shell_run_in_mode(
-    command: &str,
-    workdir: &Path,
-    timeout_s: u64,
-    network: bool,
-    artifacts: Option<&Path>,
-    mode: ShellMode,
-) -> Result<String, String> {
-    shell_run_at(
-        command,
-        workdir,
-        timeout_s,
-        network,
-        OutputLocation { root: artifacts, prefix: ARTIFACTS_PREFIX },
-        None,
-        &TurnControl::default(),
-        mode,
     )
 }
 
 /// Why a shell command did not run to a normal exit (R2 §7 receipt classes).
-/// `isolation` startup failure is distinct from the command's non-zero exit.
+/// Startup failure is distinct from the command's non-zero exit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ShellFailure {
-    /// isolation | setup | spawn | timeout | interrupted | capture | wait
+    /// setup | spawn | timeout | interrupted | capture | wait
     pub class: String,
     pub reason: String,
 }
 
-/// Structured shell outcome (R2 §7 receipt contract): actual start, execution
-/// mode, cwd, exit code/signal, elapsed time, captured output and the
+/// Structured shell outcome (R2 §7 receipt contract): actual start, cwd,
+/// exit code/signal, elapsed time, captured output and the
 /// cancel/timeout reason. The legacy string API renders from this struct.
 #[derive(Clone, Debug)]
 pub(crate) struct ShellOutcome {
-    /// The command process was actually spawned; false for isolation/setup
+    /// The command process was actually spawned; false for setup
     /// failures where the command never started.
     pub started: bool,
-    pub mode: ShellMode,
     pub cwd: String,
     pub exit_code: Option<i32>,
     pub signal: Option<i32>,
@@ -2386,10 +1700,9 @@ pub(crate) struct ShellOutcome {
 }
 
 impl ShellOutcome {
-    fn not_started(mode: ShellMode, cwd: String, class: &str, reason: String, started_at: Instant) -> ShellOutcome {
+    fn not_started(cwd: String, class: &str, reason: String, started_at: Instant) -> ShellOutcome {
         ShellOutcome {
             started: false,
-            mode,
             cwd,
             exit_code: None,
             signal: None,
@@ -2432,15 +1745,12 @@ pub(crate) struct ShellCommandSpec {
 
 #[derive(Debug)]
 pub(crate) struct SpecError {
-    /// isolation | setup — matches the receipt failure classes.
+    /// setup — matches the receipt failure classes.
     pub class: &'static str,
     pub reason: String,
 }
 
 impl SpecError {
-    fn isolation(reason: &str) -> SpecError {
-        SpecError { class: "isolation", reason: reason.to_string() }
-    }
     fn setup(reason: String) -> SpecError {
         SpecError { class: "setup", reason }
     }
@@ -2449,203 +1759,70 @@ impl SpecError {
 pub(crate) fn shell_command_spec(
     command: &str,
     workdir: &Path,
-    network: bool,
     shell_state: Option<&Path>,
-    mode: ShellMode,
-    skills: &[PathBuf],
 ) -> Result<ShellCommandSpec, SpecError> {
-    shell_spec(command, workdir, network, shell_state, mode, skills, false)
-}
-
-/// D-479: the ordinary wrapper/environment without setup effects. sbx must already exist;
-/// Docker must use a local image. No persistent shell state is read or written.
-pub(crate) fn diagnostic_shell_spec(
-    command: &str,
-    workdir: &Path,
-    mode: ShellMode,
-) -> Result<ShellCommandSpec, SpecError> {
-    shell_spec(command, workdir, false, None, mode, &[], true)
-}
-
-fn shell_spec(
-    command: &str,
-    workdir: &Path,
-    network: bool,
-    shell_state: Option<&Path>,
-    mode: ShellMode,
-    skills: &[PathBuf],
-    diagnostic: bool,
-) -> Result<ShellCommandSpec, SpecError> {
-    if let ShellMode::Sandbox(backend) = &mode {
-        if !diagnostic {
-            if let Err(reason) = backend_available(backend) {
-                return Err(SpecError::isolation(&format!("IsolationUnavailable: {reason}")));
-            }
-        }
-        if backend.kind == SandboxKind::Sbx && network {
-            return Err(SpecError::isolation(
-                "IsolationUnavailable: sandbox = \"sbx\" does not map network = true; configure the sandbox's sbx network policy instead",
-            ));
-        }
+    // Keep the existing host namespace; old isolated snapshots are never sourced.
+    let host_state = shell_state.map(|state| state.join("host"));
+    if let Some(state) = &host_state {
+        std::fs::create_dir_all(state).map_err(|e| SpecError::setup(crate::cli::derived_dir_uncreatable(state, &e)))?;
     }
-    // Separate snapshots prevent sandbox HOME/PATH/cwd leaking into host
-    // commands (and vice versa) after a live permission-mode change.
-    let host_state = shell_state.filter(|_| mode == ShellMode::Host).map(|state| state.join("host"));
-    let shell_state = host_state.as_deref().or(shell_state);
-    let state_is_host_backed = !matches!(&mode, ShellMode::Sandbox(SandboxBackend { kind: SandboxKind::Sbx, .. }));
-    if state_is_host_backed {
-        if let Some(state) = shell_state {
-            std::fs::create_dir_all(state)
-                .map_err(|e| SpecError::setup(crate::cli::derived_dir_uncreatable(state, &e)))?;
+    let wrapped = match &host_state {
+        Some(state) => {
+            let dir = state.to_string_lossy();
+            format!("{}{}\n{}", shell_state_preamble(&dir), command, shell_state_capture(&dir))
         }
-    }
-    let state_dir = match (&mode, shell_state) {
-        (ShellMode::Host, Some(state)) => state.to_string_lossy().into_owned(),
-        (ShellMode::Sandbox(SandboxBackend { kind: SandboxKind::Sbx, .. }), _) => SHELL_STATE_SANDBOX.to_string(),
-        (ShellMode::Sandbox(SandboxBackend { kind: SandboxKind::Docker, .. }), _) => DOCKER_SHELL_STATE.to_string(),
-        // D-437: the remote's shell state is **per session**, derived from this member's own state directory.
-        // The local backends isolate the state by *mounting* a different directory into each sandbox; ssh has
-        // nothing to mount, and a fixed remote path made two sessions on one host share `cwd` and exports —
-        // measured: a second run restored the first run's `cwd`, so the command ran in the remote home instead of
-        // the configured workdir. The hash is of the local state path, which is already unique per member.
-        (ShellMode::Sandbox(SandboxBackend { kind: SandboxKind::Ssh, .. }), Some(state)) => {
-            format!("{SHELL_STATE_SANDBOX}-{:016x}", stable_hash(state.to_string_lossy().as_bytes()))
-        }
-        (ShellMode::Sandbox(SandboxBackend { kind: SandboxKind::Ssh, .. }), None) => SHELL_STATE_SANDBOX.to_string(),
-        _ => SHELL_STATE_SANDBOX.to_string(),
-    };
-    let wrapped = match shell_state {
-        Some(_) => format!("{}{}\n{}", shell_state_preamble(&state_dir), command, shell_state_capture(&state_dir)),
         None => command.to_string(),
     };
     let cwd = std::fs::canonicalize(workdir).unwrap_or_else(|_| workdir.to_path_buf());
-    let (program, args, docker_client) = match &mode {
-        // D-466: unreachable through the config (`none` maps to Host), but a `Sandbox(None)` value has no
-        // wrapper to build. Refuse instead of silently running it as a host command.
-        ShellMode::Sandbox(SandboxBackend { kind: SandboxKind::None, .. }) => {
-            return Err(SpecError::isolation(
-                "IsolationUnavailable: the none backend selected a sandbox wrapper; refusing to run",
-            ));
-        }
-        ShellMode::Sandbox(SandboxBackend { kind: SandboxKind::Bubblewrap, .. }) => {
-            let argv = bwrap_argv(&cwd, network, &wrapped, shell_state, skills);
-            let Some(executable) = which("bwrap") else {
-                return Err(SpecError::isolation("IsolationUnavailable: bwrap disappeared before execution"));
-            };
-            (executable.to_string_lossy().into_owned(), argv[1..].to_vec(), false)
-        }
-        ShellMode::Sandbox(SandboxBackend { kind: SandboxKind::Sbx, sbx_name, .. }) => {
-            let name = sbx_name_for(sbx_name, &cwd);
-            if !diagnostic {
-                ensure_sbx(&name, &cwd)
-                    .map_err(|reason| SpecError::isolation(&format!("IsolationUnavailable: {reason}")))?;
-            }
-            let argv = sbx_argv(&name, &cwd, &wrapped);
-            let Some(executable) = which("sbx") else {
-                return Err(SpecError::isolation("IsolationUnavailable: sbx disappeared before execution"));
-            };
-            (executable.to_string_lossy().into_owned(), argv[1..].to_vec(), true)
-        }
-        ShellMode::Sandbox(SandboxBackend { kind: SandboxKind::Ssh, ssh_target, ssh_workdir, ssh_options, .. }) => {
-            let remote_dir = if ssh_workdir.trim().is_empty() { cwd.clone() } else { PathBuf::from(ssh_workdir) };
-            let argv = ssh_argv(ssh_target, &remote_dir, &wrapped, ssh_options);
-            let Some(executable) = which("ssh") else {
-                return Err(SpecError::isolation("IsolationUnavailable: ssh disappeared before execution"));
-            };
-            (executable.to_string_lossy().into_owned(), argv[1..].to_vec(), true)
-        }
-        ShellMode::Sandbox(SandboxBackend { kind: SandboxKind::Docker, image, .. }) => {
-            let mut argv = docker_argv(&cwd, network, &wrapped, shell_state, image);
-            if diagnostic {
-                argv.insert(2, "--pull=never".into());
-            }
-            let Some(executable) = which("docker") else {
-                return Err(SpecError::isolation("IsolationUnavailable: docker disappeared before execution"));
-            };
-            (executable.to_string_lossy().into_owned(), argv[1..].to_vec(), true)
-        }
-        // Do not source login files that might re-export provider keys.
-        ShellMode::Host => {
-            ("/bin/bash".into(), vec!["--noprofile".into(), "--norc".into(), "-c".into(), wrapped.clone()], false)
-        }
-    };
-    // whitelist environment: no model keys, no credentials (§2). The Docker *client* is a host tool, so it gets
-    // the host PATH/HOME (for `~/.docker/config.json`) and the `DOCKER_*` variables; the container's environment
-    // is the `--env` list `docker_argv` built, and the model's credentials never reach either.
-    // `docker_client` is the "this backend's executable is a *host* tool" flag: docker and ssh both need the
-    // host's PATH and HOME (docker's config, ssh's `~/.ssh/config` and keys). The model's credentials are still
-    // whitelisted out below either way.
-    let mut env: Vec<(String, String)> = if docker_client {
-        let mut env = vec![
-            ("PATH".into(), std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into())),
-            ("HOME".into(), std::env::var("HOME").unwrap_or_else(|_| "/".into())),
-        ];
-        for key in ["DOCKER_HOST", "DOCKER_CONFIG", "DOCKER_CONTEXT", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH"] {
-            if let Ok(value) = std::env::var(key) {
-                env.push((key.into(), value));
-            }
-        }
-        env
-    } else {
-        let mut env: Vec<(String, String)> = vec![
-            ("PATH".into(), sandbox_path()),
-            ("HOME".into(), sandbox_home(shell_state.is_some()).into()),
-            ("LANG".into(), std::env::var("LANG").unwrap_or_else(|_| "C.UTF-8".into())),
-            ("TERM".into(), "dumb".into()),
-            ("TMPDIR".into(), "/tmp".into()),
-            ("PYTHONIOENCODING".into(), "utf-8".into()),
-        ];
-        env.extend(toolchain_env());
-        env
-    };
-    if mode == ShellMode::Host {
-        env.retain(|(key, _)| key != "PATH" && key != "HOME");
-        env.push(("PATH".into(), std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into())));
-        env.push(("HOME".into(), std::env::var("HOME").unwrap_or_else(|_| "/".into())));
-        for (key, host, _) in toolchain_mounts() {
-            env.push((key.to_string(), host.to_string_lossy().into_owned()));
+    // Do not source login files or inherit provider credentials.
+    let mut env = vec![
+        ("PATH".into(), std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into())),
+        ("HOME".into(), std::env::var("HOME").unwrap_or_else(|_| "/".into())),
+        ("LANG".into(), std::env::var("LANG").unwrap_or_else(|_| "C.UTF-8".into())),
+        ("TERM".into(), "dumb".into()),
+        ("TMPDIR".into(), "/tmp".into()),
+        ("PYTHONIOENCODING".into(), "utf-8".into()),
+    ];
+    for key in ["CARGO_HOME", "RUSTUP_HOME"] {
+        if let Ok(value) = std::env::var(key) {
+            env.push((key.into(), value));
         }
     }
-    Ok(ShellCommandSpec { program, args, cwd: cwd.to_string_lossy().into_owned(), env, wrapped })
+    Ok(ShellCommandSpec {
+        program: "/bin/bash".into(),
+        args: vec!["--noprofile".into(), "--norc".into(), "-c".into(), wrapped.clone()],
+        cwd: cwd.to_string_lossy().into_owned(),
+        env,
+        wrapped,
+    })
 }
 
-#[expect(clippy::too_many_arguments, reason = "Keep trusted execution mode separate from model command parameters.")]
 pub(crate) fn shell_outcome_at(
     command: &str,
     workdir: &Path,
     timeout_s: u64,
-    network: bool,
     output: OutputLocation<'_>,
     shell_state: Option<&Path>,
     control: &TurnControl,
-    mode: ShellMode,
 ) -> ShellOutcome {
     let clock = Instant::now();
     let cwd_display = workdir.to_string_lossy().into_owned();
-    let not_started = |class: &str, reason: String| {
-        ShellOutcome::not_started(mode.clone(), cwd_display.clone(), class, reason, clock)
-    };
+    let not_started =
+        |class: &str, reason: String| ShellOutcome::not_started(cwd_display.clone(), class, reason, clock);
     if let Err(error) = control.check() {
         return not_started("interrupted", error);
-    }
-    if let ShellMode::Sandbox(backend) = &mode {
-        if let Err(reason) = backend_available(backend) {
-            return not_started("isolation", format!("IsolationUnavailable: {reason}"));
-        }
     }
     let sink = match OutputSink::new(output) {
         Ok(sink) => Arc::new(Mutex::new(sink)),
         Err(e) => return not_started("capture", e),
     };
-    let spec = match shell_command_spec(command, workdir, network, shell_state, mode.clone(), &[]) {
+    let spec = match shell_command_spec(command, workdir, shell_state) {
         Ok(spec) => spec,
         Err(error) => return not_started(error.class, error.reason),
     };
-    let mut sandbox = Command::new(&spec.program);
-    sandbox.args(&spec.args).current_dir(&spec.cwd);
-    if mode == ShellMode::Host {
-        sandbox.process_group(0);
-    }
+    let mut process = Command::new(&spec.program);
+    process.args(&spec.args).current_dir(&spec.cwd);
+    process.process_group(0);
     let (stdout, stdout_stdio) = match output_socket() {
         Ok(pair) => pair,
         Err(e) => return not_started("capture", e),
@@ -2655,15 +1832,15 @@ pub(crate) fn shell_outcome_at(
         Err(e) => return not_started("capture", e),
     };
     // whitelist environment: no model keys, no credentials (§2)
-    sandbox.stdin(Stdio::null()).stdout(stdout_stdio).stderr(stderr_stdio).env_clear();
+    process.stdin(Stdio::null()).stdout(stdout_stdio).stderr(stderr_stdio).env_clear();
     for (key, value) in &spec.env {
-        sandbox.env(key, value);
+        process.env(key, value);
     }
-    let mut child = match sandbox.spawn() {
+    let mut child = match process.spawn() {
         Ok(child) => child,
         Err(e) => return not_started("spawn", e.to_string()),
     };
-    drop(sandbox);
+    drop(process);
     let done = Arc::new(AtomicBool::new(false));
     let stdout_reader = drain(stdout, sink.clone(), done.clone());
     let stderr_reader = drain(stderr, sink.clone(), done.clone());
@@ -2702,7 +1879,7 @@ pub(crate) fn shell_outcome_at(
         }
     }
     if failure.is_some() {
-        if mode == ShellMode::Host {
+        {
             // The direct child is not reaped yet, so its group ID cannot be
             // reused. ponytail: a deliberate setsid() escapes this group;
             // cgroup ownership is needed for stronger full-auto containment.
@@ -2715,7 +1892,6 @@ pub(crate) fn shell_outcome_at(
                 });
             }
         }
-        // Killing bwrap tears down its private PID namespace and command tree.
         if let Err(e) = child.kill() {
             if e.kind() != std::io::ErrorKind::InvalidInput {
                 let current = failure.take().unwrap();
@@ -2742,7 +1918,6 @@ pub(crate) fn shell_outcome_at(
         Err(e) => {
             return ShellOutcome {
                 started: true,
-                mode,
                 cwd: workdir.to_string_lossy().into_owned(),
                 exit_code: status.and_then(|s| s.code()),
                 signal: status.and_then(|s| s.signal()),
@@ -2755,7 +1930,6 @@ pub(crate) fn shell_outcome_at(
     if let Some(failure) = failure {
         return ShellOutcome {
             started: true,
-            mode,
             cwd: workdir.to_string_lossy().into_owned(),
             exit_code: status.and_then(|s| s.code()),
             signal: status.and_then(|s| s.signal()),
@@ -2769,7 +1943,6 @@ pub(crate) fn shell_outcome_at(
         None => {
             return ShellOutcome {
                 started: true,
-                mode,
                 cwd: workdir.to_string_lossy().into_owned(),
                 exit_code: None,
                 signal: None,
@@ -2779,26 +1952,8 @@ pub(crate) fn shell_outcome_at(
             }
         }
     };
-    if matches!(mode, ShellMode::Sandbox(_)) && !status.success() && text.starts_with("bwrap: ") {
-        return ShellOutcome {
-            started: false,
-            mode,
-            cwd: workdir.to_string_lossy().into_owned(),
-            exit_code: status.code(),
-            signal: status.signal(),
-            duration_ms: started.elapsed().as_millis() as u64,
-            output: text.clone(),
-            failure: Some(ShellFailure {
-                class: "isolation".into(),
-                reason: format!(
-                    "IsolationUnavailable: the sandbox failed to start; the command may not have run. Check the isolation environment instead of repeating the same call.\n{text}"
-                ),
-            }),
-        };
-    }
     ShellOutcome {
         started: true,
-        mode,
         cwd: workdir.to_string_lossy().into_owned(),
         exit_code: status.code(),
         signal: status.signal(),
@@ -2808,18 +1963,15 @@ pub(crate) fn shell_outcome_at(
     }
 }
 
-#[expect(clippy::too_many_arguments, reason = "Keep trusted execution mode separate from model command parameters.")]
 fn shell_run_at(
     command: &str,
     workdir: &Path,
     timeout_s: u64,
-    network: bool,
     output: OutputLocation<'_>,
     shell_state: Option<&Path>,
     control: &TurnControl,
-    mode: ShellMode,
 ) -> Result<String, String> {
-    shell_outcome_at(command, workdir, timeout_s, network, output, shell_state, control, mode).render(shell_state)
+    shell_outcome_at(command, workdir, timeout_s, output, shell_state, control).render(shell_state)
 }
 
 /// Host part of `rest` ("host[:port]/path..."), brackets and userinfo included.
@@ -3126,7 +2278,7 @@ pub fn iso8601(seconds: i64) -> String {
 
 /// Basic-tool gate for the R2 kernel: workspace file/shell tools plus the
 /// member's bound web and MCP services, every call producing a ToolReceipt.
-type V2Executor = Box<dyn Fn(&str, &Json, &TurnControl, ShellMode) -> Result<Json, String> + Send + Sync>;
+type V2Executor = Box<dyn Fn(&str, &Json, &TurnControl) -> Result<Json, String> + Send + Sync>;
 
 /// Load codemode's persisted `store`/`load` map (D-376). A missing or unreadable file is an empty store; a
 /// malformed one is reported on stderr rather than failing a boot, because the store is a convenience, not an
@@ -3266,7 +2418,6 @@ impl V2Toolkit {
         operation_id: &str,
         intent: &teamagents_core::kernel::ToolIntent,
         control: &TurnControl,
-        mode: ShellMode,
     ) -> teamagents_core::kernel::ToolReceipt {
         use teamagents_core::kernel::{ReceiptError, ToolReceipt};
         let started_at = Instant::now();
@@ -3290,22 +2441,16 @@ impl V2Toolkit {
             // D-415: the same ceiling the driver applies to its own job path
             let timeout =
                 bounded_timeout(intent.args.get("timeout").and_then(|v| v.as_u64()), self.wiring.max_tool_seconds);
-            let network = intent.args.get("network").and_then(|v| v.as_bool()).unwrap_or(false);
             let outcome = shell_outcome_at(
                 command,
                 &self.root,
                 timeout,
-                network,
                 OutputLocation { root: self.artifacts.as_deref(), prefix: ARTIFACTS_PREFIX },
                 self.shell_state.as_deref(),
                 control,
-                mode,
             );
             receipt.started = outcome.started;
-            receipt.mode = Some(match outcome.mode {
-                ShellMode::Sandbox(_) => "approved_scope".to_string(),
-                ShellMode::Host => "full_auto".to_string(),
-            });
+            receipt.mode = Some("full_auto".into());
             receipt.cwd = Some(outcome.cwd.clone());
             receipt.exit_code = outcome.exit_code;
             receipt.signal = outcome.signal;
@@ -3395,7 +2540,7 @@ impl V2Toolkit {
         // built-in executor (plan §7) — no parallel path.
         let result = match self.bound.call(&intent.name, &intent.args) {
             Some(result) => result,
-            None => (self.executor)(&intent.name, &intent.args, control, mode),
+            None => (self.executor)(&intent.name, &intent.args, control),
         };
         receipt.duration_ms = started_at.elapsed().as_millis() as u64;
         match result {
@@ -3416,7 +2561,6 @@ impl V2Toolkit {
 /// Keep the operator-facing error prefixes as the receipt classes.
 fn receipt_error_class(text: &str) -> &'static str {
     for (prefix, class) in [
-        ("IsolationUnavailable", "isolation"),
         ("ToolServiceUnavailable", "service_unavailable"),
         ("ShellPermissionUnavailable", "permission_unavailable"),
         ("turn interrupted", "interrupted"),
@@ -3517,8 +2661,43 @@ mod bounded_timeout_tests {
 #[cfg(test)]
 mod tests {
 
-    /// D-466: the two modes. `none` is the host even when the session was built for `approved_scope`; a real
-    /// backend is the sandbox; `full_auto` stays the host.
+    #[test]
+    fn host_shell_preserves_state_without_loading_old_isolated_exports() {
+        let root = std::env::temp_dir().join(format!("ta-host state-{}", uuid::Uuid::new_v4()));
+        let state = root.join("state");
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(state.join("state.sh"), "export TA_OLD_ISOLATED=must-not-load\n").unwrap();
+        let control = TurnControl::default();
+        shell_run_stateful("mkdir sub; cd sub; export TA_HOST_PERSIST=kept", &root, 5, None, Some(&state), &control)
+            .unwrap();
+        let out = shell_run_stateful(
+            "printf '%s/%s' \"$TA_HOST_PERSIST\" \"${TA_OLD_ISOLATED-unset}\"",
+            &root,
+            5,
+            None,
+            Some(&state),
+            &control,
+        )
+        .unwrap();
+        assert!(out.contains("kept/unset"), "{out}");
+        assert!(out.contains(&format!("[cwd: {}]", root.join("sub").display())), "{out}");
+        assert!(state.join("state.sh").exists(), "legacy state is preserved");
+        let spec = shell_command_spec("true", &root, None).unwrap();
+        assert!(spec.env.iter().all(|(key, _)| [
+            "PATH",
+            "HOME",
+            "LANG",
+            "TERM",
+            "TMPDIR",
+            "PYTHONIOENCODING",
+            "CARGO_HOME",
+            "RUSTUP_HOME"
+        ]
+        .contains(&key.as_str())));
+        assert_eq!(&spec.args[..3], ["--noprofile", "--norc", "-c"]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     /// D-470: an empty allowlist is unrestricted; otherwise an exact host or a `*.suffix` subdomain matches.
     #[test]
     fn the_web_domain_allowlist_is_optional_exact_or_wildcard() {
@@ -3530,24 +2709,6 @@ mod tests {
         assert!(!control.domain_allowed("docs.example.com"), "the wildcard covers subdomains, not the bare host");
     }
 
-    #[test]
-    fn the_none_backend_is_the_host_and_a_backend_is_the_sandbox() {
-        assert_eq!(
-            ShellMode::from_permissions(Some("approved_scope"), SandboxBackend::none()).expect("none"),
-            ShellMode::Host
-        );
-        assert_eq!(
-            ShellMode::from_permissions(Some("full_auto"), SandboxBackend::bubblewrap()).expect("full_auto"),
-            ShellMode::Host
-        );
-        assert!(matches!(
-            ShellMode::from_permissions(Some("approved_scope"), SandboxBackend::bubblewrap()).expect("sandbox"),
-            ShellMode::Sandbox(_)
-        ));
-        assert_eq!(SandboxBackend::none().name(), "none");
-        assert!(SandboxBackend::none().is_none());
-        assert_eq!(sandbox_state_for(&SandboxBackend::none()), Ok(()));
-    }
     use super::*;
 
     /// The product builds an executor through `V2Toolkit::new`, which resolves the member's own
@@ -3561,9 +2722,7 @@ mod tests {
     ) -> impl Fn(&str, &Json) -> Result<Json, String> + Send + Sync + 'static {
         let executor =
             member_executor_with_control(root, catalog, bindings, ArtifactPaths::own(artifacts), None, None, None);
-        move |tool, args| {
-            executor(tool, args, &TurnControl::default(), ShellMode::Sandbox(SandboxBackend::bubblewrap()))
-        }
+        move |tool, args| executor(tool, args, &TurnControl::default())
     }
 
     fn workspace_executor(
@@ -3571,9 +2730,7 @@ mod tests {
         artifacts: Option<PathBuf>,
     ) -> impl Fn(&str, &Json) -> Result<Json, String> + Send + Sync + 'static {
         let executor = workspace_executor_with_control(root, ArtifactPaths::own(artifacts), None, None);
-        move |tool, args| {
-            executor(tool, args, &TurnControl::default(), ShellMode::Sandbox(SandboxBackend::bubblewrap()))
-        }
+        move |tool, args| executor(tool, args, &TurnControl::default())
     }
 
     /// D-469: disjoint edits in one file apply atomically; overlapping edits and a stale revision fail the
@@ -3918,14 +3075,6 @@ mod tests {
 
     #[test]
     fn cancelled_shell_keeps_partial_output_and_its_artifact() {
-        if !sandbox_usable() {
-            // A skip has to say so: a silent `return` made this test contribute nothing on a machine without a
-            // sandbox *invisibly* (D-121). The claim itself needs a running sandboxed command, and the
-            // fail-closed half of "no sandbox" is asserted by
-            // `cli::an_unisolated_shell_refuses_instead_of_running_on_the_host`.
-            eprintln!("skipped: no usable bubblewrap sandbox on this machine");
-            return;
-        }
         let dir = std::env::temp_dir().join(format!("ta-cancel-output-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let artifacts = dir.join("artifacts");
@@ -3938,7 +3087,6 @@ mod tests {
                 "printf before-cancel; touch ready; sleep 30; touch should-not-exist",
                 &child_dir,
                 40,
-                false,
                 Some(&child_artifacts),
                 &child_control,
             )
@@ -3947,7 +3095,7 @@ mod tests {
         while !dir.join("ready").exists() && !job.is_finished() && started.elapsed() < Duration::from_secs(10) {
             std::thread::sleep(Duration::from_millis(10));
         }
-        assert!(dir.join("ready").exists(), "sandbox did not start the command");
+        assert!(dir.join("ready").exists(), "shell did not start the command");
         control.cancel();
         let err = job.join().unwrap().unwrap_err();
         assert!(
@@ -4042,21 +3190,6 @@ mod tests {
         assert_eq!(big["truncated"], json!(true));
         assert_eq!(big["text"].as_str().unwrap().len(), 32_000);
         let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn bwrap_argv_mounts_skill_roots_read_only() {
-        let dir = std::env::temp_dir();
-        let skills = std::env::temp_dir().join(format!("ta-bwrap-skills-{}", std::process::id()));
-        std::fs::create_dir_all(&skills).unwrap();
-        let rendered = skills.to_string_lossy().into_owned();
-        let argv = bwrap_argv(&dir, false, "echo hi", None, std::slice::from_ref(&skills));
-        assert!(
-            argv.windows(3).any(|w| w[0] == "--ro-bind" && w[1] == rendered.as_str() && w[2] == "/skills/0"),
-            "{argv:?}"
-        );
-        assert!(argv.windows(2).any(|w| w[0] == "--dir" && w[1] == "/skills"), "{argv:?}");
-        std::fs::remove_dir_all(&skills).unwrap();
     }
 
     #[test]
@@ -4155,17 +3288,8 @@ mod tests {
         assert!(executor("read_file", &json!({"path": "../../etc/hosts"})).is_err());
         let listing = executor("ls", &json!({"path": "."})).unwrap();
         assert!(listing.as_str().unwrap().contains("sub/"), "ls is native and needs no sandbox: {listing}");
-        // glob prefers `rg` *inside* the sandbox (it knows the ignore rules); the native path is the fallback when
-        // there is no bwrap or no rg, and a sandbox that cannot start refuses instead of globbing differently
-        // (D-114). All three cases are asserted so this test says the same thing on every machine.
-        if !bwrap_available() || !sandbox_rg_available() || sandbox_usable() {
-            let globbed = executor("glob", &json!({"pattern": "**/*.txt"})).unwrap();
-            assert!(globbed.as_str().unwrap().contains("sub/file.txt"));
-        } else {
-            let error = executor("glob", &json!({"pattern": "**/*.txt"}))
-                .expect_err("a sandbox that cannot start must refuse the glob, not glob differently");
-            assert!(error.to_string().contains("IsolationUnavailable"), "{error}");
-        }
+        let globbed = executor("glob", &json!({"pattern": "**/*.txt"})).unwrap();
+        assert!(globbed.as_str().unwrap().contains("sub/file.txt"));
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -4341,205 +3465,6 @@ mod tests {
             let ip: std::net::IpAddr = addr.parse().unwrap();
             assert!(!is_private_addr(ip), "{addr} must stay reachable");
         }
-    }
-
-    #[test]
-    fn bwrap_argv_is_stable_and_runs_isolated() {
-        let dir = std::env::temp_dir();
-        let argv = bwrap_argv(&dir, false, "echo hi", None, &[]);
-        assert!(argv.iter().any(|a| a == "--unshare-net"), "network off by default");
-        assert!(argv.windows(3).any(|w| w == ["--ro-bind", "/usr", "/usr"]));
-        assert!(argv.windows(3).any(|w| w == ["--symlink", "usr/bin", "/bin"]));
-        assert!(argv.windows(2).any(|w| w[0] == "--chdir" && w[1] == dir.to_string_lossy()));
-        assert_eq!(&argv[argv.len() - 4..], ["--", "/bin/bash", "-lc", "echo hi"]);
-        assert!(!bwrap_argv(&dir, true, "x", None, &[]).iter().any(|a| a == "--unshare-net"));
-        if sandbox_usable() {
-            let out = shell_run("echo isolated-ok && id -u", &dir, 30, false, None).unwrap();
-            assert!(out.contains("isolated-ok"), "{out}");
-        }
-    }
-
-    /// D-437: the ssh backend's argv, and the statements that matter — the command really goes to the remote in a
-    /// `sh -lc`, the remote `cd` is quoted, the product's own `-o` options come **before** the user's (OpenSSH's
-    /// first-value-wins is what keeps `BatchMode=yes` in force), and the destination is one argument so a host
-    /// cannot be read as an option.
-    #[test]
-    fn ssh_argv_sends_the_command_to_the_remote_under_the_products_own_options() {
-        let options = vec!["-p".to_string(), "22222".to_string(), "-i".to_string(), "/tmp/id".to_string()];
-        let argv = ssh_argv("user@host", Path::new("/work/dir"), "echo hi", &options);
-        assert_eq!(argv[0], "ssh");
-        let batch = argv.iter().position(|item| item == "BatchMode=yes").expect("BatchMode is set");
-        let user_option = argv.iter().position(|item| item == "-p").expect("the user's options are passed");
-        assert!(batch < user_option, "the product's options must be first: they win in OpenSSH: {argv:?}");
-        let destination = argv.iter().position(|item| item == "user@host").expect("the destination");
-        assert_eq!(
-            &argv[destination..],
-            ["user@host", "sh -c 'cd '\\''/work/dir'\\'' && (\necho hi\n)'"],
-            "one destination, then the guarded script as ONE argument (ssh concatenates the rest): {argv:?}"
-        );
-        assert_eq!(
-            argv[argv.len() - 1],
-            "sh -c 'cd '\\''/work/dir'\\'' && (\necho hi\n)'",
-            "the remote cd is quoted inside a single-argument script: {argv:?}"
-        );
-        // a workdir with a quote cannot break out of the remote command
-        let tricky = ssh_argv("h", Path::new("/tmp/it's here"), "true", &[]);
-        assert!(tricky[tricky.len() - 1].contains("'\\''"), "the quote is escaped: {tricky:?}");
-        // no workdir at all means the remote's own cwd, not an empty `cd`
-        let here = ssh_argv("h", Path::new(""), "pwd", &[]);
-        assert_eq!(here[here.len() - 1], "sh -c 'cd '\\''.'\\'' && (\npwd\n)'");
-    }
-
-    #[test]
-    fn docker_argv_is_stable_and_runs_isolated() {
-        let dir = std::env::temp_dir();
-        let argv = docker_argv(&dir, false, "echo hi", None, "debian:stable-slim");
-        assert_eq!(&argv[..3], ["docker", "run", "--rm"]);
-        assert!(argv.windows(2).any(|w| w == ["--network", "none"]), "network off by default: {argv:?}");
-        assert!(!docker_argv(&dir, true, "x", None, "i").iter().any(|a| a == "--network"));
-        assert!(argv.windows(2).any(|w| w[0] == "--workdir" && w[1] == dir.to_string_lossy()));
-        assert!(argv.windows(2).any(|w| w[0] == "--volume" && w[1] == format!("{}:{}", dir.display(), dir.display())));
-        assert_eq!(&argv[argv.len() - 4..], ["debian:stable-slim", "/bin/bash", "-lc", "echo hi"]);
-        // the boundary really holds, on the machine's own docker and a present image
-        if which("docker").is_none() {
-            eprintln!("skipped: docker is not on PATH");
-            return;
-        }
-        let present = ["debian:stable-slim", "debian:trixie"].into_iter().find(|image| {
-            std::process::Command::new("docker")
-                .args(["image", "inspect", image])
-                .output()
-                .map(|out| out.status.success())
-                .unwrap_or(false)
-        });
-        let Some(image) = present else {
-            eprintln!("skipped: no local debian image to run (tried debian:stable-slim, debian:trixie)");
-            return;
-        };
-        let backend = SandboxBackend {
-            kind: SandboxKind::Docker,
-            image: image.to_string(),
-            ssh_target: String::new(),
-            ssh_workdir: String::new(),
-            ssh_options: Vec::new(),
-            sbx_name: String::new(),
-        };
-        assert!(probe_sandbox(&backend).is_ok(), "the probe accepts a present image: {:?}", probe_sandbox(&backend));
-        let probe = std::env::temp_dir().join(format!("ta-docker-{}-{}", std::process::id(), uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&probe).unwrap();
-        let argv = docker_argv(&probe, false, "echo docker-ok; touch wrote.txt", None, image);
-        let output = std::process::Command::new(&argv[0]).args(&argv[1..]).output().expect("run docker");
-        let text = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
-        assert!(text.contains("docker-ok"), "{text}");
-        // the file written in the container is owned by the host user, not root, so the workspace stays usable
-        use std::os::unix::fs::MetadataExt;
-        let owner = std::fs::metadata(probe.join("wrote.txt")).expect("the container wrote into the mount").uid();
-        let me = std::fs::metadata("/proc/self").map(|meta| meta.uid()).unwrap_or(0);
-        assert_eq!(owner, me, "the container ran as another user, so workspace files would change owner");
-        std::fs::remove_dir_all(&probe).unwrap();
-    }
-
-    #[test]
-    fn sbx_argv_uses_the_named_sandbox_and_guards_the_workdir() {
-        // D-479: isolate PATH in a child, and prove an empty-stderr failure is not cached as readiness.
-        if let Some(root) = std::env::var_os("TA_D479_SBX_PROBE_ROOT") {
-            let root = PathBuf::from(root);
-            let error = ensure_sbx("failure-test", &root).unwrap_err();
-            assert!(error.contains("sbx create exited"), "{error}");
-            assert!(error.contains('7'), "{error}");
-            std::fs::write(root.join("sbx"), "#!/bin/sh\n[ \"$1\" = exec ] && exit 0\nexit 7\n").unwrap();
-            ensure_sbx("failure-test", &root).expect("an existing sandbox can now be used");
-            return;
-        }
-        use std::os::unix::fs::PermissionsExt;
-        let root = std::env::temp_dir().join(format!("ta-sbx-failure-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&root).unwrap();
-        let fake = root.join("sbx");
-        std::fs::write(&fake, "#!/bin/sh\nexit 7\n").unwrap();
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let child = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "tools::tests::sbx_argv_uses_the_named_sandbox_and_guards_the_workdir", "--nocapture"])
-            .env("TA_D479_SBX_PROBE_ROOT", &root)
-            .env("PATH", &root)
-            .output();
-        std::fs::remove_dir_all(&root).unwrap();
-        let child = child.unwrap();
-        assert!(child.status.success(), "{}", String::from_utf8_lossy(&child.stderr));
-        assert!(String::from_utf8_lossy(&child.stdout).contains("1 passed"));
-        let argv = sbx_argv("teamagents-test", Path::new("/work/dir"), "echo hi");
-        assert_eq!(&argv[..4], ["sbx", "exec", "teamagents-test", "/bin/bash"]);
-        assert_eq!(argv[4], "-lc");
-        assert!(argv[5].contains("cd '/work/dir'"), "{argv:?}");
-        assert!(argv[5].contains("echo hi"));
-        let tricky = sbx_argv("n", Path::new("/tmp/it's here"), "true");
-        assert!(tricky[5].contains("'\\''"), "the quote is escaped: {tricky:?}");
-    }
-
-    #[test]
-    fn an_sbx_backend_without_the_cli_refuses_before_running_on_the_host() {
-        if which("sbx").is_some() {
-            eprintln!("skipped: sbx is installed, so the missing-CLI path is not testable here");
-            return;
-        }
-        let backend = SandboxBackend::sbx("teamagents-test".into());
-        let reason = probe_sandbox(&backend).unwrap_err();
-        assert!(reason.contains("sbx is not available"), "{reason}");
-    }
-
-    #[test]
-    fn a_docker_backend_without_its_image_refuses_instead_of_running_on_the_host() {
-        if which("docker").is_none() {
-            eprintln!("skipped: docker is not on PATH");
-            return;
-        }
-        let backend = SandboxBackend {
-            kind: SandboxKind::Docker,
-            image: "teamagents-no-such-image:never".into(),
-            ssh_target: String::new(),
-            ssh_workdir: String::new(),
-            ssh_options: Vec::new(),
-            sbx_name: String::new(),
-        };
-        let reason = probe_sandbox(&backend).unwrap_err();
-        // D-452: an unreachable daemon is a documented fail-closed refusal too (D-369). A sandbox whose
-        // /run is a fresh tmpfs has no docker.sock, so the missing-image assertion below is only
-        // reachable where a daemon is actually usable.
-        if reason.contains("the docker daemon is not usable") {
-            eprintln!("skipped: no reachable docker daemon, so the missing-image path is not testable here");
-            return;
-        }
-        assert!(reason.contains("not present locally"), "a missing image is refused, not pulled: {reason}");
-    }
-
-    #[test]
-    fn sandbox_builds_with_the_host_toolchain() {
-        // Each missing piece says which one it is: a silent skip hid both a broken sandbox and a missing
-        // toolchain (D-121).
-        if !sandbox_usable() {
-            eprintln!("skipped: no usable bubblewrap sandbox on this machine");
-            return;
-        }
-        if toolchain_mounts().is_empty() {
-            eprintln!("skipped: this machine exposes no host toolchain to mount into the sandbox");
-            return;
-        }
-        if which("cargo").is_none() {
-            eprintln!("skipped: cargo is not on PATH");
-            return;
-        }
-        let dir = std::env::temp_dir().join(format!("ta-toolchain-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(dir.join("src")).unwrap();
-        std::fs::write(
-            dir.join("Cargo.toml"),
-            "[package]\nname = \"probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
-        )
-        .unwrap();
-        std::fs::write(dir.join("src/lib.rs"), "#[test]\nfn adds() { assert_eq!(1 + 1, 2); }\n").unwrap();
-        let out =
-            shell_run("cargo test --offline 2>&1 | tail -30; echo cargo-rc=${PIPESTATUS[0]}", &dir, 300, false, None)
-                .unwrap();
-        assert!(out.contains("cargo-rc=0") && out.contains("1 passed"), "cargo unusable inside the sandbox: {out}");
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

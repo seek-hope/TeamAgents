@@ -9,7 +9,7 @@ use crate::hooks::Hooks;
 use crate::jobs::{client, JobSpec, Journal};
 use crate::providers::{Cancel, ErrorClass, Provider, ProviderEvent};
 use crate::reference::readback_receipt;
-use crate::tools::{shell_command_spec, ShellMode, V2Toolkit};
+use crate::tools::{shell_command_spec, V2Toolkit};
 use crate::v2::reviewer::{self, Verdict};
 use crate::v2::storage::Storage;
 use rusqlite::OptionalExtension;
@@ -55,6 +55,89 @@ mod cadence {
             "a user cancel is noticed within half a second"
         );
         assert!(JOB_POLL_PATIENCE >= std::time::Duration::from_millis(500), "quick commands do not back off instantly");
+    }
+}
+
+/// Recover the exact recorded host command. A removed backend may only contribute a verified terminal
+/// result; never launch its saved argv or substitute a host command during an upgrade (D-480).
+fn saved_shell_job(root: &Path, prepared: JobSpec) -> Result<JobSpec, String> {
+    let bytes = match std::fs::read(root.join("job.json")) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(prepared),
+        Err(error) => return Err(format!("read saved shell job: {error}")),
+    };
+    let saved: JobSpec = serde_json::from_slice(&bytes).map_err(|e| format!("parse saved shell job: {e}"))?;
+    if saved.job_id != prepared.job_id {
+        return Err("saved shell job belongs to another operation".into());
+    }
+    if let Some(journal) = client::persisted_journal(root) {
+        if journal.job_id != saved.job_id || journal.command_hash != saved.command_hash() {
+            return Err("saved shell job does not match its journal".into());
+        }
+        if saved.program == "/bin/bash" || journal.terminal() {
+            return Ok(saved);
+        }
+    } else if saved.program == "/bin/bash" && !root.join("journal.json").exists() {
+        return Ok(saved);
+    }
+    Err(format!("saved shell job {} uses a retired backend or has an unreadable journal; inspect the recorded job and stop or settle its work explicitly before resuming; no command was redispatched", saved.job_id))
+}
+
+#[cfg(test)]
+mod shell_recovery_tests {
+    use super::*;
+
+    #[test]
+    fn saved_execution_is_not_replaced_or_relaunched_by_an_upgrade() {
+        let root = std::env::temp_dir().join(format!("ta-shell-recovery-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let host = JobSpec {
+            job_id: "op-one".into(),
+            program: "/bin/bash".into(),
+            args: vec!["-c".into(), "true".into()],
+            cwd: "/tmp".into(),
+            env: vec![],
+            deadline_ms: 100,
+            token: "recorded".into(),
+        };
+        let mut old = host.clone();
+        old.program = "/retired/backend".into();
+        old.cwd = "/old/workspace".into();
+        let bytes = serde_json::to_vec(&old).unwrap();
+        std::fs::write(root.join("job.json"), &bytes).unwrap();
+        assert!(saved_shell_job(&root, host.clone()).unwrap_err().contains("no command was redispatched"));
+        let mut journal = Journal {
+            job_id: old.job_id.clone(),
+            command_hash: old.command_hash(),
+            state: "RUNNING".into(),
+            pid: None,
+            start_ticks: None,
+            boot_id: "old-boot".into(),
+            exit_code: None,
+            signal: None,
+            started_ms: Some(1),
+            finished_ms: None,
+            starts: 1,
+            cancel_saved: false,
+        };
+        std::fs::write(root.join("journal.json"), serde_json::to_vec(&journal).unwrap()).unwrap();
+        assert!(saved_shell_job(&root, host.clone()).is_err());
+        journal.state = "SUCCEEDED".into();
+        journal.exit_code = Some(0);
+        std::fs::write(root.join("journal.json"), serde_json::to_vec(&journal).unwrap()).unwrap();
+        let recovered = saved_shell_job(&root, host.clone()).unwrap();
+        assert_eq!(recovered.cwd, "/old/workspace");
+        assert_eq!(recovered.program, "/retired/backend");
+        assert_eq!(std::fs::read(root.join("job.json")).unwrap(), bytes);
+        journal.command_hash = "different".into();
+        std::fs::write(root.join("journal.json"), serde_json::to_vec(&journal).unwrap()).unwrap();
+        assert!(saved_shell_job(&root, host.clone()).unwrap_err().contains("does not match"));
+        std::fs::remove_file(root.join("journal.json")).unwrap();
+        std::fs::write(root.join("job.json"), serde_json::to_vec(&host).unwrap()).unwrap();
+        let mut changed = host.clone();
+        changed.args = vec!["new arguments must not replace saved ones".into()];
+        assert_eq!(saved_shell_job(&root, changed).unwrap().args, host.args);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
 
@@ -152,14 +235,12 @@ pub struct DriverConfig<P> {
     /// resolves its workspace policy against this directory.
     pub instances_dir: PathBuf,
     pub workspace: PathBuf,
-    /// Derived from `[permissions] sandbox` (D-466): `full_auto` for the host, `approved_scope` for a backend.
+    /// Session permission label; production uses full_auto (D-480).
     pub permissions: String,
     /// Operation approvals are decided by the user or by the reviewer.
     pub approvals_reviewer: String,
     /// Optional model key for the reviewer; the member's model is the fallback.
     pub reviewer_model: Option<String>,
-    /// The sandbox `approved_scope` runs commands in (D-369): bubblewrap or docker, from the user's own config.
-    pub sandbox: crate::tools::SandboxBackend,
     pub profile: KernelProfile,
     pub provider: P,
     pub catalog: teamagents_core::models::UserConfig,
@@ -481,8 +562,7 @@ pub struct Driver<P: Provider> {
 pub async fn start<P: Provider + 'static>(mut config: DriverConfig<P>) -> Result<DriverHandle, String> {
     std::fs::create_dir_all(&config.state_root)
         .map_err(|e| crate::cli::state_root_uncreatable(&config.state_root, &e))?;
-    // the isolated shell binds absolute source paths: a relative state root
-    // would reach bwrap as a relative bind and fail with a confusing error
+    // Shell state and runner records need stable absolute paths across cwd changes.
     config.state_root = std::fs::canonicalize(&config.state_root)
         .map_err(|e| format!("state root {}: {e}", config.state_root.display()))?;
     let lock = crate::jobs::state_lock(&config.state_root.join("coordinator.lock"))?;
@@ -2156,7 +2236,6 @@ that delegated it learns the outcome only from a settlement.";
         if dispatched.is_empty() {
             return Ok(true);
         }
-        let mode = ShellMode::from_permissions(Some(&self.config.permissions), self.config.sandbox.clone())?;
         let toolkit = self.toolkit.clone();
         let mut tasks = Vec::with_capacity(dispatched.len());
         for (operation_id, intent) in &dispatched {
@@ -2169,9 +2248,8 @@ that delegated it learns the outcome only from a settlement.";
             };
             let toolkit = toolkit.clone();
             let op = operation_id.clone();
-            let mode = mode.clone();
             tasks.push(tokio::task::spawn_blocking(move || {
-                toolkit.call(&op, &typed, &crate::tools::TurnControl::default(), mode)
+                toolkit.call(&op, &typed, &crate::tools::TurnControl::default())
             }));
         }
         let joined = futures_util::future::join_all(tasks).await;
@@ -2373,26 +2451,16 @@ that delegated it learns the outcome only from a settlement.";
             }
         }
         let job_dir = self.config.state_root.join("jobs").join(operation_id.replace(['/', ':'], "_"));
-        let mode = ShellMode::from_permissions(Some(&self.config.permissions), self.config.sandbox.clone())?;
         let command_text = intent["args"]["command"].as_str().unwrap_or("");
         let asked = intent["args"]["timeout"].as_u64();
         let timeout = match source {
             TimeoutSource::User => crate::tools::bounded_timeout(asked, None),
             TimeoutSource::Model => crate::tools::bounded_timeout(asked, self.config.catalog.limits.max_tool_seconds),
         };
-        let network = intent["args"]["network"].as_bool().unwrap_or(false);
-        let skills = crate::tools::skill_roots(&self.config.catalog);
-        let spec = match shell_command_spec(
-            command_text,
-            &self.config.workspace,
-            network,
-            Some(&self.shell_state),
-            mode.clone(),
-            &skills,
-        ) {
+        let spec = match shell_command_spec(command_text, &self.config.workspace, Some(&self.shell_state)) {
             Ok(spec) => spec,
             Err(error) => {
-                // isolation/setup failure: the command never started (A14)
+                // Setup failure: the command never started (A14)
                 let receipt =
                     self.receipt_skeleton(operation_id, intent, false, json!({"error": error.reason}).to_string());
                 let receipt = ToolReceipt {
@@ -2404,7 +2472,7 @@ that delegated it learns the outcome only from a settlement.";
                     .await;
             }
         };
-        let job = JobSpec {
+        let prepared_job = JobSpec {
             job_id: operation_id.to_string(),
             program: spec.program,
             args: spec.args,
@@ -2414,6 +2482,8 @@ that delegated it learns the outcome only from a settlement.";
             // filled by the runner spawn; reconnects read it from job.json
             token: String::new(),
         };
+        let job = saved_shell_job(&job_dir, prepared_job)?;
+        let legacy = job.program != "/bin/bash";
         if !job_dir.join("journal.json").exists() {
             // no runner ever persisted READY: (re)spawn over the same dir —
             // the persisted token keeps the job identity stable (A11)
@@ -2430,7 +2500,9 @@ that delegated it learns the outcome only from a settlement.";
             }
         }
         // GO dedups: a replay never starts a second command (A10)
-        let _ = client::go(&job_dir).await;
+        if !legacy {
+            let _ = client::go(&job_dir).await;
+        }
         let journal = self.await_job(operation_id, &job_dir).await?;
         // A known terminal outcome ends the runner's reason to exist (§6.2: one controlled runner per *active*
         // command; A12's own test ends it with `client::shutdown`). The journal on disk stays the recoverable
@@ -2503,10 +2575,7 @@ that delegated it learns the outcome only from a settlement.";
         };
         let mut receipt = self.receipt_skeleton(operation_id, intent, journal.starts > 0, content);
         receipt.ok = ok;
-        receipt.mode = Some(match mode {
-            ShellMode::Sandbox(_) => "approved_scope".into(),
-            ShellMode::Host => "full_auto".into(),
-        });
+        receipt.mode = Some(if legacy { "approved_scope" } else { "full_auto" }.into());
         receipt.cwd = Some(job.cwd);
         receipt.exit_code = journal.exit_code;
         receipt.signal = journal.signal;
@@ -2976,10 +3045,9 @@ that delegated it learns the outcome only from a settlement.";
         }
         let toolkit = self.toolkit.clone();
         let op = operation_id.to_string();
-        let mode = ShellMode::from_permissions(Some(&self.config.permissions), self.config.sandbox.clone())?;
         let domains = self.allowed_web_domains().await?;
         let control = crate::tools::TurnControl::with_domains(domains);
-        let receipt = tokio::task::spawn_blocking(move || toolkit.call(&op, &typed, &control, mode))
+        let receipt = tokio::task::spawn_blocking(move || toolkit.call(&op, &typed, &control))
             .await
             .map_err(|e| format!("tool worker join: {e}"))?;
         self.notify_tool_call(&name, &args, receipt.ok, receipt.error.as_ref().map(|e| e.reason.clone()));

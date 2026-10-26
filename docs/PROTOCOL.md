@@ -53,7 +53,7 @@ accept unfamiliar codes and absent fields from older daemons. attention is an in
 permission or a deadlock verdict. A missing timer and elapsed time alone do not establish a stall.
 
 **Environment and input feedback (D-479).** `snapshot.environment` is an observation outside the database
-watermark: `workspace`, `sandbox`, `permissions` and `sources` describe the session at boot;
+watermark: `workspace`, `execution` (host), `permissions` and `sources` describe the session at boot;
 `configuration.files[]` reports each path as `unchanged`, `changed` or `unavailable`.
 `restart_required` means a change was observed, and `comparison_available` is false if any comparison failed.
 No file bytes or fingerprints are exposed. `leader_instruction_load` is null until the current Leader driver
@@ -78,16 +78,16 @@ the handler re-checks who may do this rather than trusting the request.
 
 | Method | Parameters | Reply keys | Answered at |
 |---|---|---|---|
-| `previews` | — | `previews` | `engine/src/v2/daemon.rs:700` |
-| `checkpoint` | — | `snapshot`, `watermark` | `engine/src/v2/daemon.rs:706` |
-| `events` | `since` | `events`, `resync_required`, `watermark` | `engine/src/v2/daemon.rs:713` |
-| `history` | `instance_id`, `limit` | `entries`, `envelope_id`, `epoch`, `idx`, `instance_id`, `kind`, `message`, `workspace` | `engine/src/v2/daemon.rs:722` |
-| `surfaces` | `instance_id`, `limit` | `epoch`, `goal_id`, `instance_id`, `kind`, `offered_tools`, `request_id`, `status`, `surface_authorized`, `surfaces` | `engine/src/v2/daemon.rs:755` |
-| `inputs` | — | `envelope_id`, `epoch`, `inputs`, `instance_id`, `next_after`, `payload`, `revision`, `sequence` | `engine/src/v2/daemon.rs:787` |
-| `tasks` | — | `tasks` | `engine/src/v2/daemon.rs:838` |
-| `approvals` | — | `approvals`, `id`, `operation_id`, `preview`, `tool` | `engine/src/v2/daemon.rs:847` |
-| `goals` | — | `attached_instances`, `deadline`, `goals`, `id`, `known_usage`, `limits`, `status`, `summary`, `unknown_usage` | `engine/src/v2/daemon.rs:876` |
-| `grants` | — | `action`, `capability_requests`, `delegable`, `grants`, `id`, `issuer`, `parent_grant_id`, `requester`, `resource_scope`, `revision`, `revoked`, `status`, `subject`, `task_id` | `engine/src/v2/daemon.rs:922` |
+| `previews` | — | `previews` | `engine/src/v2/daemon.rs:697` |
+| `checkpoint` | — | `snapshot`, `watermark` | `engine/src/v2/daemon.rs:703` |
+| `events` | `since` | `events`, `resync_required`, `watermark` | `engine/src/v2/daemon.rs:710` |
+| `history` | `instance_id`, `limit` | `entries`, `envelope_id`, `epoch`, `idx`, `instance_id`, `kind`, `message`, `workspace` | `engine/src/v2/daemon.rs:719` |
+| `surfaces` | `instance_id`, `limit` | `epoch`, `goal_id`, `instance_id`, `kind`, `offered_tools`, `request_id`, `status`, `surface_authorized`, `surfaces` | `engine/src/v2/daemon.rs:752` |
+| `inputs` | — | `envelope_id`, `epoch`, `inputs`, `instance_id`, `next_after`, `payload`, `revision`, `sequence` | `engine/src/v2/daemon.rs:784` |
+| `tasks` | — | `tasks` | `engine/src/v2/daemon.rs:835` |
+| `approvals` | — | `approvals`, `id`, `operation_id`, `preview`, `tool` | `engine/src/v2/daemon.rs:844` |
+| `goals` | — | `attached_instances`, `deadline`, `goals`, `id`, `known_usage`, `limits`, `status`, `summary`, `unknown_usage` | `engine/src/v2/daemon.rs:873` |
+| `grants` | — | `action`, `capability_requests`, `delegable`, `grants`, `id`, `issuer`, `parent_grant_id`, `requester`, `resource_scope`, `revision`, `revoked`, `status`, `subject`, `task_id` | `engine/src/v2/daemon.rs:919` |
 
 ### Commands (executed by the control plane)
 
@@ -168,7 +168,7 @@ literals in `engine/src/v2/daemon.rs` and its diagnostics helper; this table is 
 | `handle` | `request_id`, `ok`, `result` |
 | `handle` | `request_id`, `ok`, `error` |
 | `handle` | — |
-| `handle` | `workspace`, `sandbox`, `permissions`, `sources`, `leader_instruction_load`, `configuration` |
+| `handle` | `workspace`, `execution`, `permissions`, `sources`, `leader_instruction_load`, `configuration` |
 | `input_paths` arm | `stopping`, `state_root` |
 | `read_snapshot` | `id`, `lifecycle`, `phase`, `model`, `reason`, `effort`, `can_run_shell`, `diagnosis` |
 | `read_snapshot` | `status`, `known_usage`, `summary`, `unknown_usage`, `limits`, `deadline` |

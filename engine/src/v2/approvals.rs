@@ -1,12 +1,10 @@
 //! The user's approval surface (D-67): list the approvals a session is waiting on
 //! and decide them — `teamagents approvals [approve|deny] --id …`.
 //!
-//! A session in `approved_scope` (the default) parks an out-of-scope operation on a
-//! user decision, and the design names the TUI as that surface (§5.4/§9). A
-//! *headless* run has nobody at a TUI: `exec` reports the approval and exits 3, and
-//! until this surface existed the only ways on were to start the TUI or to run the
-//! session in `--full-auto`. The mechanism itself was never missing — the daemon's
-//! `approvals` read carries the id, the operation and a preview, and
+//! Approval-gated operations such as self-update and historical pending approvals
+//! still require a user decision. Ordinary host Shell is automatic (D-480). A
+//! headless run reports a pending approval and exits 3. The daemon's `approvals`
+//! read carries the id, the operation and a preview, and
 //! `approve`/`deny` are ordinary user commands, gated by the same
 //! argument-hash-bound decision the runtime verifies before it dispatches
 //! (`NoEffectBeforeApproval`, A25) — so this is a client, not a new authority.

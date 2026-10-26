@@ -62,7 +62,7 @@ fn help_reports_live_environment_without_changing_drafts_or_permissions() {
     let mut app = app();
     app.apply_checkpoint(
         json!({"environment":{
-            "workspace":"/project","sandbox":"sbx","permissions":"approved_scope",
+            "workspace":"/project","execution":"host","permissions":"full_auto",
             "configuration":{"restart_required":true},
             "leader_instruction_load":{"epoch":0,"observed_at":123,"files":[
                 {"path":"/project/AGENTS.md","status":"loaded","bytes":100},
@@ -76,7 +76,7 @@ fn help_reports_live_environment_without_changing_drafts_or_permissions() {
     let text = app.entries.iter().map(|e| e.text.as_str()).collect::<Vec<_>>().join("\n");
     for needle in [
         "Workspace: /project",
-        "sbx (approved_scope)",
+        "host (full_auto)",
         "Configuration changed",
         "Last Leader prompt assembly",
         "/missing.md: unreadable (No such file)",

@@ -1,7 +1,10 @@
 > TeamAgents **v0.2.0** is the first public release: Linux x86_64, musl-static, and no Rust toolchain
 > is needed to run the published archive.
 
-### What is in this release
+The notes below describe current source, including changes after the published v0.2.0 archive.
+They do not mean that the existing release or its artifacts have been replaced.
+
+### Current source changes
 
 - The single authoritative state: one SQLite database per session (WAL with `synchronous=FULL`); instances,
   tasks, grants, budgets, approvals, receipts and events commit in one transaction, and crash recovery is
@@ -24,22 +27,22 @@
   resource-bounded terminable Rust helpers.
 - Read-only work diagnostics with explicit recovery instructions in CLI/TUI (D-461); observation never
   prompts a model, settles a task or stops an operation.
-- Two sandbox modes: `none` (the default, explicit host execution) or `approved_scope` with bubblewrap,
-  Docker or SSH; a configured backend fails closed when unavailable (D-466).
+- Host Shell, acceptance commands and local MCP (D-480); OS sandbox backends were removed.
+  Ordinary Shell needs no per-call approval. Task capabilities, records, recovery and self-update approval remain.
 - Repository `AGENTS.md` discovery from the trusted boundary to the cwd (D-467), bounded skill support
   resources (D-468), and disjoint multi-file edits plus parallel read-only batches (D-469).
 - Session controls: the Leader model/effort menu (D-473), an explicit `after = "turn"` follow-up queue
   (D-470), web domain grants, and cancel-versus-stop diagnosis; Ctrl+Q quits, Ctrl+P opens the queue and
   Ctrl+M opens the model/effort menu.
 - Terminal-independent `make pty` matrix across xterm/screen/tmux/Kitty profiles (D-472); acceptance checks
-  follow the session's shell mode (D-471); the generated profile defaults to `high` reasoning effort (D-474).
+  run on the host (D-480); the generated profile defaults to `high` reasoning effort (D-474).
 - Per-model reasoning-effort menus (D-476): `[models.<key>] efforts` declares the values Ctrl+M offers,
   defaulting to minimal/low/medium/high/xhigh/max; a model that lacks the current level falls back to the
   nearest declared level at or below it, and the CLI `--effort` remains an explicit override.
 - Installer, `teamagents init`, `doctor` and `exec` as documented in the
   [install guide](https://github.com/seek-hope/TeamAgents/blob/main/docs/INSTALL.md).
 
-Local regression: `make check` green (core 147 / engine 424 / tui 87) plus `make pty`;
+Local regression: `make check` green (core 147 / engine 415 / tui 87) plus `make pty`;
 the tag workflow smoke-installs the exact archive before publishing it. Real-model acceptance is reported
 separately in [docs/ACCEPTANCE.md](https://github.com/seek-hope/TeamAgents/blob/main/docs/ACCEPTANCE.md);
 a release packages the current source and does not widen those evidence boundaries.

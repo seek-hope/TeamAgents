@@ -72,8 +72,6 @@ KNOWN_TEST_ONLY = {
                     "inject a real storage-level condition (the doc names the page cap for A31)",
     "with_stream_stall": "mechanical: provider test-support hook: makes a stream stall so the retry path can be "
                          "driven",
-    "sandbox_usable": "mechanical: the tests' branch on the sandbox verdict; `doctor` reports the detail "
-                      "through `sandbox_state()` instead",
     "load_user_config": "D-244: the user-only loader, kept as the reference the merge path is compared against "
                         "(`the_two_loaders_agree_on_a_user_only_config`) — the product loads through "
                         "`load_user_config_for`, so only tests call this one",

@@ -146,7 +146,6 @@ async fn main() -> Fallible<()> {
         permissions: permissions.clone(),
         approvals_reviewer: "user".into(),
         reviewer_model: None,
-        sandbox: teamagents_engine::tools::SandboxBackend::bubblewrap(),
         catalog: catalog.clone(),
         bindings: vec!["files".into(), "shell".into(), "web".into(), "skills".into()],
         max_retries: 2,

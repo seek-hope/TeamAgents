@@ -18,12 +18,11 @@ probe shows "the checks gate the exit code, not the work".
     python3 review/dogfood/exec_check.py
     python3 review/dogfood/exec_check.py --state-dir /tmp/ta-execcheck
 
-A fourth scenario uses a **second session without `--full-auto`** (so a shell call parks on an approval) and
-pins the documented rule that an approval stop verifies nothing: exit 3, an empty verdict list, no ledger path,
-and the ledger the earlier run in that session wrote stays untouched.
+A fourth scenario uses a **second session without `--full-auto`** and verifies D-480: an ordinary Shell
+command runs automatically on the host, writes its artifact and reaches the passing acceptance check.
+The former approval-stop scenario is historical.
 
-It needs `DEEPSEEK_API_KEY`, uses the native window (D-36), runs the sessions in `full_auto` except for that
-fourth scenario (whose shell runs inside bubblewrap) and writes only under `--state-dir`.
+It needs `DEEPSEEK_API_KEY`, uses the native window (D-36) and writes only under `--state-dir`.
 """
 import argparse
 import atexit
@@ -160,39 +159,22 @@ def main() -> int:
         print(f"   ledger: exit_code={rows[0]['exit_code']} ok={rows[0]['ok']} "
               f"output={(rows[0].get('output') or '')[:40]!r}")
 
-    # 4. a run stopped for an approval runs no checks at all: exit 3, an empty verdict list, no ledger path,
-    #    and the ledger the previous run in *that* session wrote stays untouched
-    approval_root = root / "approval/root"
-    approval_ws = root / "approval/ws"
-    approval_ws.mkdir(parents=True)
-    (approval_ws / "hello.txt").write_text("hello")
-    passing, report = run_exec(approval_root, approval_ws, env, "Say the single word ok.",
-                               ["test -f hello.txt"], full_auto=False)
-    print(f"4a. approved_scope, passing check (no shell call): exit={passing.returncode} "
-          f"end={report.get('end')}")
-    if passing.returncode != 0:
-        failures.append(f"the baseline run in the approved_scope session should exit 0, got {passing.returncode}")
-    ledger_file = approval_root / "verification.json"
-    before = ledger_file.read_bytes() if ledger_file.is_file() else b""
-    if not before:
-        failures.append("the baseline run wrote no ledger, so the untouched-file check proves nothing")
-    parked, report = run_exec(approval_root, approval_ws, env,
-                              "Run the shell command `echo approval-probe` and report its output.",
-                              ["test -f hello.txt"], full_auto=False)
-    print(f"4b. the same session, a turn that parks on an approval: exit={parked.returncode} "
-          f"end={report.get('end')} verification={report.get('verification')} "
-          f"path={report.get('verification_path')}")
-    if parked.returncode != 3:
-        failures.append(f"a run whose turn parks on an approval must exit 3, got {parked.returncode}")
-    if report.get("verification") != []:
-        failures.append(f"an approval stop must verify nothing: {report.get('verification')}")
-    if report.get("verification_path") is not None:
-        failures.append(f"an approval stop must not point at a ledger: {report.get('verification_path')}")
-    after = ledger_file.read_bytes() if ledger_file.is_file() else b""
-    if after != before:
-        failures.append("the approval stop rewrote the ledger the earlier run left behind")
-    else:
-        print("   the earlier ledger is untouched")
+    # 4. The ordinary boot has the same automatic host behavior as --full-auto (D-480).
+    host_root = root / "host/root"
+    host_ws = root / "host/ws"
+    host_ws.mkdir(parents=True)
+    automatic, report = run_exec(host_root, host_ws, env,
+                                 "Run the shell command `printf host-automatic > host.txt`, then report completion.",
+                                 ['test "$(cat host.txt)" = host-automatic'], full_auto=False)
+    print(f"4. ordinary host Shell: exit={automatic.returncode} end={report.get('end')}")
+    if automatic.returncode != 0:
+        failures.append(f"ordinary host Shell should run without approval, got exit {automatic.returncode}")
+    artifact = host_ws / "host.txt"
+    if not artifact.is_file() or artifact.read_text() != "host-automatic":
+        failures.append("the host Shell artifact is missing or wrong")
+    rows = ledger(host_root)
+    if len(rows) != 1 or rows[0].get("ok") is not True or rows[0].get("exit_code") != 0:
+        failures.append(f"ordinary host execution did not reach its passing check: {rows}")
 
     for failure in failures:
         print("FAIL:", failure)

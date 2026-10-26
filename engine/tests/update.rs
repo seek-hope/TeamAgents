@@ -124,7 +124,6 @@ fn config(root: &Path, provider: ScriptedProvider, policy: &str) -> DriverConfig
         permissions: "full_auto".into(),
         approvals_reviewer: "user".into(),
         reviewer_model: None,
-        sandbox: teamagents_engine::tools::SandboxBackend::bubblewrap(),
         profile: KernelProfile {
             images: false,
             tool_output_chars: None,

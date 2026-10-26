@@ -25,13 +25,11 @@ ifeq ($(HOME),/tmp)
 endif
 
 .PHONY: help check fmt fmt-check lint test build pty probe-offline probe-models hygiene language-check \
-        check-nobwrap check-broken-sandbox benchmark-receipts verify-tools verify-model verify-model-all \
+        benchmark-receipts verify-tools verify-model verify-model-all \
         verify-model-counterexamples verify-model-wide verify-model-sim verify-kani release-rehearsal
 
 help:
 	@echo 'make check     format, Clippy, regression tests and repository hygiene (offline by default)'
-	@echo 'make check-nobwrap  the same gate with the GitHub runner condition: no bwrap in PATH (D-113)'
-	@echo 'make check-broken-sandbox  ... with a bwrap that cannot start a sandbox (Ubuntu 24.04 default, D-114)'
 	@echo 'make fmt       format the three crates'
 	@echo 'make build     build the CLI and the TUI'
 	@echo 'make release-rehearsal  rehearse the release workflow locally, short of publishing (a musl release build; minutes)'
@@ -89,21 +87,6 @@ build:
 # `make hygiene`) covers the files the workflow copies; this covers that the steps themselves run.
 release-rehearsal:
 	python3 review/release_rehearsal.py
-
-# CI's condition, reproducible locally (D-113): the GitHub runner has no bubblewrap, so the sandboxed shell
-# cannot start there. `review/nobwrap_path.py` builds a PATH with every tool except bwrap, and the whole gate
-# runs in it — a test that only passes where bubblewrap exists would show up here instead of in CI.
-check-nobwrap:
-	@set -eu; farm=$$(mktemp -d); trap 'rm -rf "$$farm"' EXIT HUP INT TERM; \
-		python3 review/nobwrap_path.py --verify "$$farm"; \
-		PATH="$$farm" $(MAKE) check
-
-# The other sandbox-less condition (D-114): bwrap is on PATH but cannot create a namespace — the default on
-# Ubuntu 23.10+/24.04, where AppArmor restricts unprivileged user namespaces, and inside locked-down containers.
-check-broken-sandbox:
-	@set -eu; farm=$$(mktemp -d); trap 'rm -rf "$$farm"' EXIT HUP INT TERM; \
-		python3 review/nobwrap_path.py --stub-bwrap --verify "$$farm"; \
-		PATH="$$farm" $(MAKE) check
 
 pty: build
 	@set -eu; check_dir=$$(mktemp -d); trap 'rm -rf "$$check_dir"' EXIT HUP INT TERM; \

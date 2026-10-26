@@ -20,11 +20,11 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Native context | real-model evaluation always uses the model's native window and records the value and its source | D-36 |
 | Install and first config | source builds or the published v0.2.0 archive; init writes a minimal config and never overwrites an existing file; local archives require matching checksums | D-37, D-457, D-475; docs/INSTALL.md |
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
-| Sandbox mode | `[permissions] sandbox` selects `none` (default: host shell, no shell approval) or a backend (`approved_scope` + sandbox, fail-closed); D-478 adds Docker Sandboxes (`sbx`) as a separate microVM backend | D-41, D-466, D-478 |
+| Execution | Shell, acceptance checks and local MCP services run on the host; ordinary Shell needs no per-operation approval. Sandbox backends and their settings were removed; capability grants and self-update approval remain | D-480 (supersedes D-41, D-466, D-478 execution choices) |
 | Repository instructions | explicit `instruction_files` come first; a trusted repository's `AGENTS.md` files are discovered from its boundary down to the cwd, outermost first (D-467) | D-246, D-467 |
 | Multi-edit and read parallelism | the default schema's `edit_file` accepts `edits` (disjoint, revision-checked, atomic batch; `edit_files` is an unadvertised alias); a batch of independent read-only calls runs its tool work concurrently while dispatch, veto and receipts stay ordered (D-469) | D-469 |
 | Session controls and web domains | user-only model/effort switch at a READY/WAITING boundary, an explicit `after = "turn"` follow-up queue, and `web` grants with `domain:` scopes; cancelling a task does not stop its command (D-470) | D-470 |
-| Acceptance checks | `exec --check` and goal `[[checks]]` run through the session's shell mode: `sandbox = none` on the host, a configured backend fail-closed (D-471) | D-471 |
+| Acceptance checks | `exec --check` and goal `[[checks]]` run on the host through the same shell implementation | D-471, D-480 |
 | PTY verification | `make pty` runs a terminal-profile matrix in isolated ptys (xterm-256color, screen-256color, tmux-256color, xterm-kitty, Kitty under tmux) with auto graphics-mode assertions, plus forced blocks/kitty protocol bounds | D-472 |
 | TUI keys | Ctrl+Q quits, Ctrl+P opens pending inputs, Ctrl+M opens the Leader's model/effort menu (`/quit`, `/model`); the profile applies at the next turn | D-473 |
 | Default effort | the generated `leader_main` profile defaults to `reasoning_effort = "high"`; existing configs keep their value and a running daemon keeps its boot catalog | D-474 |
@@ -35,6 +35,51 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Prompt cache | cache hit/miss/write are provider-reported and visible; the L1 frontier is fixed between compactions; Anthropic gets explicit breakpoints and OpenAI a stable key; DeepSeek stays automatic | D-459 |
 | Command idempotency | a replay with the same `command_id` returns the stored receipt for control-plane state, and the authoritative check runs under the write lock (D-463); result bodies are shared by content digest and zstd-compressed (D-464), while the receipt **rows** remain one per command | D-463, D-464 |
 | Model actions and code windows | a deciding read shares the write's transaction, or the guard is a predicate on the write itself; `verification/REPORT.md` §6 lists the protocol transitions and the three engine windows that span two transactions with their predicates | D-465 |
+
+## D-480 Remove OS sandbox backends; automatic host execution (2026-10-26)
+
+The user explicitly requested removal of TeamAgents sandbox support and selected option A: ordinary Shell
+runs automatically on the host. This supersedes the backend choices in D-369, D-437, D-466 and D-478 and the
+backend-specific part of D-479. It does not authorize file rollback, removal of session data, uninstalling
+system packages, deleting existing VMs or changing their network policies.
+
+Removed bubblewrap, Docker containers, Docker Sandboxes (sbx) and SSH shell wrappers, availability probes,
+backend setup and mount logic. Shell and user acceptance commands now use host Bash with a controlled inherited
+environment, persistent per-member host cwd/exports, bounded output, timeout/cancellation and durable job
+receipts. New production sessions retain the wire permission label full_auto and never request ordinary Shell
+approval. Task capability grants, hooks, existing approval records and self-update approval remain.
+Local MCP runs on the host in the member workspace; HTTP MCP, remote SSH MCP bindings and QuickJS tool
+composition remain supported. QuickJS's language capability boundary and bounded display workers are separate
+from the removed OS sandbox backends.
+
+Legacy permissions.sandbox and sandbox_* settings are rejected with a migration message, including the old
+none value. Removing them explicitly selects the current host behavior. The mcp_execution setting accepts only
+host (also the default); workspace and mcp_network are rejected. User check configuration no longer accepts
+network. Historic persisted operation arguments and receipts are not rewritten. The compatibility --full-auto
+flag remains accepted, with the same behavior as an ordinary new session. Environment diagnosis reports the
+host only and still performs no model calls, toolchain execution or automatic repair.
+
+The old host shell-state namespace is retained; isolated state files are not sourced as host state. Existing
+sessions and operation records remain intact. Recovery loads the recorded job identity and argv instead of
+substituting newly prepared host arguments. Retired backend jobs may supply verified terminal outcomes only;
+unfinished legacy jobs require explicit operator handling and are never redispatched. Logs remain ordinary
+same-user files, not tamper-proof records or a workspace rollback facility.
+
+The obsolete no-bubblewrap and broken-sandbox development gates are retired. Historical isolation evidence is
+explicitly marked as historical; it does not establish a capability of this source. The real-model exec-check
+probe now expects automatic host Shell in its ordinary-boot scenario; it was syntax-checked, not run against a
+paid service in this change. Its dated approval-stop results remain historical.
+
+Validation: make check passed with core 147 / engine 415 / tui 87 tests, including retired configuration
+refusal, host MCP files/network, persistent host state and saved-job recovery regressions. The PTY matrix
+passed all five profiles and both forced graphics protocols. Release builds were installed locally after
+backing up the prior binaries and config; only permissions.sandbox was removed from the local config, leaving
+the remote SSH MCP binding and all other settings unchanged. The installed CLI discovered all seven host
+tools without executing them. The installed binary also passed the credential-free shutdown/recovery probe:
+the daemon stopped in 0.3 seconds, the runner completed independently, the next daemon imported its result,
+and the command ran once; cleanup left no probe daemon or runner. The installed TUI passed the xterm-256color
+conversation PTY. No existing session, VM, package or network policy was removed or changed. No public release
+was replaced, and these local checks do not renew independent audits or real-provider acceptance.
 
 ## D-479 Explicit environment diagnosis and input delivery feedback (2026-10-26)
 
@@ -108,9 +153,9 @@ mapping, and no workspace MCP. The sandbox's own kernel/Docker daemon/network po
 repository's. `sbx` was installed from AUR `docker-sbx` because the official installer does not support CachyOS;
 the package wraps the official Docker release tarball.
 
-**Acceptance.** `tools::tests::sbx_argv_uses_the_named_sandbox_and_guards_the_workdir`,
-`tools::tests::an_sbx_backend_without_the_cli_refuses_before_running_on_the_host` and
-`config::project_config_tests::the_sandbox_backend_is_read_and_refused_when_unusable`; the test suite passes,
+**Acceptance.** `tools::tests::sbx_argv_uses_the_named_sandbox_and_guards_the_workdir`, (Historical reference; removed in D-480.)
+`tools::tests::an_sbx_backend_without_the_cli_refuses_before_running_on_the_host` and (Historical reference; removed in D-480.)
+`config::project_config_tests::the_sandbox_backend_is_read_and_refused_when_unusable`; the test suite passes, (Historical reference; removed in D-480.)
 and a live `exec --check` wrote the guest hostname/kernel into the host workspace. `doctor` now reports
 `sbx isolation probe passed (microVM)` instead of the Docker label.
 
@@ -316,7 +361,7 @@ lossy UTF-8, truncated), the mount is read-only, and a skill instruction still g
 
 **Acceptance.** `tools::tests::skill_read_exposes_relative_resources_and_refuses_escapes` (allowed read, traversal,
 absolute path, credential name, symlink escape, directory, oversized truncation) and
-`tools::tests::bwrap_argv_mounts_skill_roots_read_only`.
+`tools::tests::bwrap_argv_mounts_skill_roots_read_only`. (Historical reference; removed in D-480.)
 
 ## D-467 Repository AGENTS.md discovery (2026-10-21)
 
@@ -363,8 +408,8 @@ remains available in the sandbox mode and still needs a usable backend. The Rust
 spike (T2), not an implemented backend: bubblewrap/docker/ssh remain the first implementations behind the same
 selection key.
 
-**Acceptance.** `config::project_config_tests::the_sandbox_backend_is_read_and_refused_when_unusable` (default
-none, explicit none, a backend flips the mode), `tools::tests::the_none_backend_is_the_host_and_a_backend_is_the_sandbox`,
+**Acceptance.** `config::project_config_tests::the_sandbox_backend_is_read_and_refused_when_unusable` (default (Historical reference; removed in D-480.)
+none, explicit none, a backend flips the mode), `tools::tests::the_none_backend_is_the_host_and_a_backend_is_the_sandbox`, (Historical reference; removed in D-480.)
 the doctor CLI tests (default passes without bwrap; a configured bubblewrap still fails closed), and the
 `full_auto_reaches_a_started_daemon…` test (config `none`/`bubblewrap` and the `--full-auto` override).
 
@@ -1408,7 +1453,7 @@ enforced on the remote (so that flag is meaningful only under the local backends
 the remote process running — killing the local `ssh` closes the channel, it does not signal the far side. That is
 the same ceiling the synchronous shell path already documents for a service that daemonized itself.
 
-**The live probe caught two real defects, one of which the unit tests had blessed.** `review/dogfood/sandbox_ssh.py`
+**The live probe caught two real defects, one of which the unit tests had blessed.** `review/dogfood/sandbox_ssh.py` (Historical reference; removed in D-480.)
 starts a real `sshd` on a high port with keys under its scratch root, drives a real session in `approved_scope`
 (the mode the sandbox applies in — `full_auto` is the host *by design*, D-41), approves the parked call through the
 CLI (`approvals approve --id`, D-67), and then checks where the marker file landed:
@@ -1424,10 +1469,10 @@ CLI (`approvals approve --id`, D-67), and then checks where the marker file land
   run restored the first run's `cwd` — the same symptom as above from a different cause. The remote path is now
   derived from the member's own state directory, so two sessions on one host no longer share state.
 
-**Evidence.** `tools::tests::ssh_argv_sends_the_command_to_the_remote_under_the_products_own_options` (the
+**Evidence.** `tools::tests::ssh_argv_sends_the_command_to_the_remote_under_the_products_own_options` (the (Historical reference; removed in D-480.)
 single-argument script, the product's `-o` options before the user's — OpenSSH's first value wins, which is what
 keeps `BatchMode=yes` in force — the quoted remote `cd`, and the escaped quote in a workdir), the config refusals
-in `config::tests`, `review/dogfood/sandbox_ssh.py` live (the command runs in the configured *remote* directory and
+in `config::tests`, `review/dogfood/sandbox_ssh.py` live (the command runs in the configured *remote* directory and (Historical reference; removed in D-480.)
 nowhere locally; with the sshd stopped, nothing runs locally and the receipt records ssh's own refusal), and the
 three `V2Isolation` configurations above.
 
@@ -4254,7 +4299,7 @@ a task-success evaluation is `review/eval/r2-p6/`, not this file.
 **The gap.** D-364's `sessions_fork_snapshots_a_session_and_refuses_a_live_source` opened the fork with
 `doctor` and asserted exit 0. `doctor`'s exit code includes the isolation row, so the test passed on a dev
 machine with bubblewrap and failed on the CI runner, where bubblewrap is deliberately absent (D-113). The
-condition is what `make check-nobwrap` reproduces; the D-362…D-370 batch reached `origin/main` in one push, so
+condition is what `make check-nobwrap` reproduces; the D-362…D-370 batch reached `origin/main` in one push, so (Historical reference; removed in D-480.)
 CI met D-364's test for the first time.
 
 **The rule.** A test that verifies one capability must not require every other capability the host may lack.
@@ -4263,7 +4308,7 @@ is about — and leaves the process exit code to the isolation tests that own it
 whose resource is genuinely optional (the Docker image) may skip, as the bubblewrap positive tests already do
 (D-113); the fail-closed half runs everywhere.
 
-**Evidence.** `make check-nobwrap` is green on the fixed tree (44/44 engine `cli`, the whole gate), and
+**Evidence.** `make check-nobwrap` is green on the fixed tree (44/44 engine `cli`, the whole gate), and (Historical reference; removed in D-480.)
 `make check` stays green with bubblewrap.
 
 ## D-370 TUI slash commands: a `/command` in the composer is client-side (2026-09-30)
@@ -4292,13 +4337,13 @@ filesystem action rather than a session command), and the slash set is only live
 
 ## D-369 A configurable sandbox backend: bubblewrap or Docker, failing closed (2026-09-30)
 
-**The gap.** Isolation was bubblewrap only (`tools::bwrap_argv`), and PRODUCT-COMPARISON §2 item 4 listed
+**The gap.** Isolation was bubblewrap only (`tools::bwrap_argv`), and PRODUCT-COMPARISON §2 item 4 listed (Historical reference; removed in D-480.)
 sandbox backends (Pi: micro-VM/Docker; Hermes: seven) as the remaining execution-boundary gap. Docker is the
 second backend a Linux user expects, and this machine has a working daemon and local images, so the backend is
 verifiable here rather than only configurable.
 
 **The design.** `[permissions] sandbox = "bubblewrap" | "docker"` (default bubblewrap) and `sandbox_image`
-(required for Docker) in the user's own config; `config::sandbox_from_config` validates both — a typo is refused
+(required for Docker) in the user's own config; `config::sandbox_from_config` validates both — a typo is refused (Historical reference; removed in D-480.)
 (the shape D-161 established for `mode`), a Docker selection without an image is refused at load, and a
 `mcp_execution = "workspace"` server is refused under Docker because the MCP stdio path still builds bubblewrap's
 argv (a documented ceiling, below). The backend is threaded as `ShellMode::Sandbox(SandboxBackend { kind, image })`
@@ -4329,10 +4374,10 @@ well-behaved command stops with it; the unique `--name` is the explicit lever if
 `MC_isolation_unavailable.cfg`). Measured 2026-09-30: `make verify-model-all` 28/28,
 `make verify-model-counterexamples` 88/88, `make verify-kani` 3/3.
 
-**Evidence.** `tools::tests::docker_argv_is_stable_and_runs_isolated` (the argv shape, and a real container on
+**Evidence.** `tools::tests::docker_argv_is_stable_and_runs_isolated` (the argv shape, and a real container on (Historical reference; removed in D-480.)
 the machine's docker and a present image: `docker-ok` and a host-owned workspace file),
-`tools::tests::a_docker_backend_without_its_image_refuses_instead_of_running_on_the_host`, and
-`config::project_config_tests::the_sandbox_backend_is_read_and_refused_when_unusable` (default, missing image,
+`tools::tests::a_docker_backend_without_its_image_refuses_instead_of_running_on_the_host`, and (Historical reference; removed in D-480.)
+`config::project_config_tests::the_sandbox_backend_is_read_and_refused_when_unusable` (default, missing image, (Historical reference; removed in D-480.)
 typo, docker MCP refusal). The existing A14 refusal tests keep their meaning because the default is unchanged.
 
 **Ceilings.** No micro-VM, remote or per-command backend; one image for the whole session; the workspace is bound
@@ -6886,13 +6931,13 @@ The class-(b) measurements were not re-run and no date was invented: A11's came 
 
 The product's entry is D-311. This entry is the operator's verification and the phase's measured numbers.
 
-**What the audit found this time.** A14's row quoted `make check-nobwrap`'s result as "the three suites are green
+**What the audit found this time.** A14's row quoted `make check-nobwrap`'s result as "the three suites are green (Historical reference; removed in D-480.)
 (core 100 / engine 220 / tui 33)" — D-113's numbers, quoted as the current outcome of a target nothing
 recomputes: `review/test_counts.py` holds only the *ledger's own* sentence to the suites, so a number in an
 acceptance row is prose no audit can contradict. The delivery runs the target and states what it printed
 (**core 113 / engine 286 / tui 36**), keeping the old numbers as the history they are.
 
-**Verified.** The operator ran the cited target itself: `make check-nobwrap` is `rc=0` in **2 m 05 s** on this
+**Verified.** The operator ran the cited target itself: `make check-nobwrap` is `rc=0` in **2 m 05 s** on this (Historical reference; removed in D-480.)
 machine, and its own `test_counts` step printed `the ledger's counts match the suites: core 113 / engine 286 /
 tui 36` — the row's claim reproduced independently, not transcribed. `env -u DEEPSEEK_API_KEY make check` `rc=0`
 (25 green targets) and `make pty` ok, and the goal settled only after its own required check passed — the
@@ -6929,10 +6974,10 @@ names its driving test; some were audited in earlier turns).
 **The finding.** A14's parenthetical read "with it the three suites are green (**core 100 / engine 220 / tui
 33**)" — numbers from D-113's era, **undated**, and *no audit recomputes them*: `review/test_counts.py` checks
 the ledger's line, `AGENTS.md` and the release notes, not a row's prose. So the row carried a stale count a
-reader would take as current. Measured by running the row's *own* cited evidence: `make check-nobwrap` →
+reader would take as current. Measured by running the row's *own* cited evidence: `make check-nobwrap` → (Historical reference; removed in D-480.)
 **rc=0 in 1 m 23 s**, and inside that run its `review/test_counts.py` step printed **core 113 / engine 286 /
 tui 36** — the row was stale by 13 core, 66 engine and 3 tui tests. I also ran the row's other cited target,
-`make check-broken-sandbox` (D-114) → **rc=0 in 1 m 23 s**, so the row's *behavioural* claims (the refusal half
+`make check-broken-sandbox` (D-114) → **rc=0 in 1 m 23 s**, so the row's *behavioural* claims (the refusal half (Historical reference; removed in D-480.)
 asserted on every machine, the third machine condition covered) hold; only the numbers had drifted.
 
 **The change (the claim, not the code).** A14's sentence now states the measured counts with the date and the
@@ -6945,8 +6990,8 @@ counts stay a dated measurement rather than a second silent source of truth.**
 
 | Command | Result |
 |---|---|
-| `make check-nobwrap` — the row's own evidence | **rc=0**, 1 m 23 s; its ledger step printed `core 113 / engine 286 / tui 36` |
-| `make check-broken-sandbox` — the row's D-114 evidence | **rc=0**, 1 m 23 s |
+| `make check-nobwrap` — the row's own evidence | **rc=0**, 1 m 23 s; its ledger step printed `core 113 / engine 286 / tui 36`  (Historical reference; removed in D-480.) |
+| `make check-broken-sandbox` — the row's D-114 evidence | **rc=0**, 1 m 23 s  (Historical reference; removed in D-480.) |
 | the command whose output contradicts the old wording: `python3 review/test_counts.py` | `the ledger's counts match the suites: core 113 / engine 286 / tui 36` — against the row's `100 / 220 / 33` |
 | `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
 
@@ -11294,7 +11339,7 @@ negative controls, `MC_jobs_guess_notrun.cfg`, `MC_jobs_double_go.cfg`, `MC_jobs
 **Measured**: 13 configurations report `No error has been found` in 3 m 56 s, the 18 negative controls are
 refuted in 1 m 36 s, `make verify-kani` still proves its 3 harnesses, and `MC_jobs.cfg` itself is 207 states /
 64 distinct. The same day's other never-re-run gates were run too: `make pty` (`pty v2 smoke: ok`) and
-`make check-nobwrap` — the whole gate with bubblewrap scrubbed from PATH (exit 0), which is A14's CI condition.
+`make check-nobwrap` — the whole gate with bubblewrap scrubbed from PATH (exit 0), which is A14's CI condition. (Historical reference; removed in D-480.)
 
 **The modelling found a defect in the audit, not in the product — twice.** First, the property failed against a
 *stale* verdict: a "did not run" classification written before the journal advanced was still standing, so the
@@ -12377,8 +12422,8 @@ same problem for the daemon half.
 tests keep their explicit final removal, which is now belt-and-braces rather than the only path.
 `docs/DEVELOPMENT.md` names both guards where the leak rules are described.
 
-**Measured** (2026-09-27): `make check` green (374 tests, 22 hygiene audits), `make check-nobwrap` and
-`make check-broken-sandbox` green (374 each, no `/tmp/ta-*` left), `make probe-offline` 8/8. **Control**:
+**Measured** (2026-09-27): `make check` green (374 tests, 22 hygiene audits), `make check-nobwrap` and (Historical reference; removed in D-480.)
+`make check-broken-sandbox` green (374 each, no `/tmp/ta-*` left), `make probe-offline` 8/8. **Control**: (Historical reference; removed in D-480.)
 reverting D-171's tolerance byte-for-byte makes `doctor_predicts_whether_an_mcp_service_can_start` panic under
 the no-bwrap condition, exactly the case that leaked three trees before — the run fails with that single test
 failure and `/tmp/ta-*` is **empty** afterwards (checked directly, not through the audit, which never runs
@@ -12531,7 +12576,7 @@ refused the README until the flag was added to its toolchain allowlist **with it
 audit's own docstring describes for flags of the tools the docs tell the user to run. Nothing else changed in
 either document; `readme_zh.py`'s structural parity still holds (12 headings, 16 links, 18 flags on each side).
 
-**And the same turn found this campaign's own tests coupling to bubblewrap** (`make check-nobwrap`, the CI
+**And the same turn found this campaign's own tests coupling to bubblewrap** (`make check-nobwrap`, the CI (Historical reference; removed in D-480.)
 condition where `bwrap` is not in `PATH`): three CLI tests were red — `doctor_predicts_whether_an_mcp_service_`
 `can_start` and `a_state_root_that_is_a_file_is_refused_by_every_entry_point` asserted `doctor` exits 0, and
 without bubblewrap its *isolation* row fails by design (A14), so the verdict is 1 whatever the row under test
@@ -12540,7 +12585,7 @@ default, whose server cannot start at all without a sandbox, so the park landed 
 and the pre-submit guard — not the in-loop path under test — reported it. All three now assert the *row* (the
 thing they are about) plus "either doctor passed or its isolation row failed", and the park test's binding is
 `mcp_execution = "host"`, which makes the failure timing hold in both conditions. Product behaviour was correct
-in every case; the tests were the defect. `make check-nobwrap` and `make check-broken-sandbox` are both green on
+in every case; the tests were the defect. `make check-nobwrap` and `make check-broken-sandbox` are both green on (Historical reference; removed in D-480.)
 this tree (372 tests each), and so is the default `make check`.
 
 ## D-170 The comparison document was wrong about this build, and nothing read its citations (2026-09-27)
@@ -12550,7 +12595,7 @@ this tree (372 tests each), and so is the default `make check`.
 guide, and the comparison's *TeamAgents* column is prose that only a human re-reads. Re-reading it against the
 tree (2026-09-27) found five cells wrong or stale:
 
-* **Sandbox backends** said bubblewrap was "only for shell". `tools::shell_command_spec` → `tools::bwrap_argv`
+* **Sandbox backends** said bubblewrap was "only for shell". `tools::shell_command_spec` → `tools::bwrap_argv` (Historical reference; removed in D-480.)
   is one spec builder used by the shell tool *and* everything dispatched through it — the `[[checks]]`, the
   client's `--check`, and the job runner's commands — and `engine/src/mcp.rs` builds MCP `mcp_execution =
   "workspace"` (the default) from the same argv. `full_auto` and `mcp_execution = "host"` are the deliberate
@@ -12679,7 +12724,7 @@ one request arrives carrying `authorization: bearer test-value`. **Control** (th
 byte-identically): the same test fails on the first `unwrap_err` because the call *succeeded*, which is the
 defect written down. `tools::a_required_web_search_without_a_credential_fails_the_member_load` covers the boot
 half (required → `Err` naming the binding and the variable; optional → the binding stays and answers with the
-state). The `doctor` rows are pinned in `cli::doctor_probes_isolation_and_config_errors` (FAIL for the required
+state). The `doctor` rows are pinned in `cli::doctor_probes_isolation_and_config_errors` (FAIL for the required (Historical reference; removed in D-480.)
 one, WARN for both optional shapes, the fetch row ok).
 
 Docs: `docs/USER-GUIDE.md` §2 states the credential rule where the `[tools.web]` example is. DESIGN §7 needed
@@ -14487,7 +14532,7 @@ broken sandbox.
 
 Both now say what is missing, per condition, and keep the claim honest: the cancelled-sandbox test cannot be
 observed without a running sandbox (its fail-closed half is
-`cli::an_unisolated_shell_refuses_instead_of_running_on_the_host`, D-113), and the toolchain test only ever ran
+`cli::an_unisolated_shell_refuses_instead_of_running_on_the_host`, D-113), and the toolchain test only ever ran (Historical reference; removed in D-480.)
 where a host toolchain exists. A skip is fine; a *silent* one is not.
 
 The class has a detector now, because it is mechanical and it has now produced three rounds of findings:
@@ -14700,7 +14745,7 @@ readers use it:
   is installed that the refusal repeats bwrap's own words (`Permission denied`) — an assertion that was
   impossible before, because the message never carried them.
 
-The first full three-condition run (`make check`, `make check-nobwrap`, `make check-broken-sandbox`) also lost one
+The first full three-condition run (`make check`, `make check-nobwrap`, `make check-broken-sandbox`) also lost one (Historical reference; removed in D-480.)
 fixture race, and it is the D-83/D-94/D-103/D-105/D-111 shape once more, one level down:
 `startup_timeout_s_bounds_a_silent_handshake` (D-108) asserted the failed handshake had reaped the fixture server
 by reading the pid the fixture writes as its *first* statement — inside a 1 s `startup_timeout_s`. On a loaded
@@ -14713,7 +14758,7 @@ and boots.
 
 Evidence: three conditions green at 347 tests each (core 100 / engine 214 / tui 33); the doctor rows quoted above
 are the literal output of `teamagents doctor` with `/tmp/broken-farm` on `PATH` (`review/nobwrap_path.py
---stub-bwrap`); the MCP assertions live in `v2_mcp::mcp_workspace_execution_is_sandboxed` and
+--stub-bwrap`); the MCP assertions live in `v2_mcp::mcp_workspace_execution_is_sandboxed` and (Historical reference; removed in D-480.)
 `mcp_workspace_network_follows_the_config_key`.
 
 Ceiling: the reason is the *last non-empty line* of the probe's failure — bwrap's own message for the blocked
@@ -14760,7 +14805,7 @@ Evidence:
     #                                                  system allows unprivileged user namespaces
 
 Control for the branch selection: with the stub farm in `PATH` and a panic injected into the no-sandbox branch,
-`cli::an_unisolated_shell_refuses_instead_of_running_on_the_host` panics there — the branch is driven by
+`cli::an_unisolated_shell_refuses_instead_of_running_on_the_host` panics there — the branch is driven by (Historical reference; removed in D-480.)
 `sandbox_usable()`, not by `PATH`. Before the change the same farm failed that test at its positive assertion.
 `tools::workspace_paths_stay_inside_root` also gained a case: `glob` prefers `rg` *inside* the sandbox, so a
 sandbox that cannot start refuses instead of globbing differently, while `ls` is native and keeps working —
@@ -14787,7 +14832,7 @@ capability guard, so on the runner the run reports the check as refused and the 
         exec_takes_the_prompt_from_stdin_and_runs_the_acceptance_check
     # panicked at tests/cli.rs:426: check 1: FAILED (exit -1)  echo accepted
 
-Three more tests took the other way out and skipped whole: `cli::an_unisolated_shell_refuses_instead_of_running_on_the_host`
+Three more tests took the other way out and skipped whole: `cli::an_unisolated_shell_refuses_instead_of_running_on_the_host` (Historical reference; removed in D-480.)
 (A14's own test), `v2_daemon::headless_runs_verify_the_acceptance_commands_and_gate_the_exit_code`,
 `v2_daemon::a_failing_acceptance_command_fails_the_run` and
 `exec::tests::acceptance_commands_run_in_order_and_stop_at_the_first_failure` each printed
@@ -14867,7 +14912,7 @@ itself).
 
 ## D-111 The suite leaked daemons, and now it cannot (2026-09-26)
 
-The A14 test (`cli::an_unisolated_shell_refuses_instead_of_running_on_the_host`) drives two `teamagents exec`
+The A14 test (`cli::an_unisolated_shell_refuses_instead_of_running_on_the_host`) drives two `teamagents exec` (Historical reference; removed in D-480.)
 runs, and `exec` *detaches* the daemon it starts — that is its contract, the session outlives the client. Both
 runs therefore left a daemon running under `/tmp/ta-isolation-<pid>/root` and `…/root-control`, and because the
 daemons kept those roots busy the test's `let _ = std::fs::remove_dir_all(&root)` left the directories behind as
@@ -15764,7 +15809,7 @@ The one place where the product stops and asks the user is a gated call, and tha
 coverages: `v2_daemon::the_approvals_cli_lists_and_decides_a_parked_operation` drives the *CLI* against a
 real daemon with a scripted provider, and the PTY smoke paints and clicks the TUI's approvals box against a
 *scripted* daemon. Neither put the two together, so "the user reads a real call's arguments and decides in
-the TUI" was unproven. `review/dogfood/approval.py` does: the daemon starts **without** `--full-auto`
+the TUI" was unproven. `review/dogfood/approval.py` does: the daemon starts **without** `--full-auto` (Historical reference; removed in D-480.)
 (`require_shell_approval = !full_auto`, so every `shell` call parks), the real TUI attaches, the probe types
 a prompt asking for `echo approved-live > proof.txt`, and then presses the TUI's own keys — `Ctrl+A` into the
 box, `a` or `d` — while the pending id has to be on screen first.
@@ -16032,7 +16077,7 @@ The audits in this series keep finding "evidence" that proves less than it looks
 on the tests added in the last weeks — the ones whose job is to pin A14, D-82 and D-83 — and found two
 assertions that could not fail:
 
-- `cli::an_unisolated_shell_refuses_instead_of_running_on_the_host` asserted that the workspace was empty after
+- `cli::an_unisolated_shell_refuses_instead_of_running_on_the_host` asserted that the workspace was empty after (Historical reference; removed in D-480.)
   the refused `--check`. The command was `echo ran-unisolated`, which leaves nothing behind **even when it
   runs**, so the assertion held for the wrong reason. It now uses `touch ran-unisolated`, and the test carries
   its own control: the *same* command with the machine's `PATH` runs inside the sandbox (verdict `ok`, file
@@ -16200,7 +16245,7 @@ One list, one surface: `bound::DEFAULT_BINDINGS` is now the single place naming 
 (`files`, `shell`, `web`, `skills`), and both the daemon boot and `doctor` use it - before, that literal lived
 in `cli::daemon_boot` only, so a report had no way to describe the surface the session actually runs with.
 
-Evidence: `cli::doctor_probes_isolation_and_config_errors` now drives three shapes through the real binary -
+Evidence: `cli::doctor_probes_isolation_and_config_errors` now drives three shapes through the real binary - (Historical reference; removed in D-480.)
 `[WARN] tools.search` with `api_key_env` unset ("reports a capability state instead of failing the session"),
 `[ok  ] tools.search` once the variable is set, and `[WARN] tools.bad` ("provider \"nosuch\" is not one this
 build speaks (anysearch)") next to `[FAIL] web tools` naming the same resolution failure for a `required`
@@ -16367,7 +16412,7 @@ Evidence (all re-runnable):
 - `v2_supervisor::a_configured_mcp_service_reaches_the_members_surface` — the leader's *offered* tool list
   from a real session carries `probe_ping` next to the built-ins (fails pre-fix: the surface is
   `["shell","wait","send","delegate","spawn","finish","read_history"]`).
-- `cli::doctor_probes_isolation_and_config_errors` — the new rows: `[ok ] tools.good`, `[WARN] tools.typo`
+- `cli::doctor_probes_isolation_and_config_errors` — the new rows: `[ok ] tools.good`, `[WARN] tools.typo` (Historical reference; removed in D-480.)
   ("not runnable"), `[ok ] tools.remote`.
 - Real models, both protocols: `python3 review/dogfood/mcp.py [--provider kimi]` — the server's log shows
   `initialize`/`tools/list`/`tools/call`, and the run reports the tool's own output (a token the server

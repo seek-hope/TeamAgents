@@ -1,8 +1,7 @@
 //! User-configured hooks: an external command told about engine events.
 //!
-//! Hooks are the user's own programs (path from the user config, never from a
-//! model), so they run on the host rather than inside an instance sandbox: the
-//! event name is argv[1] and the full event JSON arrives on stdin.
+//! Hooks are the user's own host programs (path from the user config, never from
+//! a model). The event name is argv[1] and the full event JSON arrives on stdin.
 //! `notify` is fire-and-forget — a hook that hangs is killed after
 //! [`HOOK_TIMEOUT`] and never blocks a turn; failures only reach stderr.
 //! `pre_tool` is the blocking policy check in front of every native tool call:

@@ -1,8 +1,8 @@
 """Harbor installed-agent adapter for TeamAgents.
 
 Installs the static `teamagents` binary plus a frozen config into the task container and runs one headless
-turn (`teamagents exec --json`) against the task instruction. The container *is* the sandbox, so the turn runs
-with `--full-auto` (the product's `approved_scope` needs bubblewrap, which a task container cannot promise).
+turn (`teamagents exec --json`) against the task instruction. The task container supplies the execution
+boundary; D-480 runs Shell on that host. The retained `--full-auto` flag is compatible with older binaries.
 
 Usage (from the harbor venv, with the repo's binary built):
 

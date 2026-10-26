@@ -138,8 +138,6 @@ where
         mcp,
         sessions,
         models,
-        sandbox: if config.supervisor.permissions == "full_auto" { "none" } else { config.supervisor.sandbox.name() }
-            .into(),
         sources: crate::environment::sources(&config.supervisor.catalog),
         config_watch: crate::environment::ConfigWatch::new(&config.supervisor.workspace),
     });
@@ -269,7 +267,6 @@ struct SessionFacts {
     /// D-473: the user's `[models]` catalog (key, wire model, provider) so the TUI can offer a model menu instead
     /// of asking the user to remember config keys. Static for the session's lifetime.
     models: Json,
-    sandbox: String,
     sources: Json,
     config_watch: crate::environment::ConfigWatch,
 }
@@ -437,7 +434,7 @@ async fn handle(request: &Json, supervisor: &SupervisorHandle, session_db: &Path
                 Ok(mut result) => {
                     if method == "checkpoint" {
                         result["snapshot"]["environment"] = json!({
-                            "workspace": facts.workspace, "sandbox": facts.sandbox,
+                            "workspace": facts.workspace, "execution": "host",
                             "permissions": facts.permissions, "sources": facts.sources,
                             "leader_instruction_load": supervisor.instruction_sources(),
                             "configuration": facts.config_watch.report(Path::new(&facts.workspace))

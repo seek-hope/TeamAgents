@@ -105,12 +105,9 @@ pub struct ToolBinding {
     pub mcp_server: Option<String>,
     #[serde(default)]
     pub mcp_transport: Option<String>,
-    /// Local MCP execution boundary: workspace (default) or explicit host.
+    /// Local MCP execution: host only (also the default). Workspace isolation was removed.
     #[serde(default)]
     pub mcp_execution: Option<String>,
-    /// Network access for workspace-sandboxed MCP processes.
-    #[serde(default)]
-    pub mcp_network: bool,
     /// The `kind = "mcp"` service's argv over stdio (the default transport) — required for that kind and
     /// transport, refused at load otherwise (D-232).
     #[serde(default)]
@@ -289,7 +286,7 @@ pub struct GoalLimits {
 /// One user-defined acceptance check (`[[checks]]` in the config).
 ///
 /// The four fields mirror what the runtime's check boundary understands:
-/// `timeout`, `network` and `inputs` are optional, and `inputs` are
+/// `timeout` and `inputs` are optional, and `inputs` are
 /// workspace-relative paths whose hashes bind the result to the artifact
 /// versions observed when the check ran (A17).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -302,9 +299,6 @@ pub struct CheckSpec {
     /// Seconds; absent means the shell tool's own default.
     #[serde(default)]
     pub timeout: Option<u64>,
-    /// Run with network access (the sandbox is offline by default).
-    #[serde(default)]
-    pub network: bool,
     /// Workspace-relative inputs the check reads.
     #[serde(default)]
     pub inputs: Vec<String>,
@@ -318,9 +312,6 @@ impl CheckSpec {
         let mut value = serde_json::json!({"id": self.id, "command": self.command});
         if let Some(timeout) = self.timeout {
             value["timeout"] = serde_json::json!(timeout);
-        }
-        if self.network {
-            value["network"] = serde_json::json!(true);
         }
         if !self.inputs.is_empty() {
             value["inputs"] = serde_json::json!(self.inputs);

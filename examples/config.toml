@@ -15,7 +15,7 @@
 # history_days = 30      # drop applied deliveries and old events after N days (pending ones are kept)
 
 # Event hooks (optional): hooks are your own programs, running on the host with your
-# permissions (outside the sandbox).
+# permissions.
 #   notify   event notification: asynchronous, never blocks a turn, killed after 10s; the event
 #            name is argv[1] and the event JSON arrives on stdin. Events: tool_call (with
 #            tool/arguments/ok/error) / team_action / run_completed /
@@ -63,11 +63,10 @@ generation_options = { reasoning_effort = "high" }    # default effort; max take
 # --- tool bindings (instances reference them by name; binding is the authorization) ---
 
 # Acceptance checks (optional): when a goal claims "done", the runtime runs these
-# commands in the isolated shell inside the workspace and only then settles the
+# commands in the host shell inside the workspace and only then settles the
 # goal. A failing check returns the work for repair (bounded rounds) and finally
 # blocks the goal with the failing ids. `inputs` are workspace-relative paths
-# whose hashes are re-verified before completion (A17); `network = true` is
-# needed for a check that must reach the network. Only the user config may
+# whose hashes are re-verified before completion (A17). Only the user config may
 # define checks — a project file cannot install one.
 #
 # Example:

@@ -1,6 +1,6 @@
 # Development handoff
 
-Updated **2026-10-26** for **D-479 additions on e8fb2cc1**. This is the current entry point for a new development
+Updated **2026-10-26** for **D-480 host execution on 50df77fd**. This is the current entry point for a new development
 session, not an authorization to implement the candidate backlog. Recheck Git status and recent commits;
 this document does not assert that a remote branch or installed binary matches the working tree.
 
@@ -23,12 +23,12 @@ this document does not assert that a remote branch or installed binary matches t
 | b4e9f1f9, 90ca30d8 | D-459 stable prompt-cache prefix/telemetry and the formal report's source pin | Cache usage is not a dollar estimate; no cache warming was added |
 | f78a6709 | Rust toolchain pin 1.99.1 | Read rust-toolchain.toml and the lockfiles before building |
 | bdae43e2, 47546b9b | D-463/D-464 idempotent command ids and shared result digests; D-465 atomic-action windows with concurrency tests | Result bodies are derived, not authoritative; the session database stays the source of truth |
-| c6dcc8a5, e1d842d1 | D-466 two-mode pluggable sandbox, D-467 AGENTS.md discovery, D-468 skill resources, D-469 multi-edit/read batch, D-470 profile/web/deferred input/cancel-vs-stop | `sandbox = none` is the explicit host mode; a configured backend still fails closed |
-| 9b29c8b5, 3b7ea4a1 | D-471 acceptance checks follow the session's shell mode; CI fixtures follow `none`, transient ETXTBSY retry | `exec --check` and goal `[[checks]]` run on the host in `none` mode; the bubblewrap refusal stays covered |
+| c6dcc8a5, e1d842d1 | D-466 through D-470 | Backend selection was removed by D-480; instructions, skill resources, edits and session controls remain |
+| 9b29c8b5, 3b7ea4a1 | D-471 acceptance checks share the Shell implementation; transient ETXTBSY retry | D-480 now runs all checks on the host; backend-specific coverage is historical |
 | f00a2a31, 122fc628, 02be286d | D-472 terminal-agnostic PTY matrix; D-473 Ctrl+Q/Ctrl+P and the Leader model/effort menu; D-474 default reasoning effort high | PTY profiles are protocol checks, not a GUI matrix; a profile change applies at the next turn; `init` never rewrites an existing config |
 | v0.2.0 | first public release, rebuilt for D-476: Linux x86_64 musl-static archive, installer and SHA256SUMS | Tag `96acfde7`; run 39885779367; `review/install_check.py` verifies the published release; the original artifact's two downloads are not recalled |
 | D-479 | Explicit environment diagnosis, live workspace/config/source facts, actual Leader instruction-read observations and input-delivery receipts | Local scripted regressions and PTY; one-off sbx v0.49.2 diagnostic separated host/guest tools without a model call or policy change; no toolchain installation or hot reload |
-| D-478 | Docker Sandboxes (`sbx`) backend; default `none` unchanged; one sandbox per workspace; create/exec through the `sbx` CLI | `sbx` v0.48.0 installed and logged in; live `exec --check` showed guest kernel `7.0.14` vs host `7.3.0-3-cachyos` and host-owned workspace writes; no repeatable dogfood probe yet |
+| D-478 (historical; removed by D-480) | Docker Sandboxes backend | Its live microVM receipts apply to the old source only |
 
 D-462 added the verification gate and ledger: every counterexample configuration names the claim it must
 refute (`expects:` marker, compared with TLC's output), every checked claim that no control refutes is a row in
@@ -42,8 +42,8 @@ Option B (automatic model reminders) was explicitly rejected. The shared project
 engine/src/v2/diagnostics.rs; checkpoint, instances, tasks and local TUI /help expose it. Tests cover query-only
 reopen, real daemon restart without additional model calls, explicit input/cancellation recovery and TUI frames.
 
-Local checks rerun on 2026-10-26 for D-479: **make check passed, core 147 / engine 424 / tui 87**,
-**make check-nobwrap passed** (the CI runner's bwrap-free condition) and **make pty passed** the terminal-profile
+Historical D-479 checks were **core 147 / engine 424 / tui 87** when recorded before D-480; the removed
+no-bubblewrap gate and **make pty** passed the terminal-profile
 matrix (xterm-256color, screen-256color, tmux-256color, xterm-kitty and Kitty under tmux; auto graphics) plus both forced protocol modes. These results are local regressions, not a new independent audit, real-model
 comparison, actual graphical-terminal matrix or public release. D-479 release-profile binaries were also
 installed locally with the user configuration unchanged: the installed CLI passed the explicit temporary-sbx
@@ -56,6 +56,17 @@ receipts. The [formal report](../verification/REPORT.md) carries its own source 
 is renewed by a documentation edit or a Cargo pass. D-457 removed the earlier tags; **v0.2.0** is the first
 public release of this implementation (2026-10-22). Source builds remain available; future publication
 requires separate authorization and the repository variable.
+
+D-480 removes all OS sandbox backends and selects automatic host Shell (user option A). Local MCP and
+acceptance commands use the host too. Retired config settings are rejected explicitly; existing sessions,
+VMs and packages are preserved. Host cwd/exports remain under the host state namespace. Saved legacy jobs
+may only supply verified terminal outcomes; unfinished legacy execution requires explicit operator handling.
+Task capabilities, hooks, operation records, recovery, self-update approval and SSH MCP remain.
+D-480 passed make check (core 147 / engine 415 / tui 87) and the full PTY matrix. Local release binaries
+were installed after backup; only the retired permissions.sandbox setting was removed from the local config.
+The SSH MCP binding is unchanged. Installed host discovery, the credential-free daemon-stop/runner-recovery
+probe (one execution, result imported after restart, no leaked probe processes) and the xterm-256color
+conversation PTY passed. These local checks used no external model service. The public release is unchanged.
 
 ## Behavior and focused regression entry points
 

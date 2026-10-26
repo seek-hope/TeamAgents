@@ -1,6 +1,6 @@
 //! Governed self-update transaction (D-453).
 //!
-//! The update is a small, journaled transaction that runs outside the sandbox:
+//! The update is a small, journaled transaction managed by the trusted runtime:
 //! stage and verify a release, stop the daemon gracefully, switch the versioned
 //! install pointer atomically, start the new daemon, health-check it and either
 //! keep it or roll back. The append-only journal is hash-chained and protected by
@@ -1083,8 +1083,8 @@ pub fn read_request(path: &Path) -> Result<UpdateRequest, String> {
 pub fn spawn_updater(layout: &Layout, request_path: &Path) -> Result<u32, String> {
     // In production this is the daemon's own binary (the old version); a test
     // may name a script so the approval path can be exercised without replacing
-    // the test runner itself. The updater is spawned by the trusted runtime,
-    // never by the sandboxed shell.
+    // the test runner itself. The governed update path spawns the updater from
+    // the trusted runtime after the approved request is recorded.
     let exe = std::env::var_os("TEAMAGENTS_UPDATER_BIN")
         .map(PathBuf::from)
         .or_else(|| std::env::current_exe().ok())

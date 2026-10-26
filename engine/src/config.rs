@@ -480,7 +480,7 @@ fn validate_tools(catalog: &UserConfig) -> Result<(), String> {
         if let Some(execution) = binding.mcp_execution.as_deref() {
             if !MCP_EXECUTIONS.contains(&execution) {
                 return Err(format!(
-                    "tools.{name}.mcp_execution = {execution:?}: this build serves {} (docs/CONFIG.md)",
+                    "tools.{name}.mcp_execution = {execution:?}: workspace isolation was removed (D-480); this build serves {} (docs/CONFIG.md)",
                     MCP_EXECUTIONS.join(", ")
                 ));
             }
@@ -489,9 +489,8 @@ fn validate_tools(catalog: &UserConfig) -> Result<(), String> {
     Ok(())
 }
 
-/// Where a workspace-sandboxed MCP service may run (`engine/src/bound.rs`): inside the member's workspace, or
-/// explicitly on the host.
-const MCP_EXECUTIONS: &[&str] = &["workspace", "host"];
+/// Local MCP services execute on the host in the member workspace (D-480).
+const MCP_EXECUTIONS: &[&str] = &["host"];
 
 /// The goal limits the runtime boots with (`create_goal limits`): the user's
 /// acceptance checks and usage ceiling, or `{}` when neither is configured — the
@@ -738,7 +737,7 @@ mod tests {
         // and the keys the reference lists still parse, both permission keys included
         let ok = parse_user_config(&format!(
             "skills_paths = [\"/tmp/skills\"]\ninstruction_files = []\n{model}\n\
-             [permissions]\nsandbox = \"none\"\ntrust_project = true\n"
+             [permissions]\ntrust_project = true\n"
         ))
         .expect("the documented keys parse");
         assert_eq!(ok.skills_paths, vec!["/tmp/skills".to_string()]);
@@ -879,7 +878,8 @@ mod tests {
         }
         parse_user_config(&format!("{}\n[tools.t]\nkind = \"web_fetch\"\n", profile("openai")))
             .expect("a served kind parses");
-        for execution in ["workspace", "host"] {
+        {
+            let execution = "host";
             // D-232: the fixture needs the field its kind and transport require — the rule it never met
             let text = format!(
                 "{}\n[tools.t]\nkind = \"mcp\"\ncommand = \"/bin/true\"\nmcp_execution = \"{execution}\"\n",
@@ -892,7 +892,7 @@ mod tests {
             profile("openai")
         ))
         .expect_err("a typo is refused");
-        assert!(error.contains("mcp_execution") && error.contains("workspace"), "{error}");
+        assert!(error.contains("mcp_execution") && error.contains("host"), "{error}");
         let error = parse_user_config(&profile("openais")).expect_err("a typo is refused");
         assert!(error.contains("protocol") && error.contains("chat/completions"), "{error}");
         let error = parse_user_config(&format!("{}\n[tools.t]\nkind = \"web_fetchx\"\n", profile("openai")))
@@ -1145,9 +1145,9 @@ provider = "deepseek"
             .unwrap_err()
             .contains("must be true/false"));
         assert!(parse_user_config("permissions = 1\n").unwrap_err().contains("must be a table"));
-        // D-466: `mode` is gone; the two modes are selected by `sandbox`, so the old key is an unknown key
+        // The retired `mode` key is an error; D-480 uses automatic host Shell.
         assert!(parse_user_config("[permissions]\nmode = \"yolo\"\n").unwrap_err().contains("unknown key"));
-        assert!(parse_user_config("[permissions]\ntrust_project = true\nsandbox = \"none\"\n").is_ok());
+        assert!(parse_user_config("[permissions]\ntrust_project = true\n").is_ok());
         assert!(parse_user_config("[permissions]\napprovals_reviewer = \"auto_review\"\n").is_ok());
         assert!(parse_user_config("[permissions]\napprovals_reviewer = \"maybe\"\n")
             .unwrap_err()
@@ -1507,20 +1507,12 @@ fn project_permissions(user: &toml::Value) -> Result<Permissions, String> {
     // the same rule as the top level: `mod = "full_auto"` (a typo of `mode`, a *safety* setting) used to leave
     // `doctor` green and the session in `approved_scope` (measured 2026-09-27, D-161)
     for key in table.keys() {
-        if key != "trust_project"
-            && key != "trusted_projects"
-            && key != "sandbox"
-            && key != "sandbox_image"
-            && key != "sandbox_sbx_name"
-            && key != "sandbox_ssh_target"
-            && key != "sandbox_ssh_workdir"
-            && key != "sandbox_ssh_options"
-            && key != "approvals_reviewer"
-            && key != "reviewer_model"
-        {
+        if key == "sandbox" || key.starts_with("sandbox_") {
+            return Err(format!("permissions.{key}: sandbox support was removed (D-480); remove this setting to use host execution without per-shell approval"));
+        }
+        if !["trust_project", "trusted_projects", "approvals_reviewer", "reviewer_model"].contains(&key.as_str()) {
             return Err(format!(
-                "{} ([permissions] takes trust_project, trusted_projects, sandbox, sandbox_image, sandbox_sbx_name, \
-                 sandbox_ssh_target, sandbox_ssh_workdir, sandbox_ssh_options, approvals_reviewer and reviewer_model)",
+                "{} ([permissions] takes trust_project, trusted_projects, approvals_reviewer and reviewer_model)",
                 unknown_key(key)
             ));
         }
@@ -1590,137 +1582,6 @@ pub fn reviewer_model_from_config() -> Result<Option<String>, String> {
     Ok(project_permissions(&user)?.reviewer_model)
 }
 
-/// The sandbox backend the user's own config selects (D-369), or bubblewrap. It is a *safety* setting, so a typo
-/// is refused rather than silently defaulting (the shape D-161 established for `mode`), and a Docker selection
-/// without an image is refused at load.
-///
-/// `mcp_execution = "workspace"` is refused under Docker: the MCP stdio path still builds bubblewrap's argv, and
-/// a config this build cannot serve must fail closed rather than run the server unsandboxed (D-102's rule).
-pub fn sandbox_from_config() -> Result<crate::tools::SandboxBackend, String> {
-    use crate::tools::{SandboxBackend, SandboxKind};
-    let text = std::fs::read_to_string(user_config_path()).unwrap_or_default();
-    if text.trim().is_empty() {
-        return Ok(SandboxBackend::none());
-    }
-    let parsed: toml::Value = text.parse().map_err(|e| format!("bad TOML: {e}"))?;
-    let Some(table) = parsed.get("permissions").and_then(|value| value.as_table()) else {
-        return Ok(SandboxBackend::none());
-    };
-    let kind = match table.get("sandbox") {
-        None => SandboxKind::None,
-        Some(value) => match value.as_str() {
-            Some("none") => SandboxKind::None,
-            Some("bubblewrap") => SandboxKind::Bubblewrap,
-            Some("docker") => SandboxKind::Docker,
-            Some("sbx") => SandboxKind::Sbx,
-            Some("ssh") => SandboxKind::Ssh,
-            other => {
-                return Err(format!(
-                    "invalid sandbox {other:?} in user config: this build serves none, bubblewrap, docker, sbx and ssh"
-                ))
-            }
-        },
-    };
-    let image = table.get("sandbox_image").and_then(|value| value.as_str()).unwrap_or("").to_string();
-    let sbx_name = table.get("sandbox_sbx_name").and_then(|value| value.as_str()).unwrap_or("").to_string();
-    let ssh_target = table.get("sandbox_ssh_target").and_then(|value| value.as_str()).unwrap_or("").to_string();
-    let ssh_workdir = table.get("sandbox_ssh_workdir").and_then(|value| value.as_str()).unwrap_or("").to_string();
-    let ssh_options = table
-        .get("sandbox_ssh_options")
-        .map(|value| {
-            value
-                .as_array()
-                .ok_or_else(|| format!("sandbox_ssh_options must be an array of strings, got {value}"))?
-                .iter()
-                .map(|entry| {
-                    entry
-                        .as_str()
-                        .filter(|text| !text.trim().is_empty())
-                        .map(str::to_string)
-                        .ok_or_else(|| format!("sandbox_ssh_options takes strings, got {entry}"))
-                })
-                .collect::<Result<Vec<String>, String>>()
-        })
-        .transpose()?
-        .unwrap_or_default();
-    if kind == SandboxKind::Ssh {
-        // D-437: fail closed at load, like the docker image rule. A target that starts with `-` is refused
-        // because ssh would read it as an option, and the empty target would mean "no host at all".
-        if ssh_target.trim().is_empty() {
-            return Err(
-                "[permissions] sandbox = \"ssh\" needs sandbox_ssh_target = \"user@host\" (or an alias from your \
-                 own ~/.ssh/config)"
-                    .into(),
-            );
-        }
-        if ssh_target.starts_with('-') || ssh_target.split_whitespace().count() != 1 {
-            return Err(format!(
-                "sandbox_ssh_target {ssh_target:?} must be one destination (user@host or an ssh-config alias), \
-                 not an option and not several words"
-            ));
-        }
-        if ssh_workdir.starts_with('-') {
-            return Err(format!("sandbox_ssh_workdir {ssh_workdir:?} must be a directory, not an option"));
-        }
-        for option in &ssh_options {
-            // an empty or multi-word entry would be read as a destination; the options are argv items, not a shell
-            if option.split_whitespace().count() != 1 {
-                return Err(format!("sandbox_ssh_options entry {option:?} must be one argv item (no spaces)"));
-            }
-        }
-        // the MCP workspace path builds bubblewrap's argv, so it is refused under ssh exactly as under docker
-        if let Some(tools) = parsed.get("tools").and_then(|value| value.as_table()) {
-            for (name, tool) in tools {
-                let is_mcp = tool.get("kind").and_then(|value| value.as_str()) == Some("mcp");
-                let execution = tool.get("mcp_execution").and_then(|value| value.as_str()).unwrap_or("workspace");
-                if is_mcp && execution == "workspace" {
-                    return Err(format!(
-                        "[permissions] sandbox = \"ssh\" does not serve workspace MCP execution: tools.{name} \
-                         needs mcp_execution = \"host\", or use sandbox = \"bubblewrap\""
-                    ));
-                }
-            }
-        }
-    }
-    if kind == SandboxKind::Sbx {
-        if !sbx_name.trim().is_empty() && (sbx_name.starts_with('-') || sbx_name.split_whitespace().count() != 1) {
-            return Err(format!(
-                "sandbox_sbx_name {sbx_name:?} must be one sandbox name, not an option and not several words"
-            ));
-        }
-        if let Some(tools) = parsed.get("tools").and_then(|value| value.as_table()) {
-            for (name, tool) in tools {
-                let is_mcp = tool.get("kind").and_then(|value| value.as_str()) == Some("mcp");
-                let execution = tool.get("mcp_execution").and_then(|value| value.as_str()).unwrap_or("workspace");
-                if is_mcp && execution == "workspace" {
-                    return Err(format!(
-                        "[permissions] sandbox = \"sbx\" does not serve workspace MCP execution yet: tools.{name} \
-                         needs mcp_execution = \"host\", or use sandbox = \"bubblewrap\""
-                    ));
-                }
-            }
-        }
-    }
-    if kind == SandboxKind::Docker {
-        if image.trim().is_empty() {
-            return Err("[permissions] sandbox = \"docker\" needs sandbox_image = \"<image>\" (pull it first)".into());
-        }
-        if let Some(tools) = parsed.get("tools").and_then(|value| value.as_table()) {
-            for (name, tool) in tools {
-                let is_mcp = tool.get("kind").and_then(|value| value.as_str()) == Some("mcp");
-                let execution = tool.get("mcp_execution").and_then(|value| value.as_str()).unwrap_or("workspace");
-                if is_mcp && execution == "workspace" {
-                    return Err(format!(
-                        "[permissions] sandbox = \"docker\" does not serve workspace MCP execution yet: \
-                         tools.{name} needs mcp_execution = \"host\", or use sandbox = \"bubblewrap\""
-                    ));
-                }
-            }
-        }
-    }
-    Ok(SandboxBackend { kind, image, ssh_target, ssh_workdir, ssh_options, sbx_name })
-}
-
 /// The text a member's prompt gets from `instruction_files` (D-102 recorded the promise; D-246 delivers it).
 ///
 /// Every file's content in config order, each under one heading line naming the file as the *config* spells it —
@@ -1775,53 +1636,27 @@ mod project_config_tests {
     }
 
     #[test]
-    fn the_sandbox_backend_is_read_and_refused_when_unusable() {
-        let _env = crate::env_lock();
-        let root = std::env::temp_dir().join(format!("ta-sandbox-config-{}", uuid::Uuid::new_v4()));
-        let home = root.join("home");
-        std::fs::create_dir_all(&home).unwrap();
-        std::env::set_var("XDG_CONFIG_HOME", home.join(".config"));
-        std::env::set_var("XDG_STATE_HOME", home.join(".state"));
-        // D-466: the default is no sandbox; a backend is an explicit choice
-        assert_eq!(sandbox_from_config().unwrap(), crate::tools::SandboxBackend::none());
-        assert!(sandbox_from_config().unwrap().is_none());
-        assert!(sandbox_from_config().unwrap().is_none());
-        // an explicit `none` is the same mode, and it is a documented value
-        write(&user_config_path(), "[permissions]\nsandbox = \"none\"\n");
-        assert!(sandbox_from_config().unwrap().is_none());
-        // a backend flips the mode to approved_scope
-        write(&user_config_path(), "[permissions]\nsandbox = \"bubblewrap\"\n");
-        assert!(!sandbox_from_config().unwrap().is_none());
-        // docker needs an image
-        write(&user_config_path(), "[permissions]\nsandbox = \"docker\"\n");
-        assert!(sandbox_from_config().unwrap_err().contains("sandbox_image"));
-        // a typo is refused, not silently defaulted (D-161's rule, for this safety setting too)
-        write(&user_config_path(), "[permissions]\nsandbox = \"dokcer\"\n");
-        assert!(sandbox_from_config().unwrap_err().contains("invalid sandbox"));
-        // docker with an image is accepted...
-        write(&user_config_path(), "[permissions]\nsandbox = \"docker\"\nsandbox_image = \"debian:stable-slim\"\n");
-        assert_eq!(sandbox_from_config().unwrap().image, "debian:stable-slim");
-        // ... but a workspace MCP server is refused under it, because that path is still bubblewrap's
-        write(
-            &user_config_path(),
-            "[permissions]\nsandbox = \"docker\"\nsandbox_image = \"debian:stable-slim\"\n\n[tools.probe]\nkind = \"mcp\"\ncommand = \"/bin/true\"\n",
-        );
-        let error = sandbox_from_config().unwrap_err();
-        assert!(error.contains("workspace MCP") && error.contains("probe"), "{error}");
-        // Docker Sandboxes (sbx) is a separate backend; its name is optional and must be one token.
-        write(&user_config_path(), "[permissions]\nsandbox = \"sbx\"\n");
-        assert_eq!(sandbox_from_config().unwrap().kind, crate::tools::SandboxKind::Sbx);
-        write(&user_config_path(), "[permissions]\nsandbox = \"sbx\"\nsandbox_sbx_name = \"teamagents-test\"\n");
-        assert_eq!(sandbox_from_config().unwrap().sbx_name, "teamagents-test");
-        write(&user_config_path(), "[permissions]\nsandbox = \"sbx\"\nsandbox_sbx_name = \"bad name\"\n");
-        assert!(sandbox_from_config().unwrap_err().contains("sandbox_sbx_name"));
-        write(
-            &user_config_path(),
-            "[permissions]\nsandbox = \"sbx\"\n\n[tools.probe]\nkind = \"mcp\"\ncommand = \"/bin/true\"\n",
-        );
-        let error = sandbox_from_config().unwrap_err();
-        assert!(error.contains("workspace MCP") && error.contains("probe"), "{error}");
-        let _ = std::fs::remove_dir_all(&root);
+    fn retired_sandbox_settings_require_explicit_migration() {
+        for key in [
+            "sandbox",
+            "sandbox_image",
+            "sandbox_sbx_name",
+            "sandbox_ssh_target",
+            "sandbox_ssh_workdir",
+            "sandbox_ssh_options",
+        ] {
+            let error = parse_user_config(&format!("[permissions]\n{key} = \"none\"\n")).unwrap_err();
+            assert!(error.contains("removed") && error.contains("host execution"), "{key}: {error}");
+        }
+        assert!(parse_user_config("[permissions]\ntrust_project = true\n").is_ok());
+        let mcp = "[tools.remote]\nkind = \"mcp\"\ncommand = \"/bin/true\"\n";
+        assert!(parse_user_config(mcp).is_ok());
+        assert!(parse_user_config(&format!("{mcp}mcp_execution = \"host\"\n")).is_ok());
+        assert!(parse_user_config(&format!("{mcp}mcp_execution = \"workspace\"\n")).unwrap_err().contains("removed"));
+        assert!(parse_user_config(&format!("{mcp}mcp_network = true\n")).unwrap_err().contains("mcp_network"));
+        assert!(parse_user_config("[[checks]]\nid = \"t\"\ncommand = \"true\"\nnetwork = false\n")
+            .unwrap_err()
+            .contains("network"));
     }
 
     #[test]
@@ -1865,7 +1700,6 @@ model = "project-loses"
         let catalog = load_user_config_for(&project).unwrap().0;
         assert!(catalog.models.contains_key("project_model"), "project adds models");
         assert_eq!(catalog.models["shared"].model, "user-wins", "user definitions win");
-        assert!(sandbox_from_config().unwrap().is_none(), "the project cannot change the sandbox");
 
         // without the opt-in the project tools stay out
         let mut user_text = std::fs::read_to_string(user_config_path()).unwrap();
@@ -2099,7 +1933,7 @@ deadline_minutes = 5
         write(&user_config_path(), "[models.mine]\nprovider = \"openai\"\nmodel = \"m\"\n");
         write(
             &project_config_path(&project),
-            "[permissions]\nsandbox = \"none\"\ntrust_project = true\n\n[models.theirs]\nprovider = \"openai\"\nmodel = \"evil\"\n",
+            "[permissions]\ntrust_project = true\n\n[models.theirs]\nprovider = \"openai\"\nmodel = \"evil\"\n",
         );
         let (catalog, outcome) = load_user_config_for(&project).unwrap();
         assert!(!outcome.trusted, "the project cannot grant itself trust: {outcome:?}");
@@ -2108,7 +1942,6 @@ deadline_minutes = 5
             outcome.refused.iter().any(|entry| entry.starts_with("permissions (")),
             "the ignored table is named: {outcome:?}"
         );
-        assert!(sandbox_from_config().unwrap().is_none(), "the mode stays the user's");
 
         // and a *broken* project `[permissions]` table is refused like the user's own (D-232's rule): a repo
         // shipping a typo there must not be told its config was fine

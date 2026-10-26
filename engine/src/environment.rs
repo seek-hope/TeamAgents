@@ -1,6 +1,5 @@
 //! D-479: explicit development-environment inspection, never a model turn or an environment repair.
 
-use crate::tools::{SandboxBackend, ShellMode};
 use serde_json::{json, Value as Json};
 use std::io::Read;
 use std::os::unix::{net::UnixStream, process::CommandExt};
@@ -84,44 +83,33 @@ fn signature(path: &Path) -> Result<String, String> {
 /// Hints supplement the original error. They never reinterpret an operation as successful or retry it.
 pub(crate) fn recovery_hint(reason: &str) -> &'static str {
     let reason = reason.to_ascii_lowercase();
-    if reason.contains("not signed in") || reason.contains("unauthenticated") || reason.contains("login") {
-        "Authentication: run `sbx login`, then `sbx diagnose`."
-    } else if reason.contains("policy") || reason.contains("egress") || reason.contains("network is unreachable") {
-        "Network policy: inspect `sbx policy ls`; authorize only the required destinations explicitly. No policy was changed."
-    } else if reason.contains("daemon") || reason.contains("socket") || reason.contains("connection refused") {
-        "Backend service: inspect `sbx diagnose` or the selected backend's daemon; restart it explicitly if needed."
-    } else if reason.contains("cd:") || reason.contains("workdir") || reason.contains("working directory") {
-        "Workspace: verify that the configured directory exists inside the selected backend, not just on the host."
+    if reason.contains("cd:") || reason.contains("workdir") || reason.contains("working directory") {
+        "Workspace: verify that the host directory exists and is accessible."
     } else if reason.contains("not found") || reason.contains("not available") {
-        "Missing executable or sandbox: inspect the selected environment and the reported sandbox name. Host-installed tools are not automatically available there."
+        "Missing executable: inspect the host PATH and install the required tool explicitly."
     } else {
-        "Inspect the selected backend's own diagnostic output. No host fallback, dependency installation or network change was attempted."
+        "Inspect the host shell error. No dependency installation or environment repair was attempted."
     }
 }
 
 const TOOL_NAMES: [&str; 7] = ["rustc", "cargo", "node", "npm", "python3", "pip3", "git"];
 
 // Only shell builtins in the probe itself: a discovered shim is not executed.
-// Backend login-shell profiles still have their usual semantics.
 const PROBE: &str = "printf 'workspace\\t%s\\n' \"$PWD\"; for tool in rustc cargo node npm python3 pip3 git; do if location=$(command -v \"$tool\"); then printf '%s\\t%s\\n' \"$tool\" \"$location\"; else printf '%s\\tmissing\\n' \"$tool\"; fi; done";
 
-/// User-invoked only. The configured backend is inspected separately from the host, without creating an sbx VM.
+/// User-invoked host discovery, without reading or writing persistent shell state.
 pub fn doctor(workspace: &Path, json_out: bool) -> i32 {
     let result = (|| {
         crate::cli::require_workspace_dir(workspace)?;
         let workspace = workspace.canonicalize().map_err(|e| e.to_string())?;
-        let backend = crate::config::sandbox_from_config()?;
-        let host = inspect(&workspace, SandboxBackend::none());
-        let selected = if backend.is_none() { host.clone() } else { inspect(&workspace, backend.clone()) };
-        Ok::<_, String>(json!({"workspace": workspace, "backend": backend.name(), "host": host,
-            "selected": selected, "scope": "Current configuration, fresh shell; not a running member's saved exports/cwd. No model calls. Executable discovery only, not a build test.",
-            "sandbox_name": if backend.kind == crate::tools::SandboxKind::Sbx { Some(crate::tools::sbx_name_for(&backend.sbx_name, &workspace)) } else { None },
-            "sbx": "An existing workspace sandbox is required; this probe never creates or deletes one. sbx exec may start a stopped sandbox. To create one explicitly: sbx create --name NAME shell WORKSPACE (use the reported name and workspace).",
-            "network": "No network test; sbx policy and remote SSH policy remain external. No dependencies or mounts were added."}))
+        let _ = crate::config::load_user_config_for(&workspace)?;
+        let host = inspect(&workspace);
+        Ok::<_, String>(json!({"workspace": workspace, "execution": "host", "host": host,
+            "scope": "Fresh host shell; not a running member's saved exports/cwd. No model calls. Executable discovery only, not a build test."}))
     })();
     match result {
         Ok(report) => {
-            let ok = report["selected"]["ok"] == true;
+            let ok = report["host"]["ok"] == true;
             if json_out {
                 println!("{report}");
             } else {
@@ -145,55 +133,24 @@ pub fn doctor(workspace: &Path, json_out: bool) -> i32 {
 }
 
 fn print_report(report: &Json) {
-    println!(
-        "Workspace: {}\nConfigured execution: {}",
-        report["workspace"].as_str().unwrap_or("?"),
-        report["backend"].as_str().unwrap_or("?")
-    );
-    if let Some(name) = report["sandbox_name"].as_str() {
-        println!("Sandbox: {name}");
-    }
-    let rows: Vec<_> = TOOL_NAMES
-        .into_iter()
-        .map(|tool| {
-            let location = |key: &str| -> String {
-                if report[key]["ok"] != true {
-                    return "not inspected".into();
-                }
-                report[key]["tools"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .find(|row| row["name"] == tool)
-                    .and_then(|row| row["path"].as_str())
-                    .unwrap_or("unknown")
-                    .to_string()
-            };
-            (tool, location("host"), location("selected"))
-        })
-        .collect();
-    let width = rows.iter().map(|(_, host, _)| host.chars().count()).max().unwrap_or(4).max(4);
-    println!("{:<10} {:<width$}  Selected environment", "Tool", "Host");
-    for (tool, host, selected) in rows {
-        println!("{tool:<10} {host:<width$}  {selected}");
-    }
-    for key in ["host", "selected"] {
-        if report[key]["ok"] != true {
-            println!(
-                "{key}: {}\n{}",
-                report[key]["error"].as_str().unwrap_or("unavailable"),
-                report[key]["hint"].as_str().unwrap_or("")
-            );
+    println!("Workspace: {}\nExecution: host", report["workspace"].as_str().unwrap_or("?"));
+    if report["host"]["ok"] == true {
+        println!("{:<10} Host path", "Tool");
+        for row in report["host"]["tools"].as_array().into_iter().flatten() {
+            println!("{:<10} {}", row["name"].as_str().unwrap_or("?"), row["path"].as_str().unwrap_or("?"));
         }
+    } else {
+        println!(
+            "{}\n{}",
+            report["host"]["error"].as_str().unwrap_or("unavailable"),
+            report["host"]["hint"].as_str().unwrap_or("")
+        );
     }
     println!("Executable discovery only; verify actual build/test commands separately. Saved member exports are not inspected.");
-    if report["backend"] == "sbx" && report["selected"]["ok"] != true {
-        println!("{}", report["sbx"].as_str().unwrap_or(""));
-    }
 }
 
-fn inspect(workspace: &Path, backend: SandboxBackend) -> Json {
-    let result = crate::tools::diagnostic_shell_spec(PROBE, workspace, ShellMode::from_sandbox(backend))
+fn inspect(workspace: &Path) -> Json {
+    let result = crate::tools::shell_command_spec(PROBE, workspace, None)
         .map_err(|e| e.reason)
         .and_then(|spec| capture(&spec, Duration::from_secs(20)))
         .and_then(|output| {
@@ -322,22 +279,10 @@ mod tests {
     }
 
     #[test]
-    fn hints_distinguish_auth_policy_service_and_workspace() {
-        assert!(recovery_hint("not signed in").contains("sbx login"));
-        assert!(recovery_hint("global network policy has not been initialized").contains("policy ls"));
-        assert!(recovery_hint("daemon socket refused").contains("Backend service"));
-        assert!(recovery_hint("cd: No such file or directory").contains("Workspace"));
-        assert!(recovery_hint("rustc: command not found").contains("Missing executable"));
-    }
-
-    #[test]
     fn capture_is_bounded_and_does_not_inherit_credentials() {
-        let mut spec = crate::tools::diagnostic_shell_spec(
-            "printf '%s' \"${TA_ENV_SECRET-unset}\"",
-            Path::new("/tmp"),
-            ShellMode::Host,
-        )
-        .unwrap();
+        let mut spec =
+            crate::tools::shell_command_spec("printf '%s' \"${TA_ENV_SECRET-unset}\"", Path::new("/tmp"), None)
+                .unwrap();
         spec.env.retain(|(key, _)| key != "TA_ENV_SECRET");
         assert_eq!(capture(&spec, Duration::from_secs(2)).unwrap(), "unset");
         spec.args = vec!["-c".into(), "sleep 10".into()];

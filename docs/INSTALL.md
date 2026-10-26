@@ -78,13 +78,7 @@ effort. For another service, set the protocol, model, endpoint, credential varia
 window together; see [configuration](USER-GUIDE.md#2-configuration). Additional bindings are illustrated in
 [examples/config.toml](../examples/config.toml). Never put API key values in tracked files.
 
-The default `sandbox = "none"` needs no sandbox. If you select the bubblewrap backend, install it:
-
-| Distribution | Command |
-|---|---|
-| Debian / Ubuntu | `sudo apt install bubblewrap` |
-| Fedora | `sudo dnf install bubblewrap` |
-| Arch Linux | `sudo pacman -S bubblewrap` |
+Shell and local MCP execute on the host. No sandbox package is required.
 
 ```bash
 export DEEPSEEK_API_KEY='your key'
@@ -98,10 +92,9 @@ session's workspace; use an explicit named session or another state root for ano
 `--json` returns a machine-readable report.
 
 Doctor sends no model request. Fix required failures before starting; warnings identify optional or
-unconfigured capabilities. User-home development environments are not automatically available in the
-sandbox: Rust toolchain/cache mounts exist, but Node/Python/Go installations may need explicit environment
-preparation. See [permissions and isolation](USER-GUIDE.md#4-permissions-and-isolation), not full_auto as an
-implicit fallback.
+unconfigured capabilities. Use `teamagents doctor environment` to discover host development tools.
+Bash inherits the host PATH without sourcing login profiles. Remove old sandbox configuration before starting
+a new daemon; see [permissions and isolation](USER-GUIDE.md#4-permissions-and-isolation).
 
 ## 3. Upgrade and uninstall
 
@@ -149,7 +142,7 @@ its update journal. Do not broadly delete those directories or existing sessions
 | Public download returns 404 | Check the requested version and asset; v0.2.0 is published, so a wrong version or network failure is the likely cause |
 | Local archive checksum fails | Stop; obtain the matching archive/checksum pair and verify provenance |
 | Bubblewrap probe fails | Check kernel/container restrictions on unprivileged namespaces; no host fallback occurs |
-| Build tool exists on host but not in sandbox | Check workspace-local/system installation and the documented toolchain mounts |
+| A build tool is missing from the command PATH | Run `teamagents doctor environment`; check the host PATH and explicit per-member exports |
 | macOS / Windows / Linux ARM | No supported distribution is established by the Linux x86_64 checks |
 | Wrong workspace after changing directory | You joined an existing session; select the intended named session or state root |
 | State path is wrong | The state root is a directory, not the session.sqlite file; empty path arguments are refused |

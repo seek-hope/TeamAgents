@@ -23,7 +23,6 @@ generation_options = { reasoning_effort = "high" }
 # command = "cargo test --offline"
 # inputs = ["src", "Cargo.toml"]   # optional: hashes bind the result to these inputs
 # timeout = 600                    # optional seconds (default: the shell tool's)
-# network = false                  # optional: the sandbox is offline by default
 
 # Usage and wall-clock ceilings for every goal this session creates (optional;
 # without them a goal runs until you stop it). Both are yours alone: a cloned

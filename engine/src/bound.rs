@@ -193,6 +193,11 @@ pub fn list_services(catalog: &UserConfig, root: &Path) -> Vec<ServiceListing> {
 }
 
 fn load_service(name: &str, binding: &ToolBinding, root: &Path) -> Result<(Arc<McpClient>, Vec<BoundTool>), String> {
+    if binding.mcp_execution.as_deref().is_some_and(|mode| mode != "host") {
+        return Err(format!(
+            "binding {name:?}: MCP workspace isolation was removed (D-480); remove mcp_execution to use the host"
+        ));
+    }
     let transport = binding.mcp_transport.clone().unwrap_or_else(|| "stdio".into());
     let client = match transport.as_str() {
         "stdio" => {
@@ -216,8 +221,6 @@ fn load_service(name: &str, binding: &ToolBinding, root: &Path) -> Result<(Arc<M
                 &binding.args,
                 &env,
                 root,
-                binding.mcp_execution.as_deref().unwrap_or("workspace"),
-                binding.mcp_network,
                 binding.startup_timeout_s.unwrap_or(60),
                 binding.tool_timeout_s.unwrap_or(120),
             )?

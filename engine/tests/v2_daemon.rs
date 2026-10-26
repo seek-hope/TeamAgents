@@ -154,7 +154,6 @@ fn config_recording(
             permissions: "full_auto".into(),
             approvals_reviewer: "user".into(),
             reviewer_model: None,
-            sandbox: teamagents_engine::tools::SandboxBackend::bubblewrap(),
             catalog,
             bindings,
             max_retries: 2,
@@ -269,7 +268,7 @@ async fn checkpoint_environment_is_boot_scoped_and_diagnostics_do_not_start_work
     let first = client.call("checkpoint", json!({})).await;
     assert_eq!(first["ok"], true, "{first}");
     let environment = &first["result"]["snapshot"]["environment"];
-    assert_eq!(environment["sandbox"], "none", "full_auto overrides the configured backend");
+    assert_eq!(environment["execution"], "host", "production executes on the host");
     assert_eq!(environment["configuration"]["restart_required"], false);
     assert_eq!(environment["sources"]["instruction_files"][0], workspace.join("AGENTS.md").to_string_lossy().as_ref());
     std::fs::write(&project, "# changed, not reloaded").unwrap();
@@ -284,7 +283,7 @@ async fn checkpoint_environment_is_boot_scoped_and_diagnostics_do_not_start_work
     assert!(seen.lock().unwrap().is_empty(), "observation must not ask the model");
     drop(client);
     let mut reconnect = Client::connect(&socket).await;
-    assert_eq!(reconnect.call("checkpoint", json!({})).await["result"]["snapshot"]["environment"]["sandbox"], "none");
+    assert_eq!(reconnect.call("checkpoint", json!({})).await["result"]["snapshot"]["environment"]["execution"], "host");
     handle.shutdown().await.unwrap();
 }
 

@@ -1179,7 +1179,7 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
         let mut lines = vec![format!(
             "Workspace: {}\nExecution: {} ({})",
             self.environment["workspace"].as_str().unwrap_or("unknown"),
-            self.environment["sandbox"].as_str().unwrap_or("unknown"),
+            self.environment["execution"].as_str().unwrap_or("unknown"),
             self.environment["permissions"].as_str().unwrap_or("unknown")
         )];
         if self.environment["configuration"]["restart_required"] == true {

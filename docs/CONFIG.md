@@ -2,7 +2,7 @@
 
 The config file is `${XDG_CONFIG_HOME:-$HOME/.config}/teamagents/config.toml`. `teamagents init` writes a minimal
 one (mode `0600`, no credentials, keeps an existing file), `teamagents doctor` reports what it resolved
-(credentials, state root, isolation, skills, declared tools, the keys below that this build does not apply), and
+(credentials, state root, host execution, skills, declared tools, the keys below that this build does not apply), and
 the user guide's §2 explains the sections in prose: `[[checks]]` (§2.1), `[limits]` (§2.2), `[hooks]` (§2.3).
 
 Three rules decide whether a key is *honoured*:
@@ -14,7 +14,7 @@ Three rules decide whether a key is *honoured*:
   (exactly those repositories, compared by canonical path) in your own config; the loader looks for the project
   file in the working directory and then up through its parents (D-434). With the opt-in its `models`, `tools`,
   `skills_paths` and `instruction_files` merge in, and your own definitions of the same name always win.
-  `[permissions]` (sandbox, trust and automatic-review keys), `hooks`, `checks`, `retention`, `limits` and
+  `[permissions]` (trust and operation-review keys), `hooks`, `checks`, `retention`, `limits` and
   `update` may only ever come from your config, trusted or not. USER-GUIDE §2 describes this boundary;
   ACCEPTANCE records current coverage. `python3 review/project_config_claim.py` checks the basic loading
   claim, while the loader tests cover ancestor discovery and canonical-root trust (D-434).
@@ -53,10 +53,12 @@ trust posture.
 
 | Key | Meaning |
 |---|---|
-| `sandbox` | `none` (the default): the host shell, with no shell approval. `bubblewrap`, `docker`, `sbx` or `ssh`: `approved_scope` inside that backend, which refuses a command when it cannot start (D-466, D-478). |
 | `trust_project`, `trusted_projects` | Whether a repository-local config contributes models/tools/skills/instructions, and for exactly which canonical roots (D-244, D-434). |
 | `approvals_reviewer`, `reviewer_model` | `user` (the default) or `auto_review`, and the optional model the reviewer uses (D-458). |
-| `sandbox_image`, `sandbox_sbx_name`, `sandbox_ssh_target`, `sandbox_ssh_workdir`, `sandbox_ssh_options` | Backend settings for docker, Docker Sandboxes (`sbx`) and ssh; `sandbox_sbx_name` is optional and must be one sandbox name (D-369, D-437, D-478). |
+
+Sandbox backends were removed in D-480. Legacy permissions.sandbox and sandbox_* settings are rejected;
+remove them explicitly to use automatic host execution. Local MCP defaults to host; mcp_execution accepts
+only host. The removed mcp_network and checks network settings are rejected, not silently ignored.
 
 <!-- generated: begin -->
 
@@ -87,8 +89,7 @@ trust posture.
 | `api_key_env` | `Option<String>` | unset (the reader applies its own) | `engine/src/providers/mod.rs`, `engine/src/tools.rs` | — |
 | `mcp_server` | `Option<String>` | unset (the reader applies its own) | `engine/src/bound.rs` | — |
 | `mcp_transport` | `Option<String>` | unset (the reader applies its own) | `engine/src/bound.rs`, `engine/src/mcp_auth.rs` … (3 files) | — |
-| `mcp_execution` | `Option<String>` | unset (the reader applies its own) | `engine/src/bound.rs` | Local MCP execution boundary: workspace (default) or explicit host. |
-| `mcp_network` | `bool` | false | `engine/src/bound.rs` | Network access for workspace-sandboxed MCP processes. |
+| `mcp_execution` | `Option<String>` | unset (the reader applies its own) | `engine/src/bound.rs` | Local MCP execution: host only (also the default). Workspace isolation was removed. |
 | `command` | `Option<String>` | unset (the reader applies its own) | `core/src/v2/control.rs`, `engine/src/bound.rs` … (17 files) | The `kind = "mcp"` service's argv over stdio (the default transport) — required for that kind and transport, refused at load otherwise (D-232). |
 | `args` | `Vec<String>` | empty | `core/src/kernel/mod.rs`, `core/src/v2/control.rs` … (17 files) | — |
 | `url` | `Option<String>` | unset (the reader applies its own) | `engine/src/bound.rs`, `engine/src/mcp_auth.rs` … (7 files) | The `kind = "mcp"` service's endpoint over the `http` transport — required there, and an absolute http(s) URL (D-232). |
@@ -136,7 +137,6 @@ trust posture.
 | `id` | `String` | empty | `core/src/kernel/instance.rs`, `core/src/v2/control.rs` … (34 files) | Stable id, used in failures, receipts and repair feedback. |
 | `command` | `String` | empty | `core/src/v2/control.rs`, `engine/src/bound.rs` … (17 files) | The command, executed through the same shell tool the model uses. |
 | `timeout` | `Option<u64>` | unset (the reader applies its own) | `core/src/v2/control.rs`, `engine/src/mcp.rs` … (10 files) | Seconds; absent means the shell tool's own default. |
-| `network` | `bool` | false | `core/src/v2/control.rs`, `engine/src/mcp.rs` … (3 files) | Run with network access (the sandbox is offline by default). |
 | `inputs` | `Vec<String>` | empty | `core/src/v2/control.rs`, `engine/src/v2/driver.rs` … (3 files) | Workspace-relative inputs the check reads. |
 
 ### `[hooks]`

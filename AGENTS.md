@@ -48,18 +48,18 @@ cargo test --offline --manifest-path tui/Cargo.toml     # TUI logic + TestBacken
 engine/target/debug/teamagents {init,doctor,daemon,exec,version}  # CLI entry points
 engine/target/debug/teamagents exec --json --timeout 180 "…"      # headless turn (starts the daemon if needed)
 make pty                                 # real-terminal matrix (tui/scripts/pty_matrix.py, one pty per profile)
-make check-nobwrap                       # `make check` with no bwrap in PATH: the CI runner's condition (D-113)
-make check-broken-sandbox                # `make check` with a bwrap that cannot start a sandbox (Ubuntu 24.04, D-114)
 make verify-model-all                    # small TLA+ configurations for all modules (see verification/README.md)
 make verify-kani                         # Kani proofs (paging arithmetic)
 python3 review/eval/r2-p6/run.py --phase pilot --out <new date directory>  # real-model A/B/C comparison (needs credentials)
 ```
 
-- Local baseline (2026-10-26, D-479 additions on e8fb2cc1): `make check` is green — core 147 / engine 424 / tui 87;
+- Local baseline (2026-10-26, D-480 host execution on 50df77fd): `make check` is green — core 147 / engine 415 / tui 87;
   `make pty` passes. This is not a renewal of D-452's independent audit or historical real-service results.
   Raw evaluation JSONL lives in `review/eval/r2-p6/runs/`, per-item evidence in `docs/ACCEPTANCE.md`.
   Candidate daily-coding work has one home, `docs/PRODUCT-COMPARISON.md`. D-461 approves and implements
   DD-01 option A (read-only diagnosis and explicit recovery); D-479 adds the approved environment/input diagnostics.
+  D-480 removes OS sandbox backends; ordinary Shell and local MCP run on the host. Capability grants,
+  operation records, recovery and self-update approval remain. Old sandbox configuration is rejected.
   Automatic reminders and other unselected candidates remain unapproved.
 - Skipped checks and the current baseline are collected in `docs/ACCEPTANCE.md`. A green Cargo run is not a
   real-service acceptance result.

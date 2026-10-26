@@ -210,13 +210,12 @@ Search workspace files for a pattern; returns matching lines (max 100).
 
 *Offered by `reference::session_tool_schemas` (the profile's tools; the web half only for the kinds the config declares — §5.2/D-79/D-168).*
 
-Run Bash in the configured shell mode. sandbox = "none" (the default) runs on the host filesystem/network; a configured sandbox backend runs the command isolated and needs approval (network=true also needs it); temporary files/background processes end with the call. Services may survive CLI exit; For services redirect stdin/stdout/stderr, record PID, verify in a later call, and stop explicitly. Timeout/cancel kills the active process group. cwd/exports persist separately per mode; a missing cwd skips this call and resets to workspace root. Inspect nonzero exits. Page long output with read_file under /artifacts/ (exec-*.log). /artifacts/ is a virtual file-tool path and belongs to your member alone.
+Run Bash on the host filesystem and network without per-command approval. Services may survive CLI exit; redirect service stdin/stdout/stderr, record PID, verify in a later call, and stop explicitly. Timeout/cancel kills the active process group. cwd/exports persist per member; a missing cwd skips this call and resets to workspace root. Inspect nonzero exits. Page long output with read_file under /artifacts/ (exec-*.log). /artifacts/ is a virtual file-tool path and belongs to your member alone.
 
 | Parameter | Type | Required | Meaning |
 |---|---|---|---|
 | `command` | `string` | yes | — |
 | `timeout` | `integer` | no | — |
-| `network` | `boolean` | no | — |
 
 ### `web_search`
 

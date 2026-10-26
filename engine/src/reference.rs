@@ -7,7 +7,7 @@
 use crate::observability::trace::Trace;
 use crate::providers::{Cancel, ErrorClass, Provider, ProviderEvent};
 use crate::tools::TurnControl;
-use crate::tools::{ShellMode, V2Toolkit};
+use crate::tools::V2Toolkit;
 use serde_json::{json, Value as Json};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -20,8 +20,6 @@ pub struct ReferenceConfig {
     pub shell_state: Option<PathBuf>,
     /// Trusted session permission mode, never model-controlled (D-41).
     pub permissions: String,
-    /// The sandbox `approved_scope` runs commands in (D-369).
-    pub sandbox: crate::tools::SandboxBackend,
     pub profile: KernelProfile,
     /// Web catalog + bindings; empty bindings expose no web tools.
     pub catalog: UserConfig,
@@ -59,7 +57,6 @@ pub async fn run_reference<P: Provider>(
     task: &str,
     mut preview: impl FnMut(ProviderEvent) + Send,
 ) -> Result<ReferenceOutcome, String> {
-    let mode = ShellMode::from_permissions(Some(&config.permissions), config.sandbox.clone())?;
     let toolkit = std::sync::Arc::new(V2Toolkit::new(
         config.workspace.clone(),
         config.catalog.clone(),
@@ -221,8 +218,7 @@ pub async fn run_reference<P: Provider>(
                         let intent = intent.clone();
                         let operation_id = operation_id.clone();
                         let control = control.clone();
-                        let mode = mode.clone();
-                        tokio::task::spawn_blocking(move || toolkit.call(&operation_id, &intent, &control, mode))
+                        tokio::task::spawn_blocking(move || toolkit.call(&operation_id, &intent, &control))
                             .await
                             .map_err(|e| format!("tool worker join: {e}"))?
                     };
@@ -330,8 +326,8 @@ pub fn basic_tool_schemas(web: bool, skills: bool) -> Vec<Json> {
             json!({"type":"object","properties":{"pattern":{"type":"string"}},"required":["pattern"]})),
         wrap("grep", "Search workspace files for a pattern; returns matching lines (max 100).",
             json!({"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"}},"required":["pattern"]})),
-        wrap("shell", "Run Bash in the configured shell mode. sandbox = \"none\" (the default) runs on the host filesystem/network; a configured sandbox backend runs the command isolated and needs approval (network=true also needs it); temporary files/background processes end with the call. Services may survive CLI exit; For services redirect stdin/stdout/stderr, record PID, verify in a later call, and stop explicitly. Timeout/cancel kills the active process group. cwd/exports persist separately per mode; a missing cwd skips this call and resets to workspace root. Inspect nonzero exits. Page long output with read_file under /artifacts/ (exec-*.log). /artifacts/ is a virtual file-tool path and belongs to your member alone.",
-            json!({"type":"object","properties":{"command":{"type":"string"},"timeout":{"type":"integer"},"network":{"type":"boolean"}},"required":["command"]})),
+        wrap("shell", "Run Bash on the host filesystem and network without per-command approval. Services may survive CLI exit; redirect service stdin/stdout/stderr, record PID, verify in a later call, and stop explicitly. Timeout/cancel kills the active process group. cwd/exports persist per member; a missing cwd skips this call and resets to workspace root. Inspect nonzero exits. Page long output with read_file under /artifacts/ (exec-*.log). /artifacts/ is a virtual file-tool path and belongs to your member alone.",
+            json!({"type":"object","properties":{"command":{"type":"string"},"timeout":{"type":"integer"}},"required":["command"]})),
     ];
     if web {
         schemas.push(wrap("web_search", "Search the web and return title, source URL, snippet, fetch time (and full content when include_content=true).",

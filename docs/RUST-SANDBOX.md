@@ -1,4 +1,7 @@
-# A Rust-native sandbox backend: design spike (D-466 follow-up)
+# Retired Rust-native sandbox design spike (D-466, superseded by D-480)
+
+Historical evidence only. D-480 removed all OS sandbox backends at the user's request; this proposal
+is closed and is not current implementation guidance or an approved next step.
 
 Status: **design only**. No backend in this document is implemented, and nothing here claims that one works.
 The pluggable selection key (`[permissions] sandbox`) already exists; this note decides what a Rust-native

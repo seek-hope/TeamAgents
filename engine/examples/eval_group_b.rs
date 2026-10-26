@@ -143,7 +143,6 @@ fn main() {
         permissions: if full_auto { "full_auto".into() } else { "approved_scope".into() },
         approvals_reviewer: "user".into(),
         reviewer_model: None,
-        sandbox: teamagents_engine::tools::SandboxBackend::bubblewrap(),
         profile: KernelProfile {
             images: false,
             tool_output_chars: None,

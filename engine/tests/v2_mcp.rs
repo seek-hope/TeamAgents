@@ -99,7 +99,6 @@ impl Root {
             permissions: "full_auto".into(),
             approvals_reviewer: "user".into(),
             reviewer_model: None,
-            sandbox: teamagents_engine::tools::SandboxBackend::bubblewrap(),
             profile: KernelProfile {
                 images: false,
                 tool_output_chars: None,
@@ -176,95 +175,7 @@ fn echo_catalog(command: &str) -> UserConfig {
     catalog
 }
 
-/// `mcp_execution = "workspace"` really runs the server inside the workspace sandbox (A14's question, for the
-/// MCP surface): a server that writes to a host path outside the workspace must fail there, while the same
-/// server writing inside its cwd succeeds — and the host file must not exist afterwards. The sibling test
-/// `mcp_host_execution_is_not_sandboxed` is the control that the observation itself works.
-#[tokio::test]
-async fn mcp_workspace_execution_is_sandboxed() {
-    let server = r#"
-import json, sys
-outside = sys.argv[1]
-for line in sys.stdin:
-    request = json.loads(line)
-    if 'id' not in request: continue
-    method = request['method']
-    if method == 'initialize':
-        result = {'protocolVersion': '2025-06-18'}
-    elif method == 'tools/list':
-        result = {'tools': [{'name': 'write', 'inputSchema': {'type': 'object', 'properties': {}}}]}
-    elif method == 'tools/call':
-        try:
-            with open('inside.txt', 'w') as f: f.write('in')
-            inside = 'ok'
-        except Exception as e:
-            inside = type(e).__name__
-        try:
-            with open(outside, 'w') as f: f.write('out')
-            result_outside = 'ok'
-        except Exception as e:
-            result_outside = type(e).__name__
-        result = {'content': [{'type': 'text', 'text': f'inside={inside} outside={result_outside}'}]}
-    else:
-        result = {}
-    print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
-"#;
-    let root = root("mcp-workspace");
-    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
-    // a path the *engine* can write and the sandbox cannot: outside the workspace, and under /tmp the sandbox
-    // replaces with a private tmpfs (so the directory does not even exist in there)
-    let outside = root.dir.join("state").join("outside.txt");
-    std::fs::create_dir_all(outside.parent().unwrap()).unwrap();
-    let mut catalog = UserConfig::default();
-    catalog.tools.insert(
-        "ws_probe".into(),
-        serde_json::from_value::<ToolBinding>(json!({
-            "kind": "mcp", "mcp_server": "wsprobe", "mcp_transport": "stdio", "mcp_execution": "workspace",
-            "command": "/usr/bin/python3", "args": ["-u", "-c", server, outside.to_string_lossy()],
-            "tool_names": ["write"], "required": true,
-        }))
-        .unwrap(),
-    );
-    let provider =
-        ScriptedProvider::new(vec![tool_call("c1", "wsprobe_write", json!({})), finish_call("wrote what it could")]);
-    let mut config = root.config(provider);
-    config.catalog = catalog;
-    config.bindings = vec!["ws_probe".into()];
-    if !teamagents_engine::tools::sandbox_usable() {
-        // No *usable* sandbox, which is two machines (D-113/D-114): bwrap absent (the CI runner) or present but
-        // unable to create a namespace (Ubuntu 23.10+/24.04 restricts unprivileged user namespaces, so bwrap
-        // dies with "setting up uid map: Permission denied"). Both must fail the boot of the required service
-        // rather than run the server unsandboxed; only the machine without bwrap can promise the exact sentence,
-        // and in both the host path must stay untouched.
-        let error = start(config).await.err().expect("workspace mode without a usable sandbox must not boot");
-        assert!(error.contains("ws_probe"), "the boot failure names the service: {error}");
-        assert!(
-            error.contains("IsolationUnavailable") && error.contains("requires a working sandbox"),
-            "the refusal names the isolation on both sandbox-less machines: {error}"
-        );
-        if teamagents_engine::tools::bwrap_available() {
-            // bwrap is installed and the machine blocks it (Ubuntu 24.04's AppArmor default): the refusal carries
-            // bwrap's own complaint instead of a generic sentence
-            assert!(error.contains("Permission denied"), "the refusal repeats bwrap's words: {error}");
-        }
-        assert!(!outside.exists(), "the host file was not created: {}", outside.display());
-        return;
-    }
-    let handle = start(config).await.expect("start");
-    handle.input("probe the sandbox").await.expect("input");
-    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
-    let results = tool_results(&root);
-    let reply = results.iter().find(|entry| entry.contains("inside=")).cloned().unwrap_or_default();
-    assert!(!reply.is_empty(), "the MCP call's receipt is in the conversation: {results:?}");
-    assert!(reply.contains("inside=ok"), "the workspace is writable inside the sandbox: {reply}");
-    assert!(!reply.contains("outside=ok"), "a host path outside the workspace is unreachable: {reply}");
-    assert!(!outside.exists(), "the host file was not created: {}", outside.display());
-    assert_eq!(std::fs::read_to_string(root.dir.join("ws/inside.txt")).unwrap_or_default(), "in");
-    handle.shutdown().await.expect("shutdown");
-}
-
-/// The control for `mcp_workspace_execution_is_sandboxed`: the *same* server in `mcp_execution = "host"` mode
-/// reaches the host path, so the sibling test's negative result is about the sandbox and not about the server.
+/// A local MCP service runs on the host and can reach files outside its working directory.
 #[tokio::test]
 async fn mcp_host_execution_is_not_sandboxed() {
     let server = r#"
@@ -318,12 +229,9 @@ for line in sys.stdin:
     handle.shutdown().await.expect("shutdown");
 }
 
-/// The other half of the config edge that D-106 covers: `mcp_network` is *off* unless the user asks for it, and
-/// the key really reaches the sandbox (`--unshare-net` vs `--share-net`). The witness is a host loopback
-/// listener: the server reports whether it could connect. `host` mode is the control that the measurement
-/// itself works, and it is the one case that still runs on a machine without bwrap.
+/// Local MCP services have host networking by default and with an explicit host setting.
 #[tokio::test]
-async fn mcp_workspace_network_follows_the_config_key() {
+async fn mcp_host_network_is_available() {
     let server = r#"
 import json, socket, sys
 port = int(sys.argv[1])
@@ -350,23 +258,15 @@ for line in sys.stdin:
 "#;
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a host listener");
     let port = listener.local_addr().unwrap().port().to_string();
-    // (tag, execution mode, what the config says about the network, what the server must observe)
-    let cases = [
-        ("mcp-net-default", "workspace", None, "network=no"),
-        ("mcp-net-requested", "workspace", Some(true), "network=yes"),
-        ("mcp-net-host", "host", None, "network=yes"),
-    ];
-    for (tag, execution, network, expected) in cases {
+    let cases = [("mcp-net-default", None), ("mcp-net-host", Some("host"))];
+    for (tag, execution) in cases {
         let root = root(tag);
         std::fs::create_dir_all(root.dir.join("ws")).unwrap();
-        let mut binding = json!({
+        let binding = json!({
             "kind": "mcp", "mcp_server": "netprobe", "mcp_transport": "stdio", "mcp_execution": execution,
             "command": "/usr/bin/python3", "args": ["-u", "-c", server, port],
             "tool_names": ["reach"], "required": true,
         });
-        if let Some(value) = network {
-            binding["mcp_network"] = json!(value);
-        }
         let mut catalog = UserConfig::default();
         catalog.tools.insert("net_probe".into(), serde_json::from_value::<ToolBinding>(binding).unwrap());
         let provider =
@@ -374,24 +274,12 @@ for line in sys.stdin:
         let mut config = root.config(provider);
         config.catalog = catalog;
         config.bindings = vec!["net_probe".into()];
-        if execution == "workspace" && !teamagents_engine::tools::sandbox_usable() {
-            // no usable sandbox (absent, or present and unable to create a namespace): the workspace cases cannot
-            // be observed here, and the mode must refuse instead of running the server on the host (the same
-            // refusal `mcp_workspace_execution_is_sandboxed` asserts)
-            let error = start(config).await.err().expect("workspace mode without a usable sandbox must not boot");
-            assert!(error.contains("net_probe"), "the boot failure names the service: {error}");
-            assert!(
-                error.contains("IsolationUnavailable") && error.contains("requires a working sandbox"),
-                "the refusal names the isolation on both sandbox-less machines: {error}"
-            );
-            continue;
-        }
         let handle = start(config).await.expect("start");
         handle.input("try to reach the listener").await.expect("input");
         assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED", "{tag}");
         let results = tool_results(&root);
         let reply = results.iter().find(|entry| entry.contains("network=")).cloned().unwrap_or_default();
-        assert!(reply.contains(expected), "{tag}: the server observed {reply:?}, expected {expected}");
+        assert!(reply.contains("network=yes"), "{tag}: the server observed {reply:?}");
         handle.shutdown().await.expect("shutdown");
     }
 }

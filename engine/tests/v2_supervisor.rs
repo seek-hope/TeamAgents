@@ -168,7 +168,6 @@ where
         permissions: "full_auto".into(),
         approvals_reviewer: "user".into(),
         reviewer_model: None,
-        sandbox: teamagents_engine::tools::SandboxBackend::bubblewrap(),
         catalog: UserConfig::default(),
         bindings: vec![],
         max_retries: 2,

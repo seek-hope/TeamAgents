@@ -63,7 +63,7 @@ usage: teamagents [--cwd DIR] [--state-root PATH] [--session ID] [--model KEY] [
   teamagents mcp list                           the tools each configured MCP service offers (D-399),\n\
        and whether an oauth binding is signed in\n\
   teamagents mcp add --name N --command CMD     bind an MCP service in the user config (D-408):\n\
-       [--arg A]… [--transport stdio|http] [--url U] [--execution workspace|host] [--server NAME]\n\
+       [--arg A]… [--transport stdio|http] [--url U] [--execution host] [--server NAME]\n\
        [--oauth [--oauth-client-id ID]]         an http service that signs in with OAuth (D-412)\n\
   teamagents mcp remove --name N                take that binding back out\n\
   teamagents mcp login --name N                 sign in to an oauth binding (D-412): the URL is printed, the\n\
@@ -1220,7 +1220,7 @@ fn run_mcp(args: &Args) -> i32 {
         other => {
             eprintln!(
                 "mcp {other}: unknown sub-verb; teamagents mcp [list | add --name N [--command CMD] [--arg A]… \
-                 [--transport stdio|http] [--url U] [--execution workspace|host] [--server NAME] [--oauth] | \
+                 [--transport stdio|http] [--url U] [--execution host] [--server NAME] [--oauth] | \
                  remove --name N | login --name N [--no-browser] [--paste] [--timeout SEC] | logout --name N]"
             );
             2
@@ -1280,8 +1280,8 @@ fn run_mcp_add(args: &Args) -> i32 {
         }
     }
     if let Some(execution) = args.mcp_execution.clone() {
-        if !matches!(execution.as_str(), "workspace" | "host") {
-            eprintln!("mcp add --execution {execution}: use workspace or host");
+        if execution != "host" {
+            eprintln!("mcp add --execution {execution}: workspace isolation was removed; use host");
             return 2;
         }
         binding.insert("mcp_execution".into(), serde_json::json!(execution));

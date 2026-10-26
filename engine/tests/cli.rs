@@ -3,7 +3,7 @@
 use std::process::Command;
 
 #[test]
-fn environment_doctor_separates_host_and_sbx_without_setup_or_credentials() {
+fn environment_doctor_discovers_host_tools_without_running_them_or_starting_work() {
     use std::os::unix::fs::PermissionsExt;
     let root = Scratch::new("environment-doctor");
     let config = root.join("config");
@@ -12,56 +12,33 @@ fn environment_doctor_separates_host_and_sbx_without_setup_or_credentials() {
     std::fs::create_dir_all(config.join("teamagents")).unwrap();
     std::fs::create_dir_all(&workspace).unwrap();
     std::fs::create_dir_all(&bin).unwrap();
-    std::fs::write(
-        config.join("teamagents/config.toml"),
-        "[permissions]\nsandbox = \"sbx\"\nsandbox_sbx_name = \"test-existing\"\n",
-    )
-    .unwrap();
-    let fake = bin.join("sbx");
-    let log = root.join("calls");
-    std::fs::write(&fake, format!(
-        "#!/bin/sh\nprintf '%s\\n' \"$1\" >> '{}'\n[ \"$1\" = exec ] || exit 90\n[ \"$2\" = test-existing ] || exit 91\n[ -z \"$TA_ENV_SECRET\" ] || exit 92\nprintf 'workspace\\t/guest/project\\nrustc\\tmissing\\ncargo\\tmissing\\nnode\\t/guest/node\\nnpm\\tmissing\\npython3\\t/guest/python3\\npip3\\tmissing\\ngit\\t/guest/git\\n'\n",
-        log.display())).unwrap();
+    std::fs::write(config.join("teamagents/config.toml"), "").unwrap();
+    let fake = bin.join("rustc");
+    let marker = root.join("executed");
+    std::fs::write(&fake, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
     std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let run = || {
-        Command::new(env!("CARGO_BIN_EXE_teamagents"))
-            .args(["doctor", "environment", "--json", "--cwd"])
-            .arg(&workspace)
-            .env("XDG_CONFIG_HOME", &config)
-            .env("XDG_STATE_HOME", root.join("state"))
-            .env("TA_ENV_SECRET", "must-not-be-inherited")
-            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
-            .output()
-            .unwrap()
-    };
-    let output = run();
+    let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
+        .args(["doctor", "environment", "--json", "--cwd"])
+        .arg(&workspace)
+        .env("XDG_CONFIG_HOME", &config)
+        .env("XDG_STATE_HOME", root.join("state"))
+        .env("TA_ENV_SECRET", "must-not-be-inherited")
+        .env("PATH", &bin)
+        .output()
+        .unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(report["backend"], "sbx");
+    assert_eq!(report["execution"], "host");
     assert_eq!(report["host"]["ok"], true);
-    assert_eq!(report["selected"]["ok"], true);
-    assert!(report["selected"]["tools"]
+    assert!(report["host"]["tools"]
         .as_array()
         .unwrap()
         .iter()
-        .any(|row| row["name"] == "rustc" && row["available"] == false));
+        .any(|row| row["name"] == "rustc" && row["path"] == fake.to_string_lossy().as_ref()));
+    assert!(!marker.exists(), "discovery never executes the toolchain");
     assert!(!report.to_string().contains("must-not-be-inherited"));
-    assert_eq!(std::fs::read_to_string(&log).unwrap(), "exec\n");
     assert!(!root.join("state").exists(), "no daemon or session is started");
     assert_eq!(std::fs::read_dir(&workspace).unwrap().count(), 0);
-    // A service refusal must remain a refusal, never the successful host result.
-    std::fs::write(&fake, "#!/bin/sh\necho 'daemon socket: connection refused' >&2\nexit 1\n").unwrap();
-    let failed = run();
-    assert_eq!(failed.status.code(), Some(1));
-    let report: serde_json::Value = serde_json::from_slice(&failed.stdout).unwrap();
-    assert_eq!(report["host"]["ok"], true);
-    assert_eq!(report["selected"]["ok"], false);
-    assert!(report["selected"]["hint"].as_str().unwrap().contains("Backend service"));
-    std::fs::write(&fake, "#!/bin/sh\nexit 0\n").unwrap();
-    let incomplete = run();
-    assert_eq!(incomplete.status.code(), Some(1));
-    let report: serde_json::Value = serde_json::from_slice(&incomplete.stdout).unwrap();
-    assert!(report["selected"]["error"].as_str().unwrap().contains("incomplete environment probe"));
 }
 
 #[test]
@@ -252,20 +229,7 @@ fn a_config_override_reaches_the_config_and_a_bad_one_is_refused() {
     // bubblewrap is missing; only asking for bubblewrap fails closed.
     assert_eq!(code, Some(0), "{text}");
     assert!(!text.contains("[FAIL]"), "{text}");
-    assert!(text.contains("sandbox = \"none\""), "{text}");
-    if !teamagents_engine::tools::sandbox_usable() {
-        std::fs::write(
-            config_home.join("teamagents/config.toml"),
-            "[models.leader_main]\nprovider = \"compatible\"\nmodel = \"test\"\n\
-             api_key_env = \"TA_OVERRIDE_KEY\"\n\n[permissions]\nsandbox = \"bubblewrap\"\n",
-        )
-        .unwrap();
-        let (bad_code, bad_text) = run(&["doctor"]);
-        assert_eq!(bad_code, Some(1), "{bad_text}");
-        let failures: Vec<_> = bad_text.lines().filter(|line| line.contains("[FAIL]")).collect();
-        assert_eq!(failures.len(), 1, "{bad_text}");
-        assert!(failures[0].contains("bubblewrap isolation"), "{bad_text}");
-    }
+    assert!(text.contains("[ok  ] execution"), "{text}");
     assert!(text.contains("[ok  ] user config"), "{text}");
     // a key this build does not serve
     let (code, text) = run(&["doctor", "-c", "nonsense=1"]);
@@ -421,6 +385,12 @@ fn mcp_add_and_remove_edit_only_that_binding() {
     let (code, _, err) = run(&["mcp", "add", "--name", "mine", "--command", "/bin/echo"]);
     assert_eq!(code, Some(2), "{err}");
     assert!(err.contains("already"), "{err}");
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), before);
+
+    // Retired workspace execution is rejected without changing the user config.
+    let (code, _, err) = run(&["mcp", "add", "--name", "old", "--command", "/bin/echo", "--execution", "workspace"]);
+    assert_eq!(code, Some(2), "{err}");
+    assert!(err.contains("removed") && err.contains("host"), "{err}");
     assert_eq!(std::fs::read_to_string(&config).unwrap(), before);
 
     // a transport this build does not speak, and a missing command, are usage errors
@@ -778,7 +748,7 @@ fn a_bare_word_and_verbose_are_refused_without_starting_a_session() {
 /// finding 10/11: doctor runs real probes (bwrap isolation, hook programs)
 /// and reports a malformed config instead of silently defaulting it.
 #[test]
-fn doctor_probes_isolation_and_config_errors() {
+fn doctor_reports_host_execution_and_config_errors() {
     let home = Scratch::new("doctor");
     let config = home.join("config/teamagents");
     std::fs::create_dir_all(&config).unwrap();
@@ -796,19 +766,11 @@ fn doctor_probes_isolation_and_config_errors() {
     let run = |state: &std::path::Path| -> String { run_status(state).1 };
     let clean = run(&home.join("state"));
     assert!(clean.contains("user config"), "{clean}");
-    // D-466: the default is `sandbox = "none"`, reported as a mode rather than an isolation probe
-    assert!(clean.contains("[ok  ] sandbox") && clean.contains("sandbox = \"none\""), "{clean}");
-    // a configured backend is still probed for real
-    std::fs::write(
-        config.join("config.toml"),
-        "[models.m]\nprovider=\"openai\"\nmodel=\"x\"\n\n[permissions]\nsandbox = \"bubblewrap\"\n",
-    )
-    .unwrap();
-    let sandboxed = run(&home.join("state"));
-    assert!(sandboxed.contains("bubblewrap isolation"), "{sandboxed}");
-    if teamagents_engine::tools::sandbox_usable() {
-        assert!(sandboxed.contains("[ok  ] bubblewrap isolation"), "the isolation probe really runs: {sandboxed}");
-    }
+    assert!(clean.contains("[ok  ] execution"), "{clean}");
+    std::fs::write(config.join("config.toml"), "[permissions]\nsandbox = \"bubblewrap\"\n").unwrap();
+    let (code, retired) = run_status(&home.join("state"));
+    assert_eq!(code, 1, "{retired}");
+    assert!(retired.contains("removed"), "{retired}");
 
     // hooks fail silently at event time, so doctor checks the programs
     std::fs::write(
@@ -1062,19 +1024,7 @@ fn doctor_fresh_install_reports_the_missing_requirements() {
     // D-466: `none` is the default, so a fresh install needs no bwrap and the sandbox row is a mode row
     let (ok, text) = run("test-value");
     assert!(ok, "a fresh install with sandbox = none passes doctor: {text}");
-    assert!(text.contains("[ok  ] sandbox"), "{text}");
-    // ...and a configured bubblewrap still fails closed when it is missing
-    std::fs::write(
-        &config,
-        "[models.leader_main]\nprovider='openai'\nmodel='test'\napi_key_env='TA_DOCTOR_TEST_KEY'\n\n\
-         [permissions]\nsandbox = 'bubblewrap'\n",
-    )
-    .unwrap();
-    let (ok, text) = run("test-value");
-    assert!(!ok, "missing bubblewrap must fail doctor when it is configured: {text}");
-    let failures: Vec<_> = text.lines().filter(|line| line.contains("[FAIL]")).collect();
-    assert_eq!(failures.len(), 1, "only missing bubblewrap must fail doctor: {text}");
-    assert!(failures[0].contains("bubblewrap isolation"), "{text}");
+    assert!(text.contains("[ok  ] execution"), "{text}");
     for key in ["", "   "] {
         let (ok, text) = run(key);
         assert!(!ok && text.contains("[FAIL] model profile leader_main"), "{text}");
@@ -1490,116 +1440,27 @@ fn the_daemon_carries_configured_checks_into_the_goal() {
     std::fs::remove_dir_all(&root).expect("the state root goes away with its daemon");
 }
 
-/// A14: with no bubblewrap the shell must refuse to run **anything**, and the client's
-/// own acceptance commands are no exception — a `--check` command that quietly ran on
-/// the host would defeat the isolation the user asked for. The test drives the real
-/// binary in a child process whose `PATH` holds no `bwrap` (a child's environment,
-/// never the test process's own: other tests resolve tools through `PATH`), with a
-/// dead model endpoint, so the turn fails first and the verdict is where the refusal
-/// shows up — the same shape a user meets it in.
-///
-/// The positive control (the same command *with* bwrap runs and leaves its trace) needs a machine that has
-/// bubblewrap; the refusal does not, so on a machine without one — the GitHub runner, D-113 — the test asserts
-/// the refusal instead of printing "skipped" and leaving the A14 claim unchecked where CI runs.
+/// Removed execution settings refuse before starting a session, including with the compatibility flag.
 #[test]
-fn an_unisolated_shell_refuses_instead_of_running_on_the_host() {
-    let have_sandbox = teamagents_engine::tools::sandbox_usable();
-    let root = Scratch::new("isolation");
-    let (config_home, state, workspace, empty_bin) =
-        (root.join("config"), root.join("root"), root.join("ws"), root.join("empty-bin"));
-    std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
-    std::fs::create_dir_all(&workspace).unwrap();
-    std::fs::create_dir_all(&empty_bin).unwrap();
-    std::fs::write(
-        config_home.join("teamagents/config.toml"),
-        "[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\n\
-         api_key_env = \"TA_ISOLATION_KEY\"\nbase_url = \"http://127.0.0.1:1/v1\"\n\
-         \n[permissions]\nsandbox = \"bubblewrap\"\n",
-    )
-    .unwrap();
-
-    let run = |workspace: &std::path::Path, state: &std::path::Path, path: &std::path::Path| {
+fn retired_sandbox_configuration_refuses_before_starting_work() {
+    let root = Scratch::new("retired-sandbox");
+    let config = root.join("config/teamagents/config.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    for backend in ["none", "bubblewrap", "docker", "sbx", "ssh"] {
+        std::fs::write(&config, format!("[permissions]\nsandbox = \"{backend}\"\n")).unwrap();
         let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
-            .args(["exec", "--state-root"])
-            .arg(state)
-            .args(["--full-auto", "--json", "--timeout", "20", "--cwd"])
-            .arg(workspace)
-            // the check leaves a file in its cwd when it runs anywhere at all
-            .args(["--check", "touch ran-unisolated", "say hi"])
-            .env("XDG_CONFIG_HOME", &config_home)
+            .args(["daemon", "--full-auto", "--state-root"])
+            .arg(root.join("state"))
+            .env("XDG_CONFIG_HOME", root.join("config"))
             .env("XDG_STATE_HOME", root.join("xdg-state"))
-            .env("TA_ISOLATION_KEY", "test-value")
-            .env("PATH", path)
             .output()
-            .expect("run exec");
-        let printed = String::from_utf8_lossy(&output.stdout).into_owned();
-        serde_json::from_str::<serde_json::Value>(printed.trim())
-            .unwrap_or_else(|e| panic!("the run must print its JSON report ({e}): {printed:?}"))
-    };
-
-    let control_state = root.join("root-control");
-    if have_sandbox {
-        // Control first: the same command with the machine's own PATH runs inside the
-        // sandbox and really does leave the file — without this, the absence below would
-        // prove nothing (a check whose assertion cannot fail is not a check).
-        let control_workspace = root.join("ws-control");
-        std::fs::create_dir_all(&control_workspace).unwrap();
-        let host_path = std::env::var("PATH").unwrap_or_default();
-        let control = run(&control_workspace, &control_state, std::path::Path::new(&host_path));
-        assert_eq!(control["verification"][0]["ok"], serde_json::json!(true), "the control check runs: {control}");
-        assert!(control_workspace.join("ran-unisolated").is_file(), "and leaves its trace: {control}");
+            .unwrap();
+        assert!(!output.status.success());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains("removed") && error.contains("host execution"), "{backend}: {error}");
+        assert!(!root.join("state/daemon.sock").exists());
+        assert!(!root.join("state/session.sqlite").exists());
     }
-
-    // Then the refusal: no bwrap anywhere, so `which("bwrap")` fails inside the client
-    let report = run(&workspace, &state, &empty_bin);
-    let verdict = &report["verification"][0];
-    assert_eq!(verdict["ok"], serde_json::json!(false), "{report}");
-    let error = verdict["error"].as_str().unwrap_or("");
-    assert!(error.contains("IsolationUnavailable"), "the refusal names the isolation failure: {report}");
-    assert!(!workspace.join("ran-unisolated").exists(), "the check ran somewhere: {report}");
-    assert!(std::fs::read_dir(&workspace).unwrap().next().is_none(), "and it must have left nothing behind");
-    // D-471: with `sandbox = "none"` the check follows the session mode and really runs on the host, even
-    // where no sandbox exists (the same empty PATH).
-    std::fs::write(
-        config_home.join("teamagents/config.toml"),
-        "[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\n\
-         api_key_env = \"TA_ISOLATION_KEY\"\nbase_url = \"http://127.0.0.1:1/v1\"\n\
-         \n[permissions]\nsandbox = \"none\"\n",
-    )
-    .unwrap();
-    let host_workspace = root.join("ws-host");
-    std::fs::create_dir_all(&host_workspace).unwrap();
-    let host_state = root.join("root-host");
-    // the host mode runs the check with the host's own PATH (the empty bin exists to model "no bwrap", not to
-    // remove the tools the check needs)
-    let host_path = std::env::var("PATH").unwrap_or_default();
-    let host_report = run(&host_workspace, &host_state, std::path::Path::new(&host_path));
-    assert_eq!(host_report["verification"][0]["ok"], serde_json::json!(true), "{host_report}");
-    assert!(host_workspace.join("ran-unisolated").is_file(), "none mode runs the check on the host: {host_report}");
-    // `exec` detaches the daemon it starts — that is its contract, the session outlives the client — so the
-    // test has to stop both of them (the same rule the `Daemon` guard at the top of this file states): two
-    // leaked daemons per run stay behind, holding their coordinator locks, and the state root cannot be
-    // removed. Asserting they are gone is what keeps this from being a silent leak again.
-    for state in [&control_state, &state, &host_state] {
-        // no assertion here: the control state has a daemon only where the sandbox exists (`if have_sandbox`
-        // above), and this loop runs on both kinds of machine — the socket assertion below is what proves the
-        // stop worked. Stopping is still by pid, never by pattern (D-144/D-148/D-150).
-        let _ = stop_detached_daemon(state);
-    }
-    let mut alive = String::new();
-    for _ in 0..100 {
-        let output = Command::new("pgrep")
-            .args(["-f", &format!("daemon --state-root {}", root.display())])
-            .output()
-            .expect("pgrep");
-        alive = String::from_utf8_lossy(&output.stdout).into_owned();
-        if alive.is_empty() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    assert!(alive.is_empty(), "the daemons this test started are gone: {alive}");
-    std::fs::remove_dir_all(&root).expect("the state roots go away with their daemons");
 }
 
 /// `--full-auto` used to be parsed and thrown away by both entry points, so a
@@ -1673,18 +1534,7 @@ fn full_auto_reaches_a_started_daemon_and_is_reported_against_a_live_one() {
         "the daemon must stop so the test leaks nothing"
     );
 
-    // D-466: the mode is the sandbox key — `none` is the host, a backend is approved_scope.
-    // `--full-auto` still wins for one boot.
-    let write_config = |sandbox: &str| {
-        std::fs::write(
-            config_home.join("teamagents/config.toml"),
-            format!(
-                "[permissions]\nsandbox = \"{sandbox}\"\n\n[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\n\
-                 api_key_env = \"TA_FULL_AUTO_KEY\"\nbase_url = \"http://127.0.0.1:1/v1\"\n"
-            ),
-        )
-        .unwrap();
-    };
+    // D-480: ordinary boots and the legacy --full-auto flag both use host execution.
     let boot_with = |args: &[&str], state: &std::path::Path| {
         let mut command = Command::new(env!("CARGO_BIN_EXE_teamagents"));
         env(&mut command);
@@ -1694,14 +1544,11 @@ fn full_auto_reaches_a_started_daemon_and_is_reported_against_a_live_one() {
         assert!(stop_detached_daemon(state), "the daemon this test started is stopped by pid, not by pattern");
         greeting["permissions"].as_str().unwrap_or("").to_string()
     };
-    write_config("none");
-    assert_eq!(boot_with(&[], &root.join("configured")), "full_auto", "sandbox = none selects the host");
-    write_config("bubblewrap");
-    assert_eq!(boot_with(&[], &root.join("default")), "approved_scope", "a backend selects approved_scope");
+    assert_eq!(boot_with(&[], &root.join("configured")), "full_auto");
     assert_eq!(
         boot_with(&["--full-auto"], &root.join("flagged")),
         "full_auto",
-        "and the flag still asks for host execution for one boot"
+        "the compatibility flag still starts host execution"
     );
     let _ = std::fs::remove_dir_all(&root);
 }

@@ -22,7 +22,7 @@ is tabulated in [ACCEPTANCE](ACCEPTANCE.md) under "Requirements (Q1–Q19) and t
 | Q1 | Task success rate and long-horizon reliability at the same model and budget matter equally | Success rate, wrong completions, recovery correctness, cost and duration all count |
 | Q2 | Language and component boundaries may change if the design argues the choice | Free choice at the time; the user then selected the Rust-native architecture |
 | Q3 | Scope may be re-cut; deliver the kernel and the runtime first | Capabilities added to the first release are listed in Q6, Q12 and Q13 |
-| Q4 | Context, message and tool access are isolated by default; the host mode (`sandbox = none`) may bypass the logical boundary | Permissions are enforced at runtime; context isolation is never advertised as a security boundary between host processes of the same user |
+| Q4 | Context, message and tool access are isolated by default; host processes may bypass the logical boundary | Permissions are enforced at runtime; context isolation is never advertised as a security boundary between host processes of the same user |
 | Q5 | The Leader manages instances and connections by default and may delegate part of that authority | Authorized instances may communicate directly; instances never chat privately, collaboration goes through control-plane-granted messages and shared space |
 | Q6 | Ship a minimal user TUI for Leader conversation, progress, approvals, interruption and session history/switch/delete; the developer CLI owns comprehensive management (D-445/D-446) | One conversation, conditional approvals, distinct interrupt/quit and an optional session browser; member, task, goal, session and diagnostic controls remain scriptable |
 | Q7 | Closing the UI keeps work running, and the user can reconnect and intervene | The background runtime is independent of the front-end lifetime |
@@ -41,11 +41,11 @@ is tabulated in [ACCEPTANCE](ACCEPTANCE.md) under "Requirements (Q1–Q19) and t
 
 The user then selected the Rust-native architecture explicitly, replacing the earlier idea of LangGraph owning
 persistence. A team of one, governed communication, arbitrary connection topologies, a small model loop and
-long-horizon stability remain in force. D-466 updates D-41 into one key with two modes: `[permissions] sandbox = "none"` (the default) uses the host
-shell, while a configured backend runs `approved_scope` inside it and fails closed when unavailable. A service
-started by a successful command survives, timeout/cancellation stops the command's process group, and model
-credentials never enter the tool environment automatically. A Rust-native backend (Landlock + seccomp, with a
-DSec-style namespace/cgroup alternative) is designed in [RUST-SANDBOX.md](RUST-SANDBOX.md); it is not implemented.
+long-horizon stability remain in force. D-480 removes OS sandbox backends: Shell, acceptance commands and local
+MCP services run on the host, with no ordinary Shell approval. Capability grants, operation records, recovery
+and self-update approval remain. Successful commands may leave services running; timeout/cancellation stops
+the active process group. Provider credentials are not inherited automatically by tool processes. Same-user
+host execution can access files that process permissions allow, including session data.
 
 The first release targets a single machine and a single system user; the TUI, basic tools, MCP, Skills,
 multiple providers and on-demand multi-instance behaviour are all part of it. Distributed execution,
@@ -244,7 +244,7 @@ observe" never means "must inject into the model".
 
 The shared project directory counts as an explicitly granted resource, while isolated directories and
 worktrees are created on demand. Files in the shared project are readable by authorized instances anyway, so
-the design never claims that all information must pass through messages. the host mode (`sandbox = "none"`) keeps the
+the design never claims that all information must pass through messages. host execution keeps the
 logical isolation boundary the user accepted.
 
 Least privilege is measured by the effective scope and lifetime of a capability, not by the number of
@@ -425,9 +425,8 @@ receipt references. The gain of a compaction algorithm is measured separately, a
 never dressed up as an optimisation.
 
 A shell receipt carries whether the command actually started, the execution mode, cwd, exit code or signal,
-duration, output reference and the cancel/timeout reason. A failed isolation start is not a non-zero exit, and
-the host and sandbox modes keep separate working directories and environments. Verification runs in the same
-real target environment. A tool is available only when the current identity is allowed to execute it, and an
+duration, output reference and the cancel/timeout reason. Setup failures are distinct from non-zero exits.
+Cwd and exports persist per member in the host state namespace. Verification uses the host environment. A tool is available only when the current identity is allowed to execute it, and an
 environment failure is never probed by creating another instance with the same capability.
 
 MCP executes through the same permission, approval, budget, cancellation and receipt entry points; a server's
@@ -595,7 +594,7 @@ suite is never manufactured by deleting failing cases.
 | A11 | daemon and runner crash separately | reconnect when verifiable, otherwise record unknown; never restart just because a PID is missing |
 | A12 | a shell service outlives a CLI/TUI exit | keeps D-41's semantics for services started by a successful command |
 | A13 | cancel, timeout and completion races | one operation terminal state; cancellation never overwrites a real effect that happened |
-| A14 | bubblewrap unavailable | a classified `started=false` failure with no silent host fallback |
+| A14 | Host execution and retired sandbox configuration | host execution works; removed backend settings are rejected before work starts (D-480) |
 | A15 | inconsistent environment | verification runs in the real target environment and environment identity is traceable |
 | A16 | a required check fails or a deliverable is missing | no success; feedback into repair or BLOCKED |
 | A17 | artifacts change after a check | declared dependencies are invalidated; the actually verified version and the limits are reported |
@@ -630,7 +629,7 @@ adds a failed cancellation save that still stops the process best-effort and rep
 persisted state separately.
 
 Deterministic kernel/protocol behaviour is covered by sample tests, SQLite and process recovery by real
-processes, shell/bubblewrap by the real environment, and the TUI by logic tests plus PTY. At least one real
+processes, host shell by the real environment, and the TUI by logic tests plus PTY. At least one real
 mixed-provider path (DeepSeek plus another provider) is verified; providers without credentials are listed as
 unverified, and fake services never stand in for real conclusions. `make check` stays the single development
 entry point, while a full delivery additionally runs PTY, fault and authorized real-model acceptance.

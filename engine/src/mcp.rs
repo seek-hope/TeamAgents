@@ -91,43 +91,18 @@ enum Transport {
 }
 
 impl McpClient {
-    /// Binding authorizes the service; host execution requires an explicit mode.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "Preserve the existing transport API and its explicit isolation options."
-    )]
+    /// Binding authorizes the service, which runs on the host in the member workspace.
     pub fn connect_stdio_in(
         command: &str,
         args: &[String],
         env: &[(String, String)],
         root: &Path,
-        mode: &str,
-        network: bool,
         startup_timeout_s: u64,
         tool_timeout_s: u64,
     ) -> Result<Arc<Self>, String> {
         let root = root.canonicalize().map_err(|e| format!("MCP workspace unavailable: {e}"))?;
-        let mut cmd = match mode {
-            "workspace" => {
-                if let Err(reason) = crate::tools::sandbox_state() {
-                    return Err(format!(
-                        "IsolationUnavailable: MCP workspace execution requires a working sandbox: {reason}"
-                    ));
-                }
-                let mut argv = crate::tools::bwrap_argv(&root, network, "", None, &[]);
-                // Reuse the shell sandbox, replacing only its Bash invocation.
-                argv.truncate(argv.len() - 3);
-                let mut cmd = Command::new(&argv[0]);
-                cmd.args(&argv[1..]).arg(command).args(args);
-                cmd
-            }
-            "host" => {
-                let mut cmd = Command::new(command);
-                cmd.args(args);
-                cmd
-            }
-            other => return Err(format!("unsupported MCP execution mode {other:?}; use workspace or host")),
-        };
+        let mut cmd = Command::new(command);
+        cmd.args(args);
         cmd.current_dir(&root);
         cmd.env_clear();
         for key in INHERITED_ENV {
@@ -146,9 +121,6 @@ impl McpClient {
             .stderr(Stdio::inherit());
         for (key, value) in env {
             cmd.env(key, value);
-        }
-        if mode == "workspace" {
-            cmd.env("HOME", crate::tools::sandbox_home(false));
         }
         #[cfg(unix)]
         {
@@ -215,7 +187,7 @@ impl McpClient {
             client.startup_ms,
         ) {
             client.close();
-            return Err(format!("MCP {mode} initialization failed: {e}"));
+            return Err(format!("MCP host initialization failed: {e}"));
         }
         if let Err(e) = client.notify("notifications/initialized", json!({})) {
             client.close();
@@ -765,29 +737,14 @@ for line in sys.stdin:
             listener.local_addr().unwrap().port().to_string(),
             literal.into(),
         ];
-        if !crate::tools::sandbox_usable() {
-            // never degrade to unsandboxed execution: the workspace mode must fail
-            // outright (CI has no bwrap)
-            assert!(
-                McpClient::connect_stdio_in("/usr/bin/python3", &args, &[], &root, "workspace", false, 2, 3).is_err()
-            );
-            std::fs::remove_dir_all(dir).unwrap();
-            return;
-        }
-        for (mode, network, visible) in [("workspace", false, false), ("workspace", true, false), ("host", false, true)]
         {
-            let client =
-                McpClient::connect_stdio_in("/usr/bin/python3", &args, &[], &root, mode, network, 2, 3).unwrap();
+            let client = McpClient::connect_stdio_in("/usr/bin/python3", &args, &[], &root, 2, 3).unwrap();
             assert_eq!((client.startup_ms, client.tool_ms), (2000, 3000));
             let response = client.call("probe", json!({}), 3000).unwrap();
             assert_eq!(response["cwd"], root.display().to_string());
-            assert_eq!(response["outside"], visible);
-            assert_eq!(response["network"], network || mode == "host");
+            assert_eq!(response["outside"], true);
+            assert_eq!(response["network"], true);
             assert_eq!(response["literal"], literal);
-            if mode == "workspace" {
-                assert_ne!(response["home"], root.display().to_string());
-                assert_eq!(response["home_exists"], true);
-            }
             assert!(root.join("created").is_file());
             assert!(!root.join("injected").exists());
             let Transport::Stdio { child, .. } = &client.transport else { unreachable!() };
@@ -795,7 +752,6 @@ for line in sys.stdin:
             drop(client);
             assert!(!Path::new(&format!("/proc/{pid}")).exists(), "last client drop must reap the server");
         }
-        assert!(McpClient::connect_stdio_in("sh", &[], &[], &root, "automatic", false, 1, 1).is_err());
         std::fs::remove_dir_all(dir).unwrap();
     }
 

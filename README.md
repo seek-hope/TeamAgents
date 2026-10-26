@@ -2,7 +2,7 @@
 
 **You talk to the Leader, and the Leader builds the team on the spot.** A team-style agent product for the
 Linux terminal: you state a goal, the Leader recruits working instances, delegates tasks, coordinates them
-and reports back; you watch progress and approve anything that leaves the sandbox.
+and reports back; you watch progress and control team capabilities.
 
 - **Single source of truth**: one SQLite database per session (WAL with `synchronous=FULL`). Instances,
   tasks, grants, budgets, approvals, receipts and events commit in one transaction; crash recovery is
@@ -48,14 +48,14 @@ you ──goal (natural language)──▶ Leader ──spawn / delegate──�
                                    │  └────────── send ────────────┘  instances never talk
                                    │                    privately; collaboration goes through
                                    │                    control-plane-granted messages and shared space
-                                   ├── permission / approval request ──▶ you (only for out-of-scope work)
+                                   ├── permission / approval request ──▶ you (capability grants and self-update)
                                    └── finish: the goal is done when the Leader passes the completion checks
 ```
 
 - The TUI talks to the Leader; whether to split work and how many instances to use is the Leader's call
   (a team of one is legal). Direct member input and intervention are available through the developer CLI.
-- Every instance has its own model, tool bindings, workspace policy and budget. Work that exceeds its scope
-  becomes an **approval request** while the rest of the team keeps working.
+- Every instance has its own model, tool bindings, workspace policy and budget. Missing task capabilities
+  become **capability requests** while the rest of the team keeps working.
 - Runtime facts (who is doing what, where a task is stuck, why a turn ended) all land in the session
   database: queryable, recoverable, auditable.
 
@@ -80,9 +80,9 @@ you ──goal (natural language)──▶ Leader ──spawn / delegate──�
 - **Single source of truth**: one SQLite database per session (WAL with `synchronous=FULL`). Crash recovery
   is classified by persisted location — known results are reused, in-flight losses are recorded honestly
   (`OUTCOME_UNKNOWN`), and nothing is **replayed on a guess**.
-- **Permission gate**: `[permissions] sandbox` selects two modes — `none` (the default: host shell, no shell
-  approval) or a backend (`bubblewrap`/`docker`/`sbx`/`ssh`: approvals for out-of-scope work); an approval binds one concrete operation, its argument hash and its
-  permission revision, so it is used up by that single dispatch.
+- **Permission gate**: runtime capability grants decide which member may call a tool. Ordinary Shell runs
+  automatically on the host. Self-update requires user approval; recorded operation approvals remain bound
+  to one concrete operation, its argument hash and permission revision.
 - **Completion gate**: `finish` only accepts honest outcomes; the `[[checks]]` in **your own** config must
   actually pass before a goal can settle successfully. Project configuration is loaded when trusted, but
   cannot supply checks: acceptance policy remains user-owned (see *Configuration and team*).
@@ -97,8 +97,8 @@ you ──goal (natural language)──▶ Leader ──spawn / delegate──�
 - **User hooks (`[hooks]`)**: `notify` forwards events (`tool_call` / `team_action` / `run_*`) to your own
   program; `pre_tool` can veto any native tool call before it runs (exit 2 denies, stderr is the reason),
   and a broken hook only logs instead of stalling the team.
-- **Isolation**: `sandbox = "none"` (the default) runs on the host by design; a configured backend runs
-  instance shells inside it, and when it is missing the command fails loudly instead of silently degrading.
+- **Host execution**: Shell, acceptance commands and local MCP services use the host filesystem and network.
+  OS sandbox backends were removed in D-480; task authorization, records and recovery remain.
 
 D-451 adds explicit text/image attachments (`/attach PATH` or `exec --attach PATH`), workspace path
 completion, revision-checked pending input (`/queue` or `inputs`), browser search and complete local
@@ -109,7 +109,7 @@ capability delegation, optional operation auto-review and provider cache telemet
 
 ## Install
 
-Requirements: Linux (x86_64); a sandbox backend is optional (the default is `none`). Model credentials are read from environment variables and
+Requirements: Linux (x86_64). Model credentials are read from environment variables and
 never written into the config.
 
 ### Install the published release
@@ -147,13 +147,12 @@ This needs a Rust toolchain pinned by `rust-toolchain.toml`; add `--offline` onc
 
 ## Quick start
 
-The default `sandbox = "none"` needs no sandbox. If you want the bubblewrap backend, install it
-(Debian/Ubuntu: `sudo apt install bubblewrap`; other distributions are in the install guide), then run in one terminal:
+Run in one terminal:
 
 ```bash
 teamagents init                       # write a minimal config and prepare the state root; never overwrites
 export DEEPSEEK_API_KEY='your key'    # the default config uses DeepSeek; other services follow api_key_env
-teamagents doctor                     # config / credentials / state root / skills / isolation probes
+teamagents doctor                     # config / credentials / state root / skills / host execution
 teamagents --cwd /path/to/project     # your project directory; omit --cwd to use the current one
 ```
 
@@ -167,8 +166,8 @@ Then just state your goal:
 Make the tests under /tmp/proj pass and explain why each file changed.
 ```
 
-The Leader decides whether to split the work and who does what. It only interrupts you for approvals
-(out-of-scope commands, network access). The TUI keeps one conversation with the Leader. Use `Ctrl+A`
+The Leader decides whether to split the work and who does what. You decide capability requests and
+self-update approvals; ordinary Shell calls run automatically on the host. The TUI keeps one conversation with the Leader. Use `Ctrl+A`
 for pending approvals; developer management and diagnostics live in `teamagents --help` (D-445).
 
 For scripts and CI, use the headless entry point (`exec` shares the daemon with the TUI; `-` reads the
@@ -190,8 +189,7 @@ that closes the pipe (`| head`) ends the stream, not the run.
 
 Exit codes: `0` settled, `1` failed or unfinished, `3` an approval is pending (a headless run has nobody to
 answer it, so it reports instead of waiting), `124` the `--timeout` deadline passed, `2` usage or
-infrastructure (no daemon, no model profile). Each `--check COMMAND` runs after the turn ends, in order, through the session's shell mode (`sandbox =
-"none"`, the default, is the host) inside your workspace (`--cwd` or the current directory); the first failure
+infrastructure (no daemon, no model profile). Each `--check COMMAND` runs after the turn ends, in order, through the host shell; the first failure
 stops the list
 and makes the run fail. The verdicts are printed, written to `<state root>/verification.json` and included in
 the `--json` report as `verification`. Each `--accept ID=COMMAND`, by contrast, is attached to the *goal*
@@ -234,8 +232,8 @@ instead. Details, the full action vocabulary and the exit codes are in
 | `--model KEY` | pick a model catalog entry (default `leader_main`) |
 | `--every MINUTES` / `--prompt TEXT` | `automations add`: the period and the prompt each run submits (D-367) |
 | `--query TEXT` / `--limit N` | `sessions search`: the substring to look for and the most hits to return (default 20, D-368) |
-| `--full-auto` | user-only full-auto mode (out-of-scope work is approved instead of requested); it applies to the session this command starts — a session that is already running keeps the mode it booted with, and the client prints that mode instead of pretending |
-| `init` / `doctor` / `daemon` / `daemon --stop` / `exec` / `authority` / `approvals` / `instances` / `tasks` / `runners` / `artifacts` / `sessions` / `automations` / `version` / `--help` | config and state root / self-check (config, credentials, state root, skills, goal limits, checks, hooks, sandbox mode) / run the daemon alone (its output goes to `<state root>/daemon.log`) / stop the session that owns this state root, addressed by its socket (no pid; `--cwd`/`--model`/`--full-auto` are refused) / headless input / list, grant and revoke capabilities / list and decide approvals / pause, resume, interrupt, terminate, merge a worktree member's branch and list instances / list and cancel tasks / list the job runners a state root still carries and ask the settled ones to retire / list a state root's artifacts (bytes, owner, presence) and collect the ones nothing references (`runners stop --service --yes` instead signals the process group a settled command left behind) / list, create, fork, rename, restore, search, archive and delete named sessions under the base (D-364/D-365/D-368) / list, create, pause, resume and delete schedules that start a goal on their own (D-367) / version / usage |
+| `--full-auto` | compatibility flag; ordinary new sessions already use automatic host Shell. An older running daemon keeps its boot behavior until explicitly restarted |
+| `init` / `doctor` / `daemon` / `daemon --stop` / `exec` / `authority` / `approvals` / `instances` / `tasks` / `runners` / `artifacts` / `sessions` / `automations` / `version` / `--help` | config and state root / self-check (config, credentials, state root, skills, goal limits, checks, hooks, host execution) / run the daemon alone (its output goes to `<state root>/daemon.log`) / stop the session that owns this state root, addressed by its socket (no pid; `--cwd`/`--model`/`--full-auto` are refused) / headless input / list, grant and revoke capabilities / list and decide approvals / pause, resume, interrupt, terminate, merge a worktree member's branch and list instances / list and cancel tasks / list the job runners a state root still carries and ask the settled ones to retire / list a state root's artifacts (bytes, owner, presence) and collect the ones nothing references (`runners stop --service --yes` instead signals the process group a settled command left behind) / list, create, fork, rename, restore, search, archive and delete named sessions under the base (D-364/D-365/D-368) / list, create, pause, resume and delete schedules that start a goal on their own (D-367) / version / usage |
 
 Conversations render Markdown, fenced code, lists and tables, with distinct user messages and compact
 tool results. `Ctrl+O` expands or folds tool previews; full stored content remains in the session page (D-447).
@@ -273,12 +271,12 @@ see the [developer command map](docs/USER-GUIDE.md#1-quick-start).
   Models, tools, skills paths and instruction files then merge in (your definitions win); permissions, hooks,
   checks, retention, limits and update policy stay yours. `doctor` reports the trust/merge result.
   Instruction files may be listed explicitly; a trusted repository's `AGENTS.md` files are also discovered from
-  its boundary down to the working directory (D-467). The sandbox may be none, bubblewrap, Docker, Docker Sandboxes (`sbx`) or SSH.
+  its boundary down to the working directory (D-467). Shell and local MCP services execute on the host.
 - A model profile selects its wire format with `protocol = "responses" | "anthropic" | "openai" |
   "deepseek"`; `base_url` plus `model` decide the actual service, and credentials are only referenced by
   environment-variable name.
 - `[[checks]]` in the user config (never in a project file) are the machine contracts a goal must satisfy:
-  the runtime runs them through the session's shell mode at the completion boundary (D-471), so a failing check
+  the runtime runs them through the host shell at the completion boundary (D-480), so a failing check
   returns the work
   for repair instead of letting a summary claim success.
 - The Leader forms the team at runtime (`spawn` / `delegate` / `send` / `wait`); there is no static team
@@ -290,8 +288,8 @@ see the [developer command map](docs/USER-GUIDE.md#1-quick-start).
 
 - Linux x86_64 is the supported distribution target; v0.2.0 is the first public release. There is no supported
   Windows/macOS build, distributed instance protocol or built-in browser automation.
-- A selected sandbox backend fails closed when unavailable. SSH runs a remote
-  shell, not a distributed agent, and does not guarantee remote cancellation or enforce network isolation.
+- Shell has the user's host filesystem and network access. Old sandbox configuration must be removed
+  explicitly; existing sessions, VM data and system packages are preserved.
 - Controlled daily coding use is possible; equivalence to Pi as a sole general-purpose driver remains
   unestablished. Read-only work diagnostics and explicit recovery are available in CLI/TUI (D-461), without
   automatic model reminders. Remaining priorities are development/skill environments and paired coding

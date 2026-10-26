@@ -12,24 +12,20 @@ The code's generated references are four documents, each checked against the cod
 <!-- maps: docs/EVENTS.md reader=developer -->
 <!-- maps: docs/PROTOCOL.md reader=developer -->
 <!-- maps: docs/TOOLS.md reader=developer -->
-<!-- maps: docs/RUST-SANDBOX.md reader=developer -->
+<!-- maps: docs/RUST-SANDBOX.md reader=evidence -->
 
-The sandbox's Rust-native backend is designed in [RUST-SANDBOX.md](RUST-SANDBOX.md): the contract a backend owes
-(Landlock+seccomp vs a DSec-style namespaces/cgroups design), its bounded acceptance plan and its non-claims.
-It is a design note; no fourth backend is implemented.
+[RUST-SANDBOX.md](RUST-SANDBOX.md) is a retired design note, preserved as historical evidence.
+D-480 removed OS sandbox functionality; it is not a candidate implementation plan.
 
 ## Environment and the single entry point
 
 Work from the repository root. `rust-toolchain.toml` pins the Rust version, Clippy and rustfmt; the local
 machine and both GitHub workflows read the same pin. After installing Rust through rustup, the first Cargo
-run prepares the toolchain. The Linux isolation checks also need a working bubblewrap, and the real-terminal
-check needs Python 3.
+run prepares the toolchain. The real-terminal check needs Python 3. Shell and local MCP tests run on the host.
 
 ```bash
 make check CARGO_FLAGS=--locked   # first run may download dependencies, keeping the lock files
 make check                        # afterwards: --offline --locked by default
-make check-nobwrap                # the same gate with the GitHub runner's condition: no bwrap in PATH (D-113)
-make check-broken-sandbox         # ... and with a bwrap that cannot start a sandbox (Ubuntu 24.04 default, D-114)
 make fmt                          # apply the shared formatting
 make build                        # build the CLI and the TUI into the usual target paths
 make pty                          # terminal-profile matrix in isolated ptys, no model credentials
@@ -105,7 +101,7 @@ excludes exactly the two documented exceptions (`README.zh-CN.md` and the frozen
 are errors. CI uses the same make targets and may only download the locked dependencies; the release workflow
 uses the same Rust version.
 A green Cargo run can include tests that returned early for a missing dependency, so it never substitutes for
-real isolation or real-model acceptance.
+real-service or real-model acceptance.
 
 ### Evaluation and probe entry points
 

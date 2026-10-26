@@ -10,7 +10,7 @@ recorded experiments are not instructions for the current product.
 ```bash
 teamagents init                      # write the config (kept if it exists) and prepare the state root
 export DEEPSEEK_API_KEY=...          # the environment variable named by api_key_env
-teamagents doctor                    # config, credentials, running session, sources and selected isolation
+teamagents doctor                    # config, credentials, running session, sources and host execution
 teamagents doctor environment        # explicit host vs configured-environment executable discovery
 teamagents                           # open the TUI (starts this session's daemon when needed)
 ```
@@ -165,13 +165,13 @@ teamagents                           # open the TUI (starts this session's daemo
   overrides on, and a key this build does not serve is refused with the `docs/CONFIG.md` pointer rather than
   ignored. A session already running keeps the settings it booted with, so the same rule as `--cwd` applies:
   stop that daemon or use another `--state-root`.
-- **A session owns its workspace and permission mode**: both are fixed when the daemon boots (`--cwd DIR`,
-  `--full-auto`), so a client that joins a session already running keeps that session's settings and prints
+- **A session owns its workspace and execution settings**: these are fixed when the daemon boots
+  (`--cwd DIR`), so a client that joins a session already running keeps that session's settings and prints
   them (`note: a session is already running for this state root in … mode` / `that session works in …`).
   Starting a client with a different `--cwd` against a live session therefore does not move it — stop that
   daemon or use another `--state-root`. Sessions are not automatically grouped/selected by repository;
   select a named session deliberately. The interactive model/effort switch is Ctrl+M or `/model` (D-473).
-  A `--cwd` that is not an *existing directory* is different: it can never be honoured (the session confines every file and shell command to it), so `exec`, the TUI and
+  A `--cwd` that is not an *existing directory* is different: it can never be honoured (file tools need a workspace root and Shell needs an initial cwd), so `exec`, the TUI and
   `daemon` refuse it outright with `--cwd … is not a directory` instead of booting a session whose workspace
   no tool can resolve.
 - **State root**: `$XDG_STATE_HOME/teamagents/v2/` (default `~/.local/state/teamagents/v2`), where
@@ -209,8 +209,7 @@ happened. Diagnostics go to stderr, the outcome to stdout (`--json` prints one J
   follow. A consumer that closes the pipe (`teamagents exec --stream-json … | head -3`) ends the stream, not
   the run: the run still finishes and keeps its own exit code, with no write error.
 - **`--check COMMAND`** (repeatable): your own acceptance command, run after the turn ends in order through the
-  session's shell mode (`sandbox = none`, the default, runs it on the host; a configured backend runs it inside
-  that backend) inside your workspace (`--cwd`, else the current directory). The first failure
+  host shell inside your workspace (`--cwd`, else the current directory). The first failure
   stops the list; the verdicts are printed, written to `<state root>/verification.json` and included in the
   `--json` report. A failed check makes the run fail (`1`) even when the goal itself settled. Checks are
   skipped when the turn is not finished — the run stopped for an approval, your own `--timeout` deadline
@@ -356,10 +355,9 @@ trust_project = true                              # any repository
 A `trusted_projects` entry is matched against the repository's **canonical** path, so a symlinked checkout and
 its target are the same decision, `/repo` does not trust `/repo/sub` or `/repo-two`, and an entry that resolves
 nowhere trusts nothing. With the opt-in the repository's model profiles, tool bindings, `skills_paths` and
-`instruction_files` merge in, and your own definitions of the same name win; `[permissions]` (the mode and both
-trust keys), `[hooks]`, `[[checks]]`, `[retention]`, `[limits]` and `[update]` can only come from your config, so a
-cloned repository cannot install a command that runs without an approval prompt, delete data, raise a ceiling
-you set or grant itself trust. `doctor`'s `project config` row says what the merge did **and which source
+`instruction_files` merge in, and your own definitions of the same name win; `[permissions]` (trust and operation-review keys), `[hooks]`, `[[checks]]`, `[retention]`, `[limits]` and `[update]` can only come from your config, so a
+cloned repository cannot define hooks, checks or retention policy, raise a ceiling you set or grant itself
+trust. Trusted tool bindings can start host programs; inspect a repository before granting it trust. `doctor`'s `project config` row says what the merge did **and which source
 trusted it** (`trusted via trusted_projects:/path`), with a `[WARN]` and one reason per refused entry when
 nothing landed; the daemon writes the same line into `<state root>/daemon.log`. The rest of this section
 describes your own config.
@@ -390,19 +388,16 @@ api_key_env = "DEEPSEEK_API_KEY"
 - `teamagents doctor` checks the config item by item, that every model profile's credential resolves, the
   state root (stamp, WAL, read/write) and the paths under it (a directory where `session.sqlite` or
   `daemon.sock` belongs — D-228), the daemon socket path's length (Linux's 108-byte `sun_path` limit,
-  which a deep state root can cross — D-227), the configured isolation probe and that the programs named
+  which a deep state root can cross — D-227), host execution and that the programs named
   in `[hooks]` are executable; it also lists the `[[checks]]` that will gate every goal. An `sessions/` layout
   from an earlier release is reported explicitly and is never migrated. If a daemon is already running, doctor
-  reads its actual workspace/backend and configuration-change status without starting a new session.
-- `teamagents doctor environment --cwd DIR [--json]` compares Rust/Cargo, Node/npm, Python/pip and Git
-  locations on the host and in the currently configured environment (D-479). This is a fresh-shell PATH
-  inspection, not a version/build test or a view of a running member's saved exports. Missing tools appear
-  individually; a failed or incomplete backend probe exits 1 and retains the error with a recovery hint.
-  No model is called, dependencies installed, network policy changed or host fallback attempted. Each probe
-  is limited to 20 seconds and 32 KiB. An existing sbx sandbox is required: the report supplies its name and
-  the explicit create recipe if needed; `sbx exec` can start a stopped sandbox. Docker image pulls are disabled.
-  Backend shell startup profiles retain their normal behavior. This command takes current configuration,
-  so `--state-root`, `--session`, `--full-auto`, `--model` and `-c` overrides are refused.
+  reads its actual workspace/execution and configuration-change status without starting a new session.
+- `teamagents doctor environment --cwd DIR [--json]` discovers Rust/Cargo, Node/npm, Python/pip and Git
+  locations on the host (D-479, D-480). This is a fresh-shell PATH inspection, not a version/build test or a
+  view of a running member's saved exports. Missing tools appear individually; failed or incomplete probes
+  exit 1 with an error and recovery hint. No model or discovered executable is run, and no dependencies or
+  environment settings are changed. Each probe is limited to 20 seconds and 32 KiB. The command refuses
+  --state-root, --session, --full-auto, --model and -c overrides.
 - The TUI `/help` and `teamagents status --json` expose the running session's environment. Editing config
   does not hot-reload it: a changed-file warning requests an explicit stop and restart of that daemon.
   An unavailable comparison is reported separately. Preserve the same workspace, state root/session and
@@ -446,10 +441,9 @@ id = "tests"                     # stable id: appears in failures and repair fee
 command = "cargo test --offline" # run through the same shell tool the model uses
 inputs = ["src", "Cargo.toml"]   # optional: hashes bind the result to these inputs (A17)
 timeout = 900                    # optional seconds (default: the shell tool's own)
-network = false                  # optional: the sandbox is offline by default
 ```
 
-- The runtime runs them through the session's shell mode at the completion boundary (D-471), so a goal cannot
+- The runtime runs them through the host shell at the completion boundary (D-471, D-480), so a goal cannot
   settle while a check fails. A failure returns the work for repair (bounded rounds) and then blocks the goal with the
   failing ids; the check's output lands in the conversation as a tool result.
 - `inputs` are workspace-relative paths without `..` escapes. Their hashes are taken when the check runs and
@@ -617,7 +611,7 @@ pre_tool = ["/home/you/bin/policy.sh"]            # policy hook before tool call
   outcomes, and the required checks you define must really pass.
 - **Required checks** come from `[[checks]]` in your config (§2.1) and are carried on the goal itself
   (`create_goal limits.required_checks`, which only the user or the project bootstrap may predefine). The
-  runtime runs them through the session's shell mode at the completion boundary (D-471): a failure sends the
+  runtime runs them through the host shell at the completion boundary (D-471, D-480): a failure sends the
   work into a bounded
   repair loop and then blocks the goal with the failing ids. Their output appears in the conversation like any
   other tool result, so the reason is visible instead of reported as an unexplained "done".
@@ -698,85 +692,39 @@ and the short grant id; task delegation relationships are available through `tea
 
 ## 4. Permissions and isolation
 
-| Mode | Behaviour |
-|---|---|
-| `sandbox = "none"` (default) | Host shell: the command runs as you, with your filesystem and network; there is no shell approval gate |
-| `sandbox = "bubblewrap"` / `"docker"` / `"sbx"` / `"ssh"` | `approved_scope`: the command runs inside that backend; network access and out-of-scope writes need user approval, bound to the concrete operation and its argument hash |
+Shell, acceptance commands and local MCP services run on the host with the user's filesystem and network
+access (D-480). Ordinary Shell calls execute automatically, without per-operation approval. Capability grants
+still decide which members may call tools. File tools retain their workspace path checks; these do not restrict
+what an authorized host Shell can access. Hooks may veto calls, and self-update still requires user approval.
 
-`sbx` is Docker's official Sandboxes CLI (microVM), separate from the `docker` container backend. Install
-`sbx`, run `sbx login`, then set `sandbox = "sbx"`; `sandbox_sbx_name` optionally names the sandbox, otherwise
-TeamAgents derives one per workspace and creates it with `sbx create ... shell <workspace>`. Commands run through
-`sbx exec`; the sandbox owns its own kernel, Docker daemon and network policy. TeamAgents refuses `network = true`
-under `sbx` (configure the sandbox's `sbx policy` instead) and workspace MCP, and it does not delete the sandbox
-automatically—use `sbx rm NAME` when you are done.
+Sandbox backends were removed. Delete permissions.sandbox and sandbox_* entries from old user configurations;
+even the old none value is rejected with a migration message. Local MCP defaults to host execution;
+mcp_execution may be omitted or set to host. The old workspace value and mcp_network setting are rejected.
+Check configuration no longer accepts network. No package uninstall, VM removal or network-policy change is
+performed by this migration. Existing session history and receipts remain readable.
 
-A service a command leaves behind (`dev-server &`) belongs to **you**, not to the session: the product does not
-adopt it, does not restart it and does not clean it up when the client, the daemon or the member exits — that is
-the deliberate half of D-41, and the runner that owned the command's process group is retired once the job
-settles (D-112). Stop such a service the way you would from a shell: have the command print its pid (`sleep 300 &
-echo $!`) and `kill` it, or keep the command short-lived. What the session *does* stop is the command itself —
-`instances terminate` cancels an operation that is still running, and its receipt says `class: cancelled`.
+The --full-auto flag remains accepted for existing scripts and has the same effect as an ordinary new boot.
+An already running older daemon retains its own boot behavior until explicitly stopped and restarted. Stop it
+with teamagents daemon --stop before applying the new binary and configuration to that session.
 
-The mode belongs to the **session**. The flag (`teamagents --full-auto`, `teamagents --full-auto --state-root …`,
-`teamagents daemon --full-auto`) asks for host execution for that boot; otherwise `sandbox` in `[permissions]` of
-**your own** config selects it for the sessions you start:
+Bash starts without login profiles, inherits a controlled environment including host PATH/HOME and explicit
+Rust toolchain locations, and preserves cwd/exports per member. Old isolated shell snapshots are not loaded as
+host state. Use teamagents doctor environment to discover host tools; discovery does not prove a build works.
+Provider credentials are excluded from automatic environment inheritance. Host commands can still read files
+allowed by the user's OS permissions: operation records are not tamper-proof and do not provide file rollback.
 
-```toml
-[permissions]
-sandbox = "none"              # the default: host shell. Or "bubblewrap" / "docker" / "ssh" for approved_scope
-# approvals_reviewer = "auto_review"  # operation approvals go to a read-only reviewer instead of the user
-# reviewer_model = "leader_main"       # optional; the member's model is the fallback
-# sandbox_image = "debian:stable-slim"   # required for docker; the image must be present locally
-# sandbox_ssh_target = "user@host"       # required for ssh: one destination, or an alias from ~/.ssh/config
-# sandbox_ssh_workdir = "/srv/work"      # optional for ssh: where the remote command runs (default: the session's own path)
-# sandbox_ssh_options = ["-p", "2222"]   # optional for ssh: extra argv for the client (port, key, jump host)
-```
+A service a successful command leaves behind belongs to the user and can outlive the client or daemon. Record
+its PID, redirect its input/output and stop it explicitly. Instance termination cancels an active operation;
+a task cancellation alone does not stop its process. Timeout/cancellation targets the active process group,
+not deliberately detached sessions.
 
-`approvals_reviewer = "auto_review"` is a middle ground between asking for every operation and the host mode: the
-runtime sends the exact parked operation and recent user context to a separate, read-only reviewer, which may
-allow or deny it. It does **not** approve capability requests (those remain user-only) and it is not a security
-boundary; a failed review leaves the approval pending, so a headless run exits 3 without an effect. The audit
-event is `approval_reviewed`. The host mode (`sandbox = "none"`) bypasses it entirely. The review has a 30-second timeout;
-its model usage is not yet charged to the goal, so goal totals and token limits do not cover that extra
-spend. The deterministic hard-denial layer is a substring check, not a complete shell-policy parser.
-Treat auto-review as an opt-in convenience, not evidence that arbitrary unattended commands are safe.
-
-`sandbox` selects the mode: `none` (the default) runs on the host; `bubblewrap`, `docker` (which also needs
-`sandbox_image` naming a locally present image) or `ssh` (which needs `sandbox_ssh_target` and runs the command
-on that host) run `approved_scope` inside that backend. A missing or unusable backend refuses the command (`IsolationUnavailable`, or the ssh
-client's own connection error) — **it never runs on the host**, and `doctor` reports the selected backend.
-Workspace MCP servers are not served under `docker` or `ssh` yet (`mcp_execution = "host"` or bubblewrap).
-A Rust-native backend is designed in [RUST-SANDBOX.md](RUST-SANDBOX.md) but not implemented.
-
-What `ssh` does not promise, because a reader of the setting is owed the statement: it is not a namespace —
-`network = false` cannot be enforced on the remote, and a cancelled call may leave the remote process running
-(killing the local `ssh` closes the channel, it does not signal the far side). Its shell state (the `cwd` and
-exports a command leaves behind) lives on the **remote**, under a path derived per session, so two sessions on one
-host do not share it. `ssh_workdir` exists because the session's own path may not exist on the other machine: the
-`cd` fails loudly rather than running the command somewhere else.
-
-A project file can never set the mode (only your user config is read for it), and nothing a model says changes
-it. A client that
-finds a session already running keeps that session's mode and prints which one it is, so
-`teamagents exec --full-auto` against a live `approved_scope` session reports
-`a session is already running for this state root in approved_scope mode` instead of silently ignoring the
-flag. To switch
-modes, stop that daemon (§1: `teamagents daemon --stop`, or SIGTERM to its pid, or Ctrl-C where you started it
-by hand) or use another `--state-root`.
-
-When bubblewrap is unavailable this is a **classified failure** (`started=false`); the command never falls
-back silently to host execution.
-
-The default sandbox hides the host home and uses a sanitized PATH. Rust toolchains and selected Cargo
-cache directories are explicitly mounted read-only; credential-bearing Cargo config files are not mounted.
-User-home nvm, pyenv, Conda, uv and Go installations/caches are not automatically exposed. System or
-workspace-local tools may work, but verify your actual build/test commands in the configured environment.
-A missing development tool is an environment issue, not an implicit authorization to switch to full_auto.
+The existing approvals_reviewer/reviewer_model settings govern operation approvals that actually exist;
+ordinary Shell creates none in new production sessions. Capability requests and self-update approval remain
+user decisions. Historical automatic-review measurements are not renewed by this change.
 
 ### 4.1 Approving a call from the CLI (D-67)
 
-In the sandbox mode an out-of-scope call parks on **your** decision, and the operation is bound
-to it — the hash of the exact command or arguments is part of it, so a modified call needs a new decision
+A pending operation approval is bound to one concrete operation — the hash of the exact command or arguments is part of it, so a modified call needs a new decision
 (§6.2).
 
 ```bash
@@ -787,10 +735,9 @@ teamagents approvals deny --id ap-d-req-4caeb0c6       # fails closed; the model
 
 In the TUI the same decision is one key: a pending approval appears in the approvals box (the status
 line and the footer count it), **`Ctrl+A`** focuses that box, `↑`/`↓` pick an entry, **`a`** approves and
-**`d`** denies, `Esc` returns to the composer. Measured with a real model (`python3 review/dogfood/approval.py`,
-D-89): approving runs the call (its artifact appears), the box drops the id and nothing stays pending;
-denying never runs it, the operation lands `CANCELLED` with a receipt whose class is `denied`, and the model
-is told.
+**`d`** denies, `Esc` returns to the composer. D-89's real-model Shell approval probe is historical and was
+removed in D-480. Current ordinary Shell calls create no approval; the surface remains available for
+self-update and historical pending operations.
 
 An id must name a *pending* approval (a typo is refused before anything is decided), the full id or an
 unambiguous prefix is enough, and `--json` prints the raw report. Exit codes match `teamagents authority`:
@@ -931,13 +878,12 @@ teamagents goals cancel --id g-spent    # close a goal nothing can spend (its ce
   reads used for its prompt. This observation is empty after driver restart until another assembly occurs;
   it does not prove a provider consumed the request. Doctor checks current files, not historical reads.
   Skill roots are discovery sources; individual Skill content is still read on demand, and host discovery
-  does not imply a Skill script or its dependencies are available in the selected backend.
+  does not imply a Skill script or its dependencies work with the host shell PATH.
 - **Skill resource boundary**: search matches names/descriptions and returns at most ten hits; `read` returns
   at most 32,000 characters of SKILL.md text. Add `path` to read one support file relative to the skill's
   directory: it must stay inside that directory (absolute paths, `..`, symlinks that leave it, directories and
   credential-shaped names such as `.env`/`id_rsa`/`*.pem` are refused) and is truncated at 32,000 characters.
-  The configured skill roots are mounted read-only at `/skills/<n>` inside the bubblewrap sandbox, so a skill's
-  scripts and assets can run there; docker, sbx and ssh do not mount them (the tool read still works on the host).
+  Skill scripts and assets use their host paths; executing them still requires the corresponding capability.
   A loaded instruction is never a grant to read the host home or execute arbitrary host scripts.
 - The tools themselves — every function a model may be offered, with its parameters and the model-facing
   description, split by the layer that decides it (the profile's tools, the instance's grants, the session's
@@ -1016,15 +962,10 @@ teamagents goals cancel --id g-spent    # close a goal nothing can spend (its ce
   (a remote URL is refused), but this codemode path reports an image as a short marker rather than native
   image content. That limit does not apply to explicit image attachments or view_image with an image-capable
   model; those have their own native image path.
-- **Where a stdio server runs** is your choice, and the default is the safe one (D-106):
-  `mcp_execution = "workspace"` starts the server inside bubblewrap, with the member's workspace as its working
-  directory — it cannot read or write host paths outside that workspace, its `HOME` is a private directory, and
-  it has no network at all unless you also set `mcp_network = true` (a server that must call an API needs that
-  switch; the default keeps a package-manager or config-fetching server from reaching the network by itself).
-  `mcp_execution = "host"` runs the server as yourself, with your whole filesystem and network: only for a server
-  you trust, and the same choice a shell makes when the session runs `--full-auto` (D-41). Without bubblewrap the
-  workspace mode **refuses to start** — the instance parks naming the isolation — rather than quietly running the
-  server on the host.
+- **Local stdio servers run on the host**, with the member workspace as cwd and a controlled inherited
+  environment. Explicit binding.env values are layered on top. The default and only mcp_execution value
+  is host; old workspace/mcp_network configuration is rejected. The service has the user's filesystem and
+  network access. Remote SSH functionality supplied by an MCP service remains available.
 - A server that stops answering is bounded the same way (D-108). `startup_timeout_s` (default 60) covers the
   handshake: if `initialize` does not answer inside it, the boot fails, the instance parks with
   `MCP … initialization failed: MCP initialize timed out`, and the server is killed instead of left behind.
@@ -1077,7 +1018,7 @@ prove a command stopped. Missing historical reasons remain unavailable. No autom
 | `the daemon exited while starting (exit status: 1): …` | The reason is the daemon's own first words; the full log is `<state root>/daemon.log` (usually a missing/broken config or an unset credential) |
 | `exec: the leader instance i-leader is PARKED …` | The leader stopped on a permanent failure and nothing drives it. The client reports the park as soon as it sees it, with the runtime's own reason (D-164; the same sentence is the TUI's system note and a `daemon.log` line): exit 1 when the input was already submitted (it is waiting — resuming the instance runs it) or exit 2 with "nothing was submitted" when the park was visible before submitting. Fix the cause, then `teamagents instances resume --id i-leader`, or start a fresh state root. A **TERMINATED** leader is different: termination is final, so `exec` says so and the only way on is a fresh state root (D-82) |
 | `exec` reports `check 1: FAILED` | Your own `--check` command failed; its output is on stderr and in `<state root>/verification.json` |
-| `exec` exits 3 | A tool call needs approval and a headless run cannot answer it. Approve it in the TUI and run `exec` again, or start the daemon with `--full-auto` |
+| `exec` exits 3 | An operation needs approval and a headless run cannot answer it. Decide it in the TUI or with `teamagents approvals`, then run `exec` again. The compatibility `--full-auto` flag does not bypass self-update approval |
 | `doctor` reports the state root as FAIL | That path does not hold a current session database, and the row says which: a path that is a file where a directory belongs (D-166), a file that is not a database, or a format/version stamp mismatch. Use another `--state-root` or follow the message, and never edit the database by hand |
 | The agent worked in the wrong directory | Its session was started with another workspace (or without `--cwd`): the client prints the live one. Stop that daemon (§1: `teamagents daemon --stop`, which needs no pid) or start a fresh `--state-root` with `--cwd DIR` |
 | The model returns 401/402 | Check the environment variable named by the profile's `api_key_env`; `doctor` lists the credential resolution result per profile |
@@ -1085,7 +1026,7 @@ prove a command stopped. Missing historical reasons remain unavailable. No autom
 | A worktree member finished and I want its work in my tree | `teamagents instances merge --id <member>` (D-252). It refuses while the member has a turn in flight or its checkout has uncommitted changes, and reports a conflicting merge with git's message, leaving the merge in progress |
 | A member is stuck in a long or endless command and cancelling its task changed nothing | `tasks cancel` is delegation-level and does not touch the assignee's operation (D-88). Stop the work with `teamagents instances terminate --id … --yes` (the process group dies within seconds, and the receipt says `class: cancelled`) or wait for the command's own tool timeout. If it is the *thinking* you want to stop rather than a running command, `teamagents instances interrupt --id …` cancels just the current turn (D-363) |
 | An instance is parked | `teamagents instances` shows which **and why** (the reason rides on the row, D-165); resume it with `instances resume --id` once that cause is gone |
-| A command under a configured sandbox waits for approval | Decide it with `teamagents approvals` (§4.1) or in the TUI approvals panel; `--full-auto` (host execution, D-41) skips the gate |
+| An operation approval is pending | Decide it with `teamagents approvals` (§4.1) or in the TUI approvals panel; ordinary Shell creates no approval in new production sessions |
 | A command left a service running (`dev-server &`) | By design the session does not manage it (D-41/D-112): it survives the client, the daemon and the member. Stop it yourself with the pid the command printed (`sleep 300 & echo $!`, then `kill <pid>`), or start such work in a command that exits when you are done. `instances terminate` stops an *operation that is still running*, not a service left behind by one that finished |
 | A member says it cannot run shell commands although you granted it | Turn the offer into a witness: start the session with `TEAMAGENTS_LOG_SURFACE=1` and the driver writes one line per request into `<state root>/daemon.log` — `driver: surface <instance> shell=yes\|no tools=…`. `shell=no` after a live `authority grant` is a bug worth reporting; `shell=yes` with no attempt means the model had the tool and did not use it (§3.1, D-143/D-157) |
 | `exec: the daemon's socket was lost …` | The daemon stopped while this run was waiting — by your own `kill` (§1) or because it crashed. The session and its committed state are kept: start it again (`teamagents` or `exec`) and the work is where it was (D-150) |
