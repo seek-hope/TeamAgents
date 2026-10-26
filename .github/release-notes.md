@@ -1,56 +1,39 @@
-> TeamAgents **v0.2.0** is the first public release: Linux x86_64, musl-static, and no Rust toolchain
-> is needed to run the published archive.
+> These notes describe current source for a future release. They are not the body of the published v0.2.0
+> release and do not authorize a new tag or publication.
 
-The notes below describe current source, including changes after the published v0.2.0 archive.
-They do not mean that the existing release or its artifacts have been replaced.
+### Current source highlights
 
-### Current source changes
+- One authoritative SQLite database per session, with tasks, grants, budgets, approvals, receipts and events
+  committed together. Recovery reuses verified results and records unknown outcomes without blind replay.
+- One daemon per session. The TUI and `teamagents exec` use its Unix-socket JSON protocol and resume from the
+  last event watermark.
+- Governed teams through `spawn`, `delegate`, `send` and `wait`, with shared, private and Git-worktree
+  workspaces and explicit task-scoped capability delegation.
+- Chat Completions, DeepSeek, Responses and Anthropic profiles in one session, with per-model native context
+  windows and configurable reasoning efforts.
+- Host Shell, acceptance commands and local MCP services. Ordinary Shell needs no per-call approval; task
+  capability checks and self-update approval remain. Retired sandbox settings are rejected during migration.
+- File tools, persistent Shell state, DeepSeek web tools, Skills, stdio/HTTP MCP and QuickJS `codemode`
+  composition. Hooks can report events or veto native tool calls.
+- Trusted `AGENTS.md` discovery, bounded Skill support files, disjoint multi-file edits and parallel read-only
+  batches.
+- Attachments, pending-input editing, follow-up queues, session search/fork/export, an external editor and
+  read-only work diagnostics with explicit recovery instructions.
+- Markdown and syntax-colored code, Mermaid/SVG/DOT diagrams and local image previews. Kitty graphics and
+  portable text/block fallbacks share a source view.
+- Host environment discovery, boot-scoped config/source observations and input-delivery receipts. Delivery
+  does not imply task completion, and configuration changes still require an explicit daemon restart.
+- Ctrl+Q closes the TUI without stopping the daemon, Ctrl+P opens pending input and Ctrl+M opens the Leader's
+  model/effort menu. `make pty` covers five terminal profiles and both forced graphics modes.
 
-- The single authoritative state: one SQLite database per session (WAL with `synchronous=FULL`); instances,
-  tasks, grants, budgets, approvals, receipts and events commit in one transaction, and crash recovery is
-  classified by persisted location instead of replaying side effects on a guess.
-- One daemon owns the session; the TUI and `teamagents exec` are thin clients of its Unix-socket JSON
-  protocol and reconnect from the last event watermark.
-- Governed collaboration: `spawn` / `delegate` / `send` / `wait` are authorized by the control plane and
-  re-checked at dispatch, with workspace policies (shared, isolated, own Git worktree) and retirement when an
-  instance terminates.
-- Mixed providers: instances speaking chat-completions, Responses or Anthropic can share one session, each
-  with its own model, effort and native context window.
-- User hooks: `[hooks] notify` forwards events to your own program and `pre_tool` can veto a tool call before
-  it runs.
-- Mermaid, SVG and DOT diagrams plus local raster images in the conversation and session history; native
-  Kitty graphics, portable Unicode/block previews, and Ctrl+G source fallback.
-- Local command completion with explicit submission, language syntax colors and viewport-driven media
-  previews that remain available beyond sixteen images in long histories (D-450).
-- Explicit engine-owned file/image snapshots and path completion, pending-input edit/cancel, local
-  Markdown/JSON export and session-browser search (D-451). Display grammar/image/diagram parsing runs in
-  resource-bounded terminable Rust helpers.
-- Read-only work diagnostics with explicit recovery instructions in CLI/TUI (D-461); observation never
-  prompts a model, settles a task or stops an operation.
-- Host Shell, acceptance commands and local MCP (D-480); OS sandbox backends were removed.
-  Ordinary Shell needs no per-call approval. Task capabilities, records, recovery and self-update approval remain.
-- Repository `AGENTS.md` discovery from the trusted boundary to the cwd (D-467), bounded skill support
-  resources (D-468), and disjoint multi-file edits plus parallel read-only batches (D-469).
-- Session controls: the Leader model/effort menu (D-473), an explicit `after = "turn"` follow-up queue
-  (D-470), web domain grants, and cancel-versus-stop diagnosis; Ctrl+Q quits, Ctrl+P opens the queue and
-  Ctrl+M opens the model/effort menu.
-- Terminal-independent `make pty` matrix across xterm/screen/tmux/Kitty profiles (D-472); acceptance checks
-  run on the host (D-480); the generated profile defaults to `high` reasoning effort (D-474).
-- Per-model reasoning-effort menus (D-476): `[models.<key>] efforts` declares the values Ctrl+M offers,
-  defaulting to minimal/low/medium/high/xhigh/max; a model that lacks the current level falls back to the
-  nearest declared level at or below it, and the CLI `--effort` remains an explicit override.
-- Installer, `teamagents init`, `doctor` and `exec` as documented in the
-  [install guide](https://github.com/seek-hope/TeamAgents/blob/main/docs/INSTALL.md).
-
-Local regression: `make check` green (core 147 / engine 415 / tui 87) plus `make pty`;
-the tag workflow smoke-installs the exact archive before publishing it. Real-model acceptance is reported
-separately in [docs/ACCEPTANCE.md](https://github.com/seek-hope/TeamAgents/blob/main/docs/ACCEPTANCE.md);
-a release packages the current source and does not widen those evidence boundaries.
+Local regression: `make check` green (core 147 / engine 415 / tui 87) plus `make pty`. The release workflow
+smoke-installs the exact archive before publication. Real-model acceptance is reported separately in
+[docs/ACCEPTANCE.md](https://github.com/seek-hope/TeamAgents/blob/main/docs/ACCEPTANCE.md); packaging current
+source does not widen those evidence boundaries.
 
 ### Install and first run
 
-The repository and its release archives are public, so no GitHub login is needed. The installer is the
-recommended path:
+The repository and release archives are public. The recommended installer is:
 
 ```bash
 (
@@ -67,20 +50,21 @@ teamagents doctor
 teamagents
 ```
 
-It downloads the latest release, verifies SHA-256 and installs both programs; running it again upgrades them
-and keeps the existing config and sessions. Add `export PATH="$HOME/.local/bin:$PATH"` to `~/.bashrc` or
-`~/.zshrc` so later terminals find them.
+The installer downloads the latest published release, verifies SHA-256 and installs both programs. Running it
+again upgrades them while retaining existing config and sessions. Add the `PATH` export to `~/.bashrc` or
+`~/.zshrc` for later terminals.
 
-You can also download `install.sh`, the archive and `SHA256SUMS` from the Assets section of this page and run
-`sh install.sh --archive ./teamagents-VERSION-x86_64-unknown-linux-musl.tar.gz` (replace VERSION). Use
-`--version VERSION` or `--bin-dir DIR` to pin a version or a directory.
+To install an archive from this release's Assets, download `install.sh`, the archive and `SHA256SUMS`, then run
+`sh install.sh --archive ./teamagents-VERSION-x86_64-unknown-linux-musl.tar.gz` after replacing `VERSION`.
+Use `--version VERSION` or `--bin-dir DIR` to select a published version or destination.
 
 ### Requirements
 
-- Linux x86_64; the archives are statically linked against musl, so no Rust toolchain is needed.
-- Shell isolation needs `bubblewrap`: on Debian/Ubuntu use `sudo apt install bubblewrap`.
-- `init` writes a minimal config, never a credential and never over an existing file; the default model is
-  DeepSeek Flash and other services are configured by editing the TOML.
+- Linux x86_64. The archives are statically linked against musl and need no Rust toolchain at runtime.
+- Current source uses host Shell and local MCP; no sandbox package is required. Host commands have the user's
+  filesystem and network access.
+- `init` creates a minimal config without credentials and never overwrites an existing file. The default
+  profile is DeepSeek Flash; edit the TOML to use another service.
 
-Full install, upgrade and troubleshooting notes are in the
-[install guide](https://github.com/seek-hope/TeamAgents/blob/main/docs/INSTALL.md).
+See the [install guide](https://github.com/seek-hope/TeamAgents/blob/main/docs/INSTALL.md) for source builds,
+upgrades and troubleshooting.

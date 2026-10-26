@@ -177,10 +177,7 @@ pub struct UserConfig {
     pub retention: Retention,
     #[serde(default)]
     pub hooks: Hooks,
-    /// Acceptance checks the user predefines for every goal (DESIGN §8, Q11):
-    /// the runtime runs them in the isolated shell at the completion boundary,
-    /// so a goal cannot be reported as done while a check fails. They are the
-    /// user's own machine contracts, never conditions a model extracted.
+    /// Acceptance checks run on the host at the completion boundary. Project configuration cannot define them.
     #[serde(default)]
     pub checks: Vec<CheckSpec>,
     /// Usage and wall-clock ceilings every goal this session creates carries

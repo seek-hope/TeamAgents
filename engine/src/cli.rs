@@ -949,7 +949,7 @@ pub fn daemon_log_unopenable(path: &Path, error: &std::io::Error) -> String {
 /// The one wording for a directory the session needs *under* its state root that cannot be created (D-243).
 ///
 /// Unlike the state root itself (D-241), the user never typed these paths — `<state root>/artifacts`, its
-/// `locks`, an isolated shell's `shell` — and their failures named neither the path nor the lever: measured
+/// `locks`, or the member's `shell_state` — and their failures named neither the path nor the lever: measured
 /// 2026-09-27 with a *file* where the artifact directory goes, the tool answered `cannot create output
 /// artifact directory: File exists (os error 17)`, which leaves several candidate directories and nothing to
 /// act on (`No space left on device` is the other way in).

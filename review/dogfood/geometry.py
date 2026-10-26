@@ -44,8 +44,8 @@ from pty_v2_smoke import FakeDaemon  # noqa: E402  (the smoke's scripted session
 
 # The status line `make pty` asserts on: if it does not arrive, the harness is broken, not the TUI.
 RENDER_MARK = "Ready"
-# The documented quit chord (`tui/src/v2app.rs`); Ctrl+D detaches the interface.
-QUIT = b"\x04"
+# The documented quit chord (`tui/src/v2app.rs`); Ctrl+Q detaches the interface.
+QUIT = b"\x11"
 # (label, boot size, the resizes to apply in order)
 SHAPES = [
     ("control 36x96", (36, 96), []),

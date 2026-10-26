@@ -188,7 +188,7 @@ def main() -> int:
         if "draft-kept-through-reconnect" not in painted():
             failures.append("reconnect lost the unsent draft")
         print("  reconnected, fresh state visible, unsent draft intact")
-        os.write(fd, b"\x04")
+        os.write(fd, b"\x11")
         time.sleep(0.5)
     finally:
         if pid:

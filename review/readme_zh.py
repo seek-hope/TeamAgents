@@ -1,29 +1,13 @@
 #!/usr/bin/env python3
-"""The Chinese README is a mirror of the English one, and nothing said so (D-134)
+"""Keep language-independent parts of the two READMEs aligned (D-134).
 
-`README.zh-CN.md` is the repository's single non-English document (AGENTS.md), so it is a *translation* of
-`README.md` and every part of it that does not need translating — the section skeleton, the link targets, the
-CLI surface it shows — has to stay equal to the English file. Nothing checked that, and two things drifted:
-
-* the documentation table lost a row (`docs/PRODUCT-COMPARISON.md` was added to the English table by
-  `35dc328` and never to the Chinese one), and
-* the file carried **two sections under the same heading** (the quick-start heading, used twice), the earlier
-  one a shortened copy of the later one.
-
-Both are invisible to `citations.py` (the paths it lost still resolve) and to `language-check` (the Chinese
-file is the documented exception). This script asserts the three invariants that are language-independent:
-
-1. **the heading skeleton** — the sequence of heading levels must be identical, so a section added, removed or
-   re-levelled on one side is a finding (the section *text* is translated, so it is not compared);
-2. **the link targets** — every in-repository link must appear on both sides;
-3. **the CLI surface** — the set of `teamagents <verb>` invocations and `--flag` tokens must be equal, because
-   neither commands nor flags are translated.
+The Chinese README is a translation, not an independent command reference. Compare the heading-level
+skeleton, in-repository links, TeamAgents verbs and flags, Ctrl chords and supported slash commands.
 
     python3 review/readme_zh.py
+    python3 review/readme_zh.py --self-check
 
-Ceiling: this compares structure and surface, not meaning. A translated paragraph that drifts from its English
-original while keeping the same section and links is not caught; neither is a link that is correct in both
-files but stale in both.
+This checks structure and interface vocabulary, not translation quality or whether a shared link is current.
 """
 import pathlib
 import re
@@ -37,8 +21,10 @@ HEADING = re.compile(r"^(#+)\s")
 LINK = re.compile(r"\]\(([^)\s]+)\)")
 VERB = re.compile(r"\bteamagents ([a-z][a-z-]*)")
 FLAG = re.compile(r"(?<![\w-])--[a-z][a-z-]*")
+CHORD = re.compile(r"Ctrl\+(?:[A-Za-z]+|←|→)")
+LOCAL_COMMAND = re.compile(r"(?<![\w/])/(?:help|sessions|interrupt|quit|model|attach|detach|queue|edit)\b")
 
-# The one intentional asymmetry: each README links to the other ("read this in Chinese/English").
+# Each README links to the other translation.
 LINK_EXCEPTIONS = {"README.md", "README.zh-CN.md"}
 
 
@@ -52,13 +38,12 @@ def links(text: str) -> list:
 
 
 def surface(text: str) -> tuple:
-    return sorted(set(VERB.findall(text))), sorted(set(FLAG.findall(text)))
+    return (sorted(set(VERB.findall(text))), sorted(set(FLAG.findall(text))),
+            sorted(set(CHORD.findall(text))), sorted(set(LOCAL_COMMAND.findall(text))))
 
 
-def main() -> int:
-    english, chinese = ENGLISH.read_text(), CHINESE.read_text()
+def compare(english: str, chinese: str) -> tuple[list[str], tuple[int, ...]]:
     findings = []
-
     en_skeleton, zh_skeleton = skeleton(english), skeleton(chinese)
     if en_skeleton != zh_skeleton:
         findings.append(
@@ -72,19 +57,31 @@ def main() -> int:
     for extra in sorted(set(zh_links) - set(en_links)):
         findings.append(f"README.zh-CN.md links {extra}, which README.md does not")
 
-    en_verbs, en_flags = surface(english)
-    zh_verbs, zh_flags = surface(chinese)
-    for missing in sorted(set(en_verbs) - set(zh_verbs)):
-        findings.append(f"README.zh-CN.md never shows `teamagents {missing}`, which README.md does")
-    for missing in sorted(set(en_flags) - set(zh_flags)):
-        findings.append(f"README.zh-CN.md never shows {missing}, which README.md does")
-    for extra in sorted(set(zh_verbs) - set(en_verbs)):
-        findings.append(f"README.zh-CN.md shows `teamagents {extra}`, which README.md does not")
-    for extra in sorted(set(zh_flags) - set(en_flags)):
-        findings.append(f"README.zh-CN.md shows {extra}, which README.md does not")
+    en_surface, zh_surface = surface(english), surface(chinese)
+    labels = ("teamagents verb", "flag", "Ctrl chord", "slash command")
+    for label, en_items, zh_items in zip(labels, en_surface, zh_surface):
+        for missing in sorted(set(en_items) - set(zh_items)):
+            findings.append(f"README.zh-CN.md is missing {label} {missing}, which README.md shows")
+        for extra in sorted(set(zh_items) - set(en_items)):
+            findings.append(f"README.zh-CN.md shows {label} {extra}, which README.md does not")
 
-    print(f"README.md ↔ README.zh-CN.md: {len(en_skeleton)} headings, {len(en_links)} in-repo links and "
-          f"{len(en_verbs)} verbs / {len(en_flags)} flags on each side")
+    counts = (len(en_skeleton), len(en_links), *(len(items) for items in en_surface))
+    return findings, counts
+
+
+def main() -> int:
+    if "--self-check" in sys.argv[1:]:
+        findings, _ = compare("# Test\nCtrl+Q /quit /model\n", "# Test\n")
+        for token in ("Ctrl+Q", "/quit", "/model"):
+            assert any(token in finding for finding in findings), (token, findings)
+        assert not compare("# Test\nCtrl+Q /quit\n", "# Test\nCtrl+Q /quit\n")[0]
+        print("readme_zh self-check: heading/link/interface comparison and missing-control detection passed")
+        return 0
+
+    findings, counts = compare(ENGLISH.read_text(), CHINESE.read_text())
+    headings, link_count, verbs, flags, chords, commands = counts
+    print(f"README.md ↔ README.zh-CN.md: {headings} headings, {link_count} in-repo links, "
+          f"{verbs} verbs / {flags} flags, {chords} Ctrl chords and {commands} slash commands on each side")
     for finding in findings:
         print("FAIL:", finding)
     return 1 if findings else 0

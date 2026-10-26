@@ -512,29 +512,6 @@ The probe also documents the level the lever lives at: `tasks cancel` is delegat
 CLI test and this probe cover different halves of A13 (D-88).
 
 
-## `approval.py`: the user's decision, taken in the TUI
-
-The gated call is the one moment the product asks the user, and this probe is the only one that decides it in
-the real TUI with a real model:
-
-```bash
-python3 review/dogfood/approval.py                  # Ctrl+A then 'a': approve
-python3 review/dogfood/approval.py --decision deny  # Ctrl+A then 'd': deny
-```
-
-The daemon runs **without** `--full-auto`, so every `shell` call parks (`require_shell_approval = !full_auto`)
-and the approved command executes inside bubblewrap — this is the only probe that exercises that path. The
-pending id has to be on screen before the key is pressed (the panel is a surface, not decoration), and the
-artifact decides afterwards: on approve `proof.txt` holds the content, the approval is `APPROVED`, the box
-drops the id and nothing stays pending; on deny the file never exists, the approval is `DENIED`, and the
-operation lands `CANCELLED` with receipt class `denied` (the model is told). Measured 2026-09-26, five runs.
-
-Two probe lessons are recorded with it (D-89): an absence check must be the absence of a *proven present*
-thing (the first version waited for UI text that never exists, and the fix asserts the decoded id's
-disappearance instead of an empty list), and a model may ask for a *second* decision in the same turn, so the
-assertion names the decided id rather than the whole list.
-
-
 ## `stale_check.py`: a verified input that changed blocks the goal
 
 A16 (`checks.py`) is a check that can never pass; A17 is the subtler half — the check *passes*, and then the
@@ -609,13 +586,13 @@ python3 review/dogfood/exec_check.py
 3. a command that prints `(exit 0)` and exits **7**: the verdict is 7 (`ok: false`), exit 1, and the forged
    text stays in `output`.
 
-4. a second session **without** `--full-auto`: a turn that parks on an approval exits 3 with
-   `verification: []` and `verification_path: null`, and the ledger an earlier passing run in that session
-   wrote is untouched — an approval stop verifies nothing (§8).
+4. a second session without `--full-auto` verifies current host behavior: the model's Shell command runs
+   without an approval stop, writes `host.txt`, and reaches the passing acceptance check. This D-480 scenario
+   replaces the historical approval-stop case and has been syntax-checked, not rerun with a paid model.
 
-Measured 2026-09-26, three runs (D-93). That fourth scenario also fixes what the ledger is: a run without
-verdicts writes no file and reports a null path, so the reliable signal is the path in the run's own report,
-not the presence of `<state root>/verification.json`.
+The original three scenarios were measured on 2026-09-26 (D-93). The removed approval-stop scenario established
+that a run with no verdicts writes no new ledger and reports a null path; that behavior remains covered by local
+tests.
 
 
 ## `tui_sessions.py`: session browsing and deletion
@@ -628,7 +605,7 @@ and verifies both named-current and default-current deletion exit the TUI while 
 ## `tui_panels.py`: developer management beside the minimal TUI
 
 The historical filename remains for evidence links. D-445 replaces the panel workflow with CLI
-management while a real TUI stays attached to the same isolated daemon.
+management while a real TUI stays attached to the same test daemon.
 
 ```bash
 python3 review/dogfood/tui_panels.py

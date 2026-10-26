@@ -1,12 +1,12 @@
 # Development and maintenance
 
-The project keeps three Rust crates: `core`, `engine` and `tui`. The product constraints live in the
-[design baseline](DESIGN.md), confirmed decisions in [DECISIONS](DECISIONS.md) and the real-service
-acceptance boundary in [ACCEPTANCE](ACCEPTANCE.md).
+TeamAgents has three Rust crates: `core`, `engine` and `tui`. Product requirements live in
+[DESIGN.md](DESIGN.md), confirmed decisions in [DECISIONS.md](DECISIONS.md), and acceptance evidence in
+[ACCEPTANCE.md](ACCEPTANCE.md).
 
-The code's generated references are four documents, each checked against the code it describes: the event log
-([EVENTS.md](EVENTS.md)), the daemon's wire protocol ([PROTOCOL.md](PROTOCOL.md)), the tool schemas
-([TOOLS.md](TOOLS.md)) and the configuration surface ([CONFIG.md](CONFIG.md)).
+Generated references are [EVENTS.md](EVENTS.md), [PROTOCOL.md](PROTOCOL.md), [TOOLS.md](TOOLS.md) and
+[CONFIG.md](CONFIG.md). Edit their source schemas or dispatchers, then regenerate them with the commands in
+this guide; do not patch generated tables to describe behavior the code does not have.
 
 <!-- maps: docs/CONFIG.md reader=user -->
 <!-- maps: docs/EVENTS.md reader=developer -->
@@ -14,420 +14,323 @@ The code's generated references are four documents, each checked against the cod
 <!-- maps: docs/TOOLS.md reader=developer -->
 <!-- maps: docs/RUST-SANDBOX.md reader=evidence -->
 
-[RUST-SANDBOX.md](RUST-SANDBOX.md) is a retired design note, preserved as historical evidence.
-D-480 removed OS sandbox functionality; it is not a candidate implementation plan.
+[RUST-SANDBOX.md](RUST-SANDBOX.md) is a retired design note kept for cited historical evidence. It does not
+describe current execution or authorize reintroducing a backend.
 
 ## Environment and the single entry point
 
-Work from the repository root. `rust-toolchain.toml` pins the Rust version, Clippy and rustfmt; the local
-machine and both GitHub workflows read the same pin. After installing Rust through rustup, the first Cargo
-run prepares the toolchain. The real-terminal check needs Python 3. Shell and local MCP tests run on the host.
+Work from the repository root. `rust-toolchain.toml` pins Rust, Clippy and rustfmt for local development and
+both GitHub workflows. The first Cargo run may download them. Python 3 is required for repository audits and
+PTY checks. Shell and local MCP tests run on the host.
 
 ```bash
-make check CARGO_FLAGS=--locked   # first run may download dependencies, keeping the lock files
-make check                        # afterwards: --offline --locked by default
-make fmt                          # apply the shared formatting
-make build                        # build the CLI and the TUI into the usual target paths
-make pty                          # terminal-profile matrix in isolated ptys, no model credentials
+make check CARGO_FLAGS=--locked   # first run; allows locked dependency downloads
+make check                        # later runs; offline and locked by default
+make fmt                          # apply rustfmt
+make fmt-check                    # check formatting without rewriting files
+make build                        # build CLI and TUI
+make pty                          # terminal-profile matrix in isolated ptys
 ```
 
-`make test` wraps the three crate suites in `review/leak_guard.py` (snapshot before, audit after): the two ways
-a run leaks — a session daemon (D-111) and a scratch directory (D-131) — are reported as a *difference*, with
-the leaked daemon's pid and state root named and the daemon stopped, and the run fails (D-147). The tests hold
-up their end with two RAII guards in `engine/tests/cli.rs`: `Daemon` stops a daemon the test started, on every
-exit path including a panic (D-160), and `Scratch` removes the test's own temp tree the same way (D-175) — a
-test that panics in a CI condition used to skip its final `remove_dir_all`, so one failure reported as two and
-left state roots behind. After the suites, `review/test_counts.py` compares their exact sizes (asked of
-cargo's test list) with the numbers `docs/ACCEPTANCE.md` states in its baseline line, so the ledger's
-headline cannot go stale (D-178). `make check` runs, in order: formatting (`make fmt-check`), Clippy on all
-targets with warnings as errors, the three crates' tests and repository hygiene. Hygiene is a set of small
-audits — each one a claim the tree makes about itself, each with the decision that built it, and
-`review/hygiene_catalogue.py` fails when a script the build runs is missing from this list (D-184):
+`make check` runs formatting, Clippy with `-D warnings`, the three crate test suites and repository hygiene.
+There is no root Cargo workspace; use `make` or explicit crate manifests.
 
-* **the documents**: `review/doc_inventory.py` keeps the map — every tracked document outside the two language
-  exceptions declares its reader (user / developer / agent / evidence) and exactly one home, that home links it
-  and an entry point reaches it (D-443); `review/decisions_log.py` keeps `docs/DECISIONS.md`'s shape — one heading per entry,
-  newest-first, each with a body (D-107); `review/decision_queue.py` keeps the user's decision queue
-  complete — an entry that asks for the user's word must appear in `docs/ACCEPTANCE.md`'s known gaps or
-  `docs/PRODUCT-COMPARISON.md` §2, or name the later decision that closed it (D-195); `review/citations.py` resolves every backticked citation in tracked
-  markdown, a qualified name or a repository path, unless the line records it as removed (D-110), since D-200 every relative inline *link*, since D-201 every `make <target>` a reader is told to run (against the Makefile's `.PHONY` list) and since D-223 every `§N.M` section reference (against the numbered documents' own headings — the archived plan's numbering survived in 43 places until then);
+`make test` wraps the suites with `review/leak_guard.py`. It compares daemon, runner and scratch-directory
+inventories before and after the run, stops only processes it identifies by pid, and preserves the state root
+for diagnosis. `review/test_counts.py` then compares the suite sizes with the baseline in ACCEPTANCE and the
+corresponding statements in AGENTS.md and `.github/release-notes.md`.
 
-  `review/decision_citations.py` resolves every `D-<n>` to a heading or to one of the earlier rules the index
-  table keeps in force (D-170); `review/readme_zh.py` holds `README.zh-CN.md` to `README.md` on the heading
-  skeleton, the in-repository links and the CLI surface (D-134); `review/doc_flags.py` holds the three user-facing documents (the README, the user guide and the install guide) and the parsers against the CLI's own help text — a documented flag must exist, a parsed flag must be advertised, and a line marked as history is a note (D-135/D-136/D-190); `review/exec_report.py` does the same for the five `--json` reports (D-154) and
-  `review/tui_keys.py` for the TUI's keys (D-157); `review/requirement_trace.py` keeps the baseline's Q-rows
-  and `docs/ACCEPTANCE.md`'s rows in step (D-137), requires every row of those two tables to have exactly three cells (D-198: a stray or a lost `|` had shifted three rows unnoticed), and holds a row's commit pin against the `--example` its command names (D-202: A32 pinned its measurement to a commit that preceded the probe change it reported). `review/markdown_tables.py`
-  applies that shape rule to every markdown table the repository tracks (D-199: fenced examples are skipped, the separator row defines the column count, and six rows in four documents were split or merged by an unescaped `|`).
-* **the generated references**: `review/event_catalogue.py` (`docs/EVENTS.md` vs the emitted events, D-125),
-  `review/protocol_catalogue.py` (`docs/PROTOCOL.md` vs the daemon's dispatchers and the row-field table,
-  D-126/D-173), `review/tool_catalogue.py` (`docs/TOOLS.md` vs the tool schemas, D-127) and
-  `review/config_reference.py` (`docs/CONFIG.md` vs the config structs, D-128).
-* **what the code does with what it is given**: `review/flag_fields.py` fails a flag parsed into an `Args`
-  field no code reads (the `--engine` shape, D-180/D-181); `review/command_params.py` fails a command payload
-  field the command layer never reads (D-124); `review/dead_code.py` lists the public items the product's own
-  code never calls, and refuses an exemption that names no authority or that is doing no work (D-78/D-86/D-443,
-  in hygiene since D-130); `review/env_knobs.py` keeps the `TEAMAGENTS_*` table
-  below equal to the code's reads; `review/project_config_claim.py` checks the one fact every document states —
-  the project config is read, under the user's opt-in (D-133, wired by D-244), and `review/release_artifact.py` does the same for the second one —
-  whether the release claims match published tags (D-203 originally caught pre-v2 tags; v0.2.0 is the first v2 release, so the caveat state flipped to published); `review/silent_skips.py` fails a test that returns from a capability
-  guard without saying why (D-121).
-* **the config surface, both directions**: `review/config_keys.py` reports a config field whose only readers
-  are the loader, the validator, the doctor surface and the argv parser — a key this build accepts and never
-  serves (the detector behind D-75 and D-102, in hygiene since D-193) — and fails when the shipped examples or
-  the `toml` blocks of the three user-facing documents name a key the loader does not accept, or one it refuses.
-* **the build and its evidence**: `review/build_references.py` fails a script a `Makefile` target or a
-  workflow runs that does not exist or that git does not carry — how a new audit stays untracked through a
-  `git commit -a` (D-179), and since D-196 the same audit keeps the Makefile's `.PHONY` targets and its `make help` text naming each other (the help is the default goal); `review/hygiene_catalogue.py` fails a script the build runs that this page does not name (D-184) **and** a root-level `review/*.py` that no target runs unless it is listed in that audit's `HAND_RUN` with its reason (D-194: `review/config_keys.py`, the detector behind four findings, was in that position until D-193); `review/eval_manifests.py` holds the frozen evaluation manifests against the tree
-  (D-145); `review/eval_surface.py` holds the evaluation's model-visible surface against those manifests, the
-  harness's history and the recorded trials (D-182); `review/eval/r2-p6/anatomy.py --self-check` checks the classification that measures a delegated trial's
-  requests — inspect / edit / execute / orchestrate / settle — on a synthetic store, which is the tool
-  D-256 read the delegation cost with (the report half of it is hand-run against a recorded batch); `review/dogfood/probes.py --self-check` checks the probe
-  harness's own rules (its selection, budgets, the stray guard and the no-kill-by-pattern rule);
-  `review/verification_catalogue.py` holds `verification/tla`'s configurations and modules against the
-  `verify-model*` targets that drive them, and the report's counts — the configurations, the negative controls
-  and the quoted Kani harness count — against the lists and the proofs in the tree (D-185), and its §0 re-run
-  heading's commit against the newest change to the material a re-run covers (D-202: the heading named a commit
-  that predated `MC_retention.cfg`), that every marked claim is listed by a configuration that runs its module
-  (D-212/D-215) and named in `verification/README.md` (D-222), and that every module is the spec of at least one
-  counterexample configuration (D-220), names the one claim it is shown to refute in an `expects:` marker
-  (the harness compares that name with what TLC reports, D-462), and every checked claim that no control refutes
-  is recorded with a status in `verification/COVERAGE.md` (the audit recomputes that count).
-* **the shell, before any of that**: it rejects non-English characters (the two documented exceptions), tracked
-  compile caches, Python caches and SQLite temporaries, and checks the syntax of `install.sh`.
+Run leak-guarded suites serially with live probes; their process and scratch inventories can otherwise
+interfere. Build output needs writable space; use `CARGO_TARGET_DIR` for a read-only source mount. Keep the
+real Rust and Cargo homes available instead of hiding them with an arbitrary `HOME` or `PATH` change.
 
-`make language-check` runs the language rule on its own: it scans the tracked tree for CJK characters and
-excludes exactly the two documented exceptions (`README.zh-CN.md` and the frozen evaluation material under
-`review/eval`), so a stray Chinese comment fails the gate instead of being noticed in review. Clippy warnings
-are errors. CI uses the same make targets and may only download the locked dependencies; the release workflow
-uses the same Rust version.
-A green Cargo run can include tests that returned early for a missing dependency, so it never substitutes for
-real-service or real-model acceptance.
+### Hygiene checks
 
-### Evaluation and probe entry points
+`make hygiene` checks language, tracked artifacts, script syntax and the following source/document contracts.
+`review/hygiene_catalogue.py` requires every script invoked by `make hygiene` or `make test` to be named here,
+and requires every root-level audit either to run in a target or to have a recorded hand-run reason.
 
-Beyond the product there are a few standalone entry points: the failure/overhead probes, the A/B/C
-evaluation drivers and the real-terminal driver. None of them is part of `make check`; when re-running them,
-pick a **fresh evidence directory** and record results and limits in a dated report:
+| Area | Checks |
+|---|---|
+| Build and review inventory | `review/build_references.py`, `review/hygiene_catalogue.py`, `review/doc_inventory.py` |
+| Decisions, requirements and citations | `review/decisions_log.py`, `review/decision_queue.py`, `review/decision_citations.py`, `review/citations.py`, `review/requirement_trace.py` |
+| User and interface docs | `review/project_config_claim.py`, `review/release_artifact.py`, `review/readme_zh.py`, `review/doc_flags.py`, `review/exec_report.py`, `review/tui_keys.py`, `review/env_knobs.py`, `review/markdown_tables.py` |
+| Configuration and control surface | `review/config_keys.py`, `review/flag_fields.py`, `review/command_params.py`, `review/config_reference.py` |
+| Generated tool/protocol references | `review/event_catalogue.py`, `review/protocol_catalogue.py`, `review/tool_catalogue.py` |
+| Source and test quality | `review/dead_code.py`, `review/silent_skips.py`, `review/leak_guard.py`, `review/test_counts.py` |
+| Evaluation and formal material | `review/eval_manifests.py`, `review/eval_surface.py`, `review/eval/r2-p6/anatomy.py`, `review/verification_catalogue.py` |
+| Probe registry | `review/dogfood/probes.py` |
+
+The audits catch structural drift, not every incorrect claim. Review current behavior and evidence dates
+manually. Do not suppress a source-side validation or mark a current result as history merely to make a check
+pass.
+
+`make language-check` rejects non-English characters outside `README.zh-CN.md` and the frozen evaluation
+material. Commit messages are English too. `git diff --check` and the help recipe run as part of hygiene, so
+whitespace errors and shell-quoting errors in help text fail the gate.
+
+### Focused tests
+
+Use Cargo directly for a shorter loop. These are common entry points, not a replacement for the full suites:
 
 ```bash
-# dogfooding: the built CLI on this repository's own fixtures, with each fixture's
-# checks.txt as a user-defined completion check, and the artifact verified by hand
-python3 review/dogfood/run.py --task edit-integrity   # needs the model credential
-# the authority surface end to end (spawn a worker, fail without the grant, `authority grant`,
-# retry, `authority revoke`) — the probe that found D-62
-python3 review/dogfood/authority.py
-# failure probes: SQLite/artifact atomic boundaries, runner and daemon crash recovery, storage-full stop, I/O cancel
-cargo build --offline --locked --manifest-path engine/Cargo.toml --example probe
-cargo build --offline --locked --manifest-path tui/Cargo.toml --example probe
-engine/target/debug/examples/probe suite review/tmp/probe-new
-python3 tui/scripts/pty_probe.py            # drives the same protocol in a real terminal
-
-# evaluation drivers (real models; A = direct reference loop, B = persistent single instance, C = B + collaboration)
-cargo build --offline --manifest-path engine/Cargo.toml --example eval_group_a
-engine/target/debug/examples/eval_group_a --task "..." --workdir /tmp/t --trace /tmp/t-trace
-cargo build --offline --manifest-path engine/Cargo.toml --example eval_group_b   # needs engine/target/debug/teamagents
-engine/target/debug/examples/eval_group_b --task "..." --workdir /tmp/t --trace /tmp/t-trace --full-auto
-engine/target/debug/examples/eval_groups_abc --group A --task-file t.md --workdir /tmp/t --trace /tmp/t-trace --state /tmp/t/state
-
-# load and acceptance probes
-engine/target/debug/examples/load_probe DIR [--steps N] [--payload BYTES]
-engine/target/debug/examples/accept_probe --evidence DIR --workspace DIR --lead KEY --worker KEY
-
-# the host's leftover command runners (D-189): a read-only census with the classes that decide what may be
-# stopped. Run it *outside* any sandbox — a sandboxed shell sees only its own PID namespace and reports zero.
-python3 review/host_cleanup.py [--json | --class settled-journal --pids]
-```
-
-Deterministic coverage of fault injection and multi-instance behaviour lives in the test files:
-`cargo test --manifest-path engine/Cargo.toml --test v2_driver` (crash reuse, disk full, cancellation,
-required checks), `--test jobs_runner` (runner/daemon crashes, duplicate GO), `--test v2_supervisor`
-(multi-instance scheduling and retirement) and `--test v2_daemon` (handshake, watermark resume).
-
-Local development still uses Cargo directly for a shorter feedback loop (the list below is every test entry
-point):
-
-```bash
-# core: control plane, kernel, persistence
-cargo test --offline --locked --manifest-path core/Cargo.toml --lib   # control-plane unit tests (most A01-A36 citations)
+cargo test --offline --locked --manifest-path core/Cargo.toml --lib
 cargo test --offline --locked --manifest-path core/Cargo.toml --test v2_invariants
 cargo test --offline --locked --manifest-path core/Cargo.toml --test kernel_properties
-# engine: phase machine, supervisor, daemon, jobs, fake services, CLI
+
 cargo test --offline --locked --manifest-path engine/Cargo.toml --test v2_driver
 cargo test --offline --locked --manifest-path engine/Cargo.toml --test v2_supervisor
 cargo test --offline --locked --manifest-path engine/Cargo.toml --test v2_daemon
 cargo test --offline --locked --manifest-path engine/Cargo.toml --test v2_mcp
-cargo test --offline --locked --manifest-path engine/Cargo.toml --test v2_spawn_failure
 cargo test --offline --locked --manifest-path engine/Cargo.toml --test jobs_runner
 cargo test --offline --locked --manifest-path engine/Cargo.toml --test providers_fake
-cargo test --offline --locked --manifest-path engine/Cargo.toml --test providers_stall
-cargo test --offline --locked --manifest-path engine/Cargo.toml --test reference_loop
 cargo test --offline --locked --manifest-path engine/Cargo.toml --test cli
 cargo test --offline --locked --manifest-path engine/Cargo.toml --test install
-# tui: conversation state and rendering
+
 cargo test --offline --locked --manifest-path tui/Cargo.toml --test v2app_tests
 cargo test --offline --locked --manifest-path tui/Cargo.toml --test conversation
 cargo test --offline --locked --manifest-path tui/Cargo.toml --test graphics
 cargo test --offline --locked --manifest-path tui/Cargo.toml --test parity
-cargo run --offline --locked --manifest-path tui/Cargo.toml --example parity_probe
 cargo test --offline --locked --manifest-path tui/Cargo.toml --test sessions
-cargo test --offline --locked --manifest-path engine/Cargo.toml --test session_browser
+```
+
+### Evaluation and probe entry points
+
+Standalone probes and evaluation drivers are not part of `make check`. Use a fresh evidence directory and
+record the source, command, result and limitations in a dated report.
+
+```bash
+# Repository fixtures and authority workflows; model credentials depend on the probe.
+python3 review/dogfood/run.py --task edit-integrity
+python3 review/dogfood/authority.py
+
+# Failure and overhead probes.
+cargo build --offline --locked --manifest-path engine/Cargo.toml --example probe
+cargo build --offline --locked --manifest-path tui/Cargo.toml --example probe
+engine/target/debug/examples/probe suite review/tmp/probe-new
+python3 tui/scripts/pty_probe.py
+
+# A = direct reference loop; B = persistent instance; C = B plus collaboration.
+cargo build --offline --locked --manifest-path engine/Cargo.toml --example eval_group_a
+engine/target/debug/examples/eval_group_a --task "..." --workdir /tmp/t --trace /tmp/t-trace
+cargo build --offline --locked --manifest-path engine/Cargo.toml --example eval_group_b
+engine/target/debug/examples/eval_group_b --task "..." --workdir /tmp/t --trace /tmp/t-trace --full-auto
+cargo build --offline --locked --manifest-path engine/Cargo.toml --example eval_groups_abc
+engine/target/debug/examples/eval_groups_abc --group A --task-file t.md --workdir /tmp/t --trace /tmp/t-trace --state /tmp/t/state
+
+# Load and acceptance probes.
+engine/target/debug/examples/load_probe DIR [--steps N] [--payload BYTES]
+engine/target/debug/examples/accept_probe --evidence DIR --workspace DIR --lead KEY --worker KEY
+
+# Read-only host process census. Run on the host so container PID namespaces cannot hide processes.
+python3 review/host_cleanup.py [--json | --class settled-journal --pids]
 ```
 
 ## Environment knobs the code reads
 
-None of these *configures* behaviour — a setting belongs in `config.toml` (`docs/CONFIG.md`); they locate a
-binary, turn on a diagnostic, or exist for tests. They are listed because a knob nobody can find is a knob
-nobody uses, and several are what the probes depend on.
+These variables locate binaries, select diagnostics or support tests. Product behavior belongs in
+`config.toml`; see [CONFIG.md](CONFIG.md).
 
-| Variable | Who sets it | What it does |
+| Variable | Setter | Purpose |
 |---|---|---|
-| `TEAMAGENTS_LOG_SURFACE=1` | an operator diagnosing a member's offer, and `review/dogfood/authority.py` | the driver writes one line per prepared request into stderr (the daemon's log): `driver: surface <instance> shell=yes\|no tools=…` — the witness that separates "the tool was never offered" from "the model ignored it" (D-143) |
-| `TEAMAGENTS_JOB_IDLE_TICK_MS` | tests | how often an *idle* job runner re-checks (default 30 s): a test cannot wait 30 s for a rule about waiting (D-153) |
-| `TEAMAGENTS_AUTOMATION_TICK_MS` | tests | how often the daemon's automation scheduler ticks (default 30 s): a test cannot wait a period to see a schedule fire (D-367) |
-| `TEAMAGENTS_JOB_TEST_HOOKS` | the runner's own tests | compiles-in fault injection for the job runner, disabled unless the parent opts in; never read from a job file or a model (A31) |
-| `TEAMAGENTS_RUNNER_BIN` | integration tests | the runner image, so the test binary can serve as the runner (production uses the same `teamagents` binary) |
-| `TEAMAGENTS_GRAPHICS` | TUI users and terminal probes | `auto` (default), `kitty`, `blocks`, or `off`; selects local graphics presentation; Ctrl+G toggles previews and reloads files when enabled again (D-448) |
-| `TEAMAGENTS_SESSION_CLI` | the CLI launcher (or a direct TUI caller) | the engine executable used by the session browser for list/history/search/open/delete; normally the launcher supplies its own path (D-446/D-451) |
-| `TEAMAGENTS_TUI` | the CLI, when the TUI is not a sibling of it | where `teamagents` finds `teamagents-tui`; its own error message names this variable (`engine/src/main.rs`) |
-| `TEAMAGENTS_BIN_DIR` | `install.sh` | where the installer puts the binaries; documented for users in `docs/INSTALL.md` |
-| `TEAMAGENTS_INSTALL_ROOT` | self-update and the updater | the versioned install root (`versions`, `current`, `previous`, `updates`); default `~/.local/lib/teamagents` (`engine/src/update.rs`) |
-| `TEAMAGENTS_UPDATER_BIN` | self-update tests and operators | the updater binary to spawn instead of the sibling `teamagents-update`; the updater is still detached and user-approved |
-| `TEAMAGENTS_UPDATE_CRASH_AT` | self-update tests | a crash-injection point in `engine/tests/update.rs`; read only when the test harness sets it, never from the model or a request |
+| `TEAMAGENTS_LOG_SURFACE=1` | Operator | Log each prepared model request's offered tools to the daemon log |
+| `TEAMAGENTS_JOB_IDLE_TICK_MS` | Tests | Idle runner polling cadence, default 30 s |
+| `TEAMAGENTS_AUTOMATION_TICK_MS` | Tests | Automation scheduler cadence, default 30 s |
+| `TEAMAGENTS_JOB_TEST_HOOKS` | Runner tests | Enable explicit fault injection; never read from model input or job files |
+| `TEAMAGENTS_RUNNER_BIN` | Integration tests | Runner executable used by the test harness |
+| `TEAMAGENTS_GRAPHICS` | Users and PTY probes | `auto`, `kitty`, `blocks` or `off` |
+| `TEAMAGENTS_SESSION_CLI` | CLI launcher | Engine executable used by the session browser |
+| `TEAMAGENTS_TUI` | CLI or caller | TUI path when it is not beside `teamagents` |
+| `TEAMAGENTS_BIN_DIR` | Installer | Binary destination |
+| `TEAMAGENTS_INSTALL_ROOT` | Updater/operator | Versioned installation root, default `~/.local/lib/teamagents` |
+| `TEAMAGENTS_UPDATER_BIN` | Update tests/operator | Updater executable override |
+| `TEAMAGENTS_UPDATE_CRASH_AT` | Update tests | Explicit crash-injection point |
+| `TEAMAGENTS_DISPLAY_WORKER_TESTS` | TUI tests | Parent-controlled display-worker fault injection |
+
+Display workers are an internal rendering mode of `teamagents-tui`, not a configurable executable. They clear
+the environment, close inherited file descriptors and apply resource limits before parsing. Build the TUI
+before focused tests that launch the helper. Source remains readable when rendering fails.
 
 ## Formal verification (TLA+ / Kani)
 
-`verification/` holds formal material that is tied to the implementation: `tla/V2*.tla` with `MC*.cfg` are the
-TLA+ specs of the control plane, artifacts, waits, tasks, compression, the daemon protocol, the required
-check rounds, the authority layer and the user's authority surface; `kani/` is a proof crate that compiles
-`core/src/kernel/types.rs` and `tui/src/viewport.rs` directly. The results, evidence and the **unproven list** are in the
-[verification report](../verification/REPORT.md); the mapping from property to code to acceptance item is in
-the [verification guide](../verification/README.md).
+`verification/tla/` contains the TLA+ modules and configurations. `verification/kani/` compiles selected
+kernel and viewport code directly. The [verification guide](../verification/README.md) maps properties to
+code and acceptance items; the [verification report](../verification/REPORT.md) records results and unproven
+areas.
 
 ```bash
-make verify-tools       # download and verify the pinned tla2tools.jar (TLC v1.7.1, fixed SHA-256)
+make verify-tools       # download and verify the pinned TLC v1.7.1 jar
 make verify-model       # small control-plane configuration
-make verify-model-all   # small configurations for all twenty-five modules (~1 minute here)
-make verify-model-counterexamples  # every negative control: each must be *refuted*
-make verify-model-wide  # wide control-plane configuration (hundreds of millions of states, slow)
-make verify-kani        # Kani proofs for paging and viewport arithmetic (needs the Kani toolchain)
+make verify-model-all   # small configurations for all modules
+make verify-model-counterexamples
+make verify-model-wide  # large, slow configuration
+make verify-kani        # requires the Kani toolchain
 make benchmark-receipts JOBS=<dir> [BENCH=swebench|tau3|tb]
-                        # read a benchmark run's receipts before believing its number (D-421/D-430):
-                        # did every attempt keep its trajectory, does its verdict have a second
-                        # reading, and (SWE-bench) was the retrieval guard actually exercised?
 cargo test --offline --locked --manifest-path core/Cargo.toml --test v2_invariants
 ```
 
-These targets are not part of `make check` (they need Java/Kani and the first run downloads TLC). Each TLC
-invocation gets its own meta directory under the ignored `review/tmp/tla/` and removes it when the run returns
-(D-293): TLC's default is a timestamped directory under `verification/tla/states/` and it *refuses to start* if
-that directory already exists (a leftover from an interrupted or same-second run), so no run may share one.
-TLC's `verification/tla/states/` (leftovers from before D-293 only) and Kani's `target/` are regenerable
-intermediates that `.gitignore` excludes; a `verification/tla/states/` in a working tree is stale scratch that
-may be deleted.
-The models cover protocol-level properties only: they are not a refinement proof, liveness depends on weak
-fairness assumptions and every enumeration is bounded. When the command set, the phase machine or the
-paging/capping logic changes, update the specs and `v2_invariants` and re-run the affected targets.
+These targets are outside `make check`; they need Java or Kani, and the first TLC run downloads the pinned
+tool. Each TLC invocation uses a separate temporary meta directory under `review/tmp/tla/` and removes it on
+return. Regenerable intermediates are excluded by `.gitignore`.
+
+Formal models cover bounded protocol properties, not refinement of the whole implementation. Liveness depends
+on its stated fairness assumptions. Update affected models and invariants when commands, phases or arithmetic
+change, and record a fresh run instead of inheriting an older report's result.
 
 ## Where a change belongs
 
-| Change | Location and constraints | Preferred regression |
+| Change | Location and invariant | Preferred regression |
 |---|---|---|
-| Team actions, tasks, grants, scheduling | `core/src/v2/control.rs`, the single-transaction `Control::submit` path; identity, operation ids and permission revisions are filled in by the control plane, never taken from a model or client field | `core` library tests (`core/src/v2/control.rs`), `core/tests/v2_invariants.rs`, `engine/tests/v2_supervisor.rs` |
-| Persistence and transaction boundaries | `core/src/v2/store.rs` (one database per session, WAL plus explicit `synchronous=FULL`); in-process callers serialize through the bounded single-writer worker in `engine/src/v2/storage.rs` | `core` library tests, `engine/tests/v2_driver.rs`, `core/tests/v2_invariants.rs` |
-| Turn phase machine and tool execution | `engine/src/v2/driver.rs`: model and tool waits stay outside transactions and every transition goes through `Control::submit`. File/Shell/web tools live in `engine/src/tools.rs`, Shell commands run in the runner process of `engine/src/jobs`, and user hooks are `engine/src/hooks.rs` (`pre_tool` veto plus `notify` events) | `engine/tests/v2_driver.rs`, `engine/tests/jobs_runner.rs`, `engine/tests/providers_fake.rs`, `providers_stall.rs` |
-| Multi-instance collaboration | `engine/src/v2/supervisor.rs`: one phase machine per ACTIVE instance; the authorization and dispatch linearization point for `spawn`/`delegate`/`send`/`wait` is `core/src/v2/control.rs` | `engine/tests/v2_supervisor.rs`, `core/tests/v2_invariants.rs` |
-| Session daemon and clients | `engine/src/v2/daemon.rs` (one Unix-socket JSON-lines service per state root), `engine/src/v2/exec.rs` (headless client), `tui/src/daemon_client.rs` (resumes events from the last watermark) | `engine/tests/v2_daemon.rs`, `engine/tests/cli.rs`, `make pty` |
-| Information permissions and shared space | visibility and delivery decisions in `core/src/v2/control.rs` plus the context views in `core/src/kernel/*`; `audience` visibility is not `push` delivery | `core` library tests (visibility, delivery, references), `core/tests/v2_invariants.rs` |
-| MCP, Skills and tool bindings | `engine/src/bound.rs` (binding is the authorization), `engine/src/mcp.rs` (stdio and streamable HTTP) | `engine/tests/v2_mcp.rs`, `engine/tests/v2_spawn_failure.rs` |
-| Workspace policies | `engine/src/workspace.rs` (shared / isolated / git worktree). The `workspace` argument of `spawn` is resolved by `driver::prepare_spawn_workspace`, the record is written to `<instances_dir>/<id>/workspace.json`, and retirement happens in the supervisor's terminate path | `engine/src/workspace.rs` unit tests, `engine/tests/v2_driver.rs::spawn_resolves_the_requested_workspace_policy`, `engine/tests/v2_supervisor.rs::terminating_an_instance_retires_its_workspace` |
-| Providers | `engine/src/providers/*`: exactly one transport attempt and failure classification only, retries belong to the runtime; config and catalog live in `engine/src/config.rs` (user catalog parsing, `[hooks]`/`[retention]` validation) | `engine/tests/providers_fake.rs`, `engine/tests/providers_stall.rs`, `engine/src/config.rs` unit tests |
-| Model calls and the kernel | `core/src/kernel/*` (I/O-free request/response/observation conversion), `engine/src/reference.rs` (the group A direct reference loop) | `core/tests/kernel_properties.rs`, `engine/tests/reference_loop.rs` |
-| Conversation UI and the real terminal | `tui/src/v2app.rs` (state and keys), `tui/src/v2ui.rs` (rendering; `geometry()` also feeds mouse hit-testing), `tui/src/wrap.rs` | `tui/tests/v2app_tests.rs`, `make pty` |
-| Install, self-check, release | `install.sh`, `init`/`doctor` in `engine/src/cli.rs`, `.github/workflows/release.yml` | `engine/tests/install.rs`, `engine/tests/cli.rs`, the release-archive smoke test, `make release-rehearsal` |
+| Team actions, tasks and grants | `core/src/v2/control.rs`; all writes through `Control::submit`, with control-plane identity and revisions | Core tests, `core/tests/v2_invariants.rs`, `engine/tests/v2_supervisor.rs` |
+| Persistence | `core/src/v2/store.rs`; one database per session, WAL and `synchronous=FULL`; writer serialization in `engine/src/v2/storage.rs` | Core tests, `engine/tests/v2_driver.rs` |
+| Turn and tool execution | `engine/src/v2/driver.rs`; model/tool waits outside transactions. Native tools in `engine/src/tools.rs`, jobs in `engine/src/jobs` | `engine/tests/v2_driver.rs`, `engine/tests/jobs_runner.rs` |
+| Multi-instance coordination | `engine/src/v2/supervisor.rs`; one driver per ACTIVE instance | `engine/tests/v2_supervisor.rs` |
+| Daemon and clients | `engine/src/v2/daemon.rs`, `engine/src/v2/exec.rs`, `tui/src/daemon_client.rs` | `engine/tests/v2_daemon.rs`, `engine/tests/cli.rs`, `make pty` |
+| Information visibility | `core/src/v2/control.rs` and `core/src/kernel/*`; visibility is not delivery | Core tests and invariants |
+| MCP, Skills and bindings | `engine/src/bound.rs`, `engine/src/mcp.rs`; local services execute on the host | `engine/tests/v2_mcp.rs`, `engine/tests/v2_spawn_failure.rs` |
+| Workspace policies | `engine/src/workspace.rs`; spawn resolution in the driver, retirement in the supervisor | Workspace tests and supervisor integration tests |
+| Providers and configuration | `engine/src/providers/*`, `engine/src/config.rs`; providers classify attempts, runtime owns retries | `engine/tests/providers_fake.rs`, `engine/tests/providers_stall.rs`, config tests |
+| I/O-free kernel and reference loop | `core/src/kernel/*`, `engine/src/reference.rs`; the reference loop is evaluation-only | `core/tests/kernel_properties.rs`, `engine/tests/reference_loop.rs` |
+| Conversation UI | `tui/src/v2app.rs`, `tui/src/v2ui.rs`; rendering and mouse hit-testing share geometry | `tui/tests/v2app_tests.rs`, `make pty` |
+| Install and release | `install.sh`, `engine/src/cli.rs`, `.github/workflows/release.yml` | `engine/tests/install.rs`, CLI tests, `make release-rehearsal` |
 
-Rust paths in the table are relative to each crate's `src/`. The TUI reaches the engine only through the
-daemon socket (`tui/src/daemon_client.rs`): it never reads the database and never executes anything in its
-own process. Callbacks and queue types are named in their own module so complex signatures are not copied
-across files. Extract a module around an independent responsibility and a real change rate; do not create a
-framework used in one place just to silence a lint.
+The TUI reaches the engine through the daemon socket, not the database. Extract modules around independent
+responsibilities and real change rates; do not add a framework to silence a lint or make a one-off abstraction.
 
 ## Stable regression tests
 
-Integration tests prefer isolating `XDG_CONFIG_HOME`/`XDG_STATE_HOME` through a child process
-(`Command::env`, see `engine/tests/cli.rs`). When a test really must change the process environment, it
-touches only its own variables and restores them inside the same test; engine library tests keep using the
-existing `crate::env_lock()` convention. Test projects for production sessions must be separate from the
-config and state directories — use `project/`, `config/` and `state/` under one temporary root, and never
-share a temporary root containing XDG state (or `/tmp`) as the working root.
+Integration tests isolate `XDG_CONFIG_HOME` and `XDG_STATE_HOME` through child processes (`Command::env`, see
+`engine/tests/cli.rs`). If a test must change its own process environment, change only its variables and
+restore them in the same test. Engine library tests use `crate::env_lock()` where appropriate.
 
-Fake services read the request before answering, so no response can precede the pending request. Concurrency
-assertions prefer barriers or channels, and the environment is torn down only after every thread and child
-process has been closed and joined; never rely on test-name ordering or on the machine's own user config.
+Keep project, config and state directories separate beneath a temporary root. Do not use a directory containing
+XDG state, or `/tmp` itself, as a production-session workspace. Tests must not depend on the machine's user
+config, test-name ordering or responses that precede requests.
 
-Coverage by layer: `v2_driver` owns result reuse after a crash (never re-executing side effects), the
-disk-full stop and recovery, cancellation and required checks; `jobs_runner` owns runner/daemon crashes,
-duplicate GO and services surviving a daemon exit; `v2_supervisor` owns multi-instance scheduling;
-`v2_daemon` owns the handshake, watermark resume and refusing a second daemon; `v2_mcp` owns binding,
-approval and cancellation; `providers_fake`/`providers_stall` own truncated streams, connection loss and
-retry; `v2_invariants` maps the formal invariants back onto the current command set. All of them use local
-fixtures and fake services; evidence and boundaries are in [ACCEPTANCE](ACCEPTANCE.md) and they never count
-as real-model or real-provider acceptance.
+Use barriers or channels for concurrency, and join every thread and child before tearing down fixtures. Fake
+services should read each request before answering.
 
 ## Code review and evidence
 
-- The shared formatting lives in the root `rustfmt.toml`; submit large formatting sweeps separately from
-  behaviour changes so the real logic stays reviewable.
-- Never disable a lint crate-wide. An existing wide interface that must stay can carry a function-level
-  `#[expect(..., reason = "...")]`; an expectation that lost its trigger also fails the strict check.
-- File opens state whether they keep, append or truncate, and lock files keep their inode and content — they
-  are never turned into truncating opens to silence a lint.
-- New logic is verified for success, failure and recovery; a pure move or reformat reuses the existing
-  regression instead of adding a mirrored test.
-- `review/tmp/` is the ignored probe and scratch area. Durable conclusions go into a dated `review/*.md`,
-  evaluation evidence into `review/eval/r2-p6/runs/`; Python caches, temporary databases, nested Git
-  repositories and full copies of old sources are never committed. The TLA+ targets put their per-run meta
-  directories under `review/tmp/tla/` and remove each one when the run returns (D-293), so nothing there
-  survives a target unless it was killed mid-run — a `review/tmp/tla/` or `verification/tla/states/` left
-  behind is scratch and may be deleted.
+- Keep large formatting sweeps separate from behavior changes. Never disable a lint crate-wide; use a scoped
+  `#[expect(..., reason = "...")]` only when the interface genuinely requires it.
+- File opens must state whether they keep, append or truncate. Do not turn lock files into truncating opens to
+  silence a lint.
+- Test new logic for success, failure and recovery. Pure moves and formatting reuse existing regressions.
+- `review/tmp/` is ignored scratch space. Durable conclusions belong in dated reports; frozen evaluation
+  evidence belongs under `review/eval/r2-p6/runs/`.
+- Do not commit Python caches, temporary databases, nested repositories, build output or copies of old source.
+  Temporary files created by a review belong in `/tmp` or `review/tmp/`.
+- Read-only reviews must not modify reviewed files. Every falsification claim needs a reproducible command or
+  probe and must first rule out probe error.
 
 ## Documentation maintenance
 
-Keep document roles separate:
+Give each document one job:
 
-| Document | Owns | Does not imply |
+| Document | Owns | Do not use it for |
 |---|---|---|
-| README and its Chinese mirror | Short introduction, current install path and important boundaries | Complete reference or comparative acceptance |
-| USER-GUIDE and INSTALL | Behavior and commands users can use now | A future feature or a historical installer is available today |
-| DESIGN and DECISIONS | Confirmed requirements, contracts and dated decisions | An older entry overrides a newer decision |
-| ACCEPTANCE and CAPABILITIES | Per-item evidence/local baseline and its concise capability map | A green Cargo gate is real-service or comparator acceptance |
-| PRODUCT-COMPARISON | Dated comparator scope and one prioritized candidate queue | Implementation, spend or publication authorization |
-| HANDOFF | Latest inspected source, regression entry points and preservation rules | Remote synchronization or installed-binary identity |
-| Dated review reports/manifests | Evidence of their exact recorded sources and runs | A later source passed the same experiment |
+| README and Chinese mirror | Current introduction, installation and important boundaries | Complete reference or benchmark proof |
+| USER-GUIDE and INSTALL | Commands and behavior available now | Future features or retired behavior presented as current |
+| DESIGN and DECISIONS | Requirements, contracts and dated decisions | Letting an older entry override a newer one |
+| ACCEPTANCE and CAPABILITIES | Evidence and its limits | Treating local tests as live-service acceptance |
+| PRODUCT-COMPARISON | Dated comparison and one candidate queue | Implementation, spend or release authorization |
+| HANDOFF | Latest baseline, focused checks and preservation rules | Remote/install identity or blanket work authorization |
+| Dated reports and manifests | Evidence for their recorded sources and runs | Claims that later source passed the same run |
 
-When behavior changes, update its user-facing home, evidence boundary and handoff together. Link to the
-candidate queue rather than copying it into several pages. Record the inspected commit and actual run date;
-do not attach new suite counts to an older independent audit. Mark implemented, partially verified, absent
-and intentionally excluded capabilities separately. Correct current summaries while preserving immutable
-receipts and historical decisions; add a dated clarification rather than silently regrading a run.
+When behavior changes, update its user-facing home, evidence boundary and handoff together. Link to shared
+lists instead of copying them. Record the inspected commit and actual run date. Distinguish implemented,
+partially verified, absent and intentionally excluded capabilities. Correct current summaries without
+rewriting frozen receipts or regrading historical runs.
 
-Use one H1, meaningful section names, relative links and consistent status terms. Code/docs remain English
-except the Chinese README and frozen evidence. Keep README headings, links and CLI examples mirrored.
-Generated blocks in CONFIG/EVENTS/PROTOCOL/TOOLS come from their catalogues: do not manually edit a schema
-quote to describe a wished-for behavior. Reconcile the implementation first when such a change is approved.
-A documentation-only correction to surrounding prose needs no regeneration.
+Write for the reader: state current behavior first, use direct sentences, and keep decision chronology in
+DECISIONS or dated reports. Do not repeat the same caveat in several sections or narrate how a document was
+assembled. Use one H1, descriptive headings, relative links and consistent terms. Keep the two READMEs aligned
+on headings, links, CLI flags, Ctrl chords and slash commands; `review/readme_zh.py --self-check` checks the
+comparison itself.
 
-Run `make hygiene` and `git diff --check` for documentation edits; run the full `make check` before a commit.
-If documentation exposes an already implemented key missing from an audit's vocabulary, extend that check
-without suppressing its source-handler validation. The audit checks structure, not every semantic claim:
-manual source review is still required. D-460 records the current cleanup and candidate-queue separation.
+Regenerate references after changing their source:
+
+```bash
+python3 review/config_reference.py --write
+python3 review/event_catalogue.py --write
+python3 review/protocol_catalogue.py --write
+python3 review/tool_catalogue.py --write
+python3 review/test_counts.py --write   # after suite-size changes; updates all governed statements
+```
+
+Run `make hygiene` and `git diff --check` for documentation edits, and `make check` before committing. Extend
+an audit when it misses a real interface; do not weaken its validation to accept drift.
 
 ## Dependencies, toolchain and releases
 
-Each crate commits its own `Cargo.lock`, and both the regular checks and the release build use `--locked`.
-Before adding a dependency, check whether the standard library or an existing dependency already covers the
-need; when upgrading one, update only the affected lock files and re-run the interface checks plus
-`make check`. Upgrading Rust means editing the version in `rust-toolchain.toml` and re-running `make fmt`,
-`make check` and `make pty`; CI and the release workflow pick the new version up automatically.
+Each crate commits its own `Cargo.lock`, and checks and release builds use `--locked`. Prefer the standard
+library, then existing dependencies, before adding a new one. Update only affected lockfiles and rerun the
+relevant interface checks and `make check`.
 
-**Published release (v0.2.0).** D-457 removed the earlier tags; **v0.2.0** is the first public release
-(2026-10-22, Linux x86_64 musl-static). The workflow's Publish step still requires
-TEAMAGENTS_RELEASE_APPROVED=true; setting that variable is not a substitute for user authorization.
+A Rust upgrade means changing `rust-toolchain.toml` and rerunning `make fmt`, `make check` and `make pty`.
+CI and release builds read the same pin.
 
-**For a future release**, the procedure is:
+**Published release:** v0.2.0 is the first public release (2026-10-22, Linux x86_64 musl-static). A future
+release requires explicit authorization and the workflow repository variable TEAMAGENTS_RELEASE_APPROVED=true.
+The variable alone
+is not authorization.
 
-1. **Bump all three crates and their lock files.** Each `Cargo.lock` carries its crate's own version, and both
-   `make check` and the release build run `--locked`, so a missed lock is a build failure. `review/release_artifact.py`
-   (in `make hygiene`) reports a version the three disagree about, which the workflow would refuse at the tag.
-2. **Update `.github/release-notes.md`** — the workflow publishes it as the release body (`--generate-notes` adds the
-   rest) — and pass CI: `make check`, `make pty`, and the probes that need no credentials. Its local-regression
-   counts are the acceptance ledger's, and `review/test_counts.py` (in `make test`) holds both to the crates' own
-   test lists (D-221); `review/build_references.py` fails if the workflow's `--notes-file` names a file the
-   repository does not carry.
-3. **Push the `vX.Y.Z` tag.** The workflow refuses a tag that is not `v<version>`, reads the toolchain from
-   `rust-toolchain.toml`, builds musl-static binaries, packages them with `README.md`, `config.example.toml`,
-   `install.sh`, `docs/`, `examples/` and `AGENTS.md`, checksums the archive and the installer, smoke-installs the
-   exact archive (install, `init` writing a config, and the TUI binary executable), and publishes only when
-   the explicit repository-variable gate is enabled.
-   `review/build_references.py` reads the same workflow and fails on a file it copies that the repository does not
-   carry — D-216 found the one that did, which would have stopped the release at that step.
-   The same path can be run before the tag without publishing: `make release-rehearsal` (D-217) runs the version
-   gate, the musl-static release build of both binaries, the archive, the checksums and the smoke against the tree,
-   and prints the archive's size. A build, not a check — a cold run is minutes, so it stays out of `make check`.
-4. **Update release freshness claims.** After an authorized publication, update INSTALL, both READMEs,
-   ACCEPTANCE, CAPABILITIES and HANDOFF to name the exact artifact and its source. `review/release_artifact.py`
-   checks the published state and `review/install_check.py` exercises the published artifact; neither
-   relabels history.
-5. **Verify the published artifact**: the SHA-256 from the public URL, the install, `init` keeping an existing
-   config and a real TUI start.
+For a future release:
 
-Real-model evaluation needs explicit credentials and the model's native context, recorded separately; a maintenance
-regression never claims to widen provider compatibility.
+1. Bump all three crates and their lockfiles. `review/release_artifact.py` checks version agreement.
+2. Update `.github/release-notes.md`, pass `make check` and `make pty`, and run the required probes.
+   `review/build_references.py` checks workflow file references; `review/test_counts.py` keeps suite counts
+   aligned.
+3. Push the authorized `vX.Y.Z` tag. The workflow checks the tag/version, builds musl binaries, assembles and
+   checksums the archive, and smoke-installs that exact archive before the publication gate.
+4. Rehearse without publishing with `make release-rehearsal`. This is a build and can take several minutes on
+   a cold cache; `review/release_rehearsal.py` implements the local steps.
+5. After publication, update INSTALL, both READMEs, ACCEPTANCE, CAPABILITIES and HANDOFF with the exact
+   artifact and source. `review/install_check.py` verifies the published artifact; it does not relabel history.
 
-D-451's reproducible unpublished rehearsal is `python3 review/maturity-2026-10-11/install.py`. It installs the
-actual musl archive under fresh HOME/XDG/bin/workspace roots, verifies checksums, init/config preservation and
-doctor, then drives installed CLI/daemon/runner/PTY coding, queue, attachment, search, reconnect and session
-paths with a deterministic loopback provider. No user installation is replaced and no tag is published.
-The artifact hashes and platform are recorded by `review/maturity-2026-10-11/run.py`.
-
-The TUI invokes its own `--display-worker` mode for rendering only. It clears the environment, closes inherited
-FDs and installs process limits plus a Linux syscall allowlist before parsing; there is no configurable worker
-executable override. Test-only parent injection uses `TEAMAGENTS_DISPLAY_WORKER_TESTS` for fault modes. Build
-`teamagents-tui` before focused library tests that invoke the helper. Media gets 3 s; cold code grammars get
-6 s, with an 8 s CPU backstop (D-452). The host-side confined regular-file read precedes the helper and is not
-a filesystem liveness guarantee.
-The source remains readable when isolation or rendering fails.
+The D-451 rehearsal remains available as `python3 review/maturity-2026-10-11/install.py`, with hashes recorded
+by `review/maturity-2026-10-11/run.py`. It uses fresh HOME/XDG/bin/workspace roots and does not replace the
+user's installation or publish a tag.
 
 ## Fixed tasks and grading
 
-The task set and runner live in `review/eval/r2-p6/`: each task `tasks/<id>/` provides `prompt.md`,
-`checks.txt` and an optional `fixture/`; `run.py` gives every trial a fresh working directory and state
-directory, grades it inside **that same directory** from `checks.txt` once the trial ends, and writes the
-result to `runs/<date>/results.jsonl`. Group definitions, frozen parameters and limits are in the
-[evaluation guide](../review/eval/README.md).
+The fixed task set and runner live in `review/eval/r2-p6/`. Each task provides `prompt.md`, `checks.txt` and an
+optional `fixture/`. `run.py` gives every trial fresh work and state directories, grades inside that same
+work directory and writes `runs/<date>/results.jsonl`. See the [evaluation guide](../review/eval/README.md).
 
-- Grading runs inside the trial directory only and never reads the current work tree; task inputs and grading
-  scripts are frozen before a run (`manifest*.json` records the hashes).
-- Build output of large tasks can reach several GB: check the filesystems with `df -h /tmp .` first, put the
-  output directory in the ignored `review/tmp/` or on a separate disk, and point `TMPDIR` at the same disk.
-- Existing evidence is never cleaned automatically; during a run the inputs, grading and candidates stay
-  untouched, and a historical failure is never re-recorded as a success because storage moved.
-- When comparing against a competitor CLI that can read files outside the workspace, putting the tests far
-  away is not enough: mount only the public inputs in an isolated filesystem view and use a
-  model-free probe to confirm the hidden material is unreadable while the workspace stays writable and the
-  other sandbox is still active. If the model already read hidden material, stop, keep the polluted trace and
-  re-run with fresh inputs; never continue from the polluted context.
+- Freeze task inputs and grading before a run; manifests record their hashes.
+- Check disk space first. Large build output can reach several GB; use an ignored output directory and, when
+  needed, point `TMPDIR` at the same filesystem.
+- Never rewrite existing evidence or convert an old failure into a success by moving storage.
+- When comparing products, isolate hidden tests with an external filesystem boundary and verify it with a
+  model-free probe. TeamAgents no longer provides that boundary itself.
+- If hidden material enters a model's context, stop and retain the polluted trace. Rerun with fresh inputs
+  rather than continuing from contaminated context.
 
 ## Real-model verification
 
-Real-model evidence comes from three explicit entry points, none of which is part of `make check` (they need
-credentials and a native context configuration):
+Real-model runs need explicit credentials, authorization and the model's native context. They are not part of
+`make check`.
 
 ```bash
-# A/B/C comparison over the fixed task set (pre-registration and frozen parameters in review/eval/r2-p6/design.md)
 python3 review/eval/r2-p6/run.py --phase pilot  --out review/eval/r2-p6/runs/<new date>
 python3 review/eval/r2-p6/run.py --phase formal --out review/eval/r2-p6/runs/<new date>
-# one headless turn: starts the daemon when needed and reports the outcome (--json for a machine-readable summary)
 engine/target/debug/teamagents exec --json --timeout 180 "1+1=?"
-# direct reference loop (group A entry, same kernel/tools/config)
 engine/target/debug/examples/eval_group_a --task "..." --workdir /tmp/t --trace /tmp/t-trace
-# the dogfood probes: the built CLI, real daemons and the real TUI, driven end to end
-make probe-offline                       # the probes that need no model and no credential, ~2 min
-make probe-models                        # the probes that take a model, one after another (~7 min)
-python3 review/dogfood/checks.py --state-dir /tmp/ta-checks   # one model probe at a time
+make probe-offline
+make probe-models
+python3 review/dogfood/checks.py --state-dir /tmp/ta-checks
 ```
 
-- **The probes** are in `review/dogfood/` (`review/dogfood/README.md` describes each one and what it asserts).
-  `make probe-offline` runs the ones that need no model and no credential; `make probe-models` runs the rest,
-  one after another (`python3 review/dogfood/probes.py --list` prints both sets and why each probe is in one). Both fail if the run leaves a daemon or a scratch directory behind
-  (D-111, D-131; the same guard as `make test`, D-147) and keep the state of a probe that failed (D-138).
-- Always use the model's native context length and record the value and its source in the report (D-36);
-  DeepSeek Flash uses the user-confirmed 1M.
-- Every trial uses a fresh working and state directory; results go to `runs/<date>/results.jsonl` and each
-  trial's session database and artifacts stay in `runs/<date>/{state,work}/`. Compile caches and SQLite
-  temporaries of a trial are **never committed**: `.gitignore` excludes `target/` and `*.sqlite-wal|shm`,
-  and `make hygiene` rejects them.
-- Conclusions follow the pre-registered criteria only; with too few samples, an interval containing 0 or too
-  much variance, write "not confirmed" — never "equivalent" and never a claimed gain.
+`review/dogfood/README.md` describes the probes. `make probe-offline` selects credential-free checks;
+`make probe-models` runs model-requiring checks serially. `python3 review/dogfood/probes.py --list` shows both
+sets. The harness keeps failed-run state for diagnosis and applies the same leak rules as the test suites.
 
-Operational notes for real-model runs (tasks can park in `BLOCKED`, approvals expire with the turn, heavy
-tasks should write early) are in the repository's [AGENTS.md](../AGENTS.md).
+Use fresh work/state directories and the model's native context window, recording its value and source.
+DeepSeek Flash uses the user-confirmed 1M window. A run with a deliberately shrunken real-model window is not
+valid acceptance evidence.
+
+Follow the preregistered grading criteria. Small samples, intervals containing zero or high variance call for
+an inconclusive result, not a claim of parity or improvement. Operational recovery notes are in
+[AGENTS.md](../AGENTS.md).

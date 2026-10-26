@@ -735,8 +735,8 @@ pub(crate) fn spawn_driver<P: Provider + 'static>(
     std::fs::create_dir_all(&jobs).map_err(|e| crate::cli::derived_dir_uncreatable(&jobs, &e))?;
     let artifacts = config.state_root.join("artifacts");
     std::fs::create_dir_all(&artifacts).map_err(|e| crate::cli::derived_dir_uncreatable(&artifacts, &e))?;
-    // one coordinator per state root: the supervisor hands its own (possibly
-    // relative) root down, and isolated shell binds need an absolute path
+    // Canonicalize the inherited root so job and artifact paths remain stable
+    // when the caller supplied a relative path.
     config.state_root = std::fs::canonicalize(&config.state_root)
         .map_err(|e| format!("state root {}: {e}", config.state_root.display()))?;
     let shared = Arc::new(Shared {

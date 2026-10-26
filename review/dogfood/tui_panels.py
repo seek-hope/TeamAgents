@@ -210,7 +210,7 @@ def main() -> int:
         cli("goals", "--json")
         cli("authority", "--json")
         print("  minimal TUI with CLI pause/resume/cancel/confirmed termination/status/history: exercised")
-        os.write(fd, b"\x04")
+        os.write(fd, b"\x11")
         pump(0.5)
     finally:
         if pid:

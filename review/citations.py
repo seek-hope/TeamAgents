@@ -10,8 +10,8 @@ nothing reads), all found by hand.
 
     python3 review/citations.py
 
-It reads the tracked markdown (docs, review, README.md, AGENTS.md) and checks three kinds of backticked
-citation against the tree:
+It scans tracked Markdown and Rust source for backticked qualified names, repository paths and Rust basenames,
+then also checks relative links, `make` targets, TLA+ model names and numbered-section references:
 
   * a qualified name `` `a::b` `` must resolve to a test, to any `fn`/`const`/`static`/`struct`/`enum`/`type`/
     `trait`/`mod` name, or to a module file (`a::b` resolves if `b.rs` exists);
@@ -88,7 +88,7 @@ unless the line records it as archived or its file is the upstream-comparison no
 numbers are the compared platform's own).
 
 This docstring states counts of the current tree as well, and nothing looked at them either (D-208's pattern, one
-file over): **30** markdown files and **129** Rust files carry **1413** citations, **163** relative links, **783** `make` commands and **1070** `§`-section references, all five recomputed and compared here.
+file over): **30** markdown files and **129** Rust files carry **1401** citations, **163** relative links, **728** `make` commands and **1036** `§`-section references, all recomputed and compared here.
 """
 
 import pathlib

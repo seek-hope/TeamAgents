@@ -1,22 +1,14 @@
 #!/usr/bin/env python3
-"""Tests that contribute nothing without saying so (the detector behind D-121).
+"""Report tests that return early without explaining the skip (D-121).
 
-A test that skips has to be *visible*: the GitHub runner has no bubblewrap, so several isolation tests cannot
-run there, and the convention is that each one either asserts the half it can still observe (D-113/D-114) or
-prints why it is skipping. A bare `if <condition> { return; }` does neither — it turns the test into a no-op and
-nobody finds out. Two sites did exactly that for as long as they existed (`tools.rs`'s cancelled-sandbox and
-sandbox-build tests), and the loud skips were swept by hand before them.
+A bare `if <condition> { return; }` can turn a missing capability into a false pass. The check covers only a
+condition directly inside a `#[test]` or `#[tokio::test]`; returns in nested helpers and spawned tasks are not
+test skips. It runs in `make hygiene`.
 
     python3 review/silent_skips.py
 
-The rule is deliberately narrow, so that a finding is always worth reading: inside a `#[test]`/`#[tokio::test]`
-function, an `if ... {` block whose body (comments and blank lines ignored) is *only* `return;`. Guards inside a
-nested helper — an `async fn` defined in the test, or a closure handed to `tokio::spawn` (a fake server's writer
-loop, a polling helper whose timeout path panics) — are not skips and are not reported. This runs inside
-`make hygiene`.
-
-Limits: a skip written as `for ... { continue; }`, a `let _ = test_body()` that returns early, or a test that
-quietly asserts nothing are all outside this rule; the first two are rare, the third is what review is for.
+The rule is deliberately narrow: `for ... { continue; }`, helper functions that return early and tests with no
+assertions need other review. This is a structural check, not a coverage proof.
 """
 import pathlib
 import re

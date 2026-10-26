@@ -185,8 +185,8 @@ def main() -> int:
     if not any(e.get("role") == "assistant" and e.get("content", "").strip() == ANSWER for e in context):
         failures.append(f"the model's answer is not an assistant entry in the session ({roles})")
 
-    # 5. quit the TUI (Ctrl+D) and stop the daemon this run started
-    os.write(fd, b"\x04")
+    # 5. quit the TUI (Ctrl+Q) and stop the daemon this run started
+    os.write(fd, b"\x11")
     time.sleep(1.0)
     try:
         os.kill(pid, 9)

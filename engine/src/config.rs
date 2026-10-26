@@ -417,10 +417,8 @@ fn validate_tools(catalog: &UserConfig) -> Result<(), String> {
                 TOOL_KINDS.join(", ")
             ));
         }
-        // the execution boundary is a *safety* setting, and it had no check at all: `mcp_execution =
-        // "workspac"` silently meant the sandboxed default (measured 2026-09-27, D-162). `mcp_transport` is
-        // deliberately not checked here — `doctor` names an unserved transport before a session boots, which is
-        // D-74's shape ("where the user can still fix it without reading a daemon log").
+        // Validate the execution value instead of silently applying a default (D-162). `mcp_transport` is
+        // checked by doctor so the user can fix it before a session boots (D-74).
         // D-232: the field a binding's kind and transport *need*, refused at load — D-162's class one level in.
         // The binder reports a missing one when the session boots ("binding \"probe\" needs a command",
         // engine/src/bound.rs) while `doctor` still shows the binding as fine, so the user meets it after
@@ -716,10 +714,8 @@ mod tests {
 
     /// A key this build does not serve is refused with a pointer — at the top level and inside `[permissions]`,
     /// the two places serde's own unknown-field check never saw: the top level was filtered to the catalog keys
-    /// *before* parsing, and the permissions table is read by hand. Measured before this test existed
-    /// (2026-09-27): `skills_pathes = []` (a typo of `skills_paths`) and `[permissions] mod = "full_auto"` (a typo
-    /// of `mode`, a *safety* setting — the session would have run in `approved_scope`) both left `doctor` green,
-    /// while unknown keys in `[limits]`, `[retention]`, `[hooks]`, `[tools.*]`, `[models.*]` and `[[checks]]`
+    /// *before* parsing, and the permissions table is read by hand. Before this test existed (2026-09-27),
+    /// `skills_pathes = []` and `[permissions] mod = "full_auto"` both left `doctor` green, while unknown keys in `[limits]`, `[retention]`, `[hooks]`, `[tools.*]`, `[models.*]` and `[[checks]]`
     /// were already refused (D-161).
     #[test]
     fn a_key_the_build_does_not_serve_is_refused_with_a_pointer() {
@@ -1504,8 +1500,8 @@ fn project_permissions(user: &toml::Value) -> Result<Permissions, String> {
         });
     };
     let table = permissions.as_table().ok_or_else(|| "[permissions] must be a table in user config".to_string())?;
-    // the same rule as the top level: `mod = "full_auto"` (a typo of `mode`, a *safety* setting) used to leave
-    // `doctor` green and the session in `approved_scope` (measured 2026-09-27, D-161)
+    // Reject unknown permission keys here as well as at the top level; a typo must
+    // not silently change trust or review behavior (D-161).
     for key in table.keys() {
         if key == "sandbox" || key.starts_with("sandbox_") {
             return Err(format!("permissions.{key}: sandbox support was removed (D-480); remove this setting to use host execution without per-shell approval"));

@@ -701,8 +701,7 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
         }
         std::thread::sleep(Duration::from_millis(250));
     }
-    // The user's own acceptance commands are the last word on a finished turn:
-    // they run in this workspace through the same isolated shell the tools use.
+    // The user's acceptance commands run on the host in this workspace after a finished turn.
     // Nothing runs when the turn is not finished — an approval no headless caller can give, the caller's own
     // deadline passing, or a request the runtime *refused before it began* (a budget ceiling, a passed goal
     // deadline: `refused`) — because there is no acceptance to verify (§8), or when the input never landed,

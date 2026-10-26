@@ -41,8 +41,8 @@ INVOCATION = re.compile(r"python3\s+([^\s;|)'\"]+\.py)")
 # Root-level audit scripts no make target runs, each with the reason it stays that way. An entry a target *does*
 # run is a finding below, so this list cannot shelter a script that has since been wired up.
 HAND_RUN = {
-    "review/host_cleanup.py": "reads the host's own process table (D-189): it reports nothing from a sandbox "
-                             "and changes nothing, so there is no gate result to check",
+    "review/host_cleanup.py": "reads the host's own process table (D-189): container PID namespaces can hide "
+                             "processes and the probe changes nothing, so there is no gate result to check",
     "review/install_check.py": "downloads the published release and installs it (A36): network and an external "
                                "artifact, run by hand and dated in the acceptance row",
     "review/runner_cost.py": "a one-off cost meter (D-153) whose numbers A12 records; it measures a process, it "

@@ -1,12 +1,11 @@
 # Installing, first run and upgrades
 
-TeamAgents targets **Linux x86_64**. The first public release is **v0.2.0**, a musl-static archive that
-needs no Rust toolchain to run. The installer resolves the latest release and verifies its SHA-256; build
-from source when developing (§1).
+TeamAgents supports **Linux x86_64**. The published release is **v0.2.0**; current source may contain newer
+changes. Release archives are statically linked against musl and do not need Rust at runtime.
 
-### Published release (v0.2.0)
+## 1. Install TeamAgents
 
-Run the installer from a working directory, then initialize:
+### Published release
 
 ```bash
 (
@@ -20,12 +19,13 @@ export PATH="$HOME/.local/bin:$PATH"
 teamagents init
 ```
 
-Then continue at §2 for configuration, or use the source build in §1.
+The installer selects the latest release, verifies its checksum and installs `teamagents` and
+`teamagents-tui` together. Continue with §2, or build from source below.
 
-## 1. Build and install from source
+### Build and install from source
 
-Run these commands from the repository root. Rust is pinned by rust-toolchain.toml; Cargo builds core as
-a dependency of the two executable crates. The first build may download the toolchain and locked dependencies.
+Run from the repository root. `rust-toolchain.toml` selects the Rust version, and Cargo builds `core` as a
+dependency of the two executable crates. The first build may download the toolchain and locked dependencies.
 
 ```bash
 cargo build --locked --release --manifest-path engine/Cargo.toml --bin teamagents
@@ -35,33 +35,31 @@ install -m755 engine/target/release/teamagents tui/target/release/teamagents-tui
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-Add `--offline` once dependencies are cached. Both binaries must come from the same source and be installed
-in the same directory. Before replacing an existing installation, finish or explicitly stop its work and
-follow section 3; closing the TUI alone does not stop the daemon. If the destination uses a versioned
-installation with symlinks, preserve that layout rather than copying through its active links.
+Add `--offline` after dependencies are cached. Install both binaries from the same source into the same
+directory. Before replacing an existing installation, finish or explicitly stop its work as described in §3;
+closing the TUI alone leaves the daemon running. If the destination uses versioned symlinks, preserve that
+layout instead of copying through active links.
 
-The [README](../README.md#building-from-source) gives the short path. Build and test conventions are in
-[DEVELOPMENT.md](DEVELOPMENT.md); no root Cargo workspace manifest is required.
+See the [README shortcut](../README.md#building-from-source) and
+[development guide](DEVELOPMENT.md) for build and test conventions. There is no root Cargo workspace.
 
-### Local archives and release assets
+### Local archives
 
-The installer also accepts a locally built Linux x86_64 musl archive with its matching SHA256SUMS beside it:
+The installer accepts a Linux x86_64 musl archive with its matching `SHA256SUMS` beside it:
 
 ```bash
-# Replace VERSION with the version in your locally built archive.
+# Replace VERSION with the archive's version.
 sh install.sh --archive /path/to/teamagents-VERSION-x86_64-unknown-linux-musl.tar.gz
 ```
 
-This requires the matching installer and archive; a local archive is an alternative to the published download. A musl archive does
-not need Rust, Python or Node.js merely to run the product; tools and MCP services may need their own
-runtimes. The installer verifies checksums, installs both binaries together, never invokes sudo and never
-edits shell startup files. Use `--bin-dir "$HOME/bin"` for another destination. A missing checksum or
-incomplete archive is a refusal, not permission to bypass verification.
+Use the installer that matches the archive. The product itself does not need Python or Node.js, although
+individual tools and MCP services may need their own runtimes. The installer verifies checksums, never invokes
+sudo and does not edit shell startup files. Use `--bin-dir "$HOME/bin"` to choose another destination. Missing
+or invalid checksums stop installation; do not bypass that check.
 
-The [D-451 maturity report](../review/maturity-2026-10-11/REPORT.md) records a pinned-source installation
-rehearsal; that evidence stays historical. The v0.2.0 tree passed `make release-rehearsal` locally, and
-the tag workflow repeats the exact-archive install smoke before publishing. Neither widens the report's
-original evidence boundary.
+The [D-451 installation rehearsal](../review/maturity-2026-10-11/REPORT.md) is pinned to its recorded source.
+The v0.2.0 workflow also smoke-tested its exact archive before publication. Neither result is a promise about
+every later source revision.
 
 ## 2. First configuration and start
 
@@ -69,16 +67,16 @@ original evidence boundary.
 teamagents init
 ```
 
-The config lives at `${XDG_CONFIG_HOME:-$HOME/.config}/teamagents/config.toml`. Repeating init preserves
-an existing file, including symlinks. A new file is mode 0600 and contains no credential values. Init also
-prepares the state root and session database; it starts no daemon or conversation.
+The config is `${XDG_CONFIG_HOME:-$HOME/.config}/teamagents/config.toml`. Repeating `init` preserves an
+existing file, including symlinks. A new file has mode `0600` and contains no credential values. `init`
+prepares the state root and session database without starting a daemon or conversation.
 
-The generated model profile is leader_main with deepseek-flash, a 1,000,000-token context and high reasoning
-effort. For another service, set the protocol, model, endpoint, credential variable and native context
-window together; see [configuration](USER-GUIDE.md#2-configuration). Additional bindings are illustrated in
+The generated `leader_main` profile uses `deepseek-flash`, a 1,000,000-token native context and high reasoning
+effort. To use another service, update its protocol, model, endpoint, credential variable and native context
+window together. See [configuration](USER-GUIDE.md#2-configuration) and
 [examples/config.toml](../examples/config.toml). Never put API key values in tracked files.
 
-Shell and local MCP execute on the host. No sandbox package is required.
+Current source runs Shell and local MCP on the host; no sandbox package is required.
 
 ```bash
 export DEEPSEEK_API_KEY='your key'
@@ -87,62 +85,67 @@ teamagents --cwd /path/to/project
 ```
 
 Omit `--cwd` to use the current directory for a new daemon. A client joining an existing daemon keeps that
-session's workspace; use an explicit named session or another state root for another project.
-`teamagents --help` lists management commands. For scripts, use `teamagents exec "Explain this repository"`;
-`--json` returns a machine-readable report.
+session's workspace; select another named session or state root for another project. For scripts, use
+`teamagents exec "Explain this repository"`; `--json` prints a machine-readable report. `teamagents --help`
+lists management commands.
 
-Doctor sends no model request. Fix required failures before starting; warnings identify optional or
-unconfigured capabilities. Use `teamagents doctor environment` to discover host development tools.
-Bash inherits the host PATH without sourcing login profiles. Remove old sandbox configuration before starting
-a new daemon; see [permissions and isolation](USER-GUIDE.md#4-permissions-and-isolation).
+`doctor` sends no model requests. Fix required failures before starting; warnings describe optional or
+unconfigured capabilities. `teamagents doctor environment` discovers host development tools without running
+them. Bash inherits a controlled host environment without sourcing login profiles. Remove retired sandbox
+settings before starting a new daemon; see [permissions and execution](USER-GUIDE.md#4-permissions-and-execution).
 
 ## 3. Upgrade and uninstall
 
 For a manual source upgrade:
 
-1. Review the target source, schema compatibility and [acceptance limits](ACCEPTANCE.md); build both new
-   binaries before touching the installation. Preserve the old binaries and make a consistent backup of
-   any session you cannot afford to lose. A binary rollback is not a database-schema rollback.
-2. Finish work or explicitly terminate the relevant instances. Ctrl+Q only quits the TUI; task cancellation
-   does not stop a running command. A graceful daemon stop allows committed runners to finish, so it is
-   not a substitute for stopping active work.
-3. Stop each affected daemon using its state root, then replace both binaries from the same build:
+1. Review the target source, schema compatibility and [acceptance limits](ACCEPTANCE.md). Build both binaries
+   before changing the installation. Preserve the old binaries and back up any session you cannot afford to
+   lose. A binary rollback does not roll back a database-schema migration.
+2. Finish work or explicitly terminate the relevant instances. `Ctrl+Q` only closes the TUI, and task
+   cancellation does not stop a running command. A graceful daemon stop lets committed runners finish, so it
+   is not a substitute for stopping active work.
+3. Stop each affected daemon by state root, then install both binaries from the same build:
 
    ```bash
    teamagents --state-root /path/to/session-state daemon --stop
    ```
 
-4. Run `teamagents version` and `teamagents doctor`, then reconnect to the intended session. Init preserves
-   existing configuration; it does not merge new fields into it. Edit those fields deliberately.
+4. Run `teamagents version` and `teamagents doctor`, then reconnect to the intended session. `init` does not
+   merge new settings into an existing config; review and edit them explicitly.
 
-D-453 provides a separately tested, governed updater with health-check rollback and a journal. Agent
-update requests are disabled by default and require the user's concrete approval when enabled; the
-reviewer cannot authorize them. This mechanism does not create a release target; publication remains a separate authorized tag.
-See the update configuration in [CONFIG.md](CONFIG.md) and D-453 in [DECISIONS.md](DECISIONS.md).
+Older `sessions/` layouts and pre-v2 configs are not migrated automatically. `doctor` reports the old
+directory without adopting it. Inventory old data, choose a new state root and remove anything only through an
+explicit separate operation. Retired sandbox keys must be removed deliberately; they are not silently
+converted into host execution.
 
-To uninstall a simple two-binary source installation, first finish/stop its work and daemons, then remove
-only its launchers:
+The governed updater in D-453 provides a separately tested transaction with health-check rollback and a
+journal. Agent update requests are disabled by default and, when enabled, still require concrete user
+approval. The reviewer cannot authorize them. Publication remains a separate operation; see
+[update configuration](CONFIG.md) and [D-453](DECISIONS.md).
+
+To uninstall a simple two-binary installation, finish or stop its work and daemons, then remove only the
+launchers:
 
 ```bash
 rm -f ~/.local/bin/teamagents ~/.local/bin/teamagents-tui
 ```
 
-Configuration and sessions remain under `${XDG_CONFIG_HOME:-$HOME/.config}/teamagents` and
-`${XDG_STATE_HOME:-$HOME/.local/state}/teamagents`. A versioned installation can also retain binaries and
-its update journal. Do not broadly delete those directories or existing sessions as part of uninstall.
+Configuration remains under `${XDG_CONFIG_HOME:-$HOME/.config}/teamagents`; sessions remain under
+`${XDG_STATE_HOME:-$HOME/.local/state}/teamagents`. Versioned installations may also retain binaries and an
+update journal. Do not delete those directories or existing sessions as a generic cleanup step.
 
 ## 4. Troubleshooting
 
 | Symptom | What to do |
 |---|---|
-| Command not found | Add the chosen bin directory to PATH in your terminal and shell startup file |
-| TUI binary missing or mismatched | Install both binaries from the same source into the same directory |
-| Config/model missing | Run init and check the config path printed by doctor |
-| Credential missing | Export the configured variable in the terminal that starts the daemon |
-| Public download returns 404 | Check the requested version and asset; v0.2.0 is published, so a wrong version or network failure is the likely cause |
-| Local archive checksum fails | Stop; obtain the matching archive/checksum pair and verify provenance |
-| Bubblewrap probe fails | Check kernel/container restrictions on unprivileged namespaces; no host fallback occurs |
-| A build tool is missing from the command PATH | Run `teamagents doctor environment`; check the host PATH and explicit per-member exports |
-| macOS / Windows / Linux ARM | No supported distribution is established by the Linux x86_64 checks |
+| Command not found | Add the chosen bin directory to `PATH` in the terminal and shell startup file |
+| TUI missing or mismatched | Install both binaries from the same source into the same directory |
+| Config or model missing | Run `teamagents init` and check the config path printed by `doctor` |
+| Credential missing | Export the variable named by `api_key_env` in the terminal that starts the daemon |
+| Public download returns 404 | Check the version, asset name and network; v0.2.0 is published |
+| Local archive checksum fails | Stop and obtain a matching, trusted archive/checksum pair |
+| Build tool missing | Run `teamagents doctor environment`, then inspect the host `PATH` and member exports |
+| Retired sandbox setting is rejected | Remove the named `sandbox`/`sandbox_*`, `mcp_network` or `mcp_execution = "workspace"` setting explicitly |
+| macOS, Windows or Linux ARM | No supported build is established by the Linux x86_64 checks |
 | Wrong workspace after changing directory | You joined an existing session; select the intended named session or state root |
-| State path is wrong | The state root is a directory, not the session.sqlite file; empty path arguments are refused |
+| State path is wrong | Pass the state-root directory, not the `session.sqlite` file; empty paths are refused |

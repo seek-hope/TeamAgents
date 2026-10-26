@@ -47,7 +47,7 @@ help:
 	@echo 'make verify-model-counterexamples  the negative controls, every one of which must be refuted'
 	@echo 'make verify-model-wide  the wide control-plane configuration (slow, best effort)'
 	@echo 'make verify-model-sim  any configuration by random simulation (minutes; invariants only)'
-	@echo 'make benchmark-receipts JOBS=DIR [BENCH=swebench|tau3|tb]  a benchmark run's receipts (D-421)'
+	@echo 'make benchmark-receipts JOBS=DIR [BENCH=swebench|tau3|tb]  benchmark receipt checks (D-421)'
 	@echo 'make verify-kani  the Kani proofs of the paging arithmetic'
 	@echo 'first run with downloads: make check CARGO_FLAGS=--locked'
 
@@ -378,8 +378,9 @@ language-check:
 # `docs/CONFIG.md` is generated from the config structs, so a new key (or a renamed one) must be documented in
 # the same change (D-128); `review/config_keys.py` then says whether anything reads it.
 # A test that skips must say so (D-121): a bare `if <condition> { return; }` inside a test makes it a silent
-# no-op, which is how two sandbox tests contributed nothing on a machine without bubblewrap.
+# no-op and can turn a missing capability into a false pass.
 hygiene: language-check
+	@$(MAKE) --no-print-directory help > /dev/null
 	git diff --check
 	git submodule status
 	@test -z "$$(git ls-files '*.pyc' '*/__pycache__/*' '*/.pytest_cache/*' '*/target/*' \

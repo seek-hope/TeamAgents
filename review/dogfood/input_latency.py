@@ -137,7 +137,7 @@ def main() -> int:
         if burst > BURST_BOUND:
             failures.append(f"a {len(WORD)}-character burst took {burst:.2f}s (bound {BURST_BOUND}s)")
 
-    os.write(fd, b"\x04")
+    os.write(fd, b"\x11")
     time.sleep(0.5)
     try:
         os.kill(pid, 9)

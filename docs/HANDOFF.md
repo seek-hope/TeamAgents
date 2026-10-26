@@ -1,151 +1,125 @@
 # Development handoff
 
-Updated **2026-10-26** for **D-480 host execution on 50df77fd**. This is the current entry point for a new development
-session, not an authorization to implement the candidate backlog. Recheck Git status and recent commits;
-this document does not assert that a remote branch or installed binary matches the working tree.
+Updated **2026-10-26**. The runtime baseline is **D-480 (`7ae6bd5b`)**. The current maintenance cleanup
+does not change session, protocol or execution semantics. It refreshes current documentation, extends README
+parity checks to Ctrl chords and slash commands, repairs `make help` quoting and updates dogfood probes to the
+documented Ctrl+Q quit key. Always recheck Git status and recent commits. This file records a starting point,
+not the state of the remote branch, an installed binary or permission to implement the candidate backlog.
 
 ## Start here
 
-1. Read [AGENTS.md](../AGENTS.md), then inspect Git status and recent commits.
-2. Read [DESIGN.md](DESIGN.md) for Q1-Q19 and A01-A36, the current rules and newest entries in
-   [DECISIONS.md](DECISIONS.md), and the baseline/current gaps in [ACCEPTANCE.md](ACCEPTANCE.md).
-3. Use [DEVELOPMENT.md](DEVELOPMENT.md) for build, tests and documentation maintenance.
-   [PRODUCT-COMPARISON.md](PRODUCT-COMPARISON.md) owns the prioritized daily-coding candidate queue,
-   including the source/documentation comparison with Pi 1.3.0. Agree a bounded objective before coding.
+1. Read [AGENTS.md](../AGENTS.md), then run `git status --short --branch` and `git log -5 --oneline`.
+2. Read [DESIGN.md](DESIGN.md) for Q1–Q19 and A01–A36, the current-rule table and latest entries in
+   [DECISIONS.md](DECISIONS.md), and the evidence boundaries in [ACCEPTANCE.md](ACCEPTANCE.md).
+3. Use [DEVELOPMENT.md](DEVELOPMENT.md) for builds, tests and documentation maintenance.
+   [PRODUCT-COMPARISON.md](PRODUCT-COMPARISON.md) is the only candidate-work queue. Agree on a bounded
+   objective before changing behavior.
 
-## Current source baseline
+## Current baseline
 
-| Source | What it contributes | Evidence boundary |
-|---|---|---|
-| ea43869d through a06a5150 | D-450/D-451 completion, highlighting, attachments, pending input, export/search and bounded display workers | Dated comparison/maturity receipts belong to their pinned source, not every later commit |
-| c77a691a, b3898af6, 6f8a7402 | D-452 input paging, attachment cleanup/concurrency, capture process groups and display bounds | The completed D-452 independent audit is historical; it is not the latest implementation baseline |
-| 11929da6 | D-455 task-scoped capability delegation, D-458 operation auto-review, D-453 updater, external editor, D-456 web tools and D-457 release freeze | Includes governed updater, external editor, DeepSeek web tools and release freeze; distinguish implemented mechanisms from real-service acceptance |
-| b4e9f1f9, 90ca30d8 | D-459 stable prompt-cache prefix/telemetry and the formal report's source pin | Cache usage is not a dollar estimate; no cache warming was added |
-| f78a6709 | Rust toolchain pin 1.99.1 | Read rust-toolchain.toml and the lockfiles before building |
-| bdae43e2, 47546b9b | D-463/D-464 idempotent command ids and shared result digests; D-465 atomic-action windows with concurrency tests | Result bodies are derived, not authoritative; the session database stays the source of truth |
-| c6dcc8a5, e1d842d1 | D-466 through D-470 | Backend selection was removed by D-480; instructions, skill resources, edits and session controls remain |
-| 9b29c8b5, 3b7ea4a1 | D-471 acceptance checks share the Shell implementation; transient ETXTBSY retry | D-480 now runs all checks on the host; backend-specific coverage is historical |
-| f00a2a31, 122fc628, 02be286d | D-472 terminal-agnostic PTY matrix; D-473 Ctrl+Q/Ctrl+P and the Leader model/effort menu; D-474 default reasoning effort high | PTY profiles are protocol checks, not a GUI matrix; a profile change applies at the next turn; `init` never rewrites an existing config |
-| v0.2.0 | first public release, rebuilt for D-476: Linux x86_64 musl-static archive, installer and SHA256SUMS | Tag `96acfde7`; run 39885779367; `review/install_check.py` verifies the published release; the original artifact's two downloads are not recalled |
-| D-479 | Explicit environment diagnosis, live workspace/config/source facts, actual Leader instruction-read observations and input-delivery receipts | Local scripted regressions and PTY; one-off sbx v0.49.2 diagnostic separated host/guest tools without a model call or policy change; no toolchain installation or hot reload |
-| D-478 (historical; removed by D-480) | Docker Sandboxes backend | Its live microVM receipts apply to the old source only |
+D-480 removed the OS sandbox backends. Shell, acceptance commands and local MCP services run on the host;
+ordinary Shell needs no per-command approval. Task capabilities, operation records, recovery and self-update
+approval remain. Retired sandbox configuration is rejected rather than silently downgraded. Existing sessions,
+VMs, packages and network policies are not removed by the migration.
 
-D-462 added the verification gate and ledger: every counterexample configuration names the claim it must
-refute (`expects:` marker, compared with TLC's output), every checked claim that no control refutes is a row in
-`verification/COVERAGE.md`, and the count there is **0** — every behavioural claim now has a refuting control
-or a justified `entailed-by`/`structural` status. A control that was silently refuting `TypeOK` was found and
-fixed. `make verify-model-all` verifies 47 configurations and `make verify-model-counterexamples` refutes 250
-controls; Kani is not installed on this machine.
+The last complete D-480 verification passed `make check` with **core 147 / engine 415 / tui 87**, plus the full
+`make pty` matrix. Local release binaries passed host discovery, the installed TUI smoke and a daemon-stop /
+runner-recovery check in which the command ran once and its saved result was imported after restart. These are
+local regression results, not an independent audit, real-provider trial or public-release replacement.
 
-D-461 implements the user's selected DD-01 option A: read-only work diagnostics and explicit recovery.
-Option B (automatic model reminders) was explicitly rejected. The shared projection lives in
-engine/src/v2/diagnostics.rs; checkpoint, instances, tasks and local TUI /help expose it. Tests cover query-only
-reopen, real daemon restart without additional model calls, explicit input/cancellation recovery and TUI frames.
+D-479 added host tool discovery, boot-scoped environment/config/source observations and input-delivery
+receipts. It does not hot-reload configuration or prove that a discovered toolchain works. D-461 implements
+read-only work diagnosis and explicit recovery instructions; automatic model reminders are not approved.
 
-Historical D-479 checks were **core 147 / engine 424 / tui 87** when recorded before D-480; the removed
-no-bubblewrap gate and **make pty** passed the terminal-profile
-matrix (xterm-256color, screen-256color, tmux-256color, xterm-kitty and Kitty under tmux; auto graphics) plus both forced protocol modes. These results are local regressions, not a new independent audit, real-model
-comparison, actual graphical-terminal matrix or public release. D-479 release-profile binaries were also
-installed locally with the user configuration unchanged: the installed CLI passed the explicit temporary-sbx
-diagnostic and the installed TUI passed the xterm-256color conversation PTY. No TeamAgents tmux session was
-running at installation, and existing session data was retained. This is a local source-build smoke, not a
-renewal of the historical installed-archive acceptance.
+Older evidence stays pinned to its own source:
 
-The [D-451 maturity report](../review/maturity-2026-10-11/REPORT.md) retains its immutable manifests and
-receipts. The [formal report](../verification/REPORT.md) carries its own source and run boundary. Neither
-is renewed by a documentation edit or a Cargo pass. D-457 removed the earlier tags; **v0.2.0** is the first
-public release of this implementation (2026-10-22). Source builds remain available; future publication
-requires separate authorization and the repository variable.
+- [D-451 maturity report](../review/maturity-2026-10-11/REPORT.md): immutable manifests and local workflow
+  receipts. Its verifier is expected to reject later source.
+- [Formal verification report](../verification/REPORT.md): recorded TLA+/Kani scope and unproven areas. Kani
+  was unavailable on this machine; a later Cargo pass does not renew the proofs.
+- v0.2.0 is the first public release. Current source may differ from that archive. Future publication needs
+  separate authorization and the repository release gate.
 
-D-480 removes all OS sandbox backends and selects automatic host Shell (user option A). Local MCP and
-acceptance commands use the host too. Retired config settings are rejected explicitly; existing sessions,
-VMs and packages are preserved. Host cwd/exports remain under the host state namespace. Saved legacy jobs
-may only supply verified terminal outcomes; unfinished legacy execution requires explicit operator handling.
-Task capabilities, hooks, operation records, recovery, self-update approval and SSH MCP remain.
-D-480 passed make check (core 147 / engine 415 / tui 87) and the full PTY matrix. Local release binaries
-were installed after backup; only the retired permissions.sandbox setting was removed from the local config.
-The SSH MCP binding is unchanged. Installed host discovery, the credential-free daemon-stop/runner-recovery
-probe (one execution, result imported after restart, no leaked probe processes) and the xterm-256color
-conversation PTY passed. These local checks used no external model service. The public release is unchanged.
+## Contracts to preserve
 
-## Behavior and focused regression entry points
+- `core/src/v2/control.rs::Control::submit` is the single team-transaction path. The control plane assigns
+  identity, operation ids and permission revisions; models and clients do not supply them.
+- `core/src/v2/store.rs` owns one SQLite database per session, with WAL and `synchronous=FULL`.
+  `engine/src/v2/storage.rs` serializes in-process writers.
+- Model and tool waits happen outside database transactions. Recovery uses persisted locations and runner
+  journals; unknown effects are not replayed.
+- Interrupting a model request, cancelling a task, terminating an instance and closing the TUI are different
+  operations. Task cancellation alone does not stop a running process group.
+- Workers have no ambient Shell. Capability requests and operation approvals are distinct. A `BLOCKED` task
+  does not satisfy a task wait; `CANCELLED` does.
+- Project trust does not let a repository supply hooks, checks, retention, limits or update policy.
+- Host Shell is not workspace confinement. File-tool path checks, controlled environment inheritance and
+  credential filtering remain separate mechanisms.
+- A conversation branch is not a workspace rollback. Logs and exports are ordinary same-user files, not
+  tamper-proof records or complete external-side-effect backups.
 
-- Pending-input pages hold at most 100 rows and 4 MiB of stored UTF-8 payload. Lengths are checked before
-  loading; an oversized first input fails with its id/revision rather than being skipped or truncated.
-  The limit is on payload bytes, not the entire encoded response.
-- Failed attachment submission attempts immediate cleanup of that round's STAGING artifacts and files;
-  boot recovery remains the crash backstop. Concurrent submissions queue on an async lock.
-- Captured children lead their own process group. Failure, cancellation and timeout kill it; a completed
-  capture may preserve an intentional long-lived descendant such as a daemon.
-- External editing uses VISUAL, then EDITOR, and restores the draft on failure. Success changes the draft,
-  never implicitly sends it. The /edit entry is recognized but not in the seven-item completion menu.
-- A worker still has no ambient shell. An explicitly requested capability can derive a task-scoped child
-  from a user-issued delegable parent; otherwise work waits in WAITING_CAPABILITY for a user decision.
-- Automatic approval review applies only to concrete operations, not capability requests. Review failure
-  leaves the approval pending. Reviewer model usage is not yet charged to the goal (D-458).
-- D-459 records provider cache hit/miss/write usage and freezes the L1 masking frontier between compactions.
-  No reported split means unknown cache behavior, not a measured miss.
+## Focused regression entry points
 
-Useful checks, all included in the normal suites:
+All rows below are included in the normal suites unless noted otherwise.
 
-| Area | Regression location |
+| Area | Location |
 |---|---|
-| Input paging/edit/cancel/restart and concurrent attachments | engine/tests/cases/inputs.rs, engine/src/v2/attachments_tests.rs |
-| Process-group capture and draft/attachment ownership | tui/src/subprocess.rs, tui/tests/attachments.rs |
-| External editor success/failure | tui/src/editor.rs |
-| Delegable capabilities and operation-only review | core/src/v2/control.rs tests, engine/tests/v2_driver.rs, engine/src/v2/reviewer.rs |
-| Cache usage, stable prefixes and provider request bodies | core/src/kernel/mod.rs, engine/tests/providers_fake.rs, engine/src/v2/exec.rs |
-| Governed update transactions | engine/src/update.rs, engine/tests/update.rs |
-| Environment probes, config/source observations and input receipts | engine/src/environment.rs, engine/tests/cli.rs, engine/tests/v2_daemon.rs, tui/tests/minimal.rs |
+| Input paging, editing, cancellation, restart and attachments | `engine/tests/cases/inputs.rs`, `engine/src/v2/attachments_tests.rs` |
+| Process groups, drafts and attachment ownership | `tui/src/subprocess.rs`, `tui/tests/attachments.rs` |
+| External editor | `tui/src/editor.rs` |
+| Capability delegation and operation review | `core/src/v2/control.rs`, `engine/tests/v2_driver.rs`, `engine/src/v2/reviewer.rs` |
+| Provider cache fields and stable prompt prefixes | `core/src/kernel/mod.rs`, `engine/tests/providers_fake.rs`, `engine/src/v2/exec.rs` |
+| Governed self-update | `engine/src/update.rs`, `engine/tests/update.rs` |
+| Host execution, legacy config and saved-job recovery | `engine/src/tools.rs`, `engine/tests/cli.rs`, `engine/tests/v2_mcp.rs`, `engine/src/v2/driver.rs` |
+| Environment/config/source observations and input receipts | `engine/src/environment.rs`, `engine/tests/v2_daemon.rs`, `tui/tests/minimal.rs` |
+| Work diagnosis and recovery hints | `engine/src/v2/diagnostics.rs`, `engine/tests/v2_daemon.rs`, `tui/tests/minimal.rs` |
 
-## Verification and environment
+Useful limits to check when editing related code:
 
-There is no workspace-root Cargo manifest. Use make or explicit crate manifests. Run leak-guard gates
-serially with live probes; their process/scratch censuses can otherwise interfere.
+- Pending-input pages hold at most 100 rows and 4 MiB of stored UTF-8 payload. Oversized first inputs fail
+  explicitly rather than being skipped or truncated.
+- Failed attachment submission cleans that round's staging artifacts; boot recovery handles crashes.
+  Concurrent submissions use an async lock.
+- Captured children lead a process group. Cancellation and timeout kill that group; a deliberately detached
+  service can outlive the command and must be managed explicitly.
+- External editing uses `VISUAL`, then `EDITOR`, restores drafts on failure and never sends automatically.
+- Reviewer usage is not yet included in goal accounting. Provider cache fields describe reported usage, not
+  monetary cost.
+
+## Verification commands
+
+There is no root Cargo workspace. Use `make` or each crate's manifest. Run leak-guarded suites serially with
+live probes because their process and scratch-directory inventories can interfere.
 
 ```bash
-git status --short --branch
-git log -5 --oneline
 make check
 make pty
+make verify-model-all
+make verify-kani       # requires the Kani toolchain
 ```
 
-Build output requires writable space; use CARGO_TARGET_DIR when checking a read-only source mount.
-Keep the actual installed Rust/Cargo homes available rather than hiding them with an arbitrary HOME/PATH
-change. An unavailable Docker daemon can produce a documented skip/refusal path; a green gate does not
-establish a working live Docker backend or external provider.
-
-The D-451 verifier checks exact source hashes. Run its offline verification at a06a5150, using a detached
-worktree or temporary Git archive. It is expected to reject later source. Never rewrite a frozen manifest
-to make current code appear to have passed an older run; new acceptance needs new receipts.
+Build output needs writable space; use `CARGO_TARGET_DIR` for a read-only source mount. Keep the actual Rust
+and Cargo homes available. Shell and local MCP tests run on the host and need no external sandbox package.
+The PTY matrix checks terminal protocols, not every graphical terminal or OS.
 
 ## Files and state to preserve
 
-- Tracked source, docs, frozen evaluations and immutable receipts are the portable handoff. Temporary
-  check logs and ignored agent journals are not required to resume development.
-- The root session.sqlite is tracked project data, not disposable scratch. Do not delete or migrate it
+- Tracked source, docs, frozen evaluations and immutable receipts are the portable handoff. Temporary logs
+  and ignored agent journals are not required to resume development.
+- The root `session.sqlite` is tracked project data, not disposable scratch. Do not delete or migrate it
   without understanding its provenance and the requested operation.
-- Ignored agent state, logs, TLC states and build outputs may exist beside tracked files. Do not use broad
-  Git clean, database deletion or process-kill commands to prepare a conversation.
-- Preserve the user's configs, sessions and installation, including the default state under
-  ~/.local/state/teamagents/v2. Tests use isolated HOME/XDG/state/workspace directories.
-- Credentials remain in environment variables or machine stores, never in docs, prompts, events or logs.
+- Do not use broad `git clean`, database deletion or process-pattern kills to prepare a workspace.
+- Preserve user configs, sessions and installations, including `~/.local/state/teamagents/v2`. Tests use
+  isolated HOME/XDG/state/workspace directories.
+- Keep credentials in environment variables or machine stores, never in repository files, prompts or logs.
 
 ## Next-cycle constraints
 
-Prioritize the agreed items from the comparison queue rather than copying its whole backlog into a goal.
-DD-01 option A is implemented; do not add automatic reminders under that authorization. The next candidates
-are actual development/skill dependency workflows beyond D-479 diagnostics. Paired coding evaluation is
-postponed by the user and monetary accounting is excluded from the current work. Instruction discovery, tool
-composition and session controls are implemented (D-467, D-469, D-473) with the boundaries their decisions state.
-External editing, capability delegation and cache telemetry are already implemented, with remaining
-coverage limits stated separately. Paid trials and releases require concrete scope and authorization.
+The current task is documentation and maintenance cleanup, not new runtime behavior. Later candidates are
+actual development/Skill workflows (DD-02) and wider operational evidence. The matched Pi trial is postponed;
+monetary accounting is outside the current scope. Do not add automatic reminders under D-461.
 
-Keep the Rust control plane, single SQLite authority, independent daemon and minimal Leader TUI with CLI
-management. Interrupt cancels a model request, not tools; exit detaches; deletion stays identity-bound;
-approvals do not steal the composer; unknown effects are not replayed. Automatic cross-session injection,
-distributed/multi-tenant execution and a marketplace remain excluded. Design deviations need confirmation.
-
-The user's terminal is Alacritty with zsh (xterm-256color; D-472). Keep graphical-terminal evidence separate from PTY protocol tests
-and preserve owned-image cleanup. Code/docs are English except README.zh-CN.md and frozen evidence.
-Generated references and their inventories must remain synchronized; never weaken a gate to hide drift.
+Keep the Rust control plane, per-session SQLite authority, independent daemon and minimal Leader TUI.
+Automatic cross-session injection, distributed/multi-tenant execution and a marketplace remain excluded.
+Generated references and inventories must stay synchronized; never weaken a gate to hide drift. Code and docs
+are English except `README.zh-CN.md` and frozen evaluation evidence.

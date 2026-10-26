@@ -1,10 +1,8 @@
 # Capabilities and their evidence
 
-This page is the **map, not the ledger**: one row per capability, the strongest check behind it, what that check
-measured as the capability's *boundary*, and what still has no evidence. Every row points into a ledger that
-carries the detail, and nothing here overrides one of them. Current behavior was checked against source
-02be286d through D-474 on 2026-10-22; historical measurement dates below have not been renewed. The prioritized candidate
-queue lives in [PRODUCT-COMPARISON.md](PRODUCT-COMPARISON.md), not in duplicate feature lists here.
+This page summarizes each capability, its strongest check and the limits of that evidence. Details live in
+the linked ledgers. Current behavior was checked against D-480 (`7ae6bd5b`) on 2026-10-26; dated measurements
+below have not been renewed. The candidate queue is in [PRODUCT-COMPARISON.md](PRODUCT-COMPARISON.md).
 
 | For | Read |
 |---|---|
@@ -130,8 +128,8 @@ D-424 found that larger prompts were a billing issue rather than the dominant la
 These results justify measuring cadence and cost, not assuming that a shorter window, longer timeout,
 higher effort or more agents will improve every task. Keep native windows in all real-model evaluations.
 
-D-479 adds explicit host/backend executable discovery through `doctor environment`, live workspace and
-configuration-change visibility, current source diagnosis and the Leader's last prompt-assembly source result.
+D-479 adds host executable discovery through `doctor environment`, live workspace and configuration-change
+visibility, source diagnosis and the Leader's latest prompt-assembly read result.
 TUI input receipts distinguish queuing, deferral, receipt and cancellation; receipt is never a completion claim.
 These diagnostics do not install missing tools, mount extra roots, reload configuration or prove a build works.
 
@@ -142,10 +140,11 @@ priority list. The major unclosed evidence boundaries are:
 
 - Matched Pi coding outcomes, manual intervention and complete cost: existing A/B/C arms are internal
   TeamAgents ablations, not comparator trials.
-- Real selected provider/image/OAuth/Docker paths, full skill support resources and user-home development
-  environments; local serialization and scripted-provider tests establish different facts.
+- Real selected provider, image and MCP OAuth paths; complete host development and Skill dependency
+  workflows. Local serialization and scripted-provider tests establish different facts.
 - Adversarial review of auto-approval and other boundaries; broader graphical terminal/platform coverage.
-- Exact-artifact installation and update acceptance for the authorized v0.2.0 release (D-477).
+- Clean-host upgrade and rollback acceptance for future artifacts. The v0.2.0 installation check belongs to
+  that published source and does not validate later builds.
 - Long-horizon memory where facts are not already files; D-406's fixture and D-409's real-task null result
   do not establish general benefit.
 - Q16's collaboration-success form: the narrower paired latency result is confirmed in D-264, not a

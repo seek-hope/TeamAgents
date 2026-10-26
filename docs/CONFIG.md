@@ -1,11 +1,11 @@
 # The configuration reference
 
 The config file is `${XDG_CONFIG_HOME:-$HOME/.config}/teamagents/config.toml`. `teamagents init` writes a minimal
-one (mode `0600`, no credentials, keeps an existing file), `teamagents doctor` reports what it resolved
-(credentials, state root, host execution, skills, declared tools, the keys below that this build does not apply), and
-the user guide's §2 explains the sections in prose: `[[checks]]` (§2.1), `[limits]` (§2.2), `[hooks]` (§2.3).
+one (mode `0600`, no credentials, keeps an existing file), and `teamagents doctor` reports resolved
+credentials, state, host execution, Skills, declared tools and accepted-but-unapplied keys. The user guide's
+§2 explains `[[checks]]` (§2.1), `[limits]` (§2.2) and `[hooks]` (§2.3).
 
-Three rules decide whether a key is *honoured*:
+Three rules decide whether a key is applied:
 
 * **Your own config is read, and the repository's is read under one gate.** A repository-local
   `<cwd>/.teamagents/config.toml` is read by the product now — `daemon`, `doctor` and the client all load through
@@ -26,11 +26,11 @@ Three rules decide whether a key is *honoured*:
   At load, with a pointer here (`unknown key … docs/CONFIG.md lists every key this build serves`): at the top
   level, inside every table and inside each `[models.*]`/`[tools.*]` entry — `protocol` must be one this build can
   dispatch (an *empty* one is the historical chat/completions default), `kind` one it can bind, and
-  `mcp_execution` one it can honour. In a `doctor` row instead, when the value is one a *session* would fail on
+  `mcp_execution` one it can honor. In a `doctor` row instead, when the value is one a *session* would fail on
   later and the user can still fix it: `mcp_transport` and a mistyped MCP command (D-74's "where the user can
-  still fix it without reading a daemon log"). A typo is a config error, never a silent default — measured before the rule was complete (2026-09-27):
-  `skills_pathes = []` left `doctor` green and the path never loaded, and `[permissions] sandbxo = "bubblewrap"` (a typo
-  of `sandbox`, a *safety* setting) silently ran the session in the host mode (D-161). The one deliberate exception
+  still fix it without reading a daemon log"). A typo is a config error, never a silent default. For example,
+  `skills_pathes = []` is rejected rather than leaving the intended path unloaded, and retired sandbox keys
+  produce an explicit migration error (D-161, D-480). The one deliberate exception
   is a value that is free-form by design: `generation_options` is a `HashMap` the provider passes through, so its
   keys are the service's, not this build's.
 
@@ -48,17 +48,17 @@ default (D-239).
 
 ### `[permissions]`
 
-These keys are hand-read rather than one of the generated struct tables; they decide the session's execution and
-trust posture.
+These keys are hand-read rather than one of the generated struct tables; they control project trust and
+operation review.
 
 | Key | Meaning |
 |---|---|
 | `trust_project`, `trusted_projects` | Whether a repository-local config contributes models/tools/skills/instructions, and for exactly which canonical roots (D-244, D-434). |
 | `approvals_reviewer`, `reviewer_model` | `user` (the default) or `auto_review`, and the optional model the reviewer uses (D-458). |
 
-Sandbox backends were removed in D-480. Legacy permissions.sandbox and sandbox_* settings are rejected;
-remove them explicitly to use automatic host execution. Local MCP defaults to host; mcp_execution accepts
-only host. The removed mcp_network and checks network settings are rejected, not silently ignored.
+D-480 removed the sandbox backends. Legacy `permissions.sandbox` and `sandbox_*` settings are rejected;
+remove them explicitly to select automatic host execution. Local MCP defaults to `mcp_execution = "host"`,
+the only accepted value. The removed `mcp_network` and check-level `network` settings are also rejected.
 
 <!-- generated: begin -->
 
@@ -115,7 +115,7 @@ only host. The removed mcp_network and checks network settings are rejected, not
 | `instruction_files` | `Vec<String>` | empty | `engine/src/environment.rs`, `engine/src/v2/driver.rs` | Files whose text is appended to **every** member's system prompt (the leader's and each child's), in this order, each under a heading naming the file: read per turn, so an edit lands on the next turn, and a file that cannot be read is named by `doctor` and on the daemon's log rather than skipped in silence (D-102 recorded the promise, D-246 delivers it). |
 | `retention` | `Retention` | the Retention default | `engine/src/v2/daemon.rs`, `engine/src/v2/driver.rs` … (3 files) | — |
 | `hooks` | `Hooks` | the Hooks default | `engine/src/hooks.rs`, `engine/src/tools.rs` … (3 files) | — |
-| `checks` | `Vec<CheckSpec>` | empty | `core/src/v2/control.rs`, `engine/src/v2/exec.rs` … (4 files) | Acceptance checks the user predefines for every goal (DESIGN §8, Q11): the runtime runs them in the isolated shell at the completion boundary, so a goal cannot be reported as done while a check fails. They are the user's own machine contracts, never conditions a model extracted. |
+| `checks` | `Vec<CheckSpec>` | empty | `core/src/v2/control.rs`, `engine/src/v2/exec.rs` … (4 files) | Acceptance checks run on the host at the completion boundary. Project configuration cannot define them. |
 | `limits` | `GoalLimits` | the GoalLimits default | `engine/src/providers/mod.rs`, `engine/src/v2/daemon.rs` … (6 files) | Usage and wall-clock ceilings every goal this session creates carries (§8, A18/A35): the goal's `max_total_tokens` refuses a new request once the settled usage would pass it, and its deadline refuses one past that moment. Both are the user's own bounds; a session with neither runs until the user stops it (see `docs/USER-GUIDE.md` §2.2). |
 | `update` | `UpdateConfig` | the UpdateConfig default | `core/src/kernel/types.rs`, `core/src/v2/control.rs` … (6 files) | Governed self-update policy (`[update]`). The user config is the only source: a repository-local file may never change how its own agent is replaced (D-453). |
 

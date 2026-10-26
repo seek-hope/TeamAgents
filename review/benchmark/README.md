@@ -34,10 +34,10 @@ the attempts per trial. `harbor view <jobs dir>` browses runs.
 
 The adapter freezes: paratera `DeepSeek-V4.1-Flash`, provider/protocol `deepseek`, native **1,000,000**-token
 context (D-36), `reasoning_effort = "high"`, `max_retries = 3`, `timeout = 300` per request, one headless turn
-per task, `--cwd /app`, `--full-auto` (the container *is* the sandbox; `approved_scope` needs bubblewrap, which a
-task container cannot promise).
+per task, `--cwd /app`, `--full-auto` for compatibility with older binaries. Current TeamAgents runs ordinary
+Shell automatically on the task-container host; the container and harness supply the isolation boundary.
 
-**Network is phase-scoped, and that is what `patch_phases.py` writes:**
+**Network policy belongs to the benchmark harness; `patch_phases.py` writes it:**
 
 | Phase | Policy | Why |
 |---|---|---|

@@ -339,8 +339,8 @@ where
     P: Provider + 'static,
     F: Fn(&str, &KernelProfile) -> P + Send + Sync + 'static,
 {
-    // every instance driver inherits this root; isolated shell binds need it
-    // absolute even when the caller passed a relative path
+    // Instance drivers inherit this root; canonicalize it so their paths do not
+    // depend on the caller's working directory.
     std::fs::create_dir_all(&config.state_root)
         .map_err(|e| crate::cli::state_root_uncreatable(&config.state_root, &e))?;
     config.state_root = std::fs::canonicalize(&config.state_root)

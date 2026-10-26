@@ -1,9 +1,8 @@
 # TeamAgents user guide
 
-This guide describes source 02be286d through D-474, checked on 2026-10-22. For installation,
-see [INSTALL.md](INSTALL.md); for evidence and candidate improvements, see
-[ACCEPTANCE.md](ACCEPTANCE.md) and [PRODUCT-COMPARISON.md](PRODUCT-COMPARISON.md). Historical decisions and
-recorded experiments are not instructions for the current product.
+This guide describes current source through D-480. For installation, see [INSTALL.md](INSTALL.md); for evidence
+and candidate work, see [ACCEPTANCE.md](ACCEPTANCE.md) and [PRODUCT-COMPARISON.md](PRODUCT-COMPARISON.md).
+Historical decisions and experiments are not instructions for the current product.
 
 ## 1. Quick start
 
@@ -11,7 +10,7 @@ recorded experiments are not instructions for the current product.
 teamagents init                      # write the config (kept if it exists) and prepare the state root
 export DEEPSEEK_API_KEY=...          # the environment variable named by api_key_env
 teamagents doctor                    # config, credentials, running session, sources and host execution
-teamagents doctor environment        # explicit host vs configured-environment executable discovery
+teamagents doctor environment        # discover host tool locations without executing those tools
 teamagents                           # open the TUI (starts this session's daemon when needed)
 ```
 
@@ -141,16 +140,11 @@ teamagents                           # open the TUI (starts this session's daemo
 | MCP, configuration and diagnostics | `mcp`: list, add, remove, login, logout; `init`, `doctor`, `-c key=value` |
 | Processes and stored artifacts | `daemon --stop`, `runners`, `artifacts` |
 
-- **Stopping that session** (D-248): `teamagents daemon --stop` stops the session that owns this state root —
-  the socket *is* the address, so there is no pid to look up and no other session to hit by mistake (add
-  `--state-root PATH` for a non-default root). It asks the running daemon, waits for its socket to go and says
-  which of the three cases it found: the session stopped; nothing is running (also 0 — stopping what is not
-  running is not a failure); or a daemon answered but its socket is still there after 5 s (1). `--stop` takes
-  no `--cwd`, `--model` or `--full-auto`: it stops the session as it is, and a flag it does not honour is
-  named rather than ignored. The shutdown is the designed one (freezes new dispatch, keeps committed state,
-  removes its socket; DESIGN §9), so `kill <pid>` — or Ctrl-C where you started the daemon by hand — still
-  works when the lever is not reachable (`ps -eo pid,args | grep "[t]eamagents daemon"`, D-150). The session
-  database stays where it is and the next `teamagents`/`exec` on that state root starts a fresh daemon.
+- **Stop a session**: `teamagents daemon --stop` addresses the daemon through the selected state root's
+  socket, not a pid. It returns success if the session stopped or nothing was running, and fails if the socket
+  remains after 5 seconds. It accepts no `--cwd`, `--model` or `--full-auto`. Shutdown stops new dispatch and
+  preserves committed state; committed runners can finish independently. The next `teamagents` or `exec`
+  starts a fresh daemon over the same database.
 - **Headless use**: `teamagents exec [--json] [--timeout SEC] [--check CMD] [--accept ID=CMD] "prompt"` goes through the same
   daemon and reports the goal's terminal state, the assistant reply or a timeout; the prompt may come from
   stdin (`-`). The full contract is in §1.1.
@@ -158,30 +152,21 @@ teamagents                           # open the TUI (starts this session's daemo
   grant --subject ID --action shell --scope workspace` hands one out and `teamagents authority revoke --grant
   ID` takes it back. This is how a worker the Leader spawned gets the shared-workspace shell (§3); the full
   contract is in §3.1.
-- **`-c key=value` overrides a config key for one invocation** (D-428): repeatable, dotted into tables
-  (`-c limits.tool_output_chars=8000`, `-c models.leader_main.model=deepseek-flash`), with numbers and booleans
-  parsed as TOML and anything else taken as a string (no quotes needed). It is the way to *try* a setting — the
-  cost keys of §2.2 in particular — without editing `config.toml`; a client that starts the daemon passes its
-  overrides on, and a key this build does not serve is refused with the `docs/CONFIG.md` pointer rather than
-  ignored. A session already running keeps the settings it booted with, so the same rule as `--cwd` applies:
-  stop that daemon or use another `--state-root`.
-- **A session owns its workspace and execution settings**: these are fixed when the daemon boots
-  (`--cwd DIR`), so a client that joins a session already running keeps that session's settings and prints
-  them (`note: a session is already running for this state root in … mode` / `that session works in …`).
-  Starting a client with a different `--cwd` against a live session therefore does not move it — stop that
-  daemon or use another `--state-root`. Sessions are not automatically grouped/selected by repository;
-  select a named session deliberately. The interactive model/effort switch is Ctrl+M or `/model` (D-473).
-  A `--cwd` that is not an *existing directory* is different: it can never be honoured (file tools need a workspace root and Shell needs an initial cwd), so `exec`, the TUI and
-  `daemon` refuse it outright with `--cwd … is not a directory` instead of booting a session whose workspace
-  no tool can resolve.
-- **State root**: `$XDG_STATE_HOME/teamagents/v2/` (default `~/.local/state/teamagents/v2`), where
-  `session.sqlite` is the **single source of truth** (WAL with `synchronous=FULL`, carrying a format and
-  version stamp). It is a *directory*: the session database and the daemon socket live inside it, so a
-  `--state-root` naming a file (most often the `session.sqlite` itself) is refused with the flag named, by
-  `doctor`, `init`, `daemon`, `exec` and the session verbs alike (D-166). A path that does not exist yet is
-  not an error: it is created.
-  If such a fresh path is *named* like the database (`…/session.sqlite`), `init` creates it as asked and prints
-  a note, because the root is the directory that holds that file (D-169).
+- **Temporary config overrides**: repeat `-c key=value` to set dotted keys for one invocation, for example
+  `-c limits.tool_output_chars=8000` or `-c models.leader_main.model=deepseek-flash`. Numbers and booleans are
+  parsed as TOML; other values are strings. A client starting a daemon passes these overrides to it. Unknown
+  or unserved keys are rejected. A running daemon keeps its boot settings; restart it or select another state
+  root instead of assuming an override applied.
+- **Workspace and launch settings belong to the daemon**: `--cwd DIR` selects the workspace for a new
+  session. A client joining a running daemon keeps and prints the existing workspace and settings; another
+  `--cwd` does not move it. Stop that daemon, select another state root or choose a named session deliberately.
+  Sessions are not automatically selected by repository. Change the Leader's model/effort with Ctrl+M or
+  `/model`. The workspace must be an existing directory because file tools need a root and Shell needs an
+  initial cwd; invalid paths are rejected before startup.
+- **State root**: the default is `$XDG_STATE_HOME/teamagents/v2/` (`~/.local/state/teamagents/v2`). This
+  directory holds `session.sqlite`, `daemon.sock` and `daemon.log`; named sessions live below it. The database
+  uses WAL and `synchronous=FULL` and carries format/version stamps. Pass the directory to `--state-root`, not
+  the database file. A missing directory is created; a regular file or an incompatible path is rejected.
 
 ### 1.1 Headless runs (`teamagents exec`)
 
@@ -199,35 +184,25 @@ happened. Diagnostics go to stderr, the outcome to stdout (`--json` prints one J
 
 - **Prompt**: the positional argument, or everything piped into stdin when it is `-`. An empty prompt is a
   usage error.
-- **`--stream-json`**: the events while the run waits, then the report (D-249). stdout carries one JSON object
-  per line — `{"type":"event","event":{…}}` for each event of the session as this run observes it (the
-  committed log, in order, each once, flushed as it is written) and then `{"type":"report","report":{…}}`,
-  which wraps exactly the object `--json` prints (§1.2). The exit-code contract below is unchanged, the
-  report line is the last line, and the stream carries this run's own events: what the session did before this
-  input landed is drained first, never printed. `--json` and `--stream-json` are refused together (two shapes
-  of one stdout) and `--stream-json` is an `exec` mode — the read verbs print one report and have no stream to
-  follow. A consumer that closes the pipe (`teamagents exec --stream-json … | head -3`) ends the stream, not
-  the run: the run still finishes and keeps its own exit code, with no write error.
-- **`--check COMMAND`** (repeatable): your own acceptance command, run after the turn ends in order through the
-  host shell inside your workspace (`--cwd`, else the current directory). The first failure
-  stops the list; the verdicts are printed, written to `<state root>/verification.json` and included in the
-  `--json` report. A failed check makes the run fail (`1`) even when the goal itself settled. Checks are
-  skipped when the turn is not finished — the run stopped for an approval, your own `--timeout` deadline
-  passed, or the runtime refused the request before it began (a goal budget ceiling or a passed goal
-  deadline) — because there is nothing to verify yet, and a check must not stretch the deadline you set: with
-  no verdicts the report's `verification_path` is `null` and no ledger is written.
-- **Both acceptance mechanisms can be configured at once**, and they answer different questions: the
-  runtime's `[[checks]]` (§2.1) decide whether the goal may be reported done, your `--check` commands decide
-  the exit code of a finished turn. So a run can exit `1` with the goal `SUCCEEDED` (your check failed) or
-  with the goal `BLOCKED` while your check passed (measured: `python3 review/dogfood/two_gates.py`, D-101).
-- **`--accept ID=COMMAND`** (repeatable, D-385): the *goal-level* half of the same idea. It is attached to the
-  active goal **before** the input lands, so the runtime runs it at the completion boundary and a failing check
-  sends the turn back to work (a bounded repair round) instead of only colouring the exit code; after the budget
-  the goal is settled `BLOCKED`, never upgraded. Use it when "do not stop until this passes" is the point (`exec
-  --accept tests="pytest -q" "Fix the failing tests"`); `--check` remains the right tool when you only want a
-  verdict on a finished turn. The checks are the user's own: the attach is refused for a model identity, is
-  unioned by id with the goal's existing contract, and is refused once the goal has registered a check round
-(cancel it and open the next goal to change the contract).
+- **`--stream-json`**: print committed session events as this run observes them, followed by the `--json`
+  report. Each line is either `{"type":"event","event":{…}}` or the final
+  `{"type":"report","report":{…}}`. Earlier history is drained without being printed. `--json` and
+  `--stream-json` are mutually exclusive, and streaming is available only for `exec`. Closing the consumer
+  ends the stream without cancelling the run.
+- **`--check COMMAND`** (repeatable): run these acceptance commands on the host, in order, after a finished
+  turn. They start in the client workspace (`--cwd`, or the current directory). The first failure stops the
+  list and makes the run exit `1`. Verdicts go to stderr, `<state root>/verification.json` and the JSON
+  `verification` field. Checks do not run after an approval stop, a refused request, an undelivered input or
+  the caller's timeout. In those cases `verification_path` is `null` and no new ledger is written.
+- **Client checks and goal checks have different jobs**: `[[checks]]` and `--accept` decide whether a goal
+  may settle successfully; `--check` decides the exit code of a finished `exec`. A run can therefore have a
+  successful goal but fail its client check, or a blocked goal even though its client check passed.
+- **`--accept ID=COMMAND`** (repeatable): attach a required check to the active goal before submitting the
+  input. The runtime runs it at the completion boundary; failure triggers bounded repair and can ultimately
+  settle the goal as `BLOCKED`. Use it when completion depends on the check, for example
+  `exec --accept tests="pytest -q" "Fix the failing tests"`. Only a user can attach checks. IDs are merged
+  with the goal's existing checks, and the contract cannot change after a check round has started; cancel that
+  goal and open another to replace it.
 - **Durable memory**: the `memory` tool lets a member `remember` a short note and any later session under
   the same base directory `recall` it (the state root itself for the default session; a named session's base is
   the directory holding `sessions.json`, so every named session under it shares the store). The file is
@@ -269,9 +244,8 @@ happened. Diagnostics go to stderr, the outcome to stdout (`--json` prints one J
 
 ### 1.2 The JSON reports (`--json`)
 
-Seven verbs print one JSON object instead of human text, and that object is the scripting surface: `exec`,
-`authority`, `approvals`, `instances`, `tasks`, `runners` and `artifacts`. The table is the contract — `review/exec_report.py` reads
-the field names out of the source and out of this table and fails if the two drift apart in either direction.
+Many CLI commands print one JSON object with `--json`. The table below is the scripting contract:
+`review/exec_report.py` compares these fields with the report objects built by the source.
 `exec --stream-json` (D-249) carries the *same* `exec` object, wrapped as the last line
 `{"type":"report","report":{…}}` after the session's event lines; the fields below describe it unchanged.
 The arrays inside a report (`instances`, `tasks`, `approvals`, `grants`) are rows of the daemon's own views,
@@ -401,7 +375,8 @@ api_key_env = "DEEPSEEK_API_KEY"
 - The TUI `/help` and `teamagents status --json` expose the running session's environment. Editing config
   does not hot-reload it: a changed-file warning requests an explicit stop and restart of that daemon.
   An unavailable comparison is reported separately. Preserve the same workspace, state root/session and
-  launch options when restarting; inspect active work first, since stopping a daemon interrupts its work.
+  launch options when restarting. Inspect active work first: the daemon stops driving the session, while
+  committed runners may finish independently.
 - Both `web_search` and `web_fetch` bindings use the DeepSeek Search/Fetch APIs and need a credential:
   `api_key_env` names the environment variable (normally `DEEPSEEK_API_KEY`). Without it — not configured, or
   the named variable unset — a call answers with a **capability state** naming what to configure, and no request
@@ -491,7 +466,7 @@ context_keep_chars = 64000   # optional: how much tool output the request keeps 
   value when you pay per prompt token.
 - With none of them configured a goal — and therefore the session — runs until you stop it, which is why `doctor`
   says so out loud (`goal limits: none: …`). A zero is a config error at load time.
-- Both come from **your** config: like `[[checks]]`, a cloned project cannot set them. They are fixed when
+- These limits come only from **your** config: like `[[checks]]`, a cloned project cannot set them. They are fixed when
   the goal is created; changing them means starting a new session (or a new state root).
 - The TUI's status line shows what is in force (`goal ACTIVE · usage 12000/2000000 · ends in 30m`), so a
   configured ceiling is visible and not just enforced.
@@ -527,70 +502,39 @@ pre_tool = ["/home/you/bin/policy.sh"]            # policy hook before tool call
   (generated from the code and kept in sync by `make hygiene`). The requests and replies themselves
   (framing, the greeting, `command_id` dedup, every read method and command) are catalogued in
   [docs/PROTOCOL.md](PROTOCOL.md), also generated from the dispatchers.
-- **The Leader builds the team**: it uses `spawn` to create working instances, `delegate` to hand out tasks,
-  `send` for messages and `wait` for results. These appear in the model-visible tool surface according to
-  its grants (`manage`/`delegate`/`message`), and the permission revision is re-checked at dispatch. The
-  session's bootstrap grants the Leader those three capabilities over the session, so the team tools are there
-  without further setup; revoking a grant removes the tool from the surface and makes every call fail closed.
-  A delegator's `wait` must name the *task*, not a message: a delegated outcome is delivered as a task result
-  (`{kind:'task',task_id:'<id>'}`, satisfied by `SUCCEEDED`/`FAILED`/`CANCELLED`), so a condition like
-  `{kind:'message',from:'<worker>'}` — which only a chat message sent with `send` satisfies — stays pending
-  until the timer fires. Both tool descriptions say so. A due timer releases a wait exactly as a fact does, so
-  only the gap in the log shows which happened: in the round-4 pilot a delegator that named `message from
-  <worker>` was released by its timer **575.6 s** after the settlement it was waiting for (D-255).
-  The same three answers are the design's (D-341, D-348), and none of them is a wake the runtime owes you: a
-  task an assignee reported `BLOCKED` leaves the wait pending, and an assignee that stops talking — its turn
-  ends without settling, or it parks — is not a settlement either, so waiting longer never tells you. When your
-  timer fires, re-check the task statuses and `teamagents tasks cancel --id <task>` (or the delegator's own
-  `cancel_task`) what you no longer need: a cancelled task *does* satisfy a `{kind:'task'}` condition and wakes
-  the delegator.
-- **When delegating pays, measured (D-262).** The same twelve-unit job was run two ways, three times each
-  (`review/eval/r2-p6/REPORT.md`): a team reached *every unit verified green* in 41–60 s against a single
-  instance's 65–148 s, and it was earlier in **6 of 6 paired repeats** — but end to end (one accepted
-  result) the two were indistinguishable (92–200 s against 79–164 s), because the leader's own integration
-  costs about as much as the parallelism saves. So the Leader is told to delegate parts that each need
-  their own run-and-fix loop, to check the finished work with **one** gate instead of re-running every
-  part's command in turn, and *not* to delegate work a single instance can finish in one pass. A member
-  that ends its turn without settling its task never wakes the delegator (only the timer does), which is
-  why the guidance asks for a short timer and says an abandoned part is then the Leader's.
-- **The delegator can close its own task since D-265** (`cancel_task`, offered to an instance that holds
-  `delegate`): closing is terminal, the assignee is told, and the cancellation **satisfies** a wait on that
-  task — so a Leader whose member went idle can close the abandoned part and re-dispatch or do it itself
-  instead of waiting out a timer. Only the requester (or you, with `teamagents tasks cancel`) may close a
-  task; the assignee's own work is never undone by it.
-  `spawn` also takes `model` (a catalog key or the model name it declares) so a team can mix entries: an unknown
-  entry fails that call with the available keys, and an instance that cannot boot at all is parked with the
-  reason (its task stays open for you to cancel). A tool the instance cannot dispatch is not offered at all: a
-  worker the Leader spawned holds `shell` only after you grant it `shell@workspace` (§5.1's boundary, D-60), so
-  it works with the file/web/skill tools (they need their binding, not a grant) until then. Since D-455 you can
-  mark that grant `delegable`; a `spawn` or `delegate` that declares
-  `capabilities = ["shell@workspace"]` then receives an attenuated, task-scoped child grant without another
-  user decision. If no delegable parent covers it, the task parks in `WAITING_CAPABILITY`; `authority requests`
-  shows the pending approval and the task is not dispatched until you approve it.
+- **The Leader builds the team**: `spawn` creates workers, `delegate` assigns tasks, `send` carries chat
+  messages and `wait` waits for results. The session grants the Leader `manage`, `delegate` and `message`;
+  grants are checked again at dispatch, and revoked tools disappear from the next model request.
+  A delegated result satisfies a `{kind:'task',task_id:'<id>'}` wait when the task becomes
+  `SUCCEEDED`/`FAILED`/`CANCELLED`. A `{kind:'message',from:'<worker>'}` wait requires a separate `send`
+  message. `BLOCKED`, an idle worker and an unfinished turn do not settle a task wait. Use a timer, inspect
+  the task and cancel abandoned work instead of assuming that more waiting will settle it.
+- **Delegate independent work that benefits from parallel run-and-fix loops.** Verify the integrated result
+  once rather than repeating every worker's checks. Small work that one instance can finish in one pass does
+  not need a team. Historical latency comparisons are in [the evaluation report](../review/eval/r2-p6/REPORT.md);
+  they do not establish a general success gain.
+- **The delegator can cancel its own task** with `cancel_task`; you can use `teamagents tasks cancel`.
+  Cancellation is terminal, notifies the assignee and satisfies a task wait, allowing the delegator to
+  reassign or finish the work. It does not undo the assignee's side effects or stop its running command.
+  `spawn` accepts a model catalog key or model name, so members can use different providers. An unknown model
+  or an unbootable instance is reported without stopping the rest of the session.
+  Workers do not inherit `shell@workspace`. Grant it directly, or mark a parent grant `delegable` and declare
+  `capabilities = ["shell@workspace"]` on the task. The child grant is task-scoped and cannot be redelegated.
+  Without a covering parent, the task waits in `WAITING_CAPABILITY` for your decision.
 - **Who may run commands**: a member the Leader spawns does not inherit `shell@workspace` (D-61), so the tool
   surface hides `shell` from it (D-60). `teamagents authority` prints the command that would fix it, and
   `teamagents status --json` includes `can_run_shell`, computed using the dispatch gate's covering rule
   (D-441/D-442/D-445).
 - **Who runs on what**: every member's model is recorded when it is created and shown in `teamagents instances` (`i-worker · ACTIVE · READY · k3-256k`), which is what makes a team spanning
   two providers (`spawn` with `model = "…"`) readable instead of guesswork (D-69).
-- **Workspace policies**: the `workspace` argument of `spawn` decides where a new instance works — `shared`
-  (default: the project directory), `isolated` (a private directory under the session state root) or
-  `git_worktree` (its own branch and worktree). Asking for a worktree in a project that is not a Git
-  repository or has uncommitted changes falls back to shared mode and says why in the tool receipt.
-  Terminating an instance retires its workspace from the record, and **a directory with uncommitted or
-  unmerged work is never deleted automatically** — only the reason is reported.
-  A worktree member's branch is merged through the product since D-252:
-  `teamagents instances merge --id <member>` carries the branch into the session's own working tree (the branch
-  name and base commit are recorded in `<state root>/instances/<id>/worktree.json`, and `git worktree list`
-  shows the checkout; the lever reads the record instead of guessing). It refuses three ways a merge would be
-  wrong, each by name: the member is in the middle of a turn (wait for it or pause it), the member's checkout
-  still holds uncommitted changes (the merge carries the *branch* — commit or stash them first, because nothing
-  in a member's directory is ever dropped silently), and the instance has no branch at all (only a member
-  spawned with `workspace = "git_worktree"`, and the session's leader works in the session's own tree). A
-  merge that ends in conflicts is reported with git's own message and left **in progress** for you to resolve
-  (`git merge --abort` undoes it); the member's branch is untouched either way. Once the branch is merged, the
-  running session retires the worktree by itself on its next pass (the record goes with it); until then the
-  refusal is reported **once per reason** in `daemon.log`, and the checkout is kept.
+- **Workspace policies**: `spawn` accepts `shared` (the project directory), `isolated` (a private directory
+  under session state) or `git_worktree` (a separate branch and checkout). If a worktree is unavailable,
+  the receipt reports the fallback to `shared`. Termination never deletes a directory with uncommitted or
+  unmerged work.
+  Merge a worktree member with `teamagents instances merge --id <member>`. The merge is refused while the
+  member has a turn in flight, has uncommitted changes or has no worktree branch. Conflicts remain in progress
+  for you to resolve or abort with `git merge --abort`; the member branch is not rewritten. After a successful
+  merge, the supervisor retires the checkout when its safety checks pass.
 - A member whose model ends its turn with plain text (no tool call) and does not settle its task goes
   **idle with the task still `RUNNING`** (D-65: the runtime never reads an outcome out of prose, §8, and it
   never asks the same question twice — that was a turn storm). The delegator's wait stays pending, so
@@ -690,37 +634,33 @@ session — it never opens the database — so start the session first (`teamage
 `--state-root PATH` to point at another one. The CLI lists subject, action, scope
 and the short grant id; task delegation relationships are available through `teamagents tasks`.
 
-## 4. Permissions and isolation
+## 4. Permissions and execution
 
 Shell, acceptance commands and local MCP services run on the host with the user's filesystem and network
-access (D-480). Ordinary Shell calls execute automatically, without per-operation approval. Capability grants
-still decide which members may call tools. File tools retain their workspace path checks; these do not restrict
-what an authorized host Shell can access. Hooks may veto calls, and self-update still requires user approval.
+access. Ordinary Shell calls need no per-command approval. Capability grants still decide which members may
+call Shell, file tools enforce workspace paths, hooks may veto calls and self-update requires approval.
+There is no built-in OS sandbox or per-command network isolation.
 
-Sandbox backends were removed. Delete permissions.sandbox and sandbox_* entries from old user configurations;
-even the old none value is rejected with a migration message. Local MCP defaults to host execution;
-mcp_execution may be omitted or set to host. The old workspace value and mcp_network setting are rejected.
-Check configuration no longer accepts network. No package uninstall, VM removal or network-policy change is
-performed by this migration. Existing session history and receipts remain readable.
+Remove `permissions.sandbox` and `sandbox_*` from old user configs; even `sandbox = "none"` is rejected so an
+old isolation choice cannot silently become host execution. Local MCP defaults to `mcp_execution = "host"`,
+the only accepted value. Remove `mcp_network` and check-level `network` settings as well. Migration does not
+delete sessions, VMs, packages or network policies.
 
-The --full-auto flag remains accepted for existing scripts and has the same effect as an ordinary new boot.
-An already running older daemon retains its own boot behavior until explicitly stopped and restarted. Stop it
-with teamagents daemon --stop before applying the new binary and configuration to that session.
+`--full-auto` remains a compatibility flag and has the same effect as an ordinary new boot. An older running
+daemon keeps its boot behavior until you stop it with `teamagents daemon --stop` and restart it deliberately.
 
-Bash starts without login profiles, inherits a controlled environment including host PATH/HOME and explicit
-Rust toolchain locations, and preserves cwd/exports per member. Old isolated shell snapshots are not loaded as
-host state. Use teamagents doctor environment to discover host tools; discovery does not prove a build works.
-Provider credentials are excluded from automatic environment inheritance. Host commands can still read files
-allowed by the user's OS permissions: operation records are not tamper-proof and do not provide file rollback.
+Bash starts without login profiles and inherits a controlled environment containing host `PATH`/`HOME` and
+explicit Rust toolchain locations. Provider credentials are not inherited automatically. Each member keeps
+its own cwd and exports; old isolated snapshots are not loaded into host state. Use
+`teamagents doctor environment` to discover tools without executing them.
 
-A service a successful command leaves behind belongs to the user and can outlive the client or daemon. Record
-its PID, redirect its input/output and stop it explicitly. Instance termination cancels an active operation;
-a task cancellation alone does not stop its process. Timeout/cancellation targets the active process group,
-not deliberately detached sessions.
+A successful command can leave a service running after the client or daemon exits. Record its pid, redirect
+its output and stop it explicitly. Timeout/cancellation targets the active process group, not deliberately
+detached sessions. `instances terminate` cancels active work; `tasks cancel` alone does not stop a process.
 
-The existing approvals_reviewer/reviewer_model settings govern operation approvals that actually exist;
-ordinary Shell creates none in new production sessions. Capability requests and self-update approval remain
-user decisions. Historical automatic-review measurements are not renewed by this change.
+`approvals_reviewer` and `reviewer_model` apply only to operations that actually require approval. Ordinary
+Shell creates none in new production sessions. Capability requests and self-update approval remain user
+decisions.
 
 ### 4.1 Approving a call from the CLI (D-67)
 
@@ -735,9 +675,8 @@ teamagents approvals deny --id ap-d-req-4caeb0c6       # fails closed; the model
 
 In the TUI the same decision is one key: a pending approval appears in the approvals box (the status
 line and the footer count it), **`Ctrl+A`** focuses that box, `↑`/`↓` pick an entry, **`a`** approves and
-**`d`** denies, `Esc` returns to the composer. D-89's real-model Shell approval probe is historical and was
-removed in D-480. Current ordinary Shell calls create no approval; the surface remains available for
-self-update and historical pending operations.
+**`d`** denies, `Esc` returns to the composer. Ordinary Shell calls create no approval; this surface remains
+available for self-update and historical pending operations.
 
 An id must name a *pending* approval (a typo is refused before anything is decided), the full id or an
 unambiguous prefix is enough, and `--json` prints the raw report. Exit codes match `teamagents authority`:
@@ -836,13 +775,8 @@ teamagents goals cancel --id g-spent    # close a goal nothing can spend (its ce
   session's own `[limits]`/`[[checks]]`. `automations` lists id, state, next run and last goal; `pause`/`resume`
   stop or re-arm one (resuming re-arms one period out); `remove --id ID --yes` deletes it. A run never overlaps
   the previous one, and a slot missed while the session was down is coalesced into a single run, not backfilled.
-- **What a pause looks like while it takes effect**: `instances` prints the
-  lifecycle beside the execution position, which tells "pause requested" from "stopped at a safe boundary" —
-  `PAUSED / TOOLS_PENDING` is an in-flight call that will stop at the boundary, `PAUSED / READY` is parked
-  there, and the row carries the reason (`PAUSED by the user (teamagents instances)`, D-165). Measured
-  2026-09-27 with a `sleep 30` command: `ACTIVE / TOOLS_PENDING` → `instances pause` → `PAUSED /
-  TOOLS_PENDING` → the command ends → `PAUSED / READY`, while the waiting `exec` reported `timed out: i-leader
-  is PAUSED, so its turn cannot finish`.
+- **Pausing takes effect at a safe boundary**: `PAUSED / TOOLS_PENDING` means an in-flight call must finish;
+  `PAUSED / READY` means the instance has paused. `instances` shows lifecycle, phase and reason together.
 - **Stopping a command that is already running**: `tasks cancel` is *delegation-level* — the task lands
   `CANCELLED` and the delegator is released, but the assignee's command keeps running until its own tool
   timeout, because the process-group stop (§6.4) is a request against an *operation* and the assignee learns
@@ -860,25 +794,15 @@ teamagents goals cancel --id g-spent    # close a goal nothing can spend (its ce
 
 ## 5. Skills and MCP
 
-- Skills live under the registration root `~/.agents/skills` (searched and read on demand with
-  `skill search/read`; a skill's instructions can never widen execution permissions). `skills_paths` and
-  `instruction_files` accept `~/…`, and **`doctor` reports what they resolve to** (`skills  3 skill(s) under
-  1 configured root(s)`, or a WARN naming a root that does not exist) — a path that is not there is ignored,
-  so without that row a typo would look like "no skills" (D-66). **`instruction_files` now reach every prompt**:
-  each file's text is appended to the leader's *and* every child's system text, in config order, under a heading
-  naming the file, and it is read per turn, so an edit lands on the next turn (D-102 recorded the promise,
-  D-246 delivers it). `doctor` counts what a session will deliver — `1 file(s), 141 byte(s) reach every member's
-  prompt` — and warns, naming it, when a declared file cannot be read. Keep these files for rules that must hold
-  for the whole team; a member's own profile text still comes first. A trusted repository's `AGENTS.md` files are
-  discovered automatically: from the repository/trust boundary down to the working directory, outermost first, so
-  the nearest file is the most specific, with user `instruction_files` before all of them. An untrusted repository
-  contributes none and the refusal is reported (D-467). Do not confuse it with the upward project-config search
-  in §2. D-479 adds the boot-selected paths to `/help` and status, and a transient observation of the
-  Leader's last prompt assembly: loaded paths/byte counts or unreadable paths/reasons from the very same
-  reads used for its prompt. This observation is empty after driver restart until another assembly occurs;
-  it does not prove a provider consumed the request. Doctor checks current files, not historical reads.
-  Skill roots are discovery sources; individual Skill content is still read on demand, and host discovery
-  does not imply a Skill script or its dependencies work with the host shell PATH.
+- **Skills and instructions**: `~/.agents/skills` is the default registration root. `skill search/read`
+  discovers instructions on demand; Skill text never grants extra execution authority. `skills_paths` and
+  `instruction_files` accept `~/…`, and `doctor` reports missing paths.
+  Explicit instruction files are read for every member's prompt, in config order. Trusted `AGENTS.md` files
+  are discovered from the repository boundary to the cwd, outermost first, after user instruction files;
+  untrusted repositories contribute none. `/help` and `status --json` show boot-selected paths and the latest
+  Leader prompt-assembly observation, including loaded byte counts or read errors. That observation is empty
+  after a driver restart until the next assembly and does not prove provider consumption. Skill scripts still
+  need the appropriate host capability and dependencies.
 - **Skill resource boundary**: search matches names/descriptions and returns at most ten hits; `read` returns
   at most 32,000 characters of SKILL.md text. Add `path` to read one support file relative to the skill's
   directory: it must stay inside that directory (absolute paths, `..`, symlinks that leave it, directories and
@@ -888,21 +812,11 @@ teamagents goals cancel --id g-spent    # close a goal nothing can spend (its ce
 - The tools themselves — every function a model may be offered, with its parameters and the model-facing
   description, split by the layer that decides it (the profile's tools, the instance's grants, the session's
   bindings) — are catalogued in [docs/TOOLS.md](TOOLS.md), generated from the schemas.
-- MCP: bound services load at startup (a required service fails loudly, an optional one only drops its
-  capability). "Fails loudly" means: the instance whose driver cannot boot is **parked with the runtime's
-  reason** — a `bearer_token_env_var` that is not set, an unreachable endpoint or a missing command. The
-  session keeps running, but **nothing drives that instance**: a `required = true` service that cannot start
-  leaves every member unstarted, so a headless run (D-164) ends on the park instead of waiting out its
-  deadline and reports the runtime's own words (`failure`, e.g. `required tool service "x" is unavailable:
-  …`), the TUI writes the same sentence into its system notes, and `doctor` names a *static* cause before any
-  session starts (a command that is missing or not executable, `${VAR}` in a command — nothing expands one —
-  an `env` value naming an unset variable, an unset bearer variable). Fix the cause and pull the lever the
-  client names (`teamagents instances resume --id …`): `teamagents instances`
-  shows the park **and its reason** (D-165), so the answer is on the surface a
-  user looks at first. Measured live over the HTTP
-  transport (`python3 review/dogfood/mcp_http.py`, D-104). Calls go through the same permission, approval, budget, cancellation and receipt entry
-  points. A remote call dispatched before a crash is recorded as `OUTCOME_UNKNOWN` after recovery and is
-  **never replayed**.
+- **MCP services load when an instance starts**. A failed `required = true` service parks that instance with
+  the runtime's reason; an optional service drops only its capability. Common causes include a missing
+  credential, endpoint or command. Fix the cause, then use `teamagents instances resume --id …`.
+  Calls use the same permission, budget, cancellation and receipt paths as other tools. If a dispatched remote
+  call's outcome is lost during recovery, it is recorded as `OUTCOME_UNKNOWN` and is not replayed.
 - **Signing in to a remote service** (D-412): an HTTP MCP server that answers 401 until you present a token it
   issues itself needs a sign-in, not a pasted secret. Bind it with `oauth = true` and sign in once:
 
@@ -938,19 +852,14 @@ teamagents goals cancel --id g-spent    # close a goal nothing can spend (its ce
   `required` service parked it) — the driver, and with it the toolkit, is rebuilt; the conversation and the goal
   are untouched. A `required` service with no credential parks its instance instead, with the runtime's own
   reason, which is the other path to the same lever.
-- **Binding one is writing it down** (D-74/D-434): a `[tools.<name>] kind = "mcp"` entry is the binding.
-  It can come from the user config or a project config admitted by trusted_projects or trust_project
-  (section 2); an untrusted cloned project cannot bind a service. Tools are reachable through codemode
-  under their normalized service/tool names, not individually advertised model functions. A required service
-  that cannot boot parks the affected instance; an optional failure drops that capability. Doctor lists
-  configured services and static setup problems. MCP resource discovery/reading is not implemented.
-- **MCP is called from code, not one tool per tool** (D-374, completed by D-376, learned from pi's codemode).
-  Bound MCP tools are not advertised individually; the model is offered one `codemode` tool and calls them from a
-  short JavaScript program — `const hit = await tools.search({ q: "…" }); text(hit.items[0].id)` — so loops,
-  batched calls and filtering happen inside the sandbox and **only the script's own output enters the
-  conversation**, never the payloads it read. This composition surface reaches bound MCP tools, not native
-  file/shell tools. The host bridge is synchronous: a JavaScript promise batch does not establish parallel
-  MCP execution. The script runs in a QuickJS VM whose only capabilities are your
+- **Bind an MCP service in config** with `[tools.<name>] kind = "mcp"`. It can come from user config or a
+  trusted project; an untrusted project cannot bind one. Tools are available through codemode under normalized
+  service/tool names. `doctor` lists static setup problems without starting the service. MCP resource
+  discovery/reading is not implemented.
+- **Call MCP tools through codemode**: the model receives one `codemode` tool rather than every bound MCP
+  tool as a separate function. JavaScript can batch and filter calls, and only the script's own output enters
+  the conversation. Native file/Shell tools are not available inside this composition surface, and the host
+  bridge is synchronous rather than a parallel MCP runtime. The script runs in a QuickJS VM whose only capabilities are your
   bound MCP tools (no direct files, network or timers), with a 256 MB heap, an output budget and a per-script deadline
   (default two minutes; `// @options: {"timeout_ms": …, "max_output_tokens": …}` overrides them); `ALL_TOOLS`,
   `searchTools(query)`, `describeTool(name)` and `describeNamespace(service)` find a tool from inside the script,
@@ -975,42 +884,36 @@ teamagents goals cancel --id g-spent    # close a goal nothing can spend (its ce
 
 ## 6. Recovery, compaction and cleanup
 
-- Crash recovery is classified by persisted location: known results are reused, in-flight losses are
-  recorded honestly (`OUTCOME_UNKNOWN`) and nothing is replayed on a guess. When the disk is full, new
-  side-effect dispatch stops and the instance parks, reporting the in-flight loss (A31).
-- Long-context compaction triggers on **real window usage**: the summary keeps the original request, user
-  revisions, acceptance criteria and open questions, while the full text stays retrievable through
-  `read_history`. Compaction calls count against the goal budget.
-- **Retention and cleanup are implemented.** history_days is applied at daemon boot; archived_days is
-  applied by `teamagents sessions prune`, with a dry-run and explicit confirmation (§2). Defaults retain
-  history and archived sessions. Configured retention and explicit deletion can remove eligible data;
-  preserve anything you need before changing those policies. Incompatible database formats are refused,
-  not silently migrated or deleted. Historical one-off cleanup is not current installation behavior.
-- **Artifact collection runs at boot and on demand.** `teamagents artifacts` reports the catalog and bytes;
-  `teamagents artifacts gc` takes the coordinator lock and refuses while a daemon is serving the root.
-  Collection claims an unreferenced object transactionally before removing its bytes. D-436 releases a
-  completed owner's hold only after a nonzero history_days window; live/unknown work and other references
-  remain protected. With the default zero window, completed owners are not released merely because they
-  finished. Broader reference-expiration policy remains a decision boundary (D-438), not a blanket GC promise.
+- Crash recovery uses persisted facts: verified results are reused, lost outcomes become `OUTCOME_UNKNOWN`,
+  and side effects are not replayed on a guess. A full disk stops new side-effect dispatch and parks the
+  affected instance with the failure recorded.
+- Compaction uses actual context-window usage. Summaries retain the request, revisions, acceptance criteria
+  and open questions; full text remains available through `read_history`. Compaction calls count against the
+  goal budget.
+- `history_days` is applied at daemon boot and `archived_days` by `teamagents sessions prune`. Defaults keep
+  history and archived sessions. Explicit retention and deletion can remove data, so preserve what you need
+  before changing them. Incompatible database formats are rejected rather than silently adopted.
+- `teamagents artifacts` lists stored objects; `teamagents artifacts gc` collects unreferenced ones while
+  holding the coordinator lock and refusing a live daemon. Completed-owner release requires a nonzero
+  `history_days` window. Live/unknown work and remaining references stay protected; this is not a blanket
+  workspace or external-state rollback.
 
 ## 7. Troubleshooting
 
-**Work diagnostics (D-461).** Run `teamagents instances`, `teamagents tasks` or `teamagents status --json`
-against the same session (--state-root or --session). The TUI status points to attention states; /help shows
-up to twenty diagnostic rows and recovery instructions locally. Neither view sends a prompt or changes state.
+Run `teamagents instances`, `teamagents tasks` or `teamagents status --json` against the same session
+(`--state-root` or `--session`). The TUI status highlights attention states, and `/help` shows bounded
+diagnostics with recovery instructions. These reads do not send prompts or change state.
 
-The diagnosis separates idle-with-unsettled-work from model/tool/check processing, approval waits,
-capability waits, paused/parked instances and registered waits. READY with queued input is not called idle.
-Wait details preserve ALL/ANY, conditions and timer_at; no timer is not proof of deadlock. A long-running
-request or command is not labelled stalled merely because time passed. Diagnostics describe a snapshot,
-not a promise that the next command will see the same state.
+Diagnostics distinguish idle-with-unsettled-work from active model/tool/check work, approval and capability
+waits, paused/parked instances and registered waits. `READY` with queued input is not idle. A timer-free wait
+or a long-running command is not automatically a deadlock or stall; the report is a snapshot, not a promise
+about the next command.
 
-Use the instance/task ids printed on the row in suggestions labelled INSTANCE/TASK, retaining your session
-selector. For an idle worker, explicitly send a new instruction with instances send, or cancel its task if
-its result is no longer needed. BLOCKED still does not satisfy a task wait. To stop an executing command,
-use confirmed instance termination, not task cancellation or model interruption. Check unknown effects
-before retrying. The task list also shows assignee activity after task settlement; a CANCELLED task does not
-prove a command stopped. Missing historical reasons remain unavailable. No automatic reminder is sent.
+Use the instance/task ids in the suggested commands. For an idle worker, send a new instruction or cancel its
+unneeded task. `BLOCKED` does not satisfy a task wait. To stop an executing command, use confirmed instance
+termination, not task cancellation or model interruption. Inspect unknown effects before retrying. A
+`CANCELLED` task does not prove its command stopped. Missing historical reasons remain unavailable, and no
+automatic reminder is sent.
 
 | Symptom | What to do |
 |---|---|

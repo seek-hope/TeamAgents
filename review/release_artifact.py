@@ -1,41 +1,22 @@
 #!/usr/bin/env python3
-"""One fact, checked against every document that states it: is the published release this product? (D-203)
+"""Check publication claims against the newest release tag (D-203/D-457).
 
-`docs/INSTALL.md` §1 used to tell a reader that the latest published release was the earlier implementation,
-and `review/install_check.py` showed it live: that artifact's help offered `validate`, `--plain`, `--resume`
-and `--team`, verbs D-52/D-73 removed. (`sessions prune` was removed then and re-added as the retention verb
-by D-435, so it is part of the current surface.) The fact needs no network here — every release tag
-in this repository predates the v2 layout (`git ls-tree <tag> -- core/src/v2` is empty, while the current tree
-is built on it), so whatever the newest tag published is not the product the documents describe.
+The newest tag has three possible states: no public release, a release built from the earlier product layout,
+or a release containing `core/src/v2`. Documents must not recommend a release while describing it as another
+product generation. `STATEMENTS` records the retired caveats that were required for the second state and are
+forbidden for the third; `NO_RELEASE_STATEMENTS` covers the first.
 
     python3 review/release_artifact.py
+    python3 review/release_artifact.py --tag v0.2.0
+    python3 review/release_artifact.py --layout core/src   # control: a layout every tag carries
+    python3 review/release_artifact.py --doc README.md=/tmp/readme-copy.md
 
-The fact is computed from the tags, and the documents have to agree with it:
+D-216 also checks that all three crates carry the same version. The release workflow reads that version and
+refuses a mismatched tag before building an archive.
 
-* while no release tag exists at all, each document must say there is **no public release** (D-457);
-* while a release tag exists but does not carry the layout, each statement below must be **present**;
-* publishing a v2 release flips it — the newest tag then carries the layout, so each statement must be
-  **absent** — and whoever cuts that release meets a failing audit until the statements and this list are
-  rewritten together. That is the point: one fact with several statements, not several opinions (the shape
-  D-133 established for the project config).
-
-The install guide and the acceptance ledger state it in prose; the README is where the install is *recommended*,
-so it must carry the caveat too, and the Chinese README with it. The Chinese note cannot be matched by a
-Chinese phrase — this repository's code is English only — so it is held by the tag it must name (`v0.1.2`),
-the one token only the caveat mentions in either README.
-
-    python3 review/release_artifact.py --doc README.md=/tmp/readme-without-the-note.md   # the control
-    python3 review/release_artifact.py --layout core/src   # the other side: a layout every tag's tree has
-
-**D-216 added the version the three crates share.** `.github/workflows/release.yml` refuses a tag that is not
-`v<version>`, and it reads that version from `engine/Cargo.toml` — after checking that `core` and `tui` carry the same
-one. A tag cut while those three disagree fails the workflow instead of shipping, and the checksum-and-install steps
-never run: a rule the release notes' own paragraph states, checked here before a tag rather than on it.
-
-Ceiling: the fact is read from the tags in this clone, so a checkout that never fetched them cannot compute it
-(a note, not a finding: the statements are still what the documents must say, and the failure is in the lenient
-direction); the statements are matched as text, so a document that states the caveat in new words is invisible;
-and the Chinese marker is a version token rather than a phrase, a weaker contract, stated here on purpose.
+The check is local: it reads tags in this clone, not GitHub's current release page. A clone without tags gets a
+note rather than a network-backed verdict. Statement matching is intentionally narrow; update the statements
+and their tests together when the publication state changes.
 """
 import argparse
 import pathlib
@@ -141,8 +122,7 @@ def main(argv) -> int:
     for finding in findings:
         print("FAIL:", finding)
     if released and not findings:
-        print("  next: the release is this product now, so the caveats and this script's list must be rewritten "
-              "together")
+        print("  current-layout release confirmed; retired release caveats are absent")
     return 1 if findings else 0
 
 
