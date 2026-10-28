@@ -23,6 +23,13 @@ teamagents                           # open the TUI (starts this session's daemo
   wheel read history. Drafts soft-wrap and survive resizing. Kitty's native Shift-drag copies text.
   A slash prefix shows local commands: Up/Down selects, Tab or Enter fills, Esc cancels without clearing
   the draft. Press Enter to submit the filled command. An exact typed command needs only its ordinary Enter.
+- **Shortcuts and editing (D-485)**: type `?` on an empty draft for grouped shortcuts; Esc closes the view,
+  Up/Down and PageUp/PageDown scroll it. `/help` retains environment and recovery details. Ctrl+Left/Right or
+  Alt+Left/Right moves by word; Ctrl+B and Ctrl+F move by character. Ctrl+W or Alt+Backspace deletes the previous
+  word. Ctrl+U deletes to line start, Ctrl+K to line end (or the following newline), and Ctrl+Y restores the last
+  deletion. Home/End moves to the line edges. The pending-input editor shares these keys and follows its caret.
+  The status fits run state/usage, session and model/effort by width; footer hints follow the current action.
+  Help and model menus own input: typing or pasting cannot change the underlying draft.
 - **External editor**: Ctrl+E opens the current draft in VISUAL, falling back to EDITOR. Saving and exiting
   successfully replaces the draft; a nonzero exit, missing editor or read failure restores it and reports
   the error. Nothing is sent automatically. Appending /edit to nonempty draft text and pressing Enter opens
@@ -33,13 +40,14 @@ teamagents                           # open the TUI (starts this session's daemo
   listed below. Ctrl+Q or /quit quits the TUI while the daemon keeps running.
 - **Approvals appear only when needed**: Ctrl+A focuses the approval list; a approves once, d denies,
   Esc returns to the draft. Approval arrival never steals typing focus, and a click only selects a row.
-- **Readable conversations (D-447)**: shaded user messages, Leader Markdown, headings, lists, quotes, links,
+- **Readable conversations (D-447/D-485)**: prompt markers, a compact Leader reply gutter, headings, lists, quotes, links,
   fenced code and tables. Code retains indentation; narrow tables become labelled records. Diff lines have
   addition/removal colors. Completed fenced code uses language syntax colors (D-450), including Rust, Python,
   JavaScript/TypeScript, JSON, TOML and Shell. Unknown languages, incomplete fences or parser failures stay
   plain; coloring also falls back above 64 KiB/500 lines or 4096 bytes in one line. Live streaming uses
   the same layout, remains transient and is replaced by history.
-  Tool calls and results share a block; received output does not by itself establish success.
+  Tool calls and results share a block; consecutive calls share an activity group. Compact headers combine
+  tool, receipt state and command/path/query. Received output does not by itself establish success.
   Ctrl+O expands tool previews from four to forty wrapped lines or folds them again. Live tool text is capped
   at 20,000 characters with a notice; full stored results and arguments remain in /sessions.
   `teamagents history --id ID --json` also reads stored messages.

@@ -349,6 +349,93 @@ fn blocked_task_and_wait_diagnostics_refresh_without_stealing_approvals() {
 }
 
 #[test]
+fn shortcuts_own_input_and_remain_scrollable_at_small_sizes() {
+    for width in [1, 8, 40, 60, 100] {
+        let mut app = app();
+        app.handle_key(key(KeyCode::Char('?')));
+        assert!(app.help_open);
+        assert!(app.handle_key(key(KeyCode::Char('x'))).is_none());
+        assert!(app.handle_key(key(KeyCode::Enter)).is_none());
+        app.apply_approvals(json!({"approvals": [{"id":"arrival"}]}));
+        app.handle_key(ctrl('a'));
+        assert_eq!(app.focus, Focus::Composer);
+        assert!(app.composer.text().is_empty());
+        let mut terminal = Terminal::new(TestBackend::new(width, 20)).unwrap();
+        terminal.draw(|frame| v2ui::render(frame, &mut app)).unwrap();
+        assert!(app.pictures.is_empty());
+        if width >= 40 {
+            let shown: String = terminal.backend().buffer().content.iter().map(|cell| cell.symbol()).collect();
+            assert!(shown.contains("Shortcuts") && shown.contains("Input editing"));
+        }
+        for _ in 0..100 {
+            app.handle_key(key(KeyCode::PageDown));
+        }
+        terminal.draw(|frame| v2ui::render(frame, &mut app)).unwrap();
+        if width >= 40 {
+            let shown: String = terminal.backend().buffer().content.iter().map(|cell| cell.symbol()).collect();
+            assert!(shown.contains("Approvals") && shown.contains("Esc close"), "{shown}");
+        }
+        assert_eq!(app.handle_key(ctrl('c')), Some(V2Effect::Interrupt { instance: "i-leader".into() }));
+        app.handle_key(key(KeyCode::Esc));
+        assert!(!app.help_open);
+        app.composer.set_text("literal");
+        app.handle_key(key(KeyCode::Char('?')));
+        assert_eq!(app.composer.text(), "literal?");
+    }
+}
+
+#[test]
+fn responsive_status_and_hints_prioritize_current_actions() {
+    for width in [40, 60, 100] {
+        let mut app = app();
+        app.session_name = "project".into();
+        app.apply_checkpoint(json!({"instances":[{"id":"i-leader","lifecycle":"ACTIVE","phase":"READY","model":"deepseek-flash","effort":"high"}],
+            "goal":{"status":"ACTIVE","known_usage":{"total":42}}}), 2);
+        let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+        terminal.draw(|frame| v2ui::render(frame, &mut app)).unwrap();
+        let row = |y| (0..width).map(|x| terminal.backend().buffer()[(x, y)].symbol()).collect::<String>();
+        assert!(row(0).contains("Ready") && row(0).contains("42 tokens"));
+        if width == 100 {
+            assert!(row(0).contains("deepseek-flash / high") && row(0).contains("project"));
+        }
+        assert!(row(23).contains("? shortcuts") && !row(23).contains("interrupt"));
+        app.instances[0].phase = "MODEL_PENDING".into();
+        terminal.draw(|frame| v2ui::render(frame, &mut app)).unwrap();
+        let shown: String = terminal.backend().buffer().content.iter().map(|cell| cell.symbol()).collect();
+        assert!(shown.contains("Ctrl+C interrupt"));
+        app.mark_disconnected("lost connection");
+        terminal.draw(|frame| v2ui::render(frame, &mut app)).unwrap();
+        let shown: String = terminal.backend().buffer().content.iter().map(|cell| cell.symbol()).collect();
+        assert!(shown.contains("Disconnected") && shown.contains("Draft kept"));
+    }
+}
+
+#[test]
+fn pending_input_editor_shares_keys_and_follows_the_caret() {
+    let mut app = app();
+    app.composer.set_text("main draft");
+    app.handle_key(ctrl('p'));
+    let queue = app.queue.as_mut().unwrap();
+    queue.apply(&json!({"inputs":[{"envelope_id":"edit-id","revision":3,"payload":{"text":"old text"}}]}));
+    app.handle_key(key(KeyCode::Enter));
+    app.handle_key(ctrl('u'));
+    app.handle_key(ctrl('y'));
+    assert_eq!(app.queue.as_ref().unwrap().editor.as_ref().unwrap().text(), "old text");
+    app.queue.as_mut().unwrap().paste(&"\nline".repeat(50));
+    app.handle_key(key(KeyCode::Char('Z')));
+    let mut terminal = Terminal::new(TestBackend::new(40, 18)).unwrap();
+    terminal.draw(|frame| v2ui::render(frame, &mut app)).unwrap();
+    let shown: String = terminal.backend().buffer().content.iter().map(|cell| cell.symbol()).collect();
+    assert!(shown.contains("lineZ"), "the caret's row must stay visible: {shown}");
+    let caret = terminal.get_cursor_position().unwrap();
+    assert!(caret.x > 0 && caret.x < 39 && caret.y > 1 && caret.y < 14);
+    app.handle_key(key(KeyCode::Esc));
+    app.handle_key(key(KeyCode::Esc));
+    assert!(app.queue.is_none());
+    assert_eq!(app.composer.text(), "main draft");
+}
+
+#[test]
 fn ctrl_e_edits_the_current_draft_and_slash_edit_is_local() {
     let mut app = app();
     app.composer.set_text("draft to edit");

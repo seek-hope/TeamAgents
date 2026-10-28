@@ -412,6 +412,7 @@ fn run_v2(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, mut client
                     app.graphics.resize();
                     dirty = true;
                 }
+                Ok(Event::Paste(_)) if app.help_open || app.profile.is_some() => {}
                 Ok(Event::Paste(text)) if app.queue.is_some() => {
                     if let Some(queue) = &mut app.queue {
                         queue.paste(&text);

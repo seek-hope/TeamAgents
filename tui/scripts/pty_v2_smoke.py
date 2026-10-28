@@ -18,7 +18,7 @@ if TERM_PROGRAM:
     ENV["TERM_PROGRAM"] = TERM_PROGRAM
 
 INSTANCES = [
-    {"id": "i-leader", "lifecycle": "ACTIVE", "phase": "READY"},
+    {"id": "i-leader", "lifecycle": "ACTIVE", "phase": "READY", "model": "deepseek-flash", "effort": "high"},
     {"id": "i-worker", "lifecycle": "ACTIVE", "phase": "WAITING"},
 ]
 TASKS = [{"id": "t-smoke", "goal_id": "g1", "assignee": "i-worker", "status": "RUNNING"}]
@@ -198,8 +198,38 @@ def main():
     expect("10/1000", "status budget")
     expect("Message", "composer")
     expect("Enter", "footer")
-    expect("Ctrl+C interrupt", "interrupt hint")
+    expect("? shortcuts", "ready help hint")
     expect("Ctrl+Q quit", "quit hint")
+    expect("deepseek-flash / high", "active profile")
+    if "Ctrl+C interrupt" in "\n".join(scr.lines()):
+        failures.append("Ready footer prioritizes an inactive interrupt")
+
+    # Help and model overlays own keys, paste and the caret. They must not
+    # submit or put hidden text into the underlying draft.
+    os.write(fd, b"?")
+    scr.feed(read_all(fd, 0.4).decode("utf-8", "replace"))
+    expect("Shortcuts", "help overlay")
+    expect("Input editing", "grouped help")
+    os.write(fd, b"\x1b[200~hidden paste\x1b[201~\r")
+    scr.feed(read_all(fd, 0.4).decode("utf-8", "replace"))
+    if any(f.get("method") == "submit_input" for f in daemon.frames):
+        failures.append("help dispatched input")
+    os.write(fd, b"\x1b")
+    scr.feed(read_all(fd, 0.4).decode("utf-8", "replace"))
+    os.write(fd, b"/model\r")
+    scr.feed(read_all(fd, 0.4).decode("utf-8", "replace"))
+    expect("Model & effort", "model overlay")
+    os.write(fd, b"\x1b[200~another hidden paste\x1b[201~")
+    scr.feed(read_all(fd, 0.4).decode("utf-8", "replace"))
+    os.write(fd, b"\x1b")
+    scr.feed(read_all(fd, 0.4).decode("utf-8", "replace"))
+    if "hidden paste" in "\n".join(scr.lines()):
+        failures.append("an overlay accepted paste into its hidden draft")
+    os.write(fd, b"one two\x1b\x7f\x19")  # Alt+Backspace, Ctrl+Y
+    scr.feed(read_all(fd, 0.4).decode("utf-8", "replace"))
+    expect("one two", "word deletion and restore")
+    os.write(fd, b"\x15")  # Ctrl+U clears the line without submitting
+    scr.feed(read_all(fd, 0.4).decode("utf-8", "replace"))
 
     # Ctrl+J inserts a newline in the composer (0x0A in raw mode), the composer
     # box grows, and the whole two-line text is what gets submitted

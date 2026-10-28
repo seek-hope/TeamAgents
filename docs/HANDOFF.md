@@ -1,6 +1,7 @@
 # Development handoff
 
-Updated **2026-10-28**. The runtime baseline is **D-480 (`7ae6bd5b`)**. **D-484** makes DeepSeek + Exa the
+Updated **2026-10-28**. **D-485** improves conversation UX, responsive hints, shortcut discovery and shared
+message/queue editing. The runtime baseline is **D-480 (`7ae6bd5b`)**. **D-484** makes DeepSeek + Exa the
 default search configuration, with DeepSeek fetch. **D-482** added the provider-neutral search implementation;
 **D-483** documented and verified CodeGraph through the existing stdio MCP + codemode path. **D-481** previously
 refreshed TUI presentation without changing session, protocol or execution semantics. Always recheck Git status
@@ -49,6 +50,12 @@ parses and checks all three bindings while retaining the no-overwrite and mode-0
 config was explicitly backed up and migrated; doctor confirms all three web bindings and CodeGraph. Dual-source
 `auto` may charge both providers, and no live paid Search request is part of this evidence.
 
+D-485 passed `make check` with **core 147 / engine 424 / tui 96** and the complete `make pty` matrix
+(five terminal profiles plus forced blocks/Kitty graphics). Streamed and saved replies share their text/media
+gutter and line wrapping. The release-profile TUI was installed after backup and passed the installed
+xterm-256color conversation smoke, including modal paste ownership and word deletion/restore. Configuration
+and existing sessions were preserved. No live-model comparison or new public release is part of this evidence.
+
 Older evidence stays pinned to its own source:
 
 - [D-451 maturity report](../review/maturity-2026-10-11/REPORT.md): immutable manifests and local workflow
@@ -77,6 +84,10 @@ Older evidence stays pinned to its own source:
   tamper-proof records or complete external-side-effect backups.
 
 ## Focused regression entry points
+
+D-485 conversation UX checks live in the conversation/minimal/parity suites and text editor tests. The PTY
+smoke also verifies modal paste ownership and word deletion/restore. Preserve the speaker gutter in media
+coordinates and keep the help/model overlay from accepting input into the underlying composer.
 
 All rows below are included in the normal suites unless noted otherwise.
 

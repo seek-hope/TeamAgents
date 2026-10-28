@@ -225,6 +225,8 @@ pub struct V2App {
     pub models: Vec<ModelInfo>,
     pub efforts: Vec<String>,
     pub profile: Option<ProfileMenu>,
+    pub help_open: bool,
+    pub help_scroll: usize,
     pub session_id: String,
     pub instances: Vec<InstanceInfo>,
     /// Read-only checkpoint observations, never instructions to the model.
@@ -267,6 +269,8 @@ impl V2App {
             models: vec![],
             efforts: default_efforts(),
             profile: None,
+            help_open: false,
+            help_scroll: 0,
             session_id: session_id.to_string(),
             instances: vec![],
             work_diagnostics: vec![],
@@ -762,6 +766,28 @@ impl V2App {
 
     pub fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> Option<V2Effect> {
         use crossterm::event::{KeyCode, KeyModifiers};
+        if key.kind == crossterm::event::KeyEventKind::Release {
+            return None;
+        }
+        if self.help_open {
+            match (key.code, key.modifiers) {
+                (KeyCode::Esc, _) | (KeyCode::Char('?'), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                    self.help_open = false;
+                }
+                (KeyCode::Up, _) => self.help_scroll = self.help_scroll.saturating_sub(1),
+                (KeyCode::Down, _) => self.help_scroll = self.help_scroll.saturating_add(1),
+                (KeyCode::PageUp, _) => self.help_scroll = self.help_scroll.saturating_sub(8),
+                (KeyCode::PageDown, _) => self.help_scroll = self.help_scroll.saturating_add(8),
+                (KeyCode::Char('q'), KeyModifiers::CONTROL) => {
+                    self.quit = true;
+                    return Some(V2Effect::Quit);
+                }
+                (KeyCode::Char('c'), KeyModifiers::CONTROL) => return self.interrupt(),
+                (KeyCode::Char('g'), KeyModifiers::CONTROL) => self.graphics.toggle(),
+                _ => {}
+            }
+            return None;
+        }
         if self.profile.is_some() {
             if key.modifiers.contains(KeyModifiers::CONTROL) {
                 match key.code {
@@ -978,6 +1004,10 @@ impl V2App {
                 "Session {} · model {}
 Enter sends to the Leader; Ctrl+J or Shift+Enter adds a newline.
 Up/Down recalls input; PageUp/PageDown or the wheel reads history.
+? on an empty draft opens shortcuts; Esc closes them.
+Ctrl+Left/Right or Alt+Left/Right moves by word; Ctrl+B/F moves by character.
+Ctrl+W or Alt+Backspace deletes a word; Ctrl+U/K deletes to line start/end; Ctrl+Y restores the last deletion.
+Home/End moves to line start/end; Ctrl+E opens the external editor.
 A slash prefix shows commands: Up/Down selects, Tab/Enter fills, Esc cancels; Enter submits the filled command.
 Ctrl+C or /interrupt cancels the Leader's model request; running tools and delegated work continue.
 Ctrl+A focuses pending approvals; a approves once, d denies, Esc returns.
@@ -1021,6 +1051,14 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
     fn composer_key(&mut self, key: crossterm::event::KeyEvent) -> Option<V2Effect> {
         use crossterm::event::{KeyCode, KeyModifiers};
         if key.code == KeyCode::Enter && key.kind == crossterm::event::KeyEventKind::Repeat {
+            return None;
+        }
+        if key.code == KeyCode::Char('?')
+            && !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            && self.composer.text().is_empty()
+        {
+            self.help_open = true;
+            self.help_scroll = 0;
             return None;
         }
         if self.attachments.key(&mut self.composer, key) {
@@ -1117,49 +1155,10 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
                 }
                 None
             }
-            KeyCode::Backspace => {
-                self.composer.backspace();
+            _ => {
+                self.composer.edit_key(key);
                 None
             }
-            KeyCode::Delete => {
-                self.composer.delete();
-                None
-            }
-            // word-wise editing, the other half of `text.rs` that nothing called
-            KeyCode::Left if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.composer.move_word_left();
-                None
-            }
-            KeyCode::Right if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.composer.move_word_right();
-                None
-            }
-            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.composer.delete_word();
-                None
-            }
-            KeyCode::Left => {
-                self.composer.move_left();
-                None
-            }
-            KeyCode::Right => {
-                self.composer.move_right();
-                None
-            }
-            KeyCode::Home => {
-                self.composer.move_home();
-                None
-            }
-            KeyCode::End => {
-                self.composer.move_end();
-                None
-            }
-            // plain text only: control chords are commands handled above
-            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.composer.insert_char(c);
-                None
-            }
-            _ => None,
         }
     }
 
@@ -1255,6 +1254,10 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
         lines.join("\n")
     }
 
+    pub(crate) fn workspace(&self) -> Option<&str> {
+        self.environment["workspace"].as_str().filter(|s| !s.is_empty())
+    }
+
     pub fn status_line(&self) -> String {
         if self.disconnected {
             return "Disconnected · reconnecting".into();
@@ -1318,18 +1321,34 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
     }
 
     pub fn footer_hint(&self) -> String {
+        if self.help_open {
+            return "Esc close · Up/Down scroll · PgUp/PgDn page".into();
+        }
+        if self.profile.is_some() {
+            return "Enter apply · Esc cancel · Up/Down model · Left/Right effort".into();
+        }
         if self.focus == Focus::Approvals {
-            return "a approve once · d deny · up/down select · Esc back".into();
+            return "a approve once · d deny · Up/Down select · Esc back".into();
         }
-        if !self.completion.candidates(&self.composer).is_empty() {
-            return "Up/Down select · Tab/Enter fill · Esc cancel · Enter submits after filling".into();
+        if self.attachments.visible(&self.composer) || !self.completion.candidates(&self.composer).is_empty() {
+            return "Tab/Enter fill · Esc cancel · Up/Down select · Enter again submits".into();
         }
-        if self.composer.text().starts_with('/') {
-            return SLASH_HELP.into();
+        if self.disconnected || self.active_instance().is_none() {
+            return "Draft kept · Ctrl+Q quit · /help".into();
         }
         if !self.approvals.is_empty() {
-            return "Ctrl+A review · Enter send · Ctrl+C interrupt · Ctrl+Q quit".into();
+            return "Ctrl+A review · Enter send · Ctrl+Q quit".into();
         }
-        "Enter send · Ctrl+M model · Ctrl+S sessions · Ctrl+C interrupt · Ctrl+Q quit · /help".into()
+        if self.chat_scroll > 0 {
+            return format!("PgDn newer · {} lines above latest · PgUp older · Enter send", self.chat_scroll);
+        }
+        if self.active_instance().is_some_and(|i| i.lifecycle == "ACTIVE" && i.phase != "READY") {
+            return "Ctrl+C interrupt · Enter send · Ctrl+P queue · Ctrl+Q quit".into();
+        }
+        if self.composer.text().is_empty() {
+            "Enter send · ? shortcuts · Ctrl+J newline · Ctrl+M model · Ctrl+S sessions · Ctrl+Q quit".into()
+        } else {
+            "Enter send · Ctrl+J newline · Ctrl+E editor · Ctrl+Q quit · /help".into()
+        }
     }
 }

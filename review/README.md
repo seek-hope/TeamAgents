@@ -41,7 +41,7 @@ and explains the maintenance workflow. The groups below are an index, not anothe
 | Evaluation and formal material | `eval_manifests.py`, `eval_surface.py`, `eval/r2-p6/anatomy.py`, `verification_catalogue.py` |
 | Probe selection | `dogfood/probes.py` |
 
-There are now **18** probes in the offline set, selected by `dogfood/probes.py`. For the current tree, `citations.py` verifies that 163 relative links resolve today. It checks 732 commands, 26 distinct targets, 20 declared as checked on 2026-10-26;
+There are now **18** probes in the offline set, selected by `dogfood/probes.py`. For the current tree, `citations.py` verifies that 163 relative links resolve today. It checks 734 commands, 26 distinct targets, 20 declared as checked on 2026-10-26;
 its other totals are recomputed and compared with the script's own docstring.
 
 Useful manual checks:

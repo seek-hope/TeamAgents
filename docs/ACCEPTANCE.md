@@ -1,15 +1,15 @@
 # Acceptance matrix (A01–A36)
 
 Baseline: [the design and acceptance baseline](DESIGN.md) §12/§16. Current source inspection and local
-regression: **2026-10-28, D-484**. This is not a new independent acceptance audit or real-model run.
+regression: **2026-10-28, D-485**. This is not a new independent acceptance audit or real-model run.
 The D-451 product/installation receipts and the D-452 independent audit retain their original source/date
 boundaries; later source changes do not inherit those results.
 
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 147 / engine 424 / tui 91 test targets), rerun on 2026-10-28.
-`make pty` passed on 2026-10-26: the terminal-profile matrix (xterm-256color, screen-256color, tmux-256color, xterm-kitty and Kitty under tmux) plus both forced graphics protocols, all rc 0 and
+`make check` is green (core 147 / engine 424 / tui 96 test targets), rerun on 2026-10-28.
+`make pty` passed on 2026-10-28: the terminal-profile matrix (xterm-256color, screen-256color, tmux-256color, xterm-kitty and Kitty under tmux) plus both forced graphics protocols, all rc 0 and
 credential-free. PTY checks cover protocol bytes, input ownership, resize and cleanup, not a complete
 actual graphical-terminal or OS matrix. These gates do not renew real-provider, OAuth, formal-proof or
 cross-product coding acceptance. `make check` includes `make language-check`, which
@@ -454,6 +454,7 @@ design decision **for the user**.
 |---|---|---|
 | D-453 governed updater | engine/src/update.rs and engine/tests/update.rs: journal, validation, switch/rollback and live local daemon exercise | public distribution acceptance beyond the v0.2.0 artifact |
 | External editor | tui/src/editor.rs success/failure test; composer/effect wiring in tui/src/v2app.rs and tui/src/main.rs | full editor crash/resize/reconnect matrix; completion menu still omits /edit |
+| D-485 conversation UX | conversation/minimal/parity tests cover compact tools, responsive 100/60/40-column frames, modal focus and media offsets; shared editor checks cover Unicode deletion/restore and the queue caret; PTY covers modal paste and editing | no live-model comparison, system clipboard, general undo, transcript search or graphical-terminal study |
 | D-484 dual-provider default config | examples/config.minimal.toml and cli::init_creates_private_config_and_never_overwrites_existing_paths assert DeepSeek search/fetch plus Exa search; local doctor confirms all three configured bindings | existing files still require deliberate migration; no live paid Search request was made |
 | D-482 provider-neutral web search | engine/src/search.rs and engine/src/tools.rs: DeepSeek/Exa request shapes, RRF, partial failure, retry, cache/single-flight and credential/binding tests | live paid Search acceptance and measured cost/latency; web_fetch is unchanged |
 | D-483 CodeGraph MCP integration | engine/examples/codegraph_probe.rs: real existing-index discovery and codemode query, no model or auto-init | broader project/watcher coverage; shared-daemon and freshness limits remain |

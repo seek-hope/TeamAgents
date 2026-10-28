@@ -12,8 +12,8 @@ real daemon and a real model, in a real PTY:
    and then quits.
 
 The screen needles are the ones the *renderer* produces, not the raw words: the history pane labels an
-entry with its author: the answer must appear under the separate `Leader` label, and the typed input
-under `You` (D-447). A bare word would also match the composer echo of the prompt, which is on screen before
+entry with its author: the answer must start with the Leader's `●` marker, and the typed input
+with `›` (D-485). A bare word would also match the composer echo of the prompt, which is on screen before
 the turn even starts — that is why the first version of this probe "passed" the answer within a second.
 
     python3 review/dogfood/tui.py                    # DeepSeek
@@ -74,8 +74,8 @@ context_window = 262144
 PROMPT = "Reply with the single word TUIDONE and nothing else."
 ANSWER = "TUIDONE"
 # what the history pane paints once the daemon sends the turn's entries back
-ANSWER_NEEDLE = f"Leader\n{ANSWER}"
-INPUT_NEEDLE = "You\nReply with the single word"
+ANSWER_NEEDLE = f"● {ANSWER}"
+INPUT_NEEDLE = "› Reply with the single word"
 
 
 def entries(root: pathlib.Path) -> list[dict]:

@@ -14,12 +14,14 @@ pub struct Composer {
     pub history: Vec<String>,
     pub hist_idx: usize,
     pub draft: String,
+    // One local kill buffer shared by line/word deletion, never sent separately.
+    killed: String,
 }
 
 impl Composer {
     pub fn new(history: Vec<String>) -> Composer {
         let hist_idx = history.len();
-        Composer { lines: vec![vec![]], row: 0, col: 0, history, hist_idx, draft: String::new() }
+        Composer { lines: vec![vec![]], row: 0, col: 0, history, hist_idx, draft: String::new(), killed: String::new() }
     }
 
     pub fn text(&self) -> String {
@@ -162,11 +164,72 @@ impl Composer {
             self.row -= 1;
             self.col = self.lines[self.row].len();
             self.lines[self.row].extend(current);
+            self.killed = "\n".into();
             return;
         }
         let start = Self::word_boundary_left(&self.lines[self.row], self.col);
-        self.lines[self.row].drain(start..self.col);
+        self.killed = self.lines[self.row].drain(start..self.col).collect();
         self.col = start;
+    }
+
+    /// Local editing shared by the message and pending-input composers. Application
+    /// shortcuts and submission stay with the owner, which calls this after routing them.
+    pub fn edit_key(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
+        if key.kind == KeyEventKind::Release {
+            return false;
+        }
+        let control = key.modifiers == KeyModifiers::CONTROL;
+        let alt = key.modifiers == KeyModifiers::ALT;
+        match key.code {
+            KeyCode::Left if control || alt => self.move_word_left(),
+            KeyCode::Right if control || alt => self.move_word_right(),
+            KeyCode::Backspace if alt => self.delete_word(),
+            KeyCode::Char('w') if control => self.delete_word(),
+            KeyCode::Char('b') if control => self.move_left(),
+            KeyCode::Char('f') if control => self.move_right(),
+            KeyCode::Char('u') if control => {
+                if self.col > 0 {
+                    self.killed = self.lines[self.row].drain(..self.col).collect();
+                    self.col = 0;
+                }
+            }
+            KeyCode::Char('k') if control => {
+                if self.col < self.lines[self.row].len() {
+                    self.killed = self.lines[self.row].drain(self.col..).collect();
+                } else if self.row + 1 < self.lines.len() {
+                    self.delete();
+                    self.killed = "\n".into();
+                }
+            }
+            KeyCode::Char('y') if control => {
+                for ch in self.killed.clone().chars() {
+                    if ch == '\n' {
+                        self.insert_newline();
+                    } else {
+                        self.insert_char(ch);
+                    }
+                }
+            }
+            KeyCode::Char('j') if control => self.insert_newline(),
+            KeyCode::Enter if key.modifiers == KeyModifiers::SHIFT => self.insert_newline(),
+            KeyCode::Left if key.modifiers.is_empty() => self.move_left(),
+            KeyCode::Right if key.modifiers.is_empty() => self.move_right(),
+            KeyCode::Up if key.modifiers.is_empty() => self.move_up(),
+            KeyCode::Down if key.modifiers.is_empty() => self.move_down(),
+            KeyCode::Home if key.modifiers.is_empty() => self.move_home(),
+            KeyCode::End if key.modifiers.is_empty() => self.move_end(),
+            KeyCode::Backspace if key.modifiers.is_empty() => self.backspace(),
+            KeyCode::Delete if key.modifiers.is_empty() => self.delete(),
+            KeyCode::Char(ch)
+                if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
+                    && !ch.is_control() =>
+            {
+                self.insert_char(ch)
+            }
+            _ => return false,
+        }
+        true
     }
 
     pub fn submit(&mut self) -> Option<String> {
@@ -288,6 +351,42 @@ mod tests {
         c.recall(1);
         c.recall(1);
         assert_eq!(c.text(), "draft");
+    }
+
+    #[test]
+    fn shared_editor_deletes_and_restores_unicode_text_at_the_cursor() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut c = Composer::new(vec![]);
+        c.set_text("one \u{754c}\u{9762}\nnext");
+        c.move_up();
+        c.move_end();
+        let control = |ch| KeyEvent::new(KeyCode::Char(ch), KeyModifiers::CONTROL);
+        c.edit_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT));
+        assert_eq!(c.text(), "one \nnext");
+        c.edit_key(control('y'));
+        assert_eq!(c.text(), "one \u{754c}\u{9762}\nnext");
+        c.edit_key(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT));
+        assert_eq!(c.col, 4);
+        c.edit_key(control('k'));
+        c.edit_key(control('y'));
+        assert_eq!(c.text(), "one \u{754c}\u{9762}\nnext");
+        c.edit_key(control('u'));
+        assert_eq!(c.text(), "\nnext");
+        c.edit_key(control('y'));
+        assert_eq!(c.text(), "one \u{754c}\u{9762}\nnext");
+        c.edit_key(control('k'));
+        assert_eq!(c.text(), "one \u{754c}\u{9762}next");
+        c.edit_key(control('y'));
+        assert_eq!(c.text(), "one \u{754c}\u{9762}\nnext");
+        c.edit_key(control('b'));
+        c.edit_key(control('f'));
+        assert_eq!((c.row, c.col), (1, 0));
+        assert!(!c.edit_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::ALT)));
+        let before = c.text();
+        let mut release = control('u');
+        release.kind = crossterm::event::KeyEventKind::Release;
+        assert!(!c.edit_key(release));
+        assert_eq!(c.text(), before);
     }
 
     #[test]

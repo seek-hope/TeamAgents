@@ -497,6 +497,9 @@ protocol structure and export schemas/samples for client contract tests; the TUI
 daemon socket JSON protocol rather than duplicating two large domain models, and whether to extract a shared
 lightweight protocol crate follows real sharing needs.
 
+D-485 adds compact speaker/tool groups, responsive status/hints, a scrollable shortcut overlay and shared
+message/queue editing. These remain presentation and local draft operations over the same protocol.
+
 The TUI is a minimal user surface (D-445): one Leader conversation, streaming/history, compact progress
 and usage, conditional approvals, model-request interruption, and disconnect/reconnect. Input never switches
 to a worker. Exiting detaches the client; interrupting cancels only an in-flight Leader model request and

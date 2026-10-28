@@ -28,7 +28,7 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Acceptance checks | `exec --check` and goal `[[checks]]` run on the host through the same shell implementation | D-471, D-480 |
 | PTY verification | `make pty` runs a terminal-profile matrix in isolated ptys (xterm-256color, screen-256color, tmux-256color, xterm-kitty, Kitty under tmux) with auto graphics-mode assertions, plus forced blocks/kitty protocol bounds | D-472 |
 | TUI keys | Ctrl+Q quits, Ctrl+P opens pending inputs, Ctrl+M opens the Leader's model/effort menu (`/quit`, `/model`); the profile applies at the next turn | D-473 |
-| TUI presentation | conversation-first single column with the terminal's own background; semantic colors, brighter secondary text, shared rounded panels and textual selection markers; no new panels or interaction changes | D-481 |
+| TUI presentation | one conversation with compact speaker markers, grouped tools, responsive status/hints and shared panels; empty-draft `?` opens shortcuts; message and queue editors share word/line editing | D-485 (extends D-481) |
 | Default effort | the generated `leader_main` profile defaults to `reasoning_effort = "high"`; existing configs keep their value and a running daemon keeps its boot catalog | D-474 |
 | Reasoning effort menu | each model may declare `efforts`; the default is minimal/low/medium/high/xhigh/max; a model that lacks the current level falls back to the nearest declared level at or below it, and the CLI keeps an explicit override | D-476 |
 | Capability delegation | user remains the authority root; spawned instances still hold no shell by default; a user grant may be marked `delegable`, and only such a parent may produce attenuated, task-scoped, non-delegable child grants; missing capabilities become a visible pending approval, not a silent idle | D-455 |
@@ -37,6 +37,35 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Prompt cache | cache hit/miss/write are provider-reported and visible; the L1 frontier is fixed between compactions; Anthropic gets explicit breakpoints and OpenAI a stable key; DeepSeek stays automatic | D-459 |
 | Command idempotency | a replay with the same `command_id` returns the stored receipt for control-plane state, and the authoritative check runs under the write lock (D-463); result bodies are shared by content digest and zstd-compressed (D-464), while the receipt **rows** remain one per command | D-463, D-464 |
 | Model actions and code windows | a deciding read shares the write's transaction, or the guard is a predicate on the write itself; `verification/REPORT.md` §6 lists the protocol transitions and the three engine windows that span two transactions with their predicates | D-465 |
+
+## D-485 Conversation UX and shared editing (2026-10-28)
+
+**Authorization.** After reviewing Codex CLI and Pi references, the user confirmed the bounded conversation UX
+plan: compact messages and tool groups, responsive status and hints, a shortcut overlay, consistent auxiliary
+views, shared editing, regression checks and local installation. This extends D-481 beyond visual-only changes;
+the minimal Leader surface, daemon protocol, approvals, interruption and detachment semantics remain binding.
+
+User messages use a prompt marker on the terminal background; Leader Markdown uses a two-cell speaker gutter. Consecutive calls
+from the same member share an activity group. Compact tools combine name, receipt state and command/path/query;
+receiving output never claims success. Expansion and session history preserve full stored arguments/results.
+Media offsets include the gutter, and modal help/model views suppress underlying image placements and caret.
+
+Status fits the reported run state/usage, session and model/effort by terminal width. Footer actions depend on
+connection, focus, completion, approvals, scrolling and work; only whole actions fit. Empty-draft `?` opens a
+scrollable shortcut view; Esc closes it. Literal question marks in nonempty drafts and pasted text remain text.
+Help and model menus own keys, mouse and paste; Ctrl+C and Ctrl+Q retain their existing meanings. The model
+menu shows a windowed list. Queue editing follows its caret; queue rows prioritize the message over identifiers.
+
+Both composers share Ctrl+Left/Right and Alt+Left/Right, Ctrl+B/F, Ctrl+W and Alt+Backspace, Ctrl+U/K and Ctrl+Y.
+The last deleted word/line fragment stays in one local kill buffer. There is no clipboard integration or general
+undo stack. Ctrl+A remains approvals and Ctrl+E remains the external editor. No transcript search, theme picker,
+sidebar, new runtime control or paid model call is included.
+
+**Evidence.** Conversation and minimal-interface tests cover 100/60/40 columns, tool grouping and full details,
+modal focus, responsive hints, Unicode deletion/restore and queue caret scrolling. Existing media/highlighting
+checks include the speaker gutter. The PTY smoke drives help/model paste ownership and Alt+Backspace/Ctrl+Y
+through terminal bytes. Reference inspection used Pi 1.4.0 and Codex source 13b0217567d3; this is not a measured
+cross-product quality comparison. Final gate and installation evidence is recorded in ACCEPTANCE and HANDOFF.
 
 ## D-484 Bind DeepSeek and Exa in the default configuration (2026-10-28)
 

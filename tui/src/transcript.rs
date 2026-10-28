@@ -151,8 +151,23 @@ impl Transcript {
         if self.key != Some(key) {
             self.document = Document::default();
             for (position, entry) in entries.iter().enumerate() {
-                if !self.document.lines.is_empty() {
+                let tool_continuation = entry.tool.is_some()
+                    && position > 0
+                    && entries[position - 1].tool.is_some()
+                    && entries[position - 1].who == entry.who;
+                if !self.document.lines.is_empty() && !tool_continuation {
                     self.document.lines.push(Line::default());
+                }
+                if entry.tool.is_some() && !tool_continuation {
+                    let count =
+                        entries[position..].iter().take_while(|e| e.tool.is_some() && e.who == entry.who).count();
+                    if count > 1 {
+                        self.document.lines.extend(markdown::plain(
+                            &format!("Activity · {count} tools"),
+                            width,
+                            Style::default().fg(GREY),
+                        ));
+                    }
                 }
                 let origin = Origin {
                     session: session.into(),
@@ -161,18 +176,20 @@ impl Transcript {
                     member: if entry.who == "you" { "i-leader".into() } else { entry.who.clone() },
                 };
                 if let Some(g) = graphics.as_deref_mut() {
-                    if matches!(entry.kind, ChatKind::Assistant | ChatKind::Summary) {
-                        let label = if entry.kind == ChatKind::Summary {
-                            "Conversation compacted"
-                        } else if entry.who == "i-leader" || entry.who.is_empty() {
-                            "Leader"
-                        } else {
-                            &entry.who
-                        };
-                        self.document.lines.extend(markdown::plain(
-                            label,
+                    if entry.kind == ChatKind::Assistant {
+                        self.document.append(assistant_document(
+                            &entry.text,
+                            &entry.who,
                             width,
-                            Style::default().fg(CODEX).add_modifier(Modifier::BOLD),
+                            Some(g),
+                            &origin,
+                            false,
+                        ));
+                    } else if entry.kind == ChatKind::Summary {
+                        self.document.lines.extend(markdown::plain(
+                            "Conversation compacted",
+                            width,
+                            Style::default().fg(GREY),
                         ));
                         self.document.append(markdown::render_media(&entry.text, width, Some(g), &origin));
                     } else {
@@ -204,11 +221,44 @@ impl Transcript {
 }
 
 pub fn assistant(text: &str, who: &str, width: usize, streaming: bool) -> Vec<Line<'static>> {
-    let who = if who == "i-leader" || who.is_empty() { "Leader" } else { who };
-    let label = if streaming { format!("{who} · streaming") } else { who.to_string() };
-    let mut out = markdown::plain(&label, width, Style::default().fg(CODEX).add_modifier(Modifier::BOLD));
-    out.extend(markdown::render(text, width));
+    let mut out = markdown::render(text, width.saturating_sub(2).max(1));
+    mark_response(&mut out, width, who, streaming);
     out
+}
+
+pub(crate) fn assistant_document(
+    text: &str,
+    who: &str,
+    width: usize,
+    graphics: Option<&mut Graphics>,
+    origin: &Origin,
+    streaming: bool,
+) -> Document {
+    let mut body = markdown::render_media(text, width.saturating_sub(2).max(1), graphics, origin);
+    let before = body.lines.len();
+    mark_response(&mut body.lines, width, who, streaming);
+    body.offset(body.lines.len().saturating_sub(before), usize::from(width > 2) * 2);
+    body
+}
+
+/// A two-cell speaker gutter preserves Markdown styles and aligns continuation rows.
+fn mark_response(lines: &mut Vec<Line<'static>>, width: usize, who: &str, streaming: bool) {
+    if width == 0 {
+        lines.clear();
+        return;
+    }
+    if width > 2 {
+        for (i, line) in lines.iter_mut().enumerate() {
+            line.spans.insert(0, Span::styled(if i == 0 { "● " } else { "  " }, Style::default().fg(CODEX)));
+        }
+    }
+    if streaming || (!who.is_empty() && who != "i-leader") {
+        let who = if who.is_empty() || who == "i-leader" { "Leader" } else { who };
+        let label = if streaming { format!("{who} · streaming") } else { who.to_string() };
+        let mut heading = markdown::plain(&label, width, Style::default().fg(CODEX));
+        heading.append(lines);
+        *lines = heading;
+    }
 }
 
 fn render_entry(entry: &ChatEntry, width: usize, tool_limit: Option<usize>) -> Vec<Line<'static>> {
@@ -221,6 +271,18 @@ fn render_entry(entry: &ChatEntry, width: usize, tool_limit: Option<usize>) -> V
     if entry.kind == ChatKind::Assistant {
         return assistant(&entry.text, &entry.who, width, false);
     }
+    if entry.kind == ChatKind::User {
+        let body = if entry.who != "you" { format!("To {}: {}", entry.who, entry.text) } else { entry.text.clone() };
+        let mut lines = markdown::plain(&body, width.saturating_sub(2).max(1), Style::default().fg(FG));
+        for (i, line) in lines.iter_mut().enumerate() {
+            if width > 2 {
+                line.spans.insert(0, Span::styled(if i == 0 { "› " } else { "  " }, Style::default().fg(USER)));
+            }
+            line.spans.push(Span::raw(" ".repeat(width.saturating_sub(line.width()))));
+            line.style = Style::default().bg(USER_BG);
+        }
+        return lines;
+    }
     let (label, color) = match entry.kind {
         ChatKind::User => ("You", USER),
         ChatKind::Tool => ("Tool result · call outside this history page", GREY),
@@ -231,52 +293,52 @@ fn render_entry(entry: &ChatEntry, width: usize, tool_limit: Option<usize>) -> V
         ChatKind::Command => ("TeamAgents", ACCENT),
         _ => ("Notice", GREY),
     };
-    let label = if entry.kind == ChatKind::User && entry.who != "you" {
-        format!("You → {}", entry.who)
-    } else {
-        label.into()
-    };
-    let mut out = markdown::plain(&label, width, Style::default().fg(color).add_modifier(Modifier::BOLD));
+    let mut out = markdown::plain(label, width, Style::default().fg(color).add_modifier(Modifier::BOLD));
     out.extend(if entry.kind == ChatKind::Summary {
         markdown::render(&entry.text, width)
     } else {
         // Labels carry the speaker or severity color; the message itself stays readable prose.
-        let body = if entry.kind == ChatKind::User { FG } else { NOTICE };
-        markdown::plain(&entry.text, width, Style::default().fg(body))
+        markdown::plain(&entry.text, width, Style::default().fg(NOTICE))
     });
-    if entry.kind == ChatKind::User {
-        for line in &mut out {
-            let pad = width.saturating_sub(line.width());
-            line.spans.push(Span::raw(" ".repeat(pad)));
-            line.style = Style::default().bg(USER_BG);
-        }
-    }
     out
 }
 
 fn render_tool(tool: &ToolInfo, width: usize, limit: Option<usize>) -> Vec<Line<'static>> {
     let status = if tool.output.is_some() { "result received" } else { "awaiting result" };
-    let mut out = vec![Line::from(vec![
-        Span::styled("› ", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
-        Span::styled(tool.name.clone(), Style::default().fg(FG).add_modifier(Modifier::BOLD)),
-        Span::styled(format!(" · {status}"), Style::default().fg(MUTED)),
-    ])];
     let args: Json = serde_json::from_str(&tool.arguments).unwrap_or(Json::Null);
-    let detail = if limit != Some(4) {
-        if args.is_null() {
-            tool.arguments.clone()
-        } else {
-            serde_json::to_string_pretty(&args).unwrap_or_default()
-        }
+    let compact = limit == Some(4);
+    let summary = args["command"]
+        .as_str()
+        .map(|c| format!("$ {c}"))
+        .or_else(|| {
+            ["path", "query", "url", "description"].into_iter().find_map(|key| args[key].as_str().map(str::to_string))
+        })
+        .unwrap_or_else(|| tool.arguments.clone());
+    let header = Line::from(vec![
+        Span::styled("› ", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+        Span::styled(markdown::clean(&tool.name), Style::default().fg(FG).add_modifier(Modifier::BOLD)),
+        Span::styled(format!(" · {status}"), Style::default().fg(MUTED)),
+        Span::styled(
+            if compact { format!("  {}", markdown::clean(&summary).replace('\n', " ")) } else { String::new() },
+            Style::default().fg(CODE),
+        ),
+    ]);
+    let mut out = crate::wrap::wrap_line(&header, width);
+    if compact {
+        shorten(&mut out, 2, width);
+    }
+    let detail = if compact {
+        String::new()
+    } else if args.is_null() {
+        tool.arguments.clone()
     } else {
-        args["command"]
-            .as_str()
-            .map(|c| format!("$ {c}"))
-            .or_else(|| args["path"].as_str().map(str::to_string))
-            .or_else(|| args["description"].as_str().map(str::to_string))
-            .unwrap_or_else(|| tool.arguments.clone())
+        serde_json::to_string_pretty(&args).unwrap_or_default()
     };
-    let mut args = markdown::plain(&detail, width.saturating_sub(2).max(1), Style::default().fg(CODE));
+    let mut args = if compact {
+        vec![]
+    } else {
+        markdown::plain(&detail, width.saturating_sub(2).max(1), Style::default().fg(CODE))
+    };
     if let Some(limit) = limit {
         shorten(&mut args, limit.max(2), width.saturating_sub(2).max(1));
     }

@@ -134,6 +134,36 @@ fn tool_results_pair_by_member_epoch_and_id_without_guessing_success() {
 }
 
 #[test]
+fn compact_conversation_groups_tools_and_preserves_full_details() {
+    let rows = json!([
+        {"kind":"user","message":{"content":"Fix the tests"}},
+        {"kind":"assistant","message":{"content":"I will inspect the failure.","tool_calls":[
+            {"id":"read","function":{"name":"read_file","arguments":"{\"path\":\"src/main.rs\",\"offset\":42}"}},
+            {"id":"test","function":{"name":"shell","arguments":"{\"command\":\"cargo test\"}"}}
+        ]}},
+        {"kind":"tool_result","message":{"tool_call_id":"read","content":"source"}},
+        {"kind":"tool_result","message":{"tool_call_id":"test","content":"FAILED"}}
+    ]);
+    let entries = transcript::project(rows.as_array().unwrap(), "i-leader", false);
+    let mut cache = transcript::Transcript::default();
+    for width in [1, 2, 8, 40, 60, 100] {
+        let lines = cache.lines(&entries, width, Some(4));
+        assert!(lines.iter().all(|line| line.width() <= width));
+        if width >= 40 {
+            let shown = text(lines);
+            assert!(shown.starts_with("› Fix the tests"));
+            assert!(shown.contains("● I will inspect the failure."));
+            assert_eq!(shown.matches("Activity · 2 tools").count(), 1);
+            assert!(shown.contains("FAILED") && !shown.contains("succeeded"));
+            assert!(!shown.contains("\n\n› shell"), "consecutive tools share spacing");
+        }
+    }
+    let full = text(cache.lines(&entries, 100, None));
+    assert!(full.contains("\"offset\": 42") && full.contains("\"command\": \"cargo test\""));
+    assert_eq!(entries[2].tool.as_ref().unwrap().arguments, "{\"path\":\"src/main.rs\",\"offset\":42}");
+}
+
+#[test]
 fn tool_expansion_preserves_draft_and_refresh_invalidates_cached_output() {
     let mut app = app();
     let mut history = json!({"entries":[
@@ -157,6 +187,11 @@ fn tool_expansion_preserves_draft_and_refresh_invalidates_cached_output() {
 fn stream_keeps_its_beginning_and_settlement_replaces_it_once() {
     let mut app = app();
     let source = format!("# Stream start\n\n{}\n\n```rust\nfn finish() {{}}", "Visible words. ".repeat(50));
+    for width in [40, 60, 100] {
+        let streamed = transcript::assistant(&source, "i-leader", width, true);
+        let saved = transcript::assistant(&source, "i-leader", width, false);
+        assert_eq!(&streamed[1..], saved.as_slice(), "settlement must keep body wrapping stable");
+    }
     app.apply_previews(&json!([{"instance_id":"i-leader", "text":source}]));
     let shown = frame(&mut app, 100, 40);
     assert!(shown.contains("Stream start") && shown.contains("Leader · streaming"), "{shown}");

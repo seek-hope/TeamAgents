@@ -20,8 +20,10 @@ fn text(lines: &[Line<'_>]) -> String {
 fn body<'a>(lines: &'a [Line<'a>]) -> Vec<&'a ratatui::text::Span<'a>> {
     lines
         .iter()
-        .filter(|l| l.spans.first().is_some_and(|s| s.content.starts_with("│ ")))
-        .flat_map(|l| l.spans.iter().skip(1))
+        .flat_map(|line| {
+            let start = line.spans.iter().position(|s| s.content.starts_with("│ "));
+            line.spans.iter().skip(start.map_or(line.spans.len(), |index| index + 1))
+        })
         .collect()
 }
 
@@ -195,7 +197,11 @@ fn every_media_item_in_long_history_can_be_revisited_after_eviction() {
             app.graphics.poll();
             terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
             let doc = app.transcript.document(&app.entries, 78, Some(4), Some(&mut app.graphics), "");
-            let row = doc.lines.iter().position(|l| text(std::slice::from_ref(l)) == label).unwrap();
+            let row = doc
+                .lines
+                .iter()
+                .position(|l| text(std::slice::from_ref(l)).trim_start_matches(['●', ' ']) == label)
+                .unwrap();
             app.chat_scroll = app.last_chat_lines.saturating_sub(app.last_chat_height).saturating_sub(row);
             terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
             let start = app.last_chat_lines.saturating_sub(app.last_chat_height).saturating_sub(app.chat_scroll);
@@ -222,7 +228,11 @@ fn every_media_item_in_long_history_can_be_revisited_after_eviction() {
             app.graphics.poll();
             terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
             let doc = app.transcript.document(&app.entries, 78, None, Some(&mut app.graphics), "");
-            let row = doc.lines.iter().position(|l| text(std::slice::from_ref(l)) == label).unwrap();
+            let row = doc
+                .lines
+                .iter()
+                .position(|l| text(std::slice::from_ref(l)).trim_start_matches(['●', ' ']) == label)
+                .unwrap();
             let browser = app.browser.as_mut().unwrap();
             browser.scroll = row.min(browser.last_lines.saturating_sub(browser.last_height));
             terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();

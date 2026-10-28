@@ -1,7 +1,6 @@
-//! Catppuccin Mocha palette — the default dark theme of the Codex CLI — mapped
-//! to the TUI's semantic roles. Codex's style guide keeps primary text on the
-//! default foreground, green for success/additions, red for failures and a
-//! distinct magenta for the agent itself; the remaining hues are Catppuccin's.
+//! Catppuccin Mocha colors mapped to semantic roles, with the terminal
+//! background preserved. Success/additions are green, errors are red,
+//! and the agent marker is mauve.
 
 use ratatui::style::Color;
 

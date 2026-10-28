@@ -12,7 +12,7 @@ shape: a promise with no behaviour behind it, and the only witness was a human p
 Three lists are compared:
 
 * the keys the **hint lines** print (`footer_hint`, the confirmation line, the panel hints) — every one must be
-  handled by `tui/src/v2app.rs`;
+  handled by the application or shared editor;
 * the keys `README.md` documents in its TUI paragraph — every one must be handled too;
 * `USER-GUIDE.md`'s key mentions (the approvals box, the panels) — same rule.
 
@@ -58,12 +58,14 @@ def chord(letter: str) -> str:
     )
 
 
-for letter in "acdegjmnopqrstwy":
-    HANDLED[f"Ctrl+{letter.upper()}"] = chord(letter)
+for letter in "abcdefgjkmnopqrstuwy":
+    HANDLED[f"Ctrl+{letter.upper()}"] = chord(letter) + rf"|KeyCode::Char\('{letter}'\) if control =>"
 # the `Ctrl+←/→` word jumps and the shift-enter newline are written as guards, not as chords
 HANDLED["Ctrl+Left"] = r"(?s)(?=.{0,400}CONTROL)(?=.{0,400}KeyCode::Left)"
 HANDLED["Ctrl+Right"] = r"(?s)(?=.{0,400}CONTROL)(?=.{0,400}KeyCode::Right)"
 HANDLED["Shift+Enter"] = r"(?s)(?=.{0,400}SHIFT)(?=.{0,400}KeyCode::Enter)"
+for code in ("Left", "Right", "Backspace"):
+    HANDLED[f"Alt+{code}"] = rf"KeyCode::{code} if (?:control \|\| )?alt =>"
 
 # what the interface prints and what the documents name, as canonical keys
 HINT_WORDS = {
@@ -85,7 +87,7 @@ def arm(letter: str) -> str:
     return rf"Char\('{letter}'\)[^\n]{{0,60}}=>"
 
 
-CHORD = re.compile(r"ctrl\+(shift\+)?([a-z]|←|→|left|right)", re.I)
+CHORD = re.compile(r"ctrl\+(shift\+)?(left|right|[a-z]|←|→)(?![a-z])", re.I)
 ARROWS = {"←": "Left", "→": "Right", "left": "Left", "right": "Right"}
 
 
@@ -100,6 +102,8 @@ def chords_in(text: str) -> set:
     found = set()
     for shifted, letter in CHORD.findall(text):
         found.add(f"Ctrl+{ARROWS.get(letter.lower(), letter.upper())}")
+    for code in re.findall(r"alt\+([a-z]+|←|→)", text, re.I):
+        found.add(f"Alt+{ARROWS.get(code.lower(), code.capitalize())}")
     if re.search(r"shift\+enter", text, re.I):
         found.add("Shift+Enter")
     return found
@@ -152,7 +156,7 @@ def documented_keys() -> dict:
 def main() -> int:
     source = "\n".join((REPO / path).read_text() for path in
                        ("tui/src/v2app.rs", "tui/src/sessions.rs", "tui/src/completion.rs",
-                        "tui/src/attachments.rs", "tui/src/queue.rs"))
+                        "tui/src/attachments.rs", "tui/src/queue.rs", "tui/src/text.rs", "tui/src/v2ui.rs"))
     findings = []
     advertised = hint_keys(source)
     for key in sorted(advertised - {"Key p", "Key r", "Key t", "Key c", "Key a", "Key d", "Key y", "Key n"}):

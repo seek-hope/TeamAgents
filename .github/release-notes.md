@@ -19,6 +19,8 @@
   batches.
 - Attachments, pending-input editing, follow-up queues, session search/fork/export, an external editor and
   read-only work diagnostics with explicit recovery instructions.
+- Compact conversation and tool groups, responsive status/hints, empty-draft `?` shortcut help, and shared
+  message/queue editing with word movement and line deletion/restore.
 - Markdown and syntax-colored code, Mermaid/SVG/DOT diagrams and local image previews. Kitty graphics and
   portable text/block fallbacks share a source view.
 - Host environment discovery, boot-scoped config/source observations and input-delivery receipts. Delivery
@@ -26,7 +28,7 @@
 - Ctrl+Q closes the TUI without stopping the daemon, Ctrl+P opens pending input and Ctrl+M opens the Leader's
   model/effort menu. `make pty` covers five terminal profiles and both forced graphics modes.
 
-Local regression: `make check` green (core 147 / engine 424 / tui 91) plus `make pty`. The release workflow
+Local regression: `make check` green (core 147 / engine 424 / tui 96) plus `make pty`. The release workflow
 smoke-installs the exact archive before publication. Real-model acceptance is reported separately in
 [docs/ACCEPTANCE.md](https://github.com/seek-hope/TeamAgents/blob/main/docs/ACCEPTANCE.md); packaging current
 source does not widen those evidence boundaries.

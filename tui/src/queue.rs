@@ -1,6 +1,6 @@
 //! D-451: optional pending-input view. Its editor never owns the conversation draft.
 use crate::text::Composer;
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use ratatui::{
     layout::{Constraint, Layout},
     style::Style,
@@ -84,37 +84,24 @@ impl Queue {
     }
 
     pub fn key(&mut self, key: KeyEvent) -> Option<Action> {
-        if key.kind != KeyEventKind::Press {
+        if key.kind == KeyEventKind::Release
+            || (key.kind == KeyEventKind::Repeat && (self.editor.is_none() || key.code == KeyCode::Enter))
+        {
             return None;
         }
         if self.confirming {
             return if key.code == KeyCode::Char('y') && key.modifiers.is_empty() { self.revise(None) } else { None };
         }
         if let Some(editor) = &mut self.editor {
-            match key.code {
-                KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => editor.insert_newline(),
-                KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => editor.insert_newline(),
-                KeyCode::Enter if key.modifiers.is_empty() => {
-                    let text = editor.text();
-                    if text.trim().is_empty() {
-                        self.error = Some("Edited input needs text.".into());
-                        return None;
-                    }
-                    return self.revise(Some(text));
+            if key.code == KeyCode::Enter && key.modifiers.is_empty() {
+                let text = editor.text();
+                if text.trim().is_empty() {
+                    self.error = Some("Edited input needs text.".into());
+                    return None;
                 }
-                KeyCode::Char(c) if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
-                    editor.insert_char(c)
-                }
-                KeyCode::Backspace => editor.backspace(),
-                KeyCode::Delete => editor.delete(),
-                KeyCode::Left => editor.move_left(),
-                KeyCode::Right => editor.move_right(),
-                KeyCode::Up => editor.move_up(),
-                KeyCode::Down => editor.move_down(),
-                KeyCode::Home => editor.move_home(),
-                KeyCode::End => editor.move_end(),
-                _ => {}
+                return self.revise(Some(text));
             }
+            editor.edit_key(key);
             return None;
         }
         if !key.modifiers.is_empty() {
@@ -156,8 +143,8 @@ pub fn render(frame: &mut Frame, queue: &Queue) {
         Paragraph::new("Pending Leader inputs").style(Style::default().fg(CODEX).add_modifier(Modifier::BOLD)),
         rows[0],
     );
-    let lines: Vec<Line> = if let Some(editor) = &queue.editor {
-        crate::markdown::plain(&editor.text(), rows[1].width.saturating_sub(2).max(1) as usize, Style::default().fg(FG))
+    let lines: Vec<Line> = if queue.editor.is_some() {
+        vec![]
     } else {
         let height = rows[1].height.saturating_sub(2) as usize;
         let start = queue.selected.saturating_sub(height.saturating_sub(1));
@@ -172,11 +159,9 @@ pub fn render(frame: &mut Frame, queue: &Queue) {
                 let preview: String = text.chars().take(120).map(|c| if c.is_control() { ' ' } else { c }).collect();
                 let count = row["payload"]["attachments"].as_array().map_or(0, Vec::len);
                 Line::styled(
-                    format!(
-                        "{} {} r{} [{count} files] {preview}",
-                        if i == queue.selected { ">" } else { " " },
-                        row["envelope_id"].as_str().unwrap_or("?"),
-                        row["revision"]
+                    crate::v2ui::fit(
+                        &format!("{} {preview} · {count} files", if i == queue.selected { ">" } else { " " },),
+                        rows[1].width.saturating_sub(2) as usize,
                     ),
                     if i == queue.selected { selection() } else { Style::default().fg(GREY) },
                 )
@@ -189,13 +174,17 @@ pub fn render(frame: &mut Frame, queue: &Queue) {
     };
     let title =
         if queue.editor.is_some() { "Edit pending text (attachments retained)" } else { "Accepted, not yet consumed" };
-    frame.render_widget(Paragraph::new(lines).block(panel(title)).wrap(Wrap { trim: false }), rows[1]);
+    if let Some(editor) = &queue.editor {
+        crate::v2ui::render_editor(frame, editor, rows[1], title, true, "Edit queued message");
+    } else {
+        frame.render_widget(Paragraph::new(lines).block(panel(title)), rows[1]);
+    }
     let footer = if queue.confirming {
         format!("Cancel {}? y confirms; Esc keeps it.", queue.target.as_ref().map(|t| t.0.as_str()).unwrap_or("input"))
     } else if queue.editor.is_some() {
-        "Enter saves; Ctrl+J adds a line; Esc discards this edit. Original draft is retained.".into()
+        "Enter save · Esc discard · Ctrl+J newline · Ctrl+U/K delete · Ctrl+Y restore".into()
     } else {
-        "Up/Down select; Enter edits; Delete cancels; n next page; r refresh; Esc closes.".into()
+        "Enter edit · Esc close · Up/Down select · Delete cancel · n next page · r refresh".into()
     };
     if let Some(error) = queue.error.as_deref() {
         frame

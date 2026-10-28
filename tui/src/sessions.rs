@@ -425,7 +425,7 @@ fn geometry(area: Rect) -> std::rc::Rc<[Rect]> {
         Constraint::Length(1),
         Constraint::Length((area.height / 3).clamp(3, 9)),
         Constraint::Min(0),
-        Constraint::Length(3),
+        Constraint::Length(if area.width < 60 { 5 } else { 3 }),
     ])
     .split(area)
 }
@@ -495,15 +495,15 @@ pub fn render(
                         } else {
                             " "
                         },
-                        row.name,
-                        row.id,
+                        crate::v2ui::fit(&row.name, usize::from(inner.width.saturating_sub(13)).min(32)),
                         if row.archived {
                             "archived"
                         } else if row.live {
                             "running"
                         } else {
                             "idle"
-                        }
+                        },
+                        row.id,
                     ),
                     if start + offset == browser.selected { crate::v2ui::selection() } else { Style::default().fg(FG) },
                 )
@@ -609,11 +609,15 @@ pub fn render(
     } else if browser.busy {
         "Working...\nCtrl+Q detaches; session commands already started may continue.".into()
     } else {
-        format!("Up/Down: select  Enter: switch  d: delete  /: search  Esc: back\n[: older  ]: newer  PgUp/PgDn: scroll  r: refresh\n{}",
+        format!("Enter switch · Esc back · / search · Up/Down select · d delete\n[ older · ] newer · PgUp/PgDn scroll · r refresh\n{}",
             browser.error.as_deref().unwrap_or(if browser.next_before.is_some() { "Older records available." } else { "Beginning of stored history." }))
     };
+    let footer_lines = footer
+        .lines()
+        .flat_map(|line| crate::wrap::wrap_line(&crate::v2ui::hint_line(line), chunks[3].width as usize))
+        .collect::<Vec<_>>();
     frame.render_widget(
-        Paragraph::new(footer).style(
+        Paragraph::new(footer_lines).style(
             Style::default().fg(if browser.error.is_some() || browser.confirmation.is_some() { NOTICE } else { GREY }),
         ),
         chunks[3],

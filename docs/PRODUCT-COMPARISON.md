@@ -5,6 +5,11 @@ installed **Pi 1.3.0** package inspected on 2026-10-22. This is a source/documen
 TeamAgents regression checks, not a matched coding benchmark. The
 [Codex comparison from 2026-10-08](../review/parity-2026-10-08/REPORT.md) remains historical.
 
+D-485 follow-up (2026-10-28): Pi 1.4.0 startup/help and Codex source `13b0217567d3` informed the confirmed
+conversation UX work. Compact messages/tool groups, responsive hints, shortcut discovery and shared editing
+are implemented. This scoped TUI comparison does not refresh the broader Pi 1.3.0 table or establish equal
+interaction quality; current regression evidence is in ACCEPTANCE.
+
 **Assessment:** TeamAgents can perform real coding work and is suitable for controlled daily-driver trials on
 Linux with configured models and development tools. The evidence does not establish it as an interchangeable,
 sole replacement for Pi across general development workflows. Persistent execution, scoped collaboration and

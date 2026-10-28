@@ -17,7 +17,7 @@ pub(crate) fn panel(title: impl Into<String>) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .title(Span::styled(title.into(), Style::default().fg(GREY)))
+        .title(Span::styled(format!(" {} ", title.into()), Style::default().fg(GREY)))
         .border_style(Style::default().fg(BORDER))
         .style(Style::default().bg(PANEL_BG).fg(FG))
 }
@@ -94,7 +94,15 @@ pub fn approval_at(geo: &V2Geometry, app: &V2App, row: u16, col: u16) -> Option<
 /// Pointer routing uses the rendered rectangles; selecting an approval never decides it.
 pub fn handle_mouse(app: &mut V2App, area: Rect, mouse: crossterm::event::MouseEvent) {
     use crossterm::event::{MouseButton, MouseEventKind};
-    if app.queue.is_some() {
+    if app.help_open {
+        match mouse.kind {
+            MouseEventKind::ScrollUp => app.help_scroll = app.help_scroll.saturating_sub(3),
+            MouseEventKind::ScrollDown => app.help_scroll = app.help_scroll.saturating_add(3),
+            _ => {}
+        }
+        return;
+    }
+    if app.queue.is_some() || app.profile.is_some() {
         return;
     }
     let geo = geometry(app, area);
@@ -156,44 +164,54 @@ pub fn render(frame: &mut Frame, app: &mut V2App) {
     render_composer(frame, app, geo.composer);
     render_footer(frame, app, geo.footer);
     render_profile(frame, app, area);
+    if app.profile.is_some() {
+        app.pictures.clear();
+    }
+    if app.help_open {
+        render_help(frame, app, area);
+    }
 }
 
 /// D-473: a centered model/effort menu over the conversation; keys are routed by `V2App::profile_key`.
 fn render_profile(frame: &mut Frame, app: &V2App, area: Rect) {
     let Some(menu) = &app.profile else { return };
-    if area.width < 24 || area.height < 7 {
-        return;
-    }
-    let width = area.width.clamp(24, 64);
-    let height = 7;
-    let popup = Rect::new(area.x + (area.width - width) / 2, area.y + (area.height - height) / 2, width, height);
+    let popup = dialog_area(area, 72, (menu.models.len().min(7) + 7) as u16);
     frame.render_widget(Clear, popup);
     let block = panel("Model & effort").border_style(Style::default().fg(ACCENT));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
-    let model = menu
-        .models
-        .get(menu.model_ix)
-        .map(|model| format!("‹ {} ({}) ›", model.key, model.model))
-        .unwrap_or_else(|| "‹ unavailable ›".into());
     let effort = menu.efforts.get(menu.effort_ix).cloned().unwrap_or_else(|| "?".into());
-    let lines = vec![
-        Line::from(vec![
-            Span::styled("Model   ", Style::default().fg(GREY)),
-            Span::styled(model, Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
-        ]),
-        Line::from(vec![
-            Span::styled("Effort  ", Style::default().fg(GREY)),
-            Span::styled(format!("‹ {effort} ›"), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
-        ]),
-        Line::from(""),
-        hint_line("↑/↓ model · ←/→ effort · Enter apply · Esc cancel"),
-    ];
+    let list_height = inner.height.saturating_sub(4).max(1) as usize;
+    let (start, count) = window(menu.models.len(), menu.model_ix, list_height);
+    let mut lines: Vec<Line<'static>> = menu
+        .models
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(count)
+        .map(|(i, model)| {
+            let label =
+                if model.key == model.model { model.key.clone() } else { format!("{} · {}", model.key, model.model) };
+            Line::styled(
+                fit(&format!("{} {}", if i == menu.model_ix { ">" } else { " " }, label), inner.width as usize),
+                if i == menu.model_ix { selection() } else { Style::default().fg(GREY) },
+            )
+        })
+        .collect();
+    lines.push(Line::default());
+    lines.push(Line::from(vec![
+        Span::styled("Effort  ", Style::default().fg(GREY)),
+        Span::styled(fit(&format!("‹ {effort} ›"), inner.width.saturating_sub(8) as usize), selection()),
+    ]));
+    lines.extend(crate::markdown::plain(
+        "Applies at the next turn. Enter applies; Esc cancels.",
+        inner.width as usize,
+        Style::default().fg(GREY),
+    ));
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn render_status(frame: &mut Frame, app: &V2App, area: Rect) {
-    let name: String = app.session_name.chars().take(32).collect();
     let status = app.status_line();
     let status_style = if app.disconnected {
         Style::default().fg(ERROR)
@@ -204,13 +222,33 @@ fn render_status(frame: &mut Frame, app: &V2App, area: Rect) {
     } else {
         Style::default().fg(NOTICE)
     };
-    let mut spans = vec![Span::styled(" TeamAgents ", Style::default().fg(CODEX).add_modifier(Modifier::BOLD))];
-    if !name.is_empty() {
-        spans.push(Span::styled(format!(" {name}"), Style::default().fg(FG)));
+    let width = area.width as usize;
+    let mut line = Line::from(Span::styled(" ", Style::default()));
+    if width >= 100 {
+        line.spans.push(Span::styled("TeamAgents · ", Style::default().fg(CODEX).add_modifier(Modifier::BOLD)));
     }
-    spans.push(Span::styled("  ·  ", Style::default().fg(MUTED)));
-    spans.push(Span::styled(status, status_style));
-    frame.render_widget(Paragraph::new(Line::from(spans)).style(Style::default().bg(PANEL_BG)), area);
+    line.spans.push(Span::styled(fit(&status, width.saturating_sub(line.width())), status_style));
+    let mut extras = Vec::new();
+    if !app.session_name.is_empty() {
+        extras.push(fit(&app.session_name, if width >= 100 { 20 } else { 12 }));
+    }
+    if let Some(leader) = app.active_instance() {
+        if !leader.model.is_empty() {
+            let profile = if leader.effort.is_empty() {
+                leader.model.clone()
+            } else {
+                format!("{} / {}", leader.model, leader.effort)
+            };
+            extras.push(profile);
+        }
+    }
+    for extra in extras {
+        let part = format!(" · {extra}");
+        if line.width() + unicode_width::UnicodeWidthStr::width(part.as_str()) <= width {
+            line.spans.push(Span::styled(part, Style::default().fg(GREY)));
+        }
+    }
+    frame.render_widget(Paragraph::new(line).style(Style::default().bg(PANEL_BG)), area);
 }
 
 fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
@@ -241,10 +279,14 @@ fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
         ));
         lines.push(Line::from(""));
         lines.extend(crate::markdown::plain(
-            "Ctrl+S  Previous conversations     /help  Controls",
+            "?  Shortcuts     /  Commands     Ctrl+S  Conversations",
             width,
             Style::default().fg(GREY),
         ));
+        if let Some(workspace) = app.workspace() {
+            lines.push(Line::default());
+            lines.extend(crate::markdown::plain(&format!("Workspace  {workspace}"), width, Style::default().fg(GREY)));
+        }
     }
     if let Some(goal) = &app.goal {
         if goal.status != "ACTIVE" {
@@ -268,12 +310,14 @@ fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
             member: "i-leader".into(),
             position: usize::MAX,
         };
-        lines.extend(crate::markdown::plain(
-            "Leader · streaming",
+        document.append(crate::transcript::assistant_document(
+            &preview,
+            "i-leader",
             width,
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            Some(&mut app.graphics),
+            &origin,
+            true,
         ));
-        document.append(crate::markdown::render_media(&preview, width, Some(&mut app.graphics), &origin));
     }
     let total = document.lines.len();
     let height = area.height as usize;
@@ -383,41 +427,157 @@ fn render_composer(frame: &mut Frame, app: &V2App, area: Rect) {
     if area.height < 3 || area.width < 3 {
         return;
     }
-    let focused = app.focus == Focus::Composer;
+    let focused = app.focus == Focus::Composer && app.profile.is_none() && !app.help_open;
     let title = if app.attachments.paths.is_empty() {
         "Message".to_string()
     } else {
         format!("Message · {} attachments (/attach lists)", app.attachments.paths.len())
     };
+    let placeholder =
+        if app.disconnected { "Reconnecting · your draft stays here" } else { "Ask, build, or fix something…" };
+    render_editor(frame, &app.composer, area, &title, focused, placeholder);
+}
+
+/// Shared cursor-following editor for messages and pending inputs.
+pub(crate) fn render_editor(
+    frame: &mut Frame,
+    composer: &crate::text::Composer,
+    area: Rect,
+    title: &str,
+    focused: bool,
+    placeholder: &str,
+) {
     let block = panel(title).border_style(Style::default().fg(if focused { ACCENT } else { BORDER }));
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let (lines, row, col) = app.composer.visual_lines(inner.width as usize);
+    let (lines, row, col) = composer.visual_lines(inner.width as usize);
     let (start, count) = window(lines.len(), row, inner.height as usize);
     let visible = lines.into_iter().skip(start).take(count).map(Line::raw).collect::<Vec<_>>();
-    if app.composer.text().is_empty() {
-        frame.render_widget(
-            Paragraph::new("Message the Leader").style(Style::default().fg(GREY).add_modifier(Modifier::ITALIC)),
-            inner,
-        );
+    if composer.text().is_empty() {
+        frame.render_widget(Paragraph::new(placeholder).style(Style::default().fg(GREY)), inner);
     } else {
         frame.render_widget(Paragraph::new(visible), inner);
     }
-    if focused && count > 0 {
+    if focused && count > 0 && inner.width > 0 {
         frame.set_cursor_position((inner.x + col as u16, inner.y + (row - start) as u16));
     }
 }
 
 fn render_footer(frame: &mut Frame, app: &V2App, area: Rect) {
-    let hint = if app.chat_scroll > 0 {
-        format!("History · {} lines above latest · PgDn newer · {}", app.chat_scroll, app.footer_hint())
-    } else {
-        app.footer_hint()
-    };
-    frame.render_widget(Paragraph::new(hint_line(&hint)).style(Style::default().bg(PANEL_BG)), area);
+    let hint = app.footer_hint();
+    // Keep complete actions in priority order rather than cutting a shortcut in half.
+    let mut shown = String::new();
+    for part in hint.split(" · ") {
+        let candidate = if shown.is_empty() { part.to_string() } else { format!("{shown} · {part}") };
+        if unicode_width::UnicodeWidthStr::width(candidate.as_str()) <= area.width as usize {
+            shown = candidate;
+        }
+    }
+    frame.render_widget(Paragraph::new(hint_line(&shown)).style(Style::default().bg(PANEL_BG)), area);
 }
 
-/// The hint text is unchanged; only the key token of each `key action` pair is highlighted.
+/// Clip by grapheme cells, sanitizing terminal controls before adding an ellipsis.
+pub(crate) fn fit(text: &str, width: usize) -> String {
+    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthStr;
+    let text = crate::markdown::clean(text).replace(['\n', '\r'], " ");
+    if text.width() <= width {
+        return text;
+    }
+    if width == 0 {
+        return String::new();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    for glyph in text.graphemes(true) {
+        if used + glyph.width() > width - 1 {
+            break;
+        }
+        out.push_str(glyph);
+        used += glyph.width();
+    }
+    out.push('…');
+    out
+}
+
+fn dialog_area(area: Rect, width: u16, height: u16) -> Rect {
+    let width = width.min(area.width);
+    let height = height.min(area.height.saturating_sub(1));
+    Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(1).saturating_sub(height) / 2,
+        width,
+        height,
+    )
+}
+
+fn render_help(frame: &mut Frame, app: &mut V2App, area: Rect) {
+    let popup = dialog_area(area, 76, 30);
+    frame.render_widget(Clear, popup);
+    let block = panel("Shortcuts").border_style(Style::default().fg(ACCENT));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    let sections = [
+        (
+            "Input editing",
+            &[
+                "Enter send · Ctrl+J / Shift+Enter newline",
+                "Ctrl+Left/Right / Alt+Left/Right move by word",
+                "Ctrl+B/F move by character · Home/End line edges",
+                "Ctrl+W / Alt+Backspace delete previous word",
+                "Ctrl+U/K delete to line start/end · Ctrl+Y restore deletion",
+                "Ctrl+E external editor · Up/Down input history",
+            ][..],
+        ),
+        (
+            "Conversation",
+            &[
+                "PgUp/PgDn / wheel read history · Ctrl+O tool details",
+                "Ctrl+G graphics/source · / commands · Tab complete",
+                "Ctrl+C interrupt model request; tools may continue",
+                "Ctrl+Q detach; the session keeps running",
+            ][..],
+        ),
+        (
+            "Sessions and models",
+            &[
+                "Ctrl+S sessions · /sessions full stored output",
+                "Ctrl+P pending inputs · Ctrl+M model and effort",
+                "/attach PATH add a file · /detach INDEX remove it",
+            ][..],
+        ),
+        (
+            "Approvals",
+            &["Ctrl+A focus approvals · Up/Down select", "a approve once · d deny · Esc return to draft"][..],
+        ),
+        (
+            "More",
+            &[
+                "/help environment, delivery and recovery details",
+                "Esc close shortcuts · Up/Down scroll · PgUp/PgDn page",
+            ][..],
+        ),
+    ];
+    let mut lines = Vec::new();
+    for (title, hints) in sections {
+        if !lines.is_empty() {
+            lines.push(Line::default());
+        }
+        lines.extend(crate::markdown::plain(title, inner.width as usize, selection()));
+        for hint in hints {
+            lines.extend(crate::wrap::wrap_line(&hint_line(hint), inner.width as usize));
+        }
+    }
+    app.help_scroll = app.help_scroll.min(lines.len().saturating_sub(inner.height as usize));
+    frame.render_widget(
+        Paragraph::new(lines.into_iter().skip(app.help_scroll).take(inner.height as usize).collect::<Vec<_>>()),
+        inner,
+    );
+    // Overlays own the caret as well as key, mouse and paste input.
+    app.pictures.clear();
+}
+
+/// Style the key token of each `key action` pair consistently across views.
 pub(crate) fn hint_line(hint: &str) -> Line<'static> {
     let mut spans = Vec::new();
     for (index, part) in hint.split(" · ").enumerate() {
