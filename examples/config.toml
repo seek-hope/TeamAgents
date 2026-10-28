@@ -86,14 +86,14 @@ provider = "deepseek"
 url = "https://api.deepseek.com/v1/tools/search"
 api_key_env = "DEEPSEEK_API_KEY"
 
-# Optional second search provider. With both bindings, provider="auto" calls
-# both services and merges their results; either may incur its own charges.
-# [tools.exa_search]
-# kind = "web_search"
-# provider = "exa"
-# url = "https://api.exa.ai/search"
-# api_key_env = "EXA_API_KEY"
-# env = { search_type = "auto" }
+# Default dual-source search. provider="auto" calls both services and
+# merges their results; either may incur its own charges.
+[tools.exa_search]
+kind = "web_search"
+provider = "exa"
+url = "https://api.exa.ai/search"
+api_key_env = "EXA_API_KEY"
+env = { search_type = "auto" }
 
 [tools.fetch]
 kind = "web_fetch"

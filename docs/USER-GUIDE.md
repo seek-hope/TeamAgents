@@ -351,11 +351,10 @@ provider = "deepseek"
 url = "https://api.deepseek.com/v1/tools/search"
 api_key_env = "DEEPSEEK_API_KEY"
 
-# Optional second search source; auto calls both configured sources.
-# [tools.exa_search]
-# kind = "web_search"
-# provider = "exa"
-# api_key_env = "EXA_API_KEY"
+[tools.exa_search]           # default second search source; auto uses both
+kind = "web_search"
+provider = "exa"
+api_key_env = "EXA_API_KEY"
 
 [tools.fetch]
 kind = "web_fetch"
@@ -394,7 +393,9 @@ api_key_env = "DEEPSEEK_API_KEY"
   config with no web entry offers the model neither `web_search` nor `web_fetch` — `doctor` says so, and adding
   a `[tools.fetch]` entry makes exactly `web_fetch` appear.
 - `web_search` keeps its existing `query`, `max_results` (default 10, clamped to 1–50) and `include_content`
-  arguments, and adds `ori_question` plus `provider = "auto" | "both" | "deepseek" | "exa"`. Query and original
+  arguments, and adds `ori_question` plus `provider = "auto" | "both" | "deepseek" | "exa"`. New `init`
+  configurations declare DeepSeek search/fetch and Exa search; existing files are never rewritten, so add the
+  Exa binding deliberately when upgrading an older config. Query and original
   question are limited to 128 characters. `auto` uses every bound provider in parallel and merges unique URLs
   with reciprocal rank fusion; `both` requires both providers to be bound; a single-provider argument controls
   cost and source. If one provider fails, successful results are returned with a `warnings` array; if all fail,

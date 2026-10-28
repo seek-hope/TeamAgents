@@ -1,7 +1,7 @@
 # Acceptance matrix (A01–A36)
 
 Baseline: [the design and acceptance baseline](DESIGN.md) §12/§16. Current source inspection and local
-regression: **2026-10-28, D-482/D-483**. This is not a new independent acceptance audit or real-model run.
+regression: **2026-10-28, D-484**. This is not a new independent acceptance audit or real-model run.
 The D-451 product/installation receipts and the D-452 independent audit retain their original source/date
 boundaries; later source changes do not inherit those results.
 
@@ -454,6 +454,7 @@ design decision **for the user**.
 |---|---|---|
 | D-453 governed updater | engine/src/update.rs and engine/tests/update.rs: journal, validation, switch/rollback and live local daemon exercise | public distribution acceptance beyond the v0.2.0 artifact |
 | External editor | tui/src/editor.rs success/failure test; composer/effect wiring in tui/src/v2app.rs and tui/src/main.rs | full editor crash/resize/reconnect matrix; completion menu still omits /edit |
+| D-484 dual-provider default config | examples/config.minimal.toml and cli::init_creates_private_config_and_never_overwrites_existing_paths assert DeepSeek search/fetch plus Exa search; local doctor confirms all three configured bindings | existing files still require deliberate migration; no live paid Search request was made |
 | D-482 provider-neutral web search | engine/src/search.rs and engine/src/tools.rs: DeepSeek/Exa request shapes, RRF, partial failure, retry, cache/single-flight and credential/binding tests | live paid Search acceptance and measured cost/latency; web_fetch is unchanged |
 | D-483 CodeGraph MCP integration | engine/examples/codegraph_probe.rs: real existing-index discovery and codemode query, no model or auto-init | broader project/watcher coverage; shared-daemon and freshness limits remain |
 | D-456 DeepSeek web tools (historical search baseline) | engine/src/tools.rs response/binding/credential/private-address tests | fresh live Search/Fetch service acceptance; historical backend probes are not renewed |

@@ -1062,6 +1062,10 @@ fn init_creates_private_config_and_never_overwrites_existing_paths() {
     let catalog = teamagents_engine::config::parse_user_config(&text).unwrap();
     assert_eq!(catalog.models["leader_main"].context_window, Some(1_000_000));
     assert_eq!(catalog.models["leader_main"].api_key_env.as_deref(), Some("DEEPSEEK_API_KEY"));
+    assert_eq!(catalog.tools["web"].provider.as_deref(), Some("deepseek"));
+    assert_eq!(catalog.tools["exa_search"].provider.as_deref(), Some("exa"));
+    assert_eq!(catalog.tools["exa_search"].api_key_env.as_deref(), Some("EXA_API_KEY"));
+    assert_eq!(catalog.tools["fetch"].provider.as_deref(), Some("deepseek"));
     assert_eq!(std::fs::metadata(&config).unwrap().permissions().mode() & 0o777, 0o600);
     std::fs::write(&config, "# existing user content\n").unwrap();
     let output = run(&["init"]);

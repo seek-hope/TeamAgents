@@ -13,8 +13,8 @@
   windows and configurable reasoning efforts.
 - Host Shell, acceptance commands and local MCP services. Ordinary Shell needs no per-call approval; task
   capability checks and self-update approval remain. Retired sandbox settings are rejected during migration.
-- File tools, persistent Shell state, DeepSeek web tools, Skills, stdio/HTTP MCP and QuickJS `codemode`
-  composition. Hooks can report events or veto native tool calls.
+- File tools, persistent Shell state, DeepSeek/Exa search and DeepSeek fetch, Skills, stdio/HTTP MCP and QuickJS
+  `codemode` composition. Hooks can report events or veto native tool calls.
 - Trusted `AGENTS.md` discovery, bounded Skill support files, disjoint multi-file edits and parallel read-only
   batches.
 - Attachments, pending-input editing, follow-up queues, session search/fork/export, an external editor and
@@ -46,6 +46,7 @@ The repository and release archives are public. The recommended installer is:
 export PATH="$HOME/.local/bin:$PATH"
 teamagents init
 export DEEPSEEK_API_KEY='your key'
+export EXA_API_KEY='your Exa key'
 teamagents doctor
 teamagents
 ```
@@ -64,7 +65,8 @@ Use `--version VERSION` or `--bin-dir DIR` to select a published version or dest
 - Current source uses host Shell and local MCP; no sandbox package is required. Host commands have the user's
   filesystem and network access.
 - `init` creates a minimal config without credentials and never overwrites an existing file. The default
-  profile is DeepSeek Flash; edit the TOML to use another service.
+  profile is DeepSeek Flash, with DeepSeek + Exa search and DeepSeek fetch; edit the TOML to use another service
+  or single-provider search.
 
 See the [install guide](https://github.com/seek-hope/TeamAgents/blob/main/docs/INSTALL.md) for source builds,
 upgrades and troubleshooting.

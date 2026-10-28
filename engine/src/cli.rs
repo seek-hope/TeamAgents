@@ -16,7 +16,8 @@ pub fn init(state_root: Option<PathBuf>) -> i32 {
             if created {
                 println!("wrote config: {}", path.display());
                 println!("default model: deepseek-flash (context 1,000,000; reasoning effort high).");
-                println!("export DEEPSEEK_API_KEY in this terminal; edit the config above for other services.");
+                println!("default search: DeepSeek + Exa (auto); export DEEPSEEK_API_KEY and EXA_API_KEY.");
+                println!("edit the config above for other services or single-provider search.");
             } else {
                 println!("kept the existing config: {} (not overwritten)", path.display());
                 println!("set the credential environment variable named by api_key_env in that config.");

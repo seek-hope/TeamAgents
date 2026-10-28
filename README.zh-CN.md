@@ -101,13 +101,16 @@ export PATH="$HOME/.local/bin:$PATH"
 
 ```bash
 teamagents init                       # 创建最小配置和状态根；保留已有配置
-export DEEPSEEK_API_KEY='你的模型密钥'  # 默认模型配置读取这个变量
+export DEEPSEEK_API_KEY='你的模型密钥'  # 默认模型及 DeepSeek 搜索/抓取读取这个变量
+export EXA_API_KEY='你的 Exa 密钥'      # 默认 Exa 搜索绑定读取这个变量
 teamagents doctor                     # 检查配置、凭据、状态、Skills 和宿主执行环境
 teamagents --cwd /path/to/project     # 省略 --cwd 时使用当前目录
 ```
 
-`init` 按 XDG 目录约定生成 DeepSeek Flash 配置，使用原生 1M 上下文和 high 推理档位。它不会把新增
-设置合并进已有文件；请手动修改配置，再用 `doctor` 检查。
+`init` 按 XDG 目录约定生成 DeepSeek Flash 配置，使用原生 1M 上下文和 high 推理档位，并配置
+DeepSeek + Exa 搜索和 DeepSeek 抓取。默认 `auto` 搜索可能同时产生两家搜索服务的费用；可用
+`provider = "deepseek"` 或 `"exa"` 限定单一来源，或删除另一个绑定。`init` 不会把新增设置合并进已有文件；
+请手动修改配置，再用 `doctor` 检查。
 
 然后直接描述需要的结果：
 

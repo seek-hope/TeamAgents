@@ -72,14 +72,17 @@ existing file, including symlinks. A new file has mode `0600` and contains no cr
 prepares the state root and session database without starting a daemon or conversation.
 
 The generated `leader_main` profile uses `deepseek-flash`, a 1,000,000-token native context and high reasoning
-effort. To use another service, update its protocol, model, endpoint, credential variable and native context
-window together. See [configuration](USER-GUIDE.md#2-configuration) and
-[examples/config.toml](../examples/config.toml). Never put API key values in tracked files.
+effort. The default tools bind DeepSeek + Exa search and DeepSeek fetch; `auto` search may charge both search
+providers. Remove `exa_search` or select one provider to restrict a call to one source. To use another model
+service, update its protocol, model, endpoint, credential variable and native context window together. See
+[configuration](USER-GUIDE.md#2-configuration) and [examples/config.toml](../examples/config.toml). Never put
+API key values in tracked files.
 
 Current source runs Shell and local MCP on the host; no sandbox package is required.
 
 ```bash
 export DEEPSEEK_API_KEY='your key'
+export EXA_API_KEY='your Exa key'
 teamagents doctor
 teamagents --cwd /path/to/project
 ```

@@ -13,7 +13,7 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Skills | user-level registration root `~/.agents/skills`; read on demand with `skill search/read`, and skill instructions never widen execution permissions | D-23, D-34 |
 | Usage visibility | turn and goal usage/budget are visible in the TUI and in events | D-24 |
 | MCP | both transports, stdio and streamable HTTP; calls go through the shared permission, approval, budget, cancellation and receipt entry points | D-25 |
-| Web tools | `web_search` uses bound DeepSeek and/or Exa providers with `auto`/`both`/single-source selection, RRF deduplication, retries and a five-minute cache; `web_fetch` remains DeepSeek-only. Binding is still authorization, and dual-source auto may charge both providers | D-482 (supersedes D-456 for search) |
+| Web tools | `web_search` uses bound DeepSeek and/or Exa providers with `auto`/`both`/single-source selection, RRF deduplication, retries and a five-minute cache; new `init` configs bind both search providers plus DeepSeek fetch. Dual-source auto may charge both providers | D-482, D-484 (supersedes D-456 for search) |
 | CodeGraph | optional stdio MCP service (`codegraph serve --mcp`) queried through codemode; existing indexes only unless the user explicitly initializes one; shared daemon by default, no automatic install/init | D-483 |
 | Release publication | v0.2.0 is the first public release (Linux x86_64, musl static), rebuilt with D-476; future tags still need explicit user authorization and `TEAMAGENTS_RELEASE_APPROVED=true` | D-457, D-475, D-477 |
 | Context compaction | triggered by real window usage; the summary keeps the original request and acceptance criteria, and the full text stays retrievable | D-28 |
@@ -37,6 +37,25 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Prompt cache | cache hit/miss/write are provider-reported and visible; the L1 frontier is fixed between compactions; Anthropic gets explicit breakpoints and OpenAI a stable key; DeepSeek stays automatic | D-459 |
 | Command idempotency | a replay with the same `command_id` returns the stored receipt for control-plane state, and the authoritative check runs under the write lock (D-463); result bodies are shared by content digest and zstd-compressed (D-464), while the receipt **rows** remain one per command | D-463, D-464 |
 | Model actions and code windows | a deciding read shares the write's transaction, or the guard is a predicate on the write itself; `verification/REPORT.md` §6 lists the protocol transitions and the three engine windows that span two transactions with their predicates | D-465 |
+
+## D-484 Bind DeepSeek and Exa in the default configuration (2026-10-28)
+
+**Authorization.** The user confirmed that `EXA_API_KEY` is configured on the machine and asked for the default
+configuration to include Exa. D-482's provider-neutral implementation therefore becomes the default rather than
+an opt-in binding. Dual-source `auto` and its potential charges from both providers are explicitly accepted.
+
+`examples/config.minimal.toml`, included as `config::INITIAL_CONFIG`, now declares DeepSeek `web_search`, Exa
+`web_search` and DeepSeek `web_fetch`. The full example and USER-GUIDE show the same defaults. `teamagents init`
+prints both credential variable names and the dual-search default. Existing configuration files are never
+rewritten by init; the current machine's config was backed up and updated explicitly, not through an implicit
+migration. Removing `exa_search`, or passing a single-provider argument, remains the way to restrict cost/source.
+A missing Exa key remains an optional-capability warning and never triggers an anonymous request.
+
+**Evidence.** `cli::init_creates_private_config_and_never_overwrites_existing_paths` now parses the generated
+config and asserts all three bindings, the Exa provider and its `EXA_API_KEY` name, while retaining the private
+mode and no-overwrite checks. On the user's machine, `doctor` reports DeepSeek search, Exa search, DeepSeek fetch
+and CodeGraph as OK with the configured credentials. No live paid Search request was needed for this config
+change.
 
 ## D-483 CodeGraph through native MCP and codemode (2026-10-28)
 

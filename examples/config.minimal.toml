@@ -1,6 +1,6 @@
 # TeamAgents starter config. Credentials are referenced by env var name, never written.
 # When you change the model, set that model's native context_window too.
-# Other services, web search and MCP are documented in examples/config.toml.
+# Additional model providers and MCP services are documented in examples/config.toml.
 skills_paths = ["~/.agents/skills"]
 
 [models.leader_main]
@@ -13,8 +13,29 @@ timeout = 120
 max_retries = 2
 generation_options = { reasoning_effort = "high" }
 
+# Default web tools. Search provider="auto" uses DeepSeek + Exa and may
+# incur charges from both services. Remove exa_search or pass
+# provider="deepseek"/"exa" to restrict one call to a single source.
+[tools.web]
+kind = "web_search"
+provider = "deepseek"
+url = "https://api.deepseek.com/v1/tools/search"
+api_key_env = "DEEPSEEK_API_KEY"
+
+[tools.exa_search]
+kind = "web_search"
+provider = "exa"
+url = "https://api.exa.ai/search"
+api_key_env = "EXA_API_KEY"
+env = { search_type = "auto" }
+
+[tools.fetch]
+kind = "web_fetch"
+provider = "deepseek"
+api_key_env = "DEEPSEEK_API_KEY"
+
 # Acceptance checks (optional): machine contracts the runtime runs at the
-# completion boundary, in the isolated shell, before a goal may be reported as
+# completion boundary, in the host shell, before a goal may be reported as
 # done. A failing check sends the work back for repair and then blocks the goal
 # instead of letting a summary claim success. They can only come from this user
 # config, never from a cloned project.

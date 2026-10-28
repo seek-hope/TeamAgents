@@ -1,10 +1,11 @@
 # Development handoff
 
-Updated **2026-10-28**. The runtime baseline is **D-480 (`7ae6bd5b`)**. **D-482** adds provider-neutral
-DeepSeek/Exa search while leaving fetch unchanged; **D-483** documents and verifies CodeGraph through the
-existing stdio MCP + codemode path. **D-481** previously refreshed TUI presentation without changing session,
-protocol or execution semantics. Always recheck Git status and recent commits. This file records a starting
-point, not the state of the remote branch, an installed binary or permission to implement the candidate backlog.
+Updated **2026-10-28**. The runtime baseline is **D-480 (`7ae6bd5b`)**. **D-484** makes DeepSeek + Exa the
+default search configuration, with DeepSeek fetch. **D-482** added the provider-neutral search implementation;
+**D-483** documented and verified CodeGraph through the existing stdio MCP + codemode path. **D-481** previously
+refreshed TUI presentation without changing session, protocol or execution semantics. Always recheck Git status
+and recent commits. This file records a starting point, not the state of the remote branch, an installed binary
+or permission to implement the candidate backlog.
 
 ## Start here
 
@@ -42,6 +43,11 @@ request shapes, RRF, provider selection, partial failure, retry, caching and sin
 API was called. D-483's `engine/examples/codegraph_probe.rs` completed real CodeGraph 1.6.2 discovery and a
 codemode query against the existing index without a model or automatic initialization. Shared-daemon writer
 locks and stale-source warnings remain explicit boundaries.
+
+D-484 updates the init template to bind DeepSeek search/fetch and Exa search by default. The focused init test
+parses and checks all three bindings while retaining the no-overwrite and mode-0600 checks. The current machine's
+config was explicitly backed up and migrated; doctor confirms all three web bindings and CodeGraph. Dual-source
+`auto` may charge both providers, and no live paid Search request is part of this evidence.
 
 Older evidence stays pinned to its own source:
 
@@ -129,11 +135,11 @@ The PTY matrix checks terminal protocols, not every graphical terminal or OS.
 
 ## Next-cycle constraints
 
-The current source includes D-482 search and D-483 CodeGraph integration. Live paid Search acceptance and
-broader CodeGraph watcher/freshness evidence remain open; do not initialize an index implicitly or present the
-offline provider tests as live service results. Later candidates are actual development/Skill workflows (DD-02)
-and wider operational evidence. The matched Pi trial is postponed; monetary accounting is outside the current
-scope. Do not add automatic reminders under D-461.
+The current source includes D-484's dual-provider defaults, D-482 search and D-483 CodeGraph integration. Live
+paid Search acceptance and broader CodeGraph watcher/freshness evidence remain open; do not initialize an index
+implicitly or present the offline provider tests as live service results. Later candidates are actual
+development/Skill workflows (DD-02) and wider operational evidence. The matched Pi trial is postponed; monetary
+accounting is outside the current scope. Do not add automatic reminders under D-461.
 
 Keep the Rust control plane, per-session SQLite authority, independent daemon and minimal Leader TUI.
 Automatic cross-session injection, distributed/multi-tenant execution and a marketplace remain excluded.

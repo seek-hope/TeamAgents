@@ -117,13 +117,16 @@ Use the toolchain pinned in `rust-toolchain.toml`. Once dependencies are cached,
 
 ```bash
 teamagents init                       # create a minimal config and state root; preserve existing config
-export DEEPSEEK_API_KEY='your key'    # the default profile reads this variable
+export DEEPSEEK_API_KEY='your key'    # the default model and DeepSeek search/fetch read this
+export EXA_API_KEY='your Exa key'     # the default Exa search binding reads this
 teamagents doctor                     # check config, credentials, state, Skills and host execution
 teamagents --cwd /path/to/project     # omit --cwd to use the current directory
 ```
 
 `init` writes an XDG-compliant config for DeepSeek Flash with its native 1M context and high reasoning effort.
-It never merges new settings into an existing file; edit that file deliberately and inspect it with `doctor`.
+It also binds DeepSeek + Exa search and DeepSeek fetch, so default `auto` searches may charge both search
+providers. Use `provider = "deepseek"` or `"exa"` for one source, or remove the other binding. `init` never
+merges new settings into an existing file; edit that file deliberately and inspect it with `doctor`.
 
 Then describe the result you want:
 
