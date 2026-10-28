@@ -86,10 +86,31 @@ provider = "deepseek"
 url = "https://api.deepseek.com/v1/tools/search"
 api_key_env = "DEEPSEEK_API_KEY"
 
+# Optional second search provider. With both bindings, provider="auto" calls
+# both services and merges their results; either may incur its own charges.
+# [tools.exa_search]
+# kind = "web_search"
+# provider = "exa"
+# url = "https://api.exa.ai/search"
+# api_key_env = "EXA_API_KEY"
+# env = { search_type = "auto" }
+
 [tools.fetch]
 kind = "web_fetch"
 provider = "deepseek"
 api_key_env = "DEEPSEEK_API_KEY"
+
+# Sample: CodeGraph over the native stdio MCP + codemode path. This does not
+# install CodeGraph or initialize an index. Run codegraph init --yes /path/to/repo
+# yourself first. The shared daemon is reused by default; do not force
+# CODEGRAPH_NO_DAEMON=1 when another client owns the project writer.
+# [tools.codegraph]
+# kind = "mcp"
+# command = "codegraph"
+# args = ["serve", "--mcp", "--path", "."]
+# startup_timeout_s = 60
+# tool_timeout_s = 120
+# env = { CODEGRAPH_MCP_TOOLS = "explore", CODEGRAPH_TELEMETRY = "0", CODEGRAPH_NO_UPDATE_CHECK = "1", CODEGRAPH_EXPLORE_DEDUP = "0", NO_COLOR = "1" }
 
 # Sample: Tavily over MCP (needs TAVILY_API_KEY); replace [tools.web] with it
 # [tools.web]

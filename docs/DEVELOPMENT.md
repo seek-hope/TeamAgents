@@ -122,6 +122,9 @@ engine/target/debug/examples/eval_groups_abc --group A --task-file t.md --workdi
 engine/target/debug/examples/load_probe DIR [--steps N] [--payload BYTES]
 engine/target/debug/examples/accept_probe --evidence DIR --workspace DIR --lead KEY --worker KEY
 
+# Real CodeGraph discovery + codemode query; existing index only, no model.
+cargo run --offline --locked --manifest-path engine/Cargo.toml --example codegraph_probe -- .
+
 # Read-only host process census. Run on the host so container PID namespaces cannot hide processes.
 python3 review/host_cleanup.py [--json | --class settled-journal --pids]
 ```

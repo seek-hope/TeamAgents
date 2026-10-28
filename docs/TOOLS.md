@@ -221,13 +221,15 @@ Run Bash on the host filesystem and network without per-command approval. Servic
 
 *Offered by `reference::session_tool_schemas` (the profile's tools; the web half only for the kinds the config declares — §5.2/D-79/D-168).*
 
-Search the web and return title, source URL, snippet, fetch time (and full content when include_content=true).
+Search the web through the bound DeepSeek and/or Exa providers and return ranked, deduplicated results (title, URL, snippet, site, date and authority). provider=auto uses every bound provider; both requires both; deepseek/exa selects one. Partial provider failures are reported in warnings. Use include_content=false first and web_fetch for pages that matter. Identical searches share a 300-second cache.
 
 | Parameter | Type | Required | Meaning |
 |---|---|---|---|
-| `query` | `string` | yes | — |
-| `max_results` | `integer` | no | — |
-| `include_content` | `boolean` | no | — |
+| `query` | `string` | yes | Short search query (1-128 characters); site:, -site: and quoted phrases are supported. |
+| `max_results` | `integer` | no | Number of results to return (1-50, default 10). |
+| `include_content` | `boolean` | no | Include extracted page content; costs more tokens, so prefer web_fetch for selected pages. |
+| `ori_question` | `string` | no | The user's original question, which helps the search engine understand intent. |
+| `provider` | `string` | no | auto uses every bound provider; both requires DeepSeek and Exa; deepseek/exa restricts the source. |
 
 ### `web_fetch`
 

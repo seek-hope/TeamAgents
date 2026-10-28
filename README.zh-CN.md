@@ -50,8 +50,8 @@ TUI 只展示与 Leader 的对话；成员、任务、目标和会话管理由 C
   每个配置分别指定模型、推理档位和原生上下文窗口。
 - **宿主执行**：Shell、验收命令和本地 MCP 使用宿主文件系统与网络，没有内置 OS 沙箱或逐命令网络策略。
   文件工具仍检查工作区路径；获得授权的 Shell 则能访问宿主用户有权访问的内容。
-- **编码工具**：文件读取、搜索、写入和带版本检查的编辑；按成员保留状态的 Shell；DeepSeek 网页
-  搜索与抓取；Skills；stdio 和 streamable HTTP MCP。`codemode` 可在 QuickJS 中组合已绑定的 MCP 调用，
+- **编码工具**：文件读取、搜索、写入和带版本检查的编辑；按成员保留状态的 Shell；DeepSeek/Exa 网页
+  搜索与 DeepSeek 抓取；Skills；stdio 和 streamable HTTP MCP。`codemode` 可在 QuickJS 中组合已绑定的 MCP 调用，
   但不会向脚本开放直接文件或网络能力。
 - **完成检查**：目标成功结束前必须通过必要的 `[[checks]]`。独立的 `exec --check` 用于检查已完成
   回合，并决定客户端退出码。

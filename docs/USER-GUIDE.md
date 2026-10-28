@@ -351,6 +351,12 @@ provider = "deepseek"
 url = "https://api.deepseek.com/v1/tools/search"
 api_key_env = "DEEPSEEK_API_KEY"
 
+# Optional second search source; auto calls both configured sources.
+# [tools.exa_search]
+# kind = "web_search"
+# provider = "exa"
+# api_key_env = "EXA_API_KEY"
+
 [tools.fetch]
 kind = "web_fetch"
 provider = "deepseek"
@@ -377,16 +383,26 @@ api_key_env = "DEEPSEEK_API_KEY"
   An unavailable comparison is reported separately. Preserve the same workspace, state root/session and
   launch options when restarting. Inspect active work first: the daemon stops driving the session, while
   committed runners may finish independently.
-- Both `web_search` and `web_fetch` bindings use the DeepSeek Search/Fetch APIs and need a credential:
-  `api_key_env` names the environment variable (normally `DEEPSEEK_API_KEY`). Without it — not configured, or
-  the named variable unset — a call answers with a **capability state** naming what to configure, and no request
-  leaves the host unauthenticated (DESIGN §7, D-167/D-456). A binding with `required = true` that cannot work
-  (missing credential, unserved `provider`) refuses the member's start, so `doctor` reports its row as a
-  **FAIL** and the parked instance carries the reason (D-164/D-165); an optional one keeps the capability and
-  the call answers with that state.
+- Every web binding needs the credential named by its `api_key_env`. Search accepts `provider = "deepseek"`
+  (normally `DEEPSEEK_API_KEY`) and `provider = "exa"` (normally `EXA_API_KEY`); fetch remains DeepSeek-only.
+  Without the key — not configured, or the named variable unset — a call answers with a **capability state**
+  naming what to configure, and no request leaves the host unauthenticated (DESIGN §7, D-167/D-482). A binding
+  with `required = true` that cannot work (missing credential, unserved provider) refuses the member's start,
+  so `doctor` reports its row as a **FAIL** and the parked instance carries the reason (D-164/D-165); an optional
+  one keeps the capability and the call answers with that state.
   The tools themselves appear only for the kinds you declare (§5.2: binding is the authorization, D-168): a
   config with no web entry offers the model neither `web_search` nor `web_fetch` — `doctor` says so, and adding
   a `[tools.fetch]` entry makes exactly `web_fetch` appear.
+- `web_search` keeps its existing `query`, `max_results` (default 10, clamped to 1–50) and `include_content`
+  arguments, and adds `ori_question` plus `provider = "auto" | "both" | "deepseek" | "exa"`. Query and original
+  question are limited to 128 characters. `auto` uses every bound provider in parallel and merges unique URLs
+  with reciprocal rank fusion; `both` requires both providers to be bound; a single-provider argument controls
+  cost and source. If one provider fails, successful results are returned with a `warnings` array; if all fail,
+  the call returns the classified errors. Transient HTTP/network failures receive two retries with bounded
+  backoff. Identical requests share a process-local five-minute, 64-entry cache and concurrent calls coalesce.
+  Cache entries contain no credential, and failures are not cached. **With DeepSeek and Exa both bound, `auto`
+  can charge both services.** Use one provider and keep `include_content = false` when controlling cost;
+  `web_fetch` behavior is unchanged. Exa's optional `env = { search_type = "auto" }` selects its search mode.
 
 `[retention] history_days = N` is applied **when a session starts** (its daemon boots): events and *applied*
 deliveries older than N days are dropped from the session database, while the log's head, a pending wait's fact,
@@ -881,6 +897,32 @@ teamagents goals cancel --id g-spent    # close a goal nothing can spend (its ce
   `tool_timeout_s` (default 120) covers one `tools/call`: a call that does not answer inside it is reported to
   the model as a timeout — the turn continues and the model can retry or work around it — rather than blocking
   the member until the server wakes up.
+
+**CodeGraph over stdio MCP.** Install CodeGraph separately and initialize the target project's index explicitly;
+TeamAgents never installs it or runs `codegraph init` for you. For a project that already has `.codegraph/`, this
+binding discovers `codegraph_codegraph_explore` and makes it callable through codemode:
+
+```toml
+[tools.codegraph]
+kind = "mcp"
+command = "codegraph"
+args = ["serve", "--mcp", "--path", "."]
+startup_timeout_s = 60
+tool_timeout_s = 120
+env = { CODEGRAPH_MCP_TOOLS = "explore", CODEGRAPH_TELEMETRY = "0", CODEGRAPH_NO_UPDATE_CHECK = "1", CODEGRAPH_EXPLORE_DEDUP = "0", NO_COLOR = "1" }
+```
+
+Use `describeNamespace("codegraph")` to inspect the service and
+`await tools.codegraph_codegraph_explore({ query: "login authenticateUser", projectPath: "/absolute/project", maxFiles: 5 })`
+to query it. TeamAgents returns the tool's joined text to the script. The default is to reuse CodeGraph's shared
+daemon: **do not set `CODEGRAPH_NO_DAEMON=1` while another client owns the project writer**, or the server refuses
+its writer lock. Environment settings apply when a new daemon starts; an existing shared daemon keeps its original
+environment. `--no-watch` may be added to the server args to disable automatic index synchronization. If there
+was no index when the member booted, initialize it yourself and then pause/resume the member (or restart the
+daemon) to refresh discovery. `teamagents mcp list` checks discovery without a model, and
+`cargo run --offline --locked --manifest-path engine/Cargo.toml --example codegraph_probe -- /absolute/project`
+checks discovery plus a real codemode query against an existing index. Stale-source warnings still require direct
+file verification, and graph results never replace tests.
 
 ## 6. Recovery, compaction and cleanup
 

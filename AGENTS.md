@@ -53,7 +53,7 @@ make verify-kani                         # Kani proofs (paging arithmetic)
 python3 review/eval/r2-p6/run.py --phase pilot --out <new date directory>  # real-model A/B/C comparison (needs credentials)
 ```
 
-- Local baseline (2026-10-26, D-480 `7ae6bd5b`): `make check` is green — core 147 / engine 415 / tui 91;
+- Local baseline (2026-10-28, D-482/D-483): `make check` is green — core 147 / engine 424 / tui 91;
   `make pty` passes. This is not a renewal of D-452's independent audit or historical real-service results.
   Raw evaluation JSONL lives in `review/eval/r2-p6/runs/`, per-item evidence in `docs/ACCEPTANCE.md`.
   Candidate daily-coding work has one home, `docs/PRODUCT-COMPARISON.md`. D-461 approves and implements
@@ -80,7 +80,8 @@ This describes the current code.
 - Execution: `engine/src/v2/driver.rs` (phase machine; model and tool waits happen outside transactions) and
   `engine/src/v2/supervisor.rs` (one coordinator per state root driving every ACTIVE instance). Shell
   commands run in the runner process of `engine/src/jobs`.
-- Tools and bindings: `engine/src/tools.rs` (files, shell, web), `engine/src/bound.rs` (binding is the
+- Tools and bindings: `engine/src/tools.rs` (files, shell, fetch), `engine/src/search.rs` (DeepSeek/Exa search),
+  `engine/src/bound.rs` (binding is the
   authorization), `engine/src/mcp.rs` (stdio and streamable HTTP). User hooks live in `engine/src/hooks.rs`
   (`[hooks]`: `pre_tool` veto, `notify` events).
 - Information permissions: visibility and delivery decisions in `core/src/v2/control.rs` plus the context

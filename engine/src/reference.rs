@@ -330,8 +330,14 @@ pub fn basic_tool_schemas(web: bool, skills: bool) -> Vec<Json> {
             json!({"type":"object","properties":{"command":{"type":"string"},"timeout":{"type":"integer"}},"required":["command"]})),
     ];
     if web {
-        schemas.push(wrap("web_search", "Search the web and return title, source URL, snippet, fetch time (and full content when include_content=true).",
-            json!({"type":"object","properties":{"query":{"type":"string"},"max_results":{"type":"integer"},"include_content":{"type":"boolean"}},"required":["query"]})));
+        schemas.push(wrap("web_search", "Search the web through the bound DeepSeek and/or Exa providers and return ranked, deduplicated results (title, URL, snippet, site, date and authority). provider=auto uses every bound provider; both requires both; deepseek/exa selects one. Partial provider failures are reported in warnings. Use include_content=false first and web_fetch for pages that matter. Identical searches share a 300-second cache.",
+            json!({"type":"object","additionalProperties":false,"properties":{
+                "query":{"type":"string","minLength":1,"maxLength":128,"description":"Short search query (1-128 characters); site:, -site: and quoted phrases are supported."},
+                "max_results":{"type":"integer","minimum":1,"maximum":50,"default":10,"description":"Number of results to return (1-50, default 10)."},
+                "include_content":{"type":"boolean","default":false,"description":"Include extracted page content; costs more tokens, so prefer web_fetch for selected pages."},
+                "ori_question":{"type":"string","maxLength":128,"description":"The user's original question, which helps the search engine understand intent."},
+                "provider":{"type":"string","enum":["auto","deepseek","exa","both"],"default":"auto","description":"auto uses every bound provider; both requires DeepSeek and Exa; deepseek/exa restricts the source."}
+            },"required":["query"]})));
         schemas.push(wrap("web_fetch", "Fetch a web page and return title, source URL, fetch time and the readable text body (HTML only; capped).",
             json!({"type":"object","properties":{"url":{"type":"string"},"max_bytes":{"type":"integer"}},"required":["url"]})));
     }

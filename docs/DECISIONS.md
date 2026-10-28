@@ -13,7 +13,8 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Skills | user-level registration root `~/.agents/skills`; read on demand with `skill search/read`, and skill instructions never widen execution permissions | D-23, D-34 |
 | Usage visibility | turn and goal usage/budget are visible in the TUI and in events | D-24 |
 | MCP | both transports, stdio and streamable HTTP; calls go through the shared permission, approval, budget, cancellation and receipt entry points | D-25 |
-| Web tools | `web_search` and `web_fetch` call DeepSeek Search/Fetch (`/v1/tools/search`, `/v1/tools/fetch`) with the same bearer key; no AnySearch backend | D-456 |
+| Web tools | `web_search` uses bound DeepSeek and/or Exa providers with `auto`/`both`/single-source selection, RRF deduplication, retries and a five-minute cache; `web_fetch` remains DeepSeek-only. Binding is still authorization, and dual-source auto may charge both providers | D-482 (supersedes D-456 for search) |
+| CodeGraph | optional stdio MCP service (`codegraph serve --mcp`) queried through codemode; existing indexes only unless the user explicitly initializes one; shared daemon by default, no automatic install/init | D-483 |
 | Release publication | v0.2.0 is the first public release (Linux x86_64, musl static), rebuilt with D-476; future tags still need explicit user authorization and `TEAMAGENTS_RELEASE_APPROVED=true` | D-457, D-475, D-477 |
 | Context compaction | triggered by real window usage; the summary keeps the original request and acceptance criteria, and the full text stays retrievable | D-28 |
 | Task priority | complex coding and long-horizon stability come first | D-35 |
@@ -36,6 +37,63 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Prompt cache | cache hit/miss/write are provider-reported and visible; the L1 frontier is fixed between compactions; Anthropic gets explicit breakpoints and OpenAI a stable key; DeepSeek stays automatic | D-459 |
 | Command idempotency | a replay with the same `command_id` returns the stored receipt for control-plane state, and the authoritative check runs under the write lock (D-463); result bodies are shared by content digest and zstd-compressed (D-464), while the receipt **rows** remain one per command | D-463, D-464 |
 | Model actions and code windows | a deciding read shares the write's transaction, or the guard is a predicate on the write itself; `verification/REPORT.md` §6 lists the protocol transitions and the three engine windows that span two transactions with their predicates | D-465 |
+
+## D-483 CodeGraph through native MCP and codemode (2026-10-28)
+
+**Authorization.** The user asked to ensure that the CodeGraph tool from the sibling Pi tools can be used by
+TeamAgents. The Pi TypeScript extension is not ported: TeamAgents already owns the required stdio MCP client and
+QuickJS codemode bridge.
+
+Configure `[tools.codegraph] kind = "mcp"` with `command = "codegraph"` and
+`args = ["serve", "--mcp", "--path", "."]`. Discovery exposes `codegraph_codegraph_explore`; scripts use
+`describeNamespace("codegraph")` and `tools.codegraph_codegraph_explore`. Binding remains the authorization and
+each nested call keeps the existing receipts, pre-tool veto, timeout and recovery behavior.
+
+TeamAgents does not install CodeGraph, initialize an index, change another client's configuration or force a
+new daemon. The default reuses CodeGraph's shared daemon. Setting `CODEGRAPH_NO_DAEMON=1` while another client
+owns the project writer fails its lock and is not a supported workaround. An existing daemon retains its
+original environment; the example's telemetry/update/dedup variables apply when a new daemon starts. An
+unindexed project must be initialized explicitly by the user, followed by member pause/resume or daemon restart
+to refresh discovery. Graph output does not replace direct source verification or tests.
+
+**Evidence.** CodeGraph 1.6.2 was exercised against this repository's existing index with no model or paid API:
+`teamagents mcp list` discovered the tool, and
+`cargo run --offline --locked --manifest-path engine/Cargo.toml --example codegraph_probe -- .`
+completed discovery, `describeNamespace`, a real `codegraph_explore` query and source-text return through
+codemode. The first forced-independent-daemon probe failed on the live writer lock, as expected; the shared-daemon
+control passed. USER-GUIDE and `examples/config.toml` carry the configuration and boundaries.
+
+## D-482 Provider-neutral web search with DeepSeek and Exa (2026-10-28)
+
+**Authorization.** After comparing the sibling search tool with the DeepSeek-only implementation, the user
+selected option A: port dual-provider search, `auto`/`both`, reciprocal rank fusion, fallback, retries, caching
+and `ori_question`. This supersedes D-456 for **search only**. `web_fetch` is unchanged and remains DeepSeek-only.
+
+Each `[tools.*] kind = "web_search"` binding authorizes one provider. Existing DeepSeek bindings keep their
+defaults. An Exa binding declares `provider = "exa"` and normally `api_key_env = "EXA_API_KEY"`; its endpoint
+defaults to `https://api.exa.ai/search`, and optional `env.search_type` defaults to `auto`. The model keeps
+`max_results` and `include_content` for compatibility, with `provider` and `ori_question` added. `auto` queries
+every bound provider concurrently, `both` requires both bindings, and a single-source argument restricts cost
+and source. When both are bound, auto may incur charges from both services.
+
+DeepSeek sends `{query, count, need_content, ori_question?}` with Bearer auth. Exa sends
+`{query, numResults, type, contents}` with `x-api-key`, highlights and optional text. Results are normalized,
+deduplicated by canonical URL and ranked with RRF (K=60); duplicate rows from one provider cannot outweigh
+agreement between providers. A partial failure returns successful results plus provider-labelled `warnings`;
+all failures return classified errors. Missing credentials still fail before any request, and required bindings
+retain their boot-time failure rule.
+
+Each provider has a 20-second attempt timeout and two retries for 408/429/5xx and transient transport failures,
+with bounded backoff and numeric `Retry-After` support. Redirects are refused and successful response bodies
+are capped at 8 MiB. Identical requests use a process-local five-minute, 64-entry TTL+LRU cache; concurrent
+misses coalesce, failures are not cached, and cache keys contain no credential. Cache hits still require the
+binding's credential to resolve. The cache sources (`network`, `coalesced`, `cache`) are explicit in results.
+
+**Evidence.** Offline fake-HTTP tests in `engine/src/search.rs` cover both request bodies and auth headers,
+input limits, response normalization, RRF and same-provider duplicate control, explicit Exa selection, partial
+fallback, missing `both` configuration, 429 retry, cache hits, concurrent single-flight, auth classification
+and malformed responses. The D-167 no-credential/no-request and required-binding tests remain green. No live
+paid Search API was called, so service acceptance, result quality, cost and latency are not claimed.
 
 ## D-481 Editorial terminal visual refresh (2026-10-26)
 

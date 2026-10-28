@@ -97,6 +97,7 @@ pub struct ToolBinding {
     pub kind: String,
     #[serde(default)]
     pub required: bool,
+    /// Web provider: DeepSeek for search/fetch, Exa for search only (D-482).
     #[serde(default)]
     pub provider: Option<String>,
     #[serde(default)]
@@ -150,6 +151,7 @@ pub struct ToolBinding {
     /// tools/call timeout in seconds (default 120).
     #[serde(default)]
     pub tool_timeout_s: Option<u64>,
+    /// Binding-specific environment/options. MCP expands ${VAR}; Exa search accepts search_type (default auto).
     #[serde(default)]
     pub env: HashMap<String, String>,
     #[serde(default)]

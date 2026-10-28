@@ -1,6 +1,7 @@
 //! File tools confined to the member workspace, automatic host shell execution,
 //! and web fetch with an SSRF guard.
 
+pub use crate::search::web_search;
 use serde_json::{json, Value as Json};
 use sha2::{Digest, Sha256};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
@@ -987,7 +988,7 @@ fn workspace_executor_with_control(
 /// no web tool, and the executor says so instead of failing open.
 #[derive(Default, Clone)]
 pub(crate) struct WebTools {
-    pub(crate) search: Option<teamagents_core::models::ToolBinding>,
+    pub(crate) search: Vec<(String, teamagents_core::models::ToolBinding)>,
     pub(crate) fetch: Option<teamagents_core::models::ToolBinding>,
 }
 
@@ -1025,12 +1026,12 @@ pub(crate) fn web_tools(
     let mut tools = WebTools::default();
     for (name, binding) in candidates {
         // A required service that cannot load fails the member at load time
-        // (ToolServiceUnavailable). D-456: both web kinds use the DeepSeek
-        // Search/Fetch APIs, and both authenticate with the same bearer key.
+        // (ToolServiceUnavailable). Each binding authorizes one search provider;
+        // duplicate providers are collapsed deterministically at call time.
         let provider = binding.provider.as_deref().unwrap_or("deepseek");
-        if provider != "deepseek" {
+        if provider != "deepseek" && !(binding.kind == "web_search" && provider == "exa") {
             return Err(format!(
-                "tool service {name:?}: unsupported web provider {provider:?} (this build serves deepseek)"
+                "tool service {name:?}: unsupported web provider {provider:?} (DeepSeek serves search/fetch; Exa serves search)"
             ));
         }
         if binding.required {
@@ -1039,7 +1040,7 @@ pub(crate) fn web_tools(
             }
         }
         match binding.kind.as_str() {
-            "web_search" if tools.search.is_none() => tools.search = Some(binding.clone()),
+            "web_search" => tools.search.push((name.clone(), binding.clone())),
             "web_fetch" if tools.fetch.is_none() => tools.fetch = Some(binding.clone()),
             _ => {}
         }
@@ -1271,21 +1272,12 @@ pub(crate) fn member_executor_with_control(
     let web: OnceLock<Result<WebTools, String>> = OnceLock::new();
     move |tool: &str, args: &Json, control: &TurnControl| match tool {
         "web_search" => {
-            let binding = web
-                .get_or_init(|| web_tools(&catalog, &bindings))
-                .as_ref()
-                .map_err(|e| e.clone())?
-                .search
-                .clone()
-                .ok_or_else(|| format!("tool {tool} is not bound to this member"))?;
-            let provider = binding.provider.as_deref().unwrap_or("deepseek");
-            if provider != "deepseek" {
-                return Err(format!("unsupported web provider {provider:?} (this build serves deepseek)"));
+            let bindings =
+                web.get_or_init(|| web_tools(&catalog, &bindings)).as_ref().map_err(|e| e.clone())?.search.clone();
+            if bindings.is_empty() {
+                return Err(format!("tool {tool} is not bound to this member"));
             }
-            let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
-            let max = args.get("max_results").and_then(|v| v.as_i64()).unwrap_or(5);
-            let include = args.get("include_content").and_then(|v| v.as_bool()).unwrap_or(false);
-            web_search(query, max, binding.url.as_deref(), binding.api_key_env.as_deref(), include)
+            web_search(&bindings, args)
         }
         "web_fetch" => {
             let binding = web
@@ -2131,15 +2123,16 @@ pub fn is_private_addr(addr: std::net::IpAddr) -> bool {
     }
 }
 
-/// The bearer token a web binding authenticates with, or the reason it has none (D-167).
+/// The credential a web binding authenticates with, or the reason it has none (D-167).
+/// DeepSeek uses Bearer auth; Exa uses x-api-key.
 ///
 /// One wording for the three consumers — the tool call, the member's start (`web_tools`) and `doctor` — so the
 /// same binding cannot be described differently in a receipt, a park reason and a doctor row. A variable that
 /// is *set but empty* counts as absent, the way `api_key_env` does in `config::missing_key_envs`.
-/// D-456: the only web provider this build serves is DeepSeek Search/Fetch.
+/// D-482: search accepts DeepSeek and Exa; fetch remains DeepSeek-only.
 pub(crate) fn web_credential(provider: &str, api_key_env: Option<&str>) -> Result<String, String> {
-    if provider != "deepseek" {
-        return Err(format!("unsupported web provider {provider:?} (this build serves deepseek)"));
+    if !matches!(provider, "deepseek" | "exa") {
+        return Err(format!("unsupported web provider {provider:?} (this build serves deepseek and exa)"));
     }
     match api_key_env.map(str::trim).filter(|env| !env.is_empty()) {
         Some(env) => std::env::var(env)
@@ -2150,71 +2143,7 @@ pub(crate) fn web_credential(provider: &str, api_key_env: Option<&str>) -> Resul
     }
 }
 
-/// The capability state a `web_search` call answers with when it has no credential: what to configure.
-/// Never an anonymous request (D-167).
-fn web_search_capability(reason: &str) -> String {
-    format!(
-        "web_search is unavailable: {reason}; configure provider = \"deepseek\" and api_key_env = \
-         \"DEEPSEEK_API_KEY\""
-    )
-}
-
-const DEEPSEEK_SEARCH_URL: &str = "https://api.deepseek.com/v1/tools/search";
 const DEEPSEEK_FETCH_URL: &str = "https://api.deepseek.com/v1/tools/fetch";
-
-/// DeepSeek Search: POST {query, count, need_content}.
-pub fn web_search(
-    query: &str,
-    max_results: i64,
-    url: Option<&str>,
-    api_key_env: Option<&str>,
-    include_content: bool,
-) -> Result<Json, String> {
-    let url = url.unwrap_or(DEEPSEEK_SEARCH_URL);
-    // D-167: DESIGN §7 — "a missing web-search credential … is reported as a capability state, and no
-    // executable binding is invented". The call never leaves without a credential.
-    let key = web_credential("deepseek", api_key_env).map_err(|reason| web_search_capability(&reason))?;
-    let count = max_results.clamp(1, 50);
-    let mut request =
-        ureq::post(url).timeout(std::time::Duration::from_secs(30)).set("content-type", "application/json");
-    request = request.set("authorization", &format!("Bearer {key}"));
-    let response = request
-        .send_string(&json!({"query": query, "count": count, "need_content": include_content}).to_string())
-        .map_err(|e| format!("web_search failed: {e}"))?;
-    let payload: Json = response.into_json().map_err(|e| format!("web_search bad json: {e}"))?;
-    Ok(parse_search_response(&payload, query, count, include_content))
-}
-
-fn parse_search_response(payload: &Json, query: &str, count: i64, include_content: bool) -> Json {
-    let results: Vec<Json> = payload
-        .get("results")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
-        .take(count as usize)
-        .map(|item| {
-            let mut entry = json!({
-                "title": item.get("title").and_then(|v| v.as_str()).unwrap_or(""),
-                "url": item.get("url").and_then(|v| v.as_str()).unwrap_or(""),
-                "snippet": item.get("snippet").and_then(|v| v.as_str()).unwrap_or(""),
-                "summary": item.get("summary").and_then(|v| v.as_str()).unwrap_or(""),
-                "site_name": item.get("site_name").cloned().unwrap_or(Json::Null),
-                "date": item.get("date").cloned().unwrap_or(Json::Null),
-                "authority": item.get("authority").cloned().unwrap_or(Json::Null),
-                "rerank_score": item.get("rerank_score").cloned().unwrap_or(Json::Null),
-                "fetched_at": iso_now(),
-            });
-            if include_content {
-                if let Some(content) = item.get("content") {
-                    entry["content"] = content.clone();
-                }
-            }
-            entry
-        })
-        .collect();
-    json!({"query": query, "provider": "deepseek", "results": results})
-}
 
 /// DeepSeek Fetch: POST {url}; the API returns `{title, content}` with content already as Markdown.
 /// The local guard still rejects private literals/addresses before anything is sent to the API.
@@ -2249,7 +2178,7 @@ pub fn web_fetch(
     }))
 }
 
-fn iso_now() -> String {
+pub(crate) fn iso_now() -> String {
     iso8601(teamagents_core::models::now() as i64)
 }
 
@@ -3471,15 +3400,6 @@ mod tests {
 
     #[test]
     fn web_shapes_are_stable_and_bindings_are_required() {
-        let payload = json!({"results": [
-            {"title": "T", "url": "https://x", "snippet": "S", "summary": "L", "content": "BODY"},
-        ]});
-        let parsed = parse_search_response(&payload, "q", 5, false);
-        assert_eq!(parsed["provider"], "deepseek");
-        assert_eq!(parsed["results"][0]["title"], "T");
-        assert!(parsed["results"][0].get("content").is_none());
-        assert_eq!(parse_search_response(&payload, "q", 5, true)["results"][0]["content"], "BODY");
-
         assert_eq!(iso8601(0), "1970-01-01T00:00:00Z");
         assert_eq!(iso8601(1_700_000_000), "2023-11-14T22:13:20Z");
 
@@ -3497,6 +3417,16 @@ mod tests {
         );
         let executor = member_executor(std::env::temp_dir(), catalog, vec!["web".into()], None);
         assert!(executor("web_search", &json!({"query": "q"})).unwrap_err().contains("unsupported"));
+
+        let mut fetch_catalog = teamagents_core::models::UserConfig::default();
+        fetch_catalog
+            .tools
+            .insert("fetch".into(), serde_json::from_value(json!({"kind": "web_fetch", "provider": "exa"})).unwrap());
+        let error = match web_tools(&fetch_catalog, &["web".into()]) {
+            Ok(_) => panic!("Exa must not become a fetch provider just because search accepts it"),
+            Err(error) => error,
+        };
+        assert!(error.contains("Exa serves search"), "{error}");
     }
 
     // -- P1-2 / P2-6 regression tests (review 2026-09-14) --
@@ -3529,12 +3459,21 @@ mod tests {
             }
         });
 
+        let call = |api_key_env: Option<&str>| {
+            let mut value = json!({"kind": "web_search", "provider": "deepseek", "url": base});
+            if let Some(api_key_env) = api_key_env {
+                value["api_key_env"] = Json::String(api_key_env.into());
+            }
+            let binding: teamagents_core::models::ToolBinding = serde_json::from_value(value).unwrap();
+            web_search(&[("search".into(), binding)], &json!({"query": "q", "max_results": 5, "provider": "deepseek"}))
+        };
+
         // declared but unset: the capability names the variable, and no request is sent
-        let error = web_search("q", 5, Some(&base), Some("TA_WEB_SEARCH_DEFINITELY_UNSET"), false).unwrap_err();
+        let error = call(Some("TA_WEB_SEARCH_DEFINITELY_UNSET")).unwrap_err();
         assert!(error.contains("TA_WEB_SEARCH_DEFINITELY_UNSET"), "the message names the variable: {error}");
         assert!(error.contains("configure provider"), "the capability names the DeepSeek configuration: {error}");
         // nothing configured at all: search needs one (`web_fetch` is the half that does not)
-        let error = web_search("q", 5, Some(&base), None, false).unwrap_err();
+        let error = call(None).unwrap_err();
         assert!(error.contains("no `api_key_env` is configured"), "the message says what to configure: {error}");
         std::thread::sleep(std::time::Duration::from_millis(150));
         assert_eq!(seen.lock().unwrap().len(), 0, "no request may leave without a credential");
@@ -3542,7 +3481,7 @@ mod tests {
         // control: with the credential in the environment the call goes out, carrying the bearer token
         let _env = crate::env_lock();
         std::env::set_var("TA_WEB_SEARCH_KEY_SET", "test-value");
-        let result = web_search("q", 5, Some(&base), Some("TA_WEB_SEARCH_KEY_SET"), false).expect("the call goes out");
+        let result = call(Some("TA_WEB_SEARCH_KEY_SET")).expect("the call goes out");
         std::env::remove_var("TA_WEB_SEARCH_KEY_SET");
         assert_eq!(result["results"], json!([]));
         let requests = seen.lock().unwrap().clone();
@@ -3552,6 +3491,25 @@ mod tests {
             "the token is what authenticates the call: {:?}",
             requests[0]
         );
+
+        // The public member dispatcher reaches the same implementation with the new arguments intact.
+        std::env::set_var("TA_WEB_SEARCH_KEY_SET", "test-value");
+        let mut catalog = teamagents_core::models::UserConfig::default();
+        catalog.tools.insert(
+            "search".into(),
+            serde_json::from_value(json!({
+                "kind": "web_search", "provider": "deepseek", "url": base,
+                "api_key_env": "TA_WEB_SEARCH_KEY_SET"
+            }))
+            .unwrap(),
+        );
+        let executor = member_executor(std::env::temp_dir(), catalog, vec!["web".into()], None);
+        let dispatched =
+            executor("web_search", &json!({"query": "dispatch", "provider": "deepseek", "ori_question": "original"}))
+                .expect("the member executor dispatches its bound search");
+        std::env::remove_var("TA_WEB_SEARCH_KEY_SET");
+        assert_eq!(dispatched["results"], json!([]));
+        assert_eq!(seen.lock().unwrap().len(), 2);
     }
 
     /// D-167's boot half: a `required = true` `web_search` whose credential is missing fails the member's
@@ -3580,7 +3538,22 @@ mod tests {
         assert!(error.contains("required tool service \"search\""), "{error}");
         assert!(error.contains("TA_WEB_REQUIRED_DEFINITELY_UNSET"), "the reason names the variable: {error}");
         let optional = web_tools(&binding(false), &["web".to_string()]).expect("an optional one only loses it");
-        assert!(optional.search.is_some(), "the binding itself is not dropped: it answers with the state");
+        assert!(!optional.search.is_empty(), "the binding itself is not dropped: it answers with the state");
+
+        let mut exa = teamagents_core::models::UserConfig::default();
+        exa.tools.insert(
+            "exa".into(),
+            serde_json::from_value(json!({
+                "kind": "web_search", "provider": "exa", "required": true,
+                "api_key_env": "TA_EXA_REQUIRED_DEFINITELY_UNSET"
+            }))
+            .unwrap(),
+        );
+        let error = match web_tools(&exa, &["web".to_string()]) {
+            Ok(_) => panic!("a required Exa binding without its credential must fail the member's load"),
+            Err(error) => error,
+        };
+        assert!(error.contains("TA_EXA_REQUIRED_DEFINITELY_UNSET"), "{error}");
     }
 
     #[cfg(unix)]

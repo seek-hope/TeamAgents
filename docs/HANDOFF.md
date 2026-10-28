@@ -1,11 +1,10 @@
 # Development handoff
 
-Updated **2026-10-26**. The runtime baseline is **D-480 (`7ae6bd5b`)**; **D-481** refreshes TUI presentation
-without changing session, protocol or execution semantics. It uses brighter secondary text, quiet rounded
-panels and textual selection markers across the conversation, completions, queue and session pages. No new
-TUI features or interactions are added. Always recheck Git status and recent commits. This file records a
-starting point, not the state of the remote branch, an installed binary or permission to implement the
-candidate backlog.
+Updated **2026-10-28**. The runtime baseline is **D-480 (`7ae6bd5b`)**. **D-482** adds provider-neutral
+DeepSeek/Exa search while leaving fetch unchanged; **D-483** documents and verifies CodeGraph through the
+existing stdio MCP + codemode path. **D-481** previously refreshed TUI presentation without changing session,
+protocol or execution semantics. Always recheck Git status and recent commits. This file records a starting
+point, not the state of the remote branch, an installed binary or permission to implement the candidate backlog.
 
 ## Start here
 
@@ -37,6 +36,12 @@ focused visual tests cover quiet semantic roles, readable message bodies and sha
 Local release-profile binaries were installed after backup, and the installed TUI passed the xterm-256color
 conversation PTY without changing user configuration or sessions. These are presentation regressions, not
 evidence of changed runtime behavior or a new release.
+
+D-482 passed `make check` with **core 147 / engine 424 / tui 91**. Its fake-HTTP tests cover DeepSeek/Exa
+request shapes, RRF, provider selection, partial failure, retry, caching and single-flight; no live paid Search
+API was called. D-483's `engine/examples/codegraph_probe.rs` completed real CodeGraph 1.6.2 discovery and a
+codemode query against the existing index without a model or automatic initialization. Shared-daemon writer
+locks and stale-source warnings remain explicit boundaries.
 
 Older evidence stays pinned to its own source:
 
@@ -78,6 +83,8 @@ All rows below are included in the normal suites unless noted otherwise.
 | Provider cache fields and stable prompt prefixes | `core/src/kernel/mod.rs`, `engine/tests/providers_fake.rs`, `engine/src/v2/exec.rs` |
 | Governed self-update | `engine/src/update.rs`, `engine/tests/update.rs` |
 | Host execution, legacy config and saved-job recovery | `engine/src/tools.rs`, `engine/tests/cli.rs`, `engine/tests/v2_mcp.rs`, `engine/src/v2/driver.rs` |
+| Provider-neutral web search and credentials | `engine/src/search.rs`, `engine/src/tools.rs`, `engine/src/reference.rs` |
+| CodeGraph MCP discovery and codemode query | `engine/examples/codegraph_probe.rs` (manual, existing index only) |
 | Environment/config/source observations and input receipts | `engine/src/environment.rs`, `engine/tests/v2_daemon.rs`, `tui/tests/minimal.rs` |
 | Work diagnosis and recovery hints | `engine/src/v2/diagnostics.rs`, `engine/tests/v2_daemon.rs`, `tui/tests/minimal.rs` |
 
@@ -122,9 +129,11 @@ The PTY matrix checks terminal protocols, not every graphical terminal or OS.
 
 ## Next-cycle constraints
 
-The current task is documentation and maintenance cleanup, not new runtime behavior. Later candidates are
-actual development/Skill workflows (DD-02) and wider operational evidence. The matched Pi trial is postponed;
-monetary accounting is outside the current scope. Do not add automatic reminders under D-461.
+The current source includes D-482 search and D-483 CodeGraph integration. Live paid Search acceptance and
+broader CodeGraph watcher/freshness evidence remain open; do not initialize an index implicitly or present the
+offline provider tests as live service results. Later candidates are actual development/Skill workflows (DD-02)
+and wider operational evidence. The matched Pi trial is postponed; monetary accounting is outside the current
+scope. Do not add automatic reminders under D-461.
 
 Keep the Rust control plane, per-session SQLite authority, independent daemon and minimal Leader TUI.
 Automatic cross-session injection, distributed/multi-tenant execution and a marketplace remain excluded.

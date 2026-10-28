@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """A real-model check that the bound web tools work and their guard holds (A01/A25-adjacent).
 
-Two turns in one session, with a `[tools.fetch]` binding. Both web tools use the
-DeepSeek Search/Fetch APIs and therefore need `DEEPSEEK_API_KEY`.
+Two turns in one session, with a `[tools.fetch]` binding. This probe's fetch path uses the
+DeepSeek Fetch API and therefore needs `DEEPSEEK_API_KEY`; dual-provider web_search is outside this probe.
 
 1. the model fetches a public page (`https://example.com`) and reports a phrase from it — the
    readable body really reaches the conversation;

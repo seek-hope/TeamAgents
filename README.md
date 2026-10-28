@@ -64,8 +64,8 @@ and session management.
   There is no built-in OS sandbox or per-command network policy. File tools still enforce workspace paths;
   an authorized Shell can access whatever the host user can access.
 - **Coding tools**: file reads, searches, writes and revision-checked edits; a persistent per-member Shell;
-  DeepSeek web search/fetch; Skills; and MCP over stdio or streamable HTTP. The `codemode` tool composes bound
-  MCP calls in QuickJS without exposing direct file or network capabilities to the script.
+  DeepSeek/Exa web search and DeepSeek fetch; Skills; and MCP over stdio or streamable HTTP. The `codemode` tool
+  composes bound MCP calls in QuickJS without exposing direct file or network capabilities to the script.
 - **Completion checks**: required `[[checks]]` must pass before a goal can settle successfully. Separate
   `exec --check` commands validate a finished turn and control the client's exit code.
 - **Recovery and retention**: durable runner journals support reconnect after a daemon restart. Failed or

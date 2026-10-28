@@ -23,6 +23,7 @@ pub mod mcp_auth;
 pub mod observability;
 pub mod providers;
 pub mod reference;
+pub mod search;
 pub mod tools;
 pub mod update;
 pub mod v2;
