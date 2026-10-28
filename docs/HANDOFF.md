@@ -1,6 +1,8 @@
 # Development handoff
 
-Updated **2026-10-28**. **D-485** improves conversation UX, responsive hints, shortcut discovery and shared
+Updated **2026-10-28**. **D-486** preserves complete Markdown completion answers and decodes real Shell output
+envelopes with separate multiline command/log blocks. DD-11 proposes goal continuation on explicit user input;
+it is not approved or implemented. **D-485** improves conversation UX, responsive hints, shortcut discovery and shared
 message/queue editing. The runtime baseline is **D-480 (`7ae6bd5b`)**. **D-484** makes DeepSeek + Exa the
 default search configuration, with DeepSeek fetch. **D-482** added the provider-neutral search implementation;
 **D-483** documented and verified CodeGraph through the existing stdio MCP + codemode path. **D-481** previously
@@ -55,6 +57,11 @@ D-485 passed `make check` with **core 147 / engine 424 / tui 96** and the comple
 gutter and line wrapping. The release-profile TUI was installed after backup and passed the installed
 xterm-256color conversation smoke, including modal paste ownership and word deletion/restore. Configuration
 and existing sessions were preserved. No live-model comparison or new public release is part of this evidence.
+
+D-486 passed the complete local gate with **core 147 / engine 424 / tui 97**, the full terminal/graphics matrix
+and the installed release-profile TUI smoke after backup. Its fixtures use actual Shell JSON envelopes and
+complete Markdown answers; a failing-then-passing frame check covers deferred code-block gutter loss. No
+live-model call, goal lifecycle change or public release was made.
 
 Older evidence stays pinned to its own source:
 

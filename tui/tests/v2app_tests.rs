@@ -126,19 +126,25 @@ fn a_command_answer_survives_a_checkpoint_and_a_note_does_not() {
 
 /// D-431: a model can settle a goal by calling `finish` without writing any prose (measured on the tau3 retail
 /// split: 12 of 114 dialogues ended that way, and the user read nothing). The checkpoint carries the completion
-/// summary, and the status line shows it, so a settled goal is not just a bare `goal SUCCEEDED`.
+/// summary, and the conversation renders it as the complete Markdown answer.
 #[test]
 fn a_settled_goal_shows_the_models_own_completion_summary() {
     let mut app = app();
     assert_eq!(app.status_line().find("cancelled"), None, "an active goal has no summary to show");
     let mut settled = checkpoint();
     settled["goal"]["status"] = Json::String("SUCCEEDED".into());
-    settled["goal"]["summary"] = Json::String("  cancelled order W1\nand refunded the other card  ".into());
+    let summary = format!(
+        "# Finished\n\n{}\n\n```sh\nprintf 'one\\ntwo\\n'\n```\n\nFinal answer remains visible.",
+        "A detailed explanation. ".repeat(8)
+    );
+    settled["goal"]["summary"] = Json::String(summary.clone());
     app.apply_checkpoint(settled, 6);
-    let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+    assert_eq!(app.goal.as_ref().unwrap().summary.as_deref(), Some(summary.as_str()));
+    let mut terminal = Terminal::new(TestBackend::new(100, 32)).unwrap();
     terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
     let frame = frame_lines(&terminal).join("\n");
-    assert!(frame.contains("Result: cancelled order W1 and refunded the other card"), "{frame}");
+    assert!(frame.contains("Result · SUCCEEDED") && frame.contains("Final answer remains visible."), "{frame}");
+    assert!(!frame.contains("# Finished") && frame.contains("│ printf 'one\\ntwo\\n'"), "{frame}");
     // and an empty summary is not shown as a dangling separator
     let mut blank = V2App::new("s-test");
     let mut quiet = checkpoint();

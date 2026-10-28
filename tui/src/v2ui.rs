@@ -292,14 +292,32 @@ fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
         if goal.status != "ACTIVE" {
             if let Some(summary) = &goal.summary {
                 lines.push(Line::default());
-                lines.extend(crate::markdown::plain(&format!("Result: {summary}"), width, Style::default().fg(NOTICE)));
+                lines.extend(crate::markdown::plain(
+                    &format!("Result · {}", goal.status),
+                    width,
+                    Style::default().fg(GREY),
+                ));
+                let origin = crate::graphics::Origin {
+                    session: app.session_root.clone().into(),
+                    workspace: app.workspace().unwrap_or_default().into(),
+                    member: "i-leader".into(),
+                    position: usize::MAX - 1,
+                };
+                document.append(crate::transcript::assistant_document(
+                    summary,
+                    "i-leader",
+                    width,
+                    Some(&mut app.graphics),
+                    &origin,
+                    false,
+                ));
             }
         }
     }
     if let Some(preview) = app.active_preview() {
         // The daemon bounds this transient text. Keep its beginning so Markdown and scrolling are stable.
-        if !lines.is_empty() {
-            lines.push(Line::default());
+        if !document.lines.is_empty() {
+            document.lines.push(Line::default());
         }
         let preview = preview.to_string();
         let workspace =

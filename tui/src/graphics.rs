@@ -124,12 +124,20 @@ impl Document {
                 self.pictures.extend(rendered.pictures);
             }
             for (index, mut line) in rendered.lines.into_iter().take(media.rows).enumerate() {
-                let prefix = self.lines[media.row + index].spans.first().cloned();
-                if media.column > 0 {
-                    if let Some(prefix) = prefix {
-                        line.spans.insert(0, prefix);
+                let mut prefix = Vec::new();
+                let mut cells = 0;
+                for span in &self.lines[media.row + index].spans {
+                    if cells + span.width() > media.column {
+                        break;
                     }
+                    cells += span.width();
+                    prefix.push(span.clone());
                 }
+                if cells < media.column {
+                    prefix.push(Span::raw(" ".repeat(media.column - cells)));
+                }
+                prefix.append(&mut line.spans);
+                line.spans = prefix;
                 self.lines[media.row + index] = line;
             }
         }

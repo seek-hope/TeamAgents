@@ -40,6 +40,9 @@ teamagents                           # open the TUI (starts this session's daemo
   listed below. Ctrl+Q or /quit quits the TUI while the daemon keeps running.
 - **Approvals appear only when needed**: Ctrl+A focuses the approval list; a approves once, d denies,
   Esc returns to the draft. Approval arrival never steals typing focus, and a click only selects a row.
+- **Completion answers and Shell output (D-486)**: completion summaries retain their full Markdown; Shell
+  commands preserve newlines and appear separately from decoded output/error bodies. Logs remain literal,
+  including JSON printed by a command. Receipt arrival alone does not prove successful execution.
 - **Readable conversations (D-447/D-485)**: prompt markers, a compact Leader reply gutter, headings, lists, quotes, links,
   fenced code and tables. Code retains indentation; narrow tables become labelled records. Diff lines have
   addition/removal colors. Completed fenced code uses language syntax colors (D-450), including Rust, Python,

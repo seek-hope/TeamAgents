@@ -58,6 +58,7 @@ approval.
 
 | ID / priority | Current gap and proposed direction | Acceptance to agree before work |
 |---|---|---|
+| DD-11 / P0, proposed | Continuous conversation across goal settlement | At an admitted explicit user input, continue an active goal or create the next goal if none remains; preserve configured checks/budgets, input idempotency, queued-input ordering and closed records. No model-created/background goals, implicit reset of exhausted budgets or automatic resume from PARKED. Requires confirmation before implementation |
 | DD-02 / P0 | Complete host development and Skill workflows | Real Rust, Python and Node edit/build/test workflows; relative Skill references and scripts outside the workspace; missing tools and capability revocation |
 | DD-03 / P0, postponed | Matched Pi replacement evidence on held-out daily coding tasks | Frozen versions/tasks, same model/native window/effort/authority/budget, paired repeated trials, hidden tests, honest settlement, interventions and time. Provider usage; cost only if separately authorized |
 | DD-07 / P1 | Complete usage accounting and approval review | All model-call classes accounted for, missing usage remains unknown, price sources/dates where authorized, cache pricing distinguished, independent adversarial review |

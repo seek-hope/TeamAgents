@@ -134,6 +134,37 @@ fn tool_results_pair_by_member_epoch_and_id_without_guessing_success() {
 }
 
 #[test]
+fn shell_receipts_decode_one_envelope_and_keep_commands_separate_from_literal_logs() {
+    let command = "printf '%s\\n' \\\n  'first' \\\n  'second'";
+    let output = "first\nsecond\n**literal log**\n{\"output\":\"printed JSON\"}\n(exit 1)";
+    let rows = json!([
+        {"kind":"assistant","message":{"tool_calls":[{"id":"sh","function":{"name":"shell","arguments":json!({"command":command,"timeout":30}).to_string()}}]}},
+        {"kind":"tool_result","message":{"tool_call_id":"sh","content":json!({"output":output}).to_string()}}
+    ]);
+    let entries = transcript::project(rows.as_array().unwrap(), "i-leader", true);
+    let mut cache = transcript::Transcript::default();
+    for width in [1, 2, 4, 8, 40, 60, 100] {
+        let lines = cache.lines(&entries, width, Some(4));
+        assert!(lines.iter().all(|line| line.width() <= width), "{width}: {lines:?}");
+    }
+    let shown = text(cache.lines(&entries, 100, Some(4)));
+    assert!(shown.contains("  $ printf") && shown.contains("\n      'first'"), "{shown}");
+    assert!(shown.contains("  Output\n  │ first") && shown.contains("(exit 1)"), "{shown}");
+    assert!(!shown.contains("{\"output\":\"first\\n") && !shown.contains("succeeded"), "{shown}");
+    let full = text(cache.lines(&entries, 100, None));
+    assert!(full.contains("**literal log**") && full.contains("{\"output\":\"printed JSON\"}"), "{full}");
+    assert!(full.contains("\"timeout\": 30"));
+    let mut long = rows.clone();
+    long[1]["message"]["content"] = json!({"output":"long output\n".repeat(3000)}).to_string().into();
+    let bounded = transcript::project(long.as_array().unwrap(), "i-leader", true);
+    let shown = text(cache.lines(&bounded, 100, None));
+    assert!(shown.contains("Display limit reached") && !shown.contains("{\"output\":"), "{shown}");
+    long[1]["message"]["content"] = json!({"error":"command timed out\npartial output retained"}).to_string().into();
+    let errors = transcript::project(long.as_array().unwrap(), "i-leader", true);
+    assert!(text(cache.lines(&errors, 100, Some(4))).contains("  Error\n  │ command timed out"));
+}
+
+#[test]
 fn compact_conversation_groups_tools_and_preserves_full_details() {
     let rows = json!([
         {"kind":"user","message":{"content":"Fix the tests"}},

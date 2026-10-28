@@ -431,10 +431,10 @@ impl V2App {
                 unknown: g["unknown_usage"].as_i64().unwrap_or(0) != 0,
                 limit_total: g["limits"]["max_total_tokens"].as_i64(),
                 deadline: g["deadline"].as_f64(),
-                summary: g["summary"].as_str().filter(|text| !text.trim().is_empty()).map(|text| {
-                    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
-                    collapsed.chars().take(110).collect()
-                }),
+                summary: g["summary"]
+                    .as_str()
+                    .filter(|text| !text.trim().is_empty())
+                    .map(|text| text.trim().to_string()),
             })
         });
         if let Some(rows) = snapshot["models"].as_array() {

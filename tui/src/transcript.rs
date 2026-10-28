@@ -54,7 +54,9 @@ pub(crate) fn project_with_receipts(
             "summary" => ChatKind::Summary,
             _ => ChatKind::Context,
         };
-        let content = if bounded && matches!(kind, ChatKind::Tool | ChatKind::Summary) {
+        let content = if bounded && kind == ChatKind::Tool {
+            preview_output(&content, 20_000)
+        } else if bounded && kind == ChatKind::Summary {
             preview(&content, 20_000)
         } else {
             content
@@ -114,6 +116,22 @@ pub(crate) fn project_with_receipts(
         }
     }
     entries
+}
+
+/// Keep a long output envelope parseable when limiting its displayed body.
+fn preview_output(text: &str, cap: usize) -> String {
+    if let Ok(Json::Object(mut object)) = serde_json::from_str::<Json>(text) {
+        if object.len() == 1 {
+            for key in ["output", "error"] {
+                if let Some(body) = object.get(key).and_then(Json::as_str) {
+                    let shown = preview(body, cap);
+                    object.insert(key.into(), Json::String(shown));
+                    return Json::Object(object).to_string();
+                }
+            }
+        }
+    }
+    preview(text, cap)
 }
 
 fn preview(text: &str, cap: usize) -> String {
@@ -307,13 +325,22 @@ fn render_tool(tool: &ToolInfo, width: usize, limit: Option<usize>) -> Vec<Line<
     let status = if tool.output.is_some() { "result received" } else { "awaiting result" };
     let args: Json = serde_json::from_str(&tool.arguments).unwrap_or(Json::Null);
     let compact = limit == Some(4);
-    let summary = args["command"]
-        .as_str()
-        .map(|c| format!("$ {c}"))
-        .or_else(|| {
-            ["path", "query", "url", "description"].into_iter().find_map(|key| args[key].as_str().map(str::to_string))
-        })
-        .unwrap_or_else(|| tool.arguments.clone());
+    if tool.name == "shell" {
+        return render_shell(tool, &args, width, limit);
+    }
+    let summary = if tool.name == "finish" && compact {
+        format!("claimed {}", args["status"].as_str().unwrap_or("unspecified outcome"))
+    } else {
+        args["command"]
+            .as_str()
+            .map(|c| format!("$ {c}"))
+            .or_else(|| {
+                ["path", "query", "url", "description"]
+                    .into_iter()
+                    .find_map(|key| args[key].as_str().map(str::to_string))
+            })
+            .unwrap_or_else(|| tool.arguments.clone())
+    };
     let header = Line::from(vec![
         Span::styled("› ", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
         Span::styled(markdown::clean(&tool.name), Style::default().fg(FG).add_modifier(Modifier::BOLD)),
@@ -378,6 +405,71 @@ fn render_tool(tool: &ToolInfo, width: usize, limit: Option<usize>) -> Vec<Line<
             line.spans.insert(0, Span::styled("  ", Style::default().fg(MUTED)));
         }
         out.push(line);
+    }
+    out
+}
+
+/// Shell receipts carry one JSON output/error envelope; decode that envelope once, retaining literal logs.
+/// The transcript has no authoritative exit metadata, so receiving a body never implies success.
+fn render_shell(tool: &ToolInfo, args: &Json, width: usize, limit: Option<usize>) -> Vec<Line<'static>> {
+    let status = if tool.output.is_some() { "result received" } else { "awaiting result" };
+    let mut out = crate::wrap::wrap_line(
+        &Line::from(vec![
+            Span::styled("› shell", Style::default().fg(FG).add_modifier(Modifier::BOLD)),
+            Span::styled(format!(" · {status}"), Style::default().fg(MUTED)),
+        ]),
+        width,
+    );
+    let indent = if width > 4 { 4 } else { 0 };
+    let inner = width.saturating_sub(indent).max(1);
+    let command = args["command"].as_str().unwrap_or(&tool.arguments);
+    let mut command = markdown::plain(command, inner, Style::default().fg(CODE));
+    if let Some(limit) = limit {
+        shorten(&mut command, limit.max(8), inner);
+    }
+    for (index, mut line) in command.into_iter().enumerate() {
+        if indent > 0 {
+            line.spans.insert(0, Span::styled(if index == 0 { "  $ " } else { "    " }, Style::default().fg(CODE)));
+        }
+        out.push(line);
+    }
+    if limit != Some(4) {
+        out.extend(markdown::plain("  Arguments", width, Style::default().fg(MUTED)));
+        let detail = serde_json::to_string_pretty(args).unwrap_or_else(|_| tool.arguments.clone());
+        let detail = if args.is_null() { tool.arguments.as_str() } else { &detail };
+        let mut rows = markdown::plain(detail, inner, Style::default().fg(GREY));
+        if let Some(limit) = limit {
+            shorten(&mut rows, limit, inner);
+        }
+        out.extend(rows.into_iter().map(|mut line| {
+            if indent > 0 {
+                line.spans.insert(0, Span::raw("    "));
+            }
+            line
+        }));
+    }
+    if let Some(raw) = &tool.output {
+        let value = serde_json::from_str::<Json>(raw).ok();
+        let envelope = value.as_ref().and_then(Json::as_object).filter(|obj| obj.len() == 1);
+        let error = envelope.and_then(|obj| obj.get("error")).and_then(Json::as_str);
+        let output = envelope.and_then(|obj| obj.get("output")).and_then(Json::as_str).or(error).unwrap_or(raw);
+        let color = if error.is_some() { ERROR } else { NOTICE };
+        out.extend(markdown::plain(
+            if error.is_some() { "  Error" } else { "  Output" },
+            width,
+            Style::default().fg(color),
+        ));
+        let mut rows =
+            markdown::plain(if output.is_empty() { "(no output)" } else { output }, inner, Style::default().fg(color));
+        if let Some(limit) = limit {
+            shorten(&mut rows, limit, inner);
+        }
+        for mut line in rows {
+            if indent > 0 {
+                line.spans.insert(0, Span::styled("  │ ", Style::default().fg(MUTED)));
+            }
+            out.push(line);
+        }
     }
     out
 }

@@ -38,6 +38,29 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Command idempotency | a replay with the same `command_id` returns the stored receipt for control-plane state, and the authoritative check runs under the write lock (D-463); result bodies are shared by content digest and zstd-compressed (D-464), while the receipt **rows** remain one per command | D-463, D-464 |
 | Model actions and code windows | a deciding read shares the write's transaction, or the guard is a predicate on the write itself; `verification/REPORT.md` §6 lists the protocol transitions and the three engine windows that span two transactions with their predicates | D-465 |
 
+## D-486 Preserve completion answers and render real Shell envelopes (2026-10-28)
+
+**Authorization.** The user reported rough, confusing model/Shell presentation after testing D-485 and asked
+how goals constrain the model. This entry fixes presentation defects within the confirmed conversation scope;
+goal lifecycle changes remain a proposal in PRODUCT-COMPARISON.
+
+The checkpoint's completion summary was collapsed to one line and silently cut at 110 characters. It now
+retains the full Markdown answer and uses the shared reply/media renderer. Compact finish calls show the
+claimed outcome rather than an escaped summary blob; details retain the original arguments. Deferred syntax
+highlighting preserves every prefix span (reply gutter plus code/list indentation); previously resolving it
+kept only the first span and dropped the code block's edge. A frame assertion fails before this correction
+and passes afterward.
+
+Shell receipts contain a JSON output/error envelope. The view decodes exactly one recognized single-field
+envelope, preserves literal logs (including JSON printed by the command), and separates the multiline command
+from its output with a gutter. Long preview bodies keep their envelope parseable. Received output remains a
+neutral receipt state: this history projection cannot infer an authoritative exit code from log text. Expanded
+and stored-history views retain argument fields. The runner still merges stdout and stderr; the view does not
+invent separate streams.
+
+Regression checks use the actual envelope shape, multiline commands, long output, errors, narrow columns and a
+completion answer beyond the former 110-character limit. No goal, budget, permission or daemon behavior changes.
+
 ## D-485 Conversation UX and shared editing (2026-10-28)
 
 **Authorization.** After reviewing Codex CLI and Pi references, the user confirmed the bounded conversation UX
