@@ -3148,12 +3148,14 @@ mod tests {
         ));
         let _env = crate::env_lock();
         std::env::set_var("TA_DEEPSEEK_FETCH_KEY", "test-key");
-        let result = web_fetch("https://example.com", 1_000_000, false, Some(&endpoint), Some("TA_DEEPSEEK_FETCH_KEY"))
+        // A public literal keeps this offline fixture independent of the host's DNS policy.
+        let url = "https://93.184.216.34";
+        let result = web_fetch(url, 1_000_000, false, Some(&endpoint), Some("TA_DEEPSEEK_FETCH_KEY"))
             .expect("the DeepSeek fetch response is parsed");
         std::env::remove_var("TA_DEEPSEEK_FETCH_KEY");
         assert_eq!(result["title"], "Example");
         assert_eq!(result["content"], "# Example\n\nBody");
-        assert_eq!(result["url"], "https://example.com");
+        assert_eq!(result["url"], url);
 
         // the local guard still refuses a private target before any request is sent
         let err = web_fetch("http://127.0.0.1:9/", 1_000_000, false, Some(&endpoint), Some("TA_DEEPSEEK_FETCH_KEY"))
