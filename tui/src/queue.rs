@@ -4,7 +4,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{
     layout::{Constraint, Layout},
     style::Style,
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Paragraph, Wrap},
     Frame,
 };
 use serde_json::Value;
@@ -144,17 +144,24 @@ impl Queue {
 }
 
 pub fn render(frame: &mut Frame, queue: &Queue) {
-    use crate::theme::{ACCENT, BG, ERROR, FG, GREY};
+    use crate::theme::{BG, CODEX, ERROR, FG, GREY};
+    use crate::v2ui::{hint_line, panel, selection};
+    use ratatui::style::Modifier;
+    use ratatui::text::Line;
+
     let area = frame.area();
     frame.render_widget(Block::default().style(Style::default().bg(BG).fg(FG)), area);
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0), Constraint::Length(3)]).split(area);
-    frame.render_widget(Paragraph::new("Pending Leader inputs").style(Style::default().fg(ACCENT)), rows[0]);
-    let text = if let Some(editor) = &queue.editor {
-        editor.text()
+    frame.render_widget(
+        Paragraph::new("Pending Leader inputs").style(Style::default().fg(CODEX).add_modifier(Modifier::BOLD)),
+        rows[0],
+    );
+    let lines: Vec<Line> = if let Some(editor) = &queue.editor {
+        crate::markdown::plain(&editor.text(), rows[1].width.saturating_sub(2).max(1) as usize, Style::default().fg(FG))
     } else {
         let height = rows[1].height.saturating_sub(2) as usize;
         let start = queue.selected.saturating_sub(height.saturating_sub(1));
-        let items: Vec<String> = queue
+        let mut lines: Vec<Line> = queue
             .rows
             .iter()
             .enumerate()
@@ -164,28 +171,25 @@ pub fn render(frame: &mut Frame, queue: &Queue) {
                 let text = row["payload"]["text"].as_str().unwrap_or("");
                 let preview: String = text.chars().take(120).map(|c| if c.is_control() { ' ' } else { c }).collect();
                 let count = row["payload"]["attachments"].as_array().map_or(0, Vec::len);
-                format!(
-                    "{} {} r{} [{count} files] {preview}",
-                    if i == queue.selected { ">" } else { " " },
-                    row["envelope_id"].as_str().unwrap_or("?"),
-                    row["revision"]
+                Line::styled(
+                    format!(
+                        "{} {} r{} [{count} files] {preview}",
+                        if i == queue.selected { ">" } else { " " },
+                        row["envelope_id"].as_str().unwrap_or("?"),
+                        row["revision"]
+                    ),
+                    if i == queue.selected { selection() } else { Style::default().fg(GREY) },
                 )
             })
             .collect();
-        if items.is_empty() {
-            "No pending inputs. r refreshes.".into()
-        } else {
-            items.join("\n")
+        if lines.is_empty() {
+            lines.push(Line::styled("No pending inputs. r refreshes.", Style::default().fg(GREY)));
         }
+        lines
     };
     let title =
         if queue.editor.is_some() { "Edit pending text (attachments retained)" } else { "Accepted, not yet consumed" };
-    frame.render_widget(
-        Paragraph::new(crate::markdown::clean(&text))
-            .block(Block::default().borders(Borders::ALL).title(title))
-            .wrap(Wrap { trim: false }),
-        rows[1],
-    );
+    frame.render_widget(Paragraph::new(lines).block(panel(title)).wrap(Wrap { trim: false }), rows[1]);
     let footer = if queue.confirming {
         format!("Cancel {}? y confirms; Esc keeps it.", queue.target.as_ref().map(|t| t.0.as_str()).unwrap_or("input"))
     } else if queue.editor.is_some() {
@@ -193,12 +197,12 @@ pub fn render(frame: &mut Frame, queue: &Queue) {
     } else {
         "Up/Down select; Enter edits; Delete cancels; n next page; r refresh; Esc closes.".into()
     };
-    frame.render_widget(
-        Paragraph::new(queue.error.as_deref().unwrap_or(&footer))
-            .style(Style::default().fg(if queue.error.is_some() { ERROR } else { GREY }))
-            .wrap(Wrap { trim: false }),
-        rows[2],
-    );
+    if let Some(error) = queue.error.as_deref() {
+        frame
+            .render_widget(Paragraph::new(error).style(Style::default().fg(ERROR)).wrap(Wrap { trim: false }), rows[2]);
+    } else {
+        frame.render_widget(Paragraph::new(hint_line(&footer)).wrap(Wrap { trim: false }), rows[2]);
+    }
 }
 
 #[cfg(test)]
@@ -252,6 +256,23 @@ mod tests {
         assert!(
             matches!(action, Action::Revise { text: None, envelope, revision, .. } if envelope == "env-b" && revision == 0)
         );
+    }
+
+    #[test]
+    fn queue_page_uses_shared_rounded_chrome_and_selection() {
+        let mut queue = Queue::default();
+        queue.apply(&json!({"inputs": [row("env-b", 0, "cancel me")]}));
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(72, 12)).unwrap();
+        terminal.draw(|frame| render(frame, &queue)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let corner = buffer[(0, 1)].clone();
+        assert_eq!(corner.symbol(), "╭");
+        assert_eq!(corner.fg, crate::theme::BORDER);
+        let selected = buffer[(1, 2)].clone();
+        assert_eq!(selected.symbol(), ">");
+        assert_eq!(selected.fg, crate::theme::ACCENT);
+        assert!(selected.modifier.contains(ratatui::style::Modifier::BOLD));
+        assert!(!selected.modifier.contains(ratatui::style::Modifier::UNDERLINED));
     }
 
     #[test]

@@ -115,6 +115,23 @@ fn browser_search_no_match_cancel_and_stale_result_keep_the_browser_and_draft() 
 }
 
 #[test]
+fn session_page_uses_shared_rounded_chrome_and_selection() {
+    let mut app = V2App::new("s-main");
+    app.browser = Some(browser());
+    let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+    terminal.draw(|frame| v2ui::render(frame, &mut app)).unwrap();
+    let buffer = terminal.backend().buffer();
+    let corner = buffer[(0, 1)].clone();
+    assert_eq!(corner.symbol(), "╭");
+    assert_eq!(corner.fg, teamagents_tui::theme::BORDER);
+    let selected = buffer[(1, 2)].clone();
+    assert_eq!(selected.symbol(), ">");
+    assert_eq!(selected.fg, teamagents_tui::theme::ACCENT);
+    assert!(selected.modifier.contains(ratatui::style::Modifier::BOLD));
+    assert!(!selected.modifier.contains(ratatui::style::Modifier::UNDERLINED));
+}
+
+#[test]
 fn browser_search_renders_at_narrow_sizes() {
     let mut app = V2App::new("s-main");
     let mut state = browser();

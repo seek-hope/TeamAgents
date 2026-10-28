@@ -30,6 +30,24 @@ fn frame(app: &mut V2App, width: u16, height: u16) -> String {
 }
 
 #[test]
+fn error_labels_do_not_recolor_the_whole_message() {
+    let mut app = app();
+    app.entries.push(teamagents_tui::v2app::ChatEntry {
+        kind: teamagents_tui::v2app::ChatKind::Error,
+        who: "error".into(),
+        text: "connection failed".into(),
+        tool: None,
+        workspace: String::new(),
+        media: vec![],
+    });
+    let lines = app.transcript.lines(&app.entries, 80, Some(4));
+    let label = lines.iter().flat_map(|line| &line.spans).find(|span| span.content == "Error").unwrap();
+    assert_eq!(label.style.fg, Some(theme::ERROR));
+    let body = lines.iter().flat_map(|line| &line.spans).find(|span| span.content == "connection failed").unwrap();
+    assert_eq!(body.style.fg, Some(theme::NOTICE));
+}
+
+#[test]
 fn markdown_renders_structure_without_losing_destinations_or_code() {
     let source = "# Review\n\n**Ready** and *careful* with `a_b`. [Guide](https://example.test/docs).\n\n> Quote\n\n1. First item with enough words to wrap\n2. Second\n\n- [x] Checked\n\n```rust\nfn main() {\n    println!(\"a_b **literal**\");\n}\n```\n\n```diff\n-old\n+new\n```";
     let rows = markdown::render(source, 62);

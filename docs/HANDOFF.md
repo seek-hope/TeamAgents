@@ -1,10 +1,11 @@
 # Development handoff
 
-Updated **2026-10-26**. The runtime baseline is **D-480 (`7ae6bd5b`)**. The current maintenance cleanup
-does not change session, protocol or execution semantics. It refreshes current documentation, extends README
-parity checks to Ctrl chords and slash commands, repairs `make help` quoting and updates dogfood probes to the
-documented Ctrl+Q quit key. Always recheck Git status and recent commits. This file records a starting point,
-not the state of the remote branch, an installed binary or permission to implement the candidate backlog.
+Updated **2026-10-26**. The runtime baseline is **D-480 (`7ae6bd5b`)**; **D-481** refreshes TUI presentation
+without changing session, protocol or execution semantics. It uses brighter secondary text, quiet rounded
+panels and textual selection markers across the conversation, completions, queue and session pages. No new
+TUI features or interactions are added. Always recheck Git status and recent commits. This file records a
+starting point, not the state of the remote branch, an installed binary or permission to implement the
+candidate backlog.
 
 ## Start here
 
@@ -30,6 +31,12 @@ local regression results, not an independent audit, real-provider trial or publi
 D-479 added host tool discovery, boot-scoped environment/config/source observations and input-delivery
 receipts. It does not hot-reload configuration or prove that a discovered toolchain works. D-461 implements
 read-only work diagnosis and explicit recovery instructions; automatic model reminders are not approved.
+
+D-481 passed `make check` with **core 147 / engine 415 / tui 91** and the complete `make pty` matrix. Four
+focused visual tests cover quiet semantic roles, readable message bodies and shared rounded panels/selection.
+Local release-profile binaries were installed after backup, and the installed TUI passed the xterm-256color
+conversation PTY without changing user configuration or sessions. These are presentation regressions, not
+evidence of changed runtime behavior or a new release.
 
 Older evidence stays pinned to its own source:
 

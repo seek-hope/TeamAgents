@@ -462,6 +462,32 @@ fn frame_shows_status_chat_approvals_composer_and_footer() {
     assert_eq!(v2ui::approval_at(&geo, &app, geo.approvals.y, 2), None);
 }
 
+#[test]
+fn visual_chrome_uses_quiet_roles_and_a_text_selection_marker() {
+    let mut app = app();
+    app.apply_approvals(json!({"approvals": [
+        {"id": "ap-1", "operation_id": "op-1", "tool": "shell", "preview": "make check"}
+    ]}));
+    app.handle_key(ctrl('a'));
+    let mut terminal = Terminal::new(TestBackend::new(72, 18)).unwrap();
+    terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
+    let geo = v2ui::geometry(&app, ratatui::layout::Rect::new(0, 0, 72, 18));
+    let buffer = terminal.backend().buffer();
+    let corner = buffer[(geo.composer.x, geo.composer.y)].clone();
+    assert_eq!(corner.symbol(), "╭");
+    assert_eq!(corner.fg, teamagents_tui::theme::BORDER);
+    assert_eq!(corner.bg, teamagents_tui::theme::BG);
+    let title = buffer[(geo.composer.x + 1, geo.composer.y)].clone();
+    assert_eq!(title.fg, teamagents_tui::theme::GREY);
+    let placeholder = buffer[(geo.composer.x + 1, geo.composer.y + 1)].clone();
+    assert_eq!(placeholder.fg, teamagents_tui::theme::GREY);
+    let selected = buffer[(geo.approvals.x + 1, geo.approvals.y + 1)].clone();
+    assert_eq!(selected.symbol(), "▶");
+    assert_eq!(selected.fg, teamagents_tui::theme::ACCENT);
+    assert!(selected.modifier.contains(ratatui::style::Modifier::BOLD));
+    assert!(!selected.modifier.contains(ratatui::style::Modifier::UNDERLINED));
+}
+
 // ---- R19-b③ panels: instances / tasks / topology -------------------------
 
 /// An input sent while a turn is running is real but queued (D-63): the composer

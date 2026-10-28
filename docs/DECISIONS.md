@@ -27,6 +27,7 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Acceptance checks | `exec --check` and goal `[[checks]]` run on the host through the same shell implementation | D-471, D-480 |
 | PTY verification | `make pty` runs a terminal-profile matrix in isolated ptys (xterm-256color, screen-256color, tmux-256color, xterm-kitty, Kitty under tmux) with auto graphics-mode assertions, plus forced blocks/kitty protocol bounds | D-472 |
 | TUI keys | Ctrl+Q quits, Ctrl+P opens pending inputs, Ctrl+M opens the Leader's model/effort menu (`/quit`, `/model`); the profile applies at the next turn | D-473 |
+| TUI presentation | conversation-first single column with the terminal's own background; semantic colors, brighter secondary text, shared rounded panels and textual selection markers; no new panels or interaction changes | D-481 |
 | Default effort | the generated `leader_main` profile defaults to `reasoning_effort = "high"`; existing configs keep their value and a running daemon keeps its boot catalog | D-474 |
 | Reasoning effort menu | each model may declare `efforts`; the default is minimal/low/medium/high/xhigh/max; a model that lacks the current level falls back to the nearest declared level at or below it, and the CLI keeps an explicit override | D-476 |
 | Capability delegation | user remains the authority root; spawned instances still hold no shell by default; a user grant may be marked `delegable`, and only such a parent may produce attenuated, task-scoped, non-delegable child grants; missing capabilities become a visible pending approval, not a silent idle | D-455 |
@@ -35,6 +36,34 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Prompt cache | cache hit/miss/write are provider-reported and visible; the L1 frontier is fixed between compactions; Anthropic gets explicit breakpoints and OpenAI a stable key; DeepSeek stays automatic | D-459 |
 | Command idempotency | a replay with the same `command_id` returns the stored receipt for control-plane state, and the authoritative check runs under the write lock (D-463); result bodies are shared by content digest and zstd-compressed (D-464), while the receipt **rows** remain one per command | D-463, D-464 |
 | Model actions and code windows | a deciding read shares the write's transaction, or the guard is a predicate on the write itself; `verification/REPORT.md` §6 lists the protocol transitions and the three engine windows that span two transactions with their predicates | D-465 |
+
+## D-481 Editorial terminal visual refresh (2026-10-26)
+
+**Authorization.** The user reviewed and approved a visual-only TUI improvement plan. The direction is an
+"editorial terminal": content first, quiet chrome, fewer decorative colors and more consistent spacing. No new
+TUI features, panels, shortcuts, status facts or interaction semantics are authorized by this change.
+
+Keep the single-column conversation and the terminal's own background. Catppuccin remains the palette, with
+`GREY` raised to subtext0 and `MUTED` to overlay1 for readable secondary text. Labels carry speaker/severity
+color while message bodies remain normal prose. Composer, approvals, model menu, queue and sessions share
+rounded panels with quiet titles; selected rows use accent/bold plus a visible `>` or `▶` marker rather than
+depending on underline. Placeholder and hint text stay secondary, while errors, warnings and success keep their
+semantic colors. Narrow terminals retain the existing geometry, wrapping, clipping and protocol fallbacks.
+
+The implementation is confined to `tui/src/theme.rs`, `tui/src/transcript.rs`, `tui/src/v2ui.rs`,
+`tui/src/queue.rs` and `tui/src/sessions.rs`, with focused regressions in
+`v2app_tests::visual_chrome_uses_quiet_roles_and_a_text_selection_marker`,
+`conversation::error_labels_do_not_recolor_the_whole_message`,
+`sessions::session_page_uses_shared_rounded_chrome_and_selection` and
+`queue::tests::queue_page_uses_shared_rounded_chrome_and_selection`. The busy-session hint now names the
+existing Ctrl+Q quit key instead of the retired Ctrl+D.
+
+Validation: `make pty` passed all five terminal profiles and both forced graphics protocols. `make check`
+passed with core 147 / engine 415 / tui 91. A pre-existing fetch test was made DNS-independent by using a
+public IP literal while retaining its local fake endpoint and all SSRF assertions; no network guard changed.
+Local release-profile binaries were installed after backing up the previous pair; the installed TUI also passed
+the xterm-256color conversation PTY. User configuration and sessions were left unchanged. No model calls or
+release publication are part of this visual refresh.
 
 ## D-480 Remove OS sandbox backends; automatic host execution (2026-10-26)
 

@@ -12,19 +12,19 @@ use crate::theme::*;
 use crate::v2app::{Focus, V2App};
 use crate::viewport::{item_at, window};
 
-/// Quiet panel chrome; focus is identified by the title and selected row.
-fn panel(title: impl Into<String>) -> Block<'static> {
+/// Shared quiet panel chrome; focus is identified by the border and selected row.
+pub(crate) fn panel(title: impl Into<String>) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .title(Span::styled(title.into(), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)))
+        .title(Span::styled(title.into(), Style::default().fg(GREY)))
         .border_style(Style::default().fg(BORDER))
         .style(Style::default().bg(PANEL_BG).fg(FG))
 }
 
-/// A selected list row: dark text on the accent surface (v1's selection look).
-fn selection() -> Style {
-    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+/// A selected row keeps a textual marker; color and bold never work alone.
+pub(crate) fn selection() -> Style {
+    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
 }
 
 /// Screen regions shared by rendering and hit-testing.
@@ -187,7 +187,7 @@ fn render_profile(frame: &mut Frame, app: &V2App, area: Rect) {
             Span::styled(format!("‹ {effort} ›"), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
         ]),
         Line::from(""),
-        Line::from(Span::styled("↑/↓ model · ←/→ effort · Enter apply · Esc cancel", Style::default().fg(MUTED))),
+        hint_line("↑/↓ model · ←/→ effort · Enter apply · Esc cancel"),
     ];
     frame.render_widget(Paragraph::new(lines), inner);
 }
@@ -353,7 +353,7 @@ fn render_completion(frame: &mut Frame, app: &V2App, area: Rect) {
             .take(count)
             .map(|(i, path)| {
                 Line::styled(
-                    path.clone(),
+                    format!("{} {path}", if i == app.attachments.selected { ">" } else { " " },),
                     if i == app.attachments.selected { selection() } else { Style::default().fg(GREY) },
                 )
             })
@@ -371,7 +371,7 @@ fn render_completion(frame: &mut Frame, app: &V2App, area: Rect) {
         .take(count)
         .map(|(index, (name, description))| {
             Line::styled(
-                format!("{name}  {description}"),
+                format!("{} {name}  {description}", if index == selected { ">" } else { " " }),
                 if index == selected { selection() } else { Style::default().fg(GREY) },
             )
         })
@@ -397,7 +397,7 @@ fn render_composer(frame: &mut Frame, app: &V2App, area: Rect) {
     let visible = lines.into_iter().skip(start).take(count).map(Line::raw).collect::<Vec<_>>();
     if app.composer.text().is_empty() {
         frame.render_widget(
-            Paragraph::new("Message the Leader").style(Style::default().fg(MUTED).add_modifier(Modifier::ITALIC)),
+            Paragraph::new("Message the Leader").style(Style::default().fg(GREY).add_modifier(Modifier::ITALIC)),
             inner,
         );
     } else {
@@ -418,7 +418,7 @@ fn render_footer(frame: &mut Frame, app: &V2App, area: Rect) {
 }
 
 /// The hint text is unchanged; only the key token of each `key action` pair is highlighted.
-fn hint_line(hint: &str) -> Line<'static> {
+pub(crate) fn hint_line(hint: &str) -> Line<'static> {
     let mut spans = Vec::new();
     for (index, part) in hint.split(" · ").enumerate() {
         if index > 0 {

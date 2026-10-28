@@ -7,10 +7,10 @@ use ratatui::style::Color;
 
 /// `text` — primary prose.
 pub const FG: Color = Color::Rgb(0xcd, 0xd6, 0xf4);
-/// `overlay1` — secondary labels.
-pub const GREY: Color = Color::Rgb(0x7f, 0x84, 0x9c);
-/// `overlay0` — quiet chrome and hints.
-pub const MUTED: Color = Color::Rgb(0x6c, 0x70, 0x86);
+/// `subtext0` — secondary labels, readable on the terminal's own background.
+pub const GREY: Color = Color::Rgb(0xa6, 0xad, 0xc8);
+/// `overlay1` — quiet chrome and hints.
+pub const MUTED: Color = Color::Rgb(0x7f, 0x84, 0x9c);
 /// The terminal's own background: no surface is painted.
 pub const BG: Color = Color::Reset;
 pub const PANEL_BG: Color = Color::Reset;

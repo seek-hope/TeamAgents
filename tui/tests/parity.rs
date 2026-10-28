@@ -96,7 +96,9 @@ fn completion_layout_preserves_regions_and_selected_candidate_at_small_sizes() {
                 assert!(start + count > last);
                 let row = geo.completion.y + (last - start) as u16;
                 let shown: String = (0..width).map(|x| terminal.backend().buffer()[(x, row)].symbol()).collect();
-                assert!(shown.starts_with(teamagents_tui::completion::COMMANDS[last].0), "{width}x{height}: {shown}");
+                let expected = format!("> {}", teamagents_tui::completion::COMMANDS[last].0);
+                let visible: String = expected.chars().take(width as usize).collect();
+                assert!(shown.starts_with(&visible), "{width}x{height}: {shown}");
             }
         }
     }

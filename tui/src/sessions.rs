@@ -8,7 +8,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::Style,
     text::Line,
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Paragraph},
     Frame,
 };
 use serde_json::Value as Json;
@@ -447,13 +447,10 @@ pub fn render(
                 String::new()
             }
         ))
-        .style(Style::default().fg(ACCENT)),
+        .style(Style::default().fg(CODEX).add_modifier(ratatui::style::Modifier::BOLD)),
         chunks[0],
     );
-    let list = Block::default()
-        .borders(Borders::ALL)
-        .title(if browser.search_active() { "Search results" } else { "All sessions" })
-        .border_style(Style::default().fg(GREY));
+    let list = crate::v2ui::panel(if browser.search_active() { "Search results" } else { "All sessions" });
     let inner = list.inner(chunks[1]);
     frame.render_widget(list, chunks[1]);
     let (start, count) = if browser.search_active() {
@@ -471,11 +468,12 @@ pub fn render(
                 let idx = hit["idx"].as_i64().unwrap_or_default();
                 let snippet = hit["snippet"].as_str().unwrap_or("");
                 Line::styled(
-                    crate::markdown::clean(&format!("  {session}  {instance}:{idx}  {snippet}")),
+                    crate::markdown::clean(&format!(
+                        "{} {session}  {instance}:{idx}  {snippet}",
+                        if start + offset == browser.search_selected { ">" } else { " " }
+                    )),
                     if start + offset == browser.search_selected {
-                        Style::default()
-                            .fg(ACCENT)
-                            .add_modifier(ratatui::style::Modifier::BOLD | ratatui::style::Modifier::UNDERLINED)
+                        crate::v2ui::selection()
                     } else {
                         Style::default().fg(FG)
                     },
@@ -490,7 +488,13 @@ pub fn render(
                 Line::styled(
                     format!(
                         "{} {}  {}  {}",
-                        if row.attached_path() == current { "*" } else { " " },
+                        if start + offset == browser.selected {
+                            ">"
+                        } else if row.attached_path() == current {
+                            "*"
+                        } else {
+                            " "
+                        },
                         row.name,
                         row.id,
                         if row.archived {
@@ -501,13 +505,7 @@ pub fn render(
                             "idle"
                         }
                     ),
-                    if start + offset == browser.selected {
-                        Style::default()
-                            .fg(ACCENT)
-                            .add_modifier(ratatui::style::Modifier::BOLD | ratatui::style::Modifier::UNDERLINED)
-                    } else {
-                        Style::default().fg(FG)
-                    },
+                    if start + offset == browser.selected { crate::v2ui::selection() } else { Style::default().fg(FG) },
                 )
             })
             .collect()
@@ -527,7 +525,7 @@ pub fn render(
             .map(|row| format!("History: {}", row.name))
             .unwrap_or_else(|| "History".into())
     };
-    let history = Block::default().borders(Borders::ALL).title(title).border_style(Style::default().fg(GREY));
+    let history = crate::v2ui::panel(title);
     let inner = history.inner(chunks[2]);
     frame.render_widget(history, chunks[2]);
     let entries =
@@ -609,7 +607,7 @@ pub fn render(
             }
         )
     } else if browser.busy {
-        "Working...\nCtrl+D detaches; session commands already started may continue.".into()
+        "Working...\nCtrl+Q detaches; session commands already started may continue.".into()
     } else {
         format!("Up/Down: select  Enter: switch  d: delete  /: search  Esc: back\n[: older  ]: newer  PgUp/PgDn: scroll  r: refresh\n{}",
             browser.error.as_deref().unwrap_or(if browser.next_before.is_some() { "Older records available." } else { "Beginning of stored history." }))

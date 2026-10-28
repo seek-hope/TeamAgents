@@ -240,7 +240,9 @@ fn render_entry(entry: &ChatEntry, width: usize, tool_limit: Option<usize>) -> V
     out.extend(if entry.kind == ChatKind::Summary {
         markdown::render(&entry.text, width)
     } else {
-        markdown::plain(&entry.text, width, Style::default().fg(if entry.kind == ChatKind::User { FG } else { color }))
+        // Labels carry the speaker or severity color; the message itself stays readable prose.
+        let body = if entry.kind == ChatKind::User { FG } else { NOTICE };
+        markdown::plain(&entry.text, width, Style::default().fg(body))
     });
     if entry.kind == ChatKind::User {
         for line in &mut out {
