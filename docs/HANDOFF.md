@@ -1,6 +1,7 @@
 # Development handoff
 
-Updated **2026-10-29**. **D-490** applies Codex CLI's palette to D-489's Grok-informed conversation layout;
+Updated **2026-10-29**. **D-491** uses Shift+Enter for newline and Ctrl+S sessions in the footer.
+D-490 applies Codex CLI's palette to D-489's Grok-informed conversation layout;
 D-487 remains the control/data baseline. Use [ACCEPTANCE.md](ACCEPTANCE.md) for local gate evidence
 and [DECISIONS.md](DECISIONS.md) for the confirmed contract. Recheck Git status before relying on
 this snapshot. The engine is unchanged from `028f2383`. The public v0.2.0 archive is an older baseline.
@@ -41,7 +42,8 @@ escaped descendants, or remote-side-effect quiescence.
 The TUI remains one Leader conversation, now adapted from Grok Build's single-agent presentation under D-489:
 elevated user prompts, operation-derived tool groups, quiet model chrome and a conditional live activity row.
 D-490 replaces the chrome palette with Codex's terminal-default/ANSI roles and uses its default dark syntax
-colors; terminal probing and automatic light/dark theme selection are not imported.
+colors; terminal probing and automatic light/dark theme selection are not imported. D-491 keeps newline
+on Shift+Enter, retires Ctrl+J and places Ctrl+S sessions in the ready/draft footer.
 `@PATH` plus Tab stages file references through the existing confined attachment flow. Inline questions,
 conditional approvals, complete Markdown, readable Shell output, editing, shortcuts, media placement and
 streaming/saved rendering retain their implementations. Default search is DeepSeek + Exa; fetch remains

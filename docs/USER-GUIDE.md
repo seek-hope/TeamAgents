@@ -20,7 +20,7 @@ teamagents                           # open the TUI (starts this session's daemo
 - **Minimal fullscreen conversation (D-445/D-489)**: one Grok-style conversation with the Leader, a quiet
   workspace/usage header, the composer and short contextual hints. Non-idle work adds one live activity row.
   There are no member, task or topology panels and no recipient switching.
-  Enter sends; Ctrl+J or Shift+Enter inserts a newline. Up/Down recalls input; PageUp/PageDown and the
+  Enter sends; Shift+Enter inserts a newline. Up/Down recalls input; PageUp/PageDown and the
   wheel read history. Drafts soft-wrap and survive resizing. Kitty's native Shift-drag copies text.
   A slash prefix shows local commands: Up/Down selects, Tab or Enter fills, Esc cancels without clearing
   the draft. Press Enter to submit the filled command. An exact typed command needs only its ordinary Enter.
@@ -30,7 +30,8 @@ teamagents                           # open the TUI (starts this session's daemo
   word. Ctrl+U deletes to line start, Ctrl+K to line end (or the following newline), and Ctrl+Y restores the last
   deletion. Home/End moves to the line edges. The pending-input editor shares these keys and follows its caret.
   The status fits run state/usage and session/workspace by width; model/effort sits in the composer border.
-  Footer hints follow the current action.
+  Footer hints follow the current action. The ready/draft footer shows Ctrl+S sessions; newline stays
+  in the shortcuts help instead of the footer.
   Help and model menus own input: typing or pasting cannot change the underlying draft.
 - **External editor**: Ctrl+E opens the current draft in VISUAL, falling back to EDITOR. Saving and exiting
   successfully replaces the draft; a nonzero exit, missing editor or read failure restores it and reports
@@ -108,7 +109,7 @@ teamagents                           # open the TUI (starts this session's daemo
   content on supported protocols. Drafts retain staged paths across session switches and failed sends.
   Headless equivalent: `teamagents exec --attach 'src/file name.rs' --attach image.png "Review these files"`.
 - **Pending inputs (D-451)**: Ctrl+P or `/queue` lists unconsumed Leader inputs. Enter opens a separate text
-  editor; Enter saves, Ctrl+J inserts a line and Esc discards the edit. Attachments remain unchanged.
+  editor; Enter saves, Shift+Enter inserts a line and Esc discards the edit. Attachments remain unchanged.
   Delete then y cancels the captured envelope/revision; Esc keeps it. Use r to refresh and n for the next page.
   The conversation draft stays separate. Consumed, cancelled, old-epoch or stale-revision input is refused.
   CLI: `inputs list`, `inputs paths --query PREFIX`, `inputs edit --id ID --revision N --prompt TEXT` or

@@ -182,7 +182,7 @@ pub fn render(frame: &mut Frame, queue: &Queue) {
     let footer = if queue.confirming {
         format!("Cancel {}? y confirms; Esc keeps it.", queue.target.as_ref().map(|t| t.0.as_str()).unwrap_or("input"))
     } else if queue.editor.is_some() {
-        "Enter save · Esc discard · Ctrl+J newline · Ctrl+U/K delete · Ctrl+Y restore".into()
+        "Enter save · Esc discard · Ctrl+U/K delete · Ctrl+Y restore".into()
     } else {
         "Enter edit · Esc close · Up/Down select · Delete cancel · n next page · r refresh".into()
     };

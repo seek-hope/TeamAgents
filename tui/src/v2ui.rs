@@ -705,7 +705,7 @@ fn render_help(frame: &mut Frame, app: &mut V2App, area: Rect) {
         (
             "Input editing",
             &[
-                "Enter send · Ctrl+J / Shift+Enter newline",
+                "Enter send · Shift+Enter newline",
                 "Ctrl+Left/Right / Alt+Left/Right move by word",
                 "Ctrl+B/F move by character · Home/End line edges",
                 "Ctrl+W / Alt+Backspace delete previous word",

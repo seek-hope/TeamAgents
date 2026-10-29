@@ -1002,7 +1002,7 @@ impl V2App {
         match text.trim() {
             "/help" => self.command_note(format!(
                 "Session {} · model {}
-Enter sends to the Leader; Ctrl+J or Shift+Enter adds a newline.
+Enter sends to the Leader; Shift+Enter adds a newline.
 Up/Down recalls input; PageUp/PageDown or the wheel reads history.
 ? on an empty draft opens shortcuts; Esc closes them.
 Ctrl+Left/Right or Alt+Left/Right moves by word; Ctrl+B/F moves by character.
@@ -1080,16 +1080,9 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
             return Some(V2Effect::EditDraft { initial: self.composer.text() });
         }
         match key.code {
-            // A newline in the composer, as the footer and `text.rs` promise.
-            // Ctrl+J is the universal one: in raw mode the terminal's 0x0A
-            // arrives as Ctrl+J (crossterm parses it that way), so it works
-            // everywhere, while Shift+Enter needs a terminal that reports
-            // modifiers (the TUI pushes the keyboard-enhancement flags).
-            KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.composer.insert_newline();
-                None
-            }
-            KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+            // Shift+Enter edits the draft without sending it. The terminal must
+            // report the modifier; startup enables supported keyboard enhancements.
+            KeyCode::Enter if key.modifiers == KeyModifiers::SHIFT => {
                 self.composer.insert_newline();
                 None
             }
@@ -1381,9 +1374,9 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
             return "Ctrl+C interrupt · Enter send · Ctrl+P queue · Ctrl+Q quit".into();
         }
         if self.composer.text().is_empty() {
-            "Enter send · ? shortcuts · Ctrl+J newline · Ctrl+Q quit".into()
+            "Enter send · ? shortcuts · Ctrl+S sessions · Ctrl+Q quit".into()
         } else {
-            "Enter send · Ctrl+J newline · Ctrl+E editor · Ctrl+Q quit".into()
+            "Enter send · Ctrl+S sessions · Ctrl+E editor · Ctrl+Q quit".into()
         }
     }
 }

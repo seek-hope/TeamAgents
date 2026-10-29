@@ -306,7 +306,7 @@ teamagents authority revoke --grant g-1a2b3c4d
 
 常用 TUI 键位：
 
-- `Enter` 发送，`Ctrl+J` 或 `Shift+Enter` 换行。`↑`/`↓` 回顾输入或在草稿中移动；
+- `Enter` 发送，`Shift+Enter` 换行。`↑`/`↓` 回顾输入或在草稿中移动；
   `PageUp`/`PageDown` 和鼠标滚轮翻页。`Ctrl+W` 删除单词，`Ctrl+←`/`Ctrl+→` 按单词移动。
 - `Ctrl+A` 聚焦审批列表（`a` 批准、`d` 拒绝、`Esc` 返回）。`Ctrl+C` 中断当前模型请求，不会停止
   正在运行的工具或已委派工作。`Ctrl+Q` 或 `/quit` 关闭 TUI，daemon 继续运行。

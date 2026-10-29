@@ -77,7 +77,7 @@ fn the_arrows_walk_a_multi_line_draft_before_recalling() {
     for c in "alpha".chars() {
         app.handle_key(key(KeyCode::Char(c)));
     }
-    app.handle_key(ctrl('j'));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
     for c in "beta".chars() {
         app.handle_key(key(KeyCode::Char(c)));
     }
@@ -538,17 +538,17 @@ fn a_streaming_preview_is_shown_for_the_active_instance_and_replaced() {
     assert_eq!(app.active_preview(), None);
 }
 
-/// The composer is multi-line, as the footer and the README promise: Ctrl+J
-/// inserts a newline (raw mode delivers the terminal's 0x0A as Ctrl+J) and
-/// Shift+Enter does too where the terminal reports modifiers, while a plain
-/// Enter still submits the whole text.
+/// Shift+Enter edits a multi-line draft; Ctrl+S browses sessions without
+/// submitting or clearing it. Only plain Enter submits the whole text.
 #[test]
 fn composer_inserts_newlines_and_submits_the_whole_text() {
     let mut app = app();
     for c in "line one".chars() {
         app.handle_key(key(KeyCode::Char(c)));
     }
-    assert!(app.handle_key(ctrl('j')).is_none(), "Ctrl+J only edits the composer");
+    assert!(app.handle_key(ctrl('j')).is_none());
+    assert_eq!(app.composer.text(), "line one", "the retired newline key leaves the draft alone");
+    assert!(app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT)).is_none());
     for c in "line two".chars() {
         app.handle_key(key(KeyCode::Char(c)));
     }
@@ -557,13 +557,22 @@ fn composer_inserts_newlines_and_submits_the_whole_text() {
         app.handle_key(key(KeyCode::Char(c)));
     }
     assert_eq!(app.composer.text(), "line one\nline two\nline three");
+    assert_eq!(app.handle_key(ctrl('s')), Some(V2Effect::Sessions(teamagents_tui::sessions::SessionAction::List)));
+    assert!(app.browser.is_some());
+    assert_eq!(app.composer.text(), "line one\nline two\nline three");
+    let browser = app.browser.as_mut().unwrap();
+    browser.apply_list(&json!({"sessions": [{"id": "s-test", "path": "/tmp/s-test"}]}), "/tmp/s-test");
+    browser.apply_history(&json!({"entries": []}), None);
+    assert!(app.handle_key(key(KeyCode::Esc)).is_none());
+    assert!(app.browser.is_none());
     let effect = app.handle_key(key(KeyCode::Enter)).expect("submit effect");
     let V2Effect::SubmitInput { text, .. } = effect else { panic!("wrong effect") };
     assert_eq!(text, "line one\nline two\nline three");
     assert!(app.composer.text().is_empty(), "the composer clears after sending");
     app.composer.set_text("/help");
     app.handle_key(key(KeyCode::Enter));
-    assert!(app.entries.last().unwrap().text.contains("Ctrl+J"));
+    assert!(app.entries.last().unwrap().text.contains("Shift+Enter"));
+    assert!(!app.entries.last().unwrap().text.contains("Ctrl+J"));
 }
 
 #[test]

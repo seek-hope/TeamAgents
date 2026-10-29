@@ -326,7 +326,7 @@ state root; closing the TUI does not.
 
 Common TUI keys:
 
-- `Enter` sends; `Ctrl+J` or `Shift+Enter` inserts a newline. `↑`/`↓` recall input or move within a draft;
+- `Enter` sends; `Shift+Enter` inserts a newline. `↑`/`↓` recall input or move within a draft;
   `PageUp`/`PageDown` and the mouse wheel scroll. `Ctrl+W` deletes a word and `Ctrl+←`/`Ctrl+→` move by word.
 - `Ctrl+A` focuses approvals (`a` approves, `d` denies, `Esc` returns). `Ctrl+C` interrupts the current model
   request, not running tools or delegated work. `Ctrl+Q` or `/quit` closes the TUI without stopping the daemon.

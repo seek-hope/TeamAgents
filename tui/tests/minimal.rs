@@ -424,6 +424,15 @@ fn responsive_status_and_hints_prioritize_current_actions() {
             assert!(shown.contains("deepseek-flash · high"), "model/effort belongs in the composer border: {shown}");
         }
         assert!(row(23).contains("? shortcuts") && !row(23).contains("interrupt"));
+        assert!(!row(23).contains("newline") && !row(23).contains("Ctrl+J"));
+        if width >= 60 {
+            assert!(row(23).contains("Ctrl+S sessions"));
+        }
+        app.composer.set_text("unfinished draft");
+        terminal.draw(|frame| v2ui::render(frame, &mut app)).unwrap();
+        let footer: String = (0..width).map(|x| terminal.backend().buffer()[(x, 23)].symbol()).collect();
+        assert!(footer.contains("Ctrl+S sessions"), "{footer}");
+        assert!(!footer.contains("newline") && !footer.contains("Ctrl+J"));
         app.instances[0].phase = "MODEL_PENDING".into();
         terminal.draw(|frame| v2ui::render(frame, &mut app)).unwrap();
         let shown: String = terminal.backend().buffer().content.iter().map(|cell| cell.symbol()).collect();
@@ -446,6 +455,10 @@ fn pending_input_editor_shares_keys_and_follows_the_caret() {
     app.handle_key(ctrl('u'));
     app.handle_key(ctrl('y'));
     assert_eq!(app.queue.as_ref().unwrap().editor.as_ref().unwrap().text(), "old text");
+    assert!(app.handle_key(ctrl('j')).is_none());
+    assert_eq!(app.queue.as_ref().unwrap().editor.as_ref().unwrap().text(), "old text");
+    assert!(app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT)).is_none());
+    assert_eq!(app.queue.as_ref().unwrap().editor.as_ref().unwrap().text(), "old text\n");
     app.queue.as_mut().unwrap().paste(&"\nline".repeat(50));
     app.handle_key(key(KeyCode::Char('Z')));
     let mut terminal = Terminal::new(TestBackend::new(40, 18)).unwrap();

@@ -28,7 +28,7 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Session controls and web domains | user-only model/effort switch at a READY/WAITING boundary, an explicit `after = "turn"` follow-up queue, and `web` grants with `domain:` scopes; cancelling a task does not stop its command (D-470) | D-470 |
 | Acceptance checks | `exec --check` and goal `[[checks]]` run on the host through the same shell implementation | D-471, D-480 |
 | PTY verification | `make pty` runs a terminal-profile matrix in isolated ptys (xterm-256color, screen-256color, tmux-256color, xterm-kitty, Kitty under tmux) with auto graphics-mode assertions, plus forced blocks/kitty protocol bounds | D-472 |
-| TUI keys | Ctrl+Q quits, Ctrl+P opens pending inputs, Ctrl+M opens the Leader's model/effort menu (`/quit`, `/model`); the profile applies at the next turn | D-473 |
+| TUI keys | Shift+Enter inserts a newline; ready/draft footers show Ctrl+S sessions instead of newline. Ctrl+Q quits, Ctrl+P opens pending inputs, Ctrl+M opens the Leader's model/effort menu (`/quit`, `/model`); the profile applies at the next turn | D-473, D-491 |
 | TUI presentation | Grok Build's single-conversation layout with Codex CLI colors: terminal-default prose, dim chrome, blue accents, ANSI semantic colors and inverse selection; elevated prompts, grouped tools and conditional activity remain; no split terminal | D-489, D-490 (supersedes D-481 colors) |
 | Default effort | the generated `leader_main` profile defaults to `reasoning_effort = "high"`; existing configs keep their value and a running daemon keeps its boot catalog | D-474 |
 | Reasoning effort menu | each model may declare `efforts`; the default is minimal/low/medium/high/xhigh/max; a model that lacks the current level falls back to the nearest declared level at or below it, and the CLI keeps an explicit override | D-476 |
@@ -38,6 +38,20 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Prompt cache | cache hit/miss/write are provider-reported and visible; the L1 frontier is fixed between compactions; Anthropic gets explicit breakpoints and OpenAI a stable key; DeepSeek stays automatic | D-459 |
 | Command idempotency | a replay with the same `command_id` returns the stored receipt for control-plane state, and the authoritative check runs under the write lock (D-463); result bodies are shared by content digest and zstd-compressed (D-464), while the receipt **rows** remain one per command | D-463, D-464 |
 | Model actions and code windows | a deciding read shares the write's transaction, or the guard is a predicate on the write itself; `verification/REPORT.md` §6 lists the protocol transitions and the three engine windows that span two transactions with their predicates | D-465 |
+
+## D-491 Newline binding and session footer hint (2026-10-29)
+
+The user requested Shift+Enter for newline, no persistent newline hint, and Ctrl+S labelled `sessions`
+in the former Ctrl+J footer position. Both the conversation composer and pending-input editor now use
+Shift+Enter; Ctrl+J no longer edits either draft. Enter keeps its explicit send/save boundary.
+The ready and nonempty-draft footers show `Ctrl+S sessions`; the queue editor also omits newline from its
+footer. Shortcuts help and the user guide still document Shift+Enter. The existing Ctrl+S session browser
+route preserves the draft. No session, approval, execution or daemon contract changes.
+
+Regression checks cover newline without submission, retired Ctrl+J, session browsing with draft retention,
+ready/draft footer text and pending-input editing. The terminal smoke sends a CSI-u Shift+Enter report
+and verifies the exact two-line submission. This exercises reported modifiers; it does not make legacy
+terminals that send identical bytes for Enter and Shift+Enter distinguishable.
 
 ## D-490 Apply Codex CLI colors (2026-10-29)
 

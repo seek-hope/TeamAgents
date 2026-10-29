@@ -202,6 +202,9 @@ def main():
     expect("Message", "composer")
     expect("Enter", "footer")
     expect("? shortcuts", "ready help hint")
+    expect("Ctrl+S sessions", "session browser hint")
+    if "newline" in scr.lines()[-1] or "Ctrl+J" in scr.lines()[-1]:
+        failures.append("Ready footer still advertises newline")
     expect("Ctrl+Q quit", "quit hint")
     expect("deepseek-flash · high", "active profile")
     if "Ctrl+C interrupt" in "\n".join(scr.lines()):
@@ -234,17 +237,22 @@ def main():
     os.write(fd, b"\x15")  # Ctrl+U clears the line without submitting
     scr.feed(read_all(fd, 0.4).decode("utf-8", "replace"))
 
-    # Ctrl+J inserts a newline in the composer (0x0A in raw mode), the composer
-    # box grows, and the whole two-line text is what gets submitted
+    # Shift+Enter uses the CSI-u modifier report; it grows the composer without
+    # submitting. Ctrl+J is retired and must not add another line or send text.
     os.write(fd, "first-line".encode())
     time.sleep(0.2)
-    os.write(fd, b"\x0a")
+    os.write(fd, b"\x0a\x1b[13;2u")
     time.sleep(0.2)
     os.write(fd, "second-line".encode())
     time.sleep(0.3)
     scr.feed(read_all(fd, 3.0).decode("utf-8", "replace"))
     expect("first-line", "composer first line")
     expect("second-line", "composer second line")
+    expect("Ctrl+S sessions", "nonempty draft session hint")
+    if "newline" in scr.lines()[-1] or "Ctrl+J" in scr.lines()[-1]:
+        failures.append("Draft footer still advertises newline")
+    if any(f.get("method") == "submit_input" for f in daemon.frames):
+        failures.append("newline editing submitted the draft before Enter")
     os.write(fd, b"\r")
     time.sleep(0.4)
     scr.feed(read_all(fd, 3.0).decode("utf-8", "replace"))
@@ -252,7 +260,7 @@ def main():
                  if f.get("method") == "submit_input" and f.get("params", {}).get("text") == "first-line\nsecond-line"]
     if not multiline:
         sent = [f.get("params", {}).get("text") for f in daemon.frames if f.get("method") == "submit_input"]
-        failures.append(f"Ctrl+J did not submit one two-line prompt; submitted: {sent!r}")
+        failures.append(f"Shift+Enter did not submit one two-line prompt; submitted: {sent!r}")
 
     # D-77: the composer's history is real. Up (the terminal's own escape sequence)
     # recalls what was just sent, and down brings the (empty) draft back — both

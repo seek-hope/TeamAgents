@@ -1,5 +1,5 @@
 //! Composer buffer.
-//! Enter sends, Shift+Enter/Ctrl+J inserts a newline, ↑↓ recall history at the
+//! Enter sends, Shift+Enter inserts a newline, ↑↓ recall history at the
 //! first/last row. Lines are Vec<char> so multibyte editing stays simple.
 
 use unicode_width::UnicodeWidthChar;
@@ -211,7 +211,6 @@ impl Composer {
                     }
                 }
             }
-            KeyCode::Char('j') if control => self.insert_newline(),
             KeyCode::Enter if key.modifiers == KeyModifiers::SHIFT => self.insert_newline(),
             KeyCode::Left if key.modifiers.is_empty() => self.move_left(),
             KeyCode::Right if key.modifiers.is_empty() => self.move_right(),

@@ -1,7 +1,7 @@
 # Acceptance matrix (A01–A36)
 
 Baseline: [the design and acceptance baseline](DESIGN.md) §12/§16. Current source inspection and local
-regression baseline: **2026-10-29, D-490**.
+regression baseline: **2026-10-29, D-491**.
 This is not a new independent acceptance audit or real-model run.
 The D-451 product/installation receipts and the D-452 independent audit retain their original source/date
 boundaries; later source changes do not inherit those results.
@@ -488,6 +488,14 @@ can interrupt legitimate repetition. Projection bounds (32 KiB checkpoint, recen
 promise a fit in every native model window; overflow still requires explicit recovery. Local stop observation
 does not prove remote effects, escaped descendants or undeclared/shared paths quiescent. Reviewer usage
 accounting remains a separate gap. Source, installed binaries and the older published archive are distinct.
+
+## Newline and session shortcuts (D-491)
+
+The existing input/frame tests cover Shift+Enter in both editors, no Ctrl+J edit, explicit Enter submission,
+Ctrl+S session navigation with draft retention and ready/draft footer hints without newline. The PTY smoke
+sends CSI-u Shift+Enter and checks that only Enter submits the exact two-line text. The local suite counts
+remain core 174 / engine 437 / TUI 103. Modifier reporting is exercised through the terminal parser; physical
+key mappings on terminals that cannot distinguish Shift+Enter remain outside this evidence.
 
 ## Codex CLI palette (D-490)
 
