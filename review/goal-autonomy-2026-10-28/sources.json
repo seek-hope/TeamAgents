@@ -1,0 +1,259 @@
+{
+  "retrieved_on": "2026-10-28",
+  "scope": "Pinned source inspection only; upstream agents and tests were not run.",
+  "teamagents_baseline": "19ac5c8915dc61998a1218ab722c8e7ebc9b0ba8",
+  "repositories": [
+    {
+      "repo": "anthropics/claude-quickstarts",
+      "sha": "930ad10bb2e21a9ef97fe1a88d2037e18a24465c",
+      "date": "2026-10-23T15:15:01Z",
+      "message": "Pin the quickstarts to anthropic 2.0, @anthropic-ai/sdk 1.0 and ant 2.0 (#521)"
+    },
+    {
+      "repo": "openai/symphony",
+      "sha": "be10a1b79df723d6d7612b5651c8522704dafb2e",
+      "date": "2026-09-15T22:12:07Z",
+      "message": "ci: publish nightly binaries on main pushes"
+    },
+    {
+      "repo": "microsoft/autogen",
+      "sha": "d07c667a3239ea4ab7af62a53b0f4ff205a1f23d",
+      "date": "2026-10-28T14:45:27Z",
+      "message": "docs: add archive caution to landing page (#8393)"
+    },
+    {
+      "repo": "langchain-ai/deepagents",
+      "sha": "cd24d8c52849fdb24e0ac2cab2f909f8df6ba5ca",
+      "date": "2026-10-28T14:54:51Z",
+      "message": "fix(code): delay tool group progress to avoid flashing (#7357)"
+    },
+    {
+      "repo": "langchain-ai/langgraph",
+      "sha": "5a3e5dd73982a8ac81fb2c71c15b22ca982838de",
+      "date": "2026-10-28T11:46:39Z",
+      "message": "fix(sdk-py): retry failed stream reconnects with backoff (#9462)"
+    },
+    {
+      "repo": "snarktank/ralph",
+      "sha": "6c53cb0b831ebe8739c6a003e22af14902d8b0b5",
+      "date": "2026-02-02T01:46:21Z",
+      "message": "fix(skill): enfore options indentation in prd SKILL.md (#64)"
+    },
+    {
+      "repo": "OpenHands/software-agent-sdk",
+      "sha": "ccae18cb897bef7960f210aa3f380b577a84be7c",
+      "date": "2026-10-28T14:34:29Z",
+      "message": "Release v1.59.0 (#6282)"
+    }
+  ],
+  "files": [
+    {
+      "repo": "anthropics/claude-quickstarts",
+      "path": "autonomous-coding/README.md",
+      "commit": "930ad10bb2e21a9ef97fe1a88d2037e18a24465c",
+      "sha256": "46886061c3558c864e6ce42d229038d220bc5dea10735f2a552ec5d50bb6ef83",
+      "bytes": 5788,
+      "url": "https://github.com/anthropics/claude-quickstarts/blob/930ad10bb2e21a9ef97fe1a88d2037e18a24465c/autonomous-coding/README.md"
+    },
+    {
+      "repo": "anthropics/claude-quickstarts",
+      "path": "autonomous-coding/agent.py",
+      "commit": "930ad10bb2e21a9ef97fe1a88d2037e18a24465c",
+      "sha256": "4cfe854312b8086bf5793a0e6020fe17e41d0a086e7c699d951eac65b868b2cb",
+      "bytes": 7095,
+      "url": "https://github.com/anthropics/claude-quickstarts/blob/930ad10bb2e21a9ef97fe1a88d2037e18a24465c/autonomous-coding/agent.py"
+    },
+    {
+      "repo": "anthropics/claude-quickstarts",
+      "path": "autonomous-coding/prompts/initializer_prompt.md",
+      "commit": "930ad10bb2e21a9ef97fe1a88d2037e18a24465c",
+      "sha256": "dc30edc9806096d7a9337a1676acb6b53caee539791663f675fdaec54b98cd13",
+      "bytes": 3586,
+      "url": "https://github.com/anthropics/claude-quickstarts/blob/930ad10bb2e21a9ef97fe1a88d2037e18a24465c/autonomous-coding/prompts/initializer_prompt.md"
+    },
+    {
+      "repo": "anthropics/claude-quickstarts",
+      "path": "autonomous-coding/prompts/coding_prompt.md",
+      "commit": "930ad10bb2e21a9ef97fe1a88d2037e18a24465c",
+      "sha256": "6f1fe5ef3c81a9aed7478ce0c51d8fd067f8c6b90183c5f921610fa4b35dfedc",
+      "bytes": 5571,
+      "url": "https://github.com/anthropics/claude-quickstarts/blob/930ad10bb2e21a9ef97fe1a88d2037e18a24465c/autonomous-coding/prompts/coding_prompt.md"
+    },
+    {
+      "repo": "openai/symphony",
+      "path": "SPEC.md",
+      "commit": "be10a1b79df723d6d7612b5651c8522704dafb2e",
+      "sha256": "c6638056502ecd2e60eb04e1f1a627a4964506fcdf4d39873e78aa5834de85d5",
+      "bytes": 92077,
+      "url": "https://github.com/openai/symphony/blob/be10a1b79df723d6d7612b5651c8522704dafb2e/SPEC.md"
+    },
+    {
+      "repo": "openai/symphony",
+      "path": "elixir/lib/symphony_elixir/orchestrator.ex",
+      "commit": "be10a1b79df723d6d7612b5651c8522704dafb2e",
+      "sha256": "ffa6fd2ca66f775b93ca561adb60a61a416f8fb604ff247128d3638169fdab22",
+      "bytes": 65267,
+      "url": "https://github.com/openai/symphony/blob/be10a1b79df723d6d7612b5651c8522704dafb2e/elixir/lib/symphony_elixir/orchestrator.ex"
+    },
+    {
+      "repo": "openai/symphony",
+      "path": "elixir/lib/symphony_elixir/agent_runner.ex",
+      "commit": "be10a1b79df723d6d7612b5651c8522704dafb2e",
+      "sha256": "4b4ab877427c76e5778034c7c89a41e9ec884fb1b142f3c6754550f3ba25be39",
+      "bytes": 7694,
+      "url": "https://github.com/openai/symphony/blob/be10a1b79df723d6d7612b5651c8522704dafb2e/elixir/lib/symphony_elixir/agent_runner.ex"
+    },
+    {
+      "repo": "openai/symphony",
+      "path": "elixir/WORKFLOW.md",
+      "commit": "be10a1b79df723d6d7612b5651c8522704dafb2e",
+      "sha256": "7c465f8a44c6698db804dc7c6665cc1c2b7cadc1efed7d26c48629fcf530869d",
+      "bytes": 19202,
+      "url": "https://github.com/openai/symphony/blob/be10a1b79df723d6d7612b5651c8522704dafb2e/elixir/WORKFLOW.md"
+    },
+    {
+      "repo": "microsoft/autogen",
+      "path": "README.md",
+      "commit": "d07c667a3239ea4ab7af62a53b0f4ff205a1f23d",
+      "sha256": "60fa90168565070a61b0f28296ff590bd6853da2477141f5ed0775007c20d7f2",
+      "bytes": 21521,
+      "url": "https://github.com/microsoft/autogen/blob/d07c667a3239ea4ab7af62a53b0f4ff205a1f23d/README.md"
+    },
+    {
+      "repo": "microsoft/autogen",
+      "path": "python/packages/autogen-agentchat/src/autogen_agentchat/teams/_group_chat/_magentic_one/_magentic_one_orchestrator.py",
+      "commit": "d07c667a3239ea4ab7af62a53b0f4ff205a1f23d",
+      "sha256": "9c0f815cc8b65ada85d54bf314c7f8869559a35477325bbd0d0577e80d4bda3f",
+      "bytes": 22888,
+      "url": "https://github.com/microsoft/autogen/blob/d07c667a3239ea4ab7af62a53b0f4ff205a1f23d/python/packages/autogen-agentchat/src/autogen_agentchat/teams/_group_chat/_magentic_one/_magentic_one_orchestrator.py"
+    },
+    {
+      "repo": "microsoft/autogen",
+      "path": "python/packages/autogen-agentchat/src/autogen_agentchat/teams/_group_chat/_magentic_one/_prompts.py",
+      "commit": "d07c667a3239ea4ab7af62a53b0f4ff205a1f23d",
+      "sha256": "39c5db61726458450eb13214f09b38560fc15522a2308c90bf7ab0fa5acc8019",
+      "bytes": 5952,
+      "url": "https://github.com/microsoft/autogen/blob/d07c667a3239ea4ab7af62a53b0f4ff205a1f23d/python/packages/autogen-agentchat/src/autogen_agentchat/teams/_group_chat/_magentic_one/_prompts.py"
+    },
+    {
+      "repo": "langchain-ai/deepagents",
+      "path": "README.md",
+      "commit": "cd24d8c52849fdb24e0ac2cab2f909f8df6ba5ca",
+      "sha256": "24666c576b54e1e1ed9793b97971f8cb0e16ebb9d0ab9a887989c6e4dfece4ac",
+      "bytes": 7043,
+      "url": "https://github.com/langchain-ai/deepagents/blob/cd24d8c52849fdb24e0ac2cab2f909f8df6ba5ca/README.md"
+    },
+    {
+      "repo": "langchain-ai/deepagents",
+      "path": "libs/deepagents/deepagents/graph.py",
+      "commit": "cd24d8c52849fdb24e0ac2cab2f909f8df6ba5ca",
+      "sha256": "5964f538571f415331870230b86eae1833f11e52c0d91b38e3c37e6e0c609569",
+      "bytes": 50866,
+      "url": "https://github.com/langchain-ai/deepagents/blob/cd24d8c52849fdb24e0ac2cab2f909f8df6ba5ca/libs/deepagents/deepagents/graph.py"
+    },
+    {
+      "repo": "langchain-ai/deepagents",
+      "path": "libs/deepagents/deepagents/middleware/subagents.py",
+      "commit": "cd24d8c52849fdb24e0ac2cab2f909f8df6ba5ca",
+      "sha256": "66d1a30c8669309a306db73f0ce7376ee9ca1e627e7a4456b57bde7f84fec2e5",
+      "bytes": 44071,
+      "url": "https://github.com/langchain-ai/deepagents/blob/cd24d8c52849fdb24e0ac2cab2f909f8df6ba5ca/libs/deepagents/deepagents/middleware/subagents.py"
+    },
+    {
+      "repo": "langchain-ai/deepagents",
+      "path": "libs/deepagents/deepagents/middleware/summarization.py",
+      "commit": "cd24d8c52849fdb24e0ac2cab2f909f8df6ba5ca",
+      "sha256": "c3072d9bc8b5dd88015f318e1f1138d5bdc71e2fc3447d57d10e1db56b85d602",
+      "bytes": 102662,
+      "url": "https://github.com/langchain-ai/deepagents/blob/cd24d8c52849fdb24e0ac2cab2f909f8df6ba5ca/libs/deepagents/deepagents/middleware/summarization.py"
+    },
+    {
+      "repo": "snarktank/ralph",
+      "path": "README.md",
+      "commit": "6c53cb0b831ebe8739c6a003e22af14902d8b0b5",
+      "sha256": "56698a2d5ede1eef6879aec27dce3f0edf38a199658746fab9a303810b67af5c",
+      "bytes": 7377,
+      "url": "https://github.com/snarktank/ralph/blob/6c53cb0b831ebe8739c6a003e22af14902d8b0b5/README.md"
+    },
+    {
+      "repo": "snarktank/ralph",
+      "path": "ralph.sh",
+      "commit": "6c53cb0b831ebe8739c6a003e22af14902d8b0b5",
+      "sha256": "b42738266de696a2807ae6af6a7f588bd7c8c8a1c01b71b0f4eece207b9e8d76",
+      "bytes": 3524,
+      "url": "https://github.com/snarktank/ralph/blob/6c53cb0b831ebe8739c6a003e22af14902d8b0b5/ralph.sh"
+    },
+    {
+      "repo": "snarktank/ralph",
+      "path": "prompt.md",
+      "commit": "6c53cb0b831ebe8739c6a003e22af14902d8b0b5",
+      "sha256": "ece4a98cc96ba79b12637a8e653d1fa7ec41caf053a0ba809e8e93f0788101e9",
+      "bytes": 4199,
+      "url": "https://github.com/snarktank/ralph/blob/6c53cb0b831ebe8739c6a003e22af14902d8b0b5/prompt.md"
+    },
+    {
+      "repo": "snarktank/ralph",
+      "path": "CLAUDE.md",
+      "commit": "6c53cb0b831ebe8739c6a003e22af14902d8b0b5",
+      "sha256": "4dfe2e6d157db340680a4610a354b78840ea280f8384f96fba736316194fcbb5",
+      "bytes": 4069,
+      "url": "https://github.com/snarktank/ralph/blob/6c53cb0b831ebe8739c6a003e22af14902d8b0b5/CLAUDE.md"
+    },
+    {
+      "repo": "OpenHands/software-agent-sdk",
+      "path": "README.md",
+      "commit": "ccae18cb897bef7960f210aa3f380b577a84be7c",
+      "sha256": "95094c9745c7cc58136d4eaa1688fb6038aafefec2be05344293f6df7e55dbf8",
+      "bytes": 10835,
+      "url": "https://github.com/OpenHands/software-agent-sdk/blob/ccae18cb897bef7960f210aa3f380b577a84be7c/README.md"
+    },
+    {
+      "repo": "langchain-ai/langgraph",
+      "path": "README.md",
+      "commit": "5a3e5dd73982a8ac81fb2c71c15b22ca982838de",
+      "sha256": "3a13e257af1216962d53d72414a7f44ac1fc5cea34d994bdff60ea2a3b045933",
+      "bytes": 6395,
+      "url": "https://github.com/langchain-ai/langgraph/blob/5a3e5dd73982a8ac81fb2c71c15b22ca982838de/README.md"
+    },
+    {
+      "repo": "langchain-ai/langgraph",
+      "path": "libs/langgraph/langgraph/pregel/_loop.py",
+      "commit": "5a3e5dd73982a8ac81fb2c71c15b22ca982838de",
+      "sha256": "b122f38f691b41759c350480a481a12200bf19ece0359a5ca2a99febda1f5c64",
+      "bytes": 91760,
+      "url": "https://github.com/langchain-ai/langgraph/blob/5a3e5dd73982a8ac81fb2c71c15b22ca982838de/libs/langgraph/langgraph/pregel/_loop.py"
+    },
+    {
+      "repo": "OpenHands/software-agent-sdk",
+      "path": "openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py",
+      "commit": "ccae18cb897bef7960f210aa3f380b577a84be7c",
+      "sha256": "bc0adb57201022ba2d50afd17ebfdcebafa6af095efc0eab286e6c28f902ebc4",
+      "bytes": 149493,
+      "url": "https://github.com/OpenHands/software-agent-sdk/blob/ccae18cb897bef7960f210aa3f380b577a84be7c/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py"
+    },
+    {
+      "repo": "OpenHands/software-agent-sdk",
+      "path": "openhands-sdk/openhands/sdk/conversation/stuck_detector.py",
+      "commit": "ccae18cb897bef7960f210aa3f380b577a84be7c",
+      "sha256": "3bf25f2d722404398e4744ae188f575f628463732b3606a8da6049fb8ff0039e",
+      "bytes": 14399,
+      "url": "https://github.com/OpenHands/software-agent-sdk/blob/ccae18cb897bef7960f210aa3f380b577a84be7c/openhands-sdk/openhands/sdk/conversation/stuck_detector.py"
+    },
+    {
+      "repo": "OpenHands/software-agent-sdk",
+      "path": "examples/01_standalone_sdk/10_persistence.py",
+      "commit": "ccae18cb897bef7960f210aa3f380b577a84be7c",
+      "sha256": "e443115ab0b710fa864de2bb66289bc2876d671eca77827b7b3ab3dc54d499fd",
+      "bytes": 2463,
+      "url": "https://github.com/OpenHands/software-agent-sdk/blob/ccae18cb897bef7960f210aa3f380b577a84be7c/examples/01_standalone_sdk/10_persistence.py"
+    },
+    {
+      "repo": "OpenHands/software-agent-sdk",
+      "path": "examples/01_standalone_sdk/20_stuck_detector.py",
+      "commit": "ccae18cb897bef7960f210aa3f380b577a84be7c",
+      "sha256": "abbe1bfc1b5c74a301e84b3ff44d1532d044d6a7c3f20d07fd10b077f4466c36",
+      "bytes": 1720,
+      "url": "https://github.com/OpenHands/software-agent-sdk/blob/ccae18cb897bef7960f210aa3f380b577a84be7c/examples/01_standalone_sdk/20_stuck_detector.py"
+    }
+  ]
+}

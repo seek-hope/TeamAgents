@@ -100,7 +100,9 @@ fn read_sql(conn: &Connection, include_settled: bool) -> rusqlite::Result<View> 
         }
         // Same rule as the driver: no visible entry is nothing to answer, so it counts as addressed.
         let tail_is_addressed = tail.as_deref().is_none_or(|kind| matches!(kind, "assistant" | "runtime"));
-        let runnable = super::readiness::opens_a_turn(incoming, tail_is_addressed, pending > 0);
+        let work = teamagents_core::v2::control::work_state(conn, &id)
+            .map_err(|error| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, error.into()))?;
+        let runnable = super::readiness::opens_work_turn(incoming, tail_is_addressed, pending > 0, &work);
         let mut activity = match (lifecycle.as_str(), phase.as_str()) {
             ("TERMINATED", _) => diagnosis("terminated", "Instance terminated; it cannot resume.", false,
                 "Assign any remaining work to a new instance; inspect receipts before retrying effects."),
@@ -126,6 +128,12 @@ fn read_sql(conn: &Connection, include_settled: bool) -> rusqlite::Result<View> 
                     "Waiting on registered conditions; no timer is recorded (not proof of deadlock)."
                 }, false, "Inspect waits and tasks. BLOCKED and idle assignees do not satisfy task waits. Cancel a task only if its result is no longer needed; no automatic wakeup is added.")
             }
+            ("ACTIVE", "READY") if work["state"] == "NEEDS_INPUT" && !incoming => diagnosis("needs_input", "Needs your decision.", true,
+                "Answer the recorded question; the existing goal, decisions and budget are preserved."),
+            ("ACTIVE", "READY") if work["state"] == "BLOCKED" && !incoming => diagnosis("work_blocked", "Work is blocked after a concrete blocker or bounded recovery.", true,
+                "Inspect the saved reason and evidence. Supply missing information or explicitly resume after resolving the cause."),
+            ("ACTIVE", "READY") if work["state"] == "STOPPED" && !incoming => diagnosis("stopped", "Work stopped by user intervention or an enforced limit.", true,
+                "Inspect running operations; resume explicitly when appropriate. Interrupting the model does not stop tools."),
             ("ACTIVE", "READY") if runnable => diagnosis("ready", "Unaddressed input or a pending task is ready for processing.", false,
                 "Allow the coordinator to process it; this snapshot does not prove a model request has started."),
             ("ACTIVE", "READY") if running > 0 => diagnosis("idle_unsettled", "Assignee idle with RUNNING task(s) not settled.", true,
@@ -144,6 +152,12 @@ fn read_sql(conn: &Connection, include_settled: bool) -> rusqlite::Result<View> 
                 )
                 .optional()?;
             activity["reason"] = json!(reason);
+        }
+        if !work.is_null() {
+            if activity["reason"].is_null() && work["reason"].as_str().is_some_and(|r| !r.is_empty()) {
+                activity["reason"] = work["reason"].clone();
+            }
+            activity["work"] = work;
         }
         activity["waits"] = json!(waits);
         activity["operations"] = json!(operations);

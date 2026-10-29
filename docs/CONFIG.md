@@ -83,14 +83,14 @@ the only accepted value. The removed `mcp_network` and check-level `network` set
 
 | Key | Type | Absent | Read by | Meaning |
 |---|---|---|---|---|
-| `kind` | `String` | empty | `core/src/kernel/mod.rs`, `core/src/v2/control.rs` … (31 files) | — |
+| `kind` | `String` | empty | `core/src/kernel/mod.rs`, `core/src/v2/control/work.rs` … (32 files) | — |
 | `required` | `bool` | false | `core/src/kernel/mod.rs`, `engine/src/bound.rs` … (5 files) | — |
 | `provider` | `Option<String>` | unset (the reader applies its own) | `engine/src/providers/mod.rs`, `engine/src/search.rs` … (6 files) | Web provider: DeepSeek for search/fetch, Exa for search only (D-482). |
 | `api_key_env` | `Option<String>` | unset (the reader applies its own) | `engine/src/providers/mod.rs`, `engine/src/search.rs` … (3 files) | — |
 | `mcp_server` | `Option<String>` | unset (the reader applies its own) | `engine/src/bound.rs` | — |
 | `mcp_transport` | `Option<String>` | unset (the reader applies its own) | `engine/src/bound.rs`, `engine/src/mcp_auth.rs` … (3 files) | — |
 | `mcp_execution` | `Option<String>` | unset (the reader applies its own) | `engine/src/bound.rs` | Local MCP execution: host only (also the default). Workspace isolation was removed. |
-| `command` | `Option<String>` | unset (the reader applies its own) | `core/src/v2/control.rs`, `engine/src/bound.rs` … (17 files) | The `kind = "mcp"` service's argv over stdio (the default transport) — required for that kind and transport, refused at load otherwise (D-232). |
+| `command` | `Option<String>` | unset (the reader applies its own) | `core/src/v2/control/work_tests.rs`, `core/src/v2/control.rs` … (18 files) | The `kind = "mcp"` service's argv over stdio (the default transport) — required for that kind and transport, refused at load otherwise (D-232). |
 | `args` | `Vec<String>` | empty | `core/src/kernel/mod.rs`, `core/src/v2/control.rs` … (17 files) | — |
 | `url` | `Option<String>` | unset (the reader applies its own) | `engine/src/bound.rs`, `engine/src/mcp_auth.rs` … (8 files) | The `kind = "mcp"` service's endpoint over the `http` transport — required there, and an absolute http(s) URL (D-232). |
 | `bearer_token_env_var` | `Option<String>` | unset (the reader applies its own) | `engine/src/bound.rs`, `engine/src/mcp_auth.rs` | Bearer token for the http transport: names the environment variable the secret is read from — the token itself never lands in this file. |
@@ -110,21 +110,21 @@ the only accepted value. The removed `mcp_network` and check-level `network` set
 | Key | Type | Absent | Read by | Meaning |
 |---|---|---|---|---|
 | `models` | `HashMap<String, ModelProfile>` | empty | `engine/src/providers/mod.rs`, `engine/src/v2/daemon.rs` … (5 files) | — |
-| `tools` | `HashMap<String, ToolBinding>` | empty | `core/src/kernel/instance.rs`, `core/src/kernel/mod.rs` … (15 files) | — |
+| `tools` | `HashMap<String, ToolBinding>` | empty | `core/src/kernel/instance.rs`, `core/src/kernel/mod.rs` … (16 files) | — |
 | `skills_paths` | `Vec<String>` | empty | `engine/src/environment.rs`, `engine/src/tools.rs` | Directories the `skill` tool searches for `SKILL.md` entries. An entry must exist and be a directory; the default (`~/.agents/skills`) is used only when the key is unset (D-232). |
 | `instruction_files` | `Vec<String>` | empty | `engine/src/environment.rs`, `engine/src/v2/driver.rs` | Files whose text is appended to **every** member's system prompt (the leader's and each child's), in this order, each under a heading naming the file: read per turn, so an edit lands on the next turn, and a file that cannot be read is named by `doctor` and on the daemon's log rather than skipped in silence (D-102 recorded the promise, D-246 delivers it). |
 | `retention` | `Retention` | the Retention default | `engine/src/v2/daemon.rs`, `engine/src/v2/driver.rs` … (3 files) | — |
 | `hooks` | `Hooks` | the Hooks default | `engine/src/hooks.rs`, `engine/src/tools.rs` … (3 files) | — |
-| `checks` | `Vec<CheckSpec>` | empty | `core/src/v2/control.rs`, `engine/src/v2/exec.rs` … (4 files) | Acceptance checks run on the host at the completion boundary. Project configuration cannot define them. |
-| `limits` | `GoalLimits` | the GoalLimits default | `engine/src/providers/mod.rs`, `engine/src/v2/daemon.rs` … (6 files) | Usage and wall-clock ceilings every goal this session creates carries (§8, A18/A35): the goal's `max_total_tokens` refuses a new request once the settled usage would pass it, and its deadline refuses one past that moment. Both are the user's own bounds; a session with neither runs until the user stops it (see `docs/USER-GUIDE.md` §2.2). |
+| `checks` | `Vec<CheckSpec>` | empty | `core/src/v2/control/work/admission.rs`, `core/src/v2/control.rs` … (5 files) | Acceptance checks run on the host at the completion boundary. Project configuration cannot define them. |
+| `limits` | `GoalLimits` | the GoalLimits default | `core/src/v2/control/work/admission.rs`, `core/src/v2/control/work.rs` … (9 files) | Usage and wall-clock ceilings every goal this session creates carries (§8, A18/A35): the goal's `max_total_tokens` refuses a new request once the settled usage would pass it, and its deadline refuses one past that moment. Both are the user's own bounds; a session with neither runs until the user stops it (see `docs/USER-GUIDE.md` §2.2). |
 | `update` | `UpdateConfig` | the UpdateConfig default | `core/src/kernel/types.rs`, `core/src/v2/control.rs` … (6 files) | Governed self-update policy (`[update]`). The user config is the only source: a repository-local file may never change how its own agent is replaced (D-453). |
 
 ### `[limits]`
 
 | Key | Type | Absent | Read by | Meaning |
 |---|---|---|---|---|
-| `max_total_tokens` | `Option<u64>` | unset (the reader applies its own) | `core/src/v2/control.rs`, `engine/src/v2/daemon.rs` … (4 files) | Usage ceiling in tokens, counted from provider-reported usage, live reservations and each request's estimate; usage a provider never reported stays the goal's `unknown_usage` counter and does not charge the ceiling (D-287). |
-| `deadline_minutes` | `Option<u64>` | unset (the reader applies its own) | nothing: applied by the loader: config.rs turns it into each goal's absolute deadline | Wall-clock ceiling in minutes, counted from the moment the goal is created. |
+| `max_total_tokens` | `Option<u64>` | unset (the reader applies its own) | `core/src/v2/control/work/admission.rs`, `core/src/v2/control/work_tests.rs` … (6 files) | Usage ceiling in tokens, counted from provider-reported usage, live reservations and each request's estimate; usage a provider never reported stays the goal's `unknown_usage` counter and does not charge the ceiling (D-287). |
+| `deadline_minutes` | `Option<u64>` | unset (the reader applies its own) | `core/src/v2/control/work/admission.rs`, `engine/src/v2/driver.rs` | Wall-clock ceiling in minutes. Initial goals start at creation; subsequent work admission starts at its first pending input and keeps that clock when it creates a goal. |
 | `independent_verification` | `bool` | false | `core/src/v2/control.rs`, `engine/src/v2/driver.rs` | D-393/D-395: does a goal with required checks need a round another instance registered before it may settle? Opt-in, and the session's own statement about *who* may settle its goals. |
 | `tool_output_chars` | `Option<usize>` | unset (the reader applies its own) | `core/src/kernel/instance.rs`, `engine/src/providers/mod.rs` … (3 files) | D-426: the most characters of one tool output the model is shown (unset keeps the built-in 24 000). A *cost* limit: the full text stays in the store and the readback tool pages it, so a lower value trades re-sent tokens for one extra call when the model really needs the rest. |
 | `context_keep_chars` | `Option<usize>` | unset (the reader applies its own) | `core/src/kernel/instance.rs`, `engine/src/providers/mod.rs` … (3 files) | D-426/D-459: how many characters of tool output the first wire view keeps before masking the older ones (unset keeps a quarter of the model's context window, clamped). The chosen frontier is held fixed until compaction, so lower values cut the initial request and the date of the next cache miss, not every turn. |
@@ -134,8 +134,8 @@ the only accepted value. The removed `mcp_network` and check-level `network` set
 
 | Key | Type | Absent | Read by | Meaning |
 |---|---|---|---|---|
-| `id` | `String` | empty | `core/src/kernel/instance.rs`, `core/src/v2/control.rs` … (34 files) | Stable id, used in failures, receipts and repair feedback. |
-| `command` | `String` | empty | `core/src/v2/control.rs`, `engine/src/bound.rs` … (17 files) | The command, executed through the same shell tool the model uses. |
+| `id` | `String` | empty | `core/src/kernel/instance.rs`, `core/src/v2/control/work/admission.rs` … (39 files) | Stable id, used in failures, receipts and repair feedback. |
+| `command` | `String` | empty | `core/src/v2/control/work_tests.rs`, `core/src/v2/control.rs` … (18 files) | The command, executed through the same shell tool the model uses. |
 | `timeout` | `Option<u64>` | unset (the reader applies its own) | `core/src/v2/control.rs`, `engine/src/mcp.rs` … (11 files) | Seconds; absent means the shell tool's own default. |
 | `inputs` | `Vec<String>` | empty | `core/src/v2/control.rs`, `engine/src/v2/driver.rs` … (3 files) | Workspace-relative inputs the check reads. |
 

@@ -54,6 +54,12 @@ scope. The user may read any instance's history; that grants no equivalent permi
 
 ## 2. Overall design after the decision review
 
+The overall prompt principle (D-487) is to honor user instructions and intent while encouraging free
+exploration, initiative and excellent work within the authorized scope. Models should investigate promising
+approaches, apply their judgment, refine the result and verify it appropriately. Depth serves the user's goal,
+constraints, time and budget. Bounded recovery prevents empty loops; it is not a reason for shallow work or
+premature handoff. Routine choices and previously authorized work need no repeated confirmation.
+
 | Item | Choice | Reason and boundary |
 |---|---|---|
 | Language and framework | Rust for the product; no LangGraph or another agent harness | Confirmed by the user; avoids maintaining a second execution and storage semantics, and any performance gain still has to be measured |
@@ -159,6 +165,7 @@ deduplication constraints may not. Every fact has exactly one authoritative repr
 | Session | `id, project_root, leader_id, format_id, schema_version, status` |
 | Instance / Execution | `id, profile_revision, workspace_ref, context_epoch, lifecycle, phase, revision, active_goal_id, active_request_id, context_head`; one executor per instance |
 | Goal / Budget | `id, original_request_ref, requirement_revision, status, deadline, limits, known_usage, reservations, unknown_usage`; every child task references the same goal |
+| Durable work | `(goal_id, instance_id, epoch, task_id)` scopes work state, bounded model checkpoint, pinned admission policy and recovery counters; work inputs retain original references; work requests freeze context and separate later billing attribution |
 | Task | `id, goal_id, requester, assignee, dependencies, acceptance_refs, status, result_refs, revision` |
 | CapabilityGrant | `id, issuer, subject, action, resource_scope, parent_grant_id, revision, revoked_at`; a channel only references grants |
 | Envelope / ContextEntry | a message carries `id, sender, recipient, epoch, kind, correlation_id, payload_ref, sequence, state`; context is unique by `(instance, epoch, index)` and application is deduplicated by `(instance, epoch, envelope_id)` |
@@ -455,10 +462,28 @@ result handling never wait for a model slot, the interactive ready queue has pri
 reserved capacity records its throughput cost.
 
 The system recognises duplicate deliveries, permanent start errors and high-frequency retries of the same
-infrastructure failure, and handles them within bounds. A semantic "no progress" is usually only a hint:
-re-running a test may be a legitimate repair, so no failure is declared from identical commands or a fixed
-round count. The model is given the real remaining time and error summaries so it can change course, while the
-user's budget and explicit stop conditions stay authoritative.
+infrastructure failure, and handles them within bounds. For enrolled work (D-487), a durable scheduling reason
+allows continuation after progress prose. Two empty/prose/plan recovery continuations are permitted; another
+unproductive response blocks work. Repeated action/observation patterns also block rather than silently spin.
+These are heuristics, not evidence that the task is impossible: identical commands alone do not prove failure.
+New relevant input or observations can reset an episode; compaction, restart and plan edits cannot. The goal,
+its budget and the user's explicit stop remain authoritative.
+
+The work projection separates user inputs, model checkpoints and runtime observations. A goal spans the whole
+admitted request across turns and context epochs. Later steering is processed before success; an old
+assignment's response cannot settle or overwrite current work. After terminal work, informational replies need
+no new goal. New actionable work is admitted internally with `work_checkpoint start_work`, or by explicit user
+acceptance checks. Pending admission keeps its original time and policy; its inference/compaction costs remain
+recorded and transfer once to that work without changing the original request's goal field. No goal is reopened,
+and admission cannot reset an active ceiling or resume a PARKED instance. Material questions use NEEDS_INPUT;
+member attention can supersede a wait while leaving task settlement unchanged.
+
+Shared-workspace takeover checks tracked retired execution at dispatch. A task cancellation is insufficient
+stop evidence. The runtime can separately observe absence of a recorded local process group and notify the
+waiting work without changing an unknown outcome. Declared workspace paths and process-group observation are
+not an OS boundary, a global lock, or proof about escaped descendants, remote effects or undeclared writes.
+Schema v7 fences older writers. Forks retain work provenance, admission costs and stops, discard execution
+projections, require fresh evidence and refuse tracked execution lacking stop evidence.
 
 At completion the model states once, clearly, an `outcome + summary + evidence/unverified`; the runtime
 automatically links the existing check receipts instead of demanding a large ledger from the model. An ordinary

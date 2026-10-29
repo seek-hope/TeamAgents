@@ -165,6 +165,13 @@ impl KernelInstance {
                 "ignored {WAIT_TOOL}: it must be the only tool call in its response; the other calls ran normally"
             ));
         }
+        let checkpoint = calls.iter().position(|call| call["function"]["name"] == WORK_TOOL);
+        if let Some(pos) = checkpoint {
+            if calls.len() == 1 {
+                return Interpretation { entry, output: KernelOutput::Checkpoint(call_args(&calls[pos])), notes };
+            }
+            notes.push(format!("ignored {WORK_TOOL}: it must be the only tool call in its response"));
+        }
         if calls.is_empty() {
             let reply = response.message["content"].as_str().unwrap_or("").to_string();
             return Interpretation { entry, output: KernelOutput::Reply(reply), notes };
@@ -172,7 +179,9 @@ impl KernelInstance {
         let intents = calls
             .iter()
             .enumerate()
-            .filter(|(i, _)| if Some(*i) == finish { refused_finish } else { Some(*i) != wait })
+            .filter(
+                |(i, _)| if Some(*i) == finish { refused_finish } else { Some(*i) != wait && Some(*i) != checkpoint },
+            )
             .map(|(index, call)| {
                 let args = call_args(call);
                 ToolIntent {

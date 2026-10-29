@@ -1,9 +1,33 @@
-# Formal verification report (2026-09-24)
+# Formal verification report
 
 This report is the **conclusion and ledger** of the formal-verification work: how far it proves things, with
 what evidence, and what it does **not** prove. The property-by-property mapping to specs and code anchors is
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
+
+## D-487 local verification (2026-10-29; working tree)
+
+The current targets verified all **48** configurations and refuted all **261** negative controls across
+39 modules; each control refuted its named claim. Kani 0.68.0 reports
+`Complete - 7 successfully verified harnesses, 0 failures, 7 total` for the paging arithmetic.
+An earlier positive run stopped at a parser failure in the unchanged capability model; its direct and full
+reruns passed. The cause was not established. The target now preserves the full diagnostic when no verdict
+is produced. The failed run is not counted as a completed gate.
+
+`V2Work.tla` adds six independent finite scenarios and 11 behavioral claims, with 11 dedicated controls.
+The positive configuration explores 222 generated / 76 distinct states. It covers bounded recovery,
+stop preservation, attention versus settlement, answering superseded waits, observed local quiescence
+before takeover, immutable unknown outcomes, request/completion scope, and admission/effect/accounting order.
+`V2Control` and `V2Wait` retain their legacy unenrolled interpretations; their old controls were not weakened.
+
+These are local transition models, not their full cross-product, a Rust/SQLite refinement, a semantic
+completion oracle or a liveness proof. OS process identity, escaped descendants, remote effects, actual
+provider prices and model classification are not established by TLC. The transaction, scripted-driver,
+real process-group and migration evidence is recorded separately in the acceptance ledger. Kani's scope
+remains the seven pure arithmetic harnesses, not durable-work correctness.
+
+<details>
+<summary>Historical rerun ledger (original source pins and evidence boundaries)</summary>
 
 ## 0. Gate status (re-run 2026-10-26 at `0e9dcc62`)
 
@@ -526,6 +550,11 @@ recomputes that number, so a claim that loses its control reappears there and fa
   ("all eight `V2Compress` properties"): the row was an over-claim until this decision made it true. It also found
   `V2Grants`' four `TypeOK*` copies (one describing a field name the state no longer had) and `V2Store`'s
   `RefusalIsSilent` alias, and closed the Makefile's implicit default.
+
+</details>
+
+Sections 1–5 retain the original conclusions and dated follow-up evidence. Current coverage and gaps are
+summarized above and mapped in the verification README; older counts do not describe the current tree.
 
 ## 1. Summary of conclusions
 

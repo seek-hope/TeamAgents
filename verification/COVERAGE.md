@@ -68,4 +68,5 @@ a row here is not a `TypeOK*` claim.
 | `V2Tui` | `TypeOK` |
 | `V2Update` | `TypeOK` |
 | `V2Wait` | `TypeOK` |
+| `V2Work` | `TypeOK` |
 | `V2Workspace` | `TypeOK` |

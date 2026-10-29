@@ -78,6 +78,37 @@ CREATE TABLE IF NOT EXISTS goals (
     unknown_usage INTEGER NOT NULL DEFAULT 0
 );
 
+-- D-487: schema v7 adds work state without enrolling or rewriting historical goals.
+CREATE TABLE IF NOT EXISTS work_states (
+    goal_id TEXT NOT NULL,
+    instance_id TEXT NOT NULL,
+    epoch INTEGER NOT NULL,
+    task_id TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL DEFAULT 'RUNNING',
+    checkpoint_json TEXT NOT NULL DEFAULT '{}',
+    policy_json TEXT NOT NULL DEFAULT '{}',
+    pending_reason TEXT NOT NULL DEFAULT 'Assigned work',
+    empty_turns INTEGER NOT NULL DEFAULT 0,
+    fingerprints_json TEXT NOT NULL DEFAULT '[]',
+    reason TEXT NOT NULL DEFAULT '',
+    revision INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(goal_id, instance_id, epoch, task_id)
+);
+CREATE TABLE IF NOT EXISTS work_requests (
+    request_id TEXT PRIMARY KEY,
+    context_json TEXT NOT NULL,
+    billed_goal_id TEXT,
+    unknown_usage INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS work_inputs (
+    goal_id TEXT NOT NULL,
+    instance_id TEXT NOT NULL,
+    epoch INTEGER NOT NULL,
+    envelope_id TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'ASSIGNED',
+    PRIMARY KEY(instance_id, epoch, envelope_id)
+);
+
 CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
     goal_id TEXT NOT NULL,
@@ -225,6 +256,8 @@ CREATE TABLE IF NOT EXISTS operations (
     cancel_requested INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL,
     receipt_json TEXT,
+    quiescence_json TEXT,
+    dispatch_wait_json TEXT,
     UNIQUE (decision_id, tool_index)
 );
 CREATE INDEX IF NOT EXISTS idx_operations_status ON operations(status);
@@ -488,14 +521,13 @@ fn column_present(conn: &Connection, table: &str, column: &str) -> Result<bool, 
 /// schema-version change. A34's rule is about *interpreting* state, and a nullable column reinterprets nothing;
 /// rows written before it keep their inline result and are compacted by the retention sweep.
 fn ensure_columns(conn: &Connection) -> Result<(), String> {
-    let present: i64 = conn
-        .query_row("SELECT COUNT(*) FROM pragma_table_info('commands') WHERE name = 'result_digest'", [], |row| {
-            row.get(0)
-        })
-        .map_err(|e| format!("inspect commands columns: {e}"))?;
-    if present == 0 {
-        conn.execute_batch("ALTER TABLE commands ADD COLUMN result_digest TEXT")
-            .map_err(|e| format!("add commands.result_digest: {e}"))?;
+    for (table, column) in
+        [("commands", "result_digest"), ("operations", "quiescence_json"), ("operations", "dispatch_wait_json")]
+    {
+        if !column_present(conn, table, column)? {
+            conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} TEXT"))
+                .map_err(|e| format!("add {table}.{column}: {e}"))?;
+        }
     }
     Ok(())
 }
@@ -586,6 +618,12 @@ fn migrate(conn: &Connection, from: i64) -> Result<(), String> {
                          ON capability_requests(status, session_id);",
                 )
                 .map_err(|e| format!("migrate 5 -> 6 requests: {e}"))?;
+            }
+            // 6 -> 7 (D-487): older writers must not ignore durable work stops,
+            // admission or takeover state. Historical goals remain unenrolled.
+            6 => {
+                tx.execute_batch(SCHEMA).map_err(|e| format!("migrate 6 -> 7 work tables: {e}"))?;
+                ensure_columns(&tx)?;
             }
             other => return Err(format!("no migration step from v2 schema version {other}")),
         }
@@ -863,6 +901,43 @@ mod tests {
         let err = open(&versioned, false).unwrap_err();
         assert!(err.contains("schema version 99"), "{err}");
         cleanup(&versioned);
+    }
+
+    #[test]
+    fn work_migration_preserves_old_goals_without_enrolling_them() {
+        let p = path("migrate-work");
+        {
+            let conn = open(&p, true).unwrap();
+            conn.execute_batch("DROP TABLE work_states; DROP TABLE work_requests; DROP TABLE work_inputs;
+                ALTER TABLE operations DROP COLUMN quiescence_json;
+                ALTER TABLE operations DROP COLUMN dispatch_wait_json;
+                UPDATE meta SET value='6' WHERE key='schema_version';
+                INSERT INTO goals(id,session_id,original_request_ref,status,limits_json,known_usage_json,reservations_json)
+                    VALUES('old','s','input','SUCCEEDED','{}','{\"total\":15}','{}');").unwrap();
+        }
+        let reader = open_read_only(&p).unwrap();
+        let version: String =
+            reader.query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, "6");
+        drop(reader);
+        let conn = open(&p, false).unwrap();
+        let version: String =
+            conn.query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, "7");
+        let row: (String, String) = conn
+            .query_row("SELECT status,known_usage_json FROM goals WHERE id='old'", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!(row, ("SUCCEEDED".into(), "{\"total\":15}".into()));
+        for table in ["work_states", "work_inputs", "work_requests"] {
+            assert_eq!(
+                conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get::<_, i64>(0)).unwrap(),
+                0
+            );
+        }
+        assert!(column_present(&conn, "operations", "quiescence_json").unwrap());
+        assert!(column_present(&conn, "operations", "dispatch_wait_json").unwrap());
+        drop(conn);
+        cleanup(&p);
     }
 
     #[test]

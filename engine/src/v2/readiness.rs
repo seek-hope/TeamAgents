@@ -11,6 +11,24 @@ pub(crate) fn opens_a_turn(queued_input: bool, tail_is_addressed: bool, pending_
     queued_input || pending_task || !tail_is_addressed
 }
 
+/// Enrolled work may consume one persisted continuation reason. User input remains
+/// admissible while work waits; stopping never erases the original task or its budget.
+pub(crate) fn opens_work_turn(
+    queued_input: bool,
+    tail_is_addressed: bool,
+    pending_task: bool,
+    work: &serde_json::Value,
+) -> bool {
+    if queued_input {
+        return true;
+    }
+    if matches!(work["state"].as_str(), Some("NEEDS_INPUT" | "BLOCKED" | "STOPPED" | "COMPLETE")) {
+        return false;
+    }
+    opens_a_turn(false, tail_is_addressed, pending_task)
+        || work["pending_reason"].as_str().is_some_and(|reason| !reason.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::opens_a_turn;

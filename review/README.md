@@ -14,6 +14,7 @@ before claiming a falsification, rule out probe error. Current behavior is defin
 
 | Path | Contents and boundary |
 |---|---|
+| [Goal autonomy source study](goal-autonomy-2026-10-28/REPORT.md) | Seven pinned repositories and the original DD-11 proposal, now implemented as D-487; no comparative model trial |
 | [Coding workflow maturity](maturity-2026-10-11/REPORT.md) | D-451 implementation and immutable local receipts, pinned to its recorded source; later D-452 fixes are in DECISIONS |
 | [Codex/Pi comparison](parity-2026-10-08/REPORT.md) | D-450 presentation fixtures, source provenance and verification receipts; historical comparison |
 | [Evaluation guide](eval/README.md) | Fixed tasks and real-model evaluation entry points; raw results under `eval/r2-p6/runs/` |
@@ -41,7 +42,7 @@ and explains the maintenance workflow. The groups below are an index, not anothe
 | Evaluation and formal material | `eval_manifests.py`, `eval_surface.py`, `eval/r2-p6/anatomy.py`, `verification_catalogue.py` |
 | Probe selection | `dogfood/probes.py` |
 
-There are now **18** probes in the offline set, selected by `dogfood/probes.py`. For the current tree, `citations.py` verifies that 163 relative links resolve today. It checks 734 commands, 26 distinct targets, 20 declared as checked on 2026-10-26;
+There are now **18** probes in the offline set, selected by `dogfood/probes.py`. For the current tree, `citations.py` verifies that 160 relative links resolve today. It checks 722 commands, 26 distinct targets, 20 declared as checked on 2026-10-29;
 its other totals are recomputed and compared with the script's own docstring.
 
 Useful manual checks:
@@ -77,6 +78,7 @@ local binary or network sources. None of these manual tools belongs in an offlin
 
 <!-- The reading map (D-443): the review material is evidence, one home each. The three dated notes are kept
      because decisions and the verification report cite them, and ACCEPTANCE Q19 keeps review evidence. -->
+<!-- maps: review/goal-autonomy-2026-10-28/REPORT.md reader=evidence -->
 <!-- maps: review/parity-2026-10-08/REPORT.md reader=evidence -->
 <!-- maps: review/maturity-2026-10-11/REPORT.md reader=evidence -->
 <!-- maps: review/benchmark/README.md reader=evidence -->

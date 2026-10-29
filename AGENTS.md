@@ -53,14 +53,16 @@ make verify-kani                         # Kani proofs (paging arithmetic)
 python3 review/eval/r2-p6/run.py --phase pilot --out <new date directory>  # real-model A/B/C comparison (needs credentials)
 ```
 
-- Local baseline (2026-10-28, D-486): `make check` is green — core 147 / engine 424 / tui 97;
-  `make pty` passes. This is not a renewal of D-452's independent audit or historical real-service results.
+- Local source baseline (2026-10-29, D-487): `make check` is green — core 174 / engine 437 / tui 97;
+  `make pty` passes. Formal results and their abstraction limits are in `verification/REPORT.md`.
+  This does not renew D-452's independent audit or historical real-service results.
   Raw evaluation JSONL lives in `review/eval/r2-p6/runs/`, per-item evidence in `docs/ACCEPTANCE.md`.
   Candidate daily-coding work has one home, `docs/PRODUCT-COMPARISON.md`. D-461 approves and implements
   DD-01 option A (read-only diagnosis and explicit recovery); D-479 adds the approved environment/input diagnostics.
   D-480 removes OS sandbox backends; ordinary Shell and local MCP run on the host. Capability grants,
   operation records, recovery and self-update approval remain. Old sandbox configuration is rejected.
-  Automatic reminders and other unselected candidates remain unapproved.
+  D-487 adds persistent work, bounded continuation and internal admission; legacy unenrolled sessions retain
+  their earlier scheduling. Automatic reminders and other unselected candidates remain unapproved.
 - Skipped checks and the current baseline are collected in `docs/ACCEPTANCE.md`. A green Cargo run is not a
   real-service acceptance result.
 - Real-model evaluation always uses the model's native context window and records the value and its source;
@@ -106,19 +108,18 @@ This describes the current code.
 
 ## Operating notes for team runs (measured)
 
-- **Cancelling a task is not stopping its work.** `tasks cancel` lands the task `CANCELLED` and releases
-  the delegator, but the assignee's running command keeps going until its own tool timeout; the lever that
-  stops the process group is `instances terminate --id … --yes` (measured: the effect stops 1.5–6 s after
-  the lever, receipt `class: cancelled` — D-88, `python3 review/dogfood/cancel.py`).
+- **Cancelling a task does not prove its execution stopped.** Cancellation releases the delegator but a
+  running command can outlive the assignment. Instance termination is user-only; confirm runner/operation
+  stop evidence before shared-workspace takeover. D-487's observer checks the recorded local process group
+  without signalling it or rewriting an unknown receipt. Historical probe: `review/dogfood/cancel.py` (D-88).
 - **A task can park in `BLOCKED`** when required checks are exhausted, a member fails or work is cancelled;
   a blocked task prevents the goal from completing. Use `teamagents tasks cancel --id` to cancel
   it (without a live turn it goes straight to `CANCELLED`);
   re-dispatch blocked work as a new task.
-- **A member that stops talking**: a turn whose model replies with plain text (no tool call) and does not
-  settle its task now ends the member's activity with the task still `RUNNING` (D-65), instead of the runtime
-  asking again forever. The delegator's wait stays pending — cancel the task to satisfy it
-  (`teamagents tasks cancel --id`, D-68), or send the member another instruction. A
-  `BLOCKED` task does not satisfy a delegator's wait; `CANCELLED` does.
+- **Enrolled work continues after progress prose** under D-487's bounded recovery policy. Empty replies,
+  plan-only loops and repeated action/observation patterns can block with a reason. Member attention can
+  supersede a coordinator wait without settling the task. Legacy unenrolled work retains D-65's idle-after-prose
+  behavior. A BLOCKED task does not satisfy a task-result wait; cancellation does.
 - **Avoid interrupting a member turn**: keep tasks small and acceptance criteria explicit. After an
   interruption recovery is driven by persisted location — known results are reused, in-flight losses are
   recorded as `OUTCOME_UNKNOWN`, and side effects are never replayed on a guess.

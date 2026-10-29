@@ -13,7 +13,7 @@ use serde_json::{json, Value as Json};
 use std::collections::BTreeMap;
 use teamagents_core::kernel::{
     cap_tool_output, page_output, ContextEntry, EntryKind, KernelInstance, KernelOutput, KernelProfile, ModelResponse,
-    FINISH_TOOL, TOOL_OUTPUT_CAP, WAIT_TOOL,
+    FINISH_TOOL, TOOL_OUTPUT_CAP, WAIT_TOOL, WORK_TOOL,
 };
 
 fn kernel() -> KernelInstance {
@@ -376,6 +376,8 @@ fn response_classification_is_exhaustive() {
               "arguments": "{\"status\":\"success\",\"summary\":\"s\",\"evidence\":[\"e\"]}"}}]});
     let wait = json!({"role": "assistant", "tool_calls": [{"id": "w1", "function": {"name": WAIT_TOOL,
                    "arguments": "{\"mode\":\"ANY\",\"conditions\":[{\"kind\":\"message\",\"from\":\"i2\"}]}"}}]});
+    let checkpoint = json!({"role":"assistant","tool_calls":[{"id":"p1","function":{"name":WORK_TOOL,
+        "arguments":"{\"action\":\"ask_user\",\"question\":\"Which API?\"}"}}]});
     let tool = json!({"role": "assistant", "tool_calls": [call("c1", "shell")]});
     let blank = json!({"role": "assistant", "content": ""});
     let text = json!({"role": "assistant", "content": "hello"});
@@ -386,6 +388,7 @@ fn response_classification_is_exhaustive() {
         let kind = match &out.output {
             KernelOutput::Completion(candidate) => format!("completion:{}", serde_json::to_string(candidate).unwrap()),
             KernelOutput::Wait(args) => format!("wait:{}", args["mode"].as_str().unwrap_or("")),
+            KernelOutput::Checkpoint(args) => format!("checkpoint:{}", args["action"].as_str().unwrap_or("")),
             KernelOutput::ToolIntents(intents) => format!("intents:{}", intents.len()),
             KernelOutput::Reply(content) => format!("reply:{content}"),
         };
@@ -394,6 +397,14 @@ fn response_classification_is_exhaustive() {
 
     assert!(classify(finish.clone()).0.starts_with("completion:"));
     assert_eq!(classify(wait.clone()).0, "wait:ANY");
+    assert_eq!(classify(checkpoint.clone()).0, "checkpoint:ask_user");
+    let mixed_checkpoint =
+        json!({"role":"assistant","tool_calls":[call("c1","shell"),checkpoint["tool_calls"][0].clone()]});
+    assert_eq!(classify(mixed_checkpoint), ("intents:1".into(), 1));
+    for control in [&finish, &wait] {
+        let mixed = json!({"role":"assistant","tool_calls":[control["tool_calls"][0].clone(),checkpoint["tool_calls"][0].clone()]});
+        assert_eq!(classify(mixed), ("reply:".into(), 2));
+    }
     assert_eq!(
         classify(json!({"role":"assistant","tool_calls":[call("c1","shell"), call("c2","shell")]})).0,
         "intents:2"

@@ -1276,6 +1276,19 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
         if leader.lifecycle != "ACTIVE" {
             return format!("{} · {} · teamagents instances", leader.lifecycle, leader.reason);
         }
+        if let Some((_, diagnostic)) = self.work_diagnostics.iter().find(|(id, _)| id == &leader.id) {
+            match diagnostic["code"].as_str() {
+                Some("needs_input") => {
+                    return format!(
+                        "Needs your decision · {} · /help",
+                        diagnostic["reason"].as_str().unwrap_or("Reply to the recorded question")
+                    )
+                }
+                Some("work_blocked") => return "Work blocked · /help for the saved reason".into(),
+                Some("stopped") => return "Stopped · Enter send · /help for recovery".into(),
+                _ => {}
+            }
+        }
         if let Some((id, diagnostic)) = self.work_diagnostics.iter().find(|(_, d)| d["attention"] == true) {
             return format!(
                 "{id}: {} · /help",
@@ -1283,6 +1296,11 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
             );
         }
         let state = match leader.phase.as_str() {
+            "READY"
+                if self.work_diagnostics.iter().any(|(id, d)| id == &leader.id && d["work"]["state"] == "RUNNING") =>
+            {
+                "Working"
+            }
             "READY" => "Ready",
             "MODEL_PENDING" => "Thinking",
             "TOOLS_PENDING" => "Working",

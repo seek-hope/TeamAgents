@@ -4,6 +4,10 @@ TeamAgents is a Linux terminal coding agent built around a Leader and optional w
 the goal; the Leader decides whether to work alone or delegate parts of it. A daemon keeps the session running
 when you close the TUI, and each session stores its authoritative state in one SQLite database.
 
+Within your instructions and intent, the agents are encouraged to explore, exercise judgment and deliver
+thorough, verified work. Admitted goals persist across turns, compaction and restart; progress updates do not
+finish the work, and routine choices need no repeated confirmation.
+
 - The TUI and `teamagents exec` are clients of the same daemon and reconnect from the last event watermark.
 - Tasks, grants, budgets, approvals, receipts and events are persisted together. Recovery reuses verified
   results and records unknown outcomes instead of repeating side effects on a guess.
@@ -15,7 +19,7 @@ when you close the TUI, and each session stores its authoritative state in one S
 | Document | Contents |
 |---|---|
 | [User guide](docs/USER-GUIDE.md) | Commands, configuration, permissions, Skills/MCP, recovery and cleanup |
-| [Daily coding readiness and comparison](docs/PRODUCT-COMPARISON.md) | Current Pi comparison, evidence limits and candidate work |
+| [Daily coding readiness and candidates](docs/PRODUCT-COMPARISON.md) | Current scope, evidence limits and remaining candidate work |
 | [Acceptance](docs/ACCEPTANCE.md) | Evidence for A01–A36 and known gaps |
 | [Capabilities](docs/CAPABILITIES.md) | Capabilities, their checks and the limits of those checks |
 | [Design baseline](docs/DESIGN.md) | Confirmed requirements, architecture and acceptance criteria |
@@ -34,7 +38,9 @@ when you close the TUI, and each session stores its authoritative state in one S
 <!-- maps: docs/PRODUCT-COMPARISON.md reader=user -->
 <!-- maps: docs/USER-GUIDE.md reader=user -->
 
-New here? Start with the [install guide](docs/INSTALL.md). The published release is **v0.2.0** for Linux x86_64.
+New here? Start with the [install guide](docs/INSTALL.md). The published **v0.2.0** archive is an older
+Linux x86_64 baseline; use a [source build](docs/INSTALL.md#build-and-install-from-source) for the current
+behavior described here.
 
 ## How it works
 

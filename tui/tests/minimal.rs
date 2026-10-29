@@ -321,6 +321,29 @@ fn diagnostics_are_local_visible_and_replaced_on_reconnect() {
     app.mark_connected();
     app.apply_checkpoint(json!({"instances": [{"id": "i-leader", "lifecycle": "ACTIVE", "phase": "READY"}]}), 21);
     assert!(!app.status_line().contains("idle unsettled"), "fresh/older-daemon snapshots clear stale diagnostics");
+    for (index, (code, state, label)) in [
+        ("ready", "RUNNING", "Working"),
+        ("needs_input", "NEEDS_INPUT", "Needs your decision"),
+        ("work_blocked", "BLOCKED", "Work blocked"),
+        ("stopped", "STOPPED", "Stopped"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        app.apply_checkpoint(
+            json!({"instances": [{"id":"i-leader", "lifecycle":"ACTIVE", "phase":"READY",
+            "diagnosis":{"code":code, "reason":"Which API version?", "work":{"state":state}}}]}),
+            22 + index as i64,
+        );
+        assert!(app.status_line().contains(label), "{}", app.status_line());
+        if code == "needs_input" {
+            assert!(app.status_line().contains("Which API version?"));
+            app.composer.set_text("/help");
+            app.handle_key(key(KeyCode::Enter));
+            assert!(app.entries.last().unwrap().text.contains("Which API version?"));
+        }
+        assert_eq!(app.focus, Focus::Composer);
+    }
 }
 
 #[test]

@@ -116,6 +116,10 @@ For a manual source upgrade:
 4. Run `teamagents version` and `teamagents doctor`, then reconnect to the intended session. `init` does not
    merge new settings into an existing config; review and edit them explicitly.
 
+Current source upgrades v6 databases to **schema v7** for durable work and its stop/admission semantics.
+Migration preserves existing goals and does not automatically enroll old idle sessions. A v6 writer cannot
+reopen the upgraded database; retain a pre-upgrade session backup if binary rollback must remain possible.
+
 Older `sessions/` layouts and pre-v2 configs are not migrated automatically. `doctor` reports the old
 directory without adopting it. Inventory old data, choose a new state root and remove anything only through an
 explicit separate operation. Retired sandbox keys must be removed deliberately; they are not silently

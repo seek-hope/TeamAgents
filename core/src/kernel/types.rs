@@ -13,6 +13,8 @@ pub const READBACK_TOOL: &str = "read_history";
 /// like finish); send/delegate/spawn are ordinary tool intents whose grants
 /// are re-checked at the dispatch linearization point (§6.1).
 pub const WAIT_TOOL: &str = "wait";
+/// Durable work checkpoint; a sole control action, offered only for enrolled work.
+pub const WORK_TOOL: &str = "work_checkpoint";
 pub const SEND_TOOL: &str = "send";
 pub const DELEGATE_TOOL: &str = "delegate";
 pub const SPAWN_TOOL: &str = "spawn";
@@ -231,6 +233,8 @@ pub enum KernelOutput {
     /// Sole wait call (§5.3): the runtime registers the wait against the
     /// persisted facts in the import transaction — never a lost wake (A23).
     Wait(Json),
+    /// Sole work checkpoint, committed with the response and its control-tool answer.
+    Checkpoint(Json),
 }
 
 /// What the runtime feeds back into an instance after execution.
@@ -359,6 +363,21 @@ pub fn collaboration_tool_schemas(actions: &[&str]) -> Vec<Json> {
     let mut schemas = Vec::new();
     for action in actions {
         let schema = match *action {
+            WORK_TOOL => json!({
+                "type":"function", "function": {
+                    "name":WORK_TOOL,
+                    "description":"Save durable work progress or ask a material user question. Must be the sole tool call. start_work admits a new actionable user request only during input admission and requires objective. continue requires next_step; ask_user requires question; blocked requires reason. Checkpoints are model claims, not new authority. Record remaining items honestly; clear them only after appropriate evidence. Use wait for tool/member events and finish for completion. Routine short tasks within admitted work need no progress checkpoint; input admission still requires start_work for new work.",
+                    "parameters":{"type":"object","properties":{
+                        "action":{"type":"string","enum":["start_work","continue","ask_user","blocked"]},
+                        "objective":{"type":"string"},
+                        "decisions":{"type":"array","items":{"type":"string"}},
+                        "completed":{"type":"array","items":{"type":"string"}},
+                        "remaining":{"type":"array","items":{"type":"string"}},
+                        "evidence":{"type":"array","items":{"type":"string"}},
+                        "next_step":{"type":"string"},"question":{"type":"string"},"reason":{"type":"string"}
+                    },"required":["action"],"additionalProperties":false}
+                }
+            }),
             SEND_TOOL => json!({
                 "type": "function",
                 "function": {
@@ -392,7 +411,7 @@ pub fn collaboration_tool_schemas(actions: &[&str]) -> Vec<Json> {
                 "type": "function",
                 "function": {
                     "name": DELEGATE_TOOL,
-                    "description": "Delegate a task to another instance with a narrow return path: the assignee can settle exactly this task back to you, nothing more. The task is charged to the delegating instance's active goal; when that goal is settled no further task can be charged, and reopening one is the user's (`teamagents goals open`), so report that instead of retrying. To be woken by its outcome, wait on {kind:'task',task_id:'<id>'} **with timer_seconds set**: the settlement arrives as a task result, not as a chat message, and an assignee that ends its turn without settling produces no result at all. When that happens, that part is yours again: re-delegate it as a new task or do it yourself, and never report work you did not verify as success.",
+                    "description": "Delegate a task to another instance with a narrow return path: the assignee can settle exactly this task back to you. Costs belong to your active admitted goal; terminal goals never reopen. If there is no active goal, follow the current work admission or recovery state before delegating. Wait on {kind:'task',task_id:'<id>'} with timer_seconds as a fallback: a task result is not a chat message. In enrolled work, member attention can supersede the wait without settling the task. Inspect task state and saved evidence after attention or a timeout. Cancellation does not prove the old command stopped; shared-workspace takeover needs recorded stop evidence, or use an independent workspace and integrate explicitly. Never report unverified work as success.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -445,7 +464,7 @@ pub fn collaboration_tool_schemas(actions: &[&str]) -> Vec<Json> {
                 "type": "function",
                 "function": {
                     "name": WAIT_TOOL,
-                    "description": "Park this instance until the conditions hold or the timer fires. Must be the only tool call in this response. Conditions: {kind:'message',from?:'<instance>'} — a chat message from that instance (any sender when omitted) has been applied; a delegated task's outcome is a task result, not a chat message, and never satisfies this. {kind:'task',task_id:'<id>'} — that task reached SUCCEEDED, FAILED or CANCELLED; name this one for work you delegated. A task the assignee settled BLOCKED does not satisfy it. {kind:'operation',operation_id:'<id>'}, {kind:'envelope',envelope_id:'<id>'}. Always set timer_seconds when you wait for delegated work: an assignee that ends its turn without settling leaves the task open, no fact will satisfy the condition, and the timer is then the only wake you get. Re-check the task statuses when it fires and settle only what really holds.",
+                    "description": "Park this instance until the conditions hold or the timer fires. Must be the only tool call in this response. Conditions: {kind:'message',from?:'<instance>'} means an applied chat message, optionally from one sender. A delegated outcome is a task result, not a chat message, and never satisfies this condition. {kind:'task',task_id:'<id>'} means SUCCEEDED, FAILED or CANCELLED; BLOCKED does not satisfy it. Other conditions: {kind:'operation',operation_id:'<id>'}, {kind:'envelope',envelope_id:'<id>'}. Use timer_seconds as a fallback for delegated work. In enrolled work, task attention or a relevant runtime observation can cancel and supersede a wait without proving its conditions or the task's success. User input can also supersede it. On wake, inspect the recorded reason, task state and receipts, and continue only what the evidence supports.",
                     "parameters": {
                         "type": "object",
                         "properties": {

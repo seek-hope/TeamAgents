@@ -4,6 +4,9 @@ TeamAgents 是运行在 Linux 终端里的 coding agent。你只向 Leader 提�
 创建工作实例并分派部分工作。关闭 TUI 后，daemon 会继续维护会话；每个会话的权威状态都保存在一个
 SQLite 数据库中。
 
+在服从你的指令、满足你的意图的前提下，鼓励模型自由探索、独立判断，充分完善和验证结果。已接纳的目标
+跨模型回合、上下文压缩和重启持续存在；汇报进度不等于结束工作，常规选择也不需要反复请你确认。
+
 - TUI 和 `teamagents exec` 连接同一个 daemon，断线后从上次的事件位置继续读取。
 - 任务、授权、预算、审批、回执和事件一起持久化。恢复时复用已确认的结果；无法确认的外部结果记为未知，
   不会靠猜测重复执行副作用。
@@ -14,7 +17,7 @@ SQLite 数据库中。
 | 文档 | 内容 |
 |---|---|
 | [使用指南](docs/USER-GUIDE.md) | 命令、配置、权限、Skills/MCP、恢复与清理 |
-| [日常编码成熟度与产品对比](docs/PRODUCT-COMPARISON.md) | 当前 Pi 对比、证据边界和候选工作 |
+| [日常编码能力与候选工作](docs/PRODUCT-COMPARISON.md) | 当前范围、证据边界和剩余候选工作 |
 | [验收对照表](docs/ACCEPTANCE.md) | A01–A36 的证据与已知缺口 |
 | [能力与证据](docs/CAPABILITIES.md) | 各项能力、对应检查及其证据边界 |
 | [设计与验收基线](docs/DESIGN.md) | 已确认的需求、架构和验收标准 |
@@ -23,7 +26,8 @@ SQLite 数据库中。
 | [安装指南](docs/INSTALL.md) | 下载、源码构建、升级与卸载 |
 | [形式化验证](verification/README.md) | TLA+、Kani、验证命令和未证明范围 |
 
-初次使用请先看[安装指南](docs/INSTALL.md)。当前公开版本是 **v0.2.0**，支持 Linux x86_64。
+初次使用请先看[安装指南](docs/INSTALL.md)。公开的 **v0.2.0** 安装包是较早的 Linux x86_64 基线；
+本文描述的是当前源码行为，请通过[源码构建](docs/INSTALL.md#build-and-install-from-source)使用。
 
 ## 怎么工作
 

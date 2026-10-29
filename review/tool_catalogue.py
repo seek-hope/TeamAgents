@@ -106,6 +106,10 @@ def tools():
 
 def entry(schema, label):
     function = schema["function"]
+    if function["name"] == "work_checkpoint":
+        label = "`kernel::collaboration_tool_schemas(actions)` (enrolled work; control action)"
+    elif function["name"] == "wait":
+        label = "`kernel::collaboration_tool_schemas(actions)` (team instances; control action)"
     parameters = function.get("parameters", {})
     required = parameters.get("required", [])
     return (function["name"], function["description"],

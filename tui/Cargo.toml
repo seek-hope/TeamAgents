@@ -32,3 +32,14 @@ path = "src/lib.rs"
 [[bin]]
 name = "teamagents-tui"
 path = "src/main.rs"
+
+# Isolated helpers compile grammar regexes on every start. Keep development builds
+# within the same rendering deadlines as release builds.
+[profile.dev.package.fancy-regex]
+opt-level = 3
+
+[profile.dev.package.regex-automata]
+opt-level = 3
+
+[profile.dev.package.regex-syntax]
+opt-level = 3

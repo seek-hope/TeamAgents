@@ -5,6 +5,7 @@
 //! losses are recorded honestly, and nothing side-effecting is re-executed
 //! on a guess.
 
+use super::work::append_context as append_work_context;
 use crate::hooks::Hooks;
 use crate::jobs::{client, JobSpec, Journal};
 use crate::providers::{Cancel, ErrorClass, Provider, ProviderEvent};
@@ -643,6 +644,20 @@ pub(crate) async fn bootstrap(
                     }
                     control.submit(command("boot-goal", "create_goal", goal), Identity::User)?;
                 }
+                if goal_limits["autonomous_work"] == json!(true) {
+                    let mut policy_limits = goal_limits.clone();
+                    if let Some(minutes) = deadline_minutes {
+                        policy_limits["deadline_minutes"] = json!(minutes);
+                    }
+                    control.submit(
+                        command(
+                            format!("work-policy-{}", uuid::Uuid::new_v4()),
+                            "configure_work",
+                            json!({"leader_id":instance,"limits":policy_limits}),
+                        ),
+                        Identity::System,
+                    )?;
+                }
                 // The session bootstrap speaks for the user: the Leader manages
                 // the team by default (Q5, D-42), so it holds the authority the
                 // collaboration tools are derived from. Until this existed a real
@@ -848,6 +863,7 @@ impl<P: Provider> Driver<P> {
                 self.wait().await;
                 continue;
             }
+            self.observe_workspace_stops().await?;
             match self.drive_once(&snapshot).await {
                 Ok(()) => {}
                 Err(error) if storage_full(&error) => {
@@ -857,6 +873,45 @@ impl<P: Provider> Driver<P> {
                 Err(error) => return Err(error),
             }
         }
+    }
+
+    async fn observe_workspace_stops(&self) -> Result<(), String> {
+        let instance = self.config.instance_id.clone();
+        let candidates = self
+            .storage
+            .call(move |control| {
+                teamagents_core::v2::control::workspace_takeover_candidates(control.connection(), &instance)
+            })
+            .await??;
+        let mut observations = Vec::new();
+        for candidate in candidates {
+            if candidate["tool"] != "shell" {
+                continue;
+            }
+            let Some(operation) = candidate["operation_id"].as_str() else { continue };
+            let Some(owner) = candidate["instance_id"].as_str() else { continue };
+            let root = if owner == self.config.instance_id {
+                self.config.state_root.clone()
+            } else {
+                self.config.instances_dir.join(owner)
+            };
+            let dir = root.join("jobs").join(operation.replace(['/', ':'], "_"));
+            if let Some(observation) = super::work::stopped_observation(&dir, operation) {
+                observations.push(json!({"operation_id":operation,"observation":observation}));
+            }
+        }
+        if !observations.is_empty() {
+            self.submit(
+                self.command(
+                    format!("observe-stops-{}", uuid::Uuid::new_v4()),
+                    "observe_operation_stops",
+                    json!({"observations":observations}),
+                ),
+                Identity::System,
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     /// The user's `pre_tool` hook may veto one native tool call before it runs
@@ -1136,7 +1191,7 @@ impl<P: Provider> Driver<P> {
     /// the covered prefix into a summary entry; the originals stay in the
     /// epoch and stay reachable. Returns whether a summary committed — a
     /// failed summary is a lost optimization, never a failed turn.
-    async fn compact(&mut self, entries: &[ContextEntry]) -> Result<bool, String> {
+    async fn compact(&mut self, entries: &[ContextEntry], revision: i64, work: &Json) -> Result<bool, String> {
         let Some(window) = self.config.profile.context_window.filter(|window| *window > 0) else { return Ok(false) };
         // The retained tail is the newest user input and everything after it:
         // a summary never hides the working set the current turn is using —
@@ -1218,11 +1273,15 @@ impl<P: Provider> Driver<P> {
                     "begin_compression",
                     json!({"instance_id": self.config.instance_id, "request_id": request_id,
                            "request_ref": format!("compression:{}", self.config.instance_id),
-                           "est_prompt_tokens": request.est_prompt_tokens}),
+                           "revision": revision, "prepared_work": work, "est_prompt_tokens": request.est_prompt_tokens}),
                 ),
                 Identity::System,
             )
-            .await?;
+            .await;
+        let begun = match begun {
+            Err(error) if error.contains("stale executor") => return Ok(false),
+            other => other?,
+        };
         if begun["budget_refused"] == json!(true) || begun["deadline_refused"] == json!(true) {
             // the goal budget and deadline stay authoritative (§8, A35): the
             // turn proceeds uncompressed and its own request is gated the same way
@@ -1341,7 +1400,11 @@ impl<P: Provider> Driver<P> {
     /// Returns the kernel, plus the surface record D-350 persists with the request: the tool *names* this
     /// instance was offered, and whether the surface check authorized that set against the grants (the same
     /// question the dispatch boundary asks, asked again here rather than assumed).
-    async fn team_kernel(&self, snapshot: &Snapshot) -> Result<(KernelInstance, Vec<String>, bool), String> {
+    async fn team_kernel(
+        &self,
+        snapshot: &Snapshot,
+        work: &Json,
+    ) -> Result<(KernelInstance, Vec<String>, bool), String> {
         let instance = self.config.instance_id.clone();
         let surface_of = instance.clone();
         let actions = self
@@ -1390,6 +1453,14 @@ impl<P: Provider> Driver<P> {
             profile.tools.retain(|tool| tool["function"]["name"] != json!("shell"));
         }
         profile.tools.extend(teamagents_core::kernel::collaboration_tool_schemas(&actions));
+        if !work.is_null() {
+            profile
+                .tools
+                .extend(teamagents_core::kernel::collaboration_tool_schemas(&[teamagents_core::kernel::WORK_TOOL]));
+            if profile.instructions == super::daemon::LEGACY_LEADER_INSTRUCTIONS {
+                profile.instructions = super::work::LEADER.into();
+            }
+        }
         // D-453: the self-update request is a Leader-only, user-approved
         // capability. Offering it to a worker would let delegated work ask for
         // the installation to be replaced; the policy gate and the identity
@@ -1456,7 +1527,12 @@ impl<P: Provider> Driver<P> {
         const SETTLEMENT_RULE: &str = "Settlement rule: if a task is assigned to you, never end a turn leaving it \
 open — settle it with the `finish` tool (SUCCEEDED, FAILED, or BLOCKED with the reason), because the instance \
 that delegated it learns the outcome only from a settlement.";
-        profile.instructions = format!("{}\n\n{SETTLEMENT_RULE}", profile.instructions);
+        profile.instructions = format!("{}\n\n{}", super::work::BEHAVIOR, profile.instructions);
+        if work.is_null() {
+            profile.instructions = format!("{}\n\n{SETTLEMENT_RULE}", profile.instructions);
+        } else {
+            profile.instructions = format!("{}\n\n{}", profile.instructions, super::work::HARNESS);
+        }
         if !rules.is_empty() {
             profile.instructions = format!("{}\n\n{rules}", profile.instructions);
         }
@@ -1600,6 +1676,29 @@ that delegated it learns the outcome only from a settlement.";
             .await?
     }
 
+    async fn work_context(&self, request: Option<&str>) -> Result<Json, String> {
+        let instance = self.config.instance_id.clone();
+        let request = request.map(str::to_string);
+        self.storage
+            .call(move |control| {
+                if let Some(request) = request {
+                    let raw: Option<String> = control
+                        .connection()
+                        .query_row("SELECT context_json FROM work_requests WHERE request_id=?1", [&request], |r| {
+                            r.get(0)
+                        })
+                        .optional()
+                        .map_err(|e| format!("request work context: {e}"))?;
+                    raw.map(|s| serde_json::from_str(&s).map_err(|e| format!("request work JSON: {e}")))
+                        .transpose()
+                        .map(|v| v.unwrap_or(Json::Null))
+                } else {
+                    teamagents_core::v2::control::work_context(control.connection(), &instance)
+                }
+            })
+            .await?
+    }
+
     /// READY: consume input or last tool results into a fixed request, then
     /// reserve budget and register it — one transaction (§3).
     async fn step_ready(&mut self, snapshot: &Snapshot) -> Result<bool, String> {
@@ -1618,6 +1717,13 @@ that delegated it learns the outcome only from a settlement.";
             )
             .await?;
         let revision = drained["revision"].as_i64().unwrap_or(snapshot.revision);
+        let refreshed;
+        let snapshot = if revision != snapshot.revision {
+            refreshed = self.snapshot().await?;
+            &refreshed
+        } else {
+            snapshot
+        };
         // D-410: before the request is built, a goal whose deadline is close gets its one wrap-up note, so the
         // model can settle or report with time to spare instead of being cut mid-edit.
         self.warn_before_deadline(snapshot).await?;
@@ -1647,7 +1753,8 @@ that delegated it learns the outcome only from a settlement.";
         // counts as addressed here — the pre-D-462 condition (`is_none_or` + no pending task) returned idle.
         let tail_is_addressed =
             entries.last().is_none_or(|entry| matches!(entry.kind, EntryKind::Assistant | EntryKind::Runtime));
-        if !super::readiness::opens_a_turn(false, tail_is_addressed, pending_task) {
+        let mut work = self.work_context(None).await?;
+        if !super::readiness::opens_work_turn(false, tail_is_addressed, pending_task, &work) {
             return Ok(false);
         }
         // adopt assigned work: the turn that addresses a PENDING task also
@@ -1664,25 +1771,28 @@ that delegated it learns the outcome only from a settlement.";
                 Err(error) if error.contains("not startable") => {}
                 Err(error) => return Err(error),
             }
+            work = self.work_context(None).await?;
         }
-        let (kernel, offered_tools, surface_authorized) = self.team_kernel(snapshot).await?;
+        let (kernel, offered_tools, surface_authorized) = self.team_kernel(snapshot, &work).await?;
         // D-402: remember the surface the request carries, so a later call to a name that does not exist is
         // answered with what does (`unknown_tool_message`).
         self.offered = offered_tools.iter().cloned().chain(builtin_names()).collect();
         let request_id = format!("req-{}", uuid::Uuid::new_v4());
         let (mut request, mask) = kernel.prepare_request_with_mask(&entries, &request_id, self.wire_mask.as_ref());
         self.wire_mask = mask;
+        append_work_context(&mut request, &work);
         // L2 (§7, A20): a summary is taken before the request is fixed and
         // registered, so the compacted view is what begin_request reserves
         // budget for and what the provider receives
         let last_prompt = self.last_prompt_tokens().await?;
         if self.over_threshold(&request, last_prompt) {
-            if self.compact(&entries).await? {
+            if self.compact(&entries, revision, &work).await? {
                 self.wire_mask = None;
                 entries = self.context_entries(snapshot).await?;
                 self.expand_images(&mut entries)?;
                 let (next, mask) = kernel.prepare_request_with_mask(&entries, &request_id, None);
                 request = next;
+                append_work_context(&mut request, &work);
                 self.wire_mask = mask;
             } else if self.wire_mask.is_some() {
                 // The summary could not commit (or there was nothing to
@@ -1692,6 +1802,7 @@ that delegated it learns the outcome only from a settlement.";
                 self.wire_mask = None;
                 let (next, mask) = kernel.prepare_request_with_mask(&entries, &request_id, None);
                 request = next;
+                append_work_context(&mut request, &work);
                 self.wire_mask = mask;
             }
         }
@@ -1701,7 +1812,7 @@ that delegated it learns the outcome only from a settlement.";
                     format!("begin-{request_id}"),
                     "begin_request",
                     json!({"instance_id": self.config.instance_id, "request_id": request_id,
-                           "revision": revision, "est_prompt_tokens": request.est_prompt_tokens,
+                           "revision": revision, "prepared_work": work, "est_prompt_tokens": request.est_prompt_tokens,
                            "offered_tools": offered_tools, "surface_authorized": surface_authorized}),
                 ),
                 Identity::Instance(self.config.instance_id.clone()),
@@ -1726,6 +1837,9 @@ that delegated it learns the outcome only from a settlement.";
             Ok(_) => {
                 self.prepared.insert(request_id, request);
                 Ok(true)
+            }
+            Err(error) if error.contains("work is waiting") || error.contains("unconsumed scheduling reason") => {
+                Ok(false)
             }
             Err(error) if error.contains("stale executor") || error.contains("not READY") => {
                 // someone else advanced the instance; re-read and continue
@@ -1794,12 +1908,14 @@ that delegated it learns the outcome only from a settlement.";
             None => {
                 let mut entries = self.context_entries(snapshot).await?;
                 self.expand_images(&mut entries)?;
-                let (request, mask) = self.team_kernel(snapshot).await?.0.prepare_request_with_mask(
+                let work = self.work_context(Some(&request_id)).await?;
+                let (mut request, mask) = self.team_kernel(snapshot, &work).await?.0.prepare_request_with_mask(
                     &entries,
                     &request_id,
                     self.wire_mask.as_ref(),
                 );
                 self.wire_mask = mask;
+                append_work_context(&mut request, &work);
                 request
             }
         };
@@ -2030,7 +2146,7 @@ that delegated it learns the outcome only from a settlement.";
             ),
             KernelOutput::Completion(candidate) => (vec![], serde_json::to_value(candidate).unwrap_or(Json::Null), Json::Null),
             KernelOutput::Wait(wait) => (vec![], Json::Null, wait.clone()),
-            KernelOutput::Reply(_) => (vec![], Json::Null, Json::Null),
+            KernelOutput::Reply(_) | KernelOutput::Checkpoint(_) => (vec![], Json::Null, Json::Null),
         };
         let mut params = json!({
             "request_id": request_id,
@@ -2039,6 +2155,9 @@ that delegated it learns the outcome only from a settlement.";
             "intents": intents,
             "grant_revision": 0,
         });
+        if let KernelOutput::Checkpoint(checkpoint) = &interpretation.output {
+            params["checkpoint"] = checkpoint.clone();
+        }
         if !completion.is_null() {
             params["completion"] = completion;
         }
@@ -2352,6 +2471,16 @@ that delegated it learns the outcome only from a settlement.";
                     )
                     .await;
                 match dispatched {
+                    Ok(result) if result["status"] == "WORKSPACE_BUSY" => {
+                        self.complete_with_error(
+                            &operation_id,
+                            &intent,
+                            "workspace_busy",
+                            result["blocker"]["reason"].as_str().unwrap_or("Shared workspace is still in use"),
+                        )
+                        .await?;
+                        continue;
+                    }
                     Ok(result) if result["status"] == json!("APPROVAL_REQUIRED") => {
                         let approval_id = result["approval_id"].as_str().unwrap_or("").to_string();
                         if self.config.approvals_reviewer == "auto_review"
@@ -3218,7 +3347,7 @@ that delegated it learns the outcome only from a settlement.";
             }
             self.submit(
                 self.command(
-                    format!("complete-goal-{goal}"),
+                    format!("complete-goal-{goal}-{candidate_row}"),
                     "complete_goal",
                     json!({"goal_id": goal, "instance_id": self.config.instance_id}),
                 ),
@@ -3231,7 +3360,7 @@ that delegated it learns the outcome only from a settlement.";
         // from the stored candidate (§5.3); an empty queue just closes
         match self.oldest_open_task().await? {
             Some(task_id) => {
-                let (_, candidate) = self.completion_candidate().await?;
+                let (candidate_row, candidate) = self.completion_candidate().await?;
                 let status = match candidate["outcome"].as_str().unwrap_or("failed") {
                     "success" => "SUCCEEDED",
                     "blocked" => "BLOCKED",
@@ -3241,7 +3370,7 @@ that delegated it learns the outcome only from a settlement.";
                 let evidence = candidate.get("evidence").cloned().unwrap_or(json!([]));
                 self.submit(
                     self.command(
-                        format!("complete-task-{task_id}"),
+                        format!("complete-task-{task_id}-{candidate_row}"),
                         "complete_task",
                         json!({"task_id": task_id, "status": status, "summary": summary, "result_refs": evidence}),
                     ),
@@ -3518,7 +3647,7 @@ that delegated it learns the outcome only from a settlement.";
             if failures.is_empty() {
                 self.submit(
                     self.command(
-                        format!("complete-goal-{goal}"),
+                        format!("complete-goal-{goal}-{candidate_row}"),
                         "complete_goal",
                         json!({"goal_id": goal, "instance_id": self.config.instance_id}),
                     ),
@@ -3613,6 +3742,16 @@ that delegated it learns the outcome only from a settlement.";
                     )
                     .await;
                 match dispatched {
+                    Ok(result) if result["status"] == "WORKSPACE_BUSY" => {
+                        self.complete_with_error(
+                            operation_id,
+                            &intent,
+                            "workspace_busy",
+                            result["blocker"]["reason"].as_str().unwrap_or("Shared workspace is still in use"),
+                        )
+                        .await?;
+                        continue;
+                    }
                     Ok(_) => {}
                     Err(error) if error.contains("not dispatchable") || error.contains("lost the dispatch race") => {
                         continue;

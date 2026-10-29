@@ -18,6 +18,7 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Release publication | v0.2.0 is the first public release (Linux x86_64, musl static), rebuilt with D-476; future tags still need explicit user authorization and `TEAMAGENTS_RELEASE_APPROVED=true` | D-457, D-475, D-477 |
 | Context compaction | triggered by real window usage; the summary keeps the original request and acceptance criteria, and the full text stays retrievable | D-28 |
 | Task priority | complex coding and long-horizon stability come first | D-35 |
+| Work and initiative | honor user instructions and intent; explore freely and pursue excellent, thoroughly verified results within the authorized scope. Durable goals span turns, compaction and restart; bounded recovery prevents empty loops | D-487 |
 | Native context | real-model evaluation always uses the model's native window and records the value and its source | D-36 |
 | Install and first config | source builds or the published v0.2.0 archive; init writes a minimal config and never overwrites an existing file; local archives require matching checksums | D-37, D-457, D-475; docs/INSTALL.md |
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
@@ -33,10 +34,61 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Reasoning effort menu | each model may declare `efforts`; the default is minimal/low/medium/high/xhigh/max; a model that lacks the current level falls back to the nearest declared level at or below it, and the CLI keeps an explicit override | D-476 |
 | Capability delegation | user remains the authority root; spawned instances still hold no shell by default; a user grant may be marked `delegable`, and only such a parent may produce attenuated, task-scoped, non-delegable child grants; missing capabilities become a visible pending approval, not a silent idle | D-455 |
 | Repository-local config | nearest ancestor config is discovered; canonical-root trusted_projects or explicit trust_project admits it; permissions, hooks, checks, retention, limits and update policy stay user-only; instruction files remain explicit | D-244, D-246, D-434 |
-| Retention | history_days applies at boot under V2Retention guards; archived_days is applied by sessions prune under V2Prune guards; live state and evidence stay protected | D-245, D-435, D-436 |
+| Retention | history_days applies at boot under V2Retention guards; archived_days is applied by sessions prune under V2Prune guards; live state and evidence stay protected | D-245, D-435, D-436, D-487 |
 | Prompt cache | cache hit/miss/write are provider-reported and visible; the L1 frontier is fixed between compactions; Anthropic gets explicit breakpoints and OpenAI a stable key; DeepSeek stays automatic | D-459 |
 | Command idempotency | a replay with the same `command_id` returns the stored receipt for control-plane state, and the authoritative check runs under the write lock (D-463); result bodies are shared by content digest and zstd-compressed (D-464), while the receipt **rows** remain one per command | D-463, D-464 |
 | Model actions and code windows | a deciding read shares the write's transaction, or the guard is a predicate on the write itself; `verification/REPORT.md` §6 lists the protocol transitions and the three engine windows that span two transactions with their predicates | D-465 |
+
+## D-487 Persistent work context and bounded autonomous continuation (2026-10-28)
+
+**Authorization.** After reviewing the seven-repository source study and the expanded DD-11 proposal, the
+user approved implementation. Goals carry sustained user work across model turns, context renewal and restart.
+Clear communication and material clarification before execution are the principal behavior rules; routine
+technical decisions and previously granted scope do not require repeated confirmation.
+
+The user subsequently clarified the overall prompt principle: within user instructions and intent, encourage
+free exploration, initiative and the strongest useful result. The shared behavior prompt applies to Leader and
+member requests, including legacy sessions. It asks for independent judgment, investigation, refinement and
+appropriate validation; runtime limits prevent empty loops and do not justify shallow work or premature handoff.
+Scope, authority, time and budget still govern execution.
+
+**Implemented contract.** Versioned behavior, role and harness instructions are separate from the live work
+projection. `work_states`, `work_inputs` and `work_requests` live in the same authoritative SQLite database.
+Checkpoints are bounded model claims, while input references, permissions, operation receipts, checks and usage
+retain their own provenance. Retention preserves pending admission envelopes and inputs owned by active
+work, including acceptance metadata needed after a pause; closed work releases them to ordinary retention.
+A request freezes its work context; preparation and settlement reject changed
+assignment/input scope. Old responses cannot replace a new assignment's checkpoint or recovery allowance.
+
+A goal carries the whole admitted user work across turns, context renewal and restart. A progress reply does
+not finish it. Up to two empty/prose/plan recovery continuations are allowed before work becomes BLOCKED;
+repeated action/observation patterns are also bounded. These are operational heuristics, not proof of semantic
+failure. New scoped input or observations can reopen an episode; restart and compaction cannot replenish it.
+Member attention and recorded process stops supersede waits without pretending a task succeeded. Questions,
+blocking and user stops are explicit states; attention does not override a stop or answer a user question.
+
+After a terminal goal, information-only replies create no goal. A new actionable request uses the internal
+`work_checkpoint start_work` action, or user-supplied acceptance checks, to admit one new goal. Classification,
+clarification and compaction retain a pinned policy and original input time. Known and unknown admission usage
+transfers once to the new work without rewriting the original requests; an information answer's cost does not
+move to unrelated work. Existing goals, deadlines, exhausted budgets and PARKED states cannot be reset this way.
+
+Success requires current input/assignment scope, reconciled remaining items and tasks, appropriate scoped
+execution evidence, and the existing required checks. A green command alone is not semantic completion. A
+conflicting retired execution blocks shared-workspace dispatch until separate stop evidence exists. The local
+observer checks the recorded process group without signalling it; it never rewrites an unknown receipt. This
+is not confinement, cross-session coordination, or proof about escaped descendants and remote effects.
+
+Schema v7 prevents older writers from ignoring these states. Migration preserves historical records and does
+not enroll old idle work automatically. Forks preserve pending admission costs, policy, decisions and user
+stops, require fresh execution evidence, and refuse unproven tracked execution. Exports include the work
+projection and its provenance. `exec` waits through progress prose and returns `needs_input` (exit 3) for a
+material question; questions and unsettled work do not start client post-work checks.
+
+Local validation is recorded in ACCEPTANCE and the formal report. The source study remains dated research;
+scripted providers, fault injection, local process tests and finite models do not establish real-model success
+rates or renew the independent audit. Reviewer accounting remains a separate gap. No paid trial or public
+release is included.
 
 ## D-486 Preserve completion answers and render real Shell envelopes (2026-10-28)
 

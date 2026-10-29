@@ -200,6 +200,9 @@ pub async fn run_reference<P: Provider>(
                 trace.record("completion", json!({"request_id": request_id, "candidate": candidate}))?;
                 break ReferenceEnd::Completed(candidate);
             }
+            KernelOutput::Checkpoint(_) => {
+                break ReferenceEnd::Failed("reference loop has no durable work checkpoint".into());
+            }
             KernelOutput::Wait(wait) => {
                 break ReferenceEnd::Failed(format!("reference loop cannot wait: {wait}"));
             }

@@ -5,6 +5,9 @@
 
 - One authoritative SQLite database per session, with tasks, grants, budgets, approvals, receipts and events
   committed together. Recovery reuses verified results and records unknown outcomes without blind replay.
+- Persistent work across turns, compaction and restart, with bounded continuation, explicit questions and
+  stops, scoped completion evidence and internal admission of subsequent work. Checkpoints retain model
+  claims; input, authority, costs and execution outcomes keep separate provenance.
 - One daemon per session. The TUI and `teamagents exec` use its Unix-socket JSON protocol and resume from the
   last event watermark.
 - Governed teams through `spawn`, `delegate`, `send` and `wait`, with shared, private and Git-worktree
@@ -29,7 +32,7 @@
 - Ctrl+Q closes the TUI without stopping the daemon, Ctrl+P opens pending input and Ctrl+M opens the Leader's
   model/effort menu. `make pty` covers five terminal profiles and both forced graphics modes.
 
-Local regression: `make check` green (core 147 / engine 424 / tui 97) plus `make pty`. The release workflow
+Local regression passes: core 174 / engine 437 / tui 97, with full check and PTY gates completed. The release workflow
 smoke-installs the exact archive before publication. Real-model acceptance is reported separately in
 [docs/ACCEPTANCE.md](https://github.com/seek-hope/TeamAgents/blob/main/docs/ACCEPTANCE.md); packaging current
 source does not widen those evidence boundaries.

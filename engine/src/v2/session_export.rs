@@ -155,6 +155,10 @@ fn stream(
         ("instances","Members","SELECT rowid, json_object('id',id,'session_id',session_id,'workspace',workspace_ref,'lifecycle',lifecycle,'phase',phase) FROM instances WHERE rowid > ?1 ORDER BY rowid LIMIT ?2"),
         ("context_entries","History","SELECT rowid, json_object('id',id,'instance_id',instance_id,'epoch',epoch,'idx',idx,'kind',kind,'message_raw',message_json,'payload_ref',payload_ref,'envelope_id',envelope_id,'refs_raw',refs_json,'created',created,'compressed_by',compressed_by) FROM context_entries WHERE rowid > ?1 ORDER BY rowid LIMIT ?2"),
         ("envelopes","Inputs","SELECT rowid, json_object('id',id,'session_id',session_id,'sender',sender,'recipient',recipient,'epoch',epoch,'sequence',sequence,'state',state,'payload_raw',payload_json,'payload_ref',payload_ref) FROM envelopes WHERE rowid > ?1 AND kind='user_input' ORDER BY rowid LIMIT ?2"),
+        ("goals","Work goals","SELECT rowid,json_object('id',id,'status',status,'deadline',deadline,'original_request_ref',original_request_ref,'limits_raw',limits_json,'usage_raw',known_usage_json,'unknown_usage',unknown_usage) FROM goals WHERE rowid>?1 ORDER BY rowid LIMIT ?2"),
+        ("work_states","Durable work state","SELECT rowid,json_object('goal_id',NULLIF(goal_id,''),'instance_id',instance_id,'epoch',epoch,'task_id',task_id,'state',state,'checkpoint_raw',checkpoint_json,'checkpoint_provenance','model_claim','policy_raw',policy_json,'pending_reason',pending_reason,'repair_turns',empty_turns,'revision',revision,'reason',reason) FROM work_states WHERE rowid>?1 ORDER BY rowid LIMIT ?2"),
+        ("work_inputs","Work input attribution","SELECT rowid,json_object('goal_id',NULLIF(goal_id,''),'instance_id',instance_id,'epoch',epoch,'envelope_id',envelope_id,'state',state) FROM work_inputs WHERE rowid>?1 ORDER BY rowid LIMIT ?2"),
+        ("work_requests","Frozen work context","SELECT rowid,json_object('request_id',request_id,'projection_raw',context_json,'billed_goal_id',billed_goal_id,'unknown_usage',unknown_usage) FROM work_requests WHERE rowid>?1 ORDER BY rowid LIMIT ?2"),
         ("input_revisions","Input revisions","SELECT rowid, json_object('envelope_id',envelope_id,'revision',revision,'action',action,'payload_raw',payload_json,'created',created) FROM input_revisions WHERE rowid > ?1 ORDER BY rowid LIMIT ?2"),
         ("input_attachments","Attachment references","SELECT x.rowid, json_object('envelope_id',x.envelope_id,'ordinal',x.ordinal,'artifact_id',x.artifact_id,'digest',a.digest,'size',a.size,'completeness',a.completeness) FROM input_attachments x LEFT JOIN artifacts a ON a.id=x.artifact_id WHERE x.rowid > ?1 ORDER BY x.rowid LIMIT ?2"),
     ] {
@@ -175,7 +179,8 @@ fn stream(
                     if raw.len()>MAX_RECORD { return Err(format!("export {table} record {after} exceeds 16 MiB")); }
                     let mut value:Json=serde_json::from_str(raw).map_err(|e|e.to_string())?;
                     value["cursor"]=json!(after);
-                    for (raw, parsed) in [("message_raw","message"),("payload_raw","payload"),("refs_raw","refs")] {
+                    for (raw, parsed) in [("message_raw","message"),("payload_raw","payload"),("refs_raw","refs"),
+                        ("limits_raw","limits"),("usage_raw","known_usage"),("checkpoint_raw","checkpoint"),("policy_raw","policy"),("projection_raw","projection")] {
                         if let Some(source)=value.get(raw).cloned() {
                             match source.as_str().map(serde_json::from_str::<Json>) {
                                 Some(Ok(data)) => {value.as_object_mut().unwrap().remove(raw);value[parsed]=data;}

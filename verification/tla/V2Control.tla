@@ -14,6 +14,8 @@
 (* reservations. The environment (tool outcome, approval timing, crashes)  *)
 (* is nondeterministic on purpose.                                         *)
 (*                                                                         *)
+(* Scope: the idle-after-prose scheduler is the legacy unenrolled mode.    *)
+(* D-487's enrolled continuation contracts are modeled in V2Work.          *)
 (* Fixed finite domains (ReqIds, AttIds) keep the state graph finite for   *)
 (* TLC; "none" marks a free slot.                                          *)
 (***************************************************************************)

@@ -40,7 +40,17 @@ impl Provider for ScriptedProvider {
         _on_event: &mut (dyn FnMut(ProviderEvent) + Send),
     ) -> Result<AttemptOutcome, ProviderError> {
         self.seen.lock().unwrap().push(request.messages.clone());
-        let message = self.script.lock().unwrap().pop_front().unwrap_or_else(|| reply("script exhausted"));
+        let mut message = self.script.lock().unwrap().pop_front().unwrap_or_else(|| reply("script exhausted"));
+        if let Some(path) = message["__gate_path__"].as_str().map(PathBuf::from) {
+            tokio::time::timeout(Duration::from_secs(30), async {
+                while !path.exists() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .map_err(|_| ProviderError::permanent("scripted response gate timed out"))?;
+            message.as_object_mut().unwrap().remove("__gate_path__");
+        }
         // {"__slow_ms__": N, …} answers after a delay so a test can act *while*
         // the request is in flight (the same trick the supervisor harness uses)
         if let Some(delay) = message["__slow_ms__"].as_u64() {
@@ -1325,6 +1335,124 @@ fn exec_options(socket: &Path, workspace: &Path, prompt: &str, checks: Vec<Strin
 }
 
 /// `execute` is a blocking client: run it off the runtime's async threads.
+#[tokio::test]
+async fn autonomy_headless_question_answer_and_successor_acceptance() {
+    let name = "autonomy_headless_question_answer_and_successor_acceptance";
+    if std::env::var("TA_AUTONOMY_TEST_CHILD").as_deref() != Ok(name) {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name, "--nocapture"])
+            .env("TA_AUTONOMY_TEST_CHILD", name)
+            .env("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let root = root("autonomy-exec");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let question = json!({"role":"assistant","content":"Which API target?","tool_calls":[{"id":"ask","type":"function",
+        "function":{"name":"work_checkpoint","arguments":json!({"action":"ask_user","question":"Which API target?"}).to_string()}}]});
+    let scripts = HashMap::from([(
+        "i-leader".to_string(),
+        vec![
+            reply("I have checked the available context."),
+            question,
+            finish_call("Stable API target confirmed."),
+            shell_call("write", "printf done > accepted.txt"),
+            finish_call("Created accepted.txt."),
+        ],
+    )]);
+    let mut cfg = config(&root, scripts);
+    cfg.supervisor.goal_limits = json!({"autonomous_work":true});
+    let handle = serve(cfg).await.unwrap();
+    let (socket, workspace) = (root.dir.join("state/daemon.sock"), root.dir.join("ws"));
+    let first =
+        headless(exec_options(&socket, &workspace, "Confirm compatibility.", vec!["touch premature-check".into()]))
+            .await;
+    assert_eq!(first.end, End::NeedsInput, "{}", first.report);
+    assert!(!workspace.join("premature-check").exists(), "a question does not start post-work checks");
+    assert_eq!(first.report["reply"], "Which API target?");
+    let second = headless(exec_options(&socket, &workspace, "Use the stable API.", Vec::new())).await;
+    assert_eq!(second.end, End::Completed, "{}", second.report);
+    let third = headless(ExecOptions {
+        accept: vec![json!({"id":"file","command":"test -f accepted.txt"})],
+        ..exec_options(&socket, &workspace, "Create accepted.txt.", Vec::new())
+    })
+    .await;
+    assert_eq!(third.end, End::Completed, "{}", third.report);
+    assert_ne!(third.report["acceptance_goal"], "goal-s-test");
+    assert_eq!(third.report["acceptance"][0]["id"], "file");
+    assert!(third.checks_ok, "{}", third.report);
+    assert!(workspace.join("accepted.txt").exists());
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn autonomy_headless_distinguishes_information_from_new_work() {
+    let root = root("autonomy-intent");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let admission = json!({"role":"assistant","content":"","tool_calls":[{"id":"start","type":"function",
+        "function":{"name":"work_checkpoint","arguments":json!({"action":"start_work","objective":"Give the second result"}).to_string()}}]});
+    let scripts = HashMap::from([(
+        "i-leader".to_string(),
+        vec![
+            finish_call("First result."),
+            reply("The first result is complete."),
+            admission,
+            finish_call("Second result."),
+        ],
+    )]);
+    let mut cfg = config(&root, scripts);
+    cfg.supervisor.goal_limits = json!({"autonomous_work":true});
+    let handle = serve(cfg).await.unwrap();
+    let (socket, workspace) = (root.dir.join("state/daemon.sock"), root.dir.join("ws"));
+    let first = headless(exec_options(&socket, &workspace, "Give the first result.", Vec::new())).await;
+    assert_eq!(first.end, End::Completed, "{}", first.report);
+    let status = headless(exec_options(&socket, &workspace, "What did we finish?", Vec::new())).await;
+    assert_eq!(status.end, End::Reply, "{}", status.report);
+    let db = rusqlite::Connection::open_with_flags(
+        root.dir.join("session.sqlite"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    let count: i64 = db.query_row("SELECT COUNT(*) FROM goals", [], |row| row.get(0)).unwrap();
+    assert_eq!(count, 1, "a status question must not create a new work goal");
+    let next = headless(exec_options(&socket, &workspace, "Give the second result.", Vec::new())).await;
+    assert_eq!(next.end, End::Completed, "{}", next.report);
+    assert_eq!(next.report["reply"], "Second result.");
+    assert_eq!(next.report["usage"]["requests"], 2, "the admission call remains visible in this run's usage");
+    let count: i64 = db.query_row("SELECT COUNT(*) FROM goals", [], |row| row.get(0)).unwrap();
+    assert_eq!(count, 2);
+    drop(db);
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn autonomy_headless_reports_bounded_blocking_without_timing_out() {
+    let root = root("autonomy-exec-blocked");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let scripts = HashMap::from([(
+        "i-leader".to_string(),
+        vec![reply("Planning"), reply("More planning"), reply("Still planning")],
+    )]);
+    let mut cfg = config(&root, scripts);
+    cfg.supervisor.goal_limits = json!({"autonomous_work":true});
+    let handle = serve(cfg).await.unwrap();
+    let run = headless(ExecOptions {
+        timeout_s: 10,
+        ..exec_options(&root.dir.join("state/daemon.sock"), &root.dir.join("ws"), "Complete the work.", Vec::new())
+    })
+    .await;
+    assert_eq!(run.end, End::Unsettled, "{}", run.report);
+    assert!(run.report.to_string().contains("bounded recovery"), "{}", run.report);
+    handle.shutdown().await.unwrap();
+}
+
 async fn headless_result(options: ExecOptions) -> Result<ExecRun, (i32, String)> {
     tokio::task::spawn_blocking(move || execute(&options)).await.expect("exec task")
 }
@@ -1953,9 +2081,10 @@ async fn a_queued_input_is_not_answered_by_the_previous_turns_reply() {
 #[tokio::test]
 async fn a_queued_input_a_reset_sealed_is_reported_undelivered() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let release = std::env::temp_dir().join(format!("teamagents-reset-gate-{}", uuid::Uuid::new_v4()));
     let scripts = HashMap::from([(
         "i-leader".to_string(),
-        vec![json!({"__slow_ms__": 4000, "role": "assistant", "content": "answer to the first question"})],
+        vec![json!({"__gate_path__": release, "role": "assistant", "content": "answer to the first question"})],
     )]);
     let (root, handle) = boot("exec-queued-sealed", scripts).await;
     let socket = root.dir.join("state/daemon.sock");
@@ -1968,10 +2097,21 @@ async fn a_queued_input_a_reset_sealed_is_reported_undelivered() {
             ExecOptions { timeout_s: 30, ..exec_options(&socket, &root.dir.join("ws"), "second question", Vec::new()) };
         move || execute(&options)
     });
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    let mut queued = false;
+    for _ in 0..500 {
+        let events = client.call("events", json!({"since":0})).await;
+        queued = events["result"]["events"].as_array().unwrap().iter().any(|e| e["kind"] == "input_queued");
+        if queued {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(queued, "reset requires the second input to have actually queued");
     let reset = client.command("reset-1", "reset_instance", json!({"instance_id": "i-leader", "reason": "test"})).await;
+    std::fs::write(&release, b"release").unwrap();
     assert_eq!(reset["ok"], json!(true), "{reset}");
     let run = exec_handle.await.expect("exec task").expect("headless run");
+    assert_eq!(run.report["input_queued"], json!(true));
     assert_eq!(run.end, End::Undelivered, "{}", run.report);
     assert_eq!(run.end.exit_code(run.checks_ok), 1);
     assert!(
@@ -1981,6 +2121,7 @@ async fn a_queued_input_a_reset_sealed_is_reported_undelivered() {
     );
     assert_eq!(run.report["verification"].as_array().unwrap().len(), 0, "there is no turn to accept: {}", run.report);
     handle.shutdown().await.expect("shutdown");
+    std::fs::remove_file(release).unwrap();
 }
 
 /// Nobody can answer an approval in a headless run: exec reports the parked

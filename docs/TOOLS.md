@@ -1,8 +1,8 @@
 # The tool surface: what a model may be offered
 
-Every model request carries a list of functions the model may call, and every call becomes an operation with a
-durable receipt (A08/A30) — so this list *is* the capability surface of the product. A member's subset is decided
-in three layers:
+Every model request carries functions the model may call. Execution tools create operations with durable
+receipts (A08/A30); `finish`, `wait` and `work_checkpoint` are transactional control actions with recorded
+decisions and context. The offered surface is selected in three layers:
 
 * **The profile's tools** — the schemas in `reference::basic_tool_schemas(web, skills)`, which a session starts
   from as `reference::session_tool_schemas`: the file, shell and `skill` tools, plus **each** web kind only when
@@ -19,6 +19,9 @@ in three layers:
   advertised model functions. Doctor reports configured services; status reports the live bound surface.
 
 `kernel::builtin_tool_schemas()` is the floor: `finish` and the readback tool are offered to every instance.
+For enrolled work, `work_checkpoint` is a sole control action for progress, questions, blocking and internal
+new-work admission. It does not grant capabilities. Behavior instructions encourage exploration and excellent
+results within user intent and scope; harness instructions define scheduling, evidence and stopping.
 
 The section below is generated from those three functions by `python3 review/tool_catalogue.py --write`, so a
 renamed tool, a new parameter or a reworded model-facing description fails `make hygiene` until the document is
@@ -51,6 +54,24 @@ Page through the full stored output of an earlier tool call (ids appear in maske
 | `offset` | `integer` | no | — |
 | `limit` | `integer` | no | — |
 
+### `work_checkpoint`
+
+*Offered by `kernel::collaboration_tool_schemas(actions)` (enrolled work; control action).*
+
+Save durable work progress or ask a material user question. Must be the sole tool call. start_work admits a new actionable user request only during input admission and requires objective. continue requires next_step; ask_user requires question; blocked requires reason. Checkpoints are model claims, not new authority. Record remaining items honestly; clear them only after appropriate evidence. Use wait for tool/member events and finish for completion. Routine short tasks within admitted work need no progress checkpoint; input admission still requires start_work for new work.
+
+| Parameter | Type | Required | Meaning |
+|---|---|---|---|
+| `action` | `string` | yes | — |
+| `objective` | `string` | no | — |
+| `decisions` | `array` | no | — |
+| `completed` | `array` | no | — |
+| `remaining` | `array` | no | — |
+| `evidence` | `array` | no | — |
+| `next_step` | `string` | no | — |
+| `question` | `string` | no | — |
+| `reason` | `string` | no | — |
+
 ### `send`
 
 *Offered by `kernel::collaboration_tool_schemas(actions)` (per grant).*
@@ -76,7 +97,7 @@ Verify another instance's claim: run the target goal's user-pre-authorized accep
 
 *Offered by `kernel::collaboration_tool_schemas(actions)` (per grant).*
 
-Delegate a task to another instance with a narrow return path: the assignee can settle exactly this task back to you, nothing more. The task is charged to the delegating instance's active goal; when that goal is settled no further task can be charged, and reopening one is the user's (`teamagents goals open`), so report that instead of retrying. To be woken by its outcome, wait on {kind:'task',task_id:'<id>'} **with timer_seconds set**: the settlement arrives as a task result, not as a chat message, and an assignee that ends its turn without settling produces no result at all. When that happens, that part is yours again: re-delegate it as a new task or do it yourself, and never report work you did not verify as success.
+Delegate a task to another instance with a narrow return path: the assignee can settle exactly this task back to you. Costs belong to your active admitted goal; terminal goals never reopen. If there is no active goal, follow the current work admission or recovery state before delegating. Wait on {kind:'task',task_id:'<id>'} with timer_seconds as a fallback: a task result is not a chat message. In enrolled work, member attention can supersede the wait without settling the task. Inspect task state and saved evidence after attention or a timeout. Cancellation does not prove the old command stopped; shared-workspace takeover needs recorded stop evidence, or use an independent workspace and integrate explicitly. Never report unverified work as success.
 
 | Parameter | Type | Required | Meaning |
 |---|---|---|---|
@@ -114,9 +135,9 @@ Close a task you delegated, and only one you delegated: a cancellation is termin
 
 ### `wait`
 
-*Offered by `kernel::collaboration_tool_schemas(actions)` (per grant).*
+*Offered by `kernel::collaboration_tool_schemas(actions)` (team instances; control action).*
 
-Park this instance until the conditions hold or the timer fires. Must be the only tool call in this response. Conditions: {kind:'message',from?:'<instance>'} — a chat message from that instance (any sender when omitted) has been applied; a delegated task's outcome is a task result, not a chat message, and never satisfies this. {kind:'task',task_id:'<id>'} — that task reached SUCCEEDED, FAILED or CANCELLED; name this one for work you delegated. A task the assignee settled BLOCKED does not satisfy it. {kind:'operation',operation_id:'<id>'}, {kind:'envelope',envelope_id:'<id>'}. Always set timer_seconds when you wait for delegated work: an assignee that ends its turn without settling leaves the task open, no fact will satisfy the condition, and the timer is then the only wake you get. Re-check the task statuses when it fires and settle only what really holds.
+Park this instance until the conditions hold or the timer fires. Must be the only tool call in this response. Conditions: {kind:'message',from?:'<instance>'} means an applied chat message, optionally from one sender. A delegated outcome is a task result, not a chat message, and never satisfies this condition. {kind:'task',task_id:'<id>'} means SUCCEEDED, FAILED or CANCELLED; BLOCKED does not satisfy it. Other conditions: {kind:'operation',operation_id:'<id>'}, {kind:'envelope',envelope_id:'<id>'}. Use timer_seconds as a fallback for delegated work. In enrolled work, task attention or a relevant runtime observation can cancel and supersede a wait without proving its conditions or the task's success. User input can also supersede it. On wake, inspect the recorded reason, task state and receipts, and continue only what the evidence supports.
 
 | Parameter | Type | Required | Meaning |
 |---|---|---|---|

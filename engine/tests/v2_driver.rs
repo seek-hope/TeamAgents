@@ -126,6 +126,8 @@ fn send_call(id: &str, recipient: &str, text: &str) -> Json {
 
 mod common;
 
+include!("cases/autonomy.rs");
+
 /// The scratch root of one test: `teamagents-v2-driver-<tag>-<uuid>`, removed when the test ends (D-226).
 type Root = common::TempRoot;
 
@@ -1883,6 +1885,8 @@ async fn long_context_compacts_before_the_turn_and_survives_a_restart() {
     wait_event_count(&handle, "response_imported", 4, 15_000).await;
     let requests = recorded(&log);
     assert_eq!(requests.len(), 5, "one summary call plus two attempts per turn");
+    assert!(request_text(&requests[0]).contains("Behavior policy v1."));
+    assert!(!requests[0]["tool_names"].as_array().unwrap().iter().any(|name| name == "work_checkpoint"));
     // the summary call is a plain prompt: no system message, no tools (§7)
     let compaction = &requests[2];
     assert_eq!(compaction["tools"], json!(0));

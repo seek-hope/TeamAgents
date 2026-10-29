@@ -1,6 +1,6 @@
 # TeamAgents user guide
 
-This guide describes current source through D-480. For installation, see [INSTALL.md](INSTALL.md); for evidence
+This guide describes current source through D-487. For installation, see [INSTALL.md](INSTALL.md); for evidence
 and candidate work, see [ACCEPTANCE.md](ACCEPTANCE.md) and [PRODUCT-COMPARISON.md](PRODUCT-COMPARISON.md).
 Historical decisions and experiments are not instructions for the current product.
 
@@ -189,10 +189,16 @@ happened. Diagnostics go to stderr, the outcome to stdout (`--json` prints one J
 |---|---|
 | `0` | settled: the goal completed as `SUCCEEDED`, or the leader answered directly |
 | `1` | not delivered: the goal settled otherwise, the turn failed permanently, the runtime **refused the request before it began** (a goal budget ceiling, a passed goal deadline — it says so in `failure`), the leader was **terminated while the run was in flight** (it says so in `failure` too), the instance was **reset** while the run was in flight (the epoch move is named), a `--check` command failed, or the run ended `unsettled` (the turn closed with nothing settled — the runtime's own closing word, never a reply) or `undelivered` (the input waited for a boundary and a context reset sealed it before it landed) |
-| `3` | an approval is pending — a headless run does not wait for the deadline; decide it with `teamagents approvals` (§4) |
+| `3` | a material question needs your answer (`end: needs_input`), or an approval is pending; answer in the same session or decide the named approval with `teamagents approvals` (§4) |
 | `124` | the `--timeout` deadline passed with the instance still running (a refusal is not a timeout: it ends the run at once with `1`) |
 | `2` | usage or infrastructure: no daemon, no model profile, a leader that is parked or paused |
 
+- **Continuing work**: an admitted goal spans progress updates, model turns, compaction and restart. The
+  Leader can explore and refine the result within your instructions, authority and budget. Routine choices
+  need no repeated confirmation. Answer material questions in the same session; an informational follow-up
+  after completion creates no goal, while new actionable work is admitted internally. Goal identifiers are
+  not part of the ordinary conversation. `exec` waits through progress prose and reports explicit questions
+  as `needs_input`, blocking as `unsettled`, and verified settlement as completion.
 - **Prompt**: the positional argument, or everything piped into stdin when it is `-`. An empty prompt is a
   usage error.
 - **`--stream-json`**: print committed session events as this run observes them, followed by the `--json`
@@ -203,13 +209,15 @@ happened. Diagnostics go to stderr, the outcome to stdout (`--json` prints one J
 - **`--check COMMAND`** (repeatable): run these acceptance commands on the host, in order, after a finished
   turn. They start in the client workspace (`--cwd`, or the current directory). The first failure stops the
   list and makes the run exit `1`. Verdicts go to stderr, `<state root>/verification.json` and the JSON
-  `verification` field. Checks do not run after an approval stop, a refused request, an undelivered input or
-  the caller's timeout. In those cases `verification_path` is `null` and no new ledger is written.
+  `verification` field. Checks do not run while work needs input or remains unsettled, after an approval stop,
+  a refused request, an undelivered input or the caller's timeout. No new ledger is written in those cases.
+  A failed model request can still run the requested client checks when this input was applied.
 - **Client checks and goal checks have different jobs**: `[[checks]]` and `--accept` decide whether a goal
   may settle successfully; `--check` decides the exit code of a finished `exec`. A run can therefore have a
   successful goal but fail its client check, or a blocked goal even though its client check passed.
-- **`--accept ID=COMMAND`** (repeatable): attach a required check to the active goal before submitting the
-  input. The runtime runs it at the completion boundary; failure triggers bounded repair and can ultimately
+- **`--accept ID=COMMAND`** (repeatable): bind a required check to this input's work. It is attached to the
+  active goal, or atomically carried into a newly admitted goal after earlier work completed. The runtime runs
+  it at the completion boundary; failure triggers bounded repair and can ultimately
   settle the goal as `BLOCKED`. Use it when completion depends on the check, for example
   `exec --accept tests="pytest -q" "Fix the failing tests"`. Only a user can attach checks. IDs are merged
   with the goal's existing checks, and the contract cannot change after a check round has started; cancel that
@@ -468,7 +476,7 @@ Every goal this session creates can be bounded in cost and in time (D-64):
 ```toml
 [limits]
 max_total_tokens = 2000000   # optional: usage ceiling (provider-reported usage + each request's estimate)
-deadline_minutes = 45        # optional: wall clock, counted from the moment the goal is created
+deadline_minutes = 45        # optional: creation for initial goals; first pending input for later admission
 max_tool_seconds = 60        # optional: the most one *model* tool call may run (a ceiling on what it asks for)
 tool_output_chars = 8000     # optional: the most characters of one tool output the model is shown (default 24000)
 context_keep_chars = 64000   # optional: how much tool output the request keeps before masking older ones
@@ -563,22 +571,16 @@ pre_tool = ["/home/you/bin/policy.sh"]            # policy hook before tool call
   member has a turn in flight, has uncommitted changes or has no worktree branch. Conflicts remain in progress
   for you to resolve or abort with `git merge --abort`; the member branch is not rewritten. After a successful
   merge, the supervisor retires the checkout when its safety checks pass.
-- A member whose model ends its turn with plain text (no tool call) and does not settle its task goes
-  **idle with the task still `RUNNING`** (D-65: the runtime never reads an outcome out of prose, §8, and it
-  never asks the same question twice — that was a turn storm). The delegator's wait stays pending, so
-  cancelling the task (`teamagents tasks cancel --id ID`) is what releases it: a cancelled task satisfies the wait and
-  the delegator wakes to re-delegate or settle honestly. A `BLOCKED` task does *not* satisfy it.
-- Developer intervention uses `teamagents instances` / `teamagents tasks` (§4.2), with `authority`,
-  `goals` and `approvals` for the other control-plane objects. The TUI retains approval decisions.
-  A goal whose ceiling or deadline is gone refuses new work and parks the instance that asked, so the way out
-  is `teamagents goals cancel --id …` (D-341/D-344): the goal settles `CANCELLED` and the instance the refusal
-  parked runs again. A goal that has settled cannot be reopened, so the next one is opened with
-  `teamagents goals open --id … --attach …`
-  (D-267/D-269); the
-  session's `[limits]`/`[[checks]]` bound it, applied by the daemon (D-268). A headless run whose leader is
-  attached to no active goal says so on **stderr before it submits anything** (D-270), because a turn still runs
-  but a delegation inside it is refused — the sentence names the `goals open --attach` lever, so the refusal is
-  not read as the model failing.
+- Enrolled members continue after progress prose using bounded scheduling reasons. Repeated empty responses
+  or action/observation patterns can block work with a reason. A blocked member sends attention to its
+  coordinator; this can supersede a wait without declaring the task successful. BLOCKED does not satisfy a
+  task-result wait; cancellation does. Legacy unenrolled sessions retain the older idle-after-prose behavior;
+  create a fresh session to use the enrolled scheduler.
+- `instances`, `tasks`, `authority`, `goals` and `approvals` remain explicit recovery/management controls (§4.2).
+  Exhausted goals refuse new work; closing or replacing one is a user decision. Historical terminal goals
+  never reopen. Normal new work after successful completion is admitted internally with the configured
+  limits/checks. `goals open --attach` is available for deliberate management and legacy sessions, rather
+  than a mandatory step after every request.
 - Goal and task completion goes through the runtime's completion gate: `finish` only accepts honest
   outcomes, and the required checks you define must really pass.
 - **Required checks** come from `[[checks]]` in your config (§2.1) and are carried on the goal itself
@@ -747,7 +749,7 @@ teamagents tasks                        # id, status, assignee, goal
 teamagents tasks cancel --id t-prose    # releases a delegator waiting on a task that can only wait
 teamagents goals                        # the goals this session carries, and what is attached to them
 teamagents goals open --id g2 --attach i-leader --check 'tests=python3 -m pytest -q'
-                                        # after a goal settles: open the next one, attached to the Leader,
+                                        # explicit management or legacy recovery: attach a new goal,
                                         # with your own required checks (§8) and an optional --deadline
                                         # the session's [limits]/[[checks]] bound it too (D-64/D-268)
 teamagents surface [--id i-leader]      # what each model request was offered: the tool names it carried and

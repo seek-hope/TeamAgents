@@ -119,7 +119,8 @@ fn grammars_preserve_source_and_color_tokens_in_the_shared_renderer() {
     ] {
         let fenced = format!("```{lang}\n{source}\n```");
         let mut graphics = teamagents_tui::graphics::Graphics::default();
-        let deadline = Instant::now() + Duration::from_secs(5);
+        // The code worker has a six-second deadline; leave room for queueing and reaping.
+        let deadline = Instant::now() + Duration::from_secs(8);
         let lines = loop {
             let changed = graphics.poll();
             let lines = markdown::render_media(&fenced, 120, Some(&mut graphics), &Default::default()).lines;

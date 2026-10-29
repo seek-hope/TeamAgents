@@ -1,15 +1,16 @@
 # Acceptance matrix (A01–A36)
 
 Baseline: [the design and acceptance baseline](DESIGN.md) §12/§16. Current source inspection and local
-regression: **2026-10-28, D-486**. This is not a new independent acceptance audit or real-model run.
+regression baseline: **2026-10-29, D-487**.
+This is not a new independent acceptance audit or real-model run.
 The D-451 product/installation receipts and the D-452 independent audit retain their original source/date
 boundaries; later source changes do not inherit those results.
 
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 147 / engine 424 / tui 97 test targets), rerun on 2026-10-28.
-`make pty` passed on 2026-10-28: the terminal-profile matrix (xterm-256color, screen-256color, tmux-256color, xterm-kitty and Kitty under tmux) plus both forced graphics protocols, all rc 0 and
+`make check` is green (core 174 / engine 437 / tui 97 test targets).
+`make pty` passed on 2026-10-29: the terminal-profile matrix (xterm-256color, screen-256color, tmux-256color, xterm-kitty and Kitty under tmux) plus both forced graphics protocols, all rc 0 and
 credential-free. PTY checks cover protocol bytes, input ownership, resize and cleanup, not a complete
 actual graphical-terminal or OS matrix. These gates do not renew real-provider, OAuth, formal-proof or
 cross-product coding acceptance. `make check` includes `make language-check`, which
@@ -166,7 +167,7 @@ decides from its own stored receipts, so a check added later would never run —
 ## Known gaps and resolution history
 
 The table below is the current summary at D-480 (`7ae6bd5b`). Candidate work and its acceptance methods live once in
-[PRODUCT-COMPARISON.md §2](PRODUCT-COMPARISON.md#2-candidate-improvements-in-priority-order); those candidates
+[Remaining candidates](PRODUCT-COMPARISON.md#remaining-candidates); those candidates
 are not confirmed design changes. The expandable history retains re-runnable findings, corrections and
 unresolved policy dependencies without presenting every former gap as current.
 
@@ -443,10 +444,45 @@ design decision **for the user**.
   config::load_user_config_for now discovers the nearest ancestor project config and checks the canonical
   root against trusted_projects, or the user's explicit trust-all setting. User-only policy still cannot
   come from a project file. The loader tests and `python3 review/dogfood/project_config.py` cover this path;
-  D-66's doctor diagnostics still report unreadable configured paths. Automatic AGENTS instruction discovery
-  is a distinct remaining feature, not a failure of project-config loading.
+  D-66's doctor diagnostics still report unreadable configured paths.
 
 </details>
+
+## Durable work and autonomous continuation (D-487)
+
+Local Rust, PTY and hygiene gates passed; the formal report records 48 positive configurations, 261 targeted
+negative controls and seven Kani arithmetic proofs. The behavior checks use deterministic providers and
+temporary databases/processes; the exercised contracts and their limits follow.
+
+- `core/src/v2/control/work_tests.rs` covers persistent input/checkpoint provenance, bounded recovery across
+  restart and compaction, stop/question/attention semantics, preparation and completion scope, queued input,
+  admission usage/deadlines, fork accounting and shared-workspace takeover. The store migration regression
+  preserves v6 goals and usage while creating v7 work tables without enrolling old sessions. The retention
+  regression reproduces loss of pending acceptance metadata before the fix, then verifies paused admission,
+  active input ownership and release to ordinary retention after the goal closes.
+- `engine/tests/cases/autonomy.rs` exercises real driver scheduling, question/resume, crash recovery,
+  repeated actions, required-check repair, compaction and timer waits. Its real process-group case holds
+  takeover while a recorded group lives, then permits it after observed absence; the unknown receipt and
+  runner journal remain unchanged. No simulated stop is substituted for the live process check.
+- `engine/tests/v2_daemon.rs` covers headless questions, bounded blocking, information versus new-work
+  admission and successor acceptance. Client checks do not run while a question or unsettled work remains.
+  The reset/queued-input fixture now waits for its persisted queue event instead of assuming a fixed sleep
+  means submission completed. TUI diagnostics expose the question and preserve composer focus. Rendering
+  checks use the declared per-source deadlines; optimized regex dependencies reduce debug grammar startup
+  cost. Source/color assertions, timeout/reaping and subsequent-preview recovery remain checked.
+- `verification/tla/V2Work.tla` checks six independent finite scenarios and 11 behavioral claims, each with
+  a targeted counterexample. The formal report records executed gates. This is neither cross-scenario
+  composition nor a Rust/SQLite refinement, semantic-completion or liveness proof.
+
+The shared behavior prompt applies to Leader/member requests, including legacy sessions: explore and refine
+within user intent and authority, and substantiate completion. Limits prevent unproductive recovery; they
+are not instructions to stop useful work early. Tool descriptions follow the same admission/wait contract.
+
+Remaining limits: no paid model trial or measured long-task reliability/cost improvement; heuristic blocking
+can interrupt legitimate repetition. Projection bounds (32 KiB checkpoint, recent input excerpts) do not
+promise a fit in every native model window; overflow still requires explicit recovery. Local stop observation
+does not prove remote effects, escaped descendants or undeclared/shared paths quiescent. Reviewer usage
+accounting remains a separate gap. Source, installed binaries and the older published archive are distinct.
 
 ## Recent source additions and their evidence limits
 
@@ -463,8 +499,8 @@ design decision **for the user**.
 | D-458 automatic operation review | core review-decision test, engine/src/v2/reviewer.rs tests and v2_driver scripted-provider/real-shell case | reviewer billing in goal limits, independent adversarial/live-model review |
 | D-459 cache prefix and telemetry | kernel usage/masking tests, provider body/usage tests and exec aggregation tests | new service hit-rate/cost improvement; no warming or price table |
 
-D-455's detailed contract coverage follows. The 2026-10-21 gate covers the current source tests, not all
-external-service or historical experiment paths listed elsewhere in this ledger.
+D-455's dated contract coverage follows; its 2026-10-21 gate is historical and does not renew external-service
+or experiment results. The current local gate is recorded at the top of this ledger.
 
 ## Daily capability delegation (D-455)
 

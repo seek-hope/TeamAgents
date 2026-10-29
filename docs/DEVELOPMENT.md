@@ -23,6 +23,11 @@ Work from the repository root. `rust-toolchain.toml` pins Rust, Clippy and rustf
 both GitHub workflows. The first Cargo run may download them. Python 3 is required for repository audits and
 PTY checks. Shell and local MCP tests run on the host.
 
+Formatting includes the separate autonomy files loaded through `include!`. The TUI development profile
+optimizes its regex dependencies because each isolated display helper compiles grammar expressions anew.
+This keeps debug syntax coloring practical under the existing renderer deadlines; tests allow those
+deadlines and process cleanup, while still asserting source preservation, colors and recovery.
+
 ```bash
 make check CARGO_FLAGS=--locked   # first run; allows locked dependency downloads
 make check                        # later runs; offline and locked by default

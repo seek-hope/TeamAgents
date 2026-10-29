@@ -133,18 +133,19 @@ fn hostile_content_is_bounded_and_next_preview_survives() {
         Source::Diagram { language: "svg".into(), code: "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"999999999\" height=\"999999999\"><image href=\"file:///etc/passwd\"/></svg>".into() },
         Source::Code { language: "rust".into(), code: format!("let value = \"{}\";", "\\\\".repeat(1900)) },
     ];
-    // The assertion is "hostile input does not hang", not a speed claim. Compare with a normal call on the same
-    // machine instead of a fixed 2 s threshold, which flaked when the runner was loaded (D-466 follow-up).
+    // This checks the declared deadline plus process startup/reaping allowance, not rendering speed.
+    // Code has a different deadline from diagrams; a fast diagram baseline cannot bound syntax highlighting.
     let baseline = {
         let start = Instant::now();
         assert!(run_helper(&request("mermaid"), &token).is_ok());
         start.elapsed()
     };
     for source in sources {
+        let budget = if matches!(&source, Source::Code { .. }) { CODE_WORKER_TIMEOUT } else { WORKER_TIMEOUT };
         let start = Instant::now();
         let _ = run_helper(&Request { source, ..request("mermaid") }, &token);
         assert!(
-            start.elapsed() < baseline * 8 + Duration::from_secs(1),
+            start.elapsed() < budget + baseline + Duration::from_secs(1),
             "hostile input must not hang: {:?}",
             start.elapsed()
         );

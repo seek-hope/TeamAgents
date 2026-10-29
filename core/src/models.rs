@@ -257,7 +257,8 @@ pub struct GoalLimits {
     /// the ceiling (D-287).
     #[serde(default)]
     pub max_total_tokens: Option<u64>,
-    /// Wall-clock ceiling in minutes, counted from the moment the goal is created.
+    /// Wall-clock ceiling in minutes. Initial goals start at creation; subsequent work admission starts
+    /// at its first pending input and keeps that clock when it creates a goal.
     #[serde(default)]
     pub deadline_minutes: Option<u64>,
     /// D-393/D-395: does a goal with required checks need a round another instance registered before it may

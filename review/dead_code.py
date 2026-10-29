@@ -55,7 +55,7 @@ KNOWN_UNCALLED = {
     "wait_idle": "D-63: the parked substrate for interrupt-and-redirect; documented with a ponytail note",
     # DESIGN §4.1 names these row shapes as the minimal data contract; the code reads them through SQL
     # (store.rs owns the schema), so the typed form documents the contract instead of being called. Their
-    # goals/artifacts siblings (`Goal`, `Artifact`) sit in KNOWN_DOC_ONLY for the same reason.
+    # The Artifact sibling sits in KNOWN_DOC_ONLY; Goal is also mentioned by test fixtures.
     "Envelope": "mechanical: DESIGN §4.1 minimal data contract (Envelope / ContextEntry), read through SQL",
     "ModelRequestRecord": "mechanical: DESIGN §4.1 minimal data contract (ModelRequest / Attempt), read through "
                           "SQL",
@@ -64,6 +64,7 @@ KNOWN_UNCALLED = {
 
 # name -> why tests/examples/benches may mention it and no product code needs to
 KNOWN_TEST_ONLY = {
+    "Goal": "mechanical: DESIGN §4.1 minimal data contract, read through SQL; runtime-marker fixtures mention it",
     "run_reference": "mechanical: the eval group-A direct-drive reference loop (reference.rs module doc: "
                      "evaluation only, no production recovery promise); the comparison baseline its tests drive",
     "inject": "mechanical: jobs::client's own doc calls it a test hook (only honored by runners spawned with "
@@ -79,9 +80,7 @@ KNOWN_TEST_ONLY = {
 
 # name -> why only a doc comment mentions it
 KNOWN_DOC_ONLY = {
-    "Goal": "mechanical: DESIGN §4.1 minimal data contract (the goal row, §4.2/§8), read through SQL",
     "Artifact": "mechanical: DESIGN §4.1 minimal data contract (the artifact row, §9.1), read through SQL",
-    "Operation": "mechanical: DESIGN §4.1 minimal data contract (the operation row, §6.1), read through SQL",
     "cancel_turn": "D-63: the parked substrate for interrupt-and-redirect (D-78 kept it with a ponytail note "
                    "on `wait_idle`); the driver's own doc is its only other mention",
 }

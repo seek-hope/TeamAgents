@@ -116,6 +116,34 @@ liveness assumption testable, which the slower wide configuration cannot). The e
 approval timing, crash points, and whether a turn is in flight when input arrives) is **non-deterministic** in
 the model; that is exactly what is enumerated.
 
+## Enrolled durable work (D-487)
+
+`tla/V2Work.tla` and `tla/MC_work.cfg` check six finite, independent transition scenarios: recovery,
+stop, attention, takeover, scope and admission. A tagged state selects one scenario per behavior; this is
+not their Cartesian composition or a Rust/SQLite refinement proof. `TypeOK` checks its finite domains.
+The positive model explores 222 generated / 76 distinct states. Each behavioral claim has a control:
+
+| Claim | Contract | Negative control |
+|---|---|---|
+| `RecoveryRemainsBounded` | Restart or context renewal does not replenish the empty-response allowance. | `tla/MC_work_restart.cfg` |
+| `StopSurvivesObservation` | Asynchronous observations preserve an explicit user stop. | `tla/MC_work_stop.cfg` |
+| `AttentionIsNotSettlement` | Attention cancels a wait without fabricating task settlement. | `tla/MC_work_attention.cfg` |
+| `ResolvedAttentionIsAnswered` | A cancelled or satisfied attention wait has an answer. | `tla/MC_work_unanswered.cfg` |
+| `TakeoverRequiresObservation` | Cancellation alone cannot authorize shared-workspace takeover. | `tla/MC_work_cancel_stop.cfg` |
+| `UnknownOutcomeIsPreserved` | Stop observation does not turn an unknown outcome into success. | `tla/MC_work_rewrite.cfg` |
+| `PreparationMatchesCurrentWork` | A prepared request must still match current input/assignment scope. | `tla/MC_work_prepare.cfg` |
+| `CompletionMatchesCurrentWork` | A completion candidate must match current input/assignment scope. | `tla/MC_work_completion.cfg` |
+| `EffectsRequireAdmission` | Execution effects require admitted work. | `tla/MC_work_early_effect.cfg` |
+| `InformationDoesNotCreateWork` | Information-only answers create no work goal. | `tla/MC_work_info_goal.cfg` |
+| `AdmissionUsageTransfersOnce` | Known and unknown admission usage transfers exactly once. | `tla/MC_work_double_bill.cfg` |
+
+Code anchors are `core/src/v2/control/work.rs`, `work/admission.rs`, `work/takeover.rs` and the driver.
+Core regressions exercise transactions/restart/fork; scripted driver tests bridge scheduling and a real local
+process-group observation. Semantic completeness, model classification, actual token prices, filesystem
+identity, remote/escaped effects, fork I/O and cross-scenario interleavings are outside this model.
+The existing `V2Control` idle-after-prose rule and `V2Wait` report/idle controls retain their legacy
+unenrolled scope. Enrolled attention supersedes waits; it does not weaken task-result conditions.
+
 ## Claims without a refuting control
 
 Every claim a positive configuration checks is either the `expects:` target of a counterexample configuration
@@ -147,7 +175,7 @@ and fails when a new claim lands in neither place, and `--write-coverage` regene
 | `ReservationReleased` | closing a request (complete/fail/cancel) always releases its reservation | the `release_reservation` call sites | §8 |
 | `OneActiveRequest` | an instance has a single active request at a time | the phase/revision guard in `begin_request` | §3/§6.1 |
 | `SelectionIsComplete` | only an atomically selected complete attempt exists | the `selected_attempt_id IS NULL` update in `record_attempt` | A19 |
-| `NoTurnWithoutWork` | no new turn opens while the last word is already committed — the model's own text **or** the runtime's own closing note | the closing entry plus the idle test in `step_ready` (D-65: it counts only *unaddressed* work, so an open task no longer re-asks the model; D-71: a settlement is a committed tail, `EntryKind::Runtime`) | §5.4/§3/§8 |
+| `NoTurnWithoutWork` | legacy unenrolled scheduling: no new turn opens while the last word is already committed — the model's own text **or** the runtime's own closing note | the closing entry plus the idle test in `step_ready` (D-65: it counts only *unaddressed* work, so an open task no longer re-asks the model; D-71: a settlement is a committed tail, `EntryKind::Runtime`) | §5.4/§3/§8 |
 | `CancelledGoalReleasesParkedInstances` | closing a goal nothing can spend gives the session its workers back: the step that makes the goal `CANCELLED` leaves no instance parked behind it | `cancel_goal`'s release of the instances that goal's refusal parked, and the `CANCELLED` status only the user's cancel writes (`core/src/v2/control.rs`); the lever A18's exhausted-goal gap asks for (D-341/D-344) | A18 |
 | `AtMostOneWarning` | the runtime tells a goal its deadline is close at most once — one note, not one per step | `deadline_warning`'s entry id `goal-deadline-warning-<goal>` and the driver's `warn_before_deadline` (D-410) | §8 |
 | `WarnIsTimely` (temporal) | a warning is only ever appended while the goal is live and the deadline is still ahead | the same command's `ACTIVE` and future-deadline guards plus the driver's 120-second window (D-410) | A35 |
@@ -337,7 +365,9 @@ module the method's rule is checked in; the property-by-property anchors above s
 | `submit_input` | `V2Control.tla` (the inbound boundary); `V2InputQueue.tla` (verified snapshots, original revision and at-most-once consumption) |
 | `edit_input` | `V2InputQueue.tla` (pending identity/revision guard and retained original) |
 | `cancel_input` | `V2InputQueue.tla` (pending identity/revision guard, serialized against consumption) |
-| `begin_request` | `V2Control.tla` |
+| `begin_request` | `V2Control.tla`; prepared work scope in `V2Work.tla` |
+| `configure_work` | `V2Work.tla` models enabled work transitions; policy validation and storage migration are sample-tested, not formally proved |
+| `observe_operation_stops` | `V2Work.tla` models observation before takeover; OS identity and journal validation are sample-tested, not formally proved |
 | `record_attempt` | `V2Control.tla` |
 | `begin_compression` | `V2Compress.tla` |
 | `compress_context` | `V2Compress.tla` |
@@ -379,12 +409,10 @@ module the method's rule is checked in; the property-by-property anchors above s
    usage never exceeds the limit": in the model `known` is settled from provider-reported usage and bypasses
    the gate, while `BeginRequest` is the gate. This matches §8 of the design ("no false promise of never
    exceeding when provider billing is incomplete"); a naive formulation is refuted by TLC immediately.
-2. **A settled goal keeps receiving billing**: TLC refuted "a goal's records stop changing after settlement",
-   and reading the code confirmed that neither `reserve_budget` nor `settle_usage` looks at the goal status
-   while `begin_request` resolves the goal through `active_goal_id` — so a new turn after a goal completed
-   still billed that `SUCCEEDED` goal. The budget gate still worked (nothing over-reserved), but "goal status"
-   and "later usage" disagreed. **That is a product decision** (whether new turns must create a new goal), so
-   the model keeps the behaviour and asserts only "terminal status is never rewritten".
+2. **Late usage does not reopen a terminal goal.** A previously admitted request can report usage after its
+   goal settles; attribution remains with that goal. New enrolled work receives a separate goal and carries
+   its admission usage once (`V2Work`). The earlier open product question about ordinary follow-up work was
+   resolved by D-487; these models still do not constitute a whole-runtime refinement proof.
 3. **`CANCELLED_BEFORE_START` means "no effect happened"**, not "never dispatched": cancelling an operation
    that was dispatched but not started produces exactly that status, so the invariant must constrain
    `effect = 0`.

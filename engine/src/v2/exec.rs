@@ -170,6 +170,8 @@ pub enum End {
     /// The turn is parked on a user approval: a non-interactive run has nobody
     /// to answer it, so it reports immediately instead of burning the timeout.
     ApprovalRequired,
+    /// Work awaits a material user decision while retaining its goal and budget.
+    NeedsInput,
     /// The deadline passed with the instance still running.
     Timeout,
 }
@@ -183,6 +185,7 @@ impl End {
             End::Undelivered => "undelivered",
             End::Failed => "failed",
             End::ApprovalRequired => "approval_required",
+            End::NeedsInput => "needs_input",
             End::Timeout => "timeout",
         }
     }
@@ -193,7 +196,7 @@ impl End {
         match self {
             End::Completed | End::Reply if checks_ok => 0,
             End::Completed | End::Reply | End::Unsettled | End::Undelivered | End::Failed => 1,
-            End::ApprovalRequired => 3,
+            End::ApprovalRequired | End::NeedsInput => 3,
             End::Timeout => 124,
         }
     }
@@ -217,6 +220,8 @@ enum Attribution {
     Settled(String, String),
     /// The entry that ends that turn: the member's own text.
     Reply(String),
+    /// An explicit durable question, not an intermediate progress message.
+    NeedsInput(String),
     /// The entry that ends that turn: the runtime's closing word, nothing settled.
     Closed,
     /// No turn has ended at this input yet.
@@ -265,9 +270,30 @@ impl Attribution {
             // nothing the session did in the meantime is its outcome
             return Attribution::Pending;
         };
-        let Some(end) = history[mine + 1..].iter().find(|entry| Attribution::ends_a_turn(entry)) else {
+        let work_goal = history[mine]["work_goal_id"].as_str();
+        let Some(end) = history[mine + 1..].iter().find(|entry| {
+            let source = entry["envelope_id"].as_str().unwrap_or("");
+            if source.starts_with("work-question-")
+                || source.starts_with("work-blocked-")
+                || source.starts_with("work-stopped-")
+            {
+                return true;
+            }
+            if let Some(goal) = work_goal {
+                Attribution::closing_goal(entry) == Some(goal)
+            } else {
+                Attribution::ends_a_turn(entry)
+            }
+        }) else {
             return Attribution::Pending;
         };
+        let source = end["envelope_id"].as_str().unwrap_or("");
+        if source.starts_with("work-question-") {
+            return Attribution::NeedsInput(end["message"]["content"].as_str().unwrap_or("").to_string());
+        }
+        if source.starts_with("work-blocked-") || source.starts_with("work-stopped-") {
+            return Attribution::Closed;
+        }
         if Attribution::settles_a_goal(end) {
             // the settlement's own word was written in the same transaction as its goal's status, so a status
             // that still reads ACTIVE has simply not caught up: decide on the next pass instead of guessing one
@@ -296,9 +322,7 @@ pub struct ExecRun {
 }
 
 /// D-270: the advisory a run prints *before* it submits anything, when the leader's turn cannot charge work to a
-/// goal. A session whose goal has settled still runs a turn — the runtime deliberately opens no goal for a later
-/// input (the known gap in ACCEPTANCE) — but a `delegate` inside that turn is refused by the control plane
-/// ("requester has no active goal"), and the user reads the refusal as the model's own failure. The predicate is
+/// goal in a legacy session. Durable-work sessions use input admission instead of this advisory. The predicate is
 /// the delegation's own: an ACTIVE goal must be *attached* to the leader. The checkpoint's single goal object
 /// cannot answer it (it reports the session's active goal, which may be one no instance points at — the state
 /// D-267's ordering exists for), so the run reads the `goals` list. A session with no goals at all is the
@@ -427,20 +451,20 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
         client.call("checkpoint", json!({})).map_err(|error| socket_lost("reading the checkpoint", &error))?;
     let (instance, lifecycle) = leader_instance(&checkpoint)
         .ok_or_else(|| (2, format!("exec: the session has no usable leader instance: {checkpoint}")))?;
-    // D-270: say it *before* the turn spends anything. A session whose goal has settled still runs a turn — the
-    // runtime deliberately opens no goal for a later input (ACCEPTANCE's known gap) — but nothing can be charged,
-    // so a delegation inside that turn is refused and the user reads it as the model's failure. The runtime is
-    // unchanged: this is the same advisory shape as the parked-leader line below, on stderr so `--json`'s report
-    // stays what it was.
+    // Legacy sessions retain their explicit goal-opening behavior. Enrolled sessions
+    // attach acceptance commands atomically when the input is admitted.
+    let autonomous = checkpoint["snapshot"]["work_policy_version"] == json!(1);
     let goals = client.call("goals", json!({})).unwrap_or(Json::Null);
-    if let Some(advisory) = unchargeable_goal_advisory(&goals, &instance) {
-        eprintln!("{advisory}");
+    if !autonomous {
+        if let Some(advisory) = unchargeable_goal_advisory(&goals, &instance) {
+            eprintln!("{advisory}");
+        }
     }
     // D-385: `--accept` is the *goal-level* half of acceptance. It is attached here, before the input is
     // submitted, because a check can only join a goal that has not started verifying yet (`require_checks`
     // refuses once a round is registered) — and because the driver reads the goal's checks at the completion
     // boundary, so attaching late would be a race with the model's own `finish`.
-    let accept_goal = if options.accept.is_empty() {
+    let mut accept_goal = if options.accept.is_empty() || autonomous {
         None
     } else {
         let goal = chargeable_goal(&goals, &instance).map(str::to_string).ok_or_else(|| {
@@ -485,17 +509,19 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
         return Err((2, advice));
     }
     let envelope = format!("env-{}", uuid::Uuid::new_v4());
+    let mut input = json!({"instance_id": instance, "envelope_id": envelope, "text": options.prompt, "attachments":options.attachments});
+    if autonomous && !options.accept.is_empty() {
+        input["checks"] = json!(options.accept);
+    }
     let submitted = client
-        .command(
-            &format!("input-{envelope}"),
-            "submit_input",
-            json!({"instance_id": instance, "envelope_id": envelope, "text": options.prompt, "attachments":options.attachments}),
-        )
+        .command(&format!("input-{envelope}"), "submit_input", input)
         .map_err(|error| socket_lost("submitting the input", &error))?;
     // A turn that was already in flight when this run started cannot include the
     // input: it waits for the boundary and enters the conversation after that
     // turn's own reply (D-63). Report it instead of pretending it landed.
     let queued = submitted["queued"] == json!(true);
+    let mut input_applied = submitted["applied"] == json!(true);
+    let mut model_request_failed = false;
     let deadline = Instant::now() + Duration::from_secs(options.timeout_s);
     let mut goal_status: Option<String> = None;
     // D-427: what *this run* cost, summed from the provider's own reported usage on each recorded attempt (the
@@ -510,6 +536,7 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
     // D-431: the goal this run settled, so the reply fallback reads *that* goal's completion summary rather
     // than the checkpoint's goal (which is the session's active one, D-266).
     let mut settled_goal: Option<String> = None;
+    let mut admitted_work_goal: Option<String> = None;
     // set when the runtime refused a request before it began (budget ceiling, passed goal deadline)
     let mut refused: Option<String> = None;
     // the lifecycle as the loop last saw it: a run that ends on its deadline has to say *what* the instance
@@ -552,10 +579,29 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
                     // of this run: report it instead of waiting out the deadline.
                     // Failures of *other* instances belong to the leader's turn,
                     // not to this client.
+                    if event["kind"] == json!("work_input_admitted")
+                        && event["scope"] == json!(instance)
+                        && event["payload"]["envelope_id"] == json!(envelope)
+                    {
+                        input_applied = true;
+                        model_request_failed = false;
+                        admitted_work_goal = event["payload"]["goal_id"].as_str().map(str::to_string);
+                        if !options.accept.is_empty() {
+                            accept_goal = admitted_work_goal.clone();
+                        }
+                    }
+                    if event["kind"] == json!("work_input_pending")
+                        && event["scope"] == json!(instance)
+                        && event["payload"]["envelope_id"] == json!(envelope)
+                    {
+                        input_applied = true;
+                        model_request_failed = false;
+                    }
                     if event["kind"] == json!("attempt_recorded") {
                         add_attempt_usage(&mut usage, &event["payload"]);
                     }
                     if event["kind"] == json!("request_failed") && event["scope"] == json!(instance) {
+                        model_request_failed = true;
                         turn_failure =
                             Some(event["payload"]["reason"].as_str().unwrap_or("the model request failed").to_string());
                     }
@@ -628,7 +674,25 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
         let mut attribution = Attribution::Pending;
         if settled {
             if let (Ok(entries), Ok(goals)) = (client.history(&instance), client.call("goals", json!({}))) {
+                input_applied |= entries.iter().any(|entry| entry["envelope_id"].as_str() == Some(envelope.as_str()));
                 attribution = Attribution::read(&envelope, &goals, &entries);
+                // The admission event retains identity after the input leaves the history page.
+                if let Some(goal) = admitted_work_goal.as_deref() {
+                    if let Some(status) = status_of_goal(&goals, goal).filter(|status| status != "ACTIVE") {
+                        attribution = Attribution::Settled(status, goal.into());
+                    } else if let Some(work) = leader_row
+                        .map(|row| &row["diagnosis"]["work"])
+                        .filter(|work| work["goal_id"].as_str() == Some(goal))
+                    {
+                        match work["state"].as_str() {
+                            Some("NEEDS_INPUT") => {
+                                attribution = Attribution::NeedsInput(work["reason"].as_str().unwrap_or("").into())
+                            }
+                            Some("BLOCKED" | "STOPPED") => attribution = Attribution::Closed,
+                            _ => {}
+                        }
+                    }
+                }
             }
         }
         match &attribution {
@@ -636,7 +700,14 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
                 goal_status = Some(status.clone());
                 settled_goal = Some(goal_id.clone());
             }
-            Attribution::Reply(text) => reply = Some(text.clone()),
+            Attribution::Reply(text) | Attribution::NeedsInput(text) => reply = Some(text.clone()),
+            Attribution::Closed => {
+                if let Some(reason) =
+                    leader_row.and_then(|row| row["diagnosis"]["work"]["reason"].as_str()).filter(|s| !s.is_empty())
+                {
+                    turn_failure.get_or_insert_with(|| reason.to_string());
+                }
+            }
             _ => {}
         }
         // A pending approval blocks the turn on the user, and a headless run
@@ -666,17 +737,20 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
         // user lifted again: `phase_now`/`lifecycle_now` are re-read every pass.
         if lifecycle_now == "PARKED"
             && phase_now != "RUNNING"
-            && attribution == Attribution::Pending
-            && turn_failure.is_none()
+            && matches!(attribution, Attribution::Pending | Attribution::Closed)
         {
-            // the park also means there is no turn whose acceptance could be verified (§8). `refused` is the
-            // flag the verification gate reads; its value is never printed — the words ride in `failure`.
-            turn_failure = Some(parked_fate(&instance, park_reason.as_deref()));
-            refused.get_or_insert_with(|| "the leader parked before this run's turn started".to_string());
+            // A runtime failure remains a failure when its work projection is STOPPED.
+            let cause = park_reason.as_deref().or(turn_failure.as_deref());
+            turn_failure = Some(parked_fate(&instance, cause));
+            if !model_request_failed || !input_applied {
+                refused.get_or_insert_with(|| "the leader parked before this run's turn started".to_string());
+            }
+            attribution = Attribution::Pending;
         }
         let terminal = match &attribution {
             Attribution::Settled(status, _) => Some(if status == "SUCCEEDED" { End::Completed } else { End::Failed }),
             Attribution::Reply(_) => Some(End::Reply),
+            Attribution::NeedsInput(_) => Some(End::NeedsInput),
             Attribution::Closed => Some(End::Unsettled),
             Attribution::Pending if undelivered => Some(End::Undelivered),
             Attribution::Pending if turn_failure.is_some() => Some(End::Failed),
@@ -711,7 +785,8 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
     // verdicts for a turn that never finished).
     let verification = if options.checks.is_empty()
         || refused.is_some()
-        || matches!(end, End::ApprovalRequired | End::Undelivered | End::Timeout)
+        || matches!(end, End::ApprovalRequired | End::Undelivered | End::Timeout | End::NeedsInput)
+        || (autonomous && end == End::Unsettled)
     {
         Vec::new()
     } else {
@@ -1152,6 +1227,32 @@ mod tests {
     };
     use serde_json::json;
     use std::path::Path;
+
+    #[test]
+    fn autonomy_exec_ignores_progress_and_returns_explicit_questions() {
+        let goals = json!({"goals":[{"id":"g1","status":"ACTIVE"}]});
+        let mut history = vec![
+            json!({"kind":"user","envelope_id":"input","work_goal_id":"g1","message":{"role":"user","content":"Implement it"}}),
+            json!({"kind":"assistant","envelope_id":"d1","message":{"role":"assistant","content":"I will investigate"}}),
+        ];
+        assert!(matches!(Attribution::read("input", &goals, &history), Attribution::Pending));
+        history.push(json!({"kind":"assistant","envelope_id":"work-question-d2","message":{"role":"assistant","content":"Which API?"}}));
+        assert!(
+            matches!(Attribution::read("input",&goals,&history),Attribution::NeedsInput(text) if text=="Which API?")
+        );
+        history.push(json!({"kind":"user","envelope_id":"answer","work_goal_id":"g1","message":{"role":"user","content":"Stable"}}));
+        history.push(
+            json!({"kind":"assistant","envelope_id":"d3","message":{"role":"assistant","content":"Applying it"}}),
+        );
+        assert!(matches!(Attribution::read("answer", &goals, &history), Attribution::Pending));
+        history.push(
+            json!({"kind":"runtime","envelope_id":"goal-close-g1","message":{"role":"user","content":"Goal complete"}}),
+        );
+        assert!(
+            matches!(Attribution::read("answer",&json!({"goals":[{"id":"g1","status":"SUCCEEDED"}]}),&history),Attribution::Settled(status,goal) if status=="SUCCEEDED" && goal=="g1")
+        );
+        assert_eq!(End::NeedsInput.exit_code(true), 3);
+    }
 
     #[test]
     fn a_deadline_says_what_the_instance_was_doing() {

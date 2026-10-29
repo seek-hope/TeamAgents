@@ -4,6 +4,23 @@
 //! identity, operation ids, permission revisions and sequence numbers are
 //! filled here — never taken from model or client fields.
 
+mod work;
+
+/// Trusted runtime projection. Callers enforce the same history visibility as other control views.
+pub fn work_state(conn: &Connection, instance: &str) -> Result<Json, String> {
+    work::view(conn, instance)
+}
+
+/// Current work and original-input references; never a source of capability authority.
+pub fn work_context(conn: &Connection, instance: &str) -> Result<Json, String> {
+    work::context(conn, instance)
+}
+
+/// Runtime-only candidates for read-only process-stop observation before shared-workspace takeover.
+pub fn workspace_takeover_candidates(conn: &Connection, instance: &str) -> Result<Vec<Json>, String> {
+    work::takeover::candidates(conn, instance)
+}
+
 use super::store;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 use serde_json::{json, Value as Json};
@@ -251,6 +268,7 @@ fn dispatch(
         "deny_capability" => deny_capability(tx, session_id, params, identity),
         "reauthorize_operation" => reauthorize_operation(tx, session_id, params),
         "reset_instance" => reset_instance(tx, session_id, params, identity),
+        "configure_work" => work::configure(tx, session_id, params, identity),
         "create_goal" => create_goal(tx, session_id, params, identity),
         "require_checks" => require_checks(tx, session_id, params, identity),
         "send_message" => send_message(tx, session_id, params, identity),
@@ -272,6 +290,7 @@ fn dispatch(
         "compress_context" => compress_context(tx, session_id, params, identity),
         "fail_compression" => fail_compression(tx, session_id, params),
         "import_response" => import_response(tx, session_id, params, identity),
+        "observe_operation_stops" => work::takeover::observe_many(tx, session_id, params, identity),
         "dispatch_operation" => dispatch_operation(tx, session_id, params),
         "complete_operation" => complete_operation(tx, session_id, params),
         "cancel_operation" => cancel_operation(tx, session_id, params),
@@ -865,6 +884,7 @@ fn reset_instance(tx: &Connection, session_id: &str, params: &Json, identity: &I
         [instance_id],
     )
     .map_err(|e| format!("reset instance: {e}"))?;
+    work::reset_epoch(tx, instance_id, epoch, epoch + 1)?;
     event(
         tx,
         session_id,
@@ -1236,6 +1256,12 @@ fn drain_inbox(tx: &Connection, session_id: &str, params: &Json, identity: &Iden
         append_context(tx, instance_id, epoch, "user", &message, Some(&id), &json!([]))?;
         tx.execute("UPDATE envelopes SET state = 'APPLIED' WHERE id = ?1", [&id])
             .map_err(|e| format!("apply envelope {id}: {e}"))?;
+        if kind == "user_input" {
+            work::admit_input(tx, session_id, instance_id, &id)?;
+            supersede_input_waits(tx, instance_id)?;
+        } else {
+            work::observation(tx, instance_id, &kind, &sender, correlation.as_deref())?;
+        }
         applied += 1;
     }
     if applied > 0 {
@@ -1773,6 +1799,7 @@ fn start_task(tx: &Connection, session_id: &str, params: &Json, identity: &Ident
     }
     tx.execute("UPDATE tasks SET status = 'RUNNING', revision = revision + 1 WHERE id = ?1", [task_id])
         .map_err(|e| format!("start task {task_id}: {e}"))?;
+    work::assigned(tx, &assignee)?;
     event(tx, session_id, "task_started", &assignee, &json!({"task_id": task_id}))?;
     Ok(json!({"task_id": task_id, "status": "RUNNING"}))
 }
@@ -1810,6 +1837,11 @@ fn complete_task(tx: &Connection, session_id: &str, params: &Json, identity: &Id
             }
         }
         Identity::System => return Err("the system does not complete tasks".into()),
+    }
+    if matches!(identity, Identity::Instance(_))
+        && work::completion(tx, session_id, &assignee, target, summary, &result_refs)?
+    {
+        return Ok(json!({"task_id":task_id,"status":status,"completion_deferred":true}));
     }
     tx.execute(
         "UPDATE tasks SET status = ?1, result_refs_json = ?2, revision = revision + 1 WHERE id = ?3",
@@ -1912,6 +1944,9 @@ fn complete_task(tx: &Connection, session_id: &str, params: &Json, identity: &Id
         &json!({"task_id": task_id, "status": target, "assignee": assignee, "delivered": delivered}),
     )?;
     let woken = wake_satisfied(tx, session_id)?;
+    if requester != "user" {
+        work::wake_attention(tx, session_id, &requester)?;
+    }
     Ok(json!({"task_id": task_id, "status": target, "delivered": delivered, "woken": woken}))
 }
 
@@ -2144,6 +2179,13 @@ fn submit_input(tx: &Connection, session_id: &str, params: &Json, identity: &Ide
     let envelope_id = params["envelope_id"].as_str().ok_or("submit_input.envelope_id required")?;
     let text = params["text"].as_str().ok_or("submit_input.text required")?;
     let mut payload = json!({"text": text});
+    if let Some(checks) = params.get("checks") {
+        if work::policy(tx)?.is_none() {
+            return Err("input checks require the durable work policy; use require_checks on the active goal".into());
+        }
+        validate_required_checks(checks)?;
+        payload["checks"] = checks.clone();
+    }
     copy_input_attachments(params, &mut payload);
     let mut message = json!({"role": "user", "content": text});
     copy_input_attachments(&payload, &mut message);
@@ -2185,7 +2227,14 @@ fn submit_input(tx: &Connection, session_id: &str, params: &Json, identity: &Ide
     // did nothing (measured; D-63). The input therefore waits for the next READY
     // boundary, where `drain_inbox` applies it in sequence order (§5.3/§5.4, and
     // the model's own `Input` action: user input lands at READY).
-    if matches!(phase.as_str(), "MODEL_PENDING" | "TOOLS_PENDING" | "COMPLETION_PENDING") {
+    let earlier:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM envelopes WHERE recipient=?1 AND epoch=?2 AND kind='user_input' AND state='ACCEPTED' AND sequence<?3)",
+        rusqlite::params![instance_id,epoch,sequence],|r|r.get(0)).map_err(|e|format!("earlier queued input: {e}"))?;
+    if matches!(phase.as_str(), "MODEL_PENDING" | "TOOLS_PENDING" | "COMPLETION_PENDING")
+        || (matches!(phase.as_str(), "READY" | "WAITING") && earlier)
+    {
+        if phase == "WAITING" {
+            supersede_input_waits(tx, instance_id)?;
+        }
         publish_list(tx, session_id, params)?;
         event(tx, session_id, "input_queued", instance_id, &json!({"envelope_id": envelope_id, "phase": phase}))?;
         return Ok(json!({"envelope_id": envelope_id, "applied": false, "queued": true,
@@ -2193,41 +2242,45 @@ fn submit_input(tx: &Connection, session_id: &str, params: &Json, identity: &Ide
     }
     let applied = append_context(tx, instance_id, epoch, "user", &message, Some(envelope_id), &json!([]))?;
     if applied {
+        work::admit_input(tx, session_id, instance_id, envelope_id)?;
+        tx.execute("UPDATE instances SET revision=revision+1 WHERE id=?1", [instance_id])
+            .map_err(|e| format!("input preparation revision: {e}"))?;
         tx.execute("UPDATE envelopes SET state = 'APPLIED' WHERE id = ?1", [envelope_id])
             .map_err(|e| format!("envelope apply: {e}"))?;
         // a fresh input makes the instance runnable again at the next
         // boundary; pending waits are superseded — the model sees the input
         // and re-registers what it still needs (§5.3/§5.4)
-        let superseded: Vec<(String, i64)> = {
-            let mut stmt = tx
-                .prepare("SELECT id, epoch FROM waits WHERE instance_id = ?1 AND status = 'PENDING'")
-                .map_err(|e| format!("supersede scan: {e}"))?;
-            let rows = stmt
-                .query_map([instance_id], |row| Ok((row.get(0)?, row.get(1)?)))
-                .map_err(|e| format!("supersede query: {e}"))?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("supersede collect: {e}"))?
-        };
-        for (wait_id, wait_epoch) in &superseded {
-            tx.execute("UPDATE waits SET status = 'CANCELLED' WHERE id = ?1", [wait_id])
-                .map_err(|e| format!("supersede wait {wait_id}: {e}"))?;
-            // the superseded wait never wakes, so its own call is answered here
-            answer_closed_waits(
-                tx,
-                instance_id,
-                *wait_epoch,
-                std::slice::from_ref(wait_id),
-                &format!("[wait {wait_id} superseded: new input arrived before it could be satisfied]"),
-            )?;
-        }
-        tx.execute(
-            "UPDATE instances SET phase = 'READY', revision = revision + 1 WHERE id = ?1 AND phase = 'WAITING'",
-            [instance_id],
-        )
-        .map_err(|e| format!("instance wake: {e}"))?;
+        supersede_input_waits(tx, instance_id)?;
     }
     publish_list(tx, session_id, params)?;
     event(tx, session_id, "input", instance_id, &json!({"envelope_id": envelope_id, "applied": applied}))?;
-    Ok(json!({"envelope_id": envelope_id, "applied": applied, "instance_revision": revision}))
+    Ok(json!({"envelope_id": envelope_id, "applied": applied, "instance_revision": load_instance(tx,instance_id)?.4}))
+}
+
+fn supersede_input_waits(tx: &Connection, instance: &str) -> Result<(), String> {
+    let mut stmt = tx
+        .prepare("SELECT id,epoch FROM waits WHERE instance_id=?1 AND status='PENDING'")
+        .map_err(|e| format!("input wait scan: {e}"))?;
+    let waits = stmt
+        .query_map([instance], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+        .map_err(|e| format!("input waits: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("input wait rows: {e}"))?;
+    for (wait, epoch) in waits {
+        tx.execute("UPDATE waits SET status='CANCELLED' WHERE id=?1", [&wait])
+            .map_err(|e| format!("supersede input wait: {e}"))?;
+        answer_closed_waits(
+            tx,
+            instance,
+            epoch,
+            std::slice::from_ref(&wait),
+            &format!("[wait {wait} superseded: new input arrived before it could be satisfied]"),
+        )?;
+    }
+    tx.execute("UPDATE instances SET phase='READY',revision=revision+1 WHERE id=?1 AND phase='WAITING'", [instance])
+        .map_err(|e| format!("input wake: {e}"))?;
+    work::wake(tx, instance, load_instance(tx, instance)?.1, "User input superseded the wait")?;
+    Ok(())
 }
 
 fn copy_input_attachments(from: &Json, to: &mut Json) {
@@ -2436,8 +2489,11 @@ fn append_entry(
         ],
     )
     .map_err(|e| format!("context append: {e}"))?;
-    tx.execute("UPDATE instances SET context_head = ?1 WHERE id = ?2", rusqlite::params![idx, instance_id])
-        .map_err(|e| format!("context head: {e}"))?;
+    tx.execute(
+        "UPDATE instances SET context_head = ?1 WHERE id = ?2 AND context_epoch = ?3",
+        rusqlite::params![idx, instance_id, epoch],
+    )
+    .map_err(|e| format!("context head: {e}"))?;
     Ok(id)
 }
 
@@ -2469,6 +2525,9 @@ fn begin_request(tx: &Connection, session_id: &str, params: &Json, identity: &Id
             "instance {instance_id} revision {revision} != expected {expected_revision}: stale executor"
         ));
     }
+    if let Some(prepared) = params.get("prepared_work") {
+        work::check_prepared(tx, instance_id, prepared)?;
+    }
     let goal_id = budget_goal(tx, instance_id)?;
     if let Some(goal) = goal_id.as_deref() {
         // A35: past the goal deadline no new request begins — the daemon
@@ -2493,6 +2552,12 @@ fn begin_request(tx: &Connection, session_id: &str, params: &Json, identity: &Id
             return Ok(json!({"request_id": request_id, "budget_refused": true, "reason": reason}));
         }
     }
+    if goal_id.is_none() {
+        if let Some(reason) = work::admission_budget(tx, session_id, instance_id, est)? {
+            return Ok(json!({"request_id":request_id,"budget_refused":true,"reason":reason}));
+        }
+    }
+    work::begin(tx, instance_id, request_id)?;
     tx.execute(
         "INSERT INTO model_requests (request_id, instance_id, epoch, goal_id, request_ref, status, est_prompt_tokens,
                                      offered_tools, surface_authorized)
@@ -2695,6 +2760,9 @@ fn record_attempt(tx: &Connection, session_id: &str, params: &Json) -> Result<Js
         if let Some(goal) = request_goal(tx, request_id)? {
             tx.execute("UPDATE goals SET unknown_usage = unknown_usage + 1 WHERE id = ?1", [&goal])
                 .map_err(|e| format!("unknown usage: {e}"))?;
+        } else {
+            tx.execute("UPDATE work_requests SET unknown_usage=unknown_usage+1 WHERE request_id=?1", [request_id])
+                .map_err(|e| format!("unknown admission usage: {e}"))?;
         }
     }
     publish_list(tx, session_id, params)?;
@@ -2726,12 +2794,18 @@ fn begin_compression(tx: &Connection, session_id: &str, params: &Json, identity:
     let request_id = params["request_id"].as_str().ok_or("begin_compression.request_id required")?;
     let request_ref = params["request_ref"].as_str().unwrap_or("");
     let est = params["est_prompt_tokens"].as_i64().unwrap_or(0);
-    let (session, epoch, lifecycle, _, _) = load_instance(tx, instance_id)?;
+    let (session, epoch, lifecycle, _, revision) = load_instance(tx, instance_id)?;
+    if params.get("revision").is_some_and(|value| value.as_i64() != Some(revision)) {
+        return Err(format!("instance {instance_id}: stale executor preparing compression"));
+    }
     if session != session_id {
         return Err("instance does not belong to this session".to_string());
     }
     if lifecycle != "ACTIVE" {
         return Err(format!("instance {instance_id} is {lifecycle}, not compressing"));
+    }
+    if let Some(prepared) = params.get("prepared_work") {
+        work::check_prepared(tx, instance_id, prepared)?;
     }
     let goal_id = budget_goal(tx, instance_id)?;
     if let Some(goal) = goal_id.as_deref() {
@@ -2749,6 +2823,12 @@ fn begin_compression(tx: &Connection, session_id: &str, params: &Json, identity:
         if let Some(reason) = reserve_budget(tx, session_id, goal, instance_id, request_id, est)? {
             return Ok(json!({"request_id": request_id, "budget_refused": true, "reason": reason}));
         }
+    }
+    if goal_id.is_none() {
+        if let Some(reason) = work::admission_budget(tx, session_id, instance_id, est)? {
+            return Ok(json!({"request_id":request_id,"budget_refused":true,"reason":reason}));
+        }
+        work::freeze_admission(tx, instance_id, request_id)?;
     }
     tx.execute(
         // A compression request carries no tools, so its record says exactly that (D-350) rather than
@@ -2887,8 +2967,13 @@ fn fail_compression(tx: &Connection, session_id: &str, params: &Json) -> Result<
 }
 
 fn request_goal(tx: &Connection, request_id: &str) -> Result<Option<String>, String> {
-    tx.query_row("SELECT goal_id FROM model_requests WHERE request_id = ?1", [request_id], |row| row.get(0))
-        .map_err(|e| format!("request goal: {e}"))
+    tx.query_row(
+        "SELECT COALESCE(r.goal_id,w.billed_goal_id) FROM model_requests r
+        LEFT JOIN work_requests w ON w.request_id=r.request_id WHERE r.request_id=?1",
+        [request_id],
+        |row| row.get(0),
+    )
+    .map_err(|e| format!("request goal: {e}"))
 }
 
 /// Settle reported usage into the goal budget (§8); unknown usage stays a
@@ -3311,6 +3396,7 @@ fn wake_satisfied_at(tx: &Connection, session_id: &str, now: f64) -> Result<Vec<
             [&instance_id],
         )
         .map_err(|e| format!("wake phase: {e}"))?;
+        work::wake(tx, &instance_id, epoch, "Registered wait satisfied")?;
         event(tx, session_id, "wait_satisfied", &instance_id, &json!({"wait_id": wait_id}))?;
         woken.push(wait_id);
     }
@@ -3378,6 +3464,9 @@ fn import_response(tx: &Connection, session_id: &str, params: &Json, identity: &
     let wait = params.get("wait").cloned();
     // one response registers tools, a wait or a completion — never several
     // at once (§3); a plain reply carries none of them
+    if params.get("checkpoint").is_some() && (wait.is_some() || completion.is_some() || !intents.is_empty()) {
+        return Err("a work checkpoint must be the sole action".into());
+    }
     if wait.is_some() && (!intents.is_empty() || completion.is_some()) {
         return Err("import_response: a wait excludes tool intents and completion".into());
     }
@@ -3406,6 +3495,9 @@ fn import_response(tx: &Connection, session_id: &str, params: &Json, identity: &
     if selected.is_none() {
         return Err(format!("request {request_id} has no selected complete attempt; cannot import"));
     }
+    let awaiting_admission = work::admission_request(tx, request_id)?;
+    let intents = if awaiting_admission { Vec::new() } else { intents };
+    let wait = if awaiting_admission { None } else { wait };
     let inserted = tx
         .execute(
             "INSERT INTO decisions (decision_id, request_id, completion_json) VALUES (?1, ?2, ?3)",
@@ -3538,6 +3630,16 @@ fn import_response(tx: &Connection, session_id: &str, params: &Json, identity: &
     tx.execute("UPDATE model_requests SET status = 'COMPLETE' WHERE request_id = ?1", [request_id])
         .map_err(|e| format!("request complete: {e}"))?;
     release_reservation(tx, request_id)?;
+    if intents.is_empty() {
+        tx.execute(
+            "UPDATE envelopes SET state='ACCEPTED' WHERE recipient=?1 AND epoch=?2 AND state='DEFERRED'",
+            rusqlite::params![request_instance, epoch],
+        )
+        .map_err(|e| format!("follow-up promotion: {e}"))?;
+    }
+    work::response(tx, session_id, &request_instance, decision_id, params)?;
+    work::wake_attention(tx, session_id, &request_instance)?;
+    let phase = load_instance(tx, &request_instance)?.3;
     let _ = identity;
     publish_list(tx, session_id, params)?;
     event(
@@ -3606,23 +3708,35 @@ fn park_tasks_for_unknown(
     decision_id: &str,
     operation_id: &str,
 ) -> Result<(), String> {
-    let instance: String = tx
+    let (instance, goal, source_task): (String, Option<String>, Option<String>) = tx
         .query_row(
-            "SELECT r.instance_id FROM decisions d JOIN model_requests r ON d.request_id = r.request_id
-             WHERE d.decision_id = ?1",
+            "SELECT r.instance_id,r.goal_id,json_extract(w.context_json,'$.task_id')
+             FROM decisions d JOIN model_requests r ON d.request_id = r.request_id
+             LEFT JOIN work_requests w ON w.request_id=r.request_id WHERE d.decision_id = ?1",
             [decision_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .map_err(|e| format!("decision instance: {e}"))?;
     let tasks: Vec<String> = {
         let mut stmt = tx
-            .prepare("SELECT id FROM tasks WHERE assignee = ?1 AND status = 'RUNNING'")
+            .prepare(
+                "SELECT id FROM tasks WHERE assignee = ?1 AND goal_id = ?2 AND status = 'RUNNING'
+                AND (?3 IS NULL OR id=?3)",
+            )
             .map_err(|e| format!("running tasks: {e}"))?;
-        let rows =
-            stmt.query_map([&instance], |row| row.get::<_, String>(0)).map_err(|e| format!("running tasks: {e}"))?;
+        let rows = stmt
+            .query_map(rusqlite::params![instance, goal, source_task], |row| row.get::<_, String>(0))
+            .map_err(|e| format!("running tasks: {e}"))?;
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("running tasks: {e}"))?
     };
+    work::unknown_operation(tx, decision_id, operation_id)?;
     for task in tasks {
+        work::attention_task(
+            tx,
+            session_id,
+            &task,
+            "An operation outcome is unknown; inspect receipts before any takeover",
+        )?;
         tx.execute(
             "UPDATE tasks SET status = 'BLOCKED', revision = revision + 1 WHERE id = ?1 AND status = 'RUNNING'",
             [&task],
@@ -3681,13 +3795,18 @@ fn consume_if_closed(tx: &Connection, session_id: &str, decision_id: &str) -> Re
             .map_err(|e| format!("consume query: {e}"))?;
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("consume collect: {e}"))?
     };
+    let mut consumed = false;
+    let mut signatures = Vec::new();
     for (operation_id, intent_json, receipt_json) in operations {
         let intent: Json = serde_json::from_str(&intent_json).unwrap_or(json!({}));
         let receipt: Json = receipt_json.as_deref().and_then(|r| serde_json::from_str(r).ok()).unwrap_or(Json::Null);
         let content = receipt["content"].as_str().map(str::to_string).unwrap_or_else(|| receipt.to_string());
         // envelope_id = operation_id: the apply-dedup index makes a replayed
         // consumption a no-op, so recovery never double-feeds a receipt
-        append_context(
+        signatures.push(
+            json!({"name":intent["name"], "args_hash":intent["args_hash"], "ok":receipt["ok"], "content":content}),
+        );
+        consumed |= append_context(
             tx,
             &instance,
             epoch,
@@ -3698,10 +3817,13 @@ fn consume_if_closed(tx: &Connection, session_id: &str, decision_id: &str) -> Re
         )?;
     }
     tx.execute(
-        "UPDATE instances SET phase = 'READY', revision = revision + 1 WHERE id = ?1 AND phase = 'TOOLS_PENDING'",
-        [&instance],
+        "UPDATE instances SET phase = 'READY', revision = revision + 1 WHERE id = ?1 AND phase = 'TOOLS_PENDING' AND context_epoch = ?2",
+        rusqlite::params![instance,epoch],
     )
     .map_err(|e| format!("decision ready: {e}"))?;
+    if consumed {
+        work::tools_consumed(tx, session_id, &instance, decision_id, &json!(signatures))?;
+    }
     event(tx, session_id, "decision_consumed", &instance, &json!({"decision_id": decision_id}))?;
     Ok(false)
 }
@@ -3750,6 +3872,7 @@ fn dispatch_operation(tx: &Connection, session_id: &str, params: &Json) -> Resul
     if lifecycle != "ACTIVE" {
         return Err(format!("instance {instance} is {lifecycle}, not dispatching"));
     }
+    work::takeover::dispatch_scope(tx, operation_id)?;
     // authorization is re-checked at dispatch, the linearization point (§6.1)
     let intent: Json = serde_json::from_str(&intent_json).map_err(|e| format!("intent {operation_id}: {e}"))?;
     let check_owner: Option<String> = if request_ref == "required_check" {
@@ -3765,6 +3888,9 @@ fn dispatch_operation(tx: &Connection, session_id: &str, params: &Json) -> Resul
     };
     if let Some(reason) = capability_gap(tx, &instance, &intent, check_owner.as_deref())? {
         return Err(format!("operation {operation_id} unauthorized: {reason}"));
+    }
+    if let Some(blocked) = work::takeover::gate(tx, session_id, operation_id, &instance, &intent)? {
+        return Ok(blocked);
     }
     if approval_required {
         let approved: Option<String> = tx
@@ -4013,6 +4139,10 @@ fn fail_request(tx: &Connection, session_id: &str, params: &Json) -> Result<Json
         rusqlite::params![lifecycle, instance],
     )
     .map_err(|e| format!("fail_request instance: {e}"))?;
+    if park {
+        work::stop(tx, &instance, reason)?;
+        work::attention(tx, session_id, &instance, reason)?;
+    }
     event(
         tx,
         session_id,
@@ -4064,6 +4194,12 @@ fn set_lifecycle(tx: &Connection, session_id: &str, params: &Json, identity: &Id
         rusqlite::params![lifecycle, instance_id],
     )
     .map_err(|e| format!("set_lifecycle: {e}"))?;
+    if lifecycle == "ACTIVE" && matches!(identity, Identity::User) {
+        work::resume(tx, instance_id)?;
+    } else if lifecycle != "ACTIVE" {
+        work::stop(tx, instance_id, reason)?;
+        work::attention(tx, session_id, instance_id, reason)?;
+    }
     event(tx, session_id, "instance_lifecycle", instance_id, &json!({"lifecycle": lifecycle, "reason": reason}))?;
     if lifecycle == "TERMINATED" {
         // termination settles everything the instance leaves behind (§5.4):
@@ -4157,6 +4293,7 @@ fn cancel_request(tx: &Connection, session_id: &str, params: &Json) -> Result<Js
         [&instance],
     )
     .map_err(|e| format!("cancel instance: {e}"))?;
+    work::stop(tx, &instance, reason)?;
     event(tx, session_id, "request_cancelled", &instance, &json!({"request_id": request_id, "reason": reason}))?;
     Ok(json!({"request_id": request_id, "status": "CANCELLED"}))
 }
@@ -4182,6 +4319,7 @@ fn interrupt_instance(tx: &Connection, session_id: &str, params: &Json, identity
             "instance {instance_id} is TERMINATED: termination is final, so there is no turn to interrupt"
         ));
     }
+    work::stop(tx, instance_id, reason)?;
     // A request is fixed from MODEL_PENDING on. In any other phase there is no model call to abandon; a tool
     // that is running is deliberately not interrupted here (that is `set_lifecycle` TERMINATED, D-88).
     if phase != "MODEL_PENDING" {
@@ -4249,10 +4387,8 @@ pub fn validate_required_checks(checks: &Json) -> Result<(), String> {
                 return Err("limits.required_checks[].timeout must be a positive number of seconds".into());
             }
         }
-        if let Some(network) = check.get("network") {
-            if network.as_bool().is_none() {
-                return Err("limits.required_checks[].network must be true/false".into());
-            }
+        if check.get("network").is_some() {
+            return Err("limits.required_checks[].network is retired; acceptance commands run on the host".into());
         }
         if let Some(inputs) = check.get("inputs") {
             let paths = inputs.as_array().ok_or("limits.required_checks[].inputs must be an array of paths")?;
@@ -4348,6 +4484,7 @@ fn register_check_round(
     if exists {
         return Ok(json!({"decision_id": request_id, "round": round, "already_registered": true}));
     }
+    validate_required_checks(&json!(checks))?;
     tx.execute(
         "INSERT INTO model_requests (request_id, instance_id, epoch, goal_id, request_ref, selected_attempt_id, status)
          VALUES (?1, ?2, ?3, ?4, 'required_check', NULL, 'COMPLETE')",
@@ -4368,9 +4505,6 @@ fn register_check_round(
         let mut args = json!({"command": command_text, "check_id": check_id});
         if let Some(timeout) = check.get("timeout").and_then(Json::as_u64) {
             args["timeout"] = json!(timeout);
-        }
-        if check["network"].as_bool().unwrap_or(false) {
-            args["network"] = json!(true);
         }
         if let Some(inputs) = check.get("inputs") {
             args["inputs"] = inputs.clone();
@@ -4908,23 +5042,54 @@ fn complete_goal(tx: &Connection, session_id: &str, params: &Json) -> Result<Jso
         };
         let _ = verifier;
     }
-    let completion: Option<String> = tx
+    let completion: Option<(String, String)> = tx
         .query_row(
-            "SELECT d.completion_json FROM decisions d
+            "SELECT d.completion_json,r.request_id FROM decisions d
              JOIN model_requests r ON d.request_id = r.request_id
              WHERE r.instance_id = ?1 AND d.completion_json IS NOT NULL
              ORDER BY d.rowid DESC LIMIT 1",
             [instance_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()
         .map_err(|e| format!("completion read: {e}"))?;
-    let candidate: Json = completion.as_deref().and_then(|c| serde_json::from_str(c).ok()).unwrap_or(Json::Null);
+    if work::policy(tx)?.is_some()
+        && completion.is_some()
+        && completion.as_ref().map(|(_, request)| request_goal(tx, request)).transpose()?.flatten().as_deref()
+            != Some(goal_id)
+    {
+        let epoch = load_instance(tx, instance_id)?.1;
+        answer_dangling_calls(
+            tx,
+            instance_id,
+            epoch,
+            "This completion does not belong to the selected goal; reconcile the current work first",
+        )?;
+        tx.execute(
+            "UPDATE instances SET phase='READY',revision=revision+1 WHERE id=?1 AND phase='COMPLETION_PENDING'",
+            [instance_id],
+        )
+        .map_err(|e| format!("reject foreign completion: {e}"))?;
+        return Ok(
+            json!({"goal_id":goal_id,"status":"ACTIVE","completion_deferred":true,"reason":"completion belongs to a different work scope"}),
+        );
+    }
+    let candidate: Json = completion.as_ref().and_then(|(raw, _)| serde_json::from_str(raw).ok()).unwrap_or(Json::Null);
     let status = match candidate["outcome"].as_str().unwrap_or("failed") {
         "success" => "SUCCEEDED",
         "blocked" => "BLOCKED",
         _ => "FAILED",
     };
+    if work::completion(
+        tx,
+        session_id,
+        instance_id,
+        status,
+        candidate["summary"].as_str().unwrap_or(""),
+        &candidate["evidence"],
+    )? {
+        return Ok(json!({"goal_id":goal_id,"status":"ACTIVE","completion_deferred":true}));
+    }
     tx.execute("UPDATE goals SET status = ?1 WHERE id = ?2", rusqlite::params![status, goal_id])
         .map_err(|e| format!("goal close: {e}"))?;
     let detached = detach_goal(tx, goal_id)?;
@@ -5191,8 +5356,13 @@ fn fork_reset(tx: &Connection, session_id: &str, params: &Json, identity: &Ident
     if session != session_id {
         return Err(format!("instance {keep} does not belong to this session"));
     }
-    // execution state: none of it can mean anything in the copy
-    for table in ["envelopes", "approvals", "tasks"] {
+    work::fork(tx, keep)?;
+    // Applied user input remains provenance for a pending admission in the copy.
+    tx.execute("DELETE FROM envelopes WHERE session_id=?1 AND NOT EXISTS(SELECT 1 FROM work_inputs w
+        WHERE w.instance_id=?2 AND w.state='PENDING' AND w.envelope_id=envelopes.id AND envelopes.state='APPLIED' AND envelopes.kind='user_input')",
+        rusqlite::params![session_id,keep]).map_err(|e|format!("fork reset envelopes: {e}"))?;
+    // Execution state cannot run again in the copy.
+    for table in ["approvals", "tasks", "capability_requests"] {
         tx.execute(&format!("DELETE FROM {table} WHERE session_id = ?1"), [session_id])
             .map_err(|e| format!("fork reset {table}: {e}"))?;
     }
@@ -5206,7 +5376,7 @@ fn fork_reset(tx: &Connection, session_id: &str, params: &Json, identity: &Ident
         .execute("DELETE FROM instances WHERE session_id = ?1 AND id != ?2", rusqlite::params![session_id, keep])
         .map_err(|e| format!("fork reset instances: {e}"))?;
     tx.execute(
-        "UPDATE instances SET lifecycle = 'ACTIVE', phase = 'READY', active_request_id = NULL, revision = revision + 1 \
+        "UPDATE instances SET lifecycle = CASE WHEN lifecycle IN ('PAUSED','PARKED') AND EXISTS(SELECT 1 FROM meta WHERE key='work_policy_v1') THEN lifecycle ELSE 'ACTIVE' END, phase = 'READY', active_request_id = NULL, revision = revision + 1 \
          WHERE id = ?1",
         [keep],
     )
@@ -5273,6 +5443,8 @@ fn prune_history(tx: &Connection, session_id: &str, params: &Json) -> Result<Jso
             rusqlite::params![session_id, cutoff, head_events],
         )
         .map_err(|e| format!("prune events: {e}"))?;
+    // Pending admission keeps acceptance checks in its envelope. Retention releases these deliveries only
+    // after the work closes or its instance terminates; the context entries themselves remain readable.
     let deliveries = tx
         .execute(
             "DELETE FROM envelopes
@@ -5280,6 +5452,13 @@ fn prune_history(tx: &Connection, session_id: &str, params: &Json) -> Result<Jso
                 AND sequence < ?3
                 AND id IN (SELECT envelope_id FROM context_entries
                             WHERE envelope_id IS NOT NULL AND created < ?2)
+                AND NOT EXISTS (
+                    SELECT 1 FROM work_inputs w
+                    JOIN instances i ON i.id=w.instance_id
+                    LEFT JOIN goals g ON g.id=w.goal_id
+                    WHERE w.instance_id=envelopes.recipient AND w.epoch=envelopes.epoch
+                      AND w.envelope_id=envelopes.id AND i.lifecycle!='TERMINATED'
+                      AND (w.state='PENDING' OR (w.state='ASSIGNED' AND g.status='ACTIVE')))
                 AND NOT EXISTS (
                     SELECT 1 FROM waits w
                      WHERE w.status = 'PENDING'
@@ -5380,6 +5559,8 @@ fn artifact_collect(tx: &Connection, session_id: &str, params: &Json) -> Result<
 mod tests {
     use super::*;
 
+    include!("control/work_tests.rs");
+
     fn db_path(tag: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("teamagents-v2-control-{tag}-{}.db", uuid::Uuid::new_v4()))
     }
@@ -5476,7 +5657,11 @@ mod tests {
         assert_eq!(context_count(&ctl, "i1"), 1);
         // a turn in flight: the input is queued, the context does not move
         ctl.submit(
-            cmd("b-1", "begin_request", json!({"instance_id": "i1", "request_id": "r1", "revision": 0})),
+            cmd(
+                "b-1",
+                "begin_request",
+                json!({"instance_id": "i1", "request_id": "r1", "revision": applied["instance_revision"]}),
+            ),
             Identity::Instance("i1".into()),
         )
         .expect("begin");
@@ -9096,8 +9281,9 @@ mod tests {
             Identity::User,
         )
         .expect("input");
+        let revision = load_instance(ctl.connection(), "i1").unwrap().4;
         ctl.submit(
-            cmd("b1", "begin_request", json!({"instance_id": "i1", "request_id": "r1", "revision": 0})),
+            cmd("b1", "begin_request", json!({"instance_id": "i1", "request_id": "r1", "revision": revision})),
             Identity::Instance("i1".into()),
         )
         .expect("begin");

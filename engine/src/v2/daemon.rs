@@ -619,7 +619,11 @@ fn read_snapshot(conn: &rusqlite::Connection, mcp: &Json, sessions: &Json, model
         .map_err(|e| format!("input delivery: {e}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("input delivery: {e}"))?;
+    let work_enabled: bool = conn
+        .query_row("SELECT EXISTS(SELECT 1 FROM meta WHERE key='work_policy_v1')", [], |row| row.get(0))
+        .map_err(|e| format!("snapshot work policy: {e}"))?;
     Ok(json!({"instances": instances, "tasks": work.tasks, "goal": goal, "input_delivery": input_delivery,
+        "work_policy_version": if work_enabled { json!(1) } else { Json::Null },
         // D-413: the configured MCP services and their credential state, so a client that cannot read this
         // machine's config (the TUI is one) can still tell a user what the session bound and what to do next.
         "mcp": mcp,
@@ -729,8 +733,9 @@ fn read_method(
             // turn's outcome for its own cannot do that by matching text.
             let mut stmt = conn
                 .prepare(
-                    "SELECT c.epoch, c.idx, c.kind, c.message_json, c.envelope_id, i.workspace_ref
+                    "SELECT c.epoch, c.idx, c.kind, c.message_json, c.envelope_id, i.workspace_ref, NULLIF(w.goal_id,'')
                      FROM context_entries c LEFT JOIN instances i ON i.id = c.instance_id
+                     LEFT JOIN work_inputs w ON w.instance_id=c.instance_id AND w.epoch=c.epoch AND w.envelope_id=c.envelope_id
                      WHERE c.instance_id = ?1 ORDER BY c.epoch DESC, c.idx DESC LIMIT ?2",
                 )
                 .map_err(|e| format!("history prepare: {e}"))?;
@@ -738,7 +743,7 @@ fn read_method(
                 .query_map(rusqlite::params![instance, limit], |row| {
                     Ok(json!({"epoch": row.get::<_, i64>(0)?, "idx": row.get::<_, i64>(1)?,
                               "kind": row.get::<_, String>(2)?, "envelope_id": row.get::<_, Option<String>>(4)?,
-                              "workspace": row.get::<_, Option<String>>(5)?,
+                              "workspace": row.get::<_, Option<String>>(5)?, "work_goal_id": row.get::<_, Option<String>>(6)?,
                               "message": serde_json::from_str::<Json>(&row.get::<_, String>(3)?).unwrap_or(Json::Null)}))
                 })
                 .map_err(|e| format!("history query: {e}"))?;
@@ -965,7 +970,11 @@ fn read_method(
 
 /// v2 leader instructions: the collaboration vocabulary is the v2 kernel's
 /// (spawn/delegate/send/wait/finish), not the legacy team tool names.
-pub const LEADER_INSTRUCTIONS: &str = "You are the Leader of a team of agents. Understand the user's goal, decide
+pub const LEADER_INSTRUCTIONS: &str = super::work::LEADER;
+
+// Exact legacy product text: replace at assembly for enrolled work, preserving archived profiles/requests.
+pub(crate) const LEGACY_LEADER_INSTRUCTIONS: &str =
+    "You are the Leader of a team of agents. Understand the user's goal, decide
 whether to work alone or build a team. Work directly on what you can finish in one pass: writing independent
 pieces is cheap for a single instance, and delegating them costs at least as much as it saves (D-262's
 measurements). Delegate parts that each need their own run-and-fix loop — set it up, run it, see what broke,

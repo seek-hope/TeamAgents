@@ -2539,12 +2539,8 @@ fn the_goal_surface_lists_and_opens_goals_through_the_daemon() {
     assert!(out.contains("checks: 1"), "{out}");
     assert!(out.contains("attached: i-leader"), "{out}");
 
-    // D-270: once no active goal is attached to the leader, `exec` says so *before* the turn spends anything. The
-    // runtime still opens no goal for a later input (that is the design's own known gap), so without this line the
-    // user reads the refusal inside the model's answer and blames the model. Settling `goal-second` detaches the
-    // leader, and the still-ACTIVE boot goal points at nobody — the exact shape where the checkpoint's single goal
-    // object would have reported the *boot* goal and hid the state, which is why the advisory reads the `goals`
-    // list instead (D-267's ordering exists for the same reason).
+    // D-487: durable-work sessions admit a later input without the legacy manual-goal advisory.
+    // The unattached ACTIVE boot goal must still not be confused with the leader's own goal.
     let mut rpc = Rpc::connect(&socket);
     let settled = rpc.command(
         "settle-goal-second",
@@ -2571,9 +2567,11 @@ fn the_goal_surface_lists_and_opens_goals_through_the_daemon() {
     env(&mut exec);
     let output = exec.args(["exec", "--state-root"]).arg(&state).arg("say something").output().expect("run exec");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("no active goal is attached to i-leader"), "the advisory names the state: {stderr}");
-    assert!(stderr.contains("teamagents goals open"), "and the lever: {stderr}");
-    assert!(stderr.contains("--attach i-leader"), "and what to attach it to: {stderr}");
+    assert!(
+        !stderr.contains("no active goal is attached to i-leader"),
+        "durable input admission needs no legacy advisory: {stderr}"
+    );
+    assert!(!stderr.contains("teamagents goals open"), "the next input is admitted through the work policy: {stderr}");
 
     // D-283: the shape the operator watched — a goal opened with no --check at all still carries the
     // session's configured check, and the plain line must report it instead of "(0 required check(s))".
