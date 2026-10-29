@@ -1,0 +1,57 @@
+{
+  "date": "2026-10-29",
+  "scope": "Read-only upstream TUI implementation and official screenshot review; no upstream model runs",
+  "repositories": [
+    {
+      "name": "Grok Build",
+      "url": "https://github.com/xai-org/grok-build",
+      "commit": "2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8",
+      "commit_date": "2026-09-29",
+      "license": "Apache-2.0",
+      "selected_files": [
+        {
+          "path": "crates/codegen/xai-grok-pager/src/app/agent_view/render.rs",
+          "sha256": "7069a0d3e4b794d5f4195d52d75cbcb6d22ffa1bf67d0b74b65686459fccbd39"
+        },
+        {
+          "path": "crates/codegen/xai-grok-pager/src/scrollback/blocks/user.rs",
+          "sha256": "06bb6c1c77a95bb7ea9320e903e2721e3b274d883120e53d052bf2a75d0001f2"
+        },
+        {
+          "path": "crates/codegen/xai-grok-pager/src/views/turn_status.rs",
+          "sha256": "d9e61ffada1fcdf6ad17771bdd84d26dafa7f7876f8e4e5c1e3b6fba6e99ba9e"
+        }
+      ]
+    },
+    {
+      "name": "Codex",
+      "url": "https://github.com/openai/codex",
+      "commit": "79be2e201fb61e105178a62c8d8d77fa5ed6ad93",
+      "commit_date": "2026-10-29",
+      "license": "Apache-2.0",
+      "selected_files": [
+        {
+          "path": "codex-rs/tui/src/bottom_pane/chat_composer.rs",
+          "sha256": "0ebc509796dcb3170afbf9c12c82eca98846af0e66472d6e032d23857f448c0f"
+        },
+        {
+          "path": "codex-rs/tui/styles.md",
+          "sha256": "f85ff5a55881d0c1f7b0b53b1ad6da69e7f543fc4cf0e76cf42d99cb1c97fbad"
+        }
+      ]
+    },
+    {
+      "name": "herdr",
+      "url": "https://github.com/herdrdev/herdr",
+      "commit": "bc8c28988f75c538d4ca058b702f5adbea30566e",
+      "commit_date": "2026-10-28",
+      "license": "Apache-2.0",
+      "selected_files": [
+        {
+          "path": "src/ui/panes.rs",
+          "sha256": "d5911df1d3e8da65a64bd7c6f073b22c8a71486f5740ba1c8ac30766f16e88e4"
+        }
+      ]
+    }
+  ]
+}

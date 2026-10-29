@@ -8,7 +8,7 @@ pub const COMMANDS: [(&str, &str); 7] = [
     ("/interrupt", "Interrupt the Leader model request"),
     ("/quit", "Detach from this session"),
     ("/queue", "Edit or cancel pending input"),
-    ("/attach", "Stage a file; Tab completes paths"),
+    ("/attach", "Stage a file; @path + Tab also completes"),
     ("/detach", "Remove an attachment by index"),
 ];
 

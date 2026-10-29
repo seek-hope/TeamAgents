@@ -181,9 +181,9 @@ impl Transcript {
                         entries[position..].iter().take_while(|e| e.tool.is_some() && e.who == entry.who).count();
                     if count > 1 {
                         self.document.lines.extend(markdown::plain(
-                            &format!("Activity · {count} tools"),
+                            &activity_heading(&entries[position..position + count]),
                             width,
-                            Style::default().fg(GREY),
+                            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
                         ));
                     }
                 }
@@ -279,6 +279,28 @@ fn mark_response(lines: &mut Vec<Line<'static>>, width: usize, who: &str, stream
     }
 }
 
+/// Name a consecutive tool group by its actual operations, following Grok/Codex's
+/// task-oriented activity summaries without inferring semantic success from receipts.
+fn activity_heading(entries: &[ChatEntry]) -> String {
+    let names = entries.iter().filter_map(|entry| entry.tool.as_ref().map(|tool| tool.name.as_str()));
+    let names = names.collect::<Vec<_>>();
+    let count = names.len();
+    let all = |allowed: &[&str]| names.iter().all(|name| allowed.contains(name));
+    if all(&["shell"]) {
+        format!("Ran {count} commands")
+    } else if all(&["edit_file", "edit_files", "write_file"]) {
+        format!("Edited · {count} operations")
+    } else if all(&["read_file", "read_artifact", "read_history", "grep", "glob", "skill"]) {
+        format!("Explored · {count} tools")
+    } else if all(&["web_search", "web_fetch"]) {
+        format!("Searched · {count} tools")
+    } else if all(&["spawn", "delegate", "send_message", "cancel_task", "verify_task", "wait"]) {
+        format!("Coordinated · {count} actions")
+    } else {
+        format!("Worked · {count} tools")
+    }
+}
+
 fn render_entry(entry: &ChatEntry, width: usize, tool_limit: Option<usize>) -> Vec<Line<'static>> {
     if width == 0 {
         return vec![];
@@ -294,10 +316,21 @@ fn render_entry(entry: &ChatEntry, width: usize, tool_limit: Option<usize>) -> V
         let mut lines = markdown::plain(&body, width.saturating_sub(2).max(1), Style::default().fg(FG));
         for (i, line) in lines.iter_mut().enumerate() {
             if width > 2 {
-                line.spans.insert(0, Span::styled(if i == 0 { "› " } else { "  " }, Style::default().fg(USER)));
+                line.spans.insert(0, Span::styled(if i == 0 { "❯ " } else { "  " }, Style::default().fg(USER)));
             }
             line.spans.push(Span::raw(" ".repeat(width.saturating_sub(line.width()))));
             line.style = Style::default().bg(USER_BG);
+        }
+        // Grok Build's elevated user-prompt band: a full-width surface with vertical breathing room.
+        // The fill is presentation only; prompt bytes and history remain unchanged.
+        if width >= 8 {
+            let padding = || {
+                let mut line = Line::from(Span::raw(" ".repeat(width)));
+                line.style = Style::default().bg(USER_BG);
+                line
+            };
+            lines.insert(0, padding());
+            lines.push(padding());
         }
         return lines;
     }

@@ -1,9 +1,9 @@
 # TeamAgents visual architecture
 
 This is the implementation map behind the [README](../README.md). Follow the diagrams in order to rebuild
-the system's boundaries, durable data, execution rules and recovery behavior. The reference is source
-`028f2383` (D-487), database schema **7**, socket protocol **1**, and work policy **1**. These are separate
-versions. [DESIGN.md](DESIGN.md) holds requirements; [DECISIONS.md](DECISIONS.md) resolves later choices;
+the system's boundaries, durable data, execution rules and recovery behavior. The control/data reference is
+source `028f2383` (D-487); D-489 updates the TUI presentation in view 23. Database schema **7**, socket
+protocol **1**, and work policy **1** remain separate versions. [DESIGN.md](DESIGN.md) holds requirements; [DECISIONS.md](DECISIONS.md) resolves later choices;
 [ACCEPTANCE.md](ACCEPTANCE.md) records evidence rather than assuming that a diagram proves correctness.
 
 Each numbered view answers one implementation question. Arrows carry their meaning: calls, references,
@@ -1075,6 +1075,7 @@ flowchart TB
     wire["Snapshot / events / history / previews"] --> app["v2app: view state and input ownership"]
     draft["Per-session draft, attachments and queue editor"] --> app
     app --> document["Shared conversation and Markdown layout"]
+    app --> chrome["Workspace header, live activity and compact composer"]
     document --> text["Text, code, wrapping and speaker gutters"]
     document --> media["Visible diagram and image descriptors"]
     media --> helper["Bounded isolated display helper"]
@@ -1082,12 +1083,17 @@ flowchart TB
     cache --> geometry["Shared geometry and clipping"]
     text --> geometry
     geometry --> terminal["Ratatui frame and terminal graphics"]
+    chrome --> geometry
     geometry --> hit["Mouse hit testing"]
     helper -.->|"failure or deadline"| fallback["Readable source fallback"]
     fallback --> text
 ```
 
-The TUI submits only to the Leader. Approval/modal focus owns its keys; completing a slash command does not
+The TUI submits only to the Leader. D-489 adapts Grok Build's single-conversation presentation: elevated
+user bands, operation-derived tool headings, a conditional activity row and compact model chrome. `@PATH`
+plus Tab uses the same read-only `input_paths` query as `/attach`; accepting a candidate edits only that
+token and stages its path, while explicit message submission remains the sole byte-capture/send boundary.
+Approval/modal focus owns its keys; completing a slash command does not
 submit it. Queue editing compares envelope revision and never interrupts a live turn. Ctrl+C interrupts the
 current Leader model request; Ctrl+Q detaches. Session switching replaces the client only after a successful
 target sync, and drafts remain scoped to their roots. Saved history and streaming use the same renderer;

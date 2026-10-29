@@ -1017,7 +1017,8 @@ Keep the same --state-root/--session; SSH remote processes may need separate cle
 Ctrl+S or /sessions opens session history, switching and confirmed deletion; / searches stored messages.
 Ctrl+P or /queue shows pending Leader inputs; Enter edits, Delete asks to cancel, Esc returns to the draft.
 Ctrl+M or /model changes the Leader's model and reasoning effort at its next turn.
-/attach PATH stages a workspace file; Tab lists paths; Enter fills, another Enter stages. /detach INDEX removes it.
+/attach PATH stages a workspace file; @PATH then Tab offers Grok-style file references. Enter accepts.
+/detach INDEX removes a staged attachment.
 Attachments: eight files, 1 MiB UTF-8 text or 5 MiB PNG/JPEG/GIF/WebP, 16 MiB total; symlinks are refused.
 Ctrl+O expands or folds tool previews; /sessions shows full stored results.
 Ctrl+G switches graphics previews and source; image files stay unchanged.
@@ -1030,7 +1031,7 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
                 self.diagnostic_details()
             )),
             "/attach" => self.command_note(format!(
-                "Staged attachments: {:?}. Use /attach PATH; Tab lists workspace paths.",
+                "Staged attachments: {:?}. Use /attach PATH or @PATH then Tab to complete.",
                 self.attachments.paths
             )),
             "/edit" => self
@@ -1062,11 +1063,14 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
             return None;
         }
         if self.attachments.key(&mut self.composer, key) {
+            if let Some(note) = self.attachments.take_notice() {
+                self.command_note(note);
+            }
             return None;
         }
         if key.code == KeyCode::Tab && key.modifiers.is_empty() {
-            if let Some(prefix) = self.composer.text().strip_prefix("/attach ") {
-                return Some(V2Effect::InputPaths { prefix: prefix.to_string() });
+            if let Some(prefix) = self.attachments.request(&self.composer) {
+                return Some(V2Effect::InputPaths { prefix });
             }
         }
         if self.completion.key(&mut self.composer, key) {
@@ -1338,6 +1342,19 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
         format!("{state}{usage}{deadline}{wait}")
     }
 
+    /// Concise state for the header and the Grok-style activity row. Detailed diagnostics stay
+    /// in `status_line`; ordinary busy/ready states do not repeat the goal usage shown in the header.
+    pub fn activity_line(&self) -> String {
+        let status = self.status_line();
+        if !self.approvals.is_empty() {
+            return format!("Approval needed ({})", self.approvals.len());
+        }
+        if ["Ready", "Working", "Thinking", "Checking"].iter().any(|state| status.starts_with(state)) {
+            return status.split(" · ").next().unwrap_or(&status).to_string();
+        }
+        status
+    }
+
     pub fn footer_hint(&self) -> String {
         if self.help_open {
             return "Esc close · Up/Down scroll · PgUp/PgDn page".into();
@@ -1364,9 +1381,9 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
             return "Ctrl+C interrupt · Enter send · Ctrl+P queue · Ctrl+Q quit".into();
         }
         if self.composer.text().is_empty() {
-            "Enter send · ? shortcuts · Ctrl+J newline · Ctrl+M model · Ctrl+S sessions · Ctrl+Q quit".into()
+            "Enter send · ? shortcuts · Ctrl+J newline · Ctrl+Q quit".into()
         } else {
-            "Enter send · Ctrl+J newline · Ctrl+E editor · Ctrl+Q quit · /help".into()
+            "Enter send · Ctrl+J newline · Ctrl+E editor · Ctrl+Q quit".into()
         }
     }
 }

@@ -2,7 +2,7 @@
 //! source — `geometry()` — drives both the renderer and mouse hit-testing,
 //! the same discipline as ui::geometry for the v1 interface.
 
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
@@ -31,6 +31,8 @@ pub(crate) fn selection() -> Style {
 pub struct V2Geometry {
     pub status: Rect,
     pub chat: Rect,
+    /// Grok-style live activity row, shown only when there is something meaningful to report.
+    pub activity: Rect,
     /// Pending-approvals box (chat view only; height 0 when nothing pends).
     pub approvals: Rect,
     /// Composer box (chat view only).
@@ -42,7 +44,7 @@ pub struct V2Geometry {
 pub fn geometry(app: &V2App, area: Rect) -> V2Geometry {
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)]).split(area);
     let content = rows[1];
-    let composer_h = (app.composer.widget_height(content.width.saturating_sub(2) as usize) as u16)
+    let composer_h = (app.composer.widget_height(content.width.saturating_sub(4) as usize) as u16)
         .min(content.height.saturating_sub(1));
     let approvals_h = if app.approvals.is_empty() {
         0
@@ -59,8 +61,10 @@ pub fn geometry(app: &V2App, area: Rect) -> V2Geometry {
     } else {
         0
     };
+    let activity_h = u16::from(content.height >= 3 && !app.activity_line().starts_with("Ready"));
     let chunks = Layout::vertical([
         Constraint::Min(0),
+        Constraint::Length(activity_h),
         Constraint::Length(approvals_h),
         Constraint::Length(completion_h),
         Constraint::Length(composer_h),
@@ -69,9 +73,10 @@ pub fn geometry(app: &V2App, area: Rect) -> V2Geometry {
     V2Geometry {
         status: rows[0],
         chat: chunks[0],
-        approvals: chunks[1],
-        completion: chunks[2],
-        composer: chunks[3],
+        activity: chunks[1],
+        approvals: chunks[2],
+        completion: chunks[3],
+        composer: chunks[4],
         footer: rows[2],
     }
 }
@@ -159,6 +164,7 @@ pub fn render(frame: &mut Frame, app: &mut V2App) {
     if geo.chat.height > 0 {
         render_chat(frame, app, geo.chat);
     }
+    render_activity(frame, app, geo.activity);
     render_approvals(frame, app, geo.approvals);
     render_completion(frame, app, geo.completion);
     render_composer(frame, app, geo.composer);
@@ -211,8 +217,22 @@ fn render_profile(frame: &mut Frame, app: &V2App, area: Rect) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
+fn compact_tokens(value: i64) -> String {
+    let value = value.max(0) as f64;
+    if value < 10_000.0 {
+        return format!("{}", value as i64);
+    }
+    let (scaled, suffix) = if value < 1_000_000.0 { (value / 1_000.0, "k") } else { (value / 1_000_000.0, "M") };
+    let mut text = format!("{scaled:.1}");
+    if text.ends_with(".0") {
+        text.truncate(text.len() - 2);
+    }
+    format!("{text}{suffix}")
+}
+
+/// Grok Build's quiet workspace header, with TeamAgents' authoritative goal usage on the right.
 fn render_status(frame: &mut Frame, app: &V2App, area: Rect) {
-    let status = app.status_line();
+    let status = app.activity_line();
     let status_style = if app.disconnected {
         Style::default().fg(ERROR)
     } else if !app.approvals.is_empty() {
@@ -223,32 +243,115 @@ fn render_status(frame: &mut Frame, app: &V2App, area: Rect) {
         Style::default().fg(NOTICE)
     };
     let width = area.width as usize;
-    let mut line = Line::from(Span::styled(" ", Style::default()));
-    if width >= 100 {
-        line.spans.push(Span::styled("TeamAgents · ", Style::default().fg(CODEX).add_modifier(Modifier::BOLD)));
+    let usage = app.goal.as_ref().map(|goal| {
+        let limit = goal.limit_total.map(|n| format!("/{}", compact_tokens(n))).unwrap_or_default();
+        format!("{}{limit} tokens{}", compact_tokens(goal.known_total), if goal.unknown { " + ?" } else { "" })
+    });
+    let right = fit(usage.as_deref().unwrap_or(""), width.saturating_div(3));
+    let right_width = if right.is_empty() { 0 } else { unicode_width::UnicodeWidthStr::width(right.as_str()) + 2 };
+    let left_width = width.saturating_sub(right_width);
+    let mut left = Line::from(Span::styled(" ", Style::default()));
+    left.spans.push(Span::styled(
+        if left_width >= 20 { "◆ TeamAgents" } else { "TA" },
+        Style::default().fg(CODEX).add_modifier(Modifier::BOLD),
+    ));
+    if left_width >= 12 {
+        left.spans.push(Span::styled(" · ", Style::default().fg(MUTED)));
+        left.spans.push(Span::styled(fit(&status, 28), status_style));
     }
-    line.spans.push(Span::styled(fit(&status, width.saturating_sub(line.width())), status_style));
-    let mut extras = Vec::new();
-    if !app.session_name.is_empty() {
-        extras.push(fit(&app.session_name, if width >= 100 { 20 } else { 12 }));
+    if left_width >= 54 && !app.session_name.is_empty() {
+        left.spans.push(Span::styled(" · ", Style::default().fg(MUTED)));
+        left.spans.push(Span::styled(fit(&app.session_name, 18), Style::default().fg(GREY)));
     }
-    if let Some(leader) = app.active_instance() {
-        if !leader.model.is_empty() {
-            let profile = if leader.effort.is_empty() {
-                leader.model.clone()
-            } else {
-                format!("{} / {}", leader.model, leader.effort)
-            };
-            extras.push(profile);
+    if left_width >= 76 {
+        if let Some(workspace) = app.workspace() {
+            left.spans.push(Span::styled("  ", Style::default()));
+            left.spans.push(Span::styled(fit(workspace, 42), Style::default().fg(MUTED)));
         }
     }
-    for extra in extras {
-        let part = format!(" · {extra}");
-        if line.width() + unicode_width::UnicodeWidthStr::width(part.as_str()) <= width {
-            line.spans.push(Span::styled(part, Style::default().fg(GREY)));
-        }
+    frame.render_widget(
+        Paragraph::new(left).style(Style::default().bg(PANEL_BG)),
+        Rect::new(area.x, area.y, left_width as u16, 1),
+    );
+    if !right.is_empty() && area.width >= 2 {
+        let right_area = Rect::new(area.right().saturating_sub(right.len() as u16 + 1), area.y, right.len() as u16, 1);
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(right, Style::default().fg(GREY))))
+                .alignment(Alignment::Right)
+                .style(Style::default().bg(PANEL_BG)),
+            right_area,
+        );
     }
-    frame.render_widget(Paragraph::new(line).style(Style::default().bg(PANEL_BG)), area);
+}
+
+/// One live status row between the transcript and composer. It intentionally reports
+/// persisted/runtime state only; no spinner or elapsed prose is treated as progress evidence.
+fn render_activity(frame: &mut Frame, app: &V2App, area: Rect) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let status = app.activity_line();
+    let warning = !app.approvals.is_empty() || status.starts_with("Needs") || status.starts_with("Approval");
+    let stopped = app.disconnected
+        || status.starts_with("Work blocked")
+        || status.starts_with("Stopped")
+        || status.starts_with("PARKED")
+        || status.starts_with("TERMINATED");
+    let busy = app.active_instance().is_some_and(|instance| {
+        instance.lifecycle == "ACTIVE"
+            && matches!(instance.phase.as_str(), "MODEL_PENDING" | "TOOLS_PENDING" | "COMPLETION_PENDING")
+    }) || matches!(
+        status.split(" · ").next(),
+        Some("Working" | "Thinking" | "Checking" | "Connecting to the Leader")
+    );
+    let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    let icon = if stopped {
+        "!"
+    } else if warning {
+        "◆"
+    } else if busy {
+        spinner[(crate::now_epoch() * 8.0) as usize % spinner.len()]
+    } else if status.starts_with("Waiting") {
+        "◌"
+    } else {
+        "●"
+    };
+    let color = if stopped {
+        ERROR
+    } else if warning {
+        WARNING
+    } else if status.starts_with("Ready") {
+        SUCCESS
+    } else {
+        ACCENT
+    };
+    let right = if !app.approvals.is_empty() {
+        "Ctrl+A review"
+    } else if app.active_instance().is_some_and(|instance| {
+        instance.lifecycle == "ACTIVE" && instance.phase != "READY" && instance.phase != "WAITING"
+    }) {
+        "Ctrl+C interrupt"
+    } else if app.chat_scroll > 0 {
+        "PgDn latest"
+    } else {
+        ""
+    };
+    let right_width = if area.width >= 48 { right.len() + 2 } else { 0 };
+    let left_width = (area.width as usize).saturating_sub(right_width + 3);
+    let line = Line::from(vec![
+        Span::styled(format!(" {icon} "), Style::default().fg(color).add_modifier(Modifier::BOLD)),
+        Span::styled(fit(&status, left_width), Style::default().fg(if stopped { ERROR } else { NOTICE })),
+    ]);
+    frame.render_widget(
+        Paragraph::new(line),
+        Rect::new(area.x, area.y, area.width.saturating_sub(right_width as u16), 1),
+    );
+    if right_width > 0 {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(right, Style::default().fg(MUTED)))).alignment(Alignment::Right),
+            Rect::new(area.right().saturating_sub(right.len() as u16 + 1), area.y, right.len() as u16, 1),
+        );
+    }
 }
 
 fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
@@ -267,13 +370,16 @@ fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
     let lines = &mut document.lines;
     if lines.is_empty() && app.active_preview().is_none() {
         lines.push(Line::from(""));
-        lines.push(Line::styled(
-            "What would you like to build?",
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        lines.push(Line::styled("TeamAgents", Style::default().fg(CODEX).add_modifier(Modifier::BOLD)));
+        lines.push(Line::from(""));
+        lines.extend(crate::markdown::plain(
+            "A persistent coding team in your terminal.",
+            width,
+            Style::default().fg(FG),
         ));
         lines.push(Line::from(""));
         lines.extend(crate::markdown::plain(
-            "Ask the Leader to explore, fix or create something in your project.",
+            "Ask the Leader to explore, fix or create something. Work continues when you detach.",
             width,
             Style::default().fg(GREY),
         ));
@@ -370,8 +476,12 @@ fn render_approvals(frame: &mut Frame, app: &V2App, area: Rect) {
         return;
     }
     let focused = app.focus == Focus::Approvals;
-    let title = if focused { "approvals (focused)" } else { "approvals" };
-    let block = panel(title).border_style(Style::default().fg(if focused { WARNING } else { BORDER }));
+    let title = if focused { "Approval required · focused" } else { "Approval required" };
+    let block = panel(title).title_bottom(" a approve once · d deny ").border_style(Style::default().fg(if focused {
+        WARNING
+    } else {
+        BORDER
+    }));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let (start, count) = window(app.approvals.len(), app.approval_sel, inner.height as usize);
@@ -386,7 +496,7 @@ fn render_approvals(frame: &mut Frame, app: &V2App, area: Rect) {
             let marker = if selected { "▶" } else { " " };
             if selected {
                 return Line::from(Span::styled(
-                    format!("{marker} {} · {} · {}", a.id, a.tool, a.preview),
+                    fit(&format!("{marker} {} · {} · {}", a.id, a.tool, a.preview), inner.width as usize),
                     selection(),
                 ));
             }
@@ -396,7 +506,10 @@ fn render_approvals(frame: &mut Frame, app: &V2App, area: Rect) {
                 Span::styled("· ", Style::default().fg(MUTED)),
                 Span::styled(a.tool.clone(), Style::default().fg(FG).add_modifier(Modifier::BOLD)),
                 Span::styled(" · ", Style::default().fg(MUTED)),
-                Span::styled(a.preview.clone(), Style::default().fg(GREY)),
+                Span::styled(
+                    fit(&a.preview, (inner.width as usize).saturating_sub(a.id.len() + a.tool.len() + 12)),
+                    Style::default().fg(GREY),
+                ),
             ])
         })
         .collect();
@@ -441,19 +554,82 @@ fn render_completion(frame: &mut Frame, app: &V2App, area: Rect) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
+/// Main conversation prompt: Grok's quiet border, leading prompt glyph and model info
+/// integrated into the lower border. The queue editor keeps using `render_editor` below.
 fn render_composer(frame: &mut Frame, app: &V2App, area: Rect) {
     if area.height < 3 || area.width < 3 {
         return;
     }
     let focused = app.focus == Focus::Composer && app.profile.is_none() && !app.help_open;
-    let title = if app.attachments.paths.is_empty() {
-        "Message".to_string()
+    let title = if app.session_name.is_empty() { " ".to_string() } else { format!(" {} ", fit(&app.session_name, 24)) };
+    let block = panel(title).border_style(Style::default().fg(if focused { ACCENT } else { BORDER }));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let prefix_width = if inner.width >= 4 { 2 } else { 0 };
+    let (lines, row, col) = app.composer.visual_lines(inner.width.saturating_sub(prefix_width) as usize);
+    let (start, count) = window(lines.len(), row, inner.height as usize);
+    if app.composer.text().is_empty() {
+        let placeholder = if app.disconnected { "Reconnecting · draft preserved" } else { "Message the Leader…" };
+        let mut spans = Vec::new();
+        if prefix_width > 0 {
+            spans.push(Span::styled("❯ ", Style::default().fg(USER)));
+        }
+        spans.push(Span::styled(
+            fit(placeholder, inner.width.saturating_sub(prefix_width) as usize),
+            Style::default().fg(GREY),
+        ));
+        frame.render_widget(Paragraph::new(Line::from(spans)), inner);
     } else {
-        format!("Message · {} attachments (/attach lists)", app.attachments.paths.len())
+        let visible = lines
+            .into_iter()
+            .skip(start)
+            .take(count)
+            .enumerate()
+            .map(|(index, text)| {
+                let mut spans = Vec::new();
+                if prefix_width > 0 {
+                    spans.push(Span::styled(if start + index == 0 { "❯ " } else { "  " }, Style::default().fg(USER)));
+                }
+                spans.push(Span::styled(text, Style::default().fg(FG)));
+                Line::from(spans)
+            })
+            .collect::<Vec<_>>();
+        frame.render_widget(Paragraph::new(visible), inner);
+    }
+    if focused && count > 0 && inner.width > prefix_width {
+        frame.set_cursor_position((inner.x + prefix_width + col as u16, inner.y + (row - start) as u16));
+    }
+    // Model/effort and attachment metadata live in the border, not another permanent status row.
+    let bottom = Rect::new(inner.x, area.bottom().saturating_sub(1), inner.width, 1);
+    let attachment = if !app.attachments.paths.is_empty() && bottom.width >= 16 {
+        let text = if bottom.width >= 32 {
+            format!("{} attached · /attach", app.attachments.paths.len())
+        } else {
+            format!("{} @", app.attachments.paths.len())
+        };
+        Some(fit(&text, (bottom.width as usize / 3).min(24)))
+    } else {
+        None
     };
-    let placeholder =
-        if app.disconnected { "Reconnecting · your draft stays here" } else { "Ask, build, or fix something…" };
-    render_editor(frame, &app.composer, area, &title, focused, placeholder);
+    let reserved = attachment.as_ref().map_or(0, |text| unicode_width::UnicodeWidthStr::width(text.as_str()) + 2);
+    if let Some(leader) = app.active_instance() {
+        if !leader.model.is_empty() && bottom.width as usize > reserved + 10 {
+            let profile = if leader.effort.is_empty() {
+                leader.model.clone()
+            } else {
+                format!("{} · {}", leader.model, leader.effort)
+            };
+            let profile = format!(" {} ", fit(&profile, (bottom.width as usize).saturating_sub(reserved + 2)));
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(profile, Style::default().fg(GREY))))
+                    .alignment(Alignment::Right),
+                bottom,
+            );
+        }
+    }
+    if let Some(label) = attachment {
+        frame.render_widget(Paragraph::new(Line::from(Span::styled(label, Style::default().fg(ACCENT)))), bottom);
+    }
 }
 
 /// Shared cursor-following editor for messages and pending inputs.
@@ -561,7 +737,7 @@ fn render_help(frame: &mut Frame, app: &mut V2App, area: Rect) {
             &[
                 "Ctrl+S sessions · /sessions full stored output",
                 "Ctrl+P pending inputs · Ctrl+M model and effort",
-                "/attach PATH add a file · /detach INDEX remove it",
+                "/attach PATH or @PATH + Tab · /detach INDEX",
             ][..],
         ),
         (

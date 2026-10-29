@@ -457,7 +457,7 @@ fn frame_shows_status_chat_approvals_composer_and_footer() {
     assert!(all.contains("run the tests"), "{all}");
     assert!(all.contains("already running"), "{all}");
     assert!(all.contains("ap-1 · shell · make check"), "{all}");
-    assert!(all.contains("Message"), "{all}");
+    assert!(all.contains("deepseek-flash"), "{all}");
     assert!(all.contains("keep going"), "{all}");
     assert!(all.contains("Ctrl+A review"), "{all}");
     // the geometry shares one source with hit-testing: the approvals box sits
@@ -485,7 +485,10 @@ fn visual_chrome_uses_quiet_roles_and_a_text_selection_marker() {
     assert_eq!(corner.bg, teamagents_tui::theme::BG);
     let title = buffer[(geo.composer.x + 1, geo.composer.y)].clone();
     assert_eq!(title.fg, teamagents_tui::theme::GREY);
-    let placeholder = buffer[(geo.composer.x + 1, geo.composer.y + 1)].clone();
+    let prompt = buffer[(geo.composer.x + 1, geo.composer.y + 1)].clone();
+    assert_eq!(prompt.symbol(), "❯");
+    assert_eq!(prompt.fg, teamagents_tui::theme::USER);
+    let placeholder = buffer[(geo.composer.x + 3, geo.composer.y + 1)].clone();
     assert_eq!(placeholder.fg, teamagents_tui::theme::GREY);
     let selected = buffer[(geo.approvals.x + 1, geo.approvals.y + 1)].clone();
     assert_eq!(selected.symbol(), "▶");

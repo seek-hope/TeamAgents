@@ -1,7 +1,7 @@
 # Acceptance matrix (A01–A36)
 
 Baseline: [the design and acceptance baseline](DESIGN.md) §12/§16. Current source inspection and local
-regression baseline: **2026-10-29, D-487**.
+regression baseline: **2026-10-29, D-489**.
 This is not a new independent acceptance audit or real-model run.
 The D-451 product/installation receipts and the D-452 independent audit retain their original source/date
 boundaries; later source changes do not inherit those results.
@@ -9,7 +9,7 @@ boundaries; later source changes do not inherit those results.
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 174 / engine 437 / tui 97 test targets).
+`make check` is green (core 174 / engine 437 / tui 102 test targets).
 `make pty` passed on 2026-10-29: the terminal-profile matrix (xterm-256color, screen-256color, tmux-256color, xterm-kitty and Kitty under tmux) plus both forced graphics protocols, all rc 0 and
 credential-free. PTY checks cover protocol bytes, input ownership, resize and cleanup, not a complete
 actual graphical-terminal or OS matrix. These gates do not renew real-provider, OAuth, formal-proof or
@@ -488,6 +488,25 @@ can interrupt legitimate repetition. Projection bounds (32 KiB checkpoint, recen
 promise a fit in every native model window; overflow still requires explicit recovery. Local stop observation
 does not prove remote effects, escaped descendants or undeclared/shared paths quiescent. Reviewer usage
 accounting remains a separate gap. Source, installed binaries and the older published archive are distinct.
+
+## Grok-informed conversation TUI (D-489)
+
+The [pinned reference study](../review/tui-reference-2026-10-29/REPORT.md) compares Codex, Grok Build and
+herdr source and official screenshots, and records why Grok's single-conversation implementation was selected.
+The adaptation changes presentation and local completion only; it does not import another agent runtime.
+
+- The TUI suite has 102 tests across quiet workspace/usage chrome, elevated user bands, operation-derived tool
+  groups, live activity, compact model/attachment metadata, explicit approvals and narrow/tiny geometries.
+  `@` completion covers multiline drafts, empty prefixes, a caret on the sigil, stale replies, duplicate/capped
+  staging and final submitted attachments. Existing Markdown, media, queue, reconnect and editing checks stay
+  in the same suite. `make check` passed with core 174 / engine 437 / TUI 102.
+- `pty_v2_smoke.py` verifies `@` selection and the exact attachment frame in a real terminal in addition to
+  model/approval/input ownership. The full `make pty` matrix passed all five terminal profiles and forced
+  blocks/Kitty modes. Scripted TestBackend previews cover conversation, narrow, working, approval and welcome
+  states; they are not evidence of changed user preference or model quality.
+
+No daemon command, schema, grant, model request, attachment-confinement rule or runner behavior changed.
+There is no resident sidebar, split terminal, ACP integration or measured upstream usability comparison.
 
 ## Recent source additions and their evidence limits
 

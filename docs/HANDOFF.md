@@ -41,10 +41,13 @@ shared-workspace takeover uses separate observations of the recorded local proce
 it or rewriting unknown receipts. This does not establish confinement, cross-session exclusion, absence of
 escaped descendants, or remote-side-effect quiescence.
 
-The TUI remains one Leader conversation with inline questions, conditional approvals, complete Markdown
-answers and readable Shell output. Editing, shortcuts, media placement and streaming/saved rendering share the
-same implementations. Default search is DeepSeek + Exa; fetch remains DeepSeek-only. CodeGraph stays optional
-MCP + codemode, with existing indexes, shared-daemon locking and explicit initialization.
+The TUI remains one Leader conversation, now adapted from Grok Build's single-agent presentation under D-489:
+elevated user prompts, operation-derived tool groups, quiet model chrome and a conditional live activity row.
+`@PATH` plus Tab stages file references through the existing confined attachment flow. Inline questions,
+conditional approvals, complete Markdown, readable Shell output, editing, shortcuts, media placement and
+streaming/saved rendering retain their implementations. Default search is DeepSeek + Exa; fetch remains
+DeepSeek-only. CodeGraph stays optional MCP + codemode, with existing indexes, shared-daemon locking and
+explicit initialization.
 
 ## Contracts to preserve
 

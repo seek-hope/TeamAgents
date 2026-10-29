@@ -336,7 +336,8 @@ Common TUI keys:
   `TEAMAGENTS_GRAPHICS=auto|kitty|blocks|off` selects the graphics mode.
 
 Slash commands are `/help`, `/sessions`, `/interrupt`, `/quit`, `/model`, `/attach`, `/detach`, `/queue` and
-`/edit`. Completion fills a command without sending it; press Enter separately to submit.
+`/edit`. Completion fills a command without sending it; press Enter separately to submit. For a file reference,
+type `@PATH` and Tab, then accept a candidate; the file is staged and sent only with your message.
 
 For stored state, use `teamagents status --json` or
 `teamagents history --id INSTANCE --limit 400 --json`. The [user guide](docs/USER-GUIDE.md#1-quick-start)

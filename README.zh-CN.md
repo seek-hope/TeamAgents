@@ -316,7 +316,8 @@ teamagents authority revoke --grant g-1a2b3c4d
   `TEAMAGENTS_GRAPHICS=auto|kitty|blocks|off` 选择图形显示模式。
 
 斜杠命令包括 `/help`、`/sessions`、`/interrupt`、`/quit`、`/model`、`/attach`、`/detach`、
-`/queue` 和 `/edit`。补全只填入命令，仍需按 Enter 才会提交。
+`/queue` 和 `/edit`。补全只填入命令，仍需按 Enter 才会提交。输入 `@PATH` 后按 Tab 并选择候选，
+可以暂存文件引用；文件只会随你之后发送的消息一起提交。
 
 查看已存状态可使用 `teamagents status --json` 或
 `teamagents history --id INSTANCE --limit 400 --json`。其余管理命令和报告字段见

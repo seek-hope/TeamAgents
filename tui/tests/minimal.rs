@@ -262,7 +262,7 @@ fn every_size_keeps_one_nonoverlapping_conversation_and_conditional_approvals() 
                 let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
                 terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
                 let geo = v2ui::geometry(&app, area);
-                let regions = [geo.status, geo.chat, geo.approvals, geo.composer, geo.footer];
+                let regions = [geo.status, geo.chat, geo.activity, geo.approvals, geo.composer, geo.footer];
                 for (i, region) in regions.iter().enumerate() {
                     assert_eq!(region.intersection(area), *region);
                     for other in &regions[i + 1..] {
@@ -419,7 +419,9 @@ fn responsive_status_and_hints_prioritize_current_actions() {
         let row = |y| (0..width).map(|x| terminal.backend().buffer()[(x, y)].symbol()).collect::<String>();
         assert!(row(0).contains("Ready") && row(0).contains("42 tokens"));
         if width == 100 {
-            assert!(row(0).contains("deepseek-flash / high") && row(0).contains("project"));
+            assert!(row(0).contains("project"));
+            let shown: String = terminal.backend().buffer().content.iter().map(|cell| cell.symbol()).collect();
+            assert!(shown.contains("deepseek-flash · high"), "model/effort belongs in the composer border: {shown}");
         }
         assert!(row(23).contains("? shortcuts") && !row(23).contains("interrupt"));
         app.instances[0].phase = "MODEL_PENDING".into();

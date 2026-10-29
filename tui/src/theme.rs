@@ -22,7 +22,8 @@ pub const ACCENT: Color = Color::Rgb(0x89, 0xb4, 0xfa);
 pub const CODEX: Color = Color::Rgb(0xcb, 0xa6, 0xf7);
 /// `teal` — user input and code.
 pub const USER: Color = Color::Rgb(0x94, 0xe2, 0xd5);
-pub const USER_BG: Color = Color::Reset;
+/// `surface0` — elevated user-prompt band, adapted from Grok Build's fullscreen prompt surface.
+pub const USER_BG: Color = Color::Rgb(0x24, 0x27, 0x30);
 pub const CODE: Color = Color::Rgb(0x94, 0xe2, 0xd5);
 /// `green` — success and additions.
 pub const ADDED: Color = Color::Rgb(0xa6, 0xe3, 0xa1);

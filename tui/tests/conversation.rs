@@ -182,9 +182,9 @@ fn compact_conversation_groups_tools_and_preserves_full_details() {
         assert!(lines.iter().all(|line| line.width() <= width));
         if width >= 40 {
             let shown = text(lines);
-            assert!(shown.starts_with("› Fix the tests"));
+            assert!(shown.contains("❯ Fix the tests"));
             assert!(shown.contains("● I will inspect the failure."));
-            assert_eq!(shown.matches("Activity · 2 tools").count(), 1);
+            assert_eq!(shown.matches("Worked · 2 tools").count(), 1);
             assert!(shown.contains("FAILED") && !shown.contains("succeeded"));
             assert!(!shown.contains("\n\n› shell"), "consecutive tools share spacing");
         }
@@ -192,6 +192,41 @@ fn compact_conversation_groups_tools_and_preserves_full_details() {
     let full = text(cache.lines(&entries, 100, None));
     assert!(full.contains("\"offset\": 42") && full.contains("\"command\": \"cargo test\""));
     assert_eq!(entries[2].tool.as_ref().unwrap().arguments, "{\"path\":\"src/main.rs\",\"offset\":42}");
+}
+
+#[test]
+fn activity_groups_name_the_operations_without_claiming_success() {
+    for (names, expected) in [
+        (vec!["read_file", "grep"], "Explored · 2 tools"),
+        (vec!["edit_file", "write_file"], "Edited · 2 operations"),
+        (vec!["shell", "shell"], "Ran 2 commands"),
+        (vec!["web_search", "web_fetch"], "Searched · 2 tools"),
+        (vec!["spawn", "delegate"], "Coordinated · 2 actions"),
+    ] {
+        let calls = names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| json!({"id":format!("call-{index}"),"function":{"name":name,"arguments":"{}"}}))
+            .collect::<Vec<_>>();
+        let rows = json!([{"kind":"assistant","message":{"tool_calls":calls}}]);
+        let entries = transcript::project(rows.as_array().unwrap(), "i-leader", false);
+        let mut cache = transcript::Transcript::default();
+        let shown = text(cache.lines(&entries, 80, Some(4)));
+        assert_eq!(shown.matches(expected).count(), 1, "{expected}: {shown}");
+        assert!(!shown.contains("succeeded"), "a group label is not an outcome");
+    }
+}
+
+#[test]
+fn user_prompt_band_uses_an_elevated_surface_at_readable_widths() {
+    let rows = json!([{"kind":"user","message":{"content":"Fix the tests"}}]);
+    let entries = transcript::project(rows.as_array().unwrap(), "i-leader", false);
+    let mut cache = transcript::Transcript::default();
+    let lines = cache.lines(&entries, 60, Some(4));
+    let prompt = lines.iter().find(|line| line.spans.iter().any(|span| span.content == "❯ ")).unwrap();
+    assert_eq!(prompt.style.bg, Some(theme::USER_BG));
+    assert_eq!(lines.first().unwrap().style.bg, Some(theme::USER_BG));
+    assert_eq!(lines.last().unwrap().style.bg, Some(theme::USER_BG));
 }
 
 #[test]

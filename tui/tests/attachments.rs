@@ -80,6 +80,61 @@ fn attachments_preserve_approval_ownership_disconnected_drafts_and_narrow_frames
 }
 
 #[test]
+fn mention_completion_preserves_multiline_drafts_and_stages_the_selected_file() {
+    let mut app = app();
+    app.composer.set_text("Inspect @src/m\nand keep this line");
+    app.composer.row = 0;
+    app.composer.col = app.composer.lines[0].len();
+    assert!(matches!(app.handle_key(key(KeyCode::Tab)), Some(V2Effect::InputPaths { prefix }) if prefix == "src/m"));
+    app.attachments
+        .apply(&json!({"prefix":"src/m","paths":["src/main.rs","src/mod.rs"],"limited":false}), &app.composer);
+    app.handle_key(key(KeyCode::Down));
+    assert!(app.handle_key(key(KeyCode::Enter)).is_none(), "accepting a reference never submits it");
+    assert_eq!(app.composer.text(), "Inspect @src/mod.rs \nand keep this line");
+    assert_eq!(app.attachments.paths, ["src/mod.rs"]);
+    assert!(app.entries.last().unwrap().text.contains("staged from @reference"));
+    let Some(V2Effect::SubmitInput { text, attachments, .. }) = app.handle_key(key(KeyCode::Enter)) else {
+        panic!("the completed prompt did not submit")
+    };
+    assert_eq!(text, "Inspect @src/mod.rs \nand keep this line");
+    assert_eq!(attachments, ["src/mod.rs"]);
+
+    // A late reply for an older token cannot overwrite a newer draft.
+    app.composer.set_text("@new");
+    assert!(matches!(app.handle_key(key(KeyCode::Tab)), Some(V2Effect::InputPaths { prefix }) if prefix == "new"));
+    app.composer.set_text("@other");
+    app.attachments.apply(&json!({"prefix":"new","paths":["wrong.rs"]}), &app.composer);
+    assert!(app.attachments.candidates.is_empty());
+}
+
+#[test]
+fn bare_mention_and_caret_on_the_sigil_are_safe() {
+    let mut app = app();
+    app.composer.set_text("@");
+    app.composer.col = 0;
+    assert!(app.handle_key(key(KeyCode::Tab)).is_none(), "a caret before @ is not a mention prefix");
+    app.composer.col = 1;
+    assert!(matches!(app.handle_key(key(KeyCode::Tab)), Some(V2Effect::InputPaths { prefix }) if prefix.is_empty()));
+    app.attachments.apply(&json!({"prefix":"","paths":["src/main.rs"]}), &app.composer);
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(app.composer.text(), "@src/main.rs ");
+    assert_eq!(app.attachments.paths, ["src/main.rs"]);
+}
+
+#[test]
+fn mention_completion_enforces_the_attachment_cap_without_changing_the_draft() {
+    let mut app = app();
+    app.attachments.paths = (0..8).map(|index| format!("file-{index}.rs")).collect();
+    app.composer.set_text("@src");
+    assert!(matches!(app.handle_key(key(KeyCode::Tab)), Some(V2Effect::InputPaths { .. })));
+    app.attachments.apply(&json!({"prefix":"src","paths":["ninth.rs"]}), &app.composer);
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(app.composer.text(), "@src");
+    assert_eq!(app.attachments.paths.len(), 8);
+    assert!(app.entries.last().unwrap().text.contains("At most eight"));
+}
+
+#[test]
 fn slash_commands_never_enter_input_history_but_messages_do() {
     let mut app = app();
     app.attachments.paths.push("staged.txt".into());

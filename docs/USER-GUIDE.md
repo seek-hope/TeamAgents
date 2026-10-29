@@ -1,6 +1,6 @@
 # TeamAgents user guide
 
-This guide describes current source through D-487. For installation, see [INSTALL.md](INSTALL.md); for evidence
+This guide describes current source through D-489. For installation, see [INSTALL.md](INSTALL.md); for evidence
 and candidate work, see [ACCEPTANCE.md](ACCEPTANCE.md) and [PRODUCT-COMPARISON.md](PRODUCT-COMPARISON.md).
 Historical decisions and experiments are not instructions for the current product.
 
@@ -17,8 +17,9 @@ teamagents                           # open the TUI (starts this session's daemo
 - **One daemon per session**: `teamagents` probes `$XDG_STATE_HOME/teamagents/v2/daemon.sock` and, when it is
   missing or refuses the connection, starts `teamagents daemon` detached and hands the socket to the TUI.
   Quitting the TUI does not stop the session.
-- **Minimal fullscreen conversation (D-445)**: one conversation with the Leader, a one-line status,
-  the composer and a short hint. There are no member, task or topology panels and no recipient switching.
+- **Minimal fullscreen conversation (D-445/D-489)**: one Grok-style conversation with the Leader, a quiet
+  workspace/usage header, the composer and short contextual hints. Non-idle work adds one live activity row.
+  There are no member, task or topology panels and no recipient switching.
   Enter sends; Ctrl+J or Shift+Enter inserts a newline. Up/Down recalls input; PageUp/PageDown and the
   wheel read history. Drafts soft-wrap and survive resizing. Kitty's native Shift-drag copies text.
   A slash prefix shows local commands: Up/Down selects, Tab or Enter fills, Esc cancels without clearing
@@ -28,7 +29,8 @@ teamagents                           # open the TUI (starts this session's daemo
   Alt+Left/Right moves by word; Ctrl+B and Ctrl+F move by character. Ctrl+W or Alt+Backspace deletes the previous
   word. Ctrl+U deletes to line start, Ctrl+K to line end (or the following newline), and Ctrl+Y restores the last
   deletion. Home/End moves to the line edges. The pending-input editor shares these keys and follows its caret.
-  The status fits run state/usage, session and model/effort by width; footer hints follow the current action.
+  The status fits run state/usage and session/workspace by width; model/effort sits in the composer border.
+  Footer hints follow the current action.
   Help and model menus own input: typing or pasting cannot change the underlying draft.
 - **External editor**: Ctrl+E opens the current draft in VISUAL, falling back to EDITOR. Saving and exiting
   successfully replaces the draft; a nonzero exit, missing editor or read failure restores it and reports
@@ -43,13 +45,15 @@ teamagents                           # open the TUI (starts this session's daemo
 - **Completion answers and Shell output (D-486)**: completion summaries retain their full Markdown; Shell
   commands preserve newlines and appear separately from decoded output/error bodies. Logs remain literal,
   including JSON printed by a command. Receipt arrival alone does not prove successful execution.
-- **Readable conversations (D-447/D-485)**: prompt markers, a compact Leader reply gutter, headings, lists, quotes, links,
+- **Readable conversations (D-447/D-485/D-489)**: elevated user-prompt bands, a compact Leader reply gutter,
+  headings, lists, quotes, links,
   fenced code and tables. Code retains indentation; narrow tables become labelled records. Diff lines have
   addition/removal colors. Completed fenced code uses language syntax colors (D-450), including Rust, Python,
   JavaScript/TypeScript, JSON, TOML and Shell. Unknown languages, incomplete fences or parser failures stay
   plain; coloring also falls back above 64 KiB/500 lines or 4096 bytes in one line. Live streaming uses
   the same layout, remains transient and is replaced by history.
-  Tool calls and results share a block; consecutive calls share an activity group. Compact headers combine
+  Tool calls and results share a block; consecutive calls share an Explored/Edited/Ran/Searched/Coordinated/
+  Worked activity group based on their actual operations. Compact headers combine
   tool, receipt state and command/path/query. Received output does not by itself establish success.
   Ctrl+O expands tool previews from four to forty wrapped lines or folds them again. Live tool text is capped
   at 20,000 characters with a notice; full stored results and arguments remain in /sessions.
@@ -87,9 +91,12 @@ teamagents                           # open the TUI (starts this session's daemo
   the preview identifies the session, member, epoch and entry and explicitly shows a snippet. Enter opens
   its session, / edits the query, and Esc cancels a pending search or clears results before closing the page.
   Search never changes the active session or dispatches model input; unreadable sessions are reported.
-- **Attachments (D-451)**: type `/attach PATH` to stage a workspace-relative text file or PNG/JPEG/GIF/WebP.
-  Tab after `/attach ` queries workspace paths; Up/Down selects, Tab/Enter fills and Esc dismisses without
-  sending. Another Enter stages the path; only submitting a message captures bytes. Paths may contain spaces
+- **Attachments (D-451/D-489)**: type `/attach PATH`, or `@PATH` followed by Tab for a Grok-style file
+  reference, to stage a workspace-relative text file or PNG/JPEG/GIF/WebP.
+  Tab after `/attach ` or an `@` token queries workspace paths; Up/Down selects and Esc dismisses without
+  sending. With `/attach`, Tab/Enter fills and another Enter stages. With `@`, accepting replaces only that
+  token and stages the selection immediately, preserving the rest of a multiline draft; stale replies cannot
+  edit a newer token. Duplicate references reuse the staged path. Only submitting a message captures bytes. Paths may contain spaces
   or Unicode. `/attach` lists staging; `/detach INDEX` removes an item. At most eight files, 1 MiB per UTF-8
   text file, 5 MiB per image and 16 MiB total. The engine refuses symlink components, traversal, remote paths,
   special files and unsupported binary content. Snapshots retain bytes/digests across edits, retries and

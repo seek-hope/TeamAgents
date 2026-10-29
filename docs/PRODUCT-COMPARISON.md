@@ -1,6 +1,6 @@
 # Daily coding readiness and candidate work
 
-Updated **2026-10-29** for D-487. This page owns the remaining candidate queue. Current behavior is in
+Updated **2026-10-29** for D-489. This page owns the remaining candidate queue. Current behavior is in
 [USER-GUIDE.md](USER-GUIDE.md), evidence in [ACCEPTANCE.md](ACCEPTANCE.md), and confirmed decisions in
 [DECISIONS.md](DECISIONS.md). A queue item is not implementation, model-spend or publication authorization.
 
@@ -16,7 +16,7 @@ replacement. The public v0.2.0 archive is older than current source.
 | Repository setup | TeamAgents reads repository-local configuration for trusted canonical roots and discovers instruction files; user-only policy stays at user level | Configuration tests and isolated probes; dependency diagnosis is not a complete build or Skill-workflow acceptance |
 | Diagnosis and inputs (DD-01 / DD-04) | Read-only diagnosis, explicit recovery, instruction/source observations, immutable queued-input revisions and delivery receipts | Observation does not prove execution or completion; a config change is not a hot reload |
 | Editing and tools (DD-05) | Atomic disjoint edits, bounded read parallelism, file/Shell/Skill tools, provider-neutral search, MCP and codemode | Host execution is not confinement. Complete cross-language/Skill workflows need broader evidence |
-| Conversation and models (DD-06) | One Leader conversation, shared message/queue editing, complete answers, grouped tools, shortcuts and model/effort selection | TestBackend and PTY checks do not cover every terminal or provider |
+| Conversation and models (D-489 / DD-06) | Grok-style Leader conversation with elevated prompts, grouped activity, live status, compact model chrome and `@` file references; shared message/queue editing and complete answers | Scripted TestBackend/PTY checks, not a usability benchmark or every terminal/provider |
 | Collaboration and recovery | Scoped task grants, independent members, worktrees, durable operations, runner recovery and declared-workspace takeover checks | Task cancellation is not process stop. Unknown effects are not replayed; remote/escaped effects are outside the local group observer |
 | Verification and accounting | User-required checks, scoped completion evidence, known/unknown usage, native windows and cache telemetry | Check quality and semantic completeness remain distinct. Reviewer usage is still not charged to the goal |
 
@@ -50,6 +50,7 @@ LSP or automatic indexing merely to resemble another product.
 |---|---|
 | Pi 1.3.0 source/docs inspection, 2026-10-22 | Historical inspection only; the removed feature-by-feature table is available in Git history and is not a current product specification |
 | D-485 follow-up, 2026-10-28 | Pi 1.4.0 was started offline; fixed Codex source `13b0217567d3` informed conversation UX. Codex was not executed, and no paired model trial ran |
+| [D-489 TUI study](../review/tui-reference-2026-10-29/REPORT.md) | Pinned Codex, Grok Build and herdr implementations/screenshots; Grok selected for the closest single-conversation fit. Upstream source inspection is not an executed usability comparison |
 | [D-450 comparison](../review/parity-2026-10-08/REPORT.md) | Earlier pinned versions and scoped presentation evidence |
 | [D-451 maturity report](../review/maturity-2026-10-11/REPORT.md) | Immutable local workflow and installation receipts, valid for their pinned source |
 | [Capability ledger](CAPABILITIES.md) and [benchmark ledger](../review/benchmark/README.md) | Historical real-service/coding results with their own models, sources and limits |

@@ -364,6 +364,7 @@ fn run_v2(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, mut client
     v2_refresh_approvals(&mut client, &mut app);
     let mut last_event_poll = Instant::now();
     let mut last_slow = Instant::now();
+    let mut last_animation = Instant::now();
     let mut dirty = true;
     let mut active_id = app.active_instance().map(|i| i.id.clone());
     // The connection indicator is part of the status line, so a change in it must rebuild the frame even
@@ -480,6 +481,14 @@ fn run_v2(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, mut client
                     app.mark_disconnected(&e);
                     dirty = true;
                 }
+            }
+        }
+        if last_animation.elapsed() >= Duration::from_millis(125) {
+            last_animation = Instant::now();
+            // Grok's activity spinner is repaint-only and never manufactures a runtime fact.
+            // Idle Ready sessions keep the previous low-frequency event/redraw schedule.
+            if app.disconnected || !app.activity_line().starts_with("Ready") {
+                dirty = true;
             }
         }
         if last_slow.elapsed() >= Duration::from_secs(1) {

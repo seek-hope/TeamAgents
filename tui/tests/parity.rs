@@ -87,7 +87,7 @@ fn completion_layout_preserves_regions_and_selected_candidate_at_small_sizes() {
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
             terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
             let geo = v2ui::geometry(&app, area);
-            let regions = [geo.status, geo.chat, geo.approvals, geo.completion, geo.composer, geo.footer];
+            let regions = [geo.status, geo.chat, geo.activity, geo.approvals, geo.completion, geo.composer, geo.footer];
             for (i, region) in regions.iter().enumerate() {
                 assert_eq!(region.intersection(area), *region);
                 assert!(regions[i + 1..].iter().all(|r| region.intersection(*r).is_empty()));

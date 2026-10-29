@@ -29,7 +29,7 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Acceptance checks | `exec --check` and goal `[[checks]]` run on the host through the same shell implementation | D-471, D-480 |
 | PTY verification | `make pty` runs a terminal-profile matrix in isolated ptys (xterm-256color, screen-256color, tmux-256color, xterm-kitty, Kitty under tmux) with auto graphics-mode assertions, plus forced blocks/kitty protocol bounds | D-472 |
 | TUI keys | Ctrl+Q quits, Ctrl+P opens pending inputs, Ctrl+M opens the Leader's model/effort menu (`/quit`, `/model`); the profile applies at the next turn | D-473 |
-| TUI presentation | one conversation with compact speaker markers, grouped tools, responsive status/hints and shared panels; empty-draft `?` opens shortcuts; message and queue editors share word/line editing | D-485 (extends D-481) |
+| TUI presentation | one Leader conversation based on Grok Build's single-agent layout: elevated user prompts, grouped tools, quiet model chrome and conditional live activity; Codex supplies secondary text/selection cues; no herdr-style split terminal | D-489 (extends D-485/D-481) |
 | Default effort | the generated `leader_main` profile defaults to `reasoning_effort = "high"`; existing configs keep their value and a running daemon keeps its boot catalog | D-474 |
 | Reasoning effort menu | each model may declare `efforts`; the default is minimal/low/medium/high/xhigh/max; a model that lacks the current level falls back to the nearest declared level at or below it, and the CLI keeps an explicit override | D-476 |
 | Capability delegation | user remains the authority root; spawned instances still hold no shell by default; a user grant may be marked `delegable`, and only such a parent may produce attenuated, task-scoped, non-delegable child grants; missing capabilities become a visible pending approval, not a silent idle | D-455 |
@@ -38,6 +38,24 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Prompt cache | cache hit/miss/write are provider-reported and visible; the L1 frontier is fixed between compactions; Anthropic gets explicit breakpoints and OpenAI a stable key; DeepSeek stays automatic | D-459 |
 | Command idempotency | a replay with the same `command_id` returns the stored receipt for control-plane state, and the authoritative check runs under the write lock (D-463); result bodies are shared by content digest and zstd-compressed (D-464), while the receipt **rows** remain one per command | D-463, D-464 |
 | Model actions and code windows | a deciding read shares the write's transaction, or the guard is a predicate on the write itself; `verification/REPORT.md` §6 lists the protocol transitions and the three engine windows that span two transactions with their predicates | D-465 |
+
+## D-489 Adapt Grok Build's conversation TUI (2026-10-29)
+
+**Authorization and selection.** The user remained dissatisfied with the TUI and asked for direct reference to
+Codex, Grok Build and herdr, selecting the closest implementation and adapting it. Pinned source and official
+screenshots are compared in `review/tui-reference-2026-10-29/REPORT.md`. Grok Build is the base because its
+Rust/ratatui single-agent conversation matches TeamAgents' product and daemon boundaries. Codex remains a
+secondary composer/typography reference. Herdr's split-terminal multiplexer model is not imported.
+
+The adapted surface has a quiet workspace/usage header, elevated user-prompt bands, operation-derived tool
+group headings, a conditional live activity row, a compact glyph composer with model/effort in its lower
+border, and explicit approval cards. Ready sessions do not reserve the activity row. Spinner repainting is
+presentation only. `@PATH` plus Tab reuses `input_paths`; accepting a candidate edits only that token and
+stages the attachment, while explicit message submission remains the only byte-capture/send boundary.
+
+This is a TUI adaptation, not a new agent runtime. The daemon protocol, Leader-only submission, grants,
+approvals, model/goal/task states, attachment confinement, queue revisions, renderer workers and recovery
+semantics are unchanged. No resident sidebar, split terminal, ACP integration or marketplace is added.
 
 ## D-488 Visual architecture and README design guide (2026-10-29)
 

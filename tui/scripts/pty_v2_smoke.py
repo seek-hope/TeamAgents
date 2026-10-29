@@ -103,6 +103,9 @@ class FakeDaemon:
                     out = {"approvals": list(self.approvals)}
                 elif method == "previews":
                     out = {"previews": list(self.previews)}
+                elif method == "input_paths":
+                    out = {"prefix": params.get("prefix", ""),
+                           "paths": ["src/main.rs", "src/mod.rs"], "limited": False}
                 elif method in ("approve", "deny") and frame.get("command_id"):
                     self.approvals = [a for a in self.approvals if a["id"] != params.get("approval_id")]
                     out = {"decided": True}
@@ -200,7 +203,7 @@ def main():
     expect("Enter", "footer")
     expect("? shortcuts", "ready help hint")
     expect("Ctrl+Q quit", "quit hint")
-    expect("deepseek-flash / high", "active profile")
+    expect("deepseek-flash · high", "active profile")
     if "Ctrl+C interrupt" in "\n".join(scr.lines()):
         failures.append("Ready footer prioritizes an inactive interrupt")
 
@@ -288,6 +291,21 @@ def main():
             failures.append(f"submit_input command_id missing the envelope: {frame.get('command_id')!r}")
         if frame.get("params", {}).get("instance_id") != "i-leader":
             failures.append(f"submit_input targeted {frame.get('params', {}).get('instance_id')!r}")
+
+    # Grok-style @file references complete locally, stage only the selected path,
+    # and submit the attachment together with the unchanged surrounding prompt.
+    os.write(fd, b"@src/m\t")
+    scr.feed(read_all(fd, 0.8).decode("utf-8", "replace"))
+    expect("src/main.rs", "@file completion")
+    os.write(fd, b"\x1b[B\r")
+    scr.feed(read_all(fd, 0.5).decode("utf-8", "replace"))
+    expect("staged from @reference", "@file selection receipt")
+    os.write(fd, b"inspect\r")
+    scr.feed(read_all(fd, 1.0).decode("utf-8", "replace"))
+    mentions = [f for f in daemon.frames if f.get("method") == "submit_input"
+                and f.get("params", {}).get("attachments") == ["src/mod.rs"]]
+    if len(mentions) != 1 or mentions[0]["params"].get("text") != "@src/mod.rs inspect":
+        failures.append("@file reference did not preserve its prompt and selected attachment")
 
     # Retired navigation cannot redirect input or open a management surface.
     os.write(fd, b"\x0e\tstill-leader\r")
