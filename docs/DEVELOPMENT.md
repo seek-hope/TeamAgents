@@ -12,10 +12,9 @@ this guide; do not patch generated tables to describe behavior the code does not
 <!-- maps: docs/EVENTS.md reader=developer -->
 <!-- maps: docs/PROTOCOL.md reader=developer -->
 <!-- maps: docs/TOOLS.md reader=developer -->
-<!-- maps: docs/RUST-SANDBOX.md reader=evidence -->
 
-[RUST-SANDBOX.md](RUST-SANDBOX.md) is a retired design note kept for cited historical evidence. It does not
-describe current execution or authorize reintroducing a backend.
+Retired sandbox design material is available through Git history. It is not current execution guidance and is
+not kept as a parallel current document.
 
 ## Maintaining the visual architecture
 
@@ -46,6 +45,7 @@ deadlines and process cleanup, while still asserting source preservation, colors
 ```bash
 make check CARGO_FLAGS=--locked   # first run; allows locked dependency downloads
 make check                        # later runs; offline and locked by default
+make deny                         # dependency advisories and source policy; fetches advisory updates
 make fmt                          # apply rustfmt
 make fmt-check                    # check formatting without rewriting files
 make build                        # build CLI and TUI
@@ -53,7 +53,10 @@ make pty                          # terminal-profile matrix in isolated ptys
 ```
 
 `make check` runs formatting, Clippy with `-D warnings`, the three crate test suites and repository hygiene.
-There is no root Cargo workspace; use `make` or explicit crate manifests.
+There is no root Cargo workspace; use `make` or explicit crate manifests. `make deny` separately runs
+`cargo-deny` over each crate graph: vulnerabilities, unsound releases, yanked releases and unmaintained direct
+dependencies fail; unknown dependency sources fail. It needs advisory updates and is also a CI step. Transitive
+maintenance notices are reviewed in the dated security report, not treated as proof of a vulnerability.
 
 `make test` wraps the suites with `review/leak_guard.py`. It compares daemon, runner and scratch-directory
 inventories before and after the run, stops only processes it identifies by pid, and preserves the state root

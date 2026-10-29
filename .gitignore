@@ -5,6 +5,8 @@ __pycache__/
 .pytest_cache/
 *.pyc
 .venv/
+# Runtime state never belongs at the repository root; named evidence databases stay tracked.
+/session.sqlite
 # SQLite temporaries: evidence directories keep only the checkpointed main database
 *.sqlite-wal
 *.sqlite-shm

@@ -24,12 +24,13 @@ ifeq ($(HOME),/tmp)
   endif
 endif
 
-.PHONY: help check fmt fmt-check lint test build pty probe-offline probe-models hygiene language-check \
+.PHONY: help check deny fmt fmt-check lint test build pty probe-offline probe-models hygiene language-check \
         benchmark-receipts verify-tools verify-model verify-model-all \
         verify-model-counterexamples verify-model-wide verify-model-sim verify-kani release-rehearsal
 
 help:
 	@echo 'make check     format, Clippy, regression tests and repository hygiene (offline by default)'
+	@echo 'make deny      dependency vulnerability/source policy for all crates (network for advisory updates)'
 	@echo 'make fmt       format the three crates'
 	@echo 'make build     build the CLI and the TUI'
 	@echo 'make release-rehearsal  rehearse the release workflow locally, short of publishing (a musl release build; minutes)'
@@ -52,6 +53,9 @@ help:
 	@echo 'first run with downloads: make check CARGO_FLAGS=--locked'
 
 check: fmt-check lint test hygiene
+
+deny:
+	@set -eu; for crate in $(CRATES); do cargo deny --manifest-path $$crate/Cargo.toml check advisories sources; done
 
 fmt:
 	@set -eu; for crate in $(CRATES); do cargo fmt --manifest-path $$crate/Cargo.toml; done

@@ -7,16 +7,16 @@ edition = "2021"
 teamagents-core = { path = "../core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
-serde_yaml = "0.9"
+serde-saphyr = { version = "2", default-features = false, features = ["deserialize"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 ureq = { version = "2", features = ["json"] }
 url = "2"
 toml = "0.8"
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
-# Async transport. Keep exactly one production HTTP stack: do not add a second
-# one next to hyper (the synchronous ureq path is gone).
-tokio = { version = "=1.53.1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "process", "signal"] }
+# Async model transport uses reqwest. Blocking setup, update and MCP requests use ureq;
+# keep those two established stacks and do not add a third.
+tokio = { version = "=1.53.3", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "process", "signal"] }
 # "http2" is required for ALPN: without it hyper-rustls advertises no ALPN at
 # all and edges that require ALPN (e.g. the apexin relay) drop the handshake.
 reqwest = { version = "=0.12.28", default-features = false, features = ["rustls-tls", "stream", "json", "http2"] }

@@ -33,7 +33,7 @@
 - Ctrl+Q closes the TUI without stopping the daemon, Ctrl+P opens pending input and Ctrl+M opens the Leader's
   model/effort menu. `make pty` covers five terminal profiles and both forced graphics modes.
 
-Local regression passes: core 174 / engine 437 / tui 103, with full check and PTY gates completed. The release workflow
+Local regression passes: core 174 / engine 444 / tui 103, with full check and PTY gates completed. The release workflow
 smoke-installs the exact archive before publication. Real-model acceptance is reported separately in
 [docs/ACCEPTANCE.md](https://github.com/seek-hope/TeamAgents/blob/main/docs/ACCEPTANCE.md); packaging current
 source does not widen those evidence boundaries.

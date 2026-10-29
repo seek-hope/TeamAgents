@@ -602,24 +602,54 @@ fn binary_version(binary: &Path) -> Option<String> {
     text.split_whitespace().last().map(|value| value.trim().to_string())
 }
 
+const MAX_RELEASE_METADATA_BYTES: u64 = 1024 * 1024;
+const MAX_SUMS_BYTES: u64 = 1024 * 1024;
+const MAX_ARCHIVE_BYTES: u64 = 256 * 1024 * 1024;
+
+fn response_bytes(response: ureq::Response, limit: u64) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    response
+        .into_reader()
+        .take(limit + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("cannot read HTTP response: {error}"))?;
+    if bytes.len() as u64 > limit {
+        return Err(format!("HTTP response exceeds {limit} bytes"));
+    }
+    Ok(bytes)
+}
+
 fn latest_release(repo: &str) -> Result<String, String> {
     let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(30)).build();
     let response = agent
         .get(&format!("https://api.github.com/repos/{repo}/releases/latest"))
         .call()
         .map_err(|e| format!("cannot read the latest release: {e}"))?;
-    let value: Json = response.into_json().map_err(|e| format!("latest release is not JSON: {e}"))?;
+    let bytes = response_bytes(response, MAX_RELEASE_METADATA_BYTES)?;
+    let value: Json = serde_json::from_slice(&bytes).map_err(|e| format!("latest release is not JSON: {e}"))?;
     let tag = value["tag_name"].as_str().ok_or("latest release has no tag_name")?;
     Ok(tag.trim_start_matches('v').to_string())
 }
 
-fn download(url: &str, target: &Path) -> Result<(), String> {
+fn download(url: &str, target: &Path, limit: u64) -> Result<(), String> {
     let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(300)).build();
     let response = agent.get(url).call().map_err(|e| format!("download {url}: {e}"))?;
-    let mut reader = response.into_reader();
-    let mut file = std::fs::File::create(target).map_err(|e| format!("cannot create {}: {e}", target.display()))?;
-    std::io::copy(&mut reader, &mut file).map_err(|e| format!("download {url}: {e}"))?;
-    file.sync_all().map_err(|e| format!("sync {}: {e}", target.display()))
+    if response.header("content-length").and_then(|value| value.parse::<u64>().ok()).is_some_and(|size| size > limit) {
+        return Err(format!("download {url}: declared response exceeds {limit} bytes"));
+    }
+    let mut reader = response.into_reader().take(limit + 1);
+    let result = (|| {
+        let mut file = std::fs::File::create(target).map_err(|e| format!("cannot create {}: {e}", target.display()))?;
+        let written = std::io::copy(&mut reader, &mut file).map_err(|e| format!("download {url}: {e}"))?;
+        if written > limit {
+            return Err(format!("download {url}: response exceeds {limit} bytes"));
+        }
+        file.sync_all().map_err(|e| format!("sync {}: {e}", target.display()))
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(target);
+    }
+    result
 }
 
 fn verify_sums(archive: &Path, sums: &Path) -> Result<(), String> {
@@ -749,11 +779,11 @@ pub fn stage(
             let base = format!("https://github.com/{repo}/releases/download/v{version}");
             let archive_path = temp.join(&name);
             let sums_path = temp.join("SHA256SUMS");
-            if let Err(error) = download(&format!("{base}/{name}"), &archive_path) {
+            if let Err(error) = download(&format!("{base}/{name}"), &archive_path, MAX_ARCHIVE_BYTES) {
                 cleanup(&temp);
                 return Err(error);
             }
-            if let Err(error) = download(&format!("{base}/SHA256SUMS"), &sums_path) {
+            if let Err(error) = download(&format!("{base}/SHA256SUMS"), &sums_path, MAX_SUMS_BYTES) {
                 cleanup(&temp);
                 return Err(error);
             }
@@ -1628,6 +1658,25 @@ mod tests {
             request: None,
             crash_at: crash_at.map(str::to_string),
         }
+    }
+
+    #[test]
+    fn oversized_downloads_are_refused_and_leave_no_partial_file() {
+        let temp = Temp::new("download-limit");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/archive", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 2048];
+            let _ = stream.read(&mut request);
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 128\r\nConnection: close\r\n\r\n").unwrap();
+            stream.write_all(&[b'x'; 128]).unwrap();
+        });
+        let target = temp.path().join("partial");
+        let error = download(&url, &target, 64).unwrap_err();
+        server.join().unwrap();
+        assert!(error.contains("exceeds 64 bytes"), "{error}");
+        assert!(!target.exists());
     }
 
     #[test]

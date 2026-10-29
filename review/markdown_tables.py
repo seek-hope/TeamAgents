@@ -37,7 +37,8 @@ SEPARATOR = re.compile(r"^\s*\|[\s|:-]+\|\s*$")
 
 def tracked_markdown() -> list[pathlib.Path]:
     out = subprocess.run(["git", "ls-files", "*.md"], cwd=REPO, capture_output=True, text=True, check=True).stdout
-    return [REPO / name for name in out.split() if name and not name.startswith(EXCLUDED)]
+    return [REPO / name for name in out.split()
+            if name and not name.startswith(EXCLUDED) and (REPO / name).is_file()]
 
 
 def cells_of(line: str) -> int:

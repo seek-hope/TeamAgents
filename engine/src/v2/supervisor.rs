@@ -137,7 +137,7 @@ impl SupervisorHandle {
                 if interrupt {
                     // D-363: the control command already cancelled the request. Aborting the provider stream makes
                     // the turn end now instead of at the provider's own pace; the driver's `Interrupted` path
-                    // records the attempt and settles nothing, exactly like its own cancel_turn.
+                    // records the attempt and settles nothing.
                     if let Some(cancel) = driver.shared.cancel_attempt.lock().unwrap().as_ref() {
                         cancel.cancel();
                     }

@@ -19,8 +19,9 @@
 //! calls before a request, and it refreshes an expired token when the server gave it a refresh token.
 
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -35,6 +36,9 @@ const EXPIRY_SKEW_SECS: f64 = 60.0;
 /// How long the callback listener waits for the browser by default.
 pub const CALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(20);
+const MAX_RESPONSE_BYTES: u64 = 1024 * 1024;
+const MAX_CREDENTIAL_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_CALLBACK_LINE_BYTES: u64 = 8192;
 
 // ------------------------------------------------------------------ the store
 
@@ -108,14 +112,49 @@ impl Store {
     }
 
     fn read(&self) -> Result<File, String> {
-        match std::fs::read_to_string(&self.path) {
-            Ok(text) => serde_json::from_str(&text)
-                .map_err(|e| format!("{} is not a credential file this build wrote: {e}", self.path.display())),
+        let handle = match std::fs::File::open(&self.path) {
+            Ok(handle) => handle,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                Ok(File { version: 1, services: BTreeMap::new() })
+                return Ok(File { version: 1, services: BTreeMap::new() });
             }
-            Err(error) => Err(format!("cannot read {}: {error}", self.path.display())),
+            Err(error) => return Err(format!("cannot read {}: {error}", self.path.display())),
+        };
+        let mut bytes = Vec::new();
+        handle
+            .take(MAX_CREDENTIAL_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| format!("cannot read {}: {error}", self.path.display()))?;
+        if bytes.len() as u64 > MAX_CREDENTIAL_BYTES {
+            return Err(format!("{} exceeds the credential-file size limit", self.path.display()));
         }
+        let file: File = serde_json::from_slice(&bytes)
+            .map_err(|e| format!("{} is not a credential file this build wrote: {e}", self.path.display()))?;
+        if file.version != 1 {
+            return Err(format!("{} uses unsupported credential format {}", self.path.display(), file.version));
+        }
+        Ok(file)
+    }
+
+    /// Serialize read-modify-write across the daemon and standalone MCP commands. The lock file is
+    /// never truncated, and closing it releases the OS lock even if a process exits unexpectedly.
+    fn lock(&self) -> Result<std::fs::File, String> {
+        let parent = self.path.parent().ok_or("credential path has no parent")?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+        let path = self.path.with_extension("json.lock");
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true).write(true).create(true).truncate(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let handle = options.open(&path).map_err(|e| format!("cannot open {}: {e}", path.display()))?;
+        // SAFETY: handle owns a live descriptor for the duration of this call; the guard closes it on drop.
+        let result = unsafe { libc::flock(handle.as_raw_fd(), libc::LOCK_EX) };
+        if result != 0 {
+            return Err(format!("cannot lock {}: {}", path.display(), std::io::Error::last_os_error()));
+        }
+        Ok(handle)
     }
 
     /// Tokens, rewritten atomically and chmod 0600 before the bytes are visible under the real name.
@@ -123,24 +162,33 @@ impl Store {
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
         }
-        let tmp = self.path.with_extension(format!("json.tmp-{}", std::process::id()));
-        let text = serde_json::to_string_pretty(file).map_err(|e| format!("credential encode: {e}"))?;
-        {
-            let mut options = std::fs::OpenOptions::new();
-            options.write(true).create(true).truncate(true);
-            #[cfg(unix)]
+        let tmp = self.path.with_extension(format!("json.tmp-{}", uuid::Uuid::new_v4()));
+        let result = (|| {
+            let text = serde_json::to_string_pretty(file).map_err(|e| format!("credential encode: {e}"))?;
             {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
+                let mut options = std::fs::OpenOptions::new();
+                options.write(true).create_new(true);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    options.mode(0o600);
+                }
+                let mut handle = options.open(&tmp).map_err(|e| format!("cannot write {}: {e}", tmp.display()))?;
+                handle.write_all(text.as_bytes()).map_err(|e| format!("cannot write {}: {e}", tmp.display()))?;
+                handle.sync_all().map_err(|e| format!("cannot flush {}: {e}", tmp.display()))?;
             }
-            let mut handle = options.open(&tmp).map_err(|e| format!("cannot write {}: {e}", tmp.display()))?;
-            handle.write_all(text.as_bytes()).map_err(|e| format!("cannot write {}: {e}", tmp.display()))?;
-            handle.sync_all().map_err(|e| format!("cannot flush {}: {e}", tmp.display()))?;
-        }
-        std::fs::rename(&tmp, &self.path).map_err(|e| {
+            std::fs::rename(&tmp, &self.path).map_err(|e| format!("cannot replace {}: {e}", self.path.display()))?;
+            if let Some(parent) = self.path.parent() {
+                std::fs::File::open(parent)
+                    .and_then(|directory| directory.sync_all())
+                    .map_err(|e| format!("credential replaced but directory sync failed: {e}"))?;
+            }
+            Ok(())
+        })();
+        if result.is_err() {
             let _ = std::fs::remove_file(&tmp);
-            format!("cannot replace {}: {e}", self.path.display())
-        })
+        }
+        result
     }
 
     pub fn get(&self, service: &str) -> Result<Option<Tokens>, String> {
@@ -148,14 +196,15 @@ impl Store {
     }
 
     pub fn put(&self, service: &str, tokens: &Tokens) -> Result<(), String> {
+        let _guard = self.lock()?;
         let mut file = self.read()?;
-        file.version = 1;
         file.services.insert(service.to_string(), tokens.clone());
         self.write(&file)
     }
 
     /// Signing out deletes the credential; the file itself stays, so a later sign-in does not need to create it.
     pub fn remove(&self, service: &str) -> Result<bool, String> {
+        let _guard = self.lock()?;
         let mut file = self.read()?;
         let removed = file.services.remove(service).is_some();
         if removed {
@@ -167,6 +216,8 @@ impl Store {
     /// What a client may send right now: the stored access token, refreshed once if it is expired and the server
     /// issued a refresh token. `sign_in` is the sentence a user acts on when there is nothing usable.
     pub fn access_token(&self, service: &str) -> Result<Option<String>, String> {
+        // Keep concurrent refreshers from exchanging and overwriting the same credential twice.
+        let _guard = self.lock()?;
         let Some(tokens) = self.get(service)? else { return Ok(None) };
         if !tokens.expired(now()) {
             return Ok(Some(tokens.access_token));
@@ -185,7 +236,9 @@ impl Store {
                 if !refreshed.scopes.is_empty() {
                     merged.scopes = refreshed.scopes;
                 }
-                self.put(service, &merged)?;
+                let mut file = self.read()?;
+                file.services.insert(service.to_string(), merged.clone());
+                self.write(&file)?;
                 Ok(Some(merged.access_token))
             }
             _ => Err(format!(
@@ -222,10 +275,28 @@ pub struct AsMetadata {
     pub scopes_supported: Vec<String>,
 }
 
+fn response_bytes(response: ureq::Response, context: &str) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    response
+        .into_reader()
+        .take(MAX_RESPONSE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("{context}: cannot read response: {error}"))?;
+    if bytes.len() as u64 > MAX_RESPONSE_BYTES {
+        return Err(format!("{context}: response exceeds {MAX_RESPONSE_BYTES} bytes"));
+    }
+    Ok(bytes)
+}
+
+fn response_json(response: ureq::Response, context: &str) -> Result<Value, String> {
+    let bytes = response_bytes(response, context)?;
+    serde_json::from_slice(&bytes).map_err(|error| format!("{context}: response is not JSON: {error}"))
+}
+
 fn get_json(url: &str) -> Result<Value, String> {
-    let agent = ureq::AgentBuilder::new().timeout(HTTP_TIMEOUT).build();
+    let agent = ureq::AgentBuilder::new().timeout(HTTP_TIMEOUT).redirects(0).build();
     let response = agent.get(url).set("accept", "application/json").call().map_err(|e| format!("{url}: {e}"))?;
-    response.into_json::<Value>().map_err(|e| format!("{url}: response is not JSON: {e}"))
+    response_json(response, url)
 }
 
 fn origin_of(url: &str) -> Result<String, String> {
@@ -324,15 +395,15 @@ pub fn register(
         "response_types": ["code"],
         "token_endpoint_auth_method": if secret_env.is_some() { "client_secret_post" } else { "none" },
     });
-    let agent = ureq::AgentBuilder::new().timeout(HTTP_TIMEOUT).build();
+    let agent = ureq::AgentBuilder::new().timeout(HTTP_TIMEOUT).redirects(0).build();
     let response = agent
         .post(endpoint)
         .set("content-type", "application/json")
         .set("accept", "application/json")
         .send_string(&body.to_string())
         .map_err(|e| format!("client registration at {endpoint} failed: {e}"))?;
-    let registered: Value =
-        response.into_json().map_err(|e| format!("client registration at {endpoint} did not answer JSON: {e}"))?;
+    let context = format!("client registration at {endpoint}");
+    let registered: Value = response_json(response, &context)?;
     let client_id = registered["client_id"]
         .as_str()
         .ok_or_else(|| format!("client registration at {endpoint} returned no client_id"))?
@@ -368,7 +439,8 @@ fn urlencode(value: &str) -> String {
 }
 
 fn post_form(endpoint: &str, pairs: &[(&str, String)]) -> Result<Value, String> {
-    let agent = ureq::AgentBuilder::new().timeout(HTTP_TIMEOUT).build();
+    // A redirect must never resend a code, verifier, refresh token or client secret to another origin.
+    let agent = ureq::AgentBuilder::new().timeout(HTTP_TIMEOUT).redirects(0).build();
     let response = agent
         .post(endpoint)
         .set("content-type", "application/x-www-form-urlencoded")
@@ -378,7 +450,8 @@ fn post_form(endpoint: &str, pairs: &[(&str, String)]) -> Result<Value, String> 
             // a refusal carries the authorization server's own words (invalid_grant, invalid_client, …), and they
             // are the difference between "sign in again" and "your client id is wrong"
             ureq::Error::Status(code, response) => {
-                let body = response.into_string().unwrap_or_default();
+                let body = response_bytes(response, endpoint).unwrap_or_default();
+                let body = String::from_utf8_lossy(&body);
                 let description = serde_json::from_str::<Value>(&body)
                     .ok()
                     .and_then(|v| {
@@ -391,7 +464,7 @@ fn post_form(endpoint: &str, pairs: &[(&str, String)]) -> Result<Value, String> 
             }
             other => format!("{endpoint} is unreachable: {other}"),
         })?;
-    response.into_json::<Value>().map_err(|e| format!("{endpoint} did not answer JSON: {e}"))
+    response_json(response, endpoint)
 }
 
 fn tokens_from_response(response: &Value, base: Tokens) -> Result<Tokens, String> {
@@ -731,9 +804,12 @@ fn urldecode(value: &str) -> String {
 
 fn read_request_line(stream: &mut TcpStream) -> String {
     stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
-    let mut reader = BufReader::new(stream.try_clone().expect("clone loopback stream"));
+    let Ok(cloned) = stream.try_clone() else { return String::new() };
+    let mut reader = BufReader::new(cloned).take(MAX_CALLBACK_LINE_BYTES + 1);
     let mut line = String::new();
-    let _ = reader.read_line(&mut line);
+    if reader.read_line(&mut line).is_err() || line.len() as u64 > MAX_CALLBACK_LINE_BYTES || !line.ends_with('\n') {
+        return String::new();
+    }
     line.trim_end().to_string()
 }
 
@@ -782,6 +858,32 @@ pub fn read_pasted_url() -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Barrier};
+
+    fn token(value: &str) -> Tokens {
+        Tokens {
+            access_token: value.into(),
+            refresh_token: Some("refresh".into()),
+            expires_at: None,
+            token_endpoint: None,
+            client_id: Some("client".into()),
+            client_secret_env: None,
+            resource: None,
+            scopes: vec![],
+        }
+    }
+
+    fn serve_once(response: String) -> (String, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 16384];
+            let _ = stream.read(&mut request);
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+        (url, handle)
+    }
 
     #[test]
     fn the_token_file_is_private_and_round_trips() {
@@ -879,5 +981,101 @@ mod tests {
         // and the same URL with a `state` this sign-in did not ask for is refused
         let pasted = format!("{}/callback?code=abc&state=other", pending.redirect_uri);
         assert!(pending.paste(&pasted).unwrap_err().contains("state"));
+    }
+
+    #[test]
+    fn credential_writes_refuse_staging_links_and_preserve_concurrent_services() {
+        let dir = std::env::temp_dir().join(format!("ta-mcp-auth-lock-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Arc::new(Store::at(&dir.join("mcp-auth.json")));
+        let victim = dir.join("victim");
+        std::fs::write(&victim, "keep me").unwrap();
+        #[cfg(unix)]
+        {
+            let predictable = store.path.with_extension(format!("json.tmp-{}", std::process::id()));
+            std::os::unix::fs::symlink(&victim, predictable).unwrap();
+        }
+        store.put("first", &token("one")).unwrap();
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep me");
+
+        let barrier = Arc::new(Barrier::new(4));
+        let workers: Vec<_> = (0..4)
+            .map(|worker| {
+                let store = store.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    for index in 0..20 {
+                        store.put(&format!("service-{worker}-{index}"), &token(&index.to_string())).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        assert_eq!(store.read().unwrap().services.len(), 81);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn credential_reads_refuse_future_versions_and_oversized_files() {
+        let dir = std::env::temp_dir().join(format!("ta-mcp-auth-read-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("mcp-auth.json");
+        std::fs::write(&path, r#"{"version":2,"services":{}}"#).unwrap();
+        let store = Store::at(&path);
+        assert!(store.get("service").unwrap_err().contains("unsupported credential format 2"));
+        std::fs::write(&path, vec![b' '; MAX_CREDENTIAL_BYTES as usize + 1]).unwrap();
+        assert!(store.get("service").unwrap_err().contains("size limit"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn token_redirects_are_not_followed_and_oauth_bodies_are_bounded() {
+        let target = TcpListener::bind("127.0.0.1:0").unwrap();
+        target.set_nonblocking(true).unwrap();
+        let target_url = format!("http://{}", target.local_addr().unwrap());
+        let target_thread = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_millis(500);
+            while std::time::Instant::now() < deadline {
+                if target.accept().is_ok() {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            false
+        });
+        let location = format!("{target_url}/token");
+        let response = format!(
+            "HTTP/1.1 307 Temporary Redirect\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        );
+        let (endpoint, source_thread) = serve_once(response);
+        let error = refresh_tokens(&endpoint, "do-not-forward", &token("old")).unwrap_err();
+        assert!(error.contains("not JSON"), "{error}");
+        source_thread.join().unwrap();
+        assert!(!target_thread.join().unwrap(), "the redirect target received the credential form");
+
+        let body = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            MAX_RESPONSE_BYTES + 2,
+            " ".repeat(MAX_RESPONSE_BYTES as usize + 2)
+        );
+        let (endpoint, thread) = serve_once(body);
+        assert!(get_json(&endpoint).unwrap_err().contains("response exceeds"));
+        thread.join().unwrap();
+    }
+
+    #[test]
+    fn callback_request_lines_are_bounded() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let writer = std::thread::spawn(move || {
+            let mut stream = TcpStream::connect(address).unwrap();
+            stream.write_all(&vec![b'A'; MAX_CALLBACK_LINE_BYTES as usize + 100]).unwrap();
+        });
+        let (mut stream, _) = listener.accept().unwrap();
+        assert_eq!(read_request_line(&mut stream), "");
+        writer.join().unwrap();
     }
 }

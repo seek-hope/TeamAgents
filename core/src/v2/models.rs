@@ -120,23 +120,6 @@ impl GoalStatus {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Goal {
-    pub id: String,
-    pub session_id: String,
-    pub original_request_ref: String,
-    pub requirement_revision: i64,
-    pub status: GoalStatus,
-    pub deadline: Option<f64>,
-    pub limits: Json,
-    /// Settled provider usage across every instance/attempt/retry (§8).
-    pub known_usage: crate::kernel::Usage,
-    /// Outstanding reservations: parallel holds never exceed what is left.
-    pub reservations: Json,
-    /// Count of attempts whose usage the provider never reported (§8).
-    pub unknown_usage: i64,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TaskStatus {
     Pending,
@@ -185,47 +168,6 @@ pub struct Grant {
     pub parent_grant_id: Option<String>,
     pub revision: i64,
     pub revoked_at: Option<f64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Envelope {
-    pub id: String,
-    pub session_id: String,
-    pub sender: String,
-    pub recipient: String,
-    pub epoch: i64,
-    pub kind: String,
-    pub correlation_id: Option<String>,
-    pub payload: Option<Json>,
-    pub payload_ref: Option<String>,
-    pub sequence: i64,
-    /// ACCEPTED → APPLIED (or CANCELLED before application).
-    pub state: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ModelRequestRecord {
-    pub request_id: String,
-    pub instance_id: String,
-    pub epoch: i64,
-    pub goal_id: Option<String>,
-    /// Artifact reference of the fixed request body (§4.3).
-    pub request_ref: String,
-    pub selected_attempt_id: Option<String>,
-    /// PENDING | COMPLETE | FAILED
-    pub status: String,
-    pub est_prompt_tokens: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Attempt {
-    pub attempt_id: String,
-    pub request_id: String,
-    /// RUNNING | COMPLETE | TRANSIENT | PERMANENT | CONTEXT_OVERFLOW | INTERRUPTED
-    pub status: String,
-    pub response_ref: Option<String>,
-    pub usage: Option<crate::kernel::Usage>,
-    pub elapsed_ms: i64,
 }
 
 /// Terminal operation state is unique (§6.1); OUTCOME_UNKNOWN is honest, not
@@ -287,18 +229,4 @@ impl ArtifactState {
             ArtifactState::Abandoned => "ABANDONED",
         }
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Artifact {
-    pub id: String,
-    pub session_id: String,
-    pub digest: String,
-    pub size: i64,
-    pub kind: String,
-    pub owner_scope: String,
-    pub storage_ref: String,
-    pub completeness: ArtifactState,
-    /// Publishing owner (request/job) protecting STAGING from GC (§4.3).
-    pub owner_ref: Option<String>,
 }

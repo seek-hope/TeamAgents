@@ -1,10 +1,10 @@
 # Development handoff
 
-Updated **2026-10-29**. **D-491** uses Shift+Enter for newline and Ctrl+S sessions in the footer.
-D-490 applies Codex CLI's palette to D-489's Grok-informed conversation layout;
-D-487 remains the control/data baseline. Use [ACCEPTANCE.md](ACCEPTANCE.md) for local gate evidence
-and [DECISIONS.md](DECISIONS.md) for the confirmed contract. Recheck Git status before relying on
-this snapshot. The engine is unchanged from `028f2383`. The public v0.2.0 archive is an older baseline.
+Updated **2026-10-29**. **D-492** cleans stale code/documents and fixes dependency, credential, transport and
+download robustness. D-491 adjusts newline/session shortcuts, D-490 applies Codex CLI colors and D-487 remains
+the control/data baseline. Use [ACCEPTANCE.md](ACCEPTANCE.md) for gate evidence and
+[DECISIONS.md](DECISIONS.md) for the confirmed contract. Recheck Git status before relying on this snapshot.
+The public v0.2.0 archive is an older baseline.
 
 ## Start here
 
@@ -44,6 +44,8 @@ elevated user prompts, operation-derived tool groups, quiet model chrome and a c
 D-490 replaces the chrome palette with Codex's terminal-default/ANSI roles and uses its default dark syntax
 colors; terminal probing and automatic light/dark theme selection are not imported. D-491 keeps newline
 on Shift+Enter, retires Ctrl+J and places Ctrl+S sessions in the ready/draft footer.
+D-492 adds dependency-advisory CI, bounded OAuth/MCP/update inputs and locked atomic credential writes.
+Its [dated review](../review/security-2026-10-29/REPORT.md) records fixes and remaining maintenance notices.
 `@PATH` plus Tab stages file references through the existing confined attachment flow. Inline questions,
 conditional approvals, complete Markdown, readable Shell output, editing, shortcuts, media placement and
 streaming/saved rendering retain their implementations. Default search is DeepSeek + Exa; fetch remains

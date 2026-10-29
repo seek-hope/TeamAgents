@@ -1,0 +1,13 @@
+# cargo-deny policy for all three independent crate graphs.
+# Vulnerabilities and unsound releases fail. Unmaintained direct dependencies also fail;
+# transitive maintenance notices are scoped and reviewed in the dated security report.
+[advisories]
+version = 2
+unsound = "all"
+yanked = "deny"
+unmaintained = "workspace"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

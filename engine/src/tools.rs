@@ -1104,7 +1104,7 @@ fn skill_blurb(path: &Path) -> String {
         return String::new();
     }
     let frontmatter = lines.take_while(|line| !matches!(line.trim(), "---" | "...")).collect::<Vec<_>>().join("\n");
-    serde_yaml::from_str::<Json>(&frontmatter)
+    serde_saphyr::from_str::<Json>(&frontmatter)
         .ok()
         .and_then(|value| value["description"].as_str().map(|s| s.chars().take(200).collect()))
         .unwrap_or_default()
@@ -2546,26 +2546,6 @@ impl TurnControl {
 
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::SeqCst);
-    }
-
-    /// Wait until the current turn's execution lock is free (bounded by `timeout`).
-    ///
-    /// ponytail: no surface calls this either — it is the "let the turn stop
-    /// cleanly after a cancel" half of the same open question as
-    /// `driver::cancel_turn` (D-63's interrupt-or-boundary decision), kept with this
-    /// note so it is not read as a live lever.
-    pub fn wait_idle(&self, timeout: Duration) -> bool {
-        let deadline = Instant::now() + timeout;
-        loop {
-            match self.active.try_lock() {
-                Ok(_) | Err(std::sync::TryLockError::Poisoned(_)) => return true,
-                Err(std::sync::TryLockError::WouldBlock) => {}
-            }
-            if Instant::now() >= deadline {
-                return false;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
     }
 }
 

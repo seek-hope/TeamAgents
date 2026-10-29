@@ -5,7 +5,7 @@
 
 use serde_json::{json, Value as Json};
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -14,6 +14,53 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 type Pending = Mutex<HashMap<u64, Sender<Result<Json, String>>>>;
+
+const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
+
+/// Read one bounded UTF-8/JSON line without letting a peer grow the allocation indefinitely.
+fn read_bounded_line<R: BufRead>(reader: &mut R, limit: usize) -> std::io::Result<Option<String>> {
+    let mut bytes = Vec::new();
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return if bytes.is_empty() {
+                Ok(None)
+            } else {
+                String::from_utf8(bytes).map(Some).map_err(|error| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, format!("MCP input is not UTF-8: {error}"))
+                })
+            };
+        }
+        let newline = available.iter().position(|byte| *byte == b'\n');
+        let count = newline.map_or(available.len(), |index| index + 1);
+        if bytes.len().saturating_add(count) > limit {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("MCP message exceeds {limit} bytes"),
+            ));
+        }
+        bytes.extend_from_slice(&available[..count]);
+        reader.consume(count);
+        if newline.is_some() {
+            return String::from_utf8(bytes).map(Some).map_err(|error| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, format!("MCP input is not UTF-8: {error}"))
+            });
+        }
+    }
+}
+
+fn response_bytes(response: ureq::Response) -> Result<Vec<u8>, HttpFailure> {
+    let mut bytes = Vec::new();
+    response
+        .into_reader()
+        .take(MAX_MESSAGE_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| HttpFailure::Other(format!("MCP HTTP response read failed: {error}")))?;
+    if bytes.len() > MAX_MESSAGE_BYTES {
+        return Err(HttpFailure::Other(format!("MCP HTTP response exceeds {MAX_MESSAGE_BYTES} bytes")));
+    }
+    Ok(bytes)
+}
 
 /// Only these variables are inherited by a stdio MCP server
 /// (mcp.client.stdio.get_default_environment: HOME/LOGNAME/PATH/SHELL/TERM/USER);
@@ -152,7 +199,8 @@ impl McpClient {
         // server->client requests (roots/list); everything else is declined.
         let (stdin, workspace) = (reader_stdin, reader_workspace);
         std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            let mut reader = BufReader::new(stdout);
+            while let Ok(Some(line)) = read_bounded_line(&mut reader, MAX_MESSAGE_BYTES) {
                 let Ok(message) = serde_json::from_str::<Json>(&line) else { continue };
                 let Some(id) = message.get("id").and_then(|v| v.as_u64()) else { continue };
                 // a request has a method; a reply to one of ours does not
@@ -504,10 +552,9 @@ fn read_push_stream(reader: Box<dyn std::io::Read + Send + Sync + 'static>, repl
         if stop.load(Ordering::SeqCst) {
             return;
         }
-        let mut line = String::new();
-        match reader.read_line(&mut line) {
-            Ok(0) => return,
-            Ok(_) => {}
+        let line = match read_bounded_line(&mut reader, MAX_MESSAGE_BYTES) {
+            Ok(Some(line)) => line,
+            Ok(None) => return,
             // the per-read timeout is how this thread learns to stop
             Err(error)
                 if matches!(
@@ -518,13 +565,18 @@ fn read_push_stream(reader: Box<dyn std::io::Read + Send + Sync + 'static>, repl
                 continue
             }
             Err(_) => return,
-        }
+        };
         let line = line.trim_end_matches(['\r', '\n']);
         if let Some(data) = line.strip_prefix("data:") {
+            let data = data.strip_prefix(' ').unwrap_or(data);
+            if frame.len().saturating_add(data.len()).saturating_add(1) > MAX_MESSAGE_BYTES {
+                eprintln!("MCP push event exceeds {MAX_MESSAGE_BYTES} bytes; closing the stream");
+                return;
+            }
             if !frame.is_empty() {
                 frame.push('\n');
             }
-            frame.push_str(data.strip_prefix(' ').unwrap_or(data));
+            frame.push_str(data);
         }
         if !line.is_empty() || frame.is_empty() {
             continue;
@@ -661,12 +713,16 @@ fn http_roundtrip(
     }
     let content_type = response.header("content-type").unwrap_or("").to_string();
     if content_type.contains("text/event-stream") {
-        let stream = response.into_string().map_err(|e| HttpFailure::Other(format!("MCP HTTP bad SSE body: {e}")))?;
-        return sse_json(&stream, &body["id"])
+        let bytes = response_bytes(response)?;
+        let stream = std::str::from_utf8(&bytes)
+            .map_err(|error| HttpFailure::Other(format!("MCP HTTP SSE body is not UTF-8: {error}")))?;
+        return sse_json(stream, &body["id"])
             .map(Some)
             .ok_or_else(|| HttpFailure::Other("MCP HTTP SSE stream carried no matching JSON-RPC response".into()));
     }
-    let payload: Json = response.into_json().map_err(|e| HttpFailure::Other(format!("MCP HTTP bad json: {e}")))?;
+    let bytes = response_bytes(response)?;
+    let payload: Json =
+        serde_json::from_slice(&bytes).map_err(|error| HttpFailure::Other(format!("MCP HTTP bad json: {error}")))?;
     if body.get("id").is_some() && payload.get("id") != body.get("id") {
         return Err(HttpFailure::Other("MCP HTTP response id does not match request".into()));
     }
@@ -768,6 +824,54 @@ for line in sys.stdin:
         let declined = server_request_reply(9, "sampling/createMessage", Some(Path::new("/tmp"))).unwrap();
         assert_eq!(declined["error"]["code"], -32601);
         assert!(declined["error"]["message"].as_str().unwrap().contains("sampling/createMessage"));
+    }
+
+    #[test]
+    fn bounded_json_lines_reject_unterminated_growth_without_losing_valid_messages() {
+        let valid = format!("{}\n", json!({"jsonrpc": "2.0", "id": 1, "result": {"ok": true}}));
+        let mut reader = BufReader::new(valid.as_bytes());
+        assert!(read_bounded_line(&mut reader, MAX_MESSAGE_BYTES).unwrap().unwrap().contains("\"ok\":true"));
+        assert!(read_bounded_line(&mut reader, MAX_MESSAGE_BYTES).unwrap().is_none());
+
+        let oversized_bytes = vec![b'x'; MAX_MESSAGE_BYTES + 1];
+        let mut oversized = BufReader::new(oversized_bytes.as_slice());
+        let error = read_bounded_line(&mut oversized, MAX_MESSAGE_BYTES).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("exceeds"));
+    }
+
+    #[test]
+    fn http_response_bodies_are_bounded() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut length = 0usize;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" || line.is_empty() {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse().unwrap_or(0);
+                }
+            }
+            let mut request = vec![0u8; length];
+            reader.read_exact(&mut request).unwrap();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                MAX_MESSAGE_BYTES + 1
+            )
+            .unwrap();
+            stream.write_all(&vec![b' '; MAX_MESSAGE_BYTES + 1]).unwrap();
+        });
+        let session = Mutex::new(None);
+        let error = http_roundtrip(&endpoint, None, &session, None, &json!({"id": 1}), 2_000).unwrap_err();
+        server.join().unwrap();
+        assert!(error.to_string().contains("exceeds"), "{error}");
     }
 
     #[test]

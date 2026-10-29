@@ -33,6 +33,10 @@ jobs:
           toolchain: ${{ steps.rust-version.outputs.version }}
           components: rustfmt, clippy
       # Shell and local MCP tests use host execution (D-480).
+      - name: Install the dependency auditor
+        run: cargo install --locked cargo-deny --version 0.20.2
+      - name: Dependency advisories and source policy
+        run: make deny
       - name: Format and Clippy
         run: make fmt-check lint CARGO_FLAGS=--locked
       - name: Regression tests for the three crates

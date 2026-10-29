@@ -882,7 +882,9 @@ teamagents goals cancel --id g-spent    # close a goal nothing can spend (its ce
   `<xdg_config_home>/teamagents/mcp-auth.json` — **mode 0600, outside the repository, never printed, never in a
   prompt or a log**; only the variable *name* of a client secret ever appears in the config. An expired token is
   refreshed silently when the server issued a refresh token, a mid-session 401 is answered by one refresh and a
-  retry, and a credential that cannot be renewed is a refusal that names the verb to run
+  retry. OAuth redirects are refused instead of forwarding credential forms. Metadata/token responses are
+  limited to 1 MiB, callback request lines to 8 KiB and the credential file to 4 MiB. Credential updates use a
+  cross-process lock and a unique 0600 staging file with atomic replacement. A credential that cannot be renewed is a refusal that names the verb to run
   (`teamagents mcp login --name <service>`). `teamagents mcp list` prints each OAuth binding's state
   (`signed in` / `expired (will refresh)` / `not signed in`) before the tools it offers, and
   `teamagents mcp logout --name sentry` deletes the stored credential.
@@ -917,6 +919,9 @@ teamagents goals cancel --id g-spent    # close a goal nothing can spend (its ce
   environment. Explicit binding.env values are layered on top. The default and only mcp_execution value
   is host; old workspace/mcp_network configuration is rejected. The service has the user's filesystem and
   network access. Remote SSH functionality supplied by an MCP service remains available.
+  Stdio JSON lines, HTTP response bodies and accumulated SSE events are limited to 16 MiB. Oversized or invalid
+  transport input fails instead of being partially accepted; this is a transport bound, not a result-size claim
+  for every downstream artifact.
 - A server that stops answering is bounded the same way (D-108). `startup_timeout_s` (default 60) covers the
   handshake: if `initialize` does not answer inside it, the boot fails, the instance parks with
   `MCP … initialization failed: MCP initialize timed out`, and the server is killed instead of left behind.

@@ -1,6 +1,6 @@
 # Daily coding readiness and candidate work
 
-Updated **2026-10-29** for D-489. This page owns the remaining candidate queue. Current behavior is in
+Updated **2026-10-29** for D-492. This page owns the remaining candidate queue. Current behavior is in
 [USER-GUIDE.md](USER-GUIDE.md), evidence in [ACCEPTANCE.md](ACCEPTANCE.md), and confirmed decisions in
 [DECISIONS.md](DECISIONS.md). A queue item is not implementation, model-spend or publication authorization.
 
@@ -16,7 +16,7 @@ replacement. The public v0.2.0 archive is older than current source.
 | Repository setup | TeamAgents reads repository-local configuration for trusted canonical roots and discovers instruction files; user-only policy stays at user level | Configuration tests and isolated probes; dependency diagnosis is not a complete build or Skill-workflow acceptance |
 | Diagnosis and inputs (DD-01 / DD-04) | Read-only diagnosis, explicit recovery, instruction/source observations, immutable queued-input revisions and delivery receipts | Observation does not prove execution or completion; a config change is not a hot reload |
 | Editing and tools (DD-05) | Atomic disjoint edits, bounded read parallelism, file/Shell/Skill tools, provider-neutral search, MCP and codemode | Host execution is not confinement. Complete cross-language/Skill workflows need broader evidence |
-| Conversation and models (D-489 / DD-06) | Grok-style Leader conversation with elevated prompts, grouped activity, live status, compact model chrome and `@` file references; shared message/queue editing and complete answers | Scripted TestBackend/PTY checks, not a usability benchmark or every terminal/provider |
+| Conversation and models (D-489–D-491 / DD-06) | Grok-style Leader conversation with elevated prompts, grouped activity, live status, compact model chrome and `@` file references; shared message/queue editing and complete answers | Scripted TestBackend/PTY checks, not a usability benchmark or every terminal/provider |
 | Collaboration and recovery | Scoped task grants, independent members, worktrees, durable operations, runner recovery and declared-workspace takeover checks | Task cancellation is not process stop. Unknown effects are not replayed; remote/escaped effects are outside the local group observer |
 | Verification and accounting | User-required checks, scoped completion evidence, known/unknown usage, native windows and cache telemetry | Check quality and semantic completeness remain distinct. Reviewer usage is still not charged to the goal |
 

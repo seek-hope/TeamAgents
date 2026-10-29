@@ -23,8 +23,8 @@ then also checks relative links, `make` targets, TLA+ model names and numbered-s
 A line that says the cited thing is *gone* (a marker word, or a markdown table whose header says so) counts as
 a note rather than a finding: `docs/DECISIONS.md` keeps tables of removed items on purpose, and a citation
 there is how the removal is recorded. The tree definition is `git ls-files --cached --others --exclude-standard`,
-so a file that is about to be added resolves (the check runs on a working tree, not on a commit) while the
-ignored scratch areas stay invisible.
+so a file that is about to be added resolves (the check runs on a working tree, not on a commit), a deleted
+file is absent even before staging, and ignored scratch areas stay invisible.
 
 Limits, deliberately stated: bare basenames (`report.json`, `notify.sh`, `credentials.toml`, `INPUTS.md`) are
 out of scope — they are runtime artifacts and user-written files, and in a prose scan they drown the signal;
@@ -88,7 +88,7 @@ unless the line records it as archived or its file is the upstream-comparison no
 numbers are the compared platform's own).
 
 This docstring states counts of the current tree as well, and nothing looked at them either (D-208's pattern, one
-file over): **33** markdown files and **138** Rust files carry **1415** citations, **293** relative links, **727** `make` commands and **1031** `§`-section references, all recomputed and compared here.
+file over): **33** markdown files and **138** Rust files carry **1415** citations, **295** relative links, **733** `make` commands and **1027** `§`-section references, all recomputed and compared here.
 """
 
 import pathlib
@@ -143,7 +143,8 @@ GONE_MARKERS = ("deleted", "removed", "renamed", "gone", "dropped", "no longer e
 def tracked():
     out = subprocess.run(["git", "ls-files", "--cached", "--others", "--exclude-standard"],
                          cwd=REPO, capture_output=True, text=True, check=True).stdout
-    return [path for path in out.split("\n") if path]
+    # A deleted-but-not-yet-staged path is absent from the working tree, not readable evidence.
+    return [path for path in out.split("\n") if path and (REPO / path).is_file()]
 
 
 def tla_members() -> dict:

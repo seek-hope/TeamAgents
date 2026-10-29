@@ -1,7 +1,7 @@
 # Acceptance matrix (A01–A36)
 
 Baseline: [the design and acceptance baseline](DESIGN.md) §12/§16. Current source inspection and local
-regression baseline: **2026-10-29, D-491**.
+regression baseline: **2026-10-29, D-492**.
 This is not a new independent acceptance audit or real-model run.
 The D-451 product/installation receipts and the D-452 independent audit retain their original source/date
 boundaries; later source changes do not inherit those results.
@@ -9,7 +9,7 @@ boundaries; later source changes do not inherit those results.
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 174 / engine 437 / tui 103 test targets).
+`make check` is green (core 174 / engine 444 / tui 103 test targets).
 `make pty` passed on 2026-10-29: the terminal-profile matrix (xterm-256color, screen-256color, tmux-256color, xterm-kitty and Kitty under tmux) plus both forced graphics protocols, all rc 0 and
 credential-free. PTY checks cover protocol bytes, input ownership, resize and cleanup, not a complete
 actual graphical-terminal or OS matrix. These gates do not renew real-provider, OAuth, formal-proof or
@@ -488,6 +488,23 @@ can interrupt legitimate repetition. Projection bounds (32 KiB checkpoint, recen
 promise a fit in every native model window; overflow still requires explicit recovery. Local stop observation
 does not prove remote effects, escaped descendants or undeclared/shared paths quiescent. Reviewer usage
 accounting remains a separate gap. Source, installed binaries and the older published archive are distinct.
+
+## Source cleanup and robustness (D-492)
+
+The [dated review](../review/security-2026-10-29/REPORT.md) lists every resolved advisory, code fix, old-code
+control and remaining transitive maintenance notice. `make deny` passes all three crate graphs with
+cargo-deny 0.20.2 and now runs in CI. Dependency upgrades preserve locked builds; the Skill suite covers the
+safe-Rust YAML replacement, and the TUI suite covers the ratatui/lru upgrade.
+
+OAuth tests prove planted-link safety, concurrent credential preservation, format/size refusal, no credential
+forwarding on redirect and bounded callback input. MCP tests cover bounded lines and HTTP bodies; the updater
+test proves oversized partial downloads are removed. The old OAuth implementation fails four corresponding
+controls while the fixed source passes them. No real OAuth/release service was contacted.
+
+The dead-code audit scans 680 public items/fields with zero unexplained findings. Five unused persistence
+structs, two unreachable execution helpers, an empty root SQLite artifact and the retired parallel sandbox
+document are removed. Runtime schemas, grants, control transactions, recovery and frozen evidence are
+unchanged. This is targeted source review, not a new independent security audit or proof of complete safety.
 
 ## Newline and session shortcuts (D-491)
 

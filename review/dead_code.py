@@ -1,42 +1,18 @@
 #!/usr/bin/env python3
-"""Public items nothing *calls* (the audit behind D-78, D-86 and D-130).
-
-`clippy` cannot help here: `dead_code` only fires for private items, so a `pub fn`/`pub struct` that no
-caller anywhere in the tree mentions is silent — and this repository has three times found real leftovers
-that way (removed writers, a worktree helper reading a layout that no longer exists, the retired v1 tool
-executors). This script is that audit, mechanically and re-runnably:
+"""Find public Rust items and fields that production never references.
 
     python3 review/dead_code.py [--list-known]
 
-It scans the three crates' `src` for public item definitions (`fn`, `struct`, `enum`, `const`, `static`,
-`type`, `trait`) and counts every *mention* of each name, splitting the tree by whether a mention is a
-**call**:
+Clippy warns about unused private items, but a public item can be dead throughout this standalone product
+without a compiler warning. This scan covers public functions, types, constants, traits and named fields in
+`core/src`, `engine/src` and `tui/src`. A reference counts only in production code or an external launcher.
+Tests, examples, benches and comments do not keep an item alive. `#[cfg(test)]` modules and definitions are
+excluded.
 
-- a call is a mention in the product's own code: `core/src`, `engine/src`, `tui/src` outside a
-  `#[cfg(test)] mod`;
-- nothing else counts. Integration tests and `*_tests.rs`, `engine/examples` and `engine/benches` are how the
-  product is *used*, not code the product runs; and Rust comments are prose — both a `///` doc comment and an
-  ordinary `//` one (D-443: the `//` half was a blind spot, and `driver::cancel_turn` sat inside it, kept by a
-  comment in the supervisor). Prose under `docs/**` and
-  `review/**/*.md` was already excluded (D-86: the word "official" in DESIGN masked `Anthropic::official`);
-  D-130 applied the same rule to a test and to a `///` line, because neither "a test drives it" nor "a doc
-  mentions it" is a call — `workspace::merge_branch` and `driver::cancel_turn` hid behind exactly those.
-- a name mentioned in the scripts and `Makefile` that drive the CLI *is* called, just from outside Rust.
-
-A definition that is itself `#[cfg(test)]`-gated is test-only by construction and is not scanned.
-
-Three buckets, each with an allowlist that records the decision keeping the name, so a new finding stands out
-and the exit code stays meaningful. The allowlists are checked too (D-443), because an exemption is a claim
-nobody re-measures: every reason must name its authority — a binding decision (`D-<n>`) or the literal
-`mechanical:` for a structural one (a DESIGN data contract, a test-support hook) — and an entry doing no work
-is itself a finding, since a stale entry hides the next finding of that name. `merge_branch` was exactly that
-case when the rule landed: D-252 had wired the merge surface the entry still called an open item.
-
-| Bucket     | Meaning                                          | Allowlist          |
-|------------|--------------------------------------------------|--------------------|
-| `uncalled` | no mention anywhere                              | `KNOWN_UNCALLED`   |
-| `test_only`| only tests, examples or benches mention it       | `KNOWN_TEST_ONLY`  |
-| `doc_only` | only a doc comment mentions it                   | `KNOWN_DOC_ONLY`   |
+Findings are `uncalled`, `test_only` or `doc_only`. Each small allowlist entry must name its binding decision
+or `mechanical:` test/evaluation purpose; stale and unjustified exemptions fail too. Name matching is
+lexical, so a same-named use can hide a different item. This supplements rather than replaces Clippy,
+call-path review and tests.
 """
 import argparse
 import collections
@@ -51,20 +27,10 @@ USER_FILES = ["Makefile", "install.sh", "tui/scripts/pty_v2_smoke.py", "tui/scri
               "review/install_check.py", "review/dogfood/input_latency.py", "review/dogfood/tui.py"]
 
 # name -> why it may be mentioned nowhere at all
-KNOWN_UNCALLED = {
-    "wait_idle": "D-63: the parked substrate for interrupt-and-redirect; documented with a ponytail note",
-    # DESIGN §4.1 names these row shapes as the minimal data contract; the code reads them through SQL
-    # (store.rs owns the schema), so the typed form documents the contract instead of being called. Their
-    # The Artifact sibling sits in KNOWN_DOC_ONLY; Goal is also mentioned by test fixtures.
-    "Envelope": "mechanical: DESIGN §4.1 minimal data contract (Envelope / ContextEntry), read through SQL",
-    "ModelRequestRecord": "mechanical: DESIGN §4.1 minimal data contract (ModelRequest / Attempt), read through "
-                          "SQL",
-    "Attempt": "mechanical: DESIGN §4.1 minimal data contract (ModelRequest / Attempt), read through SQL",
-}
+KNOWN_UNCALLED = {}
 
 # name -> why tests/examples/benches may mention it and no product code needs to
 KNOWN_TEST_ONLY = {
-    "Goal": "mechanical: DESIGN §4.1 minimal data contract, read through SQL; runtime-marker fixtures mention it",
     "run_reference": "mechanical: the eval group-A direct-drive reference loop (reference.rs module doc: "
                      "evaluation only, no production recovery promise); the comparison baseline its tests drive",
     "inject": "mechanical: jobs::client's own doc calls it a test hook (only honored by runners spawned with "
@@ -79,14 +45,13 @@ KNOWN_TEST_ONLY = {
 }
 
 # name -> why only a doc comment mentions it
-KNOWN_DOC_ONLY = {
-    "Artifact": "mechanical: DESIGN §4.1 minimal data contract (the artifact row, §9.1), read through SQL",
-    "cancel_turn": "D-63: the parked substrate for interrupt-and-redirect (D-78 kept it with a ponytail note "
-                   "on `wait_idle`); the driver's own doc is its only other mention",
-}
+KNOWN_DOC_ONLY = {}
 
 DEFINITION = re.compile(
     r"^\s*pub(?:\(crate\))? (?:async )?(?:unsafe )?(?:extern \"[^\"]+\" )?(fn|struct|enum|const|static|type|trait) (\w+)")
+# `pub` is not valid on a local variable, so this shape identifies named fields.
+# Tuple-variant fields need no visibility marker and remain outside this lexical audit.
+FIELD = re.compile(r"^\s*pub(?:\(crate\))? ([A-Za-z_]\w*)\s*:")
 CFG_TEST = "#[cfg(test)]"
 TEST_MOD = re.compile(r"^mod \w+")
 CLOSE = re.compile(r"^}")
@@ -156,6 +121,10 @@ def main() -> int:
                 skipped += 1
                 continue
             definitions[match.group(2)].append(f"{path.relative_to(REPO)}:{number}")
+            continue
+        field = FIELD.match(line)
+        if field and not inside(number):
+            definitions[field.group(1)].append(f"{path.relative_to(REPO)}:{number}")
 
     # one token pass over each line (`\bName\b` and a word token agree for identifiers), so the scan costs
     # one regex per line instead of one per name — this is the audit `make hygiene` runs.

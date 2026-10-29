@@ -19,6 +19,7 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Context compaction | triggered by real window usage; the summary keeps the original request and acceptance criteria, and the full text stays retrievable | D-28 |
 | Task priority | complex coding and long-horizon stability come first | D-35 |
 | Work and initiative | honor user instructions and intent; explore freely and pursue excellent, thoroughly verified results within the authorized scope. Durable goals span turns, compaction and restart; bounded recovery prevents empty loops | D-487 |
+| Dependency and input hygiene | all three crate graphs run cargo-deny in CI; unknown sources and vulnerability/unsound/yanked advisories fail. OAuth/MCP/update inputs have explicit bounds and credential writes are locked and atomic | D-492 |
 | Native context | real-model evaluation always uses the model's native window and records the value and its source | D-36 |
 | Install and first config | source builds or the published v0.2.0 archive; init writes a minimal config and never overwrites an existing file; local archives require matching checksums | D-37, D-457, D-475; docs/INSTALL.md |
 | Custom providers | any compatible service is configured through `[models.*]` in `config.toml` (`protocol`/`base_url`/`model`/`api_key_env`) | D-40 (the earlier TUI's `/model` wizard went away with the old interface) |
@@ -38,6 +39,26 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Prompt cache | cache hit/miss/write are provider-reported and visible; the L1 frontier is fixed between compactions; Anthropic gets explicit breakpoints and OpenAI a stable key; DeepSeek stays automatic | D-459 |
 | Command idempotency | a replay with the same `command_id` returns the stored receipt for control-plane state, and the authoritative check runs under the write lock (D-463); result bodies are shared by content digest and zstd-compressed (D-464), while the receipt **rows** remain one per command | D-463, D-464 |
 | Model actions and code windows | a deciding read shares the write's transaction, or the guard is a predicate on the write itself; `verification/REPORT.md` §6 lists the protocol transitions and the three engine windows that span two transactions with their predicates | D-465 |
+
+## D-492 Source cleanup and robustness review (2026-10-29)
+
+The user authorized a comprehensive review of documents and code, removal of stale/low-value material and dead
+code, and fixes for unsafe or fragile implementation. The review stays within existing authority and execution
+contracts; evidence and remaining maintenance notices are in `review/security-2026-10-29/REPORT.md`.
+
+Security updates cover zstd, rustls/webpki/root certificates, Tokio, pulldown-cmark and ratatui/lru. YAML Skill
+frontmatter moves from deprecated serde_yaml/unsafe-libyaml to serde-saphyr; resvg also advances. `make deny`
+and `deny.toml` enforce vulnerability, unsound/yanked, direct-maintenance and dependency-source policy in CI.
+Transitive maintenance notices remain documented rather than being called vulnerabilities.
+
+OAuth credentials now use a cross-process lock, unique create-new 0600 staging and directory sync, format/size
+validation, bounded responses and callback lines, and no credential-form redirects. MCP stdio/HTTP/SSE messages
+are limited to 16 MiB. Update metadata/sums are limited to 1 MiB and archives to 256 MiB; oversized partial
+files are removed. These bounds fail explicitly rather than changing authorization or replay semantics.
+
+Cleanup removes five unused persistence mirror structs and two unreachable execution helpers, the accidental
+empty root SQLite file and the retired parallel sandbox document. Public named fields join the dead-code scan;
+only five justified test/evaluation exemptions remain. Historical decisions and frozen evidence are preserved.
 
 ## D-491 Newline binding and session footer hint (2026-10-29)
 
@@ -1505,7 +1526,7 @@ references it names.
 
 **Dead code: the allowlists now justify themselves.** `review/dead_code.py` gained three rules: an ordinary `//`
 comment is prose exactly as a `///` doc comment is, so it is not a call — the blind spot that kept
-`driver::cancel_turn` looking called because one comment in the supervisor mentions it (excluding the whole
+`driver::cancel_turn` (removed by D-492) looking called because one comment in the supervisor mentions it (excluding the whole
 comment family surfaced no other finding in the tree, measured); every allowlist reason must name its authority,
 a binding `D-<n>` or the literal `mechanical:`; and an exemption doing no work is itself a finding. That last
 rule found the entry it was written for: `merge_branch` was excused as "an open item only a test drives", and
@@ -14522,7 +14543,7 @@ First run over this tree: **4 findings**, all gone now.
 What the new buckets found *already known* is now allowlisted instead of looking used, each with its reason
 printed by `--list-known`:
 
-- `doc_only` — `driver::cancel_turn` (D-78 kept it as D-63's parked substrate; the driver's own doc was its
+- `doc_only` (historical; removed by D-492) — `driver::cancel_turn` (D-78 kept it as D-63's parked substrate; the driver's own doc was its
   only other mention), and `Goal` / `Artifact`, the goals/artifacts row shapes of DESIGN §4.1 that the code
   reads through SQL, which is the reason the four siblings in `KNOWN_UNCALLED` already carry.
 - `test_only` — `run_reference` (the eval group-A reference loop its tests drive), `inject` and
@@ -16284,7 +16305,7 @@ allowlist cannot rot silently:
   `<state root>/instances/<id>`), so a caller would have silently received an empty list. Its sibling
   `merge_branch` was the detector's documented blind spot until then ("a test counts as a use") and is now the
   verb's own call.
-- `tools::wait_idle` — D-63's parked substrate for interrupt-and-redirect, carrying its own `ponytail:` note.
+- `tools::wait_idle` (removed by D-492) — D-63's parked substrate for interrupt-and-redirect, carrying its own `ponytail:` note.
 
 One documentation defect came out of the same pass: the doc comment on `driver::with_control` began with
 "Stop driving; submitted commands stay committed (§4.1)", a sentence about the neighbouring method. It now
@@ -16525,7 +16546,7 @@ a reporting gap rather than dead code:
 | `tools::validate_web_bindings` | a load-time check whose doc said "session.rs calls this while building the member's runner" - a module that no longer exists, so nothing did. The executor resolves `[tools.web]` **lazily**, so a typo'd provider or an unset credential surfaced only in a tool receipt, and `doctor` had no row for web bindings at all (it reports the MCP ones since D-74) | the gap is closed the other way: `doctor` now reports each declared web binding (kind, provider, whether its credential is set, whether the provider is one this build speaks) and a **FAIL** verdict naming the resolution the executor will perform when that fails; the function itself is gone |
 | `config::save_custom_provider` | 59 careful lines (lock file, symlink refusal, `toml_edit` merge) that wrote a provider into the user config - the writer of the `/model` wizard D-40 removed | deleted, together with the now-unused `toml_edit` dependency; a "add a provider" surface would be new product surface and is not what the user asked for |
 | `tools::shell_run_host` | a duplicate wrapper; the live shell path calls `shell_run_at` directly | deleted |
-| `driver::cancel_turn` + `tools::TurnControl::wait_idle` | cancelling one turn (abort the stream, close the request) and waiting for the execution lock to free - the substrate of D-63's **open** question, "should the runtime interrupt a running turn instead of holding the input to the boundary?" | **kept**, each with a `ponytail:` note saying that no surface calls it, which live lever exists (`teamagents instances pause --id` stops the instance, not one turn) and that answering the question is what would wire them |
+| `driver::cancel_turn` + `tools::TurnControl::wait_idle` | cancelling one turn (abort the stream, close the request) and waiting for the execution lock to free - the substrate of D-63's **open** question, "should the runtime interrupt a running turn instead of holding the input to the boundary?" | **Kept at the time; removed in D-492**, each with a `ponytail:` note saying that no surface calls it, which live lever exists (`teamagents instances pause --id` stops the instance, not one turn) and that answering the question is what would wire them |
 
 One list, one surface: `bound::DEFAULT_BINDINGS` is now the single place naming what a session binds
 (`files`, `shell`, `web`, `skills`), and both the daemon boot and `doctor` use it - before, that literal lived
