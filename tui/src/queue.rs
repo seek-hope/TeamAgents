@@ -131,7 +131,7 @@ impl Queue {
 }
 
 pub fn render(frame: &mut Frame, queue: &Queue) {
-    use crate::theme::{BG, CODEX, ERROR, FG, GREY};
+    use crate::theme::{secondary, BG, CODEX, ERROR, FG};
     use crate::v2ui::{hint_line, panel, selection};
     use ratatui::style::Modifier;
     use ratatui::text::Line;
@@ -163,12 +163,12 @@ pub fn render(frame: &mut Frame, queue: &Queue) {
                         &format!("{} {preview} · {count} files", if i == queue.selected { ">" } else { " " },),
                         rows[1].width.saturating_sub(2) as usize,
                     ),
-                    if i == queue.selected { selection() } else { Style::default().fg(GREY) },
+                    if i == queue.selected { selection() } else { secondary() },
                 )
             })
             .collect();
         if lines.is_empty() {
-            lines.push(Line::styled("No pending inputs. r refreshes.", Style::default().fg(GREY)));
+            lines.push(Line::styled("No pending inputs. r refreshes.", secondary()));
         }
         lines
     };
@@ -259,8 +259,9 @@ mod tests {
         assert_eq!(corner.fg, crate::theme::BORDER);
         let selected = buffer[(1, 2)].clone();
         assert_eq!(selected.symbol(), ">");
-        assert_eq!(selected.fg, crate::theme::ACCENT);
-        assert!(selected.modifier.contains(ratatui::style::Modifier::BOLD));
+        assert_eq!(selected.fg, ratatui::style::Color::Reset);
+        assert!(selected.modifier.contains(ratatui::style::Modifier::BOLD | ratatui::style::Modifier::REVERSED));
+        assert!(!selected.modifier.contains(ratatui::style::Modifier::DIM));
         assert!(!selected.modifier.contains(ratatui::style::Modifier::UNDERLINED));
     }
 

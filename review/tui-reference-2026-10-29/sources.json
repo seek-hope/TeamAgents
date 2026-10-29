@@ -37,6 +37,18 @@
         {
           "path": "codex-rs/tui/styles.md",
           "sha256": "f85ff5a55881d0c1f7b0b53b1ad6da69e7f543fc4cf0e76cf42d99cb1c97fbad"
+        },
+        {
+          "path": "codex-rs/tui/src/style.rs",
+          "sha256": "0ea813b75bc3fdf59dd79a08e201031df79eafd4ee909b4f5e08def9c255f198"
+        },
+        {
+          "path": "codex-rs/tui/src/style/contrast.rs",
+          "sha256": "ab52727328eb91923eb6970218d49b24e9b71450950f13875317d4aae3daf589"
+        },
+        {
+          "path": "codex-rs/tui/src/render/highlight.rs",
+          "sha256": "3a5eab87e7d2df77b45cb4687d14d3b0a8cf64e09419a07bd70ee5f10bc513fc"
         }
       ]
     },

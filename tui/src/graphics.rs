@@ -331,7 +331,7 @@ impl Graphics {
             }
             let mut doc = Document::text(markdown::plain(&request.source.label(), width, Style::default().fg(ACCENT)));
             let rows = self.sizes.get(&request).copied().unwrap_or(1).max(1);
-            doc.lines.push(Line::styled("Preview pending", Style::default().fg(GREY)));
+            doc.lines.push(Line::styled("Preview pending", secondary()));
             doc.lines.extend((1..rows).map(|_| Line::raw(" ")));
             doc.media.push(MediaBlock { row: 0, column: 0, rows: doc.lines.len(), width, request });
             return doc;
@@ -744,7 +744,7 @@ fn source_pending(source: &Source, width: usize, reason: &str) -> Vec<Line<'stat
     if matches!(source, Source::Code { .. }) {
         source_fallback(source, width, "")
     } else {
-        markdown::plain(reason, width, Style::default().fg(GREY))
+        markdown::plain(reason, width, secondary())
     }
 }
 
@@ -755,11 +755,11 @@ fn source_fallback(source: &Source, width: usize, reason: &str) -> Vec<Line<'sta
             .flat_map(|line| crate::wrap::wrap_line(line, width))
             .collect();
         if reason.starts_with("Preview unavailable:") {
-            lines.extend(markdown::plain(reason, width, Style::default().fg(GREY)));
+            lines.extend(markdown::plain(reason, width, secondary()));
         }
         return lines;
     }
-    let mut lines = markdown::plain(reason, width, Style::default().fg(GREY));
+    let mut lines = markdown::plain(reason, width, secondary());
     if let Source::Diagram { code, .. } = source {
         lines.extend(markdown::plain(
             &code.chars().take(MAX_SOURCE_PREVIEW_CHARS).collect::<String>(),
@@ -770,7 +770,7 @@ fn source_fallback(source: &Source, width: usize, reason: &str) -> Vec<Line<'sta
             lines.extend(markdown::plain(
                 "Source preview limit reached; the stored message is unchanged.",
                 width,
-                Style::default().fg(GREY),
+                secondary(),
             ));
         }
     }

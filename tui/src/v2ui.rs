@@ -17,14 +17,14 @@ pub(crate) fn panel(title: impl Into<String>) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .title(Span::styled(format!(" {} ", title.into()), Style::default().fg(GREY)))
-        .border_style(Style::default().fg(BORDER))
+        .title(Span::styled(format!(" {} ", title.into()), secondary()))
+        .border_style(border(false))
         .style(Style::default().bg(PANEL_BG).fg(FG))
 }
 
 /// A selected row keeps a textual marker; color and bold never work alone.
 pub(crate) fn selection() -> Style {
-    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+    selected()
 }
 
 /// Screen regions shared by rendering and hit-testing.
@@ -200,19 +200,19 @@ fn render_profile(frame: &mut Frame, app: &V2App, area: Rect) {
                 if model.key == model.model { model.key.clone() } else { format!("{} · {}", model.key, model.model) };
             Line::styled(
                 fit(&format!("{} {}", if i == menu.model_ix { ">" } else { " " }, label), inner.width as usize),
-                if i == menu.model_ix { selection() } else { Style::default().fg(GREY) },
+                if i == menu.model_ix { selection() } else { secondary() },
             )
         })
         .collect();
     lines.push(Line::default());
     lines.push(Line::from(vec![
-        Span::styled("Effort  ", Style::default().fg(GREY)),
+        Span::styled("Effort  ", secondary()),
         Span::styled(fit(&format!("‹ {effort} ›"), inner.width.saturating_sub(8) as usize), selection()),
     ]));
     lines.extend(crate::markdown::plain(
         "Applies at the next turn. Enter applies; Esc cancels.",
         inner.width as usize,
-        Style::default().fg(GREY),
+        secondary(),
     ));
     frame.render_widget(Paragraph::new(lines), inner);
 }
@@ -256,17 +256,17 @@ fn render_status(frame: &mut Frame, app: &V2App, area: Rect) {
         Style::default().fg(CODEX).add_modifier(Modifier::BOLD),
     ));
     if left_width >= 12 {
-        left.spans.push(Span::styled(" · ", Style::default().fg(MUTED)));
+        left.spans.push(Span::styled(" · ", secondary()));
         left.spans.push(Span::styled(fit(&status, 28), status_style));
     }
     if left_width >= 54 && !app.session_name.is_empty() {
-        left.spans.push(Span::styled(" · ", Style::default().fg(MUTED)));
-        left.spans.push(Span::styled(fit(&app.session_name, 18), Style::default().fg(GREY)));
+        left.spans.push(Span::styled(" · ", secondary()));
+        left.spans.push(Span::styled(fit(&app.session_name, 18), secondary()));
     }
     if left_width >= 76 {
         if let Some(workspace) = app.workspace() {
             left.spans.push(Span::styled("  ", Style::default()));
-            left.spans.push(Span::styled(fit(workspace, 42), Style::default().fg(MUTED)));
+            left.spans.push(Span::styled(fit(workspace, 42), secondary()));
         }
     }
     frame.render_widget(
@@ -276,7 +276,7 @@ fn render_status(frame: &mut Frame, app: &V2App, area: Rect) {
     if !right.is_empty() && area.width >= 2 {
         let right_area = Rect::new(area.right().saturating_sub(right.len() as u16 + 1), area.y, right.len() as u16, 1);
         frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(right, Style::default().fg(GREY))))
+            Paragraph::new(Line::from(Span::styled(right, secondary())))
                 .alignment(Alignment::Right)
                 .style(Style::default().bg(PANEL_BG)),
             right_area,
@@ -348,7 +348,7 @@ fn render_activity(frame: &mut Frame, app: &V2App, area: Rect) {
     );
     if right_width > 0 {
         frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(right, Style::default().fg(MUTED)))).alignment(Alignment::Right),
+            Paragraph::new(Line::from(Span::styled(right, secondary()))).alignment(Alignment::Right),
             Rect::new(area.right().saturating_sub(right.len() as u16 + 1), area.y, right.len() as u16, 1),
         );
     }
@@ -381,28 +381,24 @@ fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
         lines.extend(crate::markdown::plain(
             "Ask the Leader to explore, fix or create something. Work continues when you detach.",
             width,
-            Style::default().fg(GREY),
+            secondary(),
         ));
         lines.push(Line::from(""));
         lines.extend(crate::markdown::plain(
             "?  Shortcuts     /  Commands     Ctrl+S  Conversations",
             width,
-            Style::default().fg(GREY),
+            secondary(),
         ));
         if let Some(workspace) = app.workspace() {
             lines.push(Line::default());
-            lines.extend(crate::markdown::plain(&format!("Workspace  {workspace}"), width, Style::default().fg(GREY)));
+            lines.extend(crate::markdown::plain(&format!("Workspace  {workspace}"), width, secondary()));
         }
     }
     if let Some(goal) = &app.goal {
         if goal.status != "ACTIVE" {
             if let Some(summary) = &goal.summary {
                 lines.push(Line::default());
-                lines.extend(crate::markdown::plain(
-                    &format!("Result · {}", goal.status),
-                    width,
-                    Style::default().fg(GREY),
-                ));
+                lines.extend(crate::markdown::plain(&format!("Result · {}", goal.status), width, secondary()));
                 let origin = crate::graphics::Origin {
                     session: app.session_root.clone().into(),
                     workspace: app.workspace().unwrap_or_default().into(),
@@ -477,11 +473,9 @@ fn render_approvals(frame: &mut Frame, app: &V2App, area: Rect) {
     }
     let focused = app.focus == Focus::Approvals;
     let title = if focused { "Approval required · focused" } else { "Approval required" };
-    let block = panel(title).title_bottom(" a approve once · d deny ").border_style(Style::default().fg(if focused {
-        WARNING
-    } else {
-        BORDER
-    }));
+    let approval_border =
+        if focused { Style::default().fg(WARNING).add_modifier(Modifier::BOLD) } else { border(false) };
+    let block = panel(title).title_bottom(" a approve once · d deny ").border_style(approval_border);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let (start, count) = window(app.approvals.len(), app.approval_sel, inner.height as usize);
@@ -502,13 +496,13 @@ fn render_approvals(frame: &mut Frame, app: &V2App, area: Rect) {
             }
             Line::from(vec![
                 Span::styled(marker.to_string(), Style::default().fg(ACCENT)),
-                Span::styled(format!(" {} ", a.id), Style::default().fg(MUTED)),
-                Span::styled("· ", Style::default().fg(MUTED)),
+                Span::styled(format!(" {} ", a.id), secondary()),
+                Span::styled("· ", secondary()),
                 Span::styled(a.tool.clone(), Style::default().fg(FG).add_modifier(Modifier::BOLD)),
-                Span::styled(" · ", Style::default().fg(MUTED)),
+                Span::styled(" · ", secondary()),
                 Span::styled(
                     fit(&a.preview, (inner.width as usize).saturating_sub(a.id.len() + a.tool.len() + 12)),
-                    Style::default().fg(GREY),
+                    secondary(),
                 ),
             ])
         })
@@ -529,7 +523,7 @@ fn render_completion(frame: &mut Frame, app: &V2App, area: Rect) {
             .map(|(i, path)| {
                 Line::styled(
                     format!("{} {path}", if i == app.attachments.selected { ">" } else { " " },),
-                    if i == app.attachments.selected { selection() } else { Style::default().fg(GREY) },
+                    if i == app.attachments.selected { selection() } else { secondary() },
                 )
             })
             .collect::<Vec<_>>();
@@ -547,7 +541,7 @@ fn render_completion(frame: &mut Frame, app: &V2App, area: Rect) {
         .map(|(index, (name, description))| {
             Line::styled(
                 format!("{} {name}  {description}", if index == selected { ">" } else { " " }),
-                if index == selected { selection() } else { Style::default().fg(GREY) },
+                if index == selected { selection() } else { secondary() },
             )
         })
         .collect::<Vec<_>>();
@@ -562,7 +556,7 @@ fn render_composer(frame: &mut Frame, app: &V2App, area: Rect) {
     }
     let focused = app.focus == Focus::Composer && app.profile.is_none() && !app.help_open;
     let title = if app.session_name.is_empty() { " ".to_string() } else { format!(" {} ", fit(&app.session_name, 24)) };
-    let block = panel(title).border_style(Style::default().fg(if focused { ACCENT } else { BORDER }));
+    let block = panel(title).border_style(border(focused));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let prefix_width = if inner.width >= 4 { 2 } else { 0 };
@@ -574,10 +568,7 @@ fn render_composer(frame: &mut Frame, app: &V2App, area: Rect) {
         if prefix_width > 0 {
             spans.push(Span::styled("❯ ", Style::default().fg(USER)));
         }
-        spans.push(Span::styled(
-            fit(placeholder, inner.width.saturating_sub(prefix_width) as usize),
-            Style::default().fg(GREY),
-        ));
+        spans.push(Span::styled(fit(placeholder, inner.width.saturating_sub(prefix_width) as usize), secondary()));
         frame.render_widget(Paragraph::new(Line::from(spans)), inner);
     } else {
         let visible = lines
@@ -621,8 +612,7 @@ fn render_composer(frame: &mut Frame, app: &V2App, area: Rect) {
             };
             let profile = format!(" {} ", fit(&profile, (bottom.width as usize).saturating_sub(reserved + 2)));
             frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(profile, Style::default().fg(GREY))))
-                    .alignment(Alignment::Right),
+                Paragraph::new(Line::from(Span::styled(profile, secondary()))).alignment(Alignment::Right),
                 bottom,
             );
         }
@@ -641,14 +631,14 @@ pub(crate) fn render_editor(
     focused: bool,
     placeholder: &str,
 ) {
-    let block = panel(title).border_style(Style::default().fg(if focused { ACCENT } else { BORDER }));
+    let block = panel(title).border_style(border(focused));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let (lines, row, col) = composer.visual_lines(inner.width as usize);
     let (start, count) = window(lines.len(), row, inner.height as usize);
     let visible = lines.into_iter().skip(start).take(count).map(Line::raw).collect::<Vec<_>>();
     if composer.text().is_empty() {
-        frame.render_widget(Paragraph::new(placeholder).style(Style::default().fg(GREY)), inner);
+        frame.render_widget(Paragraph::new(placeholder).style(secondary()), inner);
     } else {
         frame.render_widget(Paragraph::new(visible), inner);
     }
@@ -776,14 +766,19 @@ pub(crate) fn hint_line(hint: &str) -> Line<'static> {
     let mut spans = Vec::new();
     for (index, part) in hint.split(" · ").enumerate() {
         if index > 0 {
-            spans.push(Span::styled(" · ", Style::default().fg(MUTED)));
+            spans.push(Span::styled(" · ", secondary()));
         }
         match part.split_once(' ') {
             Some((key, action)) => {
-                spans.push(Span::styled(key.to_string(), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)));
-                spans.push(Span::styled(format!(" {action}"), Style::default().fg(GREY)));
+                spans.push(Span::styled(
+                    key.to_string(),
+                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD).remove_modifier(Modifier::DIM),
+                ));
+                spans.push(Span::styled(format!(" {action}"), secondary()));
             }
-            None => spans.push(Span::styled(part.to_string(), Style::default().fg(ACCENT))),
+            None => {
+                spans.push(Span::styled(part.to_string(), Style::default().fg(ACCENT).remove_modifier(Modifier::DIM)))
+            }
         }
     }
     Line::from(spans)

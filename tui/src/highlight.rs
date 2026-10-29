@@ -56,7 +56,7 @@ pub(crate) fn highlighted(code: &str, language: &str) -> Option<Vec<Line<'static
         return None;
     }
     let theme =
-        THEME.get_or_init(|| two_face::theme::extra()[two_face::theme::EmbeddedThemeName::Base16OceanDark].clone());
+        THEME.get_or_init(|| two_face::theme::extra()[two_face::theme::EmbeddedThemeName::CatppuccinMocha].clone());
     let mut highlighter = HighlightLines::new(syntax, theme);
     let mut lines = vec![];
     // The parent enforces a wall deadline and kills this process inside a costly regex call.

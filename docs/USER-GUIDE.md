@@ -45,6 +45,10 @@ teamagents                           # open the TUI (starts this session's daemo
 - **Completion answers and Shell output (D-486)**: completion summaries retain their full Markdown; Shell
   commands preserve newlines and appear separately from decoded output/error bodies. Logs remain literal,
   including JSON printed by a command. Receipt arrival alone does not prove successful execution.
+- **Colors (D-490)**: Codex CLI's terminal-default prose, dim hints and borders, blue accents, magenta identity
+  markers and ANSI green/red outcomes. Selection uses bold inverse terminal colors. Submitted prompts keep a
+  dark-grey band with white text; syntax uses Codex's default dark Catppuccin Mocha palette. Terminal palette
+  probing and automatic light/dark syntax switching are not enabled.
 - **Readable conversations (D-447/D-485/D-489)**: elevated user-prompt bands, a compact Leader reply gutter,
   headings, lists, quotes, links,
   fenced code and tables. Code retains indentation; narrow tables become labelled records. Diff lines have

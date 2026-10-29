@@ -30,6 +30,29 @@ fn frame(app: &mut V2App, width: u16, height: u16) -> String {
 }
 
 #[test]
+fn codex_palette_keeps_prose_neutral_and_semantics_distinct() {
+    use ratatui::style::Color;
+    assert_eq!(theme::FG, Color::Reset);
+    assert_eq!(theme::BG, Color::Reset);
+    assert_eq!(theme::NOTICE, Color::Reset);
+    assert_eq!(theme::USER, Color::Reset);
+    assert_eq!(theme::ACCENT, Color::Rgb(99, 168, 248));
+    assert_eq!(theme::CODEX, Color::Magenta);
+    assert_eq!(theme::SUCCESS, Color::Green);
+    assert_eq!(theme::ADDED, Color::Green);
+    assert_eq!(theme::ERROR, Color::Red);
+    // Unknown terminal backgrounds must not get unreadable yellow warnings.
+    assert_eq!(theme::WARNING, Color::Reset);
+    assert_eq!(theme::USER_BG, Color::DarkGray);
+
+    let rows = markdown::render("## Heading\n\nOrdinary prose and `code`.", 80);
+    let span = |text: &str| rows.iter().flat_map(|line| &line.spans).find(|span| span.content == text).unwrap();
+    assert_eq!(span("Heading").style.fg, Some(Color::Reset));
+    assert!(span("Heading").style.add_modifier.contains(Modifier::BOLD));
+    assert_eq!(span("code").style.fg, Some(theme::ACCENT));
+}
+
+#[test]
 fn error_labels_do_not_recolor_the_whole_message() {
     let mut app = app();
     app.entries.push(teamagents_tui::v2app::ChatEntry {
@@ -225,6 +248,11 @@ fn user_prompt_band_uses_an_elevated_surface_at_readable_widths() {
     let lines = cache.lines(&entries, 60, Some(4));
     let prompt = lines.iter().find(|line| line.spans.iter().any(|span| span.content == "❯ ")).unwrap();
     assert_eq!(prompt.style.bg, Some(theme::USER_BG));
+    assert!(prompt
+        .spans
+        .iter()
+        .filter(|span| !span.content.trim().is_empty())
+        .all(|span| span.style.fg == Some(ratatui::style::Color::White)));
     assert_eq!(lines.first().unwrap().style.bg, Some(theme::USER_BG));
     assert_eq!(lines.last().unwrap().style.bg, Some(theme::USER_BG));
 }

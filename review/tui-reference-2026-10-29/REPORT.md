@@ -60,3 +60,14 @@ previous installed binary. The previous binary was preserved in a private backup
 atomic; the engine and user configuration were not changed. The installed binary passed the same isolated
 PTY smoke, including `@` attachment submission, approvals, editing, resizing and clean detach. The install
 receipt is `/tmp/ta-d489-install.json`; this local installation is not a public release.
+
+## Color follow-up (D-490)
+
+The user subsequently requested Codex CLI's palette while retaining this layout. Additional inspected files
+at the same Codex pin are recorded in the manifest: shared styles, contrast/selection handling and syntax
+theme defaults. The adaptation replaces global Catppuccin chrome with terminal-default prose, dim secondary
+text, ChatGPT Blue 200 accents and ANSI semantic colors. Unknown-background fallbacks supply inverse
+selection and a dark-grey prompt band; explicit white prompt text prevents dark default text on that fill.
+Fenced syntax uses Codex's default dark Catppuccin Mocha theme. No upstream terminal probe, adaptive contrast
+solver, theme loader or automatic light/dark syntax switching is imported. D-489's runtime/input contracts
+are unchanged; this follow-up does not rewrite the earlier selection or installation evidence.

@@ -183,7 +183,7 @@ impl Transcript {
                         self.document.lines.extend(markdown::plain(
                             &activity_heading(&entries[position..position + count]),
                             width,
-                            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                            Style::default().fg(FG).add_modifier(Modifier::BOLD),
                         ));
                     }
                 }
@@ -204,11 +204,7 @@ impl Transcript {
                             false,
                         ));
                     } else if entry.kind == ChatKind::Summary {
-                        self.document.lines.extend(markdown::plain(
-                            "Conversation compacted",
-                            width,
-                            Style::default().fg(GREY),
-                        ));
+                        self.document.lines.extend(markdown::plain("Conversation compacted", width, secondary()));
                         self.document.append(markdown::render_media(&entry.text, width, Some(g), &origin));
                     } else {
                         self.document.lines.extend(render_entry(entry, width, tool_limit));
@@ -313,10 +309,10 @@ fn render_entry(entry: &ChatEntry, width: usize, tool_limit: Option<usize>) -> V
     }
     if entry.kind == ChatKind::User {
         let body = if entry.who != "you" { format!("To {}: {}", entry.who, entry.text) } else { entry.text.clone() };
-        let mut lines = markdown::plain(&body, width.saturating_sub(2).max(1), Style::default().fg(FG));
+        let mut lines = markdown::plain(&body, width.saturating_sub(2).max(1), Style::default().fg(USER_FG));
         for (i, line) in lines.iter_mut().enumerate() {
             if width > 2 {
-                line.spans.insert(0, Span::styled(if i == 0 { "❯ " } else { "  " }, Style::default().fg(USER)));
+                line.spans.insert(0, Span::styled(if i == 0 { "❯ " } else { "  " }, Style::default().fg(USER_FG)));
             }
             line.spans.push(Span::raw(" ".repeat(width.saturating_sub(line.width()))));
             line.style = Style::default().bg(USER_BG);
@@ -377,7 +373,7 @@ fn render_tool(tool: &ToolInfo, width: usize, limit: Option<usize>) -> Vec<Line<
     let header = Line::from(vec![
         Span::styled("› ", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
         Span::styled(markdown::clean(&tool.name), Style::default().fg(FG).add_modifier(Modifier::BOLD)),
-        Span::styled(format!(" · {status}"), Style::default().fg(MUTED)),
+        Span::styled(format!(" · {status}"), secondary()),
         Span::styled(
             if compact { format!("  {}", markdown::clean(&summary).replace('\n', " ")) } else { String::new() },
             Style::default().fg(CODE),
@@ -435,7 +431,7 @@ fn render_tool(tool: &ToolInfo, width: usize, limit: Option<usize>) -> Vec<Line<
     }
     for mut line in body {
         if width > 2 {
-            line.spans.insert(0, Span::styled("  ", Style::default().fg(MUTED)));
+            line.spans.insert(0, Span::styled("  ", secondary()));
         }
         out.push(line);
     }
@@ -449,7 +445,7 @@ fn render_shell(tool: &ToolInfo, args: &Json, width: usize, limit: Option<usize>
     let mut out = crate::wrap::wrap_line(
         &Line::from(vec![
             Span::styled("› shell", Style::default().fg(FG).add_modifier(Modifier::BOLD)),
-            Span::styled(format!(" · {status}"), Style::default().fg(MUTED)),
+            Span::styled(format!(" · {status}"), secondary()),
         ]),
         width,
     );
@@ -467,10 +463,10 @@ fn render_shell(tool: &ToolInfo, args: &Json, width: usize, limit: Option<usize>
         out.push(line);
     }
     if limit != Some(4) {
-        out.extend(markdown::plain("  Arguments", width, Style::default().fg(MUTED)));
+        out.extend(markdown::plain("  Arguments", width, secondary()));
         let detail = serde_json::to_string_pretty(args).unwrap_or_else(|_| tool.arguments.clone());
         let detail = if args.is_null() { tool.arguments.as_str() } else { &detail };
-        let mut rows = markdown::plain(detail, inner, Style::default().fg(GREY));
+        let mut rows = markdown::plain(detail, inner, secondary());
         if let Some(limit) = limit {
             shorten(&mut rows, limit, inner);
         }
@@ -499,7 +495,7 @@ fn render_shell(tool: &ToolInfo, args: &Json, width: usize, limit: Option<usize>
         }
         for mut line in rows {
             if indent > 0 {
-                line.spans.insert(0, Span::styled("  │ ", Style::default().fg(MUTED)));
+                line.spans.insert(0, Span::styled("  │ ", secondary()));
             }
             out.push(line);
         }
@@ -515,6 +511,6 @@ fn shorten(lines: &mut Vec<Line<'static>>, limit: usize, width: usize) {
     let tail = lines.split_off(lines.len() - limit / 2);
     lines.truncate(limit - limit / 2);
     let hint = if limit > 4 { "/sessions for full output" } else { "Ctrl+O details" };
-    lines.extend(markdown::plain(&format!("… {omitted} more lines · {hint}"), width, Style::default().fg(GREY)));
+    lines.extend(markdown::plain(&format!("… {omitted} more lines · {hint}"), width, secondary()));
     lines.extend(tail);
 }

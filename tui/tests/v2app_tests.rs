@@ -485,15 +485,19 @@ fn visual_chrome_uses_quiet_roles_and_a_text_selection_marker() {
     assert_eq!(corner.bg, teamagents_tui::theme::BG);
     let title = buffer[(geo.composer.x + 1, geo.composer.y)].clone();
     assert_eq!(title.fg, teamagents_tui::theme::GREY);
+    assert!(title.modifier.contains(ratatui::style::Modifier::DIM));
     let prompt = buffer[(geo.composer.x + 1, geo.composer.y + 1)].clone();
     assert_eq!(prompt.symbol(), "❯");
     assert_eq!(prompt.fg, teamagents_tui::theme::USER);
     let placeholder = buffer[(geo.composer.x + 3, geo.composer.y + 1)].clone();
     assert_eq!(placeholder.fg, teamagents_tui::theme::GREY);
+    assert!(placeholder.modifier.contains(ratatui::style::Modifier::DIM));
     let selected = buffer[(geo.approvals.x + 1, geo.approvals.y + 1)].clone();
     assert_eq!(selected.symbol(), "▶");
-    assert_eq!(selected.fg, teamagents_tui::theme::ACCENT);
-    assert!(selected.modifier.contains(ratatui::style::Modifier::BOLD));
+    assert_eq!(selected.fg, ratatui::style::Color::Reset);
+    assert_eq!(selected.bg, ratatui::style::Color::Reset);
+    assert!(selected.modifier.contains(ratatui::style::Modifier::BOLD | ratatui::style::Modifier::REVERSED));
+    assert!(!selected.modifier.contains(ratatui::style::Modifier::DIM));
     assert!(!selected.modifier.contains(ratatui::style::Modifier::UNDERLINED));
 }
 

@@ -97,7 +97,7 @@ impl Writer {
         for (i, mut row) in rows.into_iter().enumerate() {
             let prefix = if i == 0 { &first } else { &rest };
             let prefix: String = prefix.chars().take(prefix_width).collect();
-            row.spans.insert(0, Span::styled(prefix, Style::default().fg(GREY)));
+            row.spans.insert(0, Span::styled(prefix, secondary()));
             self.out.push(row);
         }
         for indent in &mut self.indents {
@@ -171,7 +171,7 @@ pub fn render_media(text: &str, width: usize, mut graphics: Option<&mut Graphics
             }
             Event::Start(Tag::Heading { level, .. }) => {
                 w.blank();
-                let mut style = Style::default().fg(CODEX).add_modifier(Modifier::BOLD);
+                let mut style = Style::default().fg(FG).add_modifier(Modifier::BOLD);
                 if level == HeadingLevel::H1 {
                     style = style.add_modifier(Modifier::UNDERLINED);
                 }
@@ -279,10 +279,8 @@ pub fn render_media(text: &str, width: usize, mut graphics: Option<&mut Graphics
                     doc.offset(w.out.len(), indent);
                     media.extend(doc.media);
                     for mut line in doc.lines {
-                        line.spans.insert(
-                            0,
-                            Span::styled(prefix.chars().take(indent).collect::<String>(), Style::default().fg(GREY)),
-                        );
+                        line.spans
+                            .insert(0, Span::styled(prefix.chars().take(indent).collect::<String>(), secondary()));
                         w.out.push(line);
                     }
                 } else {
@@ -357,10 +355,7 @@ pub fn render_media(text: &str, width: usize, mut graphics: Option<&mut Graphics
                 let prefix: String = w.indents.iter().map(|p| p.rest.as_str()).collect();
                 let indent = unicode_width::UnicodeWidthStr::width(prefix.as_str()).min(width.saturating_sub(1));
                 for mut line in table(rows, width - indent) {
-                    line.spans.insert(
-                        0,
-                        Span::styled(prefix.chars().take(indent).collect::<String>(), Style::default().fg(GREY)),
-                    );
+                    line.spans.insert(0, Span::styled(prefix.chars().take(indent).collect::<String>(), secondary()));
                     w.out.push(line);
                 }
                 for source in table_images {
@@ -440,7 +435,7 @@ fn table(rows: Vec<Vec<Line<'static>>>, width: usize) -> Vec<Line<'static>> {
             let mut line = Line::default();
             for (i, cell) in cells.iter().enumerate() {
                 if i > 0 {
-                    line.spans.push(Span::styled(" │ ", Style::default().fg(GREY)));
+                    line.spans.push(Span::styled(" │ ", secondary()));
                 }
                 let part = cell.get(j).cloned().unwrap_or_default();
                 let padding = widths[i].saturating_sub(part.width());
@@ -455,10 +450,7 @@ fn table(rows: Vec<Vec<Line<'static>>>, width: usize) -> Vec<Line<'static>> {
             out.push(line);
         }
         if r == 0 {
-            out.push(Line::styled(
-                widths.iter().map(|n| "─".repeat(*n)).collect::<Vec<_>>().join("─┼─"),
-                Style::default().fg(GREY),
-            ));
+            out.push(Line::styled(widths.iter().map(|n| "─".repeat(*n)).collect::<Vec<_>>().join("─┼─"), secondary()));
         }
     }
     out

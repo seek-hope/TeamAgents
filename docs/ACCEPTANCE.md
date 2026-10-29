@@ -1,7 +1,7 @@
 # Acceptance matrix (A01–A36)
 
 Baseline: [the design and acceptance baseline](DESIGN.md) §12/§16. Current source inspection and local
-regression baseline: **2026-10-29, D-489**.
+regression baseline: **2026-10-29, D-490**.
 This is not a new independent acceptance audit or real-model run.
 The D-451 product/installation receipts and the D-452 independent audit retain their original source/date
 boundaries; later source changes do not inherit those results.
@@ -9,7 +9,7 @@ boundaries; later source changes do not inherit those results.
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 174 / engine 437 / tui 102 test targets).
+`make check` is green (core 174 / engine 437 / tui 103 test targets).
 `make pty` passed on 2026-10-29: the terminal-profile matrix (xterm-256color, screen-256color, tmux-256color, xterm-kitty and Kitty under tmux) plus both forced graphics protocols, all rc 0 and
 credential-free. PTY checks cover protocol bytes, input ownership, resize and cleanup, not a complete
 actual graphical-terminal or OS matrix. These gates do not renew real-provider, OAuth, formal-proof or
@@ -488,6 +488,20 @@ can interrupt legitimate repetition. Projection bounds (32 KiB checkpoint, recen
 promise a fit in every native model window; overflow still requires explicit recovery. Local stop observation
 does not prove remote effects, escaped descendants or undeclared/shared paths quiescent. Reviewer usage
 accounting remains a separate gap. Source, installed binaries and the older published archive are distinct.
+
+## Codex CLI palette (D-490)
+
+The TUI palette regression asserts terminal-default prose/input, neutral bold headings, the literal Codex
+blue accent, ANSI identity/outcome colors and the submitted-prompt surface. Existing approval, session and
+queue frame tests assert inverse bold selection without inherited dim; the session footer additionally
+checks bright key labels beside dim descriptions. The shared syntax-rendering test checks Codex's default
+dark syntax green while preserving source and streaming/history parity. Both the old global foreground and
+a dim-inheritance defect were reproduced by failing assertions before their fixes.
+
+The 103-test TUI suite and the repository/PTY gates above cover the final source. Scripted previews were
+rendered with both dark and light terminal-default samples; they do not claim automatic palette detection,
+adaptive light syntax, universal ANSI contrast or measured usability. No layout, input, daemon or execution
+contract changed. Reference pins and the additional inspected source hashes remain in the D-489 study.
 
 ## Grok-informed conversation TUI (D-489)
 

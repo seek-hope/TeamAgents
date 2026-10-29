@@ -133,6 +133,10 @@ fn grammars_preserve_source_and_color_tokens_in_the_shared_renderer() {
         let colors: HashSet<_> =
             body(&lines).into_iter().filter(|s| !s.content.trim().is_empty()).map(|s| s.style.fg).collect();
         assert!(colors.len() >= 2, "no token colors for {lang}: {colors:?}");
+        if lang == "rust" {
+            // Codex's default dark syntax theme: Catppuccin Mocha string green.
+            assert!(colors.contains(&Some(ratatui::style::Color::Rgb(166, 227, 161))), "{colors:?}");
+        }
         let shown = lines
             .iter()
             .filter_map(|l| {

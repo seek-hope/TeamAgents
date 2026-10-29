@@ -1,36 +1,52 @@
-//! Catppuccin Mocha colors mapped to semantic roles, with the terminal
-//! background preserved. Success/additions are green, errors are red,
-//! and the agent marker is mauve.
+//! Codex CLI's terminal-owned prose and semantic palette, adapted to the existing layout.
+//! Reference: openai/codex 79be2e20, tui/styles.md and tui/src/style.rs.
+//! No terminal color query is issued: use its unknown-background fallbacks for surfaces
+//! and selection rather than guessing the user's foreground or background.
+//! ponytail: optional startup palette sampling can later enable Codex's adaptive fills
+//! and contrast correction; never read terminal input from the rendering path.
 
-use ratatui::style::Color;
+use ratatui::style::{Color, Modifier, Style};
 
-/// `text` — primary prose.
-pub const FG: Color = Color::Rgb(0xcd, 0xd6, 0xf4);
-/// `subtext0` — secondary labels, readable on the terminal's own background.
-pub const GREY: Color = Color::Rgb(0xa6, 0xad, 0xc8);
-/// `overlay1` — quiet chrome and hints.
-pub const MUTED: Color = Color::Rgb(0x7f, 0x84, 0x9c);
-/// The terminal's own background: no surface is painted.
+/// Primary prose and unpainted surfaces belong to the terminal theme.
+pub const FG: Color = Color::Reset;
 pub const BG: Color = Color::Reset;
 pub const PANEL_BG: Color = Color::Reset;
 pub const CHIP_BG: Color = Color::Reset;
-/// `surface1` — quiet panel outlines.
-pub const BORDER: Color = Color::Rgb(0x45, 0x47, 0x5a);
-/// `blue` — active controls, selection and links.
-pub const ACCENT: Color = Color::Rgb(0x89, 0xb4, 0xfa);
-/// `mauve` — Codex's own colour: brand, agent labels, headings.
-pub const CODEX: Color = Color::Rgb(0xcb, 0xa6, 0xf7);
-/// `teal` — user input and code.
-pub const USER: Color = Color::Rgb(0x94, 0xe2, 0xd5);
-/// `surface0` — elevated user-prompt band, adapted from Grok Build's fullscreen prompt surface.
-pub const USER_BG: Color = Color::Rgb(0x24, 0x27, 0x30);
-pub const CODE: Color = Color::Rgb(0x94, 0xe2, 0xd5);
-/// `green` — success and additions.
-pub const ADDED: Color = Color::Rgb(0xa6, 0xe3, 0xa1);
-/// `subtext1` — tool output and notices.
-pub const NOTICE: Color = Color::Rgb(0xba, 0xc2, 0xde);
-/// `red` — failures and deletions.
-pub const ERROR: Color = Color::Rgb(0xf3, 0x8b, 0xa8);
-/// `yellow` — pending approvals.
-pub const WARNING: Color = Color::Rgb(0xf9, 0xe2, 0xaf);
-pub const SUCCESS: Color = Color::Rgb(0xa6, 0xe3, 0xa1);
+pub const GREY: Color = Color::Reset;
+pub const MUTED: Color = Color::Reset;
+pub const BORDER: Color = Color::Reset;
+/// Codex's ChatGPT Blue 200 accent, not the old global Catppuccin blue.
+pub const ACCENT: Color = Color::Rgb(99, 168, 248);
+/// ANSI magenta identifies the application and assistant, not all Markdown headings.
+pub const CODEX: Color = Color::Magenta;
+pub const USER: Color = Color::Reset;
+/// Codex's submitted-prompt fallback when terminal background sampling is unavailable.
+pub const USER_BG: Color = Color::DarkGray;
+/// An explicit foreground is needed on this painted ANSI surface, even on light terminals.
+pub const USER_FG: Color = Color::White;
+pub const CODE: Color = ACCENT;
+pub const ADDED: Color = Color::Green;
+pub const NOTICE: Color = Color::Reset;
+pub const ERROR: Color = Color::Red;
+/// Codex avoids yellow attention text without a known dark terminal background.
+pub const WARNING: Color = Color::Reset;
+pub const SUCCESS: Color = Color::Green;
+
+/// Dim terminal-default text instead of a fixed dark-theme grey.
+pub fn secondary() -> Style {
+    Style::default().fg(GREY).add_modifier(Modifier::DIM)
+}
+
+/// With no sampled palette, Codex selects using inverse terminal colors and bold.
+pub(crate) fn selected() -> Style {
+    Style::default().fg(FG).bg(BG).add_modifier(Modifier::BOLD | Modifier::REVERSED).remove_modifier(Modifier::DIM)
+}
+
+/// Focus stays visible without a hard-coded border grey or a layout change.
+pub(crate) fn border(focused: bool) -> Style {
+    if focused {
+        Style::default().fg(ACCENT)
+    } else {
+        secondary().fg(BORDER)
+    }
+}

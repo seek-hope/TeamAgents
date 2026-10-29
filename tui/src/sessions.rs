@@ -617,9 +617,11 @@ pub fn render(
         .flat_map(|line| crate::wrap::wrap_line(&crate::v2ui::hint_line(line), chunks[3].width as usize))
         .collect::<Vec<_>>();
     frame.render_widget(
-        Paragraph::new(footer_lines).style(
-            Style::default().fg(if browser.error.is_some() || browser.confirmation.is_some() { NOTICE } else { GREY }),
-        ),
+        Paragraph::new(footer_lines).style(if browser.error.is_some() || browser.confirmation.is_some() {
+            Style::default().fg(NOTICE)
+        } else {
+            secondary()
+        }),
         chunks[3],
     );
     pictures

@@ -29,7 +29,7 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Acceptance checks | `exec --check` and goal `[[checks]]` run on the host through the same shell implementation | D-471, D-480 |
 | PTY verification | `make pty` runs a terminal-profile matrix in isolated ptys (xterm-256color, screen-256color, tmux-256color, xterm-kitty, Kitty under tmux) with auto graphics-mode assertions, plus forced blocks/kitty protocol bounds | D-472 |
 | TUI keys | Ctrl+Q quits, Ctrl+P opens pending inputs, Ctrl+M opens the Leader's model/effort menu (`/quit`, `/model`); the profile applies at the next turn | D-473 |
-| TUI presentation | one Leader conversation based on Grok Build's single-agent layout: elevated user prompts, grouped tools, quiet model chrome and conditional live activity; Codex supplies secondary text/selection cues; no herdr-style split terminal | D-489 (extends D-485/D-481) |
+| TUI presentation | Grok Build's single-conversation layout with Codex CLI colors: terminal-default prose, dim chrome, blue accents, ANSI semantic colors and inverse selection; elevated prompts, grouped tools and conditional activity remain; no split terminal | D-489, D-490 (supersedes D-481 colors) |
 | Default effort | the generated `leader_main` profile defaults to `reasoning_effort = "high"`; existing configs keep their value and a running daemon keeps its boot catalog | D-474 |
 | Reasoning effort menu | each model may declare `efforts`; the default is minimal/low/medium/high/xhigh/max; a model that lacks the current level falls back to the nearest declared level at or below it, and the CLI keeps an explicit override | D-476 |
 | Capability delegation | user remains the authority root; spawned instances still hold no shell by default; a user grant may be marked `delegable`, and only such a parent may produce attenuated, task-scoped, non-delegable child grants; missing capabilities become a visible pending approval, not a silent idle | D-455 |
@@ -38,6 +38,23 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Prompt cache | cache hit/miss/write are provider-reported and visible; the L1 frontier is fixed between compactions; Anthropic gets explicit breakpoints and OpenAI a stable key; DeepSeek stays automatic | D-459 |
 | Command idempotency | a replay with the same `command_id` returns the stored receipt for control-plane state, and the authoritative check runs under the write lock (D-463); result bodies are shared by content digest and zstd-compressed (D-464), while the receipt **rows** remain one per command | D-463, D-464 |
 | Model actions and code windows | a deciding read shares the write's transaction, or the guard is a predicate on the write itself; `verification/REPORT.md` §6 lists the protocol transitions and the three engine windows that span two transactions with their predicates | D-465 |
+
+## D-490 Apply Codex CLI colors (2026-10-29)
+
+The user requested Codex CLI's color scheme on the existing TUI. The reference remains openai/codex
+`79be2e201fb61e105178a62c8d8d77fa5ed6ad93`: its style guide, shared styles, selection fallback and default
+syntax theme. This supersedes the global Catppuccin chrome, not D-489's layout or interaction contracts.
+
+Prose, input and Markdown headings use the terminal foreground; secondary text and inactive borders are dim.
+Active controls, links and inline code use ChatGPT Blue 200 (`#63A8F8`); application/assistant identity uses
+ANSI magenta, successes/additions green and errors/deletions red. Selection uses bold inverse terminal colors
+with dim cleared. Submitted prompts use Codex's dark-grey fallback with explicit white text on that painted
+surface. Attention stays neutral and explicit rather than assuming yellow is readable. Fenced syntax uses
+Codex's default dark Catppuccin Mocha theme instead of Base16 Ocean Dark.
+
+This is a local palette adaptation, not an import of Codex's terminal probing, adaptive light/dark fills,
+contrast solver or custom theme configuration. No new terminal input reader, dependency or runtime behavior
+is added. Layout, focus, attachment submission, approvals and daemon contracts remain unchanged.
 
 ## D-489 Adapt Grok Build's conversation TUI (2026-10-29)
 

@@ -126,9 +126,19 @@ fn session_page_uses_shared_rounded_chrome_and_selection() {
     assert_eq!(corner.fg, teamagents_tui::theme::BORDER);
     let selected = buffer[(1, 2)].clone();
     assert_eq!(selected.symbol(), ">");
-    assert_eq!(selected.fg, teamagents_tui::theme::ACCENT);
-    assert!(selected.modifier.contains(ratatui::style::Modifier::BOLD));
+    assert_eq!(selected.fg, ratatui::style::Color::Reset);
+    assert!(selected.modifier.contains(ratatui::style::Modifier::BOLD | ratatui::style::Modifier::REVERSED));
+    assert!(!selected.modifier.contains(ratatui::style::Modifier::DIM));
     assert!(!selected.modifier.contains(ratatui::style::Modifier::UNDERLINED));
+    let footer = buffer
+        .content
+        .chunks(80)
+        .find(|row| row.iter().take(5).map(|cell| cell.symbol()).collect::<String>() == "Enter")
+        .expect("session footer shortcut");
+    assert_eq!(footer[0].fg, teamagents_tui::theme::ACCENT);
+    assert!(footer[0].modifier.contains(ratatui::style::Modifier::BOLD));
+    assert!(!footer[0].modifier.contains(ratatui::style::Modifier::DIM));
+    assert!(footer[6].modifier.contains(ratatui::style::Modifier::DIM));
 }
 
 #[test]
