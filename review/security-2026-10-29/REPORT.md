@@ -1,6 +1,6 @@
 # Source, dependency and robustness review (D-492)
 
-Date: 2026-10-29. Starting source: `3d8e9e70`. Scope: user-authorized cleanup of stale documents and dead code,
+Date: 2026-10-29. Starting source: `3d8e9e70`; reviewed result: `2cf5f47a`. Scope: user-authorized cleanup of stale documents and dead code,
 plus concrete security and robustness fixes. This is a targeted source review with reproducible local probes,
 not a new independent security audit or a proof that all remaining code is safe.
 
@@ -84,6 +84,12 @@ as expected: planted-link handling, credential format/size, redirect/response bo
 The same four pass on the fixed source. Logs are `/tmp/ta-d492-before-probe2.log` and
 `/tmp/ta-d492-mcp-auth2.log`; the first failed probe assembly is not counted as evidence.
 
-Repository-wide final gates are recorded in ACCEPTANCE only after they run. Local tests and the advisory scan
-do not prove semantic correctness of every unsafe block, protection from same-user host processes, complete
-coverage of all external inputs, or future absence of newly published advisories.
+The final repository gate passed with core 174 / engine 444 / TUI 103 (721 tests), and the complete terminal
+matrix passed. Release-mode installed smoke also passed init preservation, idle schema-7 startup with zero
+model calls, clean shutdown and both graphics modes. Install receipt: `/tmp/ta-d492-install.json`; private
+backup: `/tmp/ta-d492-backup-wxh4ffdz`. The running user daemon was not restarted because its goal is ACTIVE,
+so its old engine inode remains until a later normal restart; this is not claimed as a live-process upgrade.
+
+Local tests and the advisory scan do not prove semantic correctness of every unsafe block, protection from
+same-user host processes, complete coverage of all external inputs, or future absence of newly published
+advisories.

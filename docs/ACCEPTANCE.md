@@ -506,6 +506,13 @@ structs, two unreachable execution helpers, an empty root SQLite artifact and th
 document are removed. Runtime schemas, grants, control transactions, recovery and frozen evidence are
 unchanged. This is targeted source review, not a new independent security audit or proof of complete safety.
 
+Release builds from `2cf5f47a` passed. Installed engine SHA-256 is
+`c00d1ecf85b0376f6edff7ece8eb5ffb02ab46c00f32e67a981dd366bfd3585d`; installed TUI SHA-256 is
+`6dd42efb6b799251e71fc24cfde30c639da463162987f97e7ceaa4727e772056`. Previous binaries and a read-only
+session backup are under `/tmp/ta-d492-backup-wxh4ffdz`; the receipt is `/tmp/ta-d492-install.json`. Isolated
+installed smoke passed init preservation, idle schema-7 startup with zero model calls, clean shutdown and
+TUI/blocks/Kitty checks. The existing user daemon was not restarted because its goal is ACTIVE.
+
 ## Newline and session shortcuts (D-491)
 
 The existing input/frame tests cover Shift+Enter in both editors, no Ctrl+J edit, explicit Enter submission,

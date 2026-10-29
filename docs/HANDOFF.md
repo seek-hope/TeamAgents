@@ -1,10 +1,12 @@
 # Development handoff
 
-Updated **2026-10-29**. **D-492** cleans stale code/documents and fixes dependency, credential, transport and
-download robustness. D-491 adjusts newline/session shortcuts, D-490 applies Codex CLI colors and D-487 remains
+Updated **2026-10-29**. **D-492**, source baseline `2cf5f47a`, cleans stale code/documents and fixes
+dependency, credential, transport and download robustness. D-491 adjusts newline/session shortcuts, D-490 applies Codex CLI colors and D-487 remains
 the control/data baseline. Use [ACCEPTANCE.md](ACCEPTANCE.md) for gate evidence and
 [DECISIONS.md](DECISIONS.md) for the confirmed contract. Recheck Git status before relying on this snapshot.
-The public v0.2.0 archive is an older baseline.
+Both installed binaries were atomically replaced from that source after private backups and isolated smoke.
+The existing user daemon was not restarted because it carries an ACTIVE goal; it keeps the old engine inode
+until a later normal restart. The public v0.2.0 archive is an older baseline.
 
 ## Start here
 
