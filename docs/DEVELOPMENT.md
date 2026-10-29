@@ -17,6 +17,21 @@ this guide; do not patch generated tables to describe behavior the code does not
 [RUST-SANDBOX.md](RUST-SANDBOX.md) is a retired design note kept for cited historical evidence. It does not
 describe current execution or authorize reintroducing a backend.
 
+## Maintaining the visual architecture
+
+The READMEs provide five parallel overview diagrams; [ARCHITECTURE.md](ARCHITECTURE.md) carries the detailed
+implementation map. When changing behavior, update the affected states, guards, transaction boundaries and
+source links there as well as the normative design/decision records. Preserve the distinction between a
+requirement, a model abstraction and a currently implemented path.
+
+Use standard Mermaid flowchart, sequence, state and ER syntax with `accTitle` and `accDescr`, short node
+labels, quoted prose and nearby text explaining guards. Keep the two README diagrams structurally parallel.
+Validate changed fences with an actual Mermaid renderer in light and dark themes and inspect their layout.
+For example, with Mermaid CLI installed, run `mmdc -i docs/ARCHITECTURE.md -o /tmp/teamagents-architecture.md
+-t default` and repeat with `-t dark` and a different output name. Keep generated previews outside the source
+tree. The D-488 diagrams were checked with Mermaid CLI 12.0.0; GitHub selects its own renderer version.
+Repository hygiene checks links, inventory and bilingual structure but do not themselves render Mermaid.
+
 ## Environment and the single entry point
 
 Work from the repository root. `rust-toolchain.toml` pins Rust, Clippy and rustfmt for local development and

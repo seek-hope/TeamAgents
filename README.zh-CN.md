@@ -1,5 +1,8 @@
 # TeamAgents
 
+[English README](README.md) · [安装](#install) · [快速开始](#quick-start) ·
+[完整架构图集](docs/ARCHITECTURE.md)
+
 TeamAgents 是运行在 Linux 终端里的 coding agent。你只向 Leader 提出目标，由它决定独立完成任务，还是
 创建工作实例并分派部分工作。关闭 TUI 后，daemon 会继续维护会话；每个会话的权威状态都保存在一个
 SQLite 数据库中。
@@ -7,15 +10,174 @@ SQLite 数据库中。
 在服从你的指令、满足你的意图的前提下，鼓励模型自由探索、独立判断，充分完善和验证结果。已接纳的目标
 跨模型回合、上下文压缩和重启持续存在；汇报进度不等于结束工作，常规选择也不需要反复请你确认。
 
-- TUI 和 `teamagents exec` 连接同一个 daemon，断线后从上次的事件位置继续读取。
+- TUI 和 `teamagents exec` 共用 daemon，通过快照与事件位置恢复连接。
 - 任务、授权、预算、审批、回执和事件一起持久化。恢复时复用已确认的结果；无法确认的外部结果记为未知，
   不会靠猜测重复执行副作用。
 - 不同实例可以使用不同模型、工具和工作区。控制平面在派发时重新检查授权，包括授权撤销前已排队的任务。
+
+## 五张图理解设计
+
+这五张图说明产品结构和执行机制。[完整架构图集](docs/ARCHITECTURE.md)进一步给出各子系统的编号图、
+持久化键、状态转换条件、协议报文和异常恢复路径。结合图集及其源码链接，可以逐层实现相同的行为。
+
+### 1. 一个完整目标，按需组成团队
+
+**goal** 承载整项已接纳的用户请求、验收要求和共享预算。**task** 是其中一次委派。
+**instance** 是保留私有上下文、可重复使用的工作实例；Leader 是具有管理权限的实例，使用同一套模型执行核心。
+一次模型回合结束或一条进度消息，都不等于 goal 完成。
+
+```mermaid
+flowchart TB
+    accTitle: 从用户请求到经过验证的结果
+    accDescr: Leader 可以独立工作，也可以在同一持久目标下委派任务。结果必须整合并通过检查，提问、阻塞和修复均有明确路径。
+    user["用户请求<br/>与后续补充"] --> goal["持久 goal<br/>要求与共享预算"]
+    goal --> leader["Leader<br/>规划并行动"]
+    subgraph execution["同一个 goal 下的工作"]
+        own["Leader<br/>自己调用工具"]
+        members["按需委派给成员"]
+        evidence["文件、消息<br/>与执行回执"]
+        own --> evidence
+        members --> evidence
+    end
+    leader --> own
+    leader -->|"spawn / delegate"| members
+    leader -->|"必要问题或阻塞"| attention["需要用户回答 / BLOCKED"]
+    evidence --> reconcile["整合最新输入<br/>与剩余工作"]
+    reconcile --> checks{"完成条件与<br/>检查通过？"}
+    checks -->|"是"| result["结算 goal<br/>并交付结果"]
+    checks -->|"有界修复"| leader
+    checks -->|"无法继续"| attention
+```
+
+[goal、task 与 work 状态](docs/ARCHITECTURE.md#3-state-machines) ·
+[完成判定与证据](docs/ARCHITECTURE.md#7-budget-and-completion)
+
+### 2. 客户端、运行时与权威状态
+
+每个会话状态根拥有自己的 daemon、协调器锁和 SQLite 数据库。TUI 与 headless 客户端共用这一运行时。
+实例是其中的逻辑角色，不会各自拥有一个进程或数据库。
+
+```mermaid
+flowchart TB
+    accTitle: 运行时与进程边界
+    accDescr: 客户端连接 daemon，由它管理实例执行和单写入器。模型及宿主工具在数据库事务外运行；独立 Shell runner 持久保存执行回执。
+    clients["TUI / CLI / exec"] <-->|"Unix socket：JSON 行协议"| api["Daemon API"]
+    subgraph daemon["每个会话状态根一个 daemon"]
+        api --> supervisor["Supervisor<br/>有界调度"]
+        supervisor --> drivers["Leader 与成员<br/>driver"]
+        drivers <--> kernel["共享的无 I/O<br/>kernel"]
+        api --> writer["有界存储<br/>工作队列"]
+        drivers --> writer
+        writer --> control["Control::submit<br/>校验并提交"]
+    end
+    control --> db[("SQLite<br/>状态、授权<br/>用量与事件")]
+    drivers <-->|"事务外调用"| providers["模型服务"]
+    drivers <-->|"已授权调用"| tools["文件 / web / MCP"]
+    drivers <-->|"稳定的 job 身份"| runners["宿主 Shell runner"]
+    runners --> journals[("持久 job 日志")]
+    drivers --> artifacts[("不可变产物")]
+```
+
+关闭客户端后 daemon 继续运行；已提交执行的 job 可以跨 daemon 重启存活。kernel 构造请求和解释响应，
+控制平面管理权威状态，engine 执行 I/O，TUI 负责展示。当前数据库 schema 为 7，socket 协议为 1，工作策略为 1。
+
+[部署与启动](docs/ARCHITECTURE.md#1-deployment-and-ownership) ·
+[数据关系与事务](docs/ARCHITECTURE.md#2-durable-data)
+
+### 3. 持久循环与明确的停止条件
+
+执行阶段记录实例运行到了**哪里**；生命周期与工作状态决定它**能否、为何继续**。
+实例暂停、task 阻塞与操作结果未知，是三种不同的事实。
+
+```mermaid
+stateDiagram-v2
+    accTitle: 持久化的实例执行循环
+    accDescr: 请求准备、模型响应导入、工具回执、等待和完成检查各有独立的持久化位置。处于 READY 并不自动允许发起下一次请求。
+    [*] --> READY
+    READY --> MODEL_PENDING: 当前输入或持久续跑理由
+    MODEL_PENDING --> TOOLS_PENDING: 完整响应包含工具意图
+    TOOLS_PENDING --> READY: 回执只消费一次
+    MODEL_PENDING --> WAITING: 登记事件条件
+    WAITING --> READY: 等待满足或被新事件取代
+    MODEL_PENDING --> COMPLETION_PENDING: 提交完成声明
+    COMPLETION_PENDING --> COMPLETION_PENDING: 执行并消费必要检查
+    COMPLETION_PENDING --> READY: 结算或反馈修复
+    MODEL_PENDING --> READY: 普通回复或工作检查点
+```
+
+纳入新调度的工作会在进度回复后继续；空回复和重复行为只能进行有界恢复。必要问题等待用户回答，明确的用户
+停止不会被迟到结果或重启撤销。终态工作之后，纯信息回答不建立新 goal；需要行动的新工作通过内部准入建立目标，
+保留原始输入、策略和费用。升级旧会话不会静默启用新调度或重启旧工作。
+
+[上下文构造与新工作准入](docs/ARCHITECTURE.md#4-model-and-context-loop) ·
+[各类状态机](docs/ARCHITECTURE.md#3-state-machines)
+
+### 4. 协作沿着授权发生
+
+```mermaid
+flowchart TB
+    accTitle: 用户授权与团队协作
+    accDescr: 用户授权 Leader，并可允许从父授权派生范围更小的任务授权。私有上下文独立，协作通过已授权消息、共享资源和任务回传路径完成。
+    user["用户：授权根"] --> grants["有明确范围的能力授权"]
+    grants --> leader["Leader：manage / delegate / message"]
+    grants --> parent["用户明确允许委派的父授权"]
+    leader --> task["task<br/>专用结果回传路径"]
+    parent --> child["任务授权<br/>范围缩小<br/>不可再委派"]
+    child --> member["保留私有上下文的成员"]
+    task --> member
+    member -->|"task result"| leader
+    leader <-->|"已授权消息 / 共享资源"| member
+    claims["提示词、Skill 与工具输出"] -.->|"仅提供信息"| member
+```
+
+工作实例没有默认 Shell 权限；缺少权限时产生用户可处理的能力请求。撤销父授权会撤销子授权，派发时还会
+重新检查当前授权。任务结果回传不会附赠通用消息通道或其他成员的历史。普通已授权 Shell 和本地 MCP 在
+宿主执行，逻辑权限边界不是 OS 沙箱。自更新仍有单独审批。
+
+[委派、消息、等待与审批](docs/ARCHITECTURE.md#5-team-and-authority) ·
+[工具与工作区](docs/ARCHITECTURE.md#9-tools-and-resources)
+
+### 5. 恢复依靠证据
+
+```mermaid
+sequenceDiagram
+    accTitle: 副作用执行与崩溃恢复
+    accDescr: 稳定操作在 GO 之前完成授权，由唯一 runner 执行并写入持久回执。daemon 崩溃后重连同一个 job，导入回执而不是重复执行副作用。
+    participant Driver
+    participant DB as Control 与 SQLite
+    participant Runner
+    participant Journal as 持久日志
+    Driver->>DB: 保存 PREPARED 意图
+    Driver->>Runner: 准备具有相同身份的 job
+    Runner-->>Driver: READY
+    Driver->>DB: 重查授权并提交派发
+    Driver->>Runner: 授权后发送 GO
+    Runner->>Journal: 保存接收与启动事实
+    Runner->>Runner: 执行宿主命令
+    Runner->>Journal: 发布终态回执
+    Note over Driver: daemon 可能在导入前重启
+    Driver->>Runner: 重连并核验同一个 job
+    Runner-->>Driver: 已知回执或明确的不确定性
+    Driver->>DB: 只导入和消费一次，<br/>或记录 OUTCOME_UNKNOWN
+```
+
+未知副作用不会被盲目重试。取消 task 不证明命令已停止；重叠工作区的接管需要另外记录的停止证据，或使用
+独立工作区。必要检查和当前工作范围内的证据约束成功结算，但命令全部退出成功不等于语义上的工作完整。
+
+[runner、取消与接管](docs/ARCHITECTURE.md#6-effects-and-recovery) ·
+[产物、分叉与历史保留](docs/ARCHITECTURE.md#10-storage-lifecycle)
+
+图集还覆盖[客户端协议与 TUI](docs/ARCHITECTURE.md#8-clients-and-presentation)，以及
+[复刻顺序和完整示例轨迹](docs/ARCHITECTURE.md#11-reimplementation-checkpoints)。工具层提供带版本校验的文件
+编辑、按成员持久化的 Shell、DeepSeek/Exa 搜索、DeepSeek 抓取、按需加载的 Skill，以及通过有界 QuickJS
+组合的 stdio/HTTP MCP。同一团队可以使用不同的模型原生协议与窗口。TUI 与已存历史共用 Markdown、代码和
+媒体渲染器；相应本地证据及限制见[成熟度报告](review/maturity-2026-10-11/REPORT.md)。
 
 ## 文档
 
 | 文档 | 内容 |
 |---|---|
+| [完整架构图集](docs/ARCHITECTURE.md) | 详细设计图、持久化结构、转换条件、恢复机制和复刻顺序 |
 | [使用指南](docs/USER-GUIDE.md) | 命令、配置、权限、Skills/MCP、恢复与清理 |
 | [日常编码能力与候选工作](docs/PRODUCT-COMPARISON.md) | 当前范围、证据边界和剩余候选工作 |
 | [验收对照表](docs/ACCEPTANCE.md) | A01–A36 的证据与已知缺口 |
@@ -29,41 +191,7 @@ SQLite 数据库中。
 初次使用请先看[安装指南](docs/INSTALL.md)。公开的 **v0.2.0** 安装包是较早的 Linux x86_64 基线；
 本文描述的是当前源码行为，请通过[源码构建](docs/INSTALL.md#build-and-install-from-source)使用。
 
-## 怎么工作
-
-```text
-你 ──目标──▶ Leader ──spawn / delegate──▶ 工作实例
-              │                            │
-              │                            ├── 共享文件、worktree 和消息
-              │                            └── 任务结果
-              ├── 能力请求和自更新审批 ──▶ 你
-              └── 必要检查通过后才能完成目标
-```
-
-Leader 也可以独立完成任务。需要组队时，实例之间通过控制平面协作，不建立绕过控制平面的私聊通道。
-TUI 只展示与 Leader 的对话；成员、任务、目标和会话管理由 CLI 提供。
-
-## 主要特性
-
-- **明确的委派权限**：会话启动时，Leader 获得会话范围的 `manage`、`delegate` 和 `message` 授权。
-  工作实例不会自动获得 Shell。你可以直接授权，也可以授予可委派的父授权，让 Leader 创建任务级子授权。
-  子授权不能扩大范围，也不能继续委派。
-- **灵活的工作区**：工作实例可以使用项目目录、私有目录或独立的 Git worktree。存在未提交或未合并
-  改动时，TeamAgents 不会删除 worktree。
-- **多种模型协议**：同一会话可以混用 Chat Completions、DeepSeek、Responses 和 Anthropic 配置。
-  每个配置分别指定模型、推理档位和原生上下文窗口。
-- **宿主执行**：Shell、验收命令和本地 MCP 使用宿主文件系统与网络，没有内置 OS 沙箱或逐命令网络策略。
-  文件工具仍检查工作区路径；获得授权的 Shell 则能访问宿主用户有权访问的内容。
-- **编码工具**：文件读取、搜索、写入和带版本检查的编辑；按成员保留状态的 Shell；DeepSeek/Exa 网页
-  搜索与 DeepSeek 抓取；Skills；stdio 和 streamable HTTP MCP。`codemode` 可在 QuickJS 中组合已绑定的 MCP 调用，
-  但不会向脚本开放直接文件或网络能力。
-- **完成检查**：目标成功结束前必须通过必要的 `[[checks]]`。独立的 `exec --check` 用于检查已完成
-  回合，并决定客户端退出码。
-- **恢复与保留**：runner 日志支持 daemon 重启后的结果恢复。失败或中断的工作按持久化事实分类。
-  历史保留和产物回收是独立策略，不等于通用的工作区回滚。
-- **终端界面**：支持 Markdown、代码语法高亮、图表、本地图片预览、附件、待处理输入编辑、会话搜索，
-  以及本地 Markdown/JSON 导出。固定源码对应的本地证据和限制见
-  [成熟度报告](review/maturity-2026-10-11/REPORT.md)。
+<a id="install"></a>
 
 ## 安装
 
@@ -100,6 +228,8 @@ export PATH="$HOME/.local/bin:$PATH"
 ```
 
 请使用 `rust-toolchain.toml` 指定的工具链。依赖已缓存时，可以加上 `--offline`。
+
+<a id="quick-start"></a>
 
 ## 快速开始
 
@@ -140,7 +270,7 @@ git diff | teamagents exec -
 事件流，不会停止底层任务。
 
 退出码：`0` 表示目标完成或直接回答，`1` 表示失败或未完成，`2` 表示用法或环境错误，`3` 表示操作
-等待批准，`124` 表示 `--timeout` 到期。
+等待批准或必要的用户回答，`124` 表示 `--timeout` 到期。
 
 `--check COMMAND` 在回合结束后运行，遇到第一条失败命令就停止。`--accept ID=COMMAND` 在提交输入前
 把必要检查附加到目标；检查失败时可以进入有界修复，而不只是改变退出码。token、截止时间和单次工具

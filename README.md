@@ -1,5 +1,8 @@
 # TeamAgents
 
+[Chinese README](README.zh-CN.md) · [Install](#install) · [Quick start](#quick-start) ·
+[Full architecture](docs/ARCHITECTURE.md)
+
 TeamAgents is a Linux terminal coding agent built around a Leader and optional worker instances. You describe
 the goal; the Leader decides whether to work alone or delegate parts of it. A daemon keeps the session running
 when you close the TUI, and each session stores its authoritative state in one SQLite database.
@@ -8,16 +11,181 @@ Within your instructions and intent, the agents are encouraged to explore, exerc
 thorough, verified work. Admitted goals persist across turns, compaction and restart; progress updates do not
 finish the work, and routine choices need no repeated confirmation.
 
-- The TUI and `teamagents exec` are clients of the same daemon and reconnect from the last event watermark.
+- The TUI and `teamagents exec` share a daemon, with snapshots and event watermarks for reconnect.
 - Tasks, grants, budgets, approvals, receipts and events are persisted together. Recovery reuses verified
   results and records unknown outcomes instead of repeating side effects on a guess.
 - Instances can use different models, tools and workspaces. The control plane checks grants when work is
   dispatched, including work that was queued before a grant was revoked.
 
+## Design in five views
+
+These five views explain the product and its execution model. The [full visual architecture](docs/ARCHITECTURE.md)
+expands them into numbered diagrams, persistent keys, transition guards, wire frames and recovery cases.
+Read that atlas alongside the linked source to implement the same behavior.
+
+### 1. One goal, an optional team
+
+A **goal** owns the whole admitted user request, its requirements and shared budget. A **task** is one delegated
+assignment. An **instance** is a reusable actor with private context; the Leader is an instance with management
+authority, not a different model engine. A turn or a progress message does not complete the goal.
+
+```mermaid
+flowchart TB
+    accTitle: From user request to verified result
+    accDescr: The Leader can work alone or delegate assignments under one persistent goal. Results are reconciled and checked before success; questions, blocked work and repair remain explicit.
+    user["User request and later steering"] --> goal["Persistent goal: requirements and shared budget"]
+    goal --> leader["Leader plans and acts"]
+    subgraph execution["Work under the same goal"]
+        own["Leader tools"]
+        members["Optional member tasks"]
+        evidence["Files, messages and execution receipts"]
+        own --> evidence
+        members --> evidence
+    end
+    leader --> own
+    leader -->|"spawn / delegate"| members
+    leader -->|"material question or blocker"| attention["Needs input / BLOCKED"]
+    evidence --> reconcile["Reconcile latest input and remaining work"]
+    reconcile --> checks{"Completion guards and checks pass?"}
+    checks -->|"yes"| result["Settle goal and report result"]
+    checks -->|"repair within bounds"| leader
+    checks -->|"cannot proceed"| attention
+```
+
+[Goal/task/work states](docs/ARCHITECTURE.md#3-state-machines) ·
+[Completion and evidence](docs/ARCHITECTURE.md#7-budget-and-completion)
+
+### 2. Clients, runtime and the source of truth
+
+Each session root has its own daemon, coordinator lock and SQLite database. TUI and headless clients share that
+runtime. Instances are logical actors inside it; they do not each own a process or a database.
+
+```mermaid
+flowchart TB
+    accTitle: Runtime and process boundaries
+    accDescr: Clients connect to a daemon that owns logical instance execution and a single database writer. Model services and host tools run outside database transactions; independent Shell runners preserve job receipts.
+    clients["TUI / CLI / exec"] <-->|"Unix socket: JSON lines"| api["Daemon API"]
+    subgraph daemon["One daemon per session root"]
+        api --> supervisor["Supervisor and bounded scheduling"]
+        supervisor --> drivers["Leader and member drivers"]
+        drivers <--> kernel["Shared I/O-free kernel"]
+        api --> writer["Bounded storage worker"]
+        drivers --> writer
+        writer --> control["Control::submit: validate and commit"]
+    end
+    control --> db[("SQLite: state, grants, usage and events")]
+    drivers <-->|"outside transactions"| providers["Model providers"]
+    drivers <-->|"authorized calls"| tools["Files / web / MCP"]
+    drivers <-->|"stable job identity"| runners["Host Shell runners"]
+    runners --> journals[("Durable job journals")]
+    drivers --> artifacts[("Immutable artifacts")]
+```
+
+Closing a client leaves the daemon running. A committed job can survive a daemon restart. The kernel prepares
+requests and interprets responses; the control plane owns authoritative state; the engine owns I/O; the TUI
+owns presentation. The current format is database schema 7, socket protocol 1 and work policy 1.
+
+[Deployment and bootstrap](docs/ARCHITECTURE.md#1-deployment-and-ownership) ·
+[Data relationships and transactions](docs/ARCHITECTURE.md#2-durable-data)
+
+### 3. A persistent loop with explicit stopping points
+
+Execution phase records **where** an instance is; lifecycle and work state decide **whether and why** it should
+continue. A paused instance, a blocked task and an unknown operation are different facts.
+
+```mermaid
+stateDiagram-v2
+    accTitle: Persisted instance execution loop
+    accDescr: Request preparation, model response import, tool receipts, waiting and completion checks have distinct persisted phases. READY alone does not authorize a new request.
+    [*] --> READY
+    READY --> MODEL_PENDING: Current input or durable<br/>continuation
+    MODEL_PENDING --> TOOLS_PENDING: Complete response with tool<br/>intents
+    TOOLS_PENDING --> READY: Consume receipts once
+    MODEL_PENDING --> WAITING: Register event conditions
+    WAITING --> READY: Resolve or supersede wait
+    MODEL_PENDING --> COMPLETION_PENDING: Completion claim
+    COMPLETION_PENDING --> COMPLETION_PENDING: Run and consume required<br/>checks
+    COMPLETION_PENDING --> READY: Settle or request repair
+    MODEL_PENDING --> READY: Reply or work checkpoint
+```
+
+Enrolled work continues after progress prose, with bounded recovery for empty or repeating behavior. Material
+questions wait for an answer; explicit user stops survive late results and restarts. After terminal work, an
+information-only answer creates no goal, while actionable work is admitted internally with its original input,
+policy and costs. Upgrading an old session does not silently enroll or restart it.
+
+[Context construction and admission](docs/ARCHITECTURE.md#4-model-and-context-loop) ·
+[All state dimensions](docs/ARCHITECTURE.md#3-state-machines)
+
+### 4. Collaboration follows authority
+
+```mermaid
+flowchart TB
+    accTitle: User authority and team collaboration
+    accDescr: User grants authorize the Leader and may allow attenuated task-scoped grants for members. Private context remains separate; granted messages, shared resources and task return paths carry collaboration.
+    user["User: authority root"] --> grants["Scoped capability grants"]
+    grants --> leader["Leader: manage / delegate / message"]
+    grants --> parent["Explicitly delegable parent grant"]
+    leader --> task["Task and narrow result-return path"]
+    parent --> child["Attenuated, non-delegable task grant"]
+    child --> member["Member with private context"]
+    task --> member
+    member -->|"task result"| leader
+    leader <-->|"granted messages / shared resources"| member
+    claims["Prompts, Skills and tool output"] -.->|"information only"| member
+```
+
+Workers have no ambient Shell. Missing authority produces a capability request for the user. Revoking a parent
+revokes its children, and dispatch checks current grants again. A task result does not grant general messaging
+or another member's history. Ordinary authorized Shell and local MCP run on the host; these logical boundaries
+are not an OS sandbox. Self-update retains its separate approval.
+
+[Delegation, messages, waits and approvals](docs/ARCHITECTURE.md#5-team-and-authority) ·
+[Tools and workspaces](docs/ARCHITECTURE.md#9-tools-and-resources)
+
+### 5. Recovery reuses evidence
+
+```mermaid
+sequenceDiagram
+    accTitle: Effect execution and crash recovery
+    accDescr: A stable operation is authorized before GO, executed by one runner and recorded in a durable receipt. After a daemon crash the replacement reconnects and imports the receipt instead of repeating the effect.
+    participant Driver
+    participant DB as Control and SQLite
+    participant Runner
+    participant Journal
+    Driver->>DB: Persist PREPARED intent
+    Driver->>Runner: Prepare the same job<br/>identity
+    Runner-->>Driver: READY
+    Driver->>DB: Recheck grants and commit<br/>dispatch
+    Driver->>Runner: GO once authorized
+    Runner->>Journal: Persist accepted/start<br/>facts
+    Runner->>Runner: Execute host command
+    Runner->>Journal: Publish terminal receipt
+    Note over Driver: Daemon may restart before<br/>import
+    Driver->>Runner: Reconnect and verify the<br/>same job
+    Runner-->>Driver: Known receipt or explicit<br/>uncertainty
+    Driver->>DB: Import/consume once, or<br/>record OUTCOME_UNKNOWN
+```
+
+Unknown effects are not blindly retried. Task cancellation does not prove that a command stopped; overlapping
+workspace takeover needs separate recorded stop evidence or an independent workspace. Required checks and
+current-scope evidence gate success, but green commands alone do not prove semantic completeness.
+
+[Runner, cancellation and takeover](docs/ARCHITECTURE.md#6-effects-and-recovery) ·
+[Artifacts, fork and retention](docs/ARCHITECTURE.md#10-storage-lifecycle)
+
+The atlas also covers the [client protocol and TUI](docs/ARCHITECTURE.md#8-clients-and-presentation) and a
+[reimplementation order with a concrete trace](docs/ARCHITECTURE.md#11-reimplementation-checkpoints).
+The tool layer includes revision-checked file edits, persistent member Shell, DeepSeek/Exa search, DeepSeek
+fetch, on-demand Skills and stdio/HTTP MCP composed through bounded QuickJS. Models can use different native
+protocols and windows in the same team. The TUI shares its Markdown/code/media renderer with saved history;
+local evidence and its limits are recorded in the [maturity report](review/maturity-2026-10-11/REPORT.md).
+
 ## Documentation
 
 | Document | Contents |
 |---|---|
+| [Visual architecture](docs/ARCHITECTURE.md) | Detailed diagrams, durable schemas, transition guards, recovery and reimplementation order |
 | [User guide](docs/USER-GUIDE.md) | Commands, configuration, permissions, Skills/MCP, recovery and cleanup |
 | [Daily coding readiness and candidates](docs/PRODUCT-COMPARISON.md) | Current scope, evidence limits and remaining candidate work |
 | [Acceptance](docs/ACCEPTANCE.md) | Evidence for A01–A36 and known gaps |
@@ -34,6 +202,7 @@ finish the work, and routine choices need no repeated confirmation.
 <!-- maps: docs/CAPABILITIES.md reader=evidence -->
 <!-- maps: docs/DECISIONS.md reader=evidence -->
 <!-- maps: docs/DESIGN.md reader=developer -->
+<!-- maps: docs/ARCHITECTURE.md reader=developer -->
 <!-- maps: docs/INSTALL.md reader=user -->
 <!-- maps: docs/PRODUCT-COMPARISON.md reader=user -->
 <!-- maps: docs/USER-GUIDE.md reader=user -->
@@ -41,45 +210,6 @@ finish the work, and routine choices need no repeated confirmation.
 New here? Start with the [install guide](docs/INSTALL.md). The published **v0.2.0** archive is an older
 Linux x86_64 baseline; use a [source build](docs/INSTALL.md#build-and-install-from-source) for the current
 behavior described here.
-
-## How it works
-
-```text
-you ──goal──▶ Leader ──spawn / delegate──▶ worker instances
-                │                               │
-                │                               ├── shared files, worktrees and messages
-                │                               └── task results
-                ├── capability requests and self-update approval ──▶ you
-                └── finish only after the required checks pass
-```
-
-The Leader can work alone. When it creates a team, collaboration goes through the control plane rather than
-private worker-to-worker channels. The TUI stays focused on the Leader; the CLI provides member, task, goal
-and session management.
-
-## Highlights
-
-- **Delegation with explicit authority**: the Leader receives session-level `manage`, `delegate` and `message`
-  grants at startup. Workers do not receive Shell automatically. You can grant it directly or issue a
-  delegable parent grant for task-scoped children. Children cannot widen or redelegate that authority.
-- **Shared or separate workspaces**: a worker can use the project directory, a private directory or its own
-  Git worktree. TeamAgents does not delete worktrees with uncommitted or unmerged work.
-- **Multiple model protocols**: Chat Completions, DeepSeek, Responses and Anthropic profiles can share a
-  session. Model, effort and native context window are configured per profile.
-- **Host execution**: Shell, acceptance commands and local MCP services use the host filesystem and network.
-  There is no built-in OS sandbox or per-command network policy. File tools still enforce workspace paths;
-  an authorized Shell can access whatever the host user can access.
-- **Coding tools**: file reads, searches, writes and revision-checked edits; a persistent per-member Shell;
-  DeepSeek/Exa web search and DeepSeek fetch; Skills; and MCP over stdio or streamable HTTP. The `codemode` tool
-  composes bound MCP calls in QuickJS without exposing direct file or network capabilities to the script.
-- **Completion checks**: required `[[checks]]` must pass before a goal can settle successfully. Separate
-  `exec --check` commands validate a finished turn and control the client's exit code.
-- **Recovery and retention**: durable runner journals support reconnect after a daemon restart. Failed or
-  interrupted work is classified from persisted facts. History retention and artifact collection are explicit
-  policies, not a general workspace rollback mechanism.
-- **Terminal interface**: Markdown and syntax-colored code, diagrams and local image previews, attachments,
-  pending-input editing, session search, and local Markdown/JSON export. See the
-  [maturity report](review/maturity-2026-10-11/REPORT.md) for its pinned local evidence and limits.
 
 ## Install
 
@@ -158,7 +288,7 @@ git diff | teamagents exec -
 Closing the consumer ends the stream, not the underlying run.
 
 Exit codes are `0` for a completed goal or direct answer, `1` for failure or an unfinished run, `2` for usage
-or infrastructure errors, `3` when an operation needs approval, and `124` when `--timeout` expires.
+or infrastructure errors, `3` when approval or a material user answer is needed, and `124` when `--timeout` expires.
 
 `--check COMMAND` runs after a finished turn and stops at the first failure. `--accept ID=COMMAND` attaches a
 required check to the goal before the input is submitted, so a failure can trigger bounded repair instead of

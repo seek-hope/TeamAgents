@@ -4,7 +4,8 @@ This file is the design basis of the current implementation: the confirmed produ
 architecture and protocol constraints, the engineering choices, the A01–A36 acceptance matrix and the
 definition of done. The confirmed direction and scope are in [DECISIONS](DECISIONS.md), per-item evidence and
 known gaps in [ACCEPTANCE](ACCEPTANCE.md), and the conventions and commands in [DEVELOPMENT](DEVELOPMENT.md)
-and [AGENTS](../AGENTS.md).
+and [AGENTS](../AGENTS.md). The [visual architecture](ARCHITECTURE.md) maps the current implementation into
+state machines, sequences, durable data relationships and a reimplementation order.
 
 It separates three kinds of statement: requirements the user confirmed; engineering choices with reasons; and
 assumptions that only probes or real evaluation can settle. The item-by-item reasoning, alternatives and
@@ -68,7 +69,7 @@ premature handoff. Routine choices and previously authorized work need no repeat
 | Concurrent I/O | Tokio with an async HTTP transport; blocking work isolated with a bound | Service connections, model streams, timers and cancellation share one model; Tokio is the I/O executor and never owns business state |
 | Persistence | one SQLite database per session owning tasks, execution position, message consumption and operation receipts | Removes the old two-database coordination; a session is the default isolation and cleanup unit, with no cross-session transactions in the first release |
 | Large content | an append-only history index plus immutable artifact references | Avoids copying the whole 1M history per step and avoids building a full event-sourcing framework |
-| Processes | one user-level daemon, front-end clients, on-demand shell runners | The daemon is independent of the TUI; an instance is not an OS process; short ordinary tools need no process of their own |
+| Processes | one user-level daemon per session state root, front-end clients, on-demand shell runners | The daemon is independent of the TUI; an instance is not an OS process; short ordinary tools need no process of their own |
 | TUI and protocol | Rust/ratatui plus versioned JSON over a Unix socket | The existing interface and single-machine deployment fit this boundary; no network RPC, microservices or per-instance sockets |
 | Project structure | three crates (`core`, `engine`, `tui`) with responsibility-based boundaries | Modules express responsibility well enough; no crate or generic plugin interface per concept yet |
 
@@ -105,9 +106,10 @@ and budget machinery.
 
 The communication topology is validated data and may contain directed cycles; it does not determine the
 execution control flow of any instance. There is no single completion barrier across instances, and a retained
-instance occupies no thread or model slot. One instance may take on several goals in sequence, with every call
-belonging to exactly one goal; cross-goal messages are explicitly correlated and a later message never
-reassigns the budget attribution of an in-flight request.
+instance occupies no thread or model slot. One instance may take on several goals in sequence. Calls for
+admitted work belong to one goal; D-487 admission requests initially have no goal and retain separate,
+one-time later billing attribution. Cross-goal messages are explicitly correlated, and a later message never
+reassigns an in-flight request to unrelated work.
 
 The kernel's suggested interface: `prepare_request(ContextView)`, `interpret_response(ModelResponse)` and
 `apply_observation(Observation)`, producing `ModelRequest / ToolIntents / Reply / Wait / CompletionCandidate`.
@@ -293,15 +295,16 @@ deadlock. Only a closed set with no runnable or externally-fulfillable path is r
 are never cancelled automatically. Registering a wait and checking "has the result already arrived" happen in
 one transaction, so a wakeup is never lost.
 
-The three condition kinds stay apart (D-341/D-348): a delegated outcome is a *task result*, so it satisfies a
+The condition kinds stay apart (D-341/D-348): a delegated outcome is a *task result*, so it satisfies a
 `{kind:'task'}` condition and never a `{kind:'message'}` one, and a task the assignee settled `BLOCKED` is not
 a settlement either, so the wait stays pending on it. The runtime never wakes a delegator because an assignee
 has gone idle: an assignee whose turn ends without settling leaves its task open, no fact satisfies the
-condition, and the task is not dead for it. A delegator waiting on delegated work therefore does what the two
-tool descriptions say — it sets its own `timer_seconds`, and when that timer fires it re-checks the task
-statuses and cancels the task it no longer needs (`cancel_task`, the delegator's own lever, D-265), which *does*
-satisfy a `{kind:'task'}` condition; the wait is otherwise ended by a real settlement or the timer, never by
-silence.
+condition, and the task is not dead for it. For timer-based follow-up, the delegator sets `timer_seconds`
+and re-checks the task status when it fires. It can cancel work it no longer needs (`cancel_task`, the
+delegator's own lever, D-265), which *does* satisfy a `{kind:'task'}` condition. D-487 adds a separate
+supersession path for enrolled work: scoped task attention, user input or recorded process-stop evidence can
+cancel an obsolete wait and answer its slot
+without satisfying the task condition. Silence alone still does not settle a task or prove a process stopped.
 
 ### 5.4 Lifecycle and user intervention
 
@@ -487,9 +490,9 @@ projections, require fresh evidence and refuse tracked execution lacking stop ev
 
 At completion the model states once, clearly, an `outcome + summary + evidence/unverified`; the runtime
 automatically links the existing check receipts instead of demanding a large ledger from the model. An ordinary
-question needs neither an artifact nor a review instance. Required checks defined by the user or project must
-pass; conditions the model extracts from natural language carry their source and never masquerade as a
-machine-checked contract the user confirmed item by item.
+question needs neither an artifact nor a review instance. Required checks defined by the user must pass;
+trusted repository configuration cannot supply checks (D-244). Conditions the model extracts from natural
+language carry their source and never masquerade as a machine-checked contract the user confirmed item by item.
 
 Cancelling an implementation subtask never deletes the original goal's requirements. A failed check enters
 repair or BLOCKED, and a summary admitting non-delivery can never land as success. A check binds its declared

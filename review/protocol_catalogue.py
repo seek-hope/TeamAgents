@@ -8,9 +8,9 @@ catalogue, generated from the two dispatch points in the code:
 * the read methods the daemon answers from the session database (`read_method` in `engine/src/v2/daemon.rs`,
   cross-checked against the whitelist in `handle` that decides which methods are read-only), and
 * the commands the control plane executes (`fn dispatch` in `core/src/v2/control.rs`), with the parameters each
-  handler reads and whether the handler takes an identity (i.e. whether authorization applies).
+  handler reads and whether that call passes the trusted identity to its handler.
 
-and one more table from the same file: **every field the protocol carries in one JSON object**, with the function
+and one more table from the same file: **literal JSON object fields in the daemon and diagnostics**, with the function
 or read arm that builds it. The arrays a client reads (`instances[]`, `tasks[]`, `approvals[]`, `grants[]`) and a
 checkpoint's `goal` object are rows of the daemon's own views; the guide's §1.2 calls them part of the scripting
 contract and points *here* for their fields, and until this table existed a row field could be added to the
@@ -22,8 +22,8 @@ protocol without any document changing — `reason` on the instance rows arrived
 A method added to either dispatcher without a line in the document, a documented method that no longer exists, a
 changed parameter list or a stale table fails the check.
 
-The same holds for the field table, generated from the `json!({ … })` literals in `engine/src/v2/daemon.rs`: a
-field added, removed or renamed in any protocol object changes it.
+The field table covers `json!({ … })` literals in the daemon and diagnostics helper. Objects constructed by
+other modules or dynamically are outside this inventory; it is not a complete protocol schema.
 
 Limits: handler parameters are the ones the handler *itself* reads (`params["…"]` in its own body), so a field a
 helper reads is not listed (that is a documentation gap, not a wrong entry); the tables are generated from
@@ -46,7 +46,7 @@ MARKERS = ((re.compile(r'^\s*"([a-z_]+)" => \{', re.M), True),
            (re.compile(r'^(?:pub(?:\(crate\))? )?(?:async )?fn ([a-z_]+)', re.M), False))
 JSON_OBJECT = re.compile(r"json!\(\s*\{")
 # the heading of the generated field table: the method scan stops there, and `tables()` writes it
-FIELDS_HEADING = "### Every field the protocol carries in one object, and where it is built"
+FIELDS_HEADING = "### Object fields built by the daemon and diagnostics"
 
 
 def enclosing(text: str, position: int) -> str:
@@ -108,22 +108,32 @@ def read_methods():
 
 
 def commands():
-    """[(name, params the handler reads, identity, site)] from `fn dispatch`."""
+    """Literal dispatch arms, including handlers in file-backed Rust modules.
+
+    ponytail: this scans the current literal-call shape, not arbitrary Rust expressions.
+    Reject unparsed arms instead of silently omitting methods; use a Rust parser if that shape grows.
+    """
     text = CONTROL.read_text(errors="replace")
     start = text.index("fn dispatch(")
-    body = text[start:]
-    arms = list(re.finditer(r'^\s{8}"([a-z_]+)" => (?:([a-z_]+))?\(', body, re.M))
+    body = text[start:text.index("\n}", start) + 2]
+    names = set(re.findall(r'^\s{8}"([a-z_]+)" =>', body, re.M))
+    arms = list(re.finditer(r'^\s{8}"([a-z_]+)" => ([a-z_]+(?:::[a-z_]+)*)\(([^\n]*)\),$', body, re.M))
+    parsed = {arm.group(1) for arm in arms}
+    if parsed != names:
+        raise ValueError(f"unparsed control dispatch arms: {sorted(names - parsed)}")
     out = []
     for arm in arms:
-        name, handler = arm.group(1), arm.group(2)
-        chunk = body[arm.start():arm.start() + 200]
-        identity = bool(handler) and "identity" in chunk
-        params = []
-        if handler:
-            functions = re.search(rf'^fn {handler}\((.*?)^\}}', text, re.M | re.S)
-            if functions:
-                params = sorted(set(re.findall(r'params\["([A-Za-z_][A-Za-z0-9_]*)"\]', functions.group(1)))
-                                | set(re.findall(r'params\.get\("([A-Za-z_][A-Za-z0-9_]*)"\)', functions.group(1))))
+        name, handler, arguments = arm.groups()
+        parts = handler.split("::")
+        source = CONTROL if len(parts) == 1 else CONTROL.with_suffix("").joinpath(*parts[:-1]).with_suffix(".rs")
+        handler_text = text if source == CONTROL else source.read_text(errors="replace")
+        functions = re.search(rf'^(?:pub(?:\([^)]*\))? )?fn {parts[-1]}\((.*?)^\}}',
+                              handler_text, re.M | re.S)
+        if not functions:
+            raise ValueError(f"{name}: cannot locate handler {handler} in {source}")
+        params = sorted(set(re.findall(r'params\["([A-Za-z_][A-Za-z0-9_]*)"\]', functions.group(1)))
+                        | set(re.findall(r'params\.get\("([A-Za-z_][A-Za-z0-9_]*)"\)', functions.group(1))))
+        identity = "identity" in [argument.strip() for argument in arguments.split(",")]
         line = text.count("\n", 0, start + arm.start()) + 1
         out.append((name, params, identity, f"`core/src/v2/control.rs:{line}`"))
     return out
@@ -141,14 +151,14 @@ def tables():
         lines.append("")
         lines.append(f"> these arms are not in the read-only whitelist: {missing}")
     lines += ["", "### Commands (executed by the control plane)", "",
-              "| Method | Parameters the handler reads | Identity checked | Handled at |", "|---|---|---|---|"]
+              "| Method | Parameters the handler reads | Identity passed | Handled at |", "|---|---|---|---|"]
     for name, params, identity, site in commands():
         lines.append(f"| `{name}` | {', '.join(f'`{p}`' for p in params) or '—'} | "
                      f"{'yes' if identity else 'no'} | {site} |")
-    lines += ["", "### Every field the protocol carries in one object, and where it is built", "",
-              "The rows a client reads (`instances[]`, `tasks[]`, `approvals[]`, `grants[]`, `entries[]`), a",
-              "checkpoint's `goal` object and the greeting/reply envelopes are all built as `json!({ … })`",
-              "literals in `engine/src/v2/daemon.rs` and its diagnostics helper; this table is that list. A row is one literal.", "",
+    lines += ["", FIELDS_HEADING, "",
+              "This table inventories literal `json!({ … })` objects in `engine/src/v2/daemon.rs` and its",
+              "diagnostics helper. A row is one literal. Objects returned by other helpers, including durable",
+              "work projections, are outside this scan; consult their linked source contracts as well.", "",
               "| Built at | Fields |", "|---|---|"]
     for source in (DAEMON, DIAGNOSTICS):
         for where, fields in literal_fields(source.read_text(errors="replace")):
@@ -158,6 +168,16 @@ def tables():
 
 
 def main(argv):
+    if "--self-check" in argv:
+        rows = {row[0]: row for row in commands()}
+        assert {"leader_id", "limits"} <= set(rows["configure_work"][1])
+        assert rows["configure_work"][2]
+        assert "observations" in rows["observe_operation_stops"][1]
+        assert rows["observe_operation_stops"][2]
+        assert not rows["capability_requests"][2], "identity from the next arm must not leak"
+        assert not rows["complete_goal"][2], "the immediate call does not receive identity"
+        print("protocol catalogue self-check: qualified handlers and per-arm identity passed")
+        return 0
     generated = tables()
     if "--write" in argv:
         text = DOC.read_text()

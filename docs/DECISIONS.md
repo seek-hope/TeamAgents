@@ -39,6 +39,27 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Command idempotency | a replay with the same `command_id` returns the stored receipt for control-plane state, and the authoritative check runs under the write lock (D-463); result bodies are shared by content digest and zstd-compressed (D-464), while the receipt **rows** remain one per command | D-463, D-464 |
 | Model actions and code windows | a deciding read shares the write's transaction, or the guard is a predicate on the write itself; `verification/REPORT.md` §6 lists the protocol transitions and the three engine windows that span two transactions with their predicates | D-465 |
 
+## D-488 Visual architecture and README design guide (2026-10-29)
+
+The user requested a complete, detailed graphical explanation that users and developers can follow to
+reimplement TeamAgents. Both READMEs now introduce the system through five Mermaid views and link to
+`docs/ARCHITECTURE.md` for durable schemas, separate state dimensions, atomic boundaries, authority,
+recovery, clients, extension points and a build order. Each detailed view links to its source contract.
+
+The atlas describes source baseline `028f2383` and distinguishes implementation limits from the design
+baseline and verification claims. In particular it does not invent bounded event pages, sender-grant
+revalidation during inbox drain, edits to DEFERRED inputs, repeated automation goal admission, or an
+automatic collector path for ABANDONED artifacts. Runtime behavior is unchanged. Current DESIGN wording is
+aligned with already implemented D-487 admission, daemon scope and wait supersession. Historical evidence
+retains its original scope. The protocol catalogue now recognizes module-qualified dispatch handlers and
+reports per-arm identity arguments, including the two D-487 methods previously omitted by its scanner.
+
+Validation: all 45 Mermaid fences rendered in both light and dark themes with CLI 12.0.0 (90 SVGs, each with
+a title and description); local links/anchors and 96 selected ER field names were checked against the tree
+and in-memory source schema. The protocol scanner self-check, repository hygiene and full repository gate
+passed, retaining 174 core / 437 engine / 97 TUI tests. These are documentation and local regression checks,
+not new real-model evidence or a renewed independent audit.
+
 ## D-487 Persistent work context and bounded autonomous continuation (2026-10-28)
 
 **Authorization.** After reviewing the seven-repository source study and the expanded DD-11 proposal, the

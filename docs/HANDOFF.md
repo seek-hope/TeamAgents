@@ -4,7 +4,9 @@ Updated **2026-10-29**. **D-487**, source baseline `028f2383`, implements persis
 semantic admission of subsequent work. Local gates passed; use [ACCEPTANCE.md](ACCEPTANCE.md) for evidence
 and [DECISIONS.md](DECISIONS.md) for the confirmed contract. Recheck Git status before relying on
 this snapshot. Both local binaries were installed from that source after isolated smoke checks and private
-backups. The public v0.2.0 archive is an older baseline.
+backups. The public v0.2.0 archive is an older baseline. D-488 adds the bilingual README overview and
+[visual architecture](ARCHITECTURE.md), with source-linked diagrams and implementation limits; it does not
+change the executable baseline.
 
 ## Start here
 
