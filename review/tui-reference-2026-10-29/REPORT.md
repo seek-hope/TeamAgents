@@ -54,3 +54,9 @@ Focused rendering/input tests, the full TUI suite and `pty_v2_smoke.py` cover wi
 approval states, cursor placement, multiline `@` references, stale replies, attachment limits and the final
 submitted frame. Repository-wide gates and the complete terminal matrix are recorded in ACCEPTANCE after their
 actual runs; this report does not turn scripted frames into evidence of user preference or real-model quality.
+
+The release TUI built from `d0828d7f` was installed locally after two checks found no running users of the
+previous installed binary. The previous binary was preserved in a private backup and the replacement was
+atomic; the engine and user configuration were not changed. The installed binary passed the same isolated
+PTY smoke, including `@` attachment submission, approvals, editing, resizing and clean detach. The install
+receipt is `/tmp/ta-d489-install.json`; this local installation is not a public release.

@@ -57,6 +57,12 @@ This is a TUI adaptation, not a new agent runtime. The daemon protocol, Leader-o
 approvals, model/goal/task states, attachment confinement, queue revisions, renderer workers and recovery
 semantics are unchanged. No resident sidebar, split terminal, ACP integration or marketplace is added.
 
+Validation: core 174 / engine 437 / TUI 102 passed `make check`; the full terminal/forced-graphics matrix
+passed. The release TUI from `d0828d7f` was backed up and atomically installed after running-process checks.
+The installed binary passed isolated scripted-daemon PTY smoke, including `@` attachment submission,
+approvals, editing, resize and clean detach. These are local rendering/interaction checks, not a measured
+usability or real-model comparison.
+
 ## D-488 Visual architecture and README design guide (2026-10-29)
 
 The user requested a complete, detailed graphical explanation that users and developers can follow to

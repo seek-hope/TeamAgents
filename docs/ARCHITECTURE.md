@@ -2,7 +2,7 @@
 
 This is the implementation map behind the [README](../README.md). Follow the diagrams in order to rebuild
 the system's boundaries, durable data, execution rules and recovery behavior. The control/data reference is
-source `028f2383` (D-487); D-489 updates the TUI presentation in view 23. Database schema **7**, socket
+source `028f2383` (D-487); D-489 updates the TUI presentation in view 23 at `d0828d7f`. Database schema **7**, socket
 protocol **1**, and work policy **1** remain separate versions. [DESIGN.md](DESIGN.md) holds requirements; [DECISIONS.md](DECISIONS.md) resolves later choices;
 [ACCEPTANCE.md](ACCEPTANCE.md) records evidence rather than assuming that a diagram proves correctness.
 

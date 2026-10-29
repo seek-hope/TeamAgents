@@ -1,12 +1,10 @@
 # Development handoff
 
-Updated **2026-10-29**. **D-487**, source baseline `028f2383`, implements persistent work context, bounded autonomous continuation and
-semantic admission of subsequent work. Local gates passed; use [ACCEPTANCE.md](ACCEPTANCE.md) for evidence
+Updated **2026-10-29**. **D-489**, source baseline `d0828d7f`, adapts Grok Build's single-conversation TUI;
+D-487 remains the control/data baseline. Local gates passed; use [ACCEPTANCE.md](ACCEPTANCE.md) for evidence
 and [DECISIONS.md](DECISIONS.md) for the confirmed contract. Recheck Git status before relying on
-this snapshot. Both local binaries were installed from that source after isolated smoke checks and private
-backups. The public v0.2.0 archive is an older baseline. D-488 adds the bilingual README overview and
-[visual architecture](ARCHITECTURE.md), with source-linked diagrams and implementation limits; it does not
-change the executable baseline.
+this snapshot. The engine remains installed from `028f2383`; the TUI was replaced from `d0828d7f` after
+private backup and isolated installed-binary smoke. The public v0.2.0 archive is an older baseline.
 
 ## Start here
 

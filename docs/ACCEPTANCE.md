@@ -508,6 +508,11 @@ The adaptation changes presentation and local completion only; it does not impor
 No daemon command, schema, grant, model request, attachment-confinement rule or runner behavior changed.
 There is no resident sidebar, split terminal, ACP integration or measured upstream usability comparison.
 
+Release-mode TUI from `d0828d7f` was installed locally after two running-process checks and a private backup
+of the previous binary. Atomic replacement preserved the engine and user configuration. The installed SHA-256
+is `a9b4520cb3eb6b0e96d8d3185cebb22d14c319a0826602bce17c04f73051103b`; its isolated scripted-daemon PTY
+smoke passed `@` attachment submission, approvals, editing, resize and clean detach. No user work was started.
+
 ## Recent source additions and their evidence limits
 
 | Change | Implemented evidence | Still not established |
