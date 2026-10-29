@@ -5,7 +5,7 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
-## D-487 local verification (2026-10-29; working tree)
+## 0. Gate status (re-run 2026-10-29 at `028f2383`)
 
 The current targets verified all **48** configurations and refuted all **261** negative controls across
 39 modules; each control refuted its named claim. Kani 0.68.0 reports

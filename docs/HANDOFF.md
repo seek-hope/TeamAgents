@@ -1,9 +1,10 @@
 # Development handoff
 
-Updated **2026-10-29**. **D-487** implements persistent work context, bounded autonomous continuation and
+Updated **2026-10-29**. **D-487**, source baseline `028f2383`, implements persistent work context, bounded autonomous continuation and
 semantic admission of subsequent work. Local gates passed; use [ACCEPTANCE.md](ACCEPTANCE.md) for evidence
 and [DECISIONS.md](DECISIONS.md) for the confirmed contract. Recheck Git status before relying on
-this snapshot. Source, installed binaries and the public v0.2.0 archive are separate baselines.
+this snapshot. Both local binaries were installed from that source after isolated smoke checks and private
+backups. The public v0.2.0 archive is an older baseline.
 
 ## Start here
 

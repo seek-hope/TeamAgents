@@ -474,6 +474,11 @@ temporary databases/processes; the exercised contracts and their limits follow.
   a targeted counterexample. The formal report records executed gates. This is neither cross-scenario
   composition nor a Rust/SQLite refinement, semantic-completion or liveness proof.
 
+Release-mode engine and TUI binaries from `028f2383` were installed locally after private binary and database
+backups. An isolated smoke verified config preservation, schema v7 / policy v1 bootstrap with zero model
+requests, clean daemon shutdown, conversation PTY behavior and both forced graphics modes. Existing session
+databases were backed up through read-only connections; migration was exercised in temporary databases.
+
 The shared behavior prompt applies to Leader/member requests, including legacy sessions: explore and refine
 within user intent and authority, and substantiate completion. Limits prevent unproductive recovery; they
 are not instructions to stop useful work early. Tool descriptions follow the same admission/wait contract.
