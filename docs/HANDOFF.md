@@ -5,8 +5,10 @@ dependency, credential, transport and download robustness. D-491 adjusts newline
 the control/data baseline. Use [ACCEPTANCE.md](ACCEPTANCE.md) for gate evidence and
 [DECISIONS.md](DECISIONS.md) for the confirmed contract. Recheck Git status before relying on this snapshot.
 Both installed binaries were atomically replaced from that source after private backups and isolated smoke.
-The existing user daemon was not restarted because it carries an ACTIVE goal; it keeps the old engine inode
-until a later normal restart. The public v0.2.0 archive is an older baseline.
+At the user's subsequent request, old backup binaries and the old-source probe build were removed while
+read-only session backups were retained, and the existing user daemon was stopped normally with committed
+state kept. No runner process remained. A later client starts a fresh daemon. The public v0.2.0 archive is an
+older baseline.
 
 ## Start here
 
