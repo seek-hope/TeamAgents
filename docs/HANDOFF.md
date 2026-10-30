@@ -7,8 +7,9 @@ the control/data baseline. Use [ACCEPTANCE.md](ACCEPTANCE.md) for gate evidence 
 Both installed binaries were atomically replaced from that source after private backups and isolated smoke.
 At the user's subsequent request, old backup binaries and the old-source probe build were removed while
 read-only session backups were retained, and the existing user daemon was stopped normally with committed
-state kept. No runner process remained. A later client starts a fresh daemon. The public v0.2.0 archive is an
-older baseline.
+state kept. No runner process remained. A later client starts a fresh daemon. D-493 subsequently replaced the
+public v0.2.0 tag and release from `bee64381`; its workflow and published-install check passed. The archive
+SHA-256 is `bf527c449f098060e76b0fc7055643bbef448ba4aa9734a063f2ea4dc28f3934`.
 
 ## Start here
 

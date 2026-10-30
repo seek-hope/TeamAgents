@@ -55,6 +55,14 @@ workflow must smoke-install the exact archive, and `review/install_check.py --ve
 published download. Record the resulting run, source and hashes here and in ACCEPTANCE/HANDOFF only after they
 are observed. A network or CI failure leaves publication incomplete; it is not reported as success.
 
+**Evidence.** Main CI [40985648398](https://github.com/seek-hope/TeamAgents/actions/runs/40985648398) and the
+tag workflow [40986739118](https://github.com/seek-hope/TeamAgents/actions/runs/40986739118) succeeded. The
+annotated tag `89c6a1e2` resolves to source `bee6438103f8ad56364662abd3113ebeef9e1d9b`. The published
+archive has SHA-256 `bf527c449f098060e76b0fc7055643bbef448ba4aa9734a063f2ea4dc28f3934`; `install.sh`
+remains `d0160effba0fdb140b5a4a867e601b416644673edd4b5548baf4fbaef6099ac4`. The downloaded manifest matches,
+and `python3 review/install_check.py --version 0.2.0` passed on 2026-10-30. The previous release and its
+`81db7592…` archive are privately backed up under `/tmp/ta-d493-published-before`.
+
 ## D-492 Source cleanup and robustness review (2026-10-29)
 
 The user authorized a comprehensive review of documents and code, removal of stale/low-value material and dead

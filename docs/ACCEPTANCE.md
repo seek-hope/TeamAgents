@@ -182,7 +182,7 @@ unresolved policy dependencies without presenting every former gap as current.
 | Cache telemetry is implemented; priced cost/attribution and reviewer model usage in goal budgets are not | D-458/D-459; DD-07 |
 | Live selected provider/image/MCP OAuth and wider terminal/security evidence remains partial | individual A rows and dated reports; DD-08 |
 | No MCP resource browsing or general SDK/extension interface; provider auth coverage is narrower than Pi | DD-09; existing Unix protocol and hooks are real capabilities, not equivalent extension APIs |
-| First public release v0.2.0 (Linux x86_64), rebuilt with D-476; installation receipts cover the exact artifact | D-477; DD-10 |
+| Public v0.2.0 (Linux x86_64) replaced with the hardened source under D-493; workflow and published-download installation checks cover the exact artifact | D-477, D-493; DD-10 |
 | Artifact policy and references remain a decision boundary | D-438; D-436 implements owner release after the configured retention window, not arbitrary deletion |
 
 <details>

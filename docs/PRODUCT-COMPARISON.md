@@ -6,7 +6,8 @@ Updated **2026-10-29** for D-492. This page owns the remaining candidate queue. 
 
 TeamAgents supports controlled daily coding on Linux with configured models and development tools. Current
 evidence does not establish equal task success, lower cost or less intervention than Pi, nor a general sole-agent
-replacement. The public v0.2.0 archive is older than current source.
+replacement. The public v0.2.0 archive was replaced from `bee64381` on 2026-10-30 and its published install
+check passed; this does not change the comparison evidence below.
 
 ## Implemented scope
 
