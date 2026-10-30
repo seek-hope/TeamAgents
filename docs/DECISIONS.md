@@ -15,7 +15,7 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | MCP | both transports, stdio and streamable HTTP; calls go through the shared permission, approval, budget, cancellation and receipt entry points | D-25 |
 | Web tools | `web_search` uses bound DeepSeek and/or Exa providers with `auto`/`both`/single-source selection, RRF deduplication, retries and a five-minute cache; new `init` configs bind both search providers plus DeepSeek fetch. Dual-source auto may charge both providers | D-482, D-484 (supersedes D-456 for search) |
 | CodeGraph | optional stdio MCP service (`codegraph serve --mcp`) queried through codemode; existing indexes only unless the user explicitly initializes one; shared daemon by default, no automatic install/init | D-483 |
-| Release publication | v0.2.0 is the first public release (Linux x86_64, musl static), rebuilt with D-476; future tags still need explicit user authorization and `TEAMAGENTS_RELEASE_APPROVED=true` | D-457, D-475, D-477 |
+| Release publication | v0.2.0 is the first public release (Linux x86_64, musl static), rebuilt with D-476 and replaced again with the current hardened source under D-493; future tags still need explicit user authorization and `TEAMAGENTS_RELEASE_APPROVED=true` | D-457, D-475, D-477, D-493 |
 | Context compaction | triggered by real window usage; the summary keeps the original request and acceptance criteria, and the full text stays retrievable | D-28 |
 | Task priority | complex coding and long-horizon stability come first | D-35 |
 | Work and initiative | honor user instructions and intent; explore freely and pursue excellent, thoroughly verified results within the authorized scope. Durable goals span turns, compaction and restart; bounded recovery prevents empty loops | D-487 |
@@ -39,6 +39,21 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Prompt cache | cache hit/miss/write are provider-reported and visible; the L1 frontier is fixed between compactions; Anthropic gets explicit breakpoints and OpenAI a stable key; DeepSeek stays automatic | D-459 |
 | Command idempotency | a replay with the same `command_id` returns the stored receipt for control-plane state, and the authoritative check runs under the write lock (D-463); result bodies are shared by content digest and zstd-compressed (D-464), while the receipt **rows** remain one per command | D-463, D-464 |
 | Model actions and code windows | a deciding read shares the write's transaction, or the guard is a predicate on the write itself; `verification/REPORT.md` §6 lists the protocol transitions and the three engine windows that span two transactions with their predicates | D-465 |
+
+## D-493 Replace v0.2.0 with the current hardened build (2026-10-30)
+
+**Authorization.** The user explicitly asked to overwrite GitHub's published v0.2.0 with the latest TeamAgents.
+This authorizes another same-version public replacement, not a different version, platform or evidence claim.
+
+**What.** Follow D-477's verified path: preserve the prior release metadata/assets, move the annotated v0.2.0
+tag to the release-preparation commit on current main, recreate the release and let the pinned workflow rebuild
+the Linux x86_64 musl archive, installer and checksums. The package includes D-487–D-492 and retains schema 7,
+the current host-execution/authority boundaries and the 0.2.0 crate version.
+
+**Verification required before completion.** The current source gate and release rehearsal must pass, the tag
+workflow must smoke-install the exact archive, and `review/install_check.py --version 0.2.0` must verify the
+published download. Record the resulting run, source and hashes here and in ACCEPTANCE/HANDOFF only after they
+are observed. A network or CI failure leaves publication incomplete; it is not reported as success.
 
 ## D-492 Source cleanup and robustness review (2026-10-29)
 

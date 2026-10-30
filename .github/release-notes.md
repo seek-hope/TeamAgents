@@ -1,5 +1,5 @@
-> These notes describe current source for a future release. They are not the body of the published v0.2.0
-> release and do not authorize a new tag or publication.
+> These notes describe the D-493 same-version replacement of v0.2.0, built from current main after the
+> D-492 robustness review. Earlier v0.2.0 artifacts and hashes are historical.
 
 ### Current source highlights
 
@@ -10,6 +10,9 @@
   claims; input, authority, costs and execution outcomes keep separate provenance.
 - One daemon per session. The TUI and `teamagents exec` use its Unix-socket JSON protocol and resume from the
   last event watermark.
+- Dependency-advisory CI, locked atomic OAuth credential writes, bounded OAuth/MCP/update inputs and current
+  zstd/TLS/Tokio/Markdown/ratatui dependencies. Shift+Enter inserts a newline; ready/draft footers show
+  Ctrl+S sessions.
 - Governed teams through `spawn`, `delegate`, `send` and `wait`, with shared, private and Git-worktree
   workspaces and explicit task-scoped capability delegation.
 - Chat Completions, DeepSeek, Responses and Anthropic profiles in one session, with per-model native context
