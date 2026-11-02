@@ -10,7 +10,7 @@ boundaries; later source changes do not inherit those results.
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
 `make check` is green (core 174 / engine 459 / tui 104 test targets).
-`make pty` passed on 2026-10-29: the terminal-profile matrix (xterm-256color, screen-256color, tmux-256color, xterm-kitty and Kitty under tmux) plus both forced graphics protocols, all rc 0 and
+`make pty` passed on 2026-11-03: the terminal-profile matrix (xterm-256color, screen-256color, tmux-256color, xterm-kitty and Kitty under tmux) plus both forced graphics protocols, all rc 0 and
 credential-free. PTY checks cover protocol bytes, input ownership, resize and cleanup, not a complete
 actual graphical-terminal or OS matrix. These gates do not renew real-provider, OAuth, formal-proof or
 cross-product coding acceptance. `make check` includes `make language-check`, which
@@ -22,6 +22,10 @@ rendering regressions. The [dated optimization report](../review/optimization-20
 old-code failures, synthetic measurements and limits. Formal targets verify 50 positive configurations and
 273 negative controls; seven Kani arithmetic harnesses pass. The
 [formal report](../verification/REPORT.md) distinguishes declared-catalogue coverage from implementation proof.
+Native release binaries from `0027ffe2ffbbba57acf852f59bf8904dce5b0ac3` were installed after private rollback
+backups. Installed checks pass for idempotent init, schema 7, idle daemon with zero model/HTTP requests, normal
+shutdown, conversation PTY and both graphics protocols. The user config is unchanged and no user daemon was
+started. The optimization report records binary hashes; the public v0.2.0 remains the D-493 artifact.
 
 D-451 added attachment, pending-input, export/search and bounded-display evidence for
 A01/A06/A08/A11/A16/A21/A28/A29/A36. The [maturity report](../review/maturity-2026-10-11/REPORT.md) retains

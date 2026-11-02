@@ -5,10 +5,10 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
-## 0. Gate status (re-run 2026-11-03 at `5f66a70d`)
+## 0. Gate status (re-run 2026-11-03 at `0027ffe2`)
 
-D-494 verification ran on the worktree based on this source baseline. The immutable pin will be updated
-after committing the formal material. The final targets verified all **50** configurations and refuted
+D-494 material commit `0027ffe2ffbbba57acf852f59bf8904dce5b0ac3` contains the models, controls and verdict
+gate used by the final committed-source run. The targets verified all **50** configurations and refuted
 all **273** negative controls across **41** modules. The separate wide
 configuration is included in the inventory of **324** configurations, but was not exhaustively completed.
 Kani 0.68.0 reports `Complete - 7 successfully verified harnesses, 0 failures, 7 total`:
@@ -32,7 +32,8 @@ rejected those legitimate pinned-TLC outputs are harness corrections, not produc
 
 `V2JobSupervision` adds explicit socket traffic, independent timer progress, a fixed cancellation grace,
 leader-exit versus group escalation, durable start acceptance, retirement timestamps and preservation of
-normal background services, including an already completed leader observed after its deadline. Its nine controls reproduce the removed rules. `V2Discovery` adds a finite
+normal background services, including an already completed leader observed after its deadline. Its nine
+controls reproduce the removed rules. `V2Discovery` adds a finite
 storage saturation burst and supervisor cleanup, with two controls. Each positive configuration and each
 new control passed. Runtime bridges separately reproduce stalled supervision, surviving descendants,
 repeated-cancel delay, execution after an acceptance-write fault, permanent discovery loss after transient

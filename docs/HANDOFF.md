@@ -1,13 +1,15 @@
 # Development handoff
 
 Updated **2026-11-03**. **D-494** repairs provider/runner ingestion and supervision, durable start acceptance,
-storage-backpressure recovery, idle context loading and TUI rendering/frame deadlines. The material commit
-and installed binary pin are recorded after the source gates; the prior installed source remains D-492
-`2cf5f47a` until that delivery step. D-491's shortcuts, D-490's colors and D-487's control/data contracts remain.
+storage-backpressure recovery, idle context loading and TUI rendering/frame deadlines. The material source
+and installed native binaries are pinned to `0027ffe2ffbbba57acf852f59bf8904dce5b0ac3`. Both binaries were
+privately backed up and atomically replaced; installed init/schema-7/idle/shutdown and conversation/graphics
+PTY checks passed without model requests. No user daemon was started and the user config is unchanged.
+D-491's shortcuts, D-490's colors and D-487's control/data contracts remain.
 Use [ACCEPTANCE.md](ACCEPTANCE.md) for gate evidence and [DECISIONS.md](DECISIONS.md) for the confirmed
 contract. Recheck Git status: ten documentation files had preexisting changes when D-494 began and are
 preserved outside its scoped commits.
-Both previously installed binaries were atomically replaced from D-492 after private backups and isolated smoke.
+Earlier delivery: both binaries were replaced from D-492 after private backups and isolated smoke.
 At the user's subsequent request, old backup binaries and the old-source probe build were removed while
 read-only session backups were retained, and the existing user daemon was stopped normally with committed
 state kept. No runner process remained. A later client starts a fresh daemon. D-493 subsequently replaced the

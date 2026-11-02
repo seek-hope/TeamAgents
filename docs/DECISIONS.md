@@ -74,6 +74,11 @@ bytes per frame reduced from 49,052,488 to 23,210. Idle polling's trace drops fr
 quality or release-latency guarantees. Final source gates and installation evidence are recorded in ACCEPTANCE.
 The ten preexisting documentation changes are retained outside this implementation's scoped commits.
 
+Material source `0027ffe2ffbbba57acf852f59bf8904dce5b0ac3` passes the local source, PTY and dependency
+gates; the complete 50/273 TLC run was repeated on that commit. Native binaries were privately backed up
+and atomically installed. Isolated installed init/schema/idle/shutdown and conversation/graphics PTYs pass
+with zero model requests. No user daemon was started, no user state was migrated, and the public tag is unchanged.
+
 ## D-493 Replace v0.2.0 with the current hardened build (2026-10-30)
 
 **Authorization.** The user explicitly asked to overwrite GitHub's published v0.2.0 with the latest TeamAgents.

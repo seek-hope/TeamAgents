@@ -109,6 +109,25 @@ The provider, runner and supervisor regressions also run independently through t
 `jobs_runner` and `v2_supervisor` Cargo integration targets. The final source/PTY/advisory/installation results
 are recorded in `docs/ACCEPTANCE.md` after completion; passing targeted tests does not substitute for them.
 
+## Delivery evidence
+
+Material source: `0027ffe2ffbbba57acf852f59bf8904dce5b0ac3`. The complete 50-positive/273-negative TLC
+targets passed again on this committed source. Native release builds passed and replaced the installed
+binaries after a private rollback copy. No installed/user-root daemon was running at preflight. No session
+database was present under the user state root to snapshot; this installation did not create, migrate or
+delete a user session, and left the user config unchanged.
+
+| Installed binary | SHA-256 |
+|---|---|
+| teamagents | `37d9743f62bc0f6019a1d7e71105b51c0362d85e8597d913d1a36a25c8011ec7` |
+| teamagents-tui | `216c8ded6124af29f0f844d4266d0626676e1d5646453ae30128c572511638e3` |
+
+Installed smoke checks use temporary config/state/workspaces and a loopback model endpoint. Init remains
+idempotent, the fresh schema is 7, the idle daemon creates zero model requests and zero HTTP calls, and its
+normal shutdown succeeds. The actual installed TUI passes the conversation fixture and forced blocks/Kitty
+graphics PTYs. These fixtures never start a user task or a user-root daemon. Version remains 0.2.0; the
+public D-493 release and tag were not changed.
+
 ## Remaining boundaries
 
 - No full-system composition, Rust/SQLite refinement, universal liveness, filesystem power-loss proof or
