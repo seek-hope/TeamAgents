@@ -12,9 +12,6 @@ use std::ops::ControlFlow;
 use std::time::{Duration, Instant};
 use teamagents_core::kernel::{ModelRequest, ModelResponse};
 
-/// Cap on a non-SSE (error or non-streaming) response body.
-const MAX_RESPONSE: usize = 64 * 1024 * 1024;
-
 pub struct ChatCompletions {
     client: reqwest::Client,
     base: String,
@@ -181,8 +178,8 @@ impl Provider for ChatCompletions {
                 .and_then(|v| v.to_str().ok())
                 .and_then(|v| v.trim().parse::<u64>().ok())
                 .map(Duration::from_secs);
-            let body = response.text().await.unwrap_or_default();
-            return Err(ProviderError::status(status.as_u16(), &body, retry_after));
+            let body = super::read_body(response, cancel).await?;
+            return Err(ProviderError::status(status.as_u16(), &String::from_utf8_lossy(&body), retry_after));
         }
         let is_sse = response
             .headers()
@@ -249,13 +246,7 @@ impl Provider for ChatCompletions {
                 ));
             }
         } else {
-            let bytes = tokio::select! {
-                body = response.bytes() => body.map_err(|e| ProviderError::transient(format!("model stream: {e}")))?,
-                _ = cancel.cancelled() => return Err(ProviderError::interrupted("turn interrupted")),
-            };
-            if bytes.len() > MAX_RESPONSE {
-                return Err(ProviderError::permanent("chat API: response too large"));
-            }
+            let bytes = super::read_body(response, cancel).await?;
             let data: Json = serde_json::from_slice(&bytes)
                 .map_err(|e| ProviderError::permanent(format!("chat API: invalid response: {e}")))?;
             if let Some(error) = data.get("error") {

@@ -40,6 +40,40 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Command idempotency | a replay with the same `command_id` returns the stored receipt for control-plane state, and the authoritative check runs under the write lock (D-463); result bodies are shared by content digest and zstd-compressed (D-464), while the receipt **rows** remain one per command | D-463, D-464 |
 | Model actions and code windows | a deciding read shares the write's transaction, or the guard is a predicate on the write itself; `verification/REPORT.md` §6 lists the protocol transitions and the three engine windows that span two transactions with their predicates | D-465 |
 
+## D-494 Execution robustness, idle/rendering cost and formal coverage (2026-11-03)
+
+The user requested comprehensive performance, security and stability optimization and explicitly asked
+whether formal verification covers the implementation comprehensively. HarnessMM remains deferred. This
+work repairs existing contracts; it does not add an agent runtime, authority source, autonomous workflow,
+new budget or public release. The review and reproducible measurements are in
+[the dated report](../review/optimization-2026-11-03/REPORT.md).
+
+The refreshed dependency gate rejects pulldown-cmark 0.13.5 under RUSTSEC-2026-0433; the manifest floor and
+lockfile move to 0.13.6. The affected wikilinks option is not enabled by the renderer. Model adapters share
+bounded, cancellable body ingestion and byte-safe SSE framing. The runner serializes
+commands independently of bounded socket waits, preserves its first cancellation grace, retains the leader
+identity until group escalation and refuses execution after a failed durable start-acceptance write.
+Observable completion precedes a new timeout at a late poll; pending cancellation still retains its grace.
+Terminal timestamps permit retirement on every tested terminal path. Normal successful background services
+remain supported; unknown outcomes remain unknown. Log previews read only the requested prefix.
+
+A temporarily full storage queue defers discovery instead of ending supervision. Discovery exit always
+notifies owned drivers. Idle READY instances share diagnostics' indexed tail-kind query and materialize
+context only when a turn is needed. The TUI borrows cached history and copies visible rows, retains media
+clipping and uses one deadline across socket frame I/O. No conversation, approval or input shortcut changes.
+
+The formal audit separates positive coverage from negative controls and checks precise TLC verdicts.
+V2JobSupervision adds nine controls, V2Discovery adds two, and a daemon application counter adds one.
+All 50 positive configurations, 273 negative controls and seven Kani harnesses passed. This is finite,
+per-module evidence; the separate wide configuration, full composition/refinement, OS effects, wire parsers,
+semantic completeness and reviewer-accounting gap remain outside the established proof boundary.
+
+The synthetic debug redraw fixture measures 77.206 to 1.812 ms median at 201,599 wrapped rows, with allocated
+bytes per frame reduced from 49,052,488 to 23,210. Idle polling's trace drops from 15 full-context reads in
+250 ms to zero, while new input still loads authoritative context. These are local fixtures, not real-model
+quality or release-latency guarantees. Final source gates and installation evidence are recorded in ACCEPTANCE.
+The ten preexisting documentation changes are retained outside this implementation's scoped commits.
+
 ## D-493 Replace v0.2.0 with the current hardened build (2026-10-30)
 
 **Authorization.** The user explicitly asked to overwrite GitHub's published v0.2.0 with the latest TeamAgents.

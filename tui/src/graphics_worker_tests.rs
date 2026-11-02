@@ -89,9 +89,9 @@ fn composer_and_frames_remain_live_while_helper_hangs() {
         assert!(Instant::now() < deadline);
         thread::sleep(Duration::from_millis(5));
     }
-    let mut doc = app.graphics.block(source, &Origin::default(), 80);
-    doc.resolve(&mut app.graphics, 0, Rect::new(0, 0, 80, 24));
-    let shown = doc.lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+    let doc = app.graphics.block(source, &Origin::default(), 80);
+    let (lines, _) = doc.viewport(&Document::default(), &mut app.graphics, 0, Rect::new(0, 0, 80, 24));
+    let shown = lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
     assert!(shown.contains("timed out") && shown.contains("retained source"), "{shown}");
     assert_eq!(app.composer.text(), "draft while parsing");
 }

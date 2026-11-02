@@ -134,6 +134,7 @@ TLA_VERSION := 1.7.1
 TLA_SHA256 := d532ba31aafe17afba1130f92410d9257454ff7393d1eb2fe032f0c07f352da5
 
 verify-tools:
+	@python3 review/tlc_verdict.py --self-check
 	@mkdir -p "$(TLA_TOOLS_DIR)"
 	@if [ ! -f "$(TLA_TOOLS_DIR)/tla2tools.jar" ]; then \
 		echo "downloading TLC v$(TLA_VERSION) into $(TLA_TOOLS_DIR)"; \
@@ -149,20 +150,14 @@ verify-model: verify-tools
 	@cd verification/tla && meta="$(TLA_METADIR)/MC.cfg-$$$$"; rm -rf "$$meta"; \
 		out=$$(java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
 			tlc2.TLC -config MC.cfg -fp 64 -workers 4 -metadir "$$meta" V2Control.tla 2>&1); status=$$?; rm -rf "$$meta"; \
-		echo "$$out" | grep -E "No error|violation|violated|states generated"; \
-		if printf '%s' "$$out" | grep -q "No error has been found"; then :; \
-		elif printf '%s' "$$out" | grep -q "states generated"; then \
-			echo "MC.cfg did not verify (see above)" >&2; exit 1; \
-		else \
-			echo "MC.cfg did not run: TLC exited $$status without a verdict (see the tail)" >&2; \
-			echo "$$out" | tail -5 >&2; exit 1; fi
+		printf '%s\n' "$$out" | python3 ../../review/tlc_verdict.py positive MC.cfg $$status || exit 1
 
 # The module each configuration runs, in one place: the exhaustive target and `verify-model-sim` both
 # expand this, so they cannot disagree, and it must name *every* configuration in the directory — a
 # configuration that fell through the `*)` default would silently run the wrong module (the rule
 # `review/verification_catalogue.py` enforces). The control families are matched by prefix, after the
 # exact arms, because shell `case` takes the first match.
-CFG_CASE = case $$cfg in MC.cfg|MC_control*) echo V2Control.tla;; MC_artifact*) echo V2Artifact.tla;; MC_wait*) echo V2Wait.tla;; MC_task*) echo V2Task.tla;; MC_approval*) echo V2Approval.tla;; MC_compress*) echo V2Compress.tla;; MC_daemon*) echo V2Daemon.tla;; MC_checks*) echo V2Checks.tla;; MC_trust*) echo V2Trust.tla;; MC_projecttrust*) echo V2ProjectTrust.tla;; MC_prune*) echo V2Prune.tla;; MC_tui*) echo V2Tui.tla;; MC_presentation*) echo V2Presentation.tla;; MC_inputqueue*) echo V2InputQueue.tla;; MC_displayworker*) echo V2DisplayWorker.tla;; MC_prompt*) echo V2Prompt.tla;; MC_retry*) echo V2Retry.tla;; MC_grants*) echo V2Grants.tla;; MC_capabilities*) echo V2Capabilities.tla;; MC_authority*) echo V2Authority.tla;; MC_store*) echo V2Store.tla;; MC_retention*) echo V2Retention.tla;; MC_history*) echo V2History.tla;; MC_sessionui*) echo V2SessionUi.tla;; MC_sessions*) echo V2Sessions.tla;; MC_schedule*) echo V2Schedule.tla;; MC_isolation*) echo V2Isolation.tla;; MC_codemode*) echo V2Codemode.tla;; MC_images*) echo V2Images.tla;; MC_memory*) echo V2Memory.tla;; MC_update*) echo V2Update.tla;; MC_oauth*) echo V2Oauth.tla;; MC_jobs*) echo V2Jobs.tla;; MC_inbox*) echo V2Inbox.tla;; MC_diskfull*) echo V2DiskFull.tla;; MC_coordinator*) echo V2Coordinator.tla;; MC_work.cfg|MC_work_*) echo V2Work.tla;; MC_workspace*) echo V2Workspace.tla;; MC_concurrency*) echo V2Concurrency.tla;; MC_control*) echo V2Control.tla;; MC_wide.cfg) echo V2Control.tla;; *) echo V2Artifact.tla;; esac
+CFG_CASE = case $$cfg in MC.cfg|MC_control*) echo V2Control.tla;; MC_artifact*) echo V2Artifact.tla;; MC_wait*) echo V2Wait.tla;; MC_task*) echo V2Task.tla;; MC_approval*) echo V2Approval.tla;; MC_compress*) echo V2Compress.tla;; MC_daemon*) echo V2Daemon.tla;; MC_checks*) echo V2Checks.tla;; MC_trust*) echo V2Trust.tla;; MC_projecttrust*) echo V2ProjectTrust.tla;; MC_prune*) echo V2Prune.tla;; MC_tui*) echo V2Tui.tla;; MC_presentation*) echo V2Presentation.tla;; MC_inputqueue*) echo V2InputQueue.tla;; MC_displayworker*) echo V2DisplayWorker.tla;; MC_prompt*) echo V2Prompt.tla;; MC_retry*) echo V2Retry.tla;; MC_grants*) echo V2Grants.tla;; MC_capabilities*) echo V2Capabilities.tla;; MC_authority*) echo V2Authority.tla;; MC_store*) echo V2Store.tla;; MC_retention*) echo V2Retention.tla;; MC_history*) echo V2History.tla;; MC_sessionui*) echo V2SessionUi.tla;; MC_sessions*) echo V2Sessions.tla;; MC_schedule*) echo V2Schedule.tla;; MC_isolation*) echo V2Isolation.tla;; MC_codemode*) echo V2Codemode.tla;; MC_images*) echo V2Images.tla;; MC_memory*) echo V2Memory.tla;; MC_update*) echo V2Update.tla;; MC_oauth*) echo V2Oauth.tla;; MC_jobsupervision*) echo V2JobSupervision.tla;; MC_jobs.cfg|MC_jobs_*) echo V2Jobs.tla;; MC_inbox*) echo V2Inbox.tla;; MC_diskfull*) echo V2DiskFull.tla;; MC_discovery*) echo V2Discovery.tla;; MC_coordinator*) echo V2Coordinator.tla;; MC_work.cfg|MC_work_*) echo V2Work.tla;; MC_workspace*) echo V2Workspace.tla;; MC_concurrency*) echo V2Concurrency.tla;; MC_control*) echo V2Control.tla;; MC_wide.cfg) echo V2Control.tla;; *) echo V2Artifact.tla;; esac
 
 # (D-293) TLC's meta directory is `states/` under the spec's directory, suffixed with the *run's timestamp*, and
 # `FileUtil.makeMetaDir` asserts that directory does not already exist (`!dir.exists()`, then `mkdirs()`): a
@@ -174,20 +169,12 @@ TLA_METADIR ?= $(CURDIR)/review/tmp/tla
 
 # small exhaustive configurations for every module (seconds; the wide config is verify-model-wide)
 verify-model-all: verify-tools
-	@cd verification/tla && for cfg in MC.cfg MC_control_two.cfg MC_control_warn.cfg MC_work.cfg MC_oauth.cfg MC_artifact.cfg MC_wait.cfg MC_task.cfg MC_task_two.cfg MC_approval.cfg MC_compress.cfg MC_daemon.cfg MC_daemon_stop.cfg MC_checks.cfg MC_checks_briefing.cfg MC_checks_independent.cfg MC_memory.cfg MC_grants.cfg MC_grants_task.cfg MC_capabilities.cfg MC_authority.cfg MC_store.cfg MC_retention.cfg MC_history.cfg MC_sessions.cfg MC_schedule.cfg MC_isolation.cfg MC_isolation_ssh.cfg MC_codemode.cfg MC_images.cfg MC_images_blind_model.cfg MC_update.cfg MC_jobs.cfg MC_inbox.cfg MC_diskfull.cfg MC_coordinator.cfg MC_trust.cfg MC_prompt.cfg MC_retry.cfg MC_workspace.cfg MC_concurrency.cfg MC_projecttrust.cfg MC_prune.cfg MC_tui.cfg MC_sessionui.cfg MC_presentation.cfg MC_inputqueue.cfg MC_displayworker.cfg; do \
+	@cd verification/tla && for cfg in MC.cfg MC_control_two.cfg MC_control_warn.cfg MC_work.cfg MC_oauth.cfg MC_artifact.cfg MC_wait.cfg MC_task.cfg MC_task_two.cfg MC_approval.cfg MC_compress.cfg MC_daemon.cfg MC_daemon_stop.cfg MC_checks.cfg MC_checks_briefing.cfg MC_checks_independent.cfg MC_memory.cfg MC_grants.cfg MC_grants_task.cfg MC_capabilities.cfg MC_authority.cfg MC_store.cfg MC_retention.cfg MC_history.cfg MC_sessions.cfg MC_schedule.cfg MC_isolation.cfg MC_isolation_ssh.cfg MC_codemode.cfg MC_images.cfg MC_images_blind_model.cfg MC_update.cfg MC_jobs.cfg MC_jobsupervision.cfg MC_inbox.cfg MC_diskfull.cfg MC_discovery.cfg MC_coordinator.cfg MC_trust.cfg MC_prompt.cfg MC_retry.cfg MC_workspace.cfg MC_concurrency.cfg MC_projecttrust.cfg MC_prune.cfg MC_tui.cfg MC_sessionui.cfg MC_presentation.cfg MC_inputqueue.cfg MC_displayworker.cfg; do \
 		echo "== $$cfg =="; \
 		meta="$(TLA_METADIR)/$$cfg-$$$$"; rm -rf "$$meta"; \
 		out=$$(java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
 			tlc2.TLC -config $$cfg -fp 64 -workers 4 -metadir "$$meta" $$( $(CFG_CASE) ) 2>&1); status=$$?; rm -rf "$$meta"; \
-		echo "$$out" | grep -E "No error|violation|violated|states generated"; \
-		if printf '%s' "$$out" | grep -q "Warning:"; then \
-			echo "$$cfg carried a TLC warning: an inconsistent model is a defect, not a note (see above)" >&2; exit 1; fi; \
-		if printf '%s' "$$out" | grep -q "No error has been found"; then :; \
-		elif printf '%s' "$$out" | grep -q "states generated"; then \
-			echo "$$cfg did not verify (see above)" >&2; exit 1; \
-		else \
-			echo "$$cfg did not run: TLC exited $$status without a verdict (full output follows)" >&2; \
-			printf '%s\n' "$$out" >&2; exit 1; fi; \
+		printf '%s\n' "$$out" | python3 ../../review/tlc_verdict.py positive $$cfg $$status || exit 1; \
 	done
 
 # The authority, inbound-boundary and store-identity claims must be *falsifiable*
@@ -282,31 +269,19 @@ verify-model-counterexamples: verify-tools
 		MC_concurrency_writer_waits.cfg:V2Concurrency.tla MC_concurrency_skips_an_event.cfg:V2Concurrency.tla \
 		MC_concurrency_reads_ahead.cfg:V2Concurrency.tla \
 		MC_retry_session_constant.cfg:V2Retry.tla MC_retry_off_by_one.cfg:V2Retry.tla \
-		MC_retry_parks_early.cfg:V2Retry.tla; do \
+		MC_retry_parks_early.cfg:V2Retry.tla \
+		MC_jobsupervision_socket.cfg:V2JobSupervision.tla MC_jobsupervision_timer.cfg:V2JobSupervision.tla \
+		MC_jobsupervision_grace.cfg:V2JobSupervision.tla MC_jobsupervision_reap.cfg:V2JobSupervision.tla \
+		MC_jobsupervision_timestamp.cfg:V2JobSupervision.tla MC_jobsupervision_normal.cfg:V2JobSupervision.tla \
+		MC_jobsupervision_retire.cfg:V2JobSupervision.tla MC_daemon_duplicate_effect.cfg:V2Daemon.tla \
+		MC_jobsupervision_persist.cfg:V2JobSupervision.tla MC_jobsupervision_completion.cfg:V2JobSupervision.tla \
+		MC_discovery_pressure.cfg:V2Discovery.tla MC_discovery_cleanup.cfg:V2Discovery.tla; do \
 		cfg=$${pair%%:*}; spec=$${pair##*:}; \
 		echo "== $$cfg (must be refuted) =="; \
-		expect=$$(sed -n 's/^\\\* expects: \([A-Za-z_][A-Za-z0-9_]*\).*/\1/p' $$cfg | head -1); \
-		if [ -z "$$expect" ]; then \
-			echo "$$cfg carries no 'expects:' marker: a control has to name the property it must refute, or a refutation of some other property would pass for it (D-462)" >&2; exit 1; fi; \
 		meta="$(TLA_METADIR)/$$cfg-$$$$"; rm -rf "$$meta"; \
 		out=$$(java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
 			tlc2.TLC -config $$cfg -fp 64 -workers 4 -metadir "$$meta" $$spec 2>&1); status=$$?; rm -rf "$$meta"; \
-		if printf '%s' "$$out" | grep -q "Warning:"; then \
-			echo "$$cfg carried a TLC warning: an inconsistent model is a defect, not a note (see above)" >&2; exit 1; fi; \
-		if printf '%s' "$$out" | grep -qE "is violated|properties were violated|is equal to FALSE"; then \
-			if printf '%s' "$$out" | grep -qE "(Invariant|Action property) $$expect (is violated|is equal to FALSE)|invariant of $$expect is equal to FALSE"; then :; \
-			elif printf '%s' "$$out" | grep -q "Temporal properties were violated"; then \
-				:; \
-			else \
-				echo "$$cfg was refuted, but not by $$expect: the marker and the violated property disagree (D-462)" >&2; \
-				echo "$$out" | grep -E "is violated|properties were violated" >&2; exit 1; fi; \
-			echo "$$out" | grep -E "is violated|properties were violated|is equal to FALSE"; \
-		elif printf '%s' "$$out" | grep -q "states generated"; then \
-			echo "$$cfg verified instead of refuting $$expect: the property it should break may be vacuous" >&2; \
-			echo "$$out" | tail -5 >&2; exit 1; \
-		else \
-			echo "$$cfg did not run: TLC exited $$status without a verdict (a start failure, not a vacuous property)" >&2; \
-			echo "$$out" | tail -8 >&2; exit 1; fi; \
+		printf '%s\n' "$$out" | python3 ../../review/tlc_verdict.py negative $$cfg $$status || exit 1; \
 	done
 
 
@@ -324,13 +299,7 @@ verify-model-wide: verify-tools
 	@cd verification/tla && meta="$(TLA_METADIR)/MC_wide.cfg-$$$$"; rm -rf "$$meta"; \
 		out=$$(java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
 			tlc2.TLC -config MC_wide.cfg -fp 64 -workers 8 -metadir "$$meta" V2Control.tla 2>&1); status=$$?; rm -rf "$$meta"; \
-		echo "$$out" | grep -E "No error|violation|violated|states generated"; \
-		if printf '%s' "$$out" | grep -q "No error has been found"; then :; \
-		elif printf '%s' "$$out" | grep -q "states generated"; then \
-			echo "MC_wide.cfg did not verify (see above)" >&2; exit 1; \
-		else \
-			echo "MC_wide.cfg did not run: TLC exited $$status without a verdict (see the tail)" >&2; \
-			echo "$$out" | tail -5 >&2; exit 1; fi
+		printf '%s\n' "$$out" | python3 ../../review/tlc_verdict.py positive MC_wide.cfg $$status || exit 1
 
 # Two configurations are beyond a bounded exhaustive attempt — the wide control-plane one (D-210: an hour, no
 # verdict) and the task one, whose second task diverges at 43M states without converging — so this supplement
@@ -415,7 +384,7 @@ hygiene: language-check
 	python3 review/eval_manifests.py
 	python3 review/eval_surface.py
 	python3 review/eval/r2-p6/anatomy.py --self-check
-	python3 review/verification_catalogue.py
+	python3 review/verification_catalogue.py --self-check
 	python3 review/exec_report.py
 	python3 review/tui_keys.py
 	python3 review/env_knobs.py

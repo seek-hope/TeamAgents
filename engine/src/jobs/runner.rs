@@ -9,8 +9,9 @@ use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixListener;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::net::{UnixListener, UnixStream};
+use tokio::sync::{mpsc, oneshot};
 
 /// Test-only fault injection is compiled in but disabled unless the parent
 /// explicitly opts in per runner process (never from the job file or model).
@@ -128,6 +129,7 @@ impl Runner {
             }
             Err(error) => {
                 self.journal.state = "FAILED".into();
+                self.journal.finished_ms = Some(now_ms());
                 self.persist();
                 Err(format!("spawn: {error}"))
             }
@@ -144,6 +146,14 @@ impl Runner {
                 // this point is OUTCOME_UNKNOWN on recovery, never "not run".
                 self.journal.state = "START_ACCEPTED".into();
                 self.persist();
+                if !self.journal_saved {
+                    // An in-memory acceptance cannot anchor recovery after a
+                    // crash. No process has started, so this attempt can fail
+                    // honestly even when the failure journal also cannot save.
+                    self.journal.finished_ms = Some(now_ms());
+                    self.mark("FAILED", false);
+                    return Err("start acceptance could not be persisted; command was not started".into());
+                }
                 if method == "go-crash-after-accept" {
                     if !self.test_hooks {
                         return Err("test hooks disabled".into());
@@ -162,11 +172,12 @@ impl Runner {
                 if self.journal.state == "READY" {
                     // persist CANCELLED_BEFORE_START first, then confirm; this
                     // terminal state permanently rejects late or replayed GOs
+                    self.journal.finished_ms = Some(now_ms());
                     self.mark("CANCELLED_BEFORE_START", true);
-                } else if self.child.is_some() {
+                } else if self.child.is_some() && self.cancel_requested_at.is_none() {
                     self.mark("CANCEL_REQUESTED", true);
-                    signal_group(&self.journal, libc::SIGTERM)?;
                     self.cancel_requested_at = Some(now_ms());
+                    signal_group(&self.journal, libc::SIGTERM)?;
                 } else if self.journal.state == "OUTCOME_UNKNOWN" && self.journal.pid.is_some() {
                     // a recovered runner cannot waitpid the old child or claim
                     // its outcome; best-effort stop with identity re-verified
@@ -191,16 +202,34 @@ impl Runner {
 
     /// Child reaping + deadline/cancel escalation, called on every tick.
     fn tick(&mut self) {
+        if self.cancel_requested_at.is_none() {
+            // Completion already observable at this poll precedes a new timeout.
+            // An unreaped successful leader must not expose its surviving service
+            // to cancellation just because the next tick arrived after the deadline.
+            self.reap_child();
+            if self.child.is_none() {
+                return;
+            }
+        }
         if self.child.is_some() && now_ms() >= self.spec.deadline_ms && self.cancel_requested_at.is_none() {
             self.mark("CANCEL_REQUESTED", true);
             let _ = signal_group(&self.journal, libc::SIGTERM);
             self.cancel_requested_at = Some(now_ms());
         }
         if let Some(since) = self.cancel_requested_at {
-            if now_ms().saturating_sub(since) > CANCEL_ESCALATION_MS && self.child.is_some() {
-                let _ = signal_group(&self.journal, libc::SIGKILL);
+            // Keep even an exited leader unreaped until escalation. Its PID and
+            // start ticks remain an identity anchor for the entire group; reaping
+            // it early would strand descendants that ignored TERM. Normal
+            // completion still permits intentionally persistent services.
+            if now_ms().saturating_sub(since) < CANCEL_ESCALATION_MS {
+                return;
             }
+            let _ = signal_group(&self.journal, libc::SIGKILL);
+            self.reap_child();
         }
+    }
+
+    fn reap_child(&mut self) {
         let Some(active) = self.child.as_mut() else { return };
         match active.try_wait() {
             Ok(Some(status)) => {
@@ -249,6 +278,52 @@ impl Runner {
     }
 }
 
+struct RunnerRequest {
+    method: String,
+    reply: oneshot::Sender<Json>,
+}
+
+/// Socket waits never own the runner state. Each connection has bounded input
+/// and waits; requests still commit serially in the supervising loop.
+async fn serve_client(stream: UnixStream, token: String, requests: mpsc::Sender<RunnerRequest>) -> bool {
+    let (read, mut write) = stream.into_split();
+    let mut reader = BufReader::new(read);
+    loop {
+        let mut line = Vec::new();
+        let read = tokio::time::timeout(super::RPC_TIMEOUT, async {
+            (&mut reader).take(super::MAX_RPC_BYTES + 1).read_until(b'\n', &mut line).await
+        })
+        .await;
+        if !matches!(read, Ok(Ok(n)) if n > 0)
+            || line.len() as u64 > super::MAX_RPC_BYTES
+            || line.last() != Some(&b'\n')
+        {
+            return false;
+        }
+        let Ok(request) = serde_json::from_slice::<Json>(&line) else { return false };
+        let method = request["method"].as_str().unwrap_or("");
+        let reply = if request["version"].as_u64() != Some(1) {
+            json!({"ok":false,"error":"protocol version mismatch"})
+        } else if request["token"].as_str() != Some(token.as_str()) {
+            json!({"ok":false,"error":"job token mismatch"})
+        } else {
+            let (reply, response) = oneshot::channel();
+            let exchange = tokio::time::timeout(super::RPC_TIMEOUT, async {
+                requests.send(RunnerRequest { method: method.to_string(), reply }).await.ok()?;
+                response.await.ok()
+            })
+            .await;
+            let Ok(Some(reply)) = exchange else { return false };
+            reply
+        };
+        let shutdown = method == "shutdown" && reply["ok"] == json!(true);
+        let written = tokio::time::timeout(super::RPC_TIMEOUT, write.write_all(format!("{reply}\n").as_bytes())).await;
+        if shutdown || !matches!(written, Ok(Ok(()))) {
+            return shutdown;
+        }
+    }
+}
+
 fn tracing_warn(message: &str) {
     eprintln!("runner: {message}");
 }
@@ -283,6 +358,9 @@ pub async fn serve(root: &Path) -> Result<(), String> {
         if matches!(recovered.state.as_str(), "START_ACCEPTED" | "RUNNING" | "CANCEL_REQUESTED") {
             recovered.state = "OUTCOME_UNKNOWN".into();
         }
+        if recovered.terminal() && recovered.finished_ms.is_none() {
+            recovered.finished_ms = Some(now_ms());
+        }
         recovered
     } else {
         Journal {
@@ -314,74 +392,60 @@ pub async fn serve(root: &Path) -> Result<(), String> {
     runner.persist();
     let listener = UnixListener::bind_addr(&super::socket_addr(&runner.spec.token)?)
         .map_err(|e| format!("bind job socket: {e}"))?;
-    let mut tick = tokio::time::interval(TICK);
+    let (requests, mut pending) = mpsc::channel::<RunnerRequest>(32);
+    let mut clients = tokio::task::JoinSet::new();
+    let tick = tokio::time::sleep(runner.idle_tick);
+    tokio::pin!(tick);
+    let mut idle_timer = true;
+    let mut shutting_down = false;
     loop {
-        // An idle runner waits on its socket alone, at a cadence that only has to notice a job directory that
-        // vanished (see IDLE_TICK): the tick is for the child, and there is no child.
         let idle = runner.child.is_none() && runner.cancel_requested_at.is_none();
-        tick.reset_after(if idle { runner.idle_tick } else { TICK });
+        // Client traffic cannot move the deadline. Only a change between idle
+        // and active supervision changes the cadence.
+        if idle != idle_timer {
+            tick.as_mut().reset(tokio::time::Instant::now() + if idle { runner.idle_tick } else { TICK });
+            idle_timer = idle;
+        }
+        if shutting_down && clients.is_empty() {
+            break;
+        }
         tokio::select! {
-            _ = tick.tick() => {
-                // A job directory that is gone cannot be served: every client resolves the socket from the
-                // token in its `job.json`, and nothing this runner records can be written any more. Waiting can
-                // only leak the process (measured: 19 of one machine's 1,397 live runners; D-153).
-                if !runner.root.is_dir() {
-                    break;
-                }
-                // An idle runner whose job is settled has nothing left to add (see `settled_long_enough`).
-                if idle && runner.journal.terminal() && runner.settled_long_enough() {
+            biased;
+            _ = &mut tick => {
+                if !runner.root.is_dir() || (idle && runner.journal.terminal() && runner.settled_long_enough()) {
                     break;
                 }
                 runner.tick();
+                tick.as_mut().reset(tokio::time::Instant::now() + if idle { runner.idle_tick } else { TICK });
             }
-            accepted = listener.accept() => {
-                let (stream, _) = match accepted {
-                    Ok(pair) => pair,
-                    Err(_) => continue,
+            Some(request) = pending.recv() => {
+                let reply = if shutting_down {
+                    json!({"ok":false,"error":"runner is shutting down"})
+                } else {
+                    match runner.request(&request.method) {
+                        Ok(reply) => reply,
+                        Err(error) => json!({"ok":false,"error":error}),
+                    }
                 };
-                let (read, mut write) = stream.into_split();
-                let mut reader = BufReader::new(read);
-                let mut line = Vec::new();
-                let mut shutdown = false;
-                loop {
-                    line.clear();
-                    let Ok(n) = reader.read_until(b'\n', &mut line).await else { break };
-                    if n == 0 {
-                        break;
-                    }
-                    let request: Json = match serde_json::from_slice(&line) {
-                        Ok(r) => r,
-                        Err(_) => continue,
-                    };
-                    if request["version"].as_u64() != Some(1) {
-                        let _ = write.write_all(b"{\"ok\":false,\"error\":\"protocol version mismatch\"}\n").await;
-                        continue;
-                    }
-                    if request["token"].as_str() != Some(runner.spec.token.as_str()) {
-                        let _ = write.write_all(b"{\"ok\":false,\"error\":\"job token mismatch\"}\n").await;
-                        continue;
-                    }
-                    let method = request["method"].as_str().unwrap_or("");
-                    let reply = match runner.request(method) {
-                        Ok(v) => v,
-                        Err(e) => json!({"ok": false, "error": e}),
-                    };
-                    if method == "shutdown" && reply["ok"] == json!(true) {
-                        shutdown = true;
-                    }
-                    if write.write_all(format!("{reply}\n").as_bytes()).await.is_err() {
-                        break;
-                    }
-                    if shutdown {
-                        break;
-                    }
-                }
-                if shutdown {
+                shutting_down |= request.method == "shutdown" && reply["ok"] == json!(true);
+                let _ = request.reply.send(reply);
+            }
+            finished = clients.join_next(), if !clients.is_empty() => {
+                if matches!(finished, Some(Ok(true))) {
                     break;
+                }
+            }
+            accepted = listener.accept(), if !shutting_down => {
+                if let Ok((stream, _)) = accepted {
+                    if clients.len() < 32 {
+                        clients.spawn(serve_client(stream, runner.spec.token.clone(), requests.clone()));
+                    }
                 }
             }
         }
     }
+    clients.abort_all();
+    while clients.join_next().await.is_some() {}
     drop(listener);
     drop(lock);
     Ok(())
@@ -423,4 +487,79 @@ pub fn spawn(root: &Path, spec: &JobSpec) -> Result<(), String> {
     }
     command.spawn().map_err(|e| format!("spawn runner: {e}"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_observed_exit_wins_over_a_late_deadline_tick_and_preserves_its_service() {
+        let root = std::env::temp_dir().join(format!("teamagents-exit-deadline-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let spec = JobSpec {
+            job_id: "exit-before-poll".into(),
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), "sleep 30 &".into()],
+            cwd: root.to_string_lossy().into_owned(),
+            env: vec![("PATH".into(), "/usr/bin:/bin".into())],
+            deadline_ms: u64::MAX,
+            token: "unused".into(),
+        };
+        let journal = Journal {
+            job_id: spec.job_id.clone(),
+            state: "START_ACCEPTED".into(),
+            command_hash: spec.command_hash(),
+            pid: None,
+            start_ticks: None,
+            boot_id: boot_id().unwrap(),
+            exit_code: None,
+            signal: None,
+            started_ms: None,
+            finished_ms: None,
+            starts: 0,
+            cancel_saved: false,
+        };
+        let mut runner = Runner {
+            root: root.clone(),
+            spec,
+            journal,
+            child: None,
+            cancel_requested_at: None,
+            idle_tick: IDLE_TICK,
+            fail_writes: false,
+            test_hooks: false,
+            journal_saved: true,
+        };
+        runner.start_command().unwrap();
+        let pid = runner.journal.pid.unwrap();
+        let mut exited = false;
+        for _ in 0..400 {
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+            if stat.rsplit_once(") ").is_some_and(|(_, rest)| rest.starts_with("Z ")) {
+                exited = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // The leader exited before this deliberately late supervision tick.
+        // It remains unreaped, so the old ordering would still cancel its group.
+        runner.spec.deadline_ms = now_ms().saturating_sub(1);
+        runner.tick();
+        let state = runner.journal.state.clone();
+        let cancelled = runner.cancel_requested_at.is_some();
+        let live = super::super::group_members(&super::super::proc_table(), pid).len();
+        // SAFETY: this process group was created by this test and its 30-second
+        // descendant is still owned by the fixture; no system-wide process match.
+        unsafe {
+            libc::kill(-(pid as i32), libc::SIGKILL);
+        }
+        if let Some(mut child) = runner.child.take() {
+            let _ = child.wait();
+        }
+        std::fs::remove_dir_all(root).unwrap();
+        assert!(exited, "the fixture must observe an unreaped completed leader");
+        assert_eq!(state, "SUCCEEDED");
+        assert!(!cancelled && live > 0, "a completed command's service must survive its late poll");
+    }
 }

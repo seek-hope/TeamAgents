@@ -1,0 +1,41 @@
+{
+  "profile": "debug",
+  "frames_per_case": 100,
+  "cells": [
+    80,
+    24
+  ],
+  "redraw": [
+    {
+      "entries": 40,
+      "rows": 20159,
+      "p50_ms": 0.847836,
+      "p95_ms": 0.936993,
+      "allocations_per_frame": 144,
+      "allocated_bytes_per_frame": 23210
+    },
+    {
+      "entries": 200,
+      "rows": 100799,
+      "p50_ms": 1.3690449999999998,
+      "p95_ms": 1.650179,
+      "allocations_per_frame": 144,
+      "allocated_bytes_per_frame": 23210
+    },
+    {
+      "entries": 400,
+      "rows": 201599,
+      "p50_ms": 1.81162,
+      "p95_ms": 2.197371,
+      "allocations_per_frame": 144,
+      "allocated_bytes_per_frame": 23210
+    }
+  ],
+  "wrap": {
+    "input_bytes": 390000,
+    "rows": 5000,
+    "ms": 112.972083,
+    "allocations": 205057,
+    "allocated_bytes": 53073975
+  }
+}

@@ -24,6 +24,26 @@ shape D-206 was committed in.
 
 <!-- maps: verification/REPORT.md reader=evidence -->
 
+## D-494 supervision and evidence checks
+
+The current catalogue contains 41 modules, 50 positive configurations, 273 negative controls and one
+separately driven wide configuration. The catalogue now derives checked claims only from the positive
+configurations. A control must actually list its expected claim. All exhaustive targets reject warnings
+and require a successful exit and verdict. Negative verdicts are checked by
+[tlc_verdict.py](../review/tlc_verdict.py): a generic temporal failure is accepted only when the configuration
+lists exactly its expected temporal property. A named constant-FALSE invariant is a static refutation;
+it is not reported as an explored counterexample trace.
+
+| Model and positive configuration | Checked behavior and dedicated controls | Boundary |
+|---|---|---|
+| `tla/V2JobSupervision.tla`, `tla/MC_jobsupervision.cfg` | `TypeOK`, `UnsavedAcceptanceNeverExecutes`, `CancelGraceNeverReplenished`, `CancelledGroupWasEscalated`, `TerminalHasRetirementTime`, `NormalServicesArePreserved`, `DeadlineEventuallyCancels`, `SettledRunnerEventuallyLeaves` cover durable acceptance, stalled clients, timer resets, repeated cancel, leader reaping, retirement and normal background services. | One clock step abstracts a deadline/grace interval. Signal delivery and identity are abstract; no OS, escaped-descendant, remote-effect or Rust refinement proof. |
+| `tla/V2Discovery.tla`, `tla/MC_discovery.cfg` | `TypeOK`, `ExitedCoordinatorNotifiesDrivers`, `DiscoverySurvivesBackpressure` cover a temporary full storage queue and cleanup after a fatal discovery error. | One finite saturation burst and fair drain/discovery; no progress promise under permanent overload or failed driver construction. |
+| `tla/V2Daemon.tla`, `tla/MC_daemon.cfg` | `CommandApplicationCountIsBounded` counts applications per command. The historical `AppliedAtMostOnce` predicate checks receipt presence; it alone does not prove deduplication. | The model abstracts command transactions and does not prove SQLite/Rust refinement. |
+
+The nine job-supervision controls are `tla/MC_jobsupervision_socket.cfg`, `tla/MC_jobsupervision_timer.cfg`, `tla/MC_jobsupervision_grace.cfg`, `tla/MC_jobsupervision_reap.cfg`, `tla/MC_jobsupervision_timestamp.cfg`, `tla/MC_jobsupervision_normal.cfg`, `tla/MC_jobsupervision_retire.cfg`, `tla/MC_jobsupervision_persist.cfg`, `tla/MC_jobsupervision_completion.cfg`; the discovery controls are `tla/MC_discovery_pressure.cfg` and `tla/MC_discovery_cleanup.cfg`.
+The daemon count control is `tla/MC_daemon_duplicate_effect.cfg`. Each names the property it must refute.
+The complete proof boundary and the remaining implementation gaps are in [REPORT.md](REPORT.md).
+
 ## Running
 
 ```bash

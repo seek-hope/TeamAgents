@@ -20,7 +20,7 @@ pub fn wrap_line(line: &Line, width: usize) -> Vec<Line<'static>> {
         styles.push((offset, line.style.patch(span.style)));
     }
     let mut style_index = 0;
-    let mut tokens: Vec<Vec<(String, Style, usize)>> = Vec::new();
+    let mut tokens: Vec<Vec<(&str, Style, usize)>> = Vec::new();
     let mut previous_space = false;
     for (offset, grapheme) in text.grapheme_indices(true) {
         while style_index + 1 < styles.len() && offset >= styles[style_index].0 {
@@ -33,7 +33,7 @@ pub fn wrap_line(line: &Line, width: usize) -> Vec<Line<'static>> {
         previous_space = space;
         let size = UnicodeWidthStr::width(grapheme);
         let (grapheme, size) = if size > width { ("�", 1) } else { (grapheme, size) };
-        tokens.last_mut().unwrap().push((grapheme.into(), styles[style_index].1, size));
+        tokens.last_mut().unwrap().push((grapheme, styles[style_index].1, size));
     }
     let mut out = Vec::new();
     let mut row: Vec<Span<'static>> = Vec::new();
@@ -54,9 +54,9 @@ pub fn wrap_line(line: &Line, width: usize) -> Vec<Line<'static>> {
                 }
             }
             if let Some(last) = row.last_mut().filter(|last| last.style == style) {
-                last.content.to_mut().push_str(&text);
+                last.content.to_mut().push_str(text);
             } else {
-                row.push(Span::styled(text, style));
+                row.push(Span::styled(text.to_string(), style));
             }
             used += size;
         }

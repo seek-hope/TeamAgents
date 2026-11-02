@@ -14,6 +14,7 @@ before claiming a falsification, rule out probe error. Current behavior is defin
 
 | Path | Contents and boundary |
 |---|---|
+| [Robustness and performance review](optimization-2026-11-03/REPORT.md) | D-494 provider/runner/storage/TUI regressions, synthetic redraw measurements and formal coverage audit; no independent audit or real-model comparison |
 | [Security and cleanup review](security-2026-10-29/REPORT.md) | D-492 dependency advisories, concrete OAuth/MCP/update bounds, old-code controls, dead-code and stale-document cleanup; not a full independent security audit |
 | [TUI reference study](tui-reference-2026-10-29/REPORT.md) | D-489 pinned Codex, Grok Build and herdr comparison, Grok selection and local adaptation/install evidence; no usability benchmark |
 | [Goal autonomy source study](goal-autonomy-2026-10-28/REPORT.md) | Seven pinned repositories and the original DD-11 proposal, now implemented as D-487; no comparative model trial |
@@ -44,7 +45,7 @@ and explains the maintenance workflow. The groups below are an index, not anothe
 | Evaluation and formal material | `eval_manifests.py`, `eval_surface.py`, `eval/r2-p6/anatomy.py`, `verification_catalogue.py` |
 | Probe selection | `dogfood/probes.py` |
 
-There are now **18** probes in the offline set, selected by `dogfood/probes.py`. For the current tree, `citations.py` verifies that 295 relative links resolve today. It checks 733 commands, 27 distinct targets, 21 declared as checked on 2026-10-29;
+There are now **18** probes in the offline set, selected by `dogfood/probes.py`. For the current tree, `citations.py` verifies that 306 relative links resolve today. It checks 739 commands, 27 distinct targets, 21 declared as checked on 2026-11-03;
 its other totals are recomputed and compared with the script's own docstring.
 
 Useful manual checks:
@@ -80,6 +81,7 @@ local binary or network sources. None of these manual tools belongs in an offlin
 
 <!-- The reading map (D-443): the review material is evidence, one home each. The three dated notes are kept
      because decisions and the verification report cite them, and ACCEPTANCE Q19 keeps review evidence. -->
+<!-- maps: review/optimization-2026-11-03/REPORT.md reader=evidence -->
 <!-- maps: review/security-2026-10-29/REPORT.md reader=evidence -->
 <!-- maps: review/tui-reference-2026-10-29/REPORT.md reader=evidence -->
 <!-- maps: review/goal-autonomy-2026-10-28/REPORT.md reader=evidence -->

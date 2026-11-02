@@ -67,7 +67,7 @@ noreceipt == 0         \* sentinel: the command never produced a receipt
 
 VARIABLES
   logLength,    \* appended events so far: also the current state version
-  applied,      \* command -> was it applied
+  applied,      \* command -> application count (D-494; a Boolean cannot detect duplicate effects)
   receipt,      \* command -> the version its stored receipt describes
   payloadOf,    \* command -> the payload that was applied
   versionOf,    \* command -> the wire version it arrived with
@@ -113,10 +113,10 @@ RuntimeEvent ==
 Submit(c, cmd, payload, v) ==
   /\ v \in Versions
   /\ (ApplyOnAnotherVersion \/ v = Wire)
-  /\ ~applied[cmd]
+  /\ applied[cmd] = 0
   /\ logLength < MaxLog
   /\ logLength' = logLength + 1
-  /\ applied' = [applied EXCEPT ![cmd] = TRUE]
+  /\ applied' = [applied EXCEPT ![cmd] = @ + 1]
   /\ receipt' = [receipt EXCEPT ![cmd] =
         IF ApplyWithoutReceipt THEN noreceipt ELSE logLength + 1 + (IF ReceiptBeyondLog THEN 1 ELSE 0)]
   /\ payloadOf' = [payloadOf EXCEPT ![cmd] = payload]
@@ -130,13 +130,13 @@ Submit(c, cmd, payload, v) ==
 \* A replayed command id with the SAME payload returns the stored receipt and
 \* changes nothing (that is what makes client retries safe).
 Replay(c, cmd, payload) ==
-  /\ applied[cmd] /\ payload = payloadOf[cmd]
+  /\ applied[cmd] > 0 /\ payload = payloadOf[cmd]
   /\ UNCHANGED monVars
 
 \* A replayed command id with a DIFFERENT payload is refused outright: the
 \* stored receipt is authoritative, the state does not move.
 ReplayDivergent(c, cmd, payload) ==
-  /\ applied[cmd] /\ payload # payloadOf[cmd]
+  /\ applied[cmd] > 0 /\ payload # payloadOf[cmd]
   /\ UNCHANGED monVars
 
 \* Counterfactual (D-219): a same-payload replay re-applies the command — the
@@ -144,7 +144,7 @@ ReplayDivergent(c, cmd, payload) ==
 \* it. `ReceiptsAreStable` is the claim about that, and `drift` records it.
 ReapplyOnReplay(c, cmd, payload) ==
   /\ ReplayRewritesReceipt
-  /\ applied[cmd] /\ payload = payloadOf[cmd]
+  /\ applied[cmd] > 0 /\ payload = payloadOf[cmd]
   /\ logLength < MaxLog
   /\ logLength' = logLength + 1
   /\ receipt' = [receipt EXCEPT ![cmd] = logLength + 1]
@@ -152,7 +152,8 @@ ReapplyOnReplay(c, cmd, payload) ==
   /\ shrank' = shrank
   /\ UNCHANGED lifecycle
   /\ UNCHANGED delivery
-  /\ UNCHANGED <<applied, payloadOf, versionOf, snapshot, cursor, view, pruned>>
+  /\ applied' = [applied EXCEPT ![cmd] = @ + 1]
+  /\ UNCHANGED <<payloadOf, versionOf, snapshot, cursor, view, pruned>>
 
 \* Counterfactual (D-219): a compaction drops the oldest event and renumbers the
 \* log, so a version that named it is gone — the "versions are never reused or
@@ -273,7 +274,7 @@ Next ==
 
 Init ==
   /\ logLength = 0
-  /\ applied = [ cmd \in Commands |-> FALSE ]
+  /\ applied = [ cmd \in Commands |-> 0 ]
   /\ receipt = [ cmd \in Commands |-> noreceipt ]
   /\ payloadOf = [ cmd \in Commands |-> 0 ]
   /\ versionOf = [ cmd \in Commands |-> 0 ]
@@ -297,7 +298,7 @@ Spec == Init /\ [][Next]_monVars /\ WF_vars(Leave)
 \* --------------------------------------------------------------- invariants --
 TypeOK ==
   /\ logLength \in 0..MaxLog
-  /\ \A cmd \in Commands : applied[cmd] \in BOOLEAN
+  /\ \A cmd \in Commands : applied[cmd] \in 0..MaxLog
   /\ \A cmd \in Commands : receipt[cmd] \in 0..MaxLog
   /\ \A cmd \in Commands : payloadOf[cmd] \in Payloads \cup {0}
   /\ \A cmd \in Commands : versionOf[cmd] \in Versions \cup {0}
@@ -317,7 +318,10 @@ LogMonotone == shrank = FALSE
 \* A28 "command dedup": a command id is applied at most once, and its stored receipt
 \* is stable — replays (same payload) return that receipt, divergent replays are
 \* refused rather than applied again
-AppliedAtMostOnce == \A cmd \in Commands : applied[cmd] => receipt[cmd] # noreceipt
+\* Historical name: this predicate checks receipt presence. The count
+\* predicate below checks repeated application independently of receipts.
+AppliedAtMostOnce == \A cmd \in Commands : applied[cmd] > 0 => receipt[cmd] # noreceipt
+CommandApplicationCountIsBounded == \A cmd \in Commands : applied[cmd] <= 1
 
 ReceiptsAreStable == drift = {}
 
@@ -327,7 +331,7 @@ ReceiptNamesARealVersion ==
 
 \* the handshake: only commands offered with the advertised wire version run
 AppliedCommandsUsedTheWireVersion ==
-  \A cmd \in Commands : applied[cmd] => versionOf[cmd] = Wire
+  \A cmd \in Commands : applied[cmd] > 0 => versionOf[cmd] = Wire
 
 \* A28 "snapshot watermark correctness": the snapshot never claims to be newer than the watermark
 \* the client holds for it — that is what "snapshot + watermark from one read

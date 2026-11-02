@@ -415,9 +415,24 @@ where
     F: Fn(&str, &KernelProfile) -> P + Send + Sync + 'static,
 {
     async fn run(mut self) -> Result<(), String> {
+        let result = self.discover().await;
+        // stop whatever a racing discovery pass left behind; committed
+        // commands stay committed (§4.1, §6.4)
+        let remaining: Vec<InstanceDriver> = self.drivers.lock().unwrap().drain().map(|(_, d)| d).collect();
+        for driver in &remaining {
+            driver.shared.shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+            driver.shared.wake.notify_one();
+        }
+        for driver in remaining {
+            let _ = driver.task.await;
+        }
+        result
+    }
+
+    async fn discover(&mut self) -> Result<(), String> {
         let instances_dir = self.config.state_root.join("instances");
         while !self.shutdown.load(std::sync::atomic::Ordering::SeqCst) {
-            let instances: Vec<(String, String, String, String)> = self
+            let discovery = self
                 .storage
                 .call(|control| {
                     let mut stmt = control
@@ -429,7 +444,21 @@ where
                         .map_err(|e| format!("discover query: {e}"))?;
                     rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("discover collect: {e}"))
                 })
-                .await??;
+                .await;
+            let instances: Vec<(String, String, String, String)> = match discovery {
+                Ok(result) => result?,
+                Err(error) if error == super::storage::BACKPRESSURE => {
+                    // A full queue rejected this read before submission. Retry
+                    // discovery after the normal cadence; it is not a stopped
+                    // coordinator and does not justify replaying a mutation.
+                    tokio::select! {
+                        _ = self.wake.notified() => {}
+                        _ = tokio::time::sleep(self.config.poll) => {}
+                    }
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             {
                 // §5.1: once an instance is gone, clean up what its workspace
                 // policy created. Refusals (uncommitted or unmerged work) keep
@@ -533,16 +562,6 @@ where
                 _ = self.wake.notified() => {}
                 _ = tokio::time::sleep(self.config.poll) => {}
             }
-        }
-        // stop whatever a racing discovery pass left behind; committed
-        // commands stay committed (§4.1, §6.4)
-        let remaining: Vec<InstanceDriver> = self.drivers.lock().unwrap().drain().map(|(_, d)| d).collect();
-        for driver in &remaining {
-            driver.shared.shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
-            driver.shared.wake.notify_one();
-        }
-        for driver in remaining {
-            let _ = driver.task.await;
         }
         Ok(())
     }

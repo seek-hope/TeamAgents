@@ -5,7 +5,7 @@
 use super::{JobSpec, Journal};
 use serde_json::{json, Value as Json};
 use std::path::Path;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
 /// Write job.json and spawn the runner process. Spawning a second runner
@@ -14,13 +14,16 @@ pub async fn spawn(root: &Path, spec: &JobSpec) -> Result<(), String> {
     super::runner::spawn(root, spec)?;
     // Wait for the READY handshake: the runner persists its journal before
     // binding the socket, so a bound socket implies READY or a recovered state.
-    for _ in 0..200 {
-        match status(root).await {
-            Ok(_) => return Ok(()),
-            Err(_) => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+    tokio::time::timeout(super::RPC_TIMEOUT, async {
+        loop {
+            match status(root).await {
+                Ok(_) => return,
+                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+            }
         }
-    }
-    Err("runner did not report within 2s of spawn".into())
+    })
+    .await
+    .map_err(|_| "runner did not report within 2s of spawn".into())
 }
 
 fn token_of(root: &Path) -> Result<String, String> {
@@ -31,21 +34,32 @@ fn token_of(root: &Path) -> Result<String, String> {
 }
 
 pub async fn request(root: &Path, method: &str) -> Result<Json, String> {
-    let token = token_of(root)?;
-    let stream =
-        UnixStream::connect_addr(&super::socket_addr(&token)?).await.map_err(|e| format!("connect runner: {e}"))?;
-    let (read, mut write) = stream.into_split();
-    write
-        .write_all(format!("{}\n", json!({"version": 1, "method": method, "token": token})).as_bytes())
-        .await
-        .map_err(|e| format!("send {method}: {e}"))?;
-    let mut line = String::new();
-    BufReader::new(read).read_line(&mut line).await.map_err(|e| format!("read {method} reply: {e}"))?;
-    let reply: Json = serde_json::from_str(&line).map_err(|e| format!("parse {method} reply: {e}"))?;
-    if reply["ok"] != json!(true) {
-        return Err(reply["error"].as_str().unwrap_or("runner error").to_string());
-    }
-    Ok(reply)
+    tokio::time::timeout(super::RPC_TIMEOUT, async {
+        let token = token_of(root)?;
+        let stream =
+            UnixStream::connect_addr(&super::socket_addr(&token)?).await.map_err(|e| format!("connect runner: {e}"))?;
+        let (read, mut write) = stream.into_split();
+        write
+            .write_all(format!("{}\n", json!({"version": 1, "method": method, "token": token})).as_bytes())
+            .await
+            .map_err(|e| format!("send {method}: {e}"))?;
+        let mut line = String::new();
+        BufReader::new(read)
+            .take(super::MAX_RPC_BYTES + 1)
+            .read_line(&mut line)
+            .await
+            .map_err(|e| format!("read {method} reply: {e}"))?;
+        if line.len() as u64 > super::MAX_RPC_BYTES || !line.ends_with('\n') {
+            return Err("runner reply is oversized or incomplete".into());
+        }
+        let reply: Json = serde_json::from_str(&line).map_err(|e| format!("parse {method} reply: {e}"))?;
+        if reply["ok"] != json!(true) {
+            return Err(reply["error"].as_str().unwrap_or("runner error").to_string());
+        }
+        Ok(reply)
+    })
+    .await
+    .map_err(|_| format!("runner {method} timed out"))?
 }
 
 async fn journal_of(root: &Path, method: &str) -> Result<Journal, String> {
@@ -83,12 +97,15 @@ pub fn persisted_journal(root: &Path) -> Option<Journal> {
 
 /// Job output (the runner's own controlled log; §6.2).
 pub fn read_output(root: &Path, max_bytes: usize) -> String {
-    let Ok(bytes) = std::fs::read(root.join("output.log")) else { return String::new() };
-    if bytes.len() <= max_bytes {
-        return String::from_utf8_lossy(&bytes).into_owned();
+    use std::io::Read;
+    let Ok(file) = std::fs::File::open(root.join("output.log")) else { return String::new() };
+    let mut bytes = Vec::new();
+    // Limit the read itself; a background service can keep appending after
+    // the command settles, so the full log may be much larger than a preview.
+    if file.take(max_bytes as u64).read_to_end(&mut bytes).is_err() {
+        return String::new();
     }
-    // keep the head, like the synchronous capture does
-    String::from_utf8_lossy(&bytes[..max_bytes]).into_owned()
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 /// Graceful runner shutdown (only accepted with no active child).

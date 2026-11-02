@@ -53,7 +53,7 @@ make verify-kani                         # Kani proofs (paging arithmetic)
 python3 review/eval/r2-p6/run.py --phase pilot --out <new date directory>  # real-model A/B/C comparison (needs credentials)
 ```
 
-- Local source baseline (2026-10-29, D-492 `2cf5f47a`): `make check` is green — core 174 / engine 444 / tui 103;
+- Local source baseline (2026-11-03, D-494; source pin in `docs/HANDOFF.md`): `make check` is green — core 174 / engine 459 / tui 104;
   `make pty` passes. Formal results and their abstraction limits are in `verification/REPORT.md`.
   This does not renew D-452's independent audit or historical real-service results.
   Raw evaluation JSONL lives in `review/eval/r2-p6/runs/`, per-item evidence in `docs/ACCEPTANCE.md`.
@@ -65,6 +65,8 @@ python3 review/eval/r2-p6/run.py --phase pilot --out <new date directory>  # rea
   their earlier scheduling. D-489 adapts Grok Build's single-conversation TUI and `@` file references without
   changing the daemon or execution contracts; D-490 applies Codex CLI colors and D-491 adjusts shortcuts.
   D-492 adds dependency-advisory CI, bounded OAuth/MCP/update inputs and locked atomic credential writes.
+  D-494 hardens provider/runner boundaries, preserves supervision under storage backpressure, reduces idle
+  history reads and viewport allocations, and audits formal coverage with explicit remaining proof limits.
   Automatic reminders and other unselected candidates remain unapproved.
 - Skipped checks and the current baseline are collected in `docs/ACCEPTANCE.md`. A green Cargo run is not a
   real-service acceptance result.

@@ -76,30 +76,7 @@ fn read_sql(conn: &Connection, include_settled: bool) -> rusqlite::Result<View> 
             [&id],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
-        // Mirror the visible ordering in driver::read_entries, not the raw last
-        // row: a compression summary precedes its retained tail even at a higher idx.
-        // Use the primary-key tail index rather than sorting the entire visible
-        // history on every checkpoint. Only a summary-only view needs a second probe.
-        let mut tail: Option<String> = conn
-            .query_row(
-                "SELECT kind FROM context_entries WHERE instance_id = ?1 AND epoch = ?2
-                 AND compressed_by IS NULL AND kind != 'summary' ORDER BY idx DESC LIMIT 1",
-                rusqlite::params![id, epoch],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if tail.is_none() {
-            tail = conn
-                .query_row(
-                    "SELECT kind FROM context_entries WHERE instance_id = ?1 AND epoch = ?2
-                 AND compressed_by IS NULL AND kind = 'summary' ORDER BY idx DESC LIMIT 1",
-                    rusqlite::params![id, epoch],
-                    |r| r.get(0),
-                )
-                .optional()?;
-        }
-        // Same rule as the driver: no visible entry is nothing to answer, so it counts as addressed.
-        let tail_is_addressed = tail.as_deref().is_none_or(|kind| matches!(kind, "assistant" | "runtime"));
+        let tail_is_addressed = super::readiness::tail_is_addressed(conn, &id, epoch)?;
         let work = teamagents_core::v2::control::work_state(conn, &id)
             .map_err(|error| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, error.into()))?;
         let runnable = super::readiness::opens_work_turn(incoming, tail_is_addressed, pending > 0, &work);

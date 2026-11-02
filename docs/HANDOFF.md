@@ -1,10 +1,13 @@
 # Development handoff
 
-Updated **2026-10-29**. **D-492**, source baseline `2cf5f47a`, cleans stale code/documents and fixes
-dependency, credential, transport and download robustness. D-491 adjusts newline/session shortcuts, D-490 applies Codex CLI colors and D-487 remains
-the control/data baseline. Use [ACCEPTANCE.md](ACCEPTANCE.md) for gate evidence and
-[DECISIONS.md](DECISIONS.md) for the confirmed contract. Recheck Git status before relying on this snapshot.
-Both installed binaries were atomically replaced from that source after private backups and isolated smoke.
+Updated **2026-11-03**. **D-494** repairs provider/runner ingestion and supervision, durable start acceptance,
+storage-backpressure recovery, idle context loading and TUI rendering/frame deadlines. The material commit
+and installed binary pin are recorded after the source gates; the prior installed source remains D-492
+`2cf5f47a` until that delivery step. D-491's shortcuts, D-490's colors and D-487's control/data contracts remain.
+Use [ACCEPTANCE.md](ACCEPTANCE.md) for gate evidence and [DECISIONS.md](DECISIONS.md) for the confirmed
+contract. Recheck Git status: ten documentation files had preexisting changes when D-494 began and are
+preserved outside its scoped commits.
+Both previously installed binaries were atomically replaced from D-492 after private backups and isolated smoke.
 At the user's subsequent request, old backup binaries and the old-source probe build were removed while
 read-only session backups were retained, and the existing user daemon was stopped normally with committed
 state kept. No runner process remained. A later client starts a fresh daemon. D-493 subsequently replaced the
@@ -79,7 +82,10 @@ explicit initialization.
 | Headless questions, blocking, informational replies and new work | autonomy cases in `engine/tests/v2_daemon.rs`; CLI and exec tests |
 | Stop evidence and export | `engine/src/v2/work/tests.rs`; `engine/src/v2/session_export_tests.rs` |
 | Conversation, editing and terminal behavior | TUI conversation/minimal/parity suites; `make pty` |
-| Formal transition contracts | `verification/tla/V2Work.tla`; existing control/wait models retain their legacy scheduler scope |
+| Provider framing and bounded bodies | `engine/tests/cases/provider_robustness.rs`; `engine/src/providers/stream.rs` unit tests |
+| Runner persistence, supervision, cancellation and retirement | `engine/tests/cases/jobs_robustness.rs`; included by `jobs_runner` |
+| Storage saturation and idle context reads | `engine/tests/cases/supervisor_robustness.rs`; included by `v2_supervisor` |
+| Formal transition contracts | `verification/tla/V2Work.tla`, `verification/tla/V2JobSupervision.tla`, `verification/tla/V2Discovery.tla`; control/wait retain their legacy scheduler scope |
 
 Run `make check` before committing; `make fmt` also formats the two new included test files. Use the formal
 and PTY targets documented in DEVELOPMENT. Do not replace a failed behavioral check with a weaker assertion.
@@ -90,7 +96,7 @@ Current local regression belongs in ACCEPTANCE; formal results and abstraction l
 [verification/REPORT.md](../verification/REPORT.md). The [D-451 maturity report](../review/maturity-2026-10-11/REPORT.md)
 and D-452 audit keep their original source pins. Passing later tests does not renew them.
 
-The [goal-autonomy source study](../review/goal-autonomy-2026-10-28/REPORT.md) informed D-487; upstream source
+The [D-494 review](../review/optimization-2026-11-03/REPORT.md) records old-code failures and a synthetic debug\nredraw fixture: at 201,599 wrapped rows, median frame time changes from 77.206 to 1.812 ms and allocations\nfrom 49,052,488 to 23,210 bytes/frame. Full-history hashing remains linear. The formal catalogue has 41\nmodules, 50 positive configurations, 273 negative controls and one uncompleted wide configuration; seven\nKani arithmetic harnesses pass. Catalogue completeness is not Rust/SQLite refinement or full-system proof.\n\nThe [goal-autonomy source study](../review/goal-autonomy-2026-10-28/REPORT.md) informed D-487; upstream source
 inspection is not an executed comparison. Local scripted providers and process tests do not establish real-model
 success, comparative cost or reduced user intervention. Reviewer accounting, broader provider/terminal
 acceptance and matched Pi trials remain separate candidates. No paid trial or public release is part of D-487.

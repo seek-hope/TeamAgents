@@ -13,7 +13,7 @@ fn viewport_admission_and_eviction_keep_cache_and_queue_bounded() {
         for i in 0..20 {
             doc.append(graphics.block(Source::Image(format!("image-{i}.png")), &origin, 80));
         }
-        doc.resolve(&mut graphics, selected * 2, Rect::new(0, 0, 80, 2));
+        doc.viewport(&Document::default(), &mut graphics, selected * 2, Rect::new(0, 0, 80, 2));
         let request = requests.try_recv().expect("the visible request must be admitted");
         assert_eq!(request.source, Source::Image(format!("image-{selected}.png")));
         assert!(requests.try_recv().is_err(), "off-screen content must not enter the worker queue");
@@ -23,8 +23,8 @@ fn viewport_admission_and_eviction_keep_cache_and_queue_bounded() {
         assert!(graphics.sizes.len() <= 20);
     }
     assert!(!graphics.cache.iter().any(|c| c.request.source == Source::Image("image-0.png".into())));
-    let mut doc = graphics.block(Source::Image("image-0.png".into()), &origin, 80);
-    doc.resolve(&mut graphics, 0, Rect::new(0, 0, 80, 2));
+    let doc = graphics.block(Source::Image("image-0.png".into()), &origin, 80);
+    doc.viewport(&Document::default(), &mut graphics, 0, Rect::new(0, 0, 80, 2));
     assert_eq!(requests.try_recv().unwrap().source, Source::Image("image-0.png".into()));
     assert!(graphics.cache.len() <= CACHE_SIZE);
     assert_eq!(graphics.sizes.len(), 1, "metadata is pruned to the current document");

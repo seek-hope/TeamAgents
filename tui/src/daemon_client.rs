@@ -7,7 +7,7 @@ use serde_json::{json, Value as Json};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Must match engine v2::daemon::PROTOCOL_VERSION.
 pub const PROTOCOL_VERSION: u64 = 1;
@@ -101,14 +101,9 @@ impl DaemonClient {
 
     fn roundtrip(&mut self, frame: &Json, request_id: &str) -> Result<Result<Json, String>, String> {
         let conn = self.conn.as_mut().ok_or("not connected")?;
-        conn.writer
-            .write_all(format!("{frame}\n").as_bytes())
-            .and_then(|_| conn.writer.flush())
-            .map_err(|e| format!("daemon write: {e}"))?;
-        let mut line = String::new();
-        if conn.reader.read_line(&mut line).map_err(|e| format!("daemon read: {e}"))? == 0 {
-            return Err("daemon closed the connection".into());
-        }
+        let deadline = Instant::now() + IO_TIMEOUT;
+        write_frame(&mut conn.writer, format!("{frame}\n").as_bytes(), deadline)?;
+        let line = read_frame(&mut conn.reader, deadline)?;
         let reply: Json = serde_json::from_str(&line).map_err(|e| format!("daemon reply JSON: {e}"))?;
         if reply["request_id"].as_str() != Some(request_id) {
             return Err(format!("daemon reply out of order (want {request_id})"));
@@ -152,16 +147,53 @@ impl DaemonClient {
 /// means the server is stuck (§9 reconnect).
 const IO_TIMEOUT: Duration = Duration::from_secs(2);
 
+fn remaining(deadline: Instant) -> Result<Duration, String> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|time| !time.is_zero())
+        .ok_or_else(|| "daemon round trip timed out".into())
+}
+
+fn write_frame(stream: &mut UnixStream, mut bytes: &[u8], deadline: Instant) -> Result<(), String> {
+    while !bytes.is_empty() {
+        stream.set_write_timeout(Some(remaining(deadline)?)).map_err(|e| e.to_string())?;
+        let written = stream.write(bytes).map_err(|e| format!("daemon write: {e}"))?;
+        if written == 0 {
+            return Err("daemon closed while writing".into());
+        }
+        bytes = &bytes[written..];
+    }
+    Ok(())
+}
+
+/// A per-read timeout alone is renewed by every byte of a slow partial frame.
+/// Share one deadline across the complete frame (and the preceding write).
+fn read_frame(reader: &mut BufReader<UnixStream>, deadline: Instant) -> Result<String, String> {
+    let mut line = Vec::new();
+    loop {
+        reader.get_ref().set_read_timeout(Some(remaining(deadline)?)).map_err(|e| e.to_string())?;
+        let bytes = reader.fill_buf().map_err(|e| format!("daemon read: {e}"))?;
+        if bytes.is_empty() {
+            return Err("daemon closed before a complete frame".into());
+        }
+        let end = bytes.iter().position(|byte| *byte == b'\n');
+        let count = end.map_or(bytes.len(), |index| index + 1);
+        line.extend_from_slice(&bytes[..count]);
+        reader.consume(count);
+        if end.is_some() {
+            return String::from_utf8(line).map_err(|e| format!("daemon frame UTF-8: {e}"));
+        }
+    }
+}
+
 fn handshake(socket: &Path) -> Result<(Conn, Json), String> {
     let writer = UnixStream::connect(socket).map_err(|e| format!("connect {}: {e}", socket.display()))?;
     writer.set_read_timeout(Some(IO_TIMEOUT)).map_err(|e| e.to_string())?;
     writer.set_write_timeout(Some(IO_TIMEOUT)).map_err(|e| e.to_string())?;
     let reader = BufReader::new(writer.try_clone().map_err(|e| e.to_string())?);
     let mut conn = Conn { reader, writer };
-    let mut line = String::new();
-    if conn.reader.read_line(&mut line).map_err(|e| format!("greeting: {e}"))? == 0 {
-        return Err("daemon closed before the greeting".into());
-    }
+    let line =
+        read_frame(&mut conn.reader, Instant::now() + IO_TIMEOUT).map_err(|error| format!("greeting: {error}"))?;
     let greeting: Json = serde_json::from_str(&line).map_err(|e| format!("greeting JSON: {e}"))?;
     if greeting["server"].as_str() != Some("teamagents-daemon") {
         return Err("not a teamagents daemon (old server?)".into());
@@ -182,6 +214,32 @@ mod tests {
     use std::os::unix::net::UnixListener;
     use std::sync::mpsc::{channel, Sender};
     use std::thread;
+
+    #[test]
+    fn partial_frames_cannot_renew_the_round_trip_deadline() {
+        let (read, mut write) = UnixStream::pair().unwrap();
+        let sender = thread::spawn(move || {
+            for _ in 0..50 {
+                if write.write_all(b" ").is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+        });
+        let mut reader = BufReader::new(read);
+        let began = Instant::now();
+        assert!(read_frame(&mut reader, began + Duration::from_millis(80)).is_err());
+        let elapsed = began.elapsed();
+        drop(reader);
+        sender.join().unwrap();
+        assert!(elapsed < Duration::from_millis(300), "slow bytes extended the frame deadline: {elapsed:?}");
+        let (read, mut write) = UnixStream::pair().unwrap();
+        write.write_all(b"{}\nnext").unwrap();
+        drop(write);
+        let mut reader = BufReader::new(read);
+        assert_eq!(read_frame(&mut reader, Instant::now() + IO_TIMEOUT).unwrap(), "{}\n");
+        assert!(read_frame(&mut reader, Instant::now() + IO_TIMEOUT).is_err(), "EOF is not a JSON-lines delimiter");
+    }
 
     /// Scripted fake daemon: serves the greeting, then answers scripted
     /// replies; reports every received frame back over the channel.

@@ -531,9 +531,10 @@ pub fn render(
     let entries =
         if browser.search_active() { Vec::new() } else { crate::transcript::project(&browser.entries, "", false) };
     let root = browser.rows.get(browser.selected).map(|r| r.path.as_str()).unwrap_or("");
-    let mut document = browser.transcript.document(&entries, inner.width as usize, None, Some(graphics), root).clone();
-    let mut lines = document.lines.clone();
-    if browser.search_active() && !browser.search_editing && !browser.search_pending {
+    let searching = browser.search_active();
+    let document = browser.transcript.document(&entries, inner.width as usize, None, Some(graphics), root);
+    let mut lines = Vec::new();
+    if searching && !browser.search_editing && !browser.search_pending {
         if let Some(hit) = browser.search_hits.get(browser.search_selected) {
             lines = crate::markdown::plain(
                 &format!(
@@ -549,10 +550,10 @@ pub fn render(
             );
         }
     }
-    if lines.is_empty() {
+    if document.lines.is_empty() && lines.is_empty() {
         lines.push(Line::from(if browser.search_pending {
             "Searching…"
-        } else if browser.search_active() {
+        } else if searching {
             "Press Enter on a result to open its session."
         } else if browser.busy {
             "Loading..."
@@ -561,17 +562,11 @@ pub fn render(
         }));
     }
     browser.last_height = (inner.height as usize).max(1);
-    browser.last_lines = lines.len();
-    browser.scroll = browser.scroll.min(lines.len().saturating_sub(browser.last_height));
-    document.resolve(graphics, browser.scroll, inner);
-    if !document.lines.is_empty() {
-        lines = document.lines.clone();
-    }
-    let pictures = document.visible(browser.scroll, inner);
-    frame.render_widget(
-        Paragraph::new(lines.into_iter().skip(browser.scroll).take(browser.last_height).collect::<Vec<_>>()),
-        inner,
-    );
+    browser.last_lines = document.lines.len().max(lines.len());
+    browser.scroll = browser.scroll.min(browser.last_lines.saturating_sub(browser.last_height));
+    let (visible, pictures) =
+        document.viewport(&crate::graphics::Document::text(lines), graphics, browser.scroll, inner);
+    frame.render_widget(Paragraph::new(visible), inner);
     let footer = if browser.search_editing {
         format!(
             "{}\nType a query; Enter: search  Backspace: edit  Esc: cancel",

@@ -5,7 +5,61 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
-## 0. Gate status (re-run 2026-10-29 at `028f2383`)
+## 0. Gate status (re-run 2026-11-03 at `5f66a70d`)
+
+D-494 verification ran on the worktree based on this source baseline. The immutable pin will be updated
+after committing the formal material. The final targets verified all **50** configurations and refuted
+all **273** negative controls across **41** modules. The separate wide
+configuration is included in the inventory of **324** configurations, but was not exhaustively completed.
+Kani 0.68.0 reports `Complete - 7 successfully verified harnesses, 0 failures, 7 total`:
+three paging harnesses and four TUI arithmetic harnesses.
+
+The coverage audit examines every on-disk module/configuration, every declared invariant/property,
+its positive driver and its named negative controls. It now counts positive coverage only from positive
+configurations. Every declared claim is checked by a positive configuration. The behavioral ledger has
+zero unexplained missing controls and four justified entailments; type predicates are separately enumerated
+in [COVERAGE.md](COVERAGE.md). This is completeness of the declared catalogue, not completeness of the
+product specification or implementation proof.
+
+The audit found and repaired three evidence weaknesses: negative configurations could previously satisfy
+positive-coverage bookkeeping; generic temporal failures were accepted without identifying the expected
+property; and the daemon's historically named `AppliedAtMostOnce` checked receipt presence rather than
+application count. The new `CommandApplicationCountIsBounded` counts repeated effects explicitly.
+The shared verdict parser rejects warning-bearing successes and unexpected exit codes. Named action
+properties may use TLC's temporal exit status. A constant-folded FALSE invariant has one exact accepted
+diagnostic and is classified as a static refutation, not an explored trace. Early classifier runs that
+rejected those legitimate pinned-TLC outputs are harness corrections, not product counterexamples.
+
+`V2JobSupervision` adds explicit socket traffic, independent timer progress, a fixed cancellation grace,
+leader-exit versus group escalation, durable start acceptance, retirement timestamps and preservation of
+normal background services, including an already completed leader observed after its deadline. Its nine controls reproduce the removed rules. `V2Discovery` adds a finite
+storage saturation burst and supervisor cleanup, with two controls. Each positive configuration and each
+new control passed. Runtime bridges separately reproduce stalled supervision, surviving descendants,
+repeated-cancel delay, execution after an acceptance-write fault, permanent discovery loss after transient
+backpressure and repeated idle history materialization.
+
+| Area | Current formal support | Practical limit / complementary evidence |
+|---|---|---|
+| Authority, work and tasks | Control, grants, capabilities, authority, work, task, checks, approval and wait models | Finite domains and selected scenarios; no proof of model judgment, semantic completion or the full cross-product. |
+| Persistence and recovery | Store, disk-full, retention, memory, history, jobs and control models | Abstract atomic writes and recovery facts; SQLite bytes, fsync behavior and power loss require implementation/fault tests. |
+| Scheduling and overload | Coordinator, concurrency, schedule and discovery models | Fairness and finite saturation are assumptions; no progress guarantee under permanent overload or arbitrary OS scheduling. |
+| Process execution | Jobs and job-supervision models | Leader identity and signal delivery are abstract. Escaped descendants, remote effects and real process-group behavior remain runtime-test boundaries. |
+| Provider wire input | Retry/selection models cover retry budget and complete-attempt selection | SSE UTF-8, delimiters, body limits, malformed objects and cancellation are executable regressions, not wire-parser proofs. |
+| MCP, OAuth and network input | OAuth and approval models cover selected state transitions | HTTP framing, redirects, SSRF/DNS rebinding, credential storage and external servers remain code/test/advisory evidence. |
+| TUI and graphics | TUI, session UI, presentation, input queue, display worker and Kani arithmetic | Rendering libraries, Unicode shaping, total socket deadlines and measured redraw cost are not proved by these models. |
+| Artifacts, workspaces and paths | Artifact, workspace, prune, project-trust and trust models | Real paths, symlink races, Git behavior and filesystem permissions require separate probes. |
+| Installation and updates | Update model and archive/install tests | Release transport, supply chain and native installer execution remain outside TLC. |
+| Usage and budgets | Control/work/task accounting transitions and scoped admission | Provider-reported costs are not validated by TLC. The known reviewer-usage propagation gap remains open. |
+| Historical isolation | Isolation model remains internally checked | D-480 removed OS sandbox backends; this is historical evidence, not current host isolation. |
+| Combined system | Bounded command-sequence correspondence and per-module counterfactuals | No Rust/SQLite refinement, universal liveness, full composition, real-model quality or cost proof. |
+
+The daemon event API remains unpaginated; a complete, shared size/deadline policy for daemon/exec replies
+is not established by this change. TUI frame I/O has an absolute deadline, while runner RPC and provider
+input have explicit byte bounds. Full-history TUI content hashing also remains linear; the measured
+optimization removes full-document copying and per-grapheme ownership, not all history-dependent work.
+No paid model evaluation or independent security audit was performed.
+
+## 0. Prior gate status (re-run 2026-10-29 at `028f2383`)
 
 The current targets verified all **48** configurations and refuted all **261** negative controls across
 39 modules; each control refuted its named claim. Kani 0.68.0 reports
@@ -858,6 +912,10 @@ Subtotal: **28 items** have a non-empty "formal coverage" entry (A01–A04, A06�
 A28–A33, A34, A35) and the remaining **8** (A05, A14, A15, A21, A26, A27, A36) have **only** sample tests and
 real-environment evidence today. A12 is modelled in part (its runner/retirement half) and states that limit. **No item claims to be finished by formal means
 alone**, and conversely formal coverage does not excuse an item from sample or real-environment acceptance.
+
+D-494 audit note: the historical subtotal above omitted A12 from its positive list and counted eight
+remaining items while naming seven. The table actually has 29 non-empty entries and seven empty entries.
+It is a historical ledger, not the current coverage inventory; current evidence and boundaries are in section 0.
 
 ## 5. Unproven list (honest boundaries)
 

@@ -117,7 +117,7 @@ def reader_texts():
     texts = {}
     for root in READER_ROOTS + ["review"]:
         for path in sorted((REPO / root).rglob("*")):
-            if not path.is_file() or path == DOC or "tmp" in path.parts:
+            if not path.is_file() or path == DOC or "tmp" in path.relative_to(REPO).parts:
                 continue
             if path.name == "event_catalogue.py":
                 continue

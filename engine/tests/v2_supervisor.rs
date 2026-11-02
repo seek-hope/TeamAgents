@@ -114,6 +114,8 @@ fn send_call(id: &str, recipient: &str, text: &str) -> Json {
 }
 
 mod common;
+#[path = "cases/supervisor_robustness.rs"]
+mod supervisor_robustness;
 
 /// The scratch root of one test: `teamagents-v2-supervisor-<tag>-<uuid>`, removed when the test ends (D-226).
 type Root = common::TempRoot;

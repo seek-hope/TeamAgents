@@ -108,25 +108,52 @@ impl Document {
             media.column += columns;
         }
     }
-    /// Resolve only media intersecting the viewport. Geometry survives eviction of decoded images.
-    pub fn resolve(&mut self, graphics: &mut Graphics, start: usize, area: Rect) {
-        let layout: HashSet<&Request> = self.media.iter().map(|m| &m.request).collect();
+    /// Borrow the cached transcript and its transient tail; copy only viewport
+    /// rows. Media coordinates remain in document space until final clipping.
+    pub fn viewport(
+        &self,
+        tail: &Self,
+        graphics: &mut Graphics,
+        start: usize,
+        area: Rect,
+    ) -> (Vec<Line<'static>>, Vec<Placement>) {
+        let documents = [(self, 0), (tail, self.lines.len())];
+        let height = area.height as usize;
+        let mut lines: Vec<_> = self.lines.iter().chain(&tail.lines).skip(start).take(height).cloned().collect();
+        let layout: HashSet<&Request> =
+            documents.iter().flat_map(|(doc, _)| doc.media.iter().map(|m| &m.request)).collect();
         graphics.sizes.retain(|request, _| layout.contains(request));
-        let visible: Vec<_> =
-            self.media.iter().filter(|m| clip_rows(m.row, m.rows, start, area.height as usize).is_some()).collect();
-        graphics.touched = visible.iter().map(|m| m.request.clone()).collect();
-        for media in visible {
+        let visible: Vec<_> = documents
+            .iter()
+            .flat_map(|(doc, offset)| {
+                doc.media.iter().filter_map(move |media| {
+                    clip_rows(media.row + offset, media.rows, start, height).map(|_| (*doc, media, *offset))
+                })
+            })
+            .collect();
+        graphics.touched = visible.iter().map(|(_, media, _)| media.request.clone()).collect();
+        let mut pictures = Vec::new();
+        for (doc, offset) in documents {
+            for picture in &doc.pictures {
+                let mut shifted = picture.clone();
+                shifted.row += offset;
+                pictures.extend(Document { pictures: vec![shifted], ..Document::default() }.visible(start, area));
+            }
+        }
+        for (doc, media, offset) in visible {
             let mut rendered = graphics.render_request(media.request.clone(), media.width);
-            // A result may have just changed the layout. The next revision supplies its full height;
-            // never let a larger image cover the following message in the current frame.
+            // A new result may change geometry. Its complete height belongs to
+            // the next revision; it cannot cover the following message now.
             if rendered.lines.len() <= media.rows {
-                rendered.offset(media.row, media.column);
-                self.pictures.extend(rendered.pictures);
+                rendered.offset(media.row + offset, media.column);
+                pictures.extend(rendered.visible(start, area));
             }
             for (index, mut line) in rendered.lines.into_iter().take(media.rows).enumerate() {
+                let row = media.row + index;
+                let Some(target) = (row + offset).checked_sub(start).filter(|i| *i < lines.len()) else { continue };
                 let mut prefix = Vec::new();
                 let mut cells = 0;
-                for span in &self.lines[media.row + index].spans {
+                for span in &doc.lines[row].spans {
                     if cells + span.width() > media.column {
                         break;
                     }
@@ -138,9 +165,10 @@ impl Document {
                 }
                 prefix.append(&mut line.spans);
                 line.spans = prefix;
-                self.lines[media.row + index] = line;
+                lines[target] = line;
             }
         }
+        (lines, pictures)
     }
     /// Images intersect the same row viewport as their surrounding text.
     pub fn visible(&self, start: usize, area: Rect) -> Vec<Placement> {

@@ -16,6 +16,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::time::Duration;
 
+pub(crate) const RPC_TIMEOUT: Duration = Duration::from_secs(2);
+pub(crate) const MAX_RPC_BYTES: u64 = 64 * 1024;
+
 /// The fixed dispatch input for one job (written by the driver as job.json).
 /// Built from the same `ShellCommandSpec` the synchronous shell path uses,
 /// so runner and direct execution are byte-identical (A15).

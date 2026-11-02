@@ -357,18 +357,18 @@ fn render_activity(frame: &mut Frame, app: &V2App, area: Rect) {
 fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
     let area = Rect::new(area.x + u16::from(area.width > 2), area.y, area.width.saturating_sub(2), area.height);
     let width = area.width as usize;
-    let mut document = app
-        .transcript
-        .document(
-            &app.entries,
-            width,
-            Some(if app.expanded_tools { 40 } else { 4 }),
-            Some(&mut app.graphics),
-            &app.session_root,
-        )
-        .clone();
+    let preview = app.active_preview().map(str::to_owned);
+    let workspace = app.workspace().map(str::to_owned);
+    let base = app.transcript.document(
+        &app.entries,
+        width,
+        Some(if app.expanded_tools { 40 } else { 4 }),
+        Some(&mut app.graphics),
+        &app.session_root,
+    );
+    let mut document = crate::graphics::Document::default();
     let lines = &mut document.lines;
-    if lines.is_empty() && app.active_preview().is_none() {
+    if base.lines.is_empty() && preview.is_none() {
         lines.push(Line::from(""));
         lines.push(Line::styled("TeamAgents", Style::default().fg(CODEX).add_modifier(Modifier::BOLD)));
         lines.push(Line::from(""));
@@ -389,7 +389,7 @@ fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
             width,
             secondary(),
         ));
-        if let Some(workspace) = app.workspace() {
+        if let Some(workspace) = &workspace {
             lines.push(Line::default());
             lines.extend(crate::markdown::plain(&format!("Workspace  {workspace}"), width, secondary()));
         }
@@ -401,7 +401,7 @@ fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
                 lines.extend(crate::markdown::plain(&format!("Result · {}", goal.status), width, secondary()));
                 let origin = crate::graphics::Origin {
                     session: app.session_root.clone().into(),
-                    workspace: app.workspace().unwrap_or_default().into(),
+                    workspace: workspace.as_deref().unwrap_or_default().into(),
                     member: "i-leader".into(),
                     position: usize::MAX - 1,
                 };
@@ -416,12 +416,11 @@ fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
             }
         }
     }
-    if let Some(preview) = app.active_preview() {
+    if let Some(preview) = preview {
         // The daemon bounds this transient text. Keep its beginning so Markdown and scrolling are stable.
-        if !document.lines.is_empty() {
+        if !base.lines.is_empty() || !document.lines.is_empty() {
             document.lines.push(Line::default());
         }
-        let preview = preview.to_string();
         let workspace =
             app.entries.iter().rev().find(|e| !e.workspace.is_empty()).map(|e| e.workspace.clone()).unwrap_or_default();
         let origin = crate::graphics::Origin {
@@ -439,7 +438,7 @@ fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
             true,
         ));
     }
-    let total = document.lines.len();
+    let total = base.lines.len() + document.lines.len();
     let height = area.height as usize;
     let previous = if app.last_chat_width == width { app.last_chat_lines } else { total };
     let (start, offset) = crate::viewport::transcript_window(total, previous, height, app.chat_scroll);
@@ -448,9 +447,8 @@ fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
     app.last_chat_width = width;
     app.last_chat_height = height.max(1);
     let max_scroll = total.saturating_sub(height);
-    document.resolve(&mut app.graphics, start, area);
-    app.pictures = document.visible(start, area);
-    let visible: Vec<Line<'static>> = document.lines.into_iter().skip(start).take(height).collect();
+    let (visible, pictures) = base.viewport(&document, &mut app.graphics, start, area);
+    app.pictures = pictures;
     frame.render_widget(Paragraph::new(visible), area);
     if total > height && area.width > 0 {
         let mut state = ScrollbarState::new(max_scroll + 1).position(start);

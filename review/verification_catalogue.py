@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The formal-verification material, against the targets that drive it and the report that counts it (D-185).
 
-`verification/tla/` holds thirty-nine TLA+ modules and three-hundred-and-ten configurations — and **these numbers are
+`verification/tla/` holds forty-one TLA+ modules and three-hundred-and-twenty-four configurations — and **these numbers are
 checked against the directory by this script's own rule**, because the sentence that said "forty" was the
 kind of count nothing looked at (the module count in this line and the two the report states are all
 compared with what the tree holds); `verification/REPORT.md`
@@ -79,6 +79,10 @@ and it cannot see a model whose abstraction drifted from the code it describes �
 spec-to-code test in `make check` is for.
 """
 import argparse
+import contextlib
+import io
+import shutil
+import tempfile
 import fnmatch
 import pathlib
 import re
@@ -179,8 +183,42 @@ def target_recipes(makefile: str) -> dict[str, str]:
     return out
 
 
+def configuration_claims(text: str, section: str) -> set[str]:
+    """Read one explicitly indented TLC claim section."""
+    block = re.search(rf"^{section}[ \t]*\n((?:[ \t]+\S[^\n]*(?:\n|$))+)", text, re.M)
+    return {line.strip() for line in block.group(1).splitlines() if line.strip()} if block else set()
+
+
+def self_check() -> int:
+    """Remove positive/negative claim listings on copies; both omissions must fail."""
+    if main([]) != 0:
+        return 1
+    probes = [
+        ("MC_work.cfg", "RecoveryRemainsBounded", "a claim nothing checks"),
+        ("MC_work_restart.cfg", "RecoveryRemainsBounded", "does not check its expected claim"),
+    ]
+    for filename, claim, expected in probes:
+        with tempfile.TemporaryDirectory(prefix="teamagents-verification-control-") as scratch:
+            copied = pathlib.Path(scratch) / "tla"
+            shutil.copytree(REPO / TLA, copied)
+            config = copied / filename
+            text = config.read_text(encoding="utf-8")
+            needle = f"    {claim}\n"
+            if text.count(needle) != 1:
+                raise AssertionError(f"control fixture changed: {filename}")
+            config.write_text(text.replace(needle, ""), encoding="utf-8")
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+                status = main(["--tla", str(copied)])
+            if status == 0 or expected not in output.getvalue():
+                raise AssertionError(f"{filename} missing-claim control did not fail as intended: {output.getvalue()}")
+    print("positive-coverage and expected-claim controls passed")
+    return 0
+
+
 def main(argv) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--self-check", action="store_true", help="audit then run missing-claim controls on copies")
     parser.add_argument("--makefile", default="Makefile")
     parser.add_argument("--report", default="verification/REPORT.md")
     parser.add_argument("--mapping", default="verification/README.md")
@@ -189,6 +227,8 @@ def main(argv) -> int:
     parser.add_argument("--tla", default=TLA,
                         help="the TLA+ directory to read (a copy is the control)")
     args = parser.parse_args(argv)
+    if args.self_check:
+        return self_check()
     tla = args.tla
     makefile_text = (REPO / args.makefile).read_text(encoding="utf-8")
     recipes = target_recipes(makefile_text)
@@ -343,18 +383,18 @@ def main(argv) -> int:
             if cfg not in mapping:
                 findings.append(f"`{name}` runs {cfg}, which no mapping block names: it would fall through the "
                                 "`*)` default and run the wrong module")
+    positive = set(CFG.findall(drivers.get("verify-model-all", "")))
     checked = {}
+    configured = {}
     for cfg in on_disk_cfgs:
         spec = mapping.get(cfg)
         if not spec:
             continue
-        names = set()
-        for key in ("INVARIANTS", "PROPERTIES"):
-            block = re.search(rf"^{key}[ \t]*\n((?:[ \t]+\S[^\n]*\n)+)",
-                              (REPO / tla / cfg).read_text(encoding="utf-8"), re.M)
-            if block:
-                names |= {line.strip() for line in block.group(1).split("\n") if line.strip()}
-        checked.setdefault(spec, set()).update(names)
+        configuration = (REPO / tla / cfg).read_text(encoding="utf-8")
+        names = configuration_claims(configuration, "INVARIANTS") | configuration_claims(configuration, "PROPERTIES")
+        configured[cfg] = names
+        if cfg in positive:
+            checked.setdefault(spec, set()).update(names)
     for spec in on_disk_specs:
         module = spec.removesuffix(".tla")   # the cfgs name modules, the directory lists files
         text = (REPO / tla / spec).read_text(encoding="utf-8")
@@ -386,7 +426,6 @@ def main(argv) -> int:
     # refuted by `TypeOK` instead of the claim it was written for, because its counterfactual also ran past the
     # abstraction's bounds. So: a control names the claim it must refute and the harness checks the name, and
     # every other checked claim is recorded in verification/COVERAGE.md with a status.
-    positive = set(CFG.findall(drivers.get("verify-model-all", "")))
     covered: dict[str, set] = {}
     for cfg, spec in sorted(pairs.items()):
         markers = EXPECTS.findall((REPO / tla / cfg).read_text(encoding="utf-8"))
@@ -399,6 +438,8 @@ def main(argv) -> int:
             findings.append(f"{tla}/{cfg} expects {markers[0]} to be refuted, and no positive configuration lists "
                             f"that claim for {spec}: the marker names a claim nothing checks (D-462)")
             continue
+        if markers[0] not in configured.get(cfg, set()):
+            findings.append(f"{tla}/{cfg} does not check its expected claim {markers[0]}")
         covered.setdefault(spec, set()).add(markers[0])
     ledger = (REPO / "verification" / "COVERAGE.md")
     if args.write_coverage:

@@ -7,6 +7,8 @@ use teamagents_engine::jobs::{client, JobSpec};
 use teamagents_engine::v2::runners::{RunnersCommand, RunnersOptions};
 
 mod common;
+#[path = "cases/jobs_robustness.rs"]
+mod jobs_robustness;
 
 /// The scratch root of one test, removed when the test ends (D-226).
 fn root(tag: &str) -> common::TempRoot {

@@ -38,6 +38,7 @@ a row here is not a `TypeOK*` claim.
 | `V2Control` | `TypeOK` |
 | `V2Coordinator` | `TypeOK` |
 | `V2Daemon` | `TypeOK` |
+| `V2Discovery` | `TypeOK` |
 | `V2DiskFull` | `TypeOK` |
 | `V2DisplayWorker` | `TypeOK` |
 | `V2Grants` | `TypeOK` |
@@ -50,6 +51,7 @@ a row here is not a `TypeOK*` claim.
 | `V2Inbox` | `TypeOK` |
 | `V2InputQueue` | `TypeOK` |
 | `V2Isolation` | `TypeOK` |
+| `V2JobSupervision` | `TypeOK` |
 | `V2Jobs` | `TypeOK` |
 | `V2Memory` | `TypeOK` |
 | `V2Oauth` | `TypeOK` |

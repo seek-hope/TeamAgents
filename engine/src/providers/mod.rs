@@ -517,64 +517,17 @@ pub(crate) enum SseEnd {
     Transport(String),
 }
 
-pub(crate) async fn pump_sse(
-    response: reqwest::Response,
-    cancel: &Cancel,
-    stall: Duration,
-    mut on_frame: impl FnMut(&str) -> Result<std::ops::ControlFlow<()>, ProviderError> + Send,
-    timing: &mut StreamTiming,
-) -> Result<SseEnd, ProviderError> {
-    use std::ops::ControlFlow;
-    let mut stream = response.bytes_stream();
-    let mut buffer = String::new();
-    // Inactivity is measured in *frames*, not bytes: a connection that only
-    // trickles keep-alive comments is dead for our purposes, while any real
-    // event (a delta, a reasoning step) proves the model is working. §8.
-    let mut deadline = tokio::time::Instant::now() + stall;
-    loop {
-        let chunk = tokio::select! {
-            chunk = futures_next(&mut stream) => chunk,
-            _ = cancel.cancelled() => return Ok(SseEnd::Cancelled),
-            _ = tokio::time::sleep_until(deadline) => {
-                return Ok(SseEnd::Transport(format!(
-                    "model stream stalled: no event for {}s",
-                    stall.as_secs()
-                )))
-            }
-        };
-        let Some(chunk) = chunk else { return Ok(SseEnd::Closed) };
-        let chunk = match chunk {
-            Ok(chunk) => chunk,
-            Err(error) => return Ok(SseEnd::Transport(format!("model stream: {error}"))),
-        };
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
-        // SSE frames are separated by a blank line.
-        while let Some(pos) = buffer.find("\n\n") {
-            let frame = buffer[..pos].to_string();
-            buffer = buffer[pos + 2..].to_string();
-            let mut delivered = false;
-            for line in frame.lines() {
-                let Some(data) = line.strip_prefix("data:").map(str::trim) else { continue };
-                delivered = true;
-                if let ControlFlow::Break(()) = on_frame(data)? {
-                    return Ok(SseEnd::Closed);
-                }
-            }
-            if delivered {
-                deadline = tokio::time::Instant::now() + stall;
-                // D-416: the same event that resets the stall deadline is the stream's progress, so the timing is
-                // recorded here rather than in each adapter
-                timing.frame();
-            }
-        }
-    }
-}
+mod stream;
+use stream::{pump_sse, read_body};
 
 /// Append a string field from a wire delta onto an assembled JSON object.
 pub(crate) fn append(target: &mut Json, key: &str, delta: &Json) {
     if let Some(text) = delta.as_str() {
-        let merged = format!("{}{}", target[key].as_str().unwrap_or(""), text);
-        target[key] = Json::String(merged);
+        if let Some(Json::String(value)) = target.get_mut(key) {
+            value.push_str(text);
+        } else {
+            target[key] = Json::String(text.to_owned());
+        }
     }
 }
 
@@ -585,15 +538,6 @@ pub(crate) fn stream_failure_msg(message: &str, emitted: bool) -> ProviderError 
     } else {
         ProviderError::transient(message)
     }
-}
-
-/// reqwest 0.12 stream helper (futures-util is only used for StreamExt).
-pub(crate) async fn futures_next<S, T>(stream: &mut S) -> Option<Result<T, reqwest::Error>>
-where
-    S: futures_util::Stream<Item = Result<T, reqwest::Error>> + Unpin,
-{
-    use futures_util::StreamExt;
-    stream.next().await
 }
 
 #[cfg(test)]

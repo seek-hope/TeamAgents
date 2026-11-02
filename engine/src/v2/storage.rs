@@ -9,6 +9,8 @@ use teamagents_core::v2::Control;
 
 type Task = Box<dyn FnOnce(&mut Control) + Send + 'static>;
 
+pub(crate) const BACKPRESSURE: &str = "storage queue full: backpressure";
+
 #[derive(Clone)]
 pub struct Storage {
     queue: SyncSender<Task>,
@@ -43,7 +45,7 @@ impl Storage {
             let _ = tx.send(f(control));
         });
         self.queue.try_send(task).map_err(|e| match e {
-            TrySendError::Full(_) => "storage queue full: backpressure".to_string(),
+            TrySendError::Full(_) => BACKPRESSURE.to_string(),
             TrySendError::Disconnected(_) => "storage worker gone".to_string(),
         })?;
         rx.await.map_err(|_| "storage worker dropped the reply".to_string())

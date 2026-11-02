@@ -1687,8 +1687,6 @@ that delegated it learns the outcome only from a settlement.";
         self.warn_before_deadline(snapshot).await?;
         // D-418: and the criterion itself, before the model plans the turn rather than when it claims to be done.
         self.brief_checks(snapshot).await?;
-        let mut entries = self.context_entries(snapshot).await?;
-        self.expand_images(&mut entries)?;
         // A turn opens for *unaddressed* work only: content that arrived since the
         // last request (the drain above applied it) or a task this instance has not
         // started yet. A task it already addressed is not a reason to ask again —
@@ -1709,12 +1707,21 @@ that delegated it learns the outcome only from a settlement.";
         let pending_task = self.oldest_task("PENDING").await?.is_some();
         // An empty context is nothing to answer: the runtime has no word of its own to avoid re-asking, so it
         // counts as addressed here — the pre-D-462 condition (`is_none_or` + no pending task) returned idle.
-        let tail_is_addressed =
-            entries.last().is_none_or(|entry| matches!(entry.kind, EntryKind::Assistant | EntryKind::Runtime));
+        let instance = self.config.instance_id.clone();
+        let epoch = snapshot.epoch;
+        let tail_is_addressed = self
+            .storage
+            .call(move |control| {
+                super::readiness::tail_is_addressed(control.connection(), &instance, epoch)
+                    .map_err(|error| format!("context tail: {error}"))
+            })
+            .await??;
         let mut work = self.work_context(None).await?;
         if !super::readiness::opens_work_turn(false, tail_is_addressed, pending_task, &work) {
             return Ok(false);
         }
+        let mut entries = self.context_entries(snapshot).await?;
+        self.expand_images(&mut entries)?;
         // adopt assigned work: the turn that addresses a PENDING task also
         // marks it RUNNING; a lost race just means someone else moved it
         if let Some(task_id) = self.oldest_task("PENDING").await? {

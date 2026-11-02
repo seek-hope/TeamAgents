@@ -18,6 +18,8 @@ use tokio::net::TcpListener;
 
 #[path = "cases/provider_content.rs"]
 mod provider_content;
+#[path = "cases/provider_robustness.rs"]
+mod provider_robustness;
 
 struct FakeServer {
     base: String,
