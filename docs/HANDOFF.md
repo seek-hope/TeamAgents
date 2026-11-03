@@ -1,5 +1,14 @@
 # Development handoff
 
+D-496 formal material is pinned at `61feaf5fe0682632a1203607c21e0df39c86f73f`: 58 positive configurations
+pass in 55 traversals, with 298 controls, 65 witnesses, nine Kani harnesses and the full 737-test/lint/hygiene/
+leak gate passing. Three duplicate graph searches are removed; guarded request/subset evaluation preserves
+the graphs. A serial small-fixture median changes from 31.03 to 30.09 seconds; this is not an end-to-end CI
+or wide speedup. Identity canonicalization and explicit-stutter removal remain isolated experiments, with
+bounded relational evidence and uncompleted general proof obligations. The [formal search report](../review/formal-optimization-2026-11-03/REPORT.md)
+records replay commands and limits. No runtime source, installed binary, user state or release changes.
+Recheck Git status: the same ten preexisting documentation changes are preserved. New delivery CI is pending.
+
 D-495 formal material is pinned at `36afc59b6fa00128f8ecd886ab1817f41412bc32`: 58 positive configurations,
 298 named counterexamples, 65 normal-path witnesses and nine Kani harnesses pass. The wide configuration
 timed out and is unproved. The full local regression passed 737 tests, lint, hygiene and leak checks.

@@ -5,7 +5,45 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
-## 0. Gate status (re-run 2026-11-03 at `36afc59b`)
+## 0. Gate status (re-run 2026-11-03 at `61feaf5f`)
+
+D-496 material commit `61feaf5fe0682632a1203607c21e0df39c86f73f` pins the models, configurations,
+proof sources, runner and Makefile. All 417 material-file SHA-256 values match the validated tree and the
+immutable commit. The runs occurred on those bytes before commit; this is not another post-commit run.
+
+All **58** positive configurations passed in **55** traversals, all **298** named negative controls were
+refuted, all **65** normal-path witnesses passed, and all **9** Kani harnesses passed. Kani reported
+`Complete - 9 successfully verified harnesses, 0 failures, 9 total`. The inventory remains
+**46** modules and **357** configurations, including the separate uncompleted wide configuration. Each
+positive source configuration's generated/distinct/final-queue totals match D-495. Unioning identical
+model/config claim lists avoids 4,151,650 repeated generated states: the positive batch generated
+131,720,468 states instead of 135,872,118. Individual state graphs and liveness obligations are unchanged.
+
+The control model uses a guarded active-request lookup and chooses the operation-subset domain after the
+response branch. A union-graph action comparison checked 494,520 distinct states; its reply-only mutation
+was rejected. Three serial timing pairs on the small fixture had medians of 31.03 seconds before and
+30.09 seconds after (3.05%). This is not an end-to-end CI or wide-configuration performance claim.
+The [optimization report](../review/formal-optimization-2026-11-03/REPORT.md) records the algebraic argument,
+profile counters, replay inputs, measurements and isolated reduction experiments. Canonical allocation
+and removal of explicit stutter are not in the accepted model. Bounded allocation-relation probes are
+additional research evidence, not a general machine-checked fair-trace theorem.
+
+The final local logs are `review/tmp/d496/positive-final2.log`, `negative.log`, `witness.log`, `kani.log`
+and `check.log`, each with an exit-0 receipt. Positive replay inputs and logs are in
+`/tmp/teamagents-positive-anhvg75m`; witness replay inputs are in `/tmp/teamagents-witnesses-t1rvpq9q`.
+Executed batch fixtures require a failing second-config invariant or temporal property to fail the union.
+Parser controls reject indented directives and source-name collisions. An early positive attempt was
+stopped to strengthen those controls; a later intermediate syntax error failed at startup. Neither is
+counted as a completed gate. The final batch used the committed runner bytes.
+
+The full project gate re-passed **737** Rust tests (core 174 / engine 459 / tui 104), formatting, Clippy,
+hygiene and process/scratch leak checks. An independent staged checkout excluding the ten preexisting
+documentation changes also passed hygiene. Those ten changes remain outside the scoped commits.
+Runtime source and installed binaries remain D-494; no PTY, live-service, installation or public-release
+acceptance is renewed. The wide result remains D-495's timeout, not a new completed search. Full
+implementation refinement/composition, arbitrary-string proofs and reviewer usage remain unresolved.
+
+## D-495 historical gate (2026-11-03 at `36afc59b`)
 
 D-495 material commit `36afc59b6fa00128f8ecd886ab1817f41412bc32` pins the checked models, configurations,
 Kani sources and proof subjects, witness manifest and requirement inventory. After committing, the 410
