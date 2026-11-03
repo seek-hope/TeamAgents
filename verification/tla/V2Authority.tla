@@ -236,22 +236,19 @@ List ==
 \* the user already held — it never widens an instance's own. With a parent the
 \* new grant is a *derived* one and must be covered by it (issue_grant's parent
 \* check), which is what makes the cascade below reachable from the user's side.
-UserGrants(g, subject, action, shape, parent, delegable) ==
+UserGrants(g, subject, action, scope, parent, delegable) ==
   /\ ~UsedFor(grants, g)
-  /\ subject \in Instances
-  /\ <<action, shape>> \in GrantablePairs
+  /\ subject \in Instances /\ scope \in Scopes
+  /\ <<action, ScopeShape[scope]>> \in GrantablePairs
   /\ parent \in GrantIds \union {"none"}
-  /\ \E scope \in Scopes : ScopeShape[scope] = shape
   /\ (parent = "none" \/ \E p \in GrantIds :
         /\ p = parent /\ LiveFor(grants, p)
         /\ \/ grants[p].action = action
            \/ grants[p].action = "manage" /\ action \in {"message", "delegate"}
-        /\ \/ grants[p].scope = "session"
-           \/ grants[p].scope = CHOOSE s \in Scopes : ScopeShape[s] = shape)
-  /\ LET scope == CHOOSE s \in Scopes : ScopeShape[s] = shape
-     IN grants' = [grants EXCEPT ![g] = [subject |-> subject, action |-> action, scope |-> scope,
-                                        parent |-> parent, issuer |-> Granter, delegable |-> delegable,
-                                        task |-> "none", live |-> TRUE]]
+        /\ CoversScope(grants[p].scope, scope))
+  /\ grants' = [grants EXCEPT ![g] = [subject |-> subject, action |-> action, scope |-> scope,
+                                     parent |-> parent, issuer |-> Granter, delegable |-> delegable,
+                                     task |-> "none", live |-> TRUE]]
   /\ revision' = revision + 1
   /\ UNCHANGED <<offered, listed, ops, revokedIds, staleOps>>
 
@@ -265,8 +262,22 @@ Spawn(g) ==
                         /\ grants' = [grants EXCEPT ![g] =
                               [subject |-> "leader", action |-> "delegate",
                                scope |-> "instance:worker", parent |-> m,
-                               issuer |-> "leader", delegable |-> (SpawnDelegable \/ TaskChildDelegable),
-                               task |-> (IF TaskChildDelegable THEN "t1" ELSE "none"), live |-> TRUE]]
+                               issuer |-> "leader", delegable |-> SpawnDelegable,
+                               task |-> "none", live |-> TRUE]]
+  /\ revision' = revision + 1
+  /\ UNCHANGED <<offered, listed, ops, revokedIds, staleOps>>
+
+\* User-approved capability issuance (issue_task_grant): a real task-scoped
+\* grant also exists on the normal path. V2Capabilities models the preceding
+\* request/approval and the instance-derived parent case. UserGrants above is
+\* restricted to ordinary grants; arbitrary user-supplied task metadata on that
+\* low-level command is outside TaskScopedGrantsAreNonDelegable's scope here.
+ApproveTaskCapability(g) ==
+  /\ ~UsedFor(grants, g)
+  /\ grants' = [grants EXCEPT ![g] =
+       [subject |-> "worker", action |-> "shell", scope |-> "workspace",
+        parent |-> "none", issuer |-> Granter, delegable |-> TaskChildDelegable,
+        task |-> "t1", live |-> TRUE]]
   /\ revision' = revision + 1
   /\ UNCHANGED <<offered, listed, ops, revokedIds, staleOps>>
 
@@ -350,10 +361,10 @@ WiderChildGrant ==
 
 Next ==
   \/ List
-  \/ \E g \in GrantIds, subject \in Instances, action \in Actions, shape \in Shapes,
+  \/ \E g \in GrantIds, subject \in Instances, action \in Actions, scope \in Scopes,
         parent \in GrantIds \union {"none"}, delegable \in BOOLEAN :
-       UserGrants(g, subject, action, shape, parent, delegable)
-  \/ \E g \in GrantIds : Spawn(g)
+       UserGrants(g, subject, action, scope, parent, delegable)
+  \/ \E g \in GrantIds : Spawn(g) \/ ApproveTaskCapability(g)
   \/ \E g \in GrantIds : UserRevokes(g)
   \/ \E i \in Instances : Observe(i)
   \/ ObserveAll

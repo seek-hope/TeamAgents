@@ -5,6 +5,57 @@
 
 use crate::kernel_types::page_span;
 
+/// The six checked actions and twelve representative scopes include every live
+/// shape, nested resources and similarly named siblings. This is a finite
+/// vocabulary proof, not a theorem over arbitrary Unicode strings.
+#[kani::proof]
+#[kani::unwind(32)]
+fn capability_vocabulary_matches_the_requested_shape() {
+    use crate::capability::{authorizes_something, ScopeShape};
+    let action: u8 = kani::any();
+    let scope: u8 = kani::any();
+    kani::assume(action < 6 && scope < 12);
+    let (action, expected_shape) = match action {
+        0 => ("shell", ScopeShape::Workspace),
+        1 => ("manage", ScopeShape::Instance),
+        2 => ("message", ScopeShape::Instance),
+        3 => ("delegate", ScopeShape::Instance),
+        4 => ("task_result", ScopeShape::Task),
+        _ => ("web", ScopeShape::Domain),
+    };
+    let (scope, shape) = match scope {
+        0 => ("session", Some(ScopeShape::Session)),
+        1 => ("workspace", Some(ScopeShape::Workspace)),
+        2 => ("instance:a", Some(ScopeShape::Instance)),
+        3 => ("instance:ab", Some(ScopeShape::Instance)),
+        4 => ("task:a", Some(ScopeShape::Task)),
+        5 => ("domain:a", Some(ScopeShape::Domain)),
+        6 => ("domain:a/b", None),
+        7 => ("instance:", None),
+        8 => ("task:", None),
+        9 => ("domain:", None),
+        10 => ("", None),
+        _ => ("Session", None),
+    };
+    assert_eq!(ScopeShape::of(scope), shape);
+    assert_eq!(
+        authorizes_something(action, scope),
+        shape == Some(ScopeShape::Session) || shape == Some(expected_shape)
+    );
+}
+
+/// Every one-byte ASCII action is unknown, even with the broad session scope.
+#[kani::proof]
+#[kani::unwind(16)]
+fn unknown_action_cannot_gain_session_authority() {
+    let byte: u8 = kani::any();
+    kani::assume(byte < 128);
+    let bytes = [byte];
+    let action = std::str::from_utf8(&bytes).unwrap();
+    assert!(crate::capability::asks_about(action).is_none());
+    assert!(!crate::capability::authorizes_something(action, "session"));
+}
+
 /// Every list size, selection and terminal height, including stale selections:
 /// the viewport fits, and contains the selected item whenever it has any rows.
 #[kani::proof]

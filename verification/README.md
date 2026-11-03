@@ -24,9 +24,66 @@ shape D-206 was committed in.
 
 <!-- maps: verification/REPORT.md reader=evidence -->
 
-## D-494 supervision and evidence checks
+## D-495 reachability, repaired abstractions and current requirements
 
-The current catalogue contains 41 modules, 50 positive configurations, 273 negative controls and one
+The current inventory has **46 modules**, **58 positive configurations**, **298 negative controls**,
+one separately driven wide configuration and **65 normal-path witnesses** across all 45 current modules.
+The historical isolation module remains separate. Counts describe the inventory; completed run evidence
+and the immutable material pin belong in [REPORT.md](REPORT.md).
+
+[REQUIREMENTS.md](REQUIREMENTS.md), generated from `requirements.json`, classifies every Q1-Q19 and A01-A36
+entry with checked claims, concrete bridge files and explicit residual obligations. Catalogue completeness
+is not complete formal coverage of the implementation: no full Rust/SQLite refinement or module-composition
+theorem is claimed. The catalogue gate also validates this inventory and the witness inventory.
+
+<!-- maps: verification/REQUIREMENTS.md reader=evidence -->
+
+Three distinct gates are required: positive safety/liveness checks, named fault controls, and existential
+normal-path witnesses. `make verify-witnesses` runs the latter from `witnesses.json` without enabling faults
+or changing constants. A negative reachability predicate must produce the exact expected safety violation
+and a noninitial trace; exhaustive absence, timeout, warnings and other errors fail. A guided path intersects
+the original Next relation and preserves Init and the fairness suffix; it can restrict but cannot invent
+transitions. Executed fixtures accept a valid path and reject a forged transition and an absent target.
+Traces and SHA-256 replay receipts are retained in the runner's printed output directory. One witness per
+module is an anti-vacuity floor, not complete action/path coverage.
+
+The old control model selected only replies, so tools/waits/completion never happened. It now enumerates
+response kinds and outcomes, records actual attempt identities, counts equal reservation amounts separately,
+and allocates fresh operation slots per request. `tla/MC_control_attempts.cfg` exposes lost/late attempts;
+`tla/MC_control_decisions.cfg` exposes two successive decisions without overwriting old operations.
+Reset/termination close pending requests and PREPARED operations, request cancellation for dispatched work,
+and keep late receipts on their original operations. `NoDispatchOnTerminated` constrains new dispatch,
+not historical effects; `NoReceiptAcrossEpochs` constrains context import, not old-operation settlement.
+Completion and wait phases have their real exit paths. Per-instance TurnStep uses **strong fairness**:
+recurring crashes can break weak-fair enabling intervals. This is an explicit scheduler/provider assumption,
+not a promise of progress on an unavailable host. TLC checks temporal properties on the complete graph
+(`-lncheck final`); a partial search never passes.
+
+Artifact publication preserves owner holds. Ordinary history references can be removed under abstract
+eligibility guards; release and GC claim/delete/collect are separately reachable. `ReleaseKeepsTheRowAndTheBytes`
+is a release-step property, not a permanent prohibition on later legal GC. `tla/MC_wait_deferred.cfg` adds a
+real unswept operation fact; task/message atomic wake remains unchanged. Authority enumerates both concrete
+instance targets and includes a normal task-capability approval path. Low-level arbitrary task metadata is
+not a proved extension of that path.
+
+| New finite model and positive configuration | Scope, bridge and precise negative controls |
+|---|---|
+| `tla/V2ExecutionChain.tla`, `tla/MC_executionchain.cfg` | Control dispatch, hook veto, durable runner acceptance, journal recovery, immutable receipts and epoch-fenced consumption. Anchors: `core/src/v2/control.rs`, `engine/src/v2/driver.rs`, `engine/src/jobs/runner.rs`, `engine/src/v2/work.rs`; bridges: `engine/tests/cases/jobs_robustness.rs`, `engine/tests/cases/autonomy.rs`. Cancellation and observed stop are distinct. This is one finite composition slice, not a theorem composing all modules or actual fsync/signals. Claims: `TypeOK`, `DispatchWasAuthorized`, `EffectHasControlCommit`, `EffectHasDurableAcceptance`, `VetoPreventsEffect`, `UnknownIsNeverReplayed`, `ContextKeepsItsEpoch`, `TakeoverNeedsStopEvidence`, `TerminalReceiptIsImmutable`. Controls: `tla/MC_executionchain_accept.cfg` → `EffectHasDurableAcceptance`; `tla/MC_executionchain_commit.cfg` → `EffectHasControlCommit`; `tla/MC_executionchain_epoch.cfg` → `ContextKeepsItsEpoch`; `tla/MC_executionchain_receipt.cfg` → `TerminalReceiptIsImmutable`; `tla/MC_executionchain_replay.cfg` → `UnknownIsNeverReplayed`; `tla/MC_executionchain_stale.cfg` → `DispatchWasAuthorized`; `tla/MC_executionchain_takeover.cfg` → `TakeoverNeedsStopEvidence`; `tla/MC_executionchain_veto.cfg` → `VetoPreventsEffect`. |
+| `tla/V2StreamBoundary.tla`, `tla/MC_streamboundary.cfg` | Bounded provider bodies, complete frames/responses, stall renewal and visible-text retry barriers. Anchor: `engine/src/providers/stream.rs`; bridge: `engine/tests/cases/provider_robustness.rs`. UTF-8/JSON parsing and HTTP/TLS remain tested implementations, not proved parsers. Claims: `TypeOK`, `BodyIsBounded`, `OnlyCompleteResponsesExecute`, `InvalidEventsAreRejected`, `PartialChunksDoNotRenew`, `VisibleTextIsNotReplayed`, `RetryBudgetIsBounded`. Controls: `tla/MC_streamboundary_invalid.cfg` → `InvalidEventsAreRejected`; `tla/MC_streamboundary_partial.cfg` → `OnlyCompleteResponsesExecute`; `tla/MC_streamboundary_retry.cfg` → `RetryBudgetIsBounded`; `tla/MC_streamboundary_size.cfg` → `BodyIsBounded`; `tla/MC_streamboundary_stall.cfg` → `PartialChunksDoNotRenew`; `tla/MC_streamboundary_visible.cfg` → `VisibleTextIsNotReplayed`. |
+| `tla/V2ProfileSwitch.tla`, `tla/MC_profileswitch.cfg` | Only a user may switch a nonterminated instance at READY/WAITING; admitted request profiles remain frozen. Anchor: `core/src/v2/control.rs::set_instance_profile`; bridges: control unit tests and `engine/tests/v2_driver.rs`. Two resolved profile names abstract native provider options. Claims: `TypeOK`, `OnlyUserSwitches`, `SwitchUsesSafeBoundary`, `RequestProfileIsFrozen`. Controls: `tla/MC_profileswitch_midturn.cfg` → `SwitchUsesSafeBoundary`; `tla/MC_profileswitch_nonuser.cfg` → `OnlyUserSwitches`; `tla/MC_profileswitch_rewrite.cfg` → `RequestProfileIsFrozen`; `tla/MC_profileswitch_terminated.cfg` → `SwitchUsesSafeBoundary`. |
+| `tla/V2SkillAuthority.tla`, `tla/MC_skillauthority.cfg` | A skill read needs its binding and a canonical regular file inside the registry; content cannot mint authority. Anchor: `engine/src/tools.rs`; bridges: its skill unit tests and `engine/tests/v2_mcp.rs`. Filesystem checks are premises, not a proof against path races. Claims: `TypeOK`, `SkillReadNeedsBinding`, `SkillReadStaysInRegistry`, `SkillContentCannotGrant`. Controls: `tla/MC_skillauthority_escape.cfg` → `SkillReadStaysInRegistry`; `tla/MC_skillauthority_grant.cfg` → `SkillContentCannotGrant`; `tla/MC_skillauthority_unbound.cfg` → `SkillReadNeedsBinding`. |
+| `tla/V2ExportSnapshot.tla`, `tla/MC_exportsnapshot.cfg` | Pages share one read snapshot; bounded, complete, synced output is published without replacing an existing destination. Anchor: `engine/src/v2/session_export.rs`; bridge: `engine/src/v2/session_export_tests.rs`. Cancellation is sampled before publication; a later cancellation cannot undo hard_link. A crash after publication may leave valid output without a success reply. SQLite and filesystem atomicity are assumed; fork/retention composition is not proved. Claims: `TypeOK`, `PagesShareSnapshot`, `ExportBytesAreBounded`, `PublicationIsComplete`, `ExistingDestinationSurvives`. Controls: `tla/MC_exportsnapshot_publish.cfg` → `PublicationIsComplete`; `tla/MC_exportsnapshot_replace.cfg` → `ExistingDestinationSurvives`; `tla/MC_exportsnapshot_size.cfg` → `ExportBytesAreBounded`; `tla/MC_exportsnapshot_snapshot.cfg` → `PagesShareSnapshot`. |
+
+Kani now compiles `core/src/v2/capability.rs` directly. In addition to the seven existing arithmetic harnesses,
+`capability_vocabulary_matches_the_requested_shape` proves six actions by twelve representative scopes;
+`unknown_action_cannot_gain_session_authority` proves rejection of every one-byte ASCII action even with
+session scope. These two harnesses do **not** prove arbitrary Unicode scope algebra, prefix transitivity or
+all command identities. Broader bounded-string proof attempts were stopped for resource use and are not
+evidence of success.
+
+## D-494 supervision and evidence checks (historical baseline)
+
+The D-494 catalogue contained 41 modules, 50 positive configurations, 273 negative controls and one
 separately driven wide configuration. The catalogue now derives checked claims only from the positive
 configurations. A control must actually list its expected claim. All exhaustive targets reject warnings
 and require a successful exit and verdict. Negative verdicts are checked by
@@ -69,7 +126,8 @@ make verify-model-sim       # any configuration by random simulation (~2-4 minut
                             # 100): the *invariants* only — simulation checks no temporal property — and a
                             # violation found here is real while absence proves nothing (D-211, D-215).
                             # `SIM_CONFIG=…` picks one, including the refuted controls
-make verify-kani            # paging arithmetic (needs the Kani toolchain, see below)
+make verify-witnesses       # reachable normal paths; not safety proofs
+make verify-kani            # arithmetic and bounded capability vocabulary (Kani toolchain required)
 cargo test --offline --manifest-path core/Cargo.toml --test v2_invariants   # spec-to-code correspondence
 ```
 
@@ -178,7 +236,7 @@ and fails when a new claim lands in neither place, and `--write-coverage` regene
 
 **D-462 controls continued**: `tla/MC_jobs_keep_runner.cfg` (SettledRunnerLeaves), `tla/MC_jobs_guess_not_run_effect.cfg` (NotRunMeansNoEffect) and `tla/MC_jobs_effect_before_accept.cfg` (EffectImpliesAcceptedStart).
 
-**D-462 controls for the control plane itself**: `tla/MC_control_BadAdmission.cfg`, `tla/MC_control_BadActiveRequest.cfg`, `tla/MC_control_EffectBeforeDispatch.cfg`, `tla/MC_control_KeepClosedReservation.cfg`, `tla/MC_control_OverReserve.cfg`, `tla/MC_control_SelectIncomplete.cfg`, `tla/MC_control_StaleExecutor.cfg`, `tla/MC_control_DoubleEffect.cfg`, `tla/MC_control_RewriteTerminalOp.cfg`, `tla/MC_control_RewriteTerminalGoal.cfg`, `tla/MC_control_CrossEpochReceipt.cfg`, `tla/MC_control_EffectUnauthorized.cfg`, `tla/MC_control_EffectOnTerminated.cfg`, `tla/MC_control_EffectAfterCancel.cfg`, `tla/MC_control_PreparedEffect.cfg` (one per claim: AdmissionGate, OneActiveRequest, RecordBeforeEffect, ReservationReleased, ReservationsAdmitted, SelectionIsComplete, StaleExecutorRejected, EffectAtMostOnce, TerminalOpStable, TerminalGoalStatusStable, NoReceiptAcrossEpochs, NoEffectBeforeApproval, NoEffectOnTerminated, CancelledBeforeStartHasNoEffect, PreparedIsNotTerminal).
+**D-462 controls for the control plane itself**: `tla/MC_control_BadAdmission.cfg`, `tla/MC_control_BadActiveRequest.cfg`, `tla/MC_control_EffectBeforeDispatch.cfg`, `tla/MC_control_KeepClosedReservation.cfg`, `tla/MC_control_OverReserve.cfg`, `tla/MC_control_SelectIncomplete.cfg`, `tla/MC_control_StaleExecutor.cfg`, `tla/MC_control_DoubleEffect.cfg`, `tla/MC_control_RewriteTerminalOp.cfg`, `tla/MC_control_RewriteTerminalGoal.cfg`, `tla/MC_control_CrossEpochReceipt.cfg`, `tla/MC_control_EffectUnauthorized.cfg`, `tla/MC_control_EffectOnTerminated.cfg`, `tla/MC_control_EffectAfterCancel.cfg`, `tla/MC_control_PreparedEffect.cfg` (one per claim: AdmissionGate, OneActiveRequest, RecordBeforeEffect, ReservationReleased, ReservationsAdmitted, SelectionIsComplete, StaleExecutorRejected, EffectAtMostOnce, TerminalOpStable, TerminalGoalStatusStable, NoReceiptAcrossEpochs, NoEffectBeforeApproval, NoDispatchOnTerminated, CancelledBeforeStartHasNoEffect, PreparedIsNotTerminal).
 
 **D-462 controls for the task lifecycle**: `tla/MC_task_self_dependency.cfg`, `tla/MC_task_stale_active_goal.cfg`, `tla/MC_task_stranger_writes.cfg`, `tla/MC_task_return_path_closed.cfg`, `tla/MC_task_rewrite_settled.cfg`, `tla/MC_task_system_settles.cfg` (NoSelfDependency, NoStaleActiveGoal, OnlyPartiesWriteTasks, ReturnPathOnlyWhileOpen, SettledIsFinal, SystemOnlyParksTasks).
 
@@ -204,12 +262,12 @@ and fails when a new claim lands in neither place, and `--write-coverage` regene
 | `SettlementFollowsATurnAfterTheLanding` | an outcome belongs to the turn that produced it: the goal can only settle after a request begun since the instance's last input landing | the boundary drain before `BeginRequest`, `complete_goal` reading a decision's candidate, and the client's positional attribution in `exec` (D-72) | §5.3/§5.4/§8 |
 | `QueuedInputEntersTheContext` (temporal) | an input that waited for the boundary enters the context; it is never dropped while the instance keeps running (a park keeps it, a reset seals it with its epoch, termination ends it) | the `envelopes` state machine (`ACCEPTED` → `APPLIED`, sealed at a reset) plus the drain | A06/A21 |
 | `StaleExecutorRejected` | an executing instance holds the current revision | `revision == expected` in `begin_request` | §6.1 |
-| `NoEffectOnTerminated` | a terminated instance produces no effect | TERMINATED in `set_lifecycle` plus the dispatch guard | §6.4 |
+| `NoDispatchOnTerminated` | no new dispatch for a terminated instance; an old in-flight effect may finish | TERMINATED in `set_lifecycle` plus the dispatch guard | §6.4 |
 | `PreparedIsNotTerminal` | a `PREPARED` operation has no effect yet | the operation state machine | §6.1 |
 | `CancelledBeforeStartHasNoEffect` | "cancelled before start" means no effect (a dispatch record may exist) | `cancel_operation` on `DISPATCH_COMMITTED` | A13 |
 | `TerminalOpStable` (temporal) | a terminal operation is never rewritten | the "already terminal" refusal in `complete_operation` | A13 |
 | `TerminalGoalStatusStable` (temporal) | a terminal goal is never rewritten | the `already_closed` branch of `complete_goal`/`block_goal` | §8 |
-| `NoReceiptAcrossEpochs` (temporal) | a receipt never lands across epochs | `reset_instance` closes the old epoch and cancels in-flight operations | A24 |
+| `NoReceiptAcrossEpochs` (temporal) | old-operation receipts never enter the new context epoch; old operations may still settle | epoch-fenced consumption after `reset_instance` | A24 |
 
 ### Private history (A05, Q8, §5.1/§5.4)
 

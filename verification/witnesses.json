@@ -1,0 +1,480 @@
+{
+  "schema": 1,
+  "historical": {
+    "V2Isolation": "D-480 retired OS sandbox execution; retained models describe historical internal consistency."
+  },
+  "cases": [
+    {
+      "id": "control_effect",
+      "module": "V2Control",
+      "config": "MC.cfg",
+      "predicate": "\\E o \\in Ops : ops[o].effect = 1",
+      "purpose": "A normal approved tool response reaches its external effect."
+    },
+    {
+      "id": "control_consumed_receipt",
+      "module": "V2Control",
+      "config": "MC.cfg",
+      "predicate": "\\E i \\in Instances : inst[i].contextOps # {}",
+      "purpose": "A terminal operation receipt is consumed into its owning context."
+    },
+    {
+      "id": "control_wait",
+      "module": "V2Control",
+      "config": "MC.cfg",
+      "predicate": "\\E i \\in Instances : inst[i].phase = \"WAITING\"",
+      "purpose": "A selected wait response reaches the parked phase."
+    },
+    {
+      "id": "control_completion_succeeded",
+      "module": "V2Control",
+      "config": "MC.cfg",
+      "predicate": "goal.status = \"SUCCEEDED\"",
+      "purpose": "A completion response reaches this modeled goal outcome."
+    },
+    {
+      "id": "control_completion_failed",
+      "module": "V2Control",
+      "config": "MC.cfg",
+      "predicate": "goal.status = \"FAILED\"",
+      "purpose": "A completion response reaches this modeled goal outcome."
+    },
+    {
+      "id": "control_completion_blocked",
+      "module": "V2Control",
+      "config": "MC.cfg",
+      "predicate": "goal.status = \"BLOCKED\"",
+      "purpose": "A completion response reaches this modeled goal outcome."
+    },
+    {
+      "id": "control_equal_reservations",
+      "module": "V2Control",
+      "config": "MC_control_two.cfg",
+      "predicate": "Cardinality(goal.reserved) = 2 /\\ ReservedTotal = 2",
+      "purpose": "Distinct requests with equal reservation amounts both contribute to the total."
+    },
+    {
+      "id": "control_late_receipt",
+      "module": "V2Control",
+      "config": "MC.cfg",
+      "predicate": "\\E o \\in Ops : ops[o].cancelRequested /\\ ops[o].status = \"SUCCEEDED\" /\\ ops[o].epoch < inst[ops[o].instance].ctxEpoch",
+      "purpose": "A running old-epoch operation can settle after reset without joining the new context."
+    },
+    {
+      "id": "control_selected_retry",
+      "module": "V2Control",
+      "config": "MC_control_attempts.cfg",
+      "predicate": "\\E a \\in AttIds, r \\in UsedReqs : attempts[a].status = \"LOST\" /\\ attempts[a].req = r /\\ requests[r].selected",
+      "purpose": "A lost attempt and a complete selected retry coexist for one request."
+    },
+    {
+      "id": "control_late_attempt",
+      "module": "V2Control",
+      "config": "MC_control_attempts.cfg",
+      "predicate": "\\E r \\in UsedReqs : Cardinality({a \\in AttIds : attempts[a].req = r /\\ attempts[a].status = \"COMPLETE\"}) = 2",
+      "purpose": "A second complete attempt is archived while the first selection remains authoritative."
+    },
+    {
+      "id": "control_successive_decisions",
+      "module": "V2Control",
+      "config": "MC_control_decisions.cfg",
+      "predicate": "\\E o, p \\in Ops : ops[o].effect = 1 /\\ ops[p].effect = 1 /\\ ops[o].request # ops[p].request",
+      "purpose": "Successive requests allocate different operations instead of overwriting terminal receipts.",
+      "path": [
+        "BeginRequest(\"L\") /\\ inst'[\"L\"].activeReq = 1",
+        "RecordAttempt(\"L\") /\\ requests'[1].result = \"ops\" /\\ requests'[1].selectedAttempt = 1",
+        "ImportResponse(\"L\") /\\ ops'[\"o1\"].request = 1 /\\ ops'[\"o2\"].status = \"none\"",
+        "RequestApproval(\"o1\")",
+        "Approve(\"o1\")",
+        "Dispatch(\"o1\")",
+        "StartEffect(\"o1\")",
+        "Complete(\"o1\", \"SUCCEEDED\")",
+        "ConsumeDecision(\"L\")",
+        "BeginRequest(\"L\") /\\ inst'[\"L\"].activeReq = 2",
+        "RecordAttempt(\"L\") /\\ requests'[2].result = \"ops\"",
+        "ImportResponse(\"L\") /\\ ops'[\"o2\"].request = 2",
+        "Dispatch(\"o2\")",
+        "StartEffect(\"o2\")"
+      ]
+    },
+    {
+      "id": "artifact_claim",
+      "module": "V2Artifact",
+      "config": "MC_artifact.cfg",
+      "predicate": "\\E id \\in Artifacts : row[id] = \"DELETING\"",
+      "purpose": "Reference removal and owner release make normal collection reachable."
+    },
+    {
+      "id": "artifact_release",
+      "module": "V2Artifact",
+      "config": "MC_artifact.cfg",
+      "predicate": "released # {}",
+      "purpose": "The monitor records a legitimate release, not only faulty ones."
+    },
+    {
+      "id": "artifact_delete_gap",
+      "module": "V2Artifact",
+      "config": "MC_artifact.cfg",
+      "predicate": "\\E id \\in Artifacts : row[id] = \"DELETING\" /\\ disk[id] = \"absent\"",
+      "purpose": "File deletion and catalog removal have an observable crash boundary."
+    },
+    {
+      "id": "artifact_collected",
+      "module": "V2Artifact",
+      "config": "MC_artifact.cfg",
+      "predicate": "\\E id \\in released : row[id] = \"none\" /\\ disk[id] = \"absent\"",
+      "purpose": "An artifact whose owner was released completes catalog collection."
+    },
+    {
+      "id": "wait_unswept",
+      "module": "V2Wait",
+      "config": "MC_wait_deferred.cfg",
+      "predicate": "\\E w \\in Waits : waitState[w] = \"PENDING\" /\\ Holds(w, facts, timers)",
+      "purpose": "A satisfiable pending wait really relies on the parked drain."
+    },
+    {
+      "id": "authority_task",
+      "module": "V2Authority",
+      "config": "MC_authority.cfg",
+      "predicate": "\\E g \\in GrantIds : Used(g) /\\ grants[g].task # \"none\"",
+      "purpose": "Normal user-approved capability issuance creates a nondelegable task grant."
+    },
+    {
+      "id": "authority_leader",
+      "module": "V2Authority",
+      "config": "MC_authority.cfg",
+      "predicate": "\\E g \\in GrantIds : Used(g) /\\ grants[g].issuer = Granter /\\ grants[g].scope = \"instance:leader\"",
+      "purpose": "Concrete scope selection explores this instance target."
+    },
+    {
+      "id": "authority_worker",
+      "module": "V2Authority",
+      "config": "MC_authority.cfg",
+      "predicate": "\\E g \\in GrantIds : Used(g) /\\ grants[g].issuer = Granter /\\ grants[g].scope = \"instance:worker\"",
+      "purpose": "Concrete scope selection explores this instance target."
+    },
+    {
+      "id": "approval_approved_effect",
+      "module": "V2Approval",
+      "config": "MC_approval.cfg",
+      "predicate": "\\E o \\in Ops : apprStatus[o] = \"APPROVED\" /\\ effect[o] = 1 /\\ opStatus[o] = \"CLOSED\" /\\ clock < horizon[o]",
+      "purpose": "An approved operation dispatches within its window and closes with an effect."
+    },
+    {
+      "id": "capabilities_settled_child",
+      "module": "V2Capabilities",
+      "config": "MC_capabilities.cfg",
+      "predicate": "parent_live /\\ child_exists /\\ child_parent = parent_grant /\\ child_task \\in Tasks /\\ settled /\\ ~child_live /\\ ~child_delegable",
+      "purpose": "Task settlement revokes a minted child while its parent remains live."
+    },
+    {
+      "id": "checks_verified_success",
+      "module": "V2Checks",
+      "config": "MC_checks.cfg",
+      "predicate": "goalStatus = \"SUCCEEDED\" /\\ candidate = \"success\" /\\ required = AllChecks /\\ roundChecks = required /\\ round > 0 /\\ lastVerdict = \"pass\" /\\ ~roundOpen /\\ (\\A k \\in required : result[k] = \"pass\")",
+      "purpose": "A success claim settles after a completed round passes every available check."
+    },
+    {
+      "id": "codemode_nested_call_output",
+      "module": "V2Codemode",
+      "config": "MC_codemode.cfg",
+      "predicate": "\\E r \\in Runs : r \\in done /\\ ScriptItem(r) \\in context /\\ (\\E t \\in Tools \\ Vetoed : [run |-> r, tool |-> t] \\in called)",
+      "purpose": "A script completes an allowed nested call and contributes its own output."
+    },
+    {
+      "id": "compress_committed_summary",
+      "module": "V2Compress",
+      "config": "MC_compress.cfg",
+      "predicate": "(\\E r \\in Reqs : requestStatus[r] = \"COMPLETE\" /\\ ~reserved[r]) /\\ (\\E e, s \\in Slots : e < s /\\ entry[e] = \"covered\" /\\ summaryOf[e] = s /\\ isSummary[s] /\\ Visible(s))",
+      "purpose": "Compression completes and releases its reservation while preserving a covered original."
+    },
+    {
+      "id": "concurrency_delivered_with_stalled_reader",
+      "module": "V2Concurrency",
+      "config": "MC_concurrency.cfg",
+      "predicate": "len = MaxEvents /\\ count[\"r1\"] = MaxEvents /\\ count[\"r2\"] = 0 /\\ (\\A i \\in Events : view[\"r1\"][i] = i)",
+      "purpose": "One reader catches up while another remains stalled."
+    },
+    {
+      "id": "coordinator_acquired_after_sweep",
+      "module": "V2Coordinator",
+      "config": "MC_coordinator.cfg",
+      "predicate": "sweep = \"done\" /\\ daemon = \"live\" /\\ outcome = \"acquired\" /\\ references = 1 /\\ coordinators = 1",
+      "purpose": "Maintenance releases its lock and the coordinator acquires it."
+    },
+    {
+      "id": "daemon_command_event_delivered",
+      "module": "V2Daemon",
+      "config": "MC_daemon.cfg",
+      "predicate": "\\E cmd \\in Commands : \\E c \\in Clients : applied[cmd] = 1 /\\ receipt[cmd] \\in served[c] /\\ cursor[c] = logLength /\\ view[c] = cursor[c]",
+      "purpose": "A command receipt and its event reach a caught-up client."
+    },
+    {
+      "id": "discovery_completed_with_drained_pressure",
+      "module": "V2Discovery",
+      "config": "MC_discovery.cfg",
+      "predicate": "running /\\ demanded /\\ discovered /\\ saturated /\\ ~full /\\ ~stopped /\\ ~fault",
+      "purpose": "Discovery completes with saturation drained and supervision running."
+    },
+    {
+      "id": "diskfull_resumed_persistence",
+      "module": "V2DiskFull",
+      "config": "MC_diskfull.cfg",
+      "predicate": "store = \"ok\" /\\ lifecycle = \"active\" /\\ ~latched /\\ inFlight = \"none\" /\\ outcome = \"persisted\" /\\ reported = \"unknown\"",
+      "purpose": "After a storage failure, user resume permits a new persisted result."
+    },
+    {
+      "id": "displayworker_finished_output",
+      "module": "V2DisplayWorker",
+      "config": "MC_displayworker.cfg",
+      "predicate": "owner /\\ last.op = \"finish\" /\\ generation \\in cache /\\ bytes > 0 /\\ age < 2 /\\ ~active /\\ ~live",
+      "purpose": "Current worker output finishes within its deadline and leaves no live process."
+    },
+    {
+      "id": "grants_authorized_child_effect",
+      "module": "V2Grants",
+      "config": "MC_grants.cfg",
+      "predicate": "\\E o \\in Ops : o.owner = \"child\" /\\ ops[o].effects = 1 /\\ ops[o].stamp = revision /\\ revision > 0 /\\ Covers2(o.owner, o.action, o.scope) /\\ \"shell\" \\in offered[\"child\"]",
+      "purpose": "A granted child shell operation executes at the current permission revision."
+    },
+    {
+      "id": "history_authorized_reads",
+      "module": "V2History",
+      "config": "MC_history.cfg",
+      "predicate": "\\E i \\in Instances : [reader |-> \"user\", target |-> i] \\in reads /\\ [reader |-> i, target |-> i] \\in reads",
+      "purpose": "The user and instance complete permitted history reads."
+    },
+    {
+      "id": "images_loaded_parts_sent",
+      "module": "V2Images",
+      "config": "MC_images.cfg",
+      "predicate": "sent /\\ ref = \"present\" /\\ loaded /\\ wire = \"parts\"",
+      "purpose": "A loaded image reaches a sent vision request."
+    },
+    {
+      "id": "inbox_ordered_application",
+      "module": "V2Inbox",
+      "config": "MC_inbox.cfg",
+      "predicate": "epoch = 0 /\\ log = <<1, 2>> /\\ state[1] = \"applied\" /\\ state[2] = \"applied\"",
+      "purpose": "Two accepted envelopes are applied in sequence."
+    },
+    {
+      "id": "inputqueue_revised_snapshot_consumed",
+      "module": "V2InputQueue",
+      "config": "MC_inputqueue.cfg",
+      "predicate": "state = \"applied\" /\\ verified /\\ revision = 1 /\\ history = <<1, 2>> /\\ snapshot = 1 /\\ source = 2 /\\ delivered = snapshot /\\ deliveries = 1 /\\ last.op = \"consume\"",
+      "purpose": "Revised verified input is consumed once from its snapshot after the source changes."
+    },
+    {
+      "id": "jobs_successful_effect_readback",
+      "module": "V2Jobs",
+      "config": "MC_jobs.cfg",
+      "predicate": "journal = \"SUCCEEDED\" /\\ started = 1 /\\ effect /\\ runner = \"dead\" /\\ readJournal = \"SUCCEEDED\" /\\ readEffect /\\ readVerdict = \"ran\"",
+      "purpose": "A successful effect is read back after its runner exits."
+    },
+    {
+      "id": "jobsupervision_normal_retirement",
+      "module": "V2JobSupervision",
+      "config": "MC_jobsupervision.cfg",
+      "predicate": "s.mode = \"normal\" /\\ s.phase = \"SUCCEEDED\" /\\ ~s.runner /\\ s.timestamp /\\ s.socket /\\ s.descendant /\\ ~s.killSent",
+      "purpose": "Normal retirement preserves a descendant service despite an open socket."
+    },
+    {
+      "id": "memory_bounded_recall",
+      "module": "V2Memory",
+      "config": "MC_memory.cfg",
+      "predicate": "recalled /\\ Cardinality(notes) = MaxNotes /\\ Cardinality(result) = RecallMax /\\ result \\subseteq notes",
+      "purpose": "A full store completes recall at its configured bound."
+    },
+    {
+      "id": "oauth_authorized_token_used",
+      "module": "V2Oauth",
+      "config": "MC_oauth.cfg",
+      "predicate": "\\E s \\in Services, t \\in Tokens, r \\in Resources : store[s] = <<t, r>> /\\ bound[t] = r /\\ clock < expiry[t] /\\ <<t, r, clock, s>> \\in sent",
+      "purpose": "An authorized unexpired token is used for its bound resource."
+    },
+    {
+      "id": "presentation_visible_media_completed",
+      "module": "V2Presentation",
+      "config": "MC_presentation.cfg",
+      "predicate": "generation = 0 /\\ last.op = \"complete\" /\\ last.ok /\\ 1 \\in visible /\\ 1 \\in cached /\\ queued = {}",
+      "purpose": "Visible media completes at the current generation and enters the cache."
+    },
+    {
+      "id": "projecttrust_canonical_root_landed",
+      "module": "V2ProjectTrust",
+      "config": "MC_projecttrust.cfg",
+      "predicate": "landed /\\ listed = {\"r1\"}",
+      "purpose": "Canonical root trust permits project configuration to land."
+    },
+    {
+      "id": "prompt_worker_edited_rules_composed",
+      "module": "V2Prompt",
+      "config": "MC_prompt.cfg",
+      "predicate": "\\E i \\in Instances \\ {Leader} : i \\in created /\\ turns[i] > 0 /\\ rulesRev > 0 /\\ promptRev[i] = rulesRev /\\ withoutRules = {} /\\ ~stalePrompt",
+      "purpose": "A worker composes a prompt with edited session rules."
+    },
+    {
+      "id": "prune_eligible_sessions_removed",
+      "module": "V2Prune",
+      "config": "MC_prune.cfg",
+      "predicate": "taken = {\"c\", \"f\"} /\\ present = {\"a\", \"b\", \"d\", \"e\"} /\\ badlyTaken = {}",
+      "purpose": "Both eligible sessions leave while protected sessions remain."
+    },
+    {
+      "id": "retention_swept_ordinary",
+      "module": "V2Retention",
+      "config": "MC_retention.cfg",
+      "predicate": "~present[\"e1\"] /\\ age[\"e1\"] >= Horizon /\\ present[\"e2\"] /\\ live[\"e2\"] /\\ present[\"e3\"] /\\ evidence[\"e3\"]",
+      "purpose": "An old ordinary fact is evicted while live references and evaluation evidence are protected."
+    },
+    {
+      "id": "retry_exhausted_profiles",
+      "module": "V2Retry",
+      "config": "MC_retry.cfg",
+      "predicate": "\\A i \\in Instances : i \\in built /\\ parked[i] /\\ budget[i] = Budgets[i] /\\ attempts[i] = Budgets[i] + 1",
+      "purpose": "Both profiles exhaust their own retry limits and park."
+    },
+    {
+      "id": "schedule_run_finished",
+      "module": "V2Schedule",
+      "config": "MC_schedule.cfg",
+      "predicate": "log = <<[id |-> \"a1\", slot |-> 0]>> /\\ ~running[\"a1\"] /\\ nextAt[\"a1\"] = 1",
+      "purpose": "A due automation finishes and advances its slot."
+    },
+    {
+      "id": "sessions_named_archived",
+      "module": "V2Sessions",
+      "config": "MC_sessions.cfg",
+      "predicate": "\"a\" \\in archived /\\ reg[\"a\"] = \"p2\" /\\ (\\A e \\in holder : e.id # \"a\")",
+      "purpose": "A named session archives without a coordinator holding it."
+    },
+    {
+      "id": "sessionui_confirmed_delete_finished",
+      "module": "V2SessionUi",
+      "config": "MC_sessionui.cfg",
+      "predicate": "last.op = \"delete\" /\\ last.confirmed /\\ last.ok /\\ last.target = current /\\ pending = \"none\" /\\ ~open",
+      "purpose": "Successful confirmed deletion of the current session closes the client."
+    },
+    {
+      "id": "store_initialized_read_accepted",
+      "module": "V2Store",
+      "config": "MC_store.cfg",
+      "predicate": "stamp = \"v2\" /\\ tables = OurTables /\\ lastOpen = \"accepted\" /\\ ~lastWrote",
+      "purpose": "An initialized store reopens without writing."
+    },
+    {
+      "id": "task_assignee_settled",
+      "module": "V2Task",
+      "config": "MC_task.cfg",
+      "predicate": "\\E t \\in Tasks : taskStatus[t] = \"SUCCEEDED\" /\\ lastActor[t] = assignee[t] /\\ returnPath[t] = \"absent\"",
+      "purpose": "An assignee settles its task and the return capability is revoked."
+    },
+    {
+      "id": "trust_authorized_model_merge",
+      "module": "V2Trust",
+      "config": "MC_trust.cfg",
+      "predicate": "trustAsked /\\ trusted /\\ models[\"m1\"] = \"user\" /\\ models[\"m2\"] = \"project\"",
+      "purpose": "User authorization admits project configuration while preserving user precedence."
+    },
+    {
+      "id": "tui_explicit_approval",
+      "module": "V2Tui",
+      "config": "MC_tui.cfg",
+      "predicate": "last.effect = \"approve\" /\\ last.key = \"a\" /\\ last.focus = \"approvals\" /\\ last.pending",
+      "purpose": "An explicit key dispatches a focused pending approval."
+    },
+    {
+      "id": "update_health_checked_completion",
+      "module": "V2Update",
+      "config": "MC_update.cfg",
+      "predicate": "phase = \"completed\" /\\ health = \"ok\" /\\ active = {\"v2\"} /\\ previous = \"v1\" /\\ artifact /\\ revision = 4",
+      "purpose": "Validated update completes after switching and a successful health check."
+    },
+    {
+      "id": "workspace_committed_for_merge",
+      "module": "V2Workspace",
+      "config": "MC_workspace.cfg",
+      "predicate": "checkout = \"present\" /\\ ~uncommitted /\\ unmerged /\\ ~busy",
+      "purpose": "Edits reach a clean committed branch awaiting merge; merge and retirement lack unique state markers here."
+    },
+    {
+      "id": "work_admitted_effect",
+      "module": "V2Work",
+      "config": "MC_work.cfg",
+      "predicate": "IF s.kind = \"admission\" THEN (s.data.effect /\\ s.data.active /\\ s.data.transfers = 1 /\\ s.data.known = 1 /\\ s.data.unknown = 1 /\\ s.data.billed = 1 /\\ s.data.unpriced = 1) ELSE FALSE",
+      "purpose": "Admission usage transfers once before an active work effect."
+    },
+    {
+      "id": "executionchain_success_import",
+      "module": "V2ExecutionChain",
+      "config": "MC_executionchain.cfg",
+      "predicate": "s.receipt = \"SUCCEEDED\" /\\ s.imported /\\ s.effects = 1",
+      "purpose": "A durably accepted effect is journaled, persisted and consumed."
+    },
+    {
+      "id": "executionchain_crash_recovery",
+      "module": "V2ExecutionChain",
+      "config": "MC_executionchain.cfg",
+      "predicate": "s.recoveredJournal /\\ s.receipt = \"SUCCEEDED\" /\\ s.imported",
+      "purpose": "A journal surviving the coordinator crash is reused without repeating the effect."
+    },
+    {
+      "id": "executionchain_unknown_takeover",
+      "module": "V2ExecutionChain",
+      "config": "MC_executionchain.cfg",
+      "predicate": "s.receipt = \"UNKNOWN\" /\\ s.effects = 1 /\\ s.takeover /\\ s.stopped",
+      "purpose": "Stop evidence permits takeover without converting an unknown receipt into a known outcome."
+    },
+    {
+      "id": "executionchain_late_receipt",
+      "module": "V2ExecutionChain",
+      "config": "MC_executionchain.cfg",
+      "predicate": "s.receipt = \"SUCCEEDED\" /\\ s.epoch = 1 /\\ ~s.imported /\\ s.effects = 1",
+      "purpose": "An old operation settles without entering the reset context."
+    },
+    {
+      "id": "stream_complete_effect",
+      "module": "V2StreamBoundary",
+      "config": "MC_streamboundary.cfg",
+      "predicate": "s.effect /\\ s.full /\\ s.valid",
+      "purpose": "A complete valid response can be selected and execute."
+    },
+    {
+      "id": "stream_retry_before_text",
+      "module": "V2StreamBoundary",
+      "config": "MC_streamboundary.cfg",
+      "predicate": "s.retries = 1 /\\ s.effect /\\ ~s.retriedVisible",
+      "purpose": "An unexposed failed attempt retries within budget and later completes."
+    },
+    {
+      "id": "stream_partial_timeout",
+      "module": "V2StreamBoundary",
+      "config": "MC_streamboundary.cfg",
+      "predicate": "s.partial /\\ s.phase = \"failed\" /\\ s.age = 2 /\\ s.events = 0",
+      "purpose": "A partial frame does not defer the stall boundary."
+    },
+    {
+      "id": "profile_next_request",
+      "module": "V2ProfileSwitch",
+      "config": "MC_profileswitch.cfg",
+      "predicate": "s.changed /\\ s.request = \"b\" /\\ s.captured = \"b\"",
+      "purpose": "A user profile change takes effect on a new request."
+    },
+    {
+      "id": "skill_read_without_shell",
+      "module": "V2SkillAuthority",
+      "config": "MC_skillauthority.cfg",
+      "predicate": "s.loaded /\\ s.requestedShell /\\ ~s.shell /\\ ~s.userGrant",
+      "purpose": "Loading a skill that requests Shell does not grant Shell."
+    },
+    {
+      "id": "export_snapshot_published",
+      "module": "V2ExportSnapshot",
+      "config": "MC_exportsnapshot.cfg",
+      "predicate": "s.published /\\ s.captured = {1} /\\ s.live = Rows /\\ s.seen = {1} /\\ s.cancelled",
+      "purpose": "The original snapshot publishes even if cancellation arrives after the final check, before hard_link.",
+      "path": ["Snapshot", "Page(1, 1)", "Append", "Complete", "Sync", "CheckPublication", "Cancel", "Publish"]
+    }
+  ]
+}

@@ -40,6 +40,34 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Command idempotency | a replay with the same `command_id` returns the stored receipt for control-plane state, and the authoritative check runs under the write lock (D-463); result bodies are shared by content digest and zstd-compressed (D-464), while the receipt **rows** remain one per command | D-463, D-464 |
 | Model actions and code windows | a deciding read shares the write's transaction, or the guard is a predicate on the write itself; `verification/REPORT.md` §6 lists the protocol transitions and the three engine windows that span two transactions with their predicates | D-465 |
 
+## D-495 Formal reachability and evidence coverage (2026-11-03)
+
+The user asked to complete formal-verification coverage. This work repairs model defects and adds
+executable coverage checks without changing runtime contracts or claiming a full implementation proof.
+The evidence boundary is binding: an inventory entry, a reachable normal path, a refuted fault and a finite
+safety/liveness check are different kinds of evidence. No new release, installation or paid trial is included.
+
+The control model now explores real response kinds/outcomes, preserves reservation multiplicity and attempt
+identity, allocates operations per request and distinguishes old-operation receipts from new context import.
+Termination/reset request cancellation for already dispatched work rather than inventing stop evidence.
+Completion/wait exits reflect the driver. Recurring-crash liveness requires explicitly stated per-instance
+strong fairness; aggregate fairness is insufficient. Artifact release is an action property, owner holds and
+ordinary references are distinct, and GC's file deletion/catalog collection are separate. Deferred wait facts
+and normal task-grant/concrete-scope paths no longer rely on vacuous antecedents.
+
+Five finite models cover an execution-chain composition slice, stream boundaries, profile switching, skill
+authority and snapshot export publication. Two Kani harnesses compile production capability vocabulary code;
+all-string scope proofs were attempted but stopped for resource use and are not claimed. The generated
+[requirement inventory](../verification/REQUIREMENTS.md) keeps all Q/A entries and their remaining obligations.
+The catalogue gate validates it and the witness manifest; CI separately runs normal-path witnesses.
+
+The current inventory is 46 modules, 58 positive configurations, 298 fault controls, one separate wide
+configuration and 65 witnesses for the 45 current modules. `V2Isolation` remains historical after D-480.
+Actual completed-run evidence and the immutable source pin belong in [the formal report](../verification/REPORT.md).
+No full Rust/SQLite refinement, all-module composition, arbitrary-string capability proof, MCP transport proof,
+OS/remote effect guarantee or real-model quality improvement follows. Reviewer usage propagation remains an
+implementation gap. The ten preexisting documentation changes are preserved outside this work's scoped commits.
+
 ## D-494 Execution robustness, idle/rendering cost and formal coverage (2026-11-03)
 
 The user requested comprehensive performance, security and stability optimization and explicitly asked

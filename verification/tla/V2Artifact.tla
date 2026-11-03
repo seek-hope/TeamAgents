@@ -56,10 +56,10 @@ WriteBytes(id) ==
   /\ UNCHANGED <<row, holders, owner, released>>
 
 \* 2) then the STAGING row with its owner (crash between 1 and 2 = orphan file)
-StageRow(id) ==
+StageRow(id, protected) ==
   /\ staged[id] /\ row[id] = "none"
   /\ row' = [row EXCEPT ![id] = "STAGING"]
-  /\ owner' = [owner EXCEPT ![id] = TRUE]
+  /\ owner' = [owner EXCEPT ![id] = protected]
   /\ UNCHANGED <<disk, holders, staged, released>>
 
 \* 3) the referencing transaction: LIVE flip and the reference commit together
@@ -68,8 +68,7 @@ PublishWithReference(id, who) ==
   /\ who \in Owners \ holders[id]
   /\ row' = [row EXCEPT ![id] = IF ReferenceToStaging THEN "STAGING" ELSE "LIVE"]
   /\ holders' = [holders EXCEPT ![id] = IF LiveWithoutReference THEN holders[id] ELSE @ \cup {who}]
-  /\ owner' = [owner EXCEPT ![id] = FALSE]
-  /\ UNCHANGED <<disk, staged, released>>
+  /\ UNCHANGED <<disk, staged, released, owner>>
 
 \* D-462 counterfactual: the bytes of a LIVE artifact disappear while the row stays.
 GhostDelete(id) ==
@@ -94,19 +93,33 @@ AddReference(id, who) ==
   /\ holders' = [holders EXCEPT ![id] = @ \cup {who}]
   /\ UNCHANGED <<row, disk, owner, staged, released>>
 
+\* Removal of an eligible ordinary-history reference by prune_history. The
+\* reference owner's eligibility is an environment premise here; V2Prune checks
+\* which source rows may be swept. This action does not drop the publishing hold.
+RemoveReference(id, who) ==
+  /\ row[id] = "LIVE" /\ who \in holders[id]
+  /\ id \in Spent /\ id \in Aged
+  /\ holders' = [holders EXCEPT ![id] = @ \ {who}]
+  /\ UNCHANGED <<row, disk, owner, staged, released>>
+
 \* GC claim: only ownerless, unreferenced LIVE artifacts become DELETING
 GcClaim(id) ==
   /\ (ClaimAnyone \/ row[id] = "LIVE") /\ (GcIgnoresHolders \/ holders[id] = {}) /\ ~owner[id]
   /\ row' = [row EXCEPT ![id] = "DELETING"]
   /\ UNCHANGED <<disk, holders, owner, staged, released>>
 
-\* GC delete: the file goes away, the row leaves the catalog
+\* File deletion and catalog collection are separate steps: a crash can leave
+\* an absent file with a DELETING row, which a later collection can finish.
 GcDelete(id) ==
   /\ (DeleteAnyone \/ row[id] = "DELETING") /\ holders[id] = {}
   /\ disk' = [disk EXCEPT ![id] = "absent"]
+  /\ UNCHANGED <<row, holders, owner, staged, released>>
+
+GcCollect(id) ==
+  /\ row[id] = "DELETING" /\ disk[id] = "absent" /\ holders[id] = {}
   /\ row' = [row EXCEPT ![id] = IF CollectorKeepsGhost THEN "LIVE" ELSE "none"]
   /\ staged' = [staged EXCEPT ![id] = FALSE]
-  /\ UNCHANGED <<holders, owner, released>>
+  /\ UNCHANGED <<disk, holders, owner, released>>
 
 \* orphan cleanup: a STAGING artifact whose publishing request died is abandoned
 Abandon(id) ==
@@ -122,11 +135,11 @@ Abandon(id) ==
 \* may go. Before D-436 nothing in the product ever dropped a hold, which is why the model's `~owner[id]` had no
 \* counterpart in the code (the D-253 probe measured the consequence: 3 LIVE artifacts, 0 claimable).
 DropOwner(id) ==
-  /\ owner[id]
+  /\ row[id] = "LIVE" /\ owner[id]
   /\ (ReleaseLiveOwner \/ id \in Spent)
   /\ (ReleaseFreshArtifact \/ id \in Aged)
   /\ owner' = [owner EXCEPT ![id] = FALSE]
-  /\ released' = released \cup (IF id \in Spent /\ id \in Aged THEN {} ELSE {id})
+  /\ released' = released \cup {id}
   /\ disk' = [disk EXCEPT ![id] = IF ReleaseDeletesBytes THEN "absent" ELSE disk[id]]
   /\ UNCHANGED <<row, holders, staged>>
 
@@ -136,13 +149,15 @@ Stutter == UNCHANGED vars
 
 Next ==
   \/ \E id \in Artifacts : WriteBytes(id)
-  \/ \E id \in Artifacts : StageRow(id)
+  \/ \E id \in Artifacts : \E protected \in BOOLEAN : StageRow(id, protected)
   \/ \E id \in Artifacts : \E who \in Owners : PublishWithReference(id, who)
   \/ \E id \in Artifacts : \E who \in Owners : AddReference(id, who)
   \/ \E id \in Artifacts : \E who \in Owners : PublishWithoutBytes(id, who)
   \/ \E id \in Artifacts : GhostDelete(id)
   \/ \E id \in Artifacts : GcClaim(id)
   \/ \E id \in Artifacts : GcDelete(id)
+  \/ \E id \in Artifacts : GcCollect(id)
+  \/ \E id \in Artifacts : \E who \in Owners : RemoveReference(id, who)
   \/ \E id \in Artifacts : Abandon(id)
   \/ \E id \in Artifacts : DropOwner(id)
   \/ Stutter   \* the system is open-ended: an idle step is always possible
@@ -183,13 +198,17 @@ GcClaimsOnlyUnreferencedLive ==
 OwnerHoldsUntilItsSubjectIsFinished == released \subseteq Spent
 NothingIsReleasedInsideTheWindow == released \subseteq Aged
 
-\* and the release is not a deletion: it changes the hold, never the row or the bytes
+\* The release step itself preserves row, bytes and references. A later collector
+\* may delete them; a historical membership test cannot express this contract.
 ReleaseKeepsTheRowAndTheBytes ==
-  \A id \in Artifacts : id \in released => disk[id] = "present" \/ row[id] = "none"
+  [][ \A id \in Artifacts :
+        (row[id] = "LIVE" /\ owner[id] /\ ~owner'[id]) =>
+          row'[id] = row[id] /\ disk'[id] = disk[id] /\ holders'[id] = holders[id] ]_vars
 
-\* STAGING/ABANDONED artifacts are never deleted by the collector
+\* A DELETING row may survive file deletion until the catalog commit. Incomplete
+\* STAGING/ABANDONED and still-LIVE rows must keep their bytes.
 CollectorSkipsIncomplete ==
-  \A id \in Artifacts : disk[id] = "absent" => row[id] = "none"
+  \A id \in Artifacts : disk[id] = "absent" => row[id] \in {"none", "DELETING"}
 
 \* properties (the interesting parts are action properties) ----------------
 \* A30: a reference attaches either to an already LIVE artifact or in the very
@@ -197,7 +216,7 @@ CollectorSkipsIncomplete ==
 \* in both cases the bytes are already persisted
 ReferencesOnlyLive ==
   [][ \A id \in Artifacts :
-        (holders'[id] # holders[id]) =>
+        (holders'[id] \ holders[id] # {}) =>
           (row[id] = "LIVE" \/ row'[id] = "LIVE") /\ disk[id] = "present" ]_vars
 
 \* A30: the file never disappears unless the artifact was in DELETING

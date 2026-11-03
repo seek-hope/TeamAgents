@@ -147,6 +147,15 @@ FactAppears(c) ==
      /\ Sweep(f, timers)
   /\ UNCHANGED <<waitMode, waitConds, waitCall, waitOwner, timers, reported, idle>>
 
+\* A prepared-operation cancellation or an approval expiry can make an
+\* operation condition true without calling wake_satisfied in that transaction.
+\* Task settlement and message delivery retain their atomic sweeps above.
+FactWithoutSweep(c) ==
+  /\ c \in Conds \ {TaskSettled, MessageCond} /\ ~facts[c]
+  /\ facts' = [facts EXCEPT ![c] = TRUE]
+  /\ UNCHANGED <<phase, waitState, waitMode, waitConds, waitCall, waitOwner,
+                  answers, answerCall, timers, reported, idle>>
+
 \* D-255(b)/D-341: the assignee settles the task BLOCKED. That is a *report* — the assignee may still be
 \* unblocked and settle the same task later — so it is no fact and wakes nobody; `WakeOnReport` is the
 \* counterfactual in which the old question was answered "yes".
@@ -221,6 +230,7 @@ Next ==
         \E conds \in SUBSET Conds : \E call \in {nocall} \cup Waits :
            /\ conds # {} /\ ArmWait(w, i, mode, conds, call)
   \/ \E c \in Conds : FactAppears(c)
+  \/ \E c \in Conds : FactWithoutSweep(c)
   \/ \E w \in Waits : ClockTicks(w)
   \/ \E i \in Instances : Drain(i)
   \/ \E i \in Instances : Supersede(i)

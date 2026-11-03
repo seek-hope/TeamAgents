@@ -26,7 +26,7 @@ endif
 
 .PHONY: help check deny fmt fmt-check lint test build pty probe-offline probe-models hygiene language-check \
         benchmark-receipts verify-tools verify-model verify-model-all \
-        verify-model-counterexamples verify-model-wide verify-model-sim verify-kani release-rehearsal
+        verify-model-counterexamples verify-witnesses verify-model-wide verify-model-sim verify-kani release-rehearsal
 
 help:
 	@echo 'make check     format, Clippy, regression tests and repository hygiene (offline by default)'
@@ -43,13 +43,14 @@ help:
 	@echo 'make test      the three crate suites under the leak guard, plus the ledger check'
 	@echo 'make hygiene   the audits and the generated-document checks (make check runs it too)'
 	@echo 'make verify-tools  fetch the pinned TLC jar (the verify targets do this themselves)'
-	@echo 'make verify-model  the small control-plane configuration in TLC (~seconds)'
-	@echo 'make verify-model-all  every TLA+ configuration, exhaustively (~4 min; verification/README.md)'
+	@echo 'make verify-model  the bounded control-plane configuration in TLC'
+	@echo 'make verify-model-all  every bounded positive TLA+ configuration (verification/README.md)'
 	@echo 'make verify-model-counterexamples  the negative controls, every one of which must be refuted'
+	@echo 'make verify-witnesses  executable normal-path reachability (not safety proofs)'
 	@echo 'make verify-model-wide  the wide control-plane configuration (slow, best effort)'
 	@echo 'make verify-model-sim  any configuration by random simulation (minutes; invariants only)'
 	@echo 'make benchmark-receipts JOBS=DIR [BENCH=swebench|tau3|tb]  benchmark receipt checks (D-421)'
-	@echo 'make verify-kani  the Kani proofs of the paging arithmetic'
+	@echo 'make verify-kani  production arithmetic and bounded capability-vocabulary proofs'
 	@echo 'first run with downloads: make check CARGO_FLAGS=--locked'
 
 check: fmt-check lint test hygiene
@@ -149,7 +150,7 @@ verify-tools:
 verify-model: verify-tools
 	@cd verification/tla && meta="$(TLA_METADIR)/MC.cfg-$$$$"; rm -rf "$$meta"; \
 		out=$$(java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
-			tlc2.TLC -config MC.cfg -fp 64 -workers 4 -metadir "$$meta" V2Control.tla 2>&1); status=$$?; rm -rf "$$meta"; \
+			tlc2.TLC -config MC.cfg -lncheck final -fp 64 -workers 4 -metadir "$$meta" V2Control.tla 2>&1); status=$$?; rm -rf "$$meta"; \
 		printf '%s\n' "$$out" | python3 ../../review/tlc_verdict.py positive MC.cfg $$status || exit 1
 
 # The module each configuration runs, in one place: the exhaustive target and `verify-model-sim` both
@@ -157,7 +158,7 @@ verify-model: verify-tools
 # configuration that fell through the `*)` default would silently run the wrong module (the rule
 # `review/verification_catalogue.py` enforces). The control families are matched by prefix, after the
 # exact arms, because shell `case` takes the first match.
-CFG_CASE = case $$cfg in MC.cfg|MC_control*) echo V2Control.tla;; MC_artifact*) echo V2Artifact.tla;; MC_wait*) echo V2Wait.tla;; MC_task*) echo V2Task.tla;; MC_approval*) echo V2Approval.tla;; MC_compress*) echo V2Compress.tla;; MC_daemon*) echo V2Daemon.tla;; MC_checks*) echo V2Checks.tla;; MC_trust*) echo V2Trust.tla;; MC_projecttrust*) echo V2ProjectTrust.tla;; MC_prune*) echo V2Prune.tla;; MC_tui*) echo V2Tui.tla;; MC_presentation*) echo V2Presentation.tla;; MC_inputqueue*) echo V2InputQueue.tla;; MC_displayworker*) echo V2DisplayWorker.tla;; MC_prompt*) echo V2Prompt.tla;; MC_retry*) echo V2Retry.tla;; MC_grants*) echo V2Grants.tla;; MC_capabilities*) echo V2Capabilities.tla;; MC_authority*) echo V2Authority.tla;; MC_store*) echo V2Store.tla;; MC_retention*) echo V2Retention.tla;; MC_history*) echo V2History.tla;; MC_sessionui*) echo V2SessionUi.tla;; MC_sessions*) echo V2Sessions.tla;; MC_schedule*) echo V2Schedule.tla;; MC_isolation*) echo V2Isolation.tla;; MC_codemode*) echo V2Codemode.tla;; MC_images*) echo V2Images.tla;; MC_memory*) echo V2Memory.tla;; MC_update*) echo V2Update.tla;; MC_oauth*) echo V2Oauth.tla;; MC_jobsupervision*) echo V2JobSupervision.tla;; MC_jobs.cfg|MC_jobs_*) echo V2Jobs.tla;; MC_inbox*) echo V2Inbox.tla;; MC_diskfull*) echo V2DiskFull.tla;; MC_discovery*) echo V2Discovery.tla;; MC_coordinator*) echo V2Coordinator.tla;; MC_work.cfg|MC_work_*) echo V2Work.tla;; MC_workspace*) echo V2Workspace.tla;; MC_concurrency*) echo V2Concurrency.tla;; MC_control*) echo V2Control.tla;; MC_wide.cfg) echo V2Control.tla;; *) echo V2Artifact.tla;; esac
+CFG_CASE = case $$cfg in MC.cfg|MC_control*) echo V2Control.tla;; MC_profileswitch*) echo V2ProfileSwitch.tla;; MC_skillauthority*) echo V2SkillAuthority.tla;; MC_exportsnapshot*) echo V2ExportSnapshot.tla;; MC_streamboundary*) echo V2StreamBoundary.tla;; MC_executionchain*) echo V2ExecutionChain.tla;; MC_artifact*) echo V2Artifact.tla;; MC_wait*) echo V2Wait.tla;; MC_task*) echo V2Task.tla;; MC_approval*) echo V2Approval.tla;; MC_compress*) echo V2Compress.tla;; MC_daemon*) echo V2Daemon.tla;; MC_checks*) echo V2Checks.tla;; MC_trust*) echo V2Trust.tla;; MC_projecttrust*) echo V2ProjectTrust.tla;; MC_prune*) echo V2Prune.tla;; MC_tui*) echo V2Tui.tla;; MC_presentation*) echo V2Presentation.tla;; MC_inputqueue*) echo V2InputQueue.tla;; MC_displayworker*) echo V2DisplayWorker.tla;; MC_prompt*) echo V2Prompt.tla;; MC_retry*) echo V2Retry.tla;; MC_grants*) echo V2Grants.tla;; MC_capabilities*) echo V2Capabilities.tla;; MC_authority*) echo V2Authority.tla;; MC_store*) echo V2Store.tla;; MC_retention*) echo V2Retention.tla;; MC_history*) echo V2History.tla;; MC_sessionui*) echo V2SessionUi.tla;; MC_sessions*) echo V2Sessions.tla;; MC_schedule*) echo V2Schedule.tla;; MC_isolation*) echo V2Isolation.tla;; MC_codemode*) echo V2Codemode.tla;; MC_images*) echo V2Images.tla;; MC_memory*) echo V2Memory.tla;; MC_update*) echo V2Update.tla;; MC_oauth*) echo V2Oauth.tla;; MC_jobsupervision*) echo V2JobSupervision.tla;; MC_jobs.cfg|MC_jobs_*) echo V2Jobs.tla;; MC_inbox*) echo V2Inbox.tla;; MC_diskfull*) echo V2DiskFull.tla;; MC_discovery*) echo V2Discovery.tla;; MC_coordinator*) echo V2Coordinator.tla;; MC_work.cfg|MC_work_*) echo V2Work.tla;; MC_workspace*) echo V2Workspace.tla;; MC_concurrency*) echo V2Concurrency.tla;; MC_control*) echo V2Control.tla;; MC_wide.cfg) echo V2Control.tla;; *) echo V2Artifact.tla;; esac
 
 # (D-293) TLC's meta directory is `states/` under the spec's directory, suffixed with the *run's timestamp*, and
 # `FileUtil.makeMetaDir` asserts that directory does not already exist (`!dir.exists()`, then `mkdirs()`): a
@@ -167,13 +168,15 @@ CFG_CASE = case $$cfg in MC.cfg|MC_control*) echo V2Control.tla;; MC_artifact*) 
 # independent of each other and of anything left behind, and the tracked tree keeps no TLC state.
 TLA_METADIR ?= $(CURDIR)/review/tmp/tla
 
-# small exhaustive configurations for every module (seconds; the wide config is verify-model-wide)
+# Bounded exhaustive configurations for every module; liveness is checked on the
+# complete graph, avoiding repeated partial-graph work as reachable paths grow.
+# The larger configuration remains a separate verify-model-wide run.
 verify-model-all: verify-tools
-	@cd verification/tla && for cfg in MC.cfg MC_control_two.cfg MC_control_warn.cfg MC_work.cfg MC_oauth.cfg MC_artifact.cfg MC_wait.cfg MC_task.cfg MC_task_two.cfg MC_approval.cfg MC_compress.cfg MC_daemon.cfg MC_daemon_stop.cfg MC_checks.cfg MC_checks_briefing.cfg MC_checks_independent.cfg MC_memory.cfg MC_grants.cfg MC_grants_task.cfg MC_capabilities.cfg MC_authority.cfg MC_store.cfg MC_retention.cfg MC_history.cfg MC_sessions.cfg MC_schedule.cfg MC_isolation.cfg MC_isolation_ssh.cfg MC_codemode.cfg MC_images.cfg MC_images_blind_model.cfg MC_update.cfg MC_jobs.cfg MC_jobsupervision.cfg MC_inbox.cfg MC_diskfull.cfg MC_discovery.cfg MC_coordinator.cfg MC_trust.cfg MC_prompt.cfg MC_retry.cfg MC_workspace.cfg MC_concurrency.cfg MC_projecttrust.cfg MC_prune.cfg MC_tui.cfg MC_sessionui.cfg MC_presentation.cfg MC_inputqueue.cfg MC_displayworker.cfg; do \
+	@cd verification/tla && for cfg in MC.cfg MC_control_two.cfg MC_control_attempts.cfg MC_control_decisions.cfg MC_control_warn.cfg MC_executionchain.cfg MC_streamboundary.cfg MC_profileswitch.cfg MC_skillauthority.cfg MC_exportsnapshot.cfg MC_work.cfg MC_oauth.cfg MC_artifact.cfg MC_wait.cfg MC_wait_deferred.cfg MC_task.cfg MC_task_two.cfg MC_approval.cfg MC_compress.cfg MC_daemon.cfg MC_daemon_stop.cfg MC_checks.cfg MC_checks_briefing.cfg MC_checks_independent.cfg MC_memory.cfg MC_grants.cfg MC_grants_task.cfg MC_capabilities.cfg MC_authority.cfg MC_store.cfg MC_retention.cfg MC_history.cfg MC_sessions.cfg MC_schedule.cfg MC_isolation.cfg MC_isolation_ssh.cfg MC_codemode.cfg MC_images.cfg MC_images_blind_model.cfg MC_update.cfg MC_jobs.cfg MC_jobsupervision.cfg MC_inbox.cfg MC_diskfull.cfg MC_discovery.cfg MC_coordinator.cfg MC_trust.cfg MC_prompt.cfg MC_retry.cfg MC_workspace.cfg MC_concurrency.cfg MC_projecttrust.cfg MC_prune.cfg MC_tui.cfg MC_sessionui.cfg MC_presentation.cfg MC_inputqueue.cfg MC_displayworker.cfg; do \
 		echo "== $$cfg =="; \
 		meta="$(TLA_METADIR)/$$cfg-$$$$"; rm -rf "$$meta"; \
 		out=$$(java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
-			tlc2.TLC -config $$cfg -fp 64 -workers 4 -metadir "$$meta" $$( $(CFG_CASE) ) 2>&1); status=$$?; rm -rf "$$meta"; \
+			tlc2.TLC -config $$cfg -lncheck final -fp 64 -workers 4 -metadir "$$meta" $$( $(CFG_CASE) ) 2>&1); status=$$?; rm -rf "$$meta"; \
 		printf '%s\n' "$$out" | python3 ../../review/tlc_verdict.py positive $$cfg $$status || exit 1; \
 	done
 
@@ -182,6 +185,19 @@ verify-model-all: verify-tools
 # named property. A control that verifies means the property says nothing, so it fails the target.
 verify-model-counterexamples: verify-tools
 	@cd verification/tla && for pair in \
+		MC_profileswitch_nonuser.cfg:V2ProfileSwitch.tla MC_profileswitch_midturn.cfg:V2ProfileSwitch.tla \
+		MC_profileswitch_terminated.cfg:V2ProfileSwitch.tla MC_profileswitch_rewrite.cfg:V2ProfileSwitch.tla \
+		MC_skillauthority_unbound.cfg:V2SkillAuthority.tla MC_skillauthority_escape.cfg:V2SkillAuthority.tla \
+		MC_skillauthority_grant.cfg:V2SkillAuthority.tla MC_exportsnapshot_snapshot.cfg:V2ExportSnapshot.tla \
+		MC_exportsnapshot_size.cfg:V2ExportSnapshot.tla MC_exportsnapshot_publish.cfg:V2ExportSnapshot.tla \
+		MC_exportsnapshot_replace.cfg:V2ExportSnapshot.tla \
+		MC_streamboundary_size.cfg:V2StreamBoundary.tla MC_streamboundary_partial.cfg:V2StreamBoundary.tla \
+		MC_streamboundary_invalid.cfg:V2StreamBoundary.tla MC_streamboundary_stall.cfg:V2StreamBoundary.tla \
+		MC_streamboundary_visible.cfg:V2StreamBoundary.tla MC_streamboundary_retry.cfg:V2StreamBoundary.tla \
+		MC_executionchain_stale.cfg:V2ExecutionChain.tla MC_executionchain_commit.cfg:V2ExecutionChain.tla \
+		MC_executionchain_accept.cfg:V2ExecutionChain.tla MC_executionchain_veto.cfg:V2ExecutionChain.tla \
+		MC_executionchain_replay.cfg:V2ExecutionChain.tla MC_executionchain_epoch.cfg:V2ExecutionChain.tla \
+		MC_executionchain_takeover.cfg:V2ExecutionChain.tla MC_executionchain_receipt.cfg:V2ExecutionChain.tla \
 		MC_work_restart.cfg:V2Work.tla MC_work_stop.cfg:V2Work.tla MC_work_attention.cfg:V2Work.tla MC_work_unanswered.cfg:V2Work.tla \
 		MC_work_cancel_stop.cfg:V2Work.tla MC_work_rewrite.cfg:V2Work.tla MC_work_prepare.cfg:V2Work.tla MC_work_completion.cfg:V2Work.tla \
 		MC_work_early_effect.cfg:V2Work.tla MC_work_info_goal.cfg:V2Work.tla MC_work_double_bill.cfg:V2Work.tla \
@@ -287,13 +303,20 @@ verify-model-counterexamples: verify-tools
 
 # Kani proofs (readback paging arithmetic; needs the Kani toolchain, not part of make check)
 KANI_PATH = $(HOME)/.cargo/bin:$(PATH)
+verify-witnesses: verify-tools
+	python3 review/verification_requirements.py --self-check
+	python3 review/verification_witnesses.py --check
+	python3 review/verification_witnesses.py --self-check
+	python3 review/verification_witnesses.py --check-fixtures --jar "$(TLA_TOOLS_DIR)/tla2tools.jar"
+	python3 review/verification_witnesses.py --jar "$(TLA_TOOLS_DIR)/tla2tools.jar"
+
 verify-kani:
 	@PATH="$(KANI_PATH)" command -v cargo-kani >/dev/null || { \
 		echo "the Kani toolchain is required: cargo install --locked kani-verifier && cargo kani setup" >&2; exit 1; }
-	@cd verification/kani && out=$$(PATH="$(KANI_PATH)" CARGO_TARGET_DIR=target cargo kani --lib 2>&1); \
+	@cd verification/kani && out=$$(PATH="$(KANI_PATH)" CARGO_TARGET_DIR=target cargo kani --lib 2>&1); status=$$?; \
 		echo "$$out" | grep -E "VERIFICATION|Complete -"; \
-		printf '%s' "$$out" | grep -qE "Complete - [1-9][0-9]* successfully verified harnesses, 0 failures" || { \
-			echo "the Kani proofs did not all succeed (see above)" >&2; exit 1; }
+		[ "$$status" -eq 0 ] && printf '%s' "$$out" | grep -qE "Complete - [1-9][0-9]* successfully verified harnesses, 0 failures" || { \
+			printf '%s\n' "$$out"; echo "the Kani proofs did not all succeed (exit $$status)" >&2; exit 1; }
 
 verify-model-wide: verify-tools
 	@cd verification/tla && meta="$(TLA_METADIR)/MC_wide.cfg-$$$$"; rm -rf "$$meta"; \

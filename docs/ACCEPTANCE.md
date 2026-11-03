@@ -27,6 +27,11 @@ backups. Installed checks pass for idempotent init, schema 7, idle daemon with z
 shutdown, conversation PTY and both graphics protocols. The user config is unchanged and no user daemon was
 started. The optimization report records binary hashes; the public v0.2.0 remains the D-493 artifact.
 
+D-495 is formal-only work: the current [requirement evidence inventory](../verification/REQUIREMENTS.md)
+classifies every Q/A requirement and its remaining obligations. It does not upgrade the acceptance icons
+below or renew real-service results. Model fixes, normal-path witnesses and bounded production-code Kani
+proofs are recorded in the formal report; runtime source and installed binaries remain D-494.
+
 D-451 added attachment, pending-input, export/search and bounded-display evidence for
 A01/A06/A08/A11/A16/A21/A28/A29/A36. The [maturity report](../review/maturity-2026-10-11/REPORT.md) retains
 its source pins, negative tests, immutable receipts and installation rehearsal. Those deterministic local

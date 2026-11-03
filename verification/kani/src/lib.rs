@@ -17,4 +17,7 @@ pub mod kernel_types;
 #[path = "../../../tui/src/viewport.rs"]
 pub mod viewport;
 
+#[path = "../../../core/src/v2/capability.rs"]
+pub mod capability;
+
 mod harnesses;

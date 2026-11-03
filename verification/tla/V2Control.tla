@@ -63,9 +63,13 @@ ReqClosed     == {"COMPLETE", "FAILED", "CANCELLED"}
 
 nil == 0   \* free-slot / no-instance sentinel (integer, so it compares with ids)
 
-\* summing ests without depending on a Sequences helper
-RECURSIVE SumSet(_)
-SumSet(S) == IF S = {} THEN 0 ELSE LET x == CHOOSE y \in S : TRUE IN x + SumSet(S \ {x})
+\* Sum reservation records, preserving distinct request ids even when amounts
+\* are equal. Projecting the amounts into a set first loses multiplicity.
+RECURSIVE SumReservations(_)
+SumReservations(S) ==
+  IF S = {} THEN 0
+  ELSE LET entry == CHOOSE e \in S : TRUE
+       IN entry[2] + SumReservations(S \ {entry})
 
 VARIABLES
   inst,      \* instance -> [lifecycle, phase, revision, expectRev, epoch,
@@ -90,13 +94,33 @@ vars == <<inst, goal, requests, attempts, ops, approvals, dead, nearDeadline, wa
 UsedReqs == { r \in ReqIds : requests[r].status # "none" }
 FreeReqs == ReqIds \ UsedReqs
 FreeAtts == { a \in AttIds : attempts[a].status = "none" }
-ReservedTotal == SumSet({ e[2] : e \in goal.reserved })
+FreeOps == { o \in Ops : ops[o].status = "none" }
+RequestOps(r) == { o \in Ops : ops[o].request = r }
+ReservedTotal == SumReservations(goal.reserved)
 BudgetFits(e) == goal.known + ReservedTotal + e <= TokenLimit
 Fresh(i) == inst[i].expectRev = inst[i].revision
 Alive(i) == i \notin dead
 ApprovalSatisfied(o) == o \notin ApprovalOps \/ approvals[o] = "APPROVED"
 NonTerminalOps(i) == { o \in Ops : ops[o].instance = i /\ ops[o].status \in OpNonTerminal }
 DoneOps(i) == { o \in Ops : ops[o].instance = i /\ ops[o].status \in OpTerminal }
+
+\* close_epoch_execution cancels only unstarted operations. Dispatched work
+\* keeps its status and receives a cancellation request; a late receipt may
+\* still settle the original operation without entering the new context.
+ClosedRequests(i) ==
+  [ r \in ReqIds |-> IF requests[r].instance = i /\ requests[r].status = "PENDING"
+                       THEN [requests[r] EXCEPT !.status = "CANCELLED"] ELSE requests[r] ]
+ClosedOperations(i) ==
+  [ o \in Ops |-> IF ops[o].instance = i /\ ops[o].epoch = inst[i].ctxEpoch
+                     THEN IF ops[o].status = "PREPARED"
+                            THEN [ops[o] EXCEPT !.status = "CANCELLED"]
+                            ELSE IF ops[o].status \in OpNonTerminal
+                                   THEN [ops[o] EXCEPT !.cancelRequested = TRUE] ELSE ops[o]
+                     ELSE ops[o] ]
+ClosedApprovals(i) ==
+  [ o \in Ops |-> IF ops[o].instance = i /\ ops[o].epoch = inst[i].ctxEpoch
+                    /\ ops[o].status = "PREPARED" /\ approvals[o] = "PENDING"
+                       THEN "EXPIRED" ELSE approvals[o] ]
 
 \* The instance's last committed word: the model's own text ("assistant") or the
 \* runtime's own closing note ("runtime", §8/D-71 — a settlement or a closed turn
@@ -119,15 +143,16 @@ Input(i) ==
 \* Weak fairness on this action is the liveness assumption behind
 \* `QueuedInputEntersTheContext` below (the drain runs at every boundary).
 ApplyQueued(i) ==
-  /\ Alive(i) /\ inst[i].queue /\ inst[i].phase = "READY" /\ inst[i].lifecycle = "ACTIVE"
+  /\ Alive(i) /\ inst[i].queue /\ inst[i].phase \in {"READY", "WAITING"}
+  /\ inst[i].lifecycle = "ACTIVE"
   /\ inst' = [inst EXCEPT ![i].tail = "user", ![i].queue = FALSE,
-                              ![i].afterLanding = FALSE]
+                              ![i].phase = "READY", ![i].afterLanding = FALSE]
   /\ UNCHANGED <<goal, requests, attempts, ops, approvals, dead, nearDeadline, warns>>
 
 \* the user submits while a walk is in flight: the input waits for the boundary
 QueueInput(i) ==
   /\ Alive(i) /\ inst[i].lifecycle = "ACTIVE"
-  /\ inst[i].phase \in {"MODEL_PENDING", "TOOLS_PENDING", "COMPLETION_PENDING"}
+  /\ inst[i].phase \in {"MODEL_PENDING", "TOOLS_PENDING", "COMPLETION_PENDING", "WAITING"}
   /\ inst' = [inst EXCEPT ![i].queue = TRUE]
   /\ UNCHANGED <<goal, requests, attempts, ops, approvals, dead, nearDeadline, warns>>
 
@@ -196,14 +221,15 @@ BeginRequest(i) ==
   /\ \E r \in FreeReqs :
        /\ requests' = [requests EXCEPT ![r] = [status |-> "PENDING", instance |-> i,
                                               epoch |-> inst[i].epoch, est |-> 1,
-                                              selected |-> FALSE, result |-> "reply"]]
+                                              selected |-> FALSE, selectedAttempt |-> nil, result |-> "reply"]]
        /\ goal' = [goal EXCEPT !.reserved = @ \cup {<<r, 1>>}]
        /\ inst' = [inst EXCEPT ![i].phase = "MODEL_PENDING", ![i].activeReq = r,
                                   ![i].revision = @ + 1, ![i].expectRev = @ + 1,
                                   \* a request of i's own is now addressing whatever
                                   \* landed last (a boundary drained the queue first:
                                   \* `~inst[i].queue` above)
-                                  ![i].afterLanding = TRUE]
+                                  ![i].afterLanding = TRUE,
+                                  ![i].hadWork = inst[i].tail \notin CommittedTails]
   /\ UNCHANGED <<attempts, ops, approvals, dead, nearDeadline, warns>>
 
 \* the atomic response selection bills the goal; late completes only archive
@@ -211,9 +237,11 @@ RecordAttempt(i) ==
   /\ Alive(i)
   /\ \E r \in UsedReqs :
        /\ inst[i].activeReq = r /\ requests[r].status = "PENDING"
-       /\ \E a \in FreeAtts :
+       /\ ~requests[r].selected
+       /\ \E a \in FreeAtts, kind \in Result :
             attempts' = [attempts EXCEPT ![a] = [req |-> r, status |-> "COMPLETE"]]
-            /\ requests' = [requests EXCEPT ![r].selected = TRUE]
+            /\ requests' = [requests EXCEPT ![r].selected = TRUE, ![r].selectedAttempt = a,
+                                           ![r].result = kind]
             /\ goal' = [goal EXCEPT !.known = @ + 1]
   /\ UNCHANGED <<inst, ops, approvals, dead, nearDeadline, warns>>
 
@@ -223,15 +251,28 @@ LostAttempt(i) ==
   /\ goal.unknown < MaxUnknown
   /\ \E r \in UsedReqs :
        /\ inst[i].activeReq = r /\ requests[r].status = "PENDING"
+       /\ \E a \in FreeAtts :
+            attempts' = [attempts EXCEPT ![a] = [req |-> r, status |-> "LOST"]]
        /\ goal' = [goal EXCEPT !.unknown = @ + 1]
-  /\ UNCHANGED <<inst, requests, attempts, ops, approvals, dead, nearDeadline, warns>>
+  /\ UNCHANGED <<inst, requests, ops, approvals, dead, nearDeadline, warns>>
+
+\* A second complete response while the request is still pending is archived
+\* and billed without replacing its selected attempt. Closed requests refuse it.
+RecordLateAttempt(r) ==
+  /\ r \in UsedReqs
+  /\ requests[r].selected /\ requests[r].status = "PENDING"
+  /\ \E a \in FreeAtts :
+       attempts' = [attempts EXCEPT ![a] = [req |-> r, status |-> "COMPLETE"]]
+  /\ goal' = [goal EXCEPT !.known = @ + 1]
+  /\ UNCHANGED <<inst, requests, ops, approvals, dead, nearDeadline, warns>>
 
 \* response import: context append + decision + phase, one transaction
 ImportResponse(i) ==
   /\ Alive(i)
-  /\ \E r \in UsedReqs :
+  /\ \E r \in UsedReqs, chosen \in SUBSET FreeOps :
        /\ inst[i].activeReq = r /\ requests[r].status = "PENDING"
        /\ requests[r].selected
+       /\ IF requests[r].result = "ops" THEN chosen # {} ELSE chosen = {}
        /\ requests' = [requests EXCEPT ![r].status = "COMPLETE"]
        /\ goal' = [goal EXCEPT !.reserved = @ \ {<<r, requests[r].est>>}]
        /\ inst' = [inst EXCEPT ![i].phase =
@@ -241,12 +282,12 @@ ImportResponse(i) ==
                         [] OTHER                             -> "WAITING",
                                   ![i].tail = "assistant",
                                   ![i].activeReq = IF requests[r].result = "ops" THEN r ELSE nil]
-       /\ ops' = IF requests[r].result = "ops"
-                   THEN [ o \in Ops |->
-                            [status |-> "PREPARED", instance |-> i, epoch |-> inst[i].epoch,
-                             effect |-> 0, dispatched |-> FALSE] ]
-                   ELSE ops
-       /\ approvals' = IF requests[r].result = "ops" THEN [ o \in Ops |-> "none" ] ELSE approvals
+       /\ ops' = [o \in Ops |->
+                    IF o \in chosen
+                      THEN [status |-> "PREPARED", instance |-> i, epoch |-> inst[i].epoch,
+                            request |-> r, effect |-> 0, dispatched |-> FALSE, cancelRequested |-> FALSE]
+                      ELSE ops[o]]
+       /\ approvals' = [o \in Ops |-> IF o \in chosen THEN "none" ELSE approvals[o]]
   /\ UNCHANGED <<attempts, dead, nearDeadline, warns>>
 
 \* a shell-like operation asks the user; the runtime never self-approves (§6.2)
@@ -257,12 +298,12 @@ RequestApproval(o) ==
   /\ UNCHANGED <<inst, goal, requests, attempts, ops, dead, nearDeadline, warns>>
 
 Approve(o) ==
-  /\ approvals[o] = "PENDING"
+  /\ approvals[o] = "PENDING" /\ ops[o].status = "PREPARED"
   /\ approvals' = [approvals EXCEPT ![o] = "APPROVED"]
   /\ UNCHANGED <<inst, goal, requests, attempts, ops, dead, nearDeadline, warns>>
 
 Deny(o) ==
-  /\ approvals[o] = "PENDING"
+  /\ approvals[o] = "PENDING" /\ ops[o].status = "PREPARED"
   /\ approvals' = [approvals EXCEPT ![o] = "DENIED"]
   /\ ops' = [ops EXCEPT ![o].status = "CANCELLED_BEFORE_START"]
   /\ UNCHANGED <<inst, goal, requests, attempts, dead, nearDeadline, warns>>
@@ -287,19 +328,23 @@ StartEffect(o) ==
 Complete(o, outcome) ==
   /\ outcome \in OpTerminal
   /\ ops[o].status \in OpNonTerminal
-  /\ ops[o].epoch = inst[ops[o].instance].ctxEpoch   \* no receipt across epochs
   /\ ~(ops[o].status = "PREPARED" /\ outcome \in {"SUCCEEDED", "FAILED", "OUTCOME_UNKNOWN"})
+  /\ (outcome # "CANCELLED_BEFORE_START" \/ ops[o].effect = 0)
   /\ ops' = [ops EXCEPT ![o].status = outcome]
-  /\ UNCHANGED <<inst, goal, requests, attempts, approvals, dead, nearDeadline, warns>>
+  /\ approvals' = [approvals EXCEPT ![o] = IF @ = "PENDING" THEN "EXPIRED" ELSE @]
+  /\ UNCHANGED <<inst, goal, requests, attempts, dead, nearDeadline, warns>>
 
 \* decision consumption: receipts join the context, phase READY, approvals expire
 ConsumeDecision(i) ==
   /\ Alive(i) /\ inst[i].phase = "TOOLS_PENDING"
   /\ \E r \in UsedReqs :
        /\ inst[i].activeReq = r /\ requests[r].result = "ops"
-       /\ DoneOps(i) = Ops
-       /\ inst' = [inst EXCEPT ![i].phase = "READY", ![i].tail = "tool", ![i].activeReq = nil]
-       /\ approvals' = [ o \in Ops |-> IF approvals[o] = "PENDING" THEN "EXPIRED" ELSE approvals[o] ]
+       /\ requests[r].epoch = inst[i].ctxEpoch
+       /\ RequestOps(r) # {} /\ RequestOps(r) \subseteq DoneOps(i)
+       /\ inst' = [inst EXCEPT ![i].phase = "READY", ![i].tail = "tool", ![i].activeReq = nil,
+                                  ![i].contextOps = @ \cup RequestOps(r)]
+       /\ approvals' = [ o \in Ops |-> IF o \in RequestOps(r) /\ approvals[o] = "PENDING"
+                                        THEN "EXPIRED" ELSE approvals[o] ]
        /\ UNCHANGED <<goal, requests, attempts, ops, dead, nearDeadline, warns>>
 
 Crash(i) ==
@@ -354,6 +399,7 @@ SettleGoal(i, status) ==
   \* and block_goal never write it).
   /\ Alive(i) /\ status \in {"SUCCEEDED", "FAILED", "BLOCKED"}
   /\ goal.status = "ACTIVE"
+  /\ inst[i].phase = "COMPLETION_PENDING" /\ inst[i].lifecycle = "ACTIVE"
   /\ inst[i].tail = "assistant"
   /\ NonTerminalOps(i) = {}                       \* no open operation survives a close
   /\ ~(\E r \in UsedReqs : requests[r].instance = i /\ requests[r].status = "PENDING")
@@ -361,6 +407,20 @@ SettleGoal(i, status) ==
   /\ inst' = [inst EXCEPT ![i].phase = "READY", ![i].tail = "runtime",
                               ![i].settledAfterTurn = inst[i].afterLanding]
   /\ UNCHANGED <<requests, attempts, ops, approvals, dead, nearDeadline, warns>>
+
+\* The driver closes a completion against an already-settled goal without
+\* rewriting that goal or re-running its checks (Driver::step_completion).
+CloseCompletion(i) ==
+  /\ Alive(i) /\ inst[i].phase = "COMPLETION_PENDING" /\ goal.status # "ACTIVE"
+  /\ inst' = [inst EXCEPT ![i].phase = "READY", ![i].tail = "runtime"]
+  /\ UNCHANGED <<goal, requests, attempts, ops, approvals, dead, nearDeadline, warns>>
+
+\* The wait contract supplies the matching result/timer externally; queued user
+\* input instead wakes through ApplyQueued in the same transaction as its landing.
+WakeWait(i) ==
+  /\ Alive(i) /\ inst[i].phase = "WAITING"
+  /\ inst' = [inst EXCEPT ![i].phase = "READY", ![i].tail = "tool"]
+  /\ UNCHANGED <<goal, requests, attempts, ops, approvals, dead, nearDeadline, warns>>
 
 \* D-341/D-344: the user's lever on a goal nothing can spend. A goal whose ceiling or deadline is gone stays
 \* ACTIVE for ever, refusing new work (A18's gate) and still listed (A18's known gap); the instance its refusal
@@ -381,30 +441,33 @@ CancelGoal ==
 
 \* reset: new epoch closes the old execution, reservations released (A24)
 ResetInstance(i) ==
-  /\ Alive(i)
+  /\ Alive(i) /\ inst[i].lifecycle # "TERMINATED"
   /\ inst[i].epoch < MaxEpoch
   /\ LET newEpoch == inst[i].epoch + 1 IN
        \* a reset seals the old epoch's inbox (A24) and with it a queued input
        /\ inst' = [inst EXCEPT ![i].epoch = newEpoch, ![i].phase = "READY",
                               ![i].ctxEpoch = newEpoch, ![i].activeReq = nil,
-                              ![i].queue = FALSE,
+                              ![i].queue = FALSE, ![i].contextOps = {},
                               ![i].revision = @ + 1, ![i].expectRev = @ + 1]
-       /\ requests' = [ r \in ReqIds |->
-                          IF requests[r].instance = i /\ requests[r].status = "PENDING"
-                            THEN [requests[r] EXCEPT !.status = "CANCELLED"] ELSE requests[r] ]
+       /\ requests' = ClosedRequests(i)
        /\ goal' = [goal EXCEPT !.reserved = { e \in goal.reserved : requests[e[1]].instance # i }]
-       /\ ops' = [ o \in Ops |->
-                     IF ops[o].instance = i /\ ops[o].status \in OpNonTerminal
-                       THEN [ops[o] EXCEPT !.status = "CANCELLED"] ELSE ops[o] ]
-  /\ UNCHANGED <<attempts, approvals, dead, nearDeadline, warns>>
+       /\ ops' = ClosedOperations(i)
+       /\ approvals' = ClosedApprovals(i)
+  /\ UNCHANGED <<attempts, dead, nearDeadline, warns>>
 
 SetLifecycle(i, l) ==
   /\ Alive(i) /\ l \in {"ACTIVE", "PAUSED", "PARKED", "TERMINATED"}
-  /\ l # inst[i].lifecycle
-  \* a terminated instance takes no input: a queued one is not deliverable any more
-  /\ inst' = [inst EXCEPT ![i].lifecycle = l,
-                           ![i].queue = IF l = "TERMINATED" THEN FALSE ELSE inst[i].queue]
-  /\ UNCHANGED <<goal, requests, attempts, ops, approvals, dead, nearDeadline, warns>>
+  /\ inst[i].lifecycle # "TERMINATED" /\ l # inst[i].lifecycle
+  /\ IF l = "TERMINATED"
+        THEN /\ inst' = [inst EXCEPT ![i].lifecycle = l, ![i].queue = FALSE,
+                                    ![i].phase = "READY", ![i].activeReq = nil]
+             /\ requests' = ClosedRequests(i)
+             /\ goal' = [goal EXCEPT !.reserved = { e \in goal.reserved : requests[e[1]].instance # i }]
+             /\ ops' = ClosedOperations(i)
+             /\ approvals' = ClosedApprovals(i)
+        ELSE /\ inst' = [inst EXCEPT ![i].lifecycle = l]
+             /\ UNCHANGED <<goal, requests, ops, approvals>>
+  /\ UNCHANGED <<attempts, dead, nearDeadline, warns>>
 
 \* ---------------------------------------------------------------------- spec --
 \* an idle step keeps the model open-ended (TLC then reports no false deadlock)
@@ -465,8 +528,11 @@ RewriteTerminalGoalStep ==
 
 CrossEpochReceiptStep ==
   /\ CrossEpochReceipt
-  /\ ( \E o \in Ops : ops' = [ops EXCEPT ![o].status = "SUCCEEDED", ![o].epoch = @ + 1] )
-  /\ UNCHANGED <<inst, goal, requests, attempts, approvals, dead, nearDeadline, warns>>
+  /\ \E o \in Ops :
+       /\ ops[o].status \in OpTerminal
+       /\ ops[o].epoch # inst[ops[o].instance].ctxEpoch
+       /\ inst' = [inst EXCEPT ![ops[o].instance].contextOps = @ \cup {o}]
+  /\ UNCHANGED <<goal, requests, attempts, ops, approvals, dead, nearDeadline, warns>>
 
 EffectUnauthorizedStep ==
   /\ EffectUnauthorized
@@ -475,8 +541,11 @@ EffectUnauthorizedStep ==
 
 EffectOnTerminatedStep ==
   /\ EffectOnTerminated
-  /\ ( \E o \in Ops : inst' = [inst EXCEPT ![ops[o].instance].lifecycle = "TERMINATED"] /\ ops' = [ops EXCEPT ![o].effect = 1] )
-  /\ UNCHANGED <<goal, requests, attempts, approvals, dead, nearDeadline, warns>>
+  /\ \E o \in Ops :
+       /\ inst[ops[o].instance].lifecycle = "TERMINATED"
+       /\ ~ops[o].dispatched
+       /\ ops' = [ops EXCEPT ![o].dispatched = TRUE]
+  /\ UNCHANGED <<inst, goal, requests, attempts, approvals, dead, nearDeadline, warns>>
 
 EffectAfterCancelStep ==
   /\ EffectAfterCancel
@@ -513,6 +582,7 @@ Next ==
   \/ \E i \in Instances : MidTurnInput(i)
   \/ \E i \in Instances : BeginRequest(i)
   \/ \E i \in Instances : RecordAttempt(i)
+  \/ \E r \in ReqIds : RecordLateAttempt(r)
   \/ \E i \in Instances : LostAttempt(i)
   \/ \E i \in Instances : ImportResponse(i)
   \/ \E o \in Ops : RequestApproval(o)
@@ -520,13 +590,14 @@ Next ==
   \/ \E o \in Ops : Deny(o)
   \/ \E o \in Ops : Dispatch(o)
   \/ \E o \in Ops : StartEffect(o)
-  \/ \E o \in Ops : Complete(o, CHOOSE x \in OpTerminal : TRUE)
+  \/ \E o \in Ops, outcome \in OpTerminal : Complete(o, outcome)
   \/ \E i \in Instances : ConsumeDecision(i)
   \/ \E i \in Instances : Crash(i)
   \/ \E i \in Instances : Recover(i)
   \/ \E i \in Instances : CancelRequest(i)
   \/ \E i \in Instances : FailRequest(i)
-  \/ \E i \in Instances : SettleGoal(i, CHOOSE x \in {"SUCCEEDED", "FAILED", "BLOCKED"} : TRUE)
+  \/ \E i \in Instances, status \in {"SUCCEEDED", "FAILED", "BLOCKED"} : SettleGoal(i, status)
+  \/ \E i \in Instances : CloseCompletion(i) \/ WakeWait(i)
   \/ CancelGoal
   \/ \E i \in Instances : ResetInstance(i)
   \/ \E i \in Instances : \E l \in {"ACTIVE", "PAUSED", "PARKED", "TERMINATED"} : SetLifecycle(i, l)
@@ -542,27 +613,30 @@ Init ==
                  \* request of its own — the state begins with the boot input
                  \* already addressed, so this starts TRUE), and what that was
                  \* worth at settlement time (the invariant below reads it).
-                 afterLanding |-> TRUE, settledAfterTurn |-> TRUE] ]
+                 afterLanding |-> TRUE, settledAfterTurn |-> TRUE, hadWork |-> TRUE, contextOps |-> {}] ]
   /\ goal = [status |-> "ACTIVE", known |-> 0, unknown |-> 0, reserved |-> {}, deadlinePassed |-> FALSE]
   /\ requests = [ r \in ReqIds |->
                     [status |-> "none", instance |-> "", epoch |-> 0, est |-> 1,
-                     selected |-> FALSE, result |-> "reply"] ]
+                     selected |-> FALSE, selectedAttempt |-> nil, result |-> "reply"] ]
   /\ attempts = [ a \in AttIds |-> [req |-> 0, status |-> "none"] ]
-  /\ ops = [ o \in Ops |-> [status |-> "CANCELLED", instance |-> CHOOSE x \in Instances : TRUE,
-                            epoch |-> 0, effect |-> 0, dispatched |-> FALSE] ]
+  /\ ops = [ o \in Ops |-> [status |-> "none", instance |-> CHOOSE x \in Instances : TRUE,
+                            epoch |-> 0, request |-> nil, effect |-> 0, dispatched |-> FALSE, cancelRequested |-> FALSE] ]
   /\ approvals = [ o \in Ops |-> "none" ]
   /\ dead = {}
   /\ nearDeadline = FALSE
   /\ warns = 0
 
 \* The turn advances: at least one step an instance's in-flight turn can take next.
-\* Weak fairness on it is the assumption behind `QueuedInputEntersTheContext` — the
-\* driver keeps driving, and the provider eventually answers or the transport times
+\* Strong fairness is necessary when recurring crashes interrupt the enabled
+\* intervals of tool consumption and completion. This is an explicit scheduler /
+\* environment assumption, not a guarantee of progress on an unavailable host.
+\* The driver keeps driving, and the provider eventually answers or the transport times
 \* out into `FailRequest` — so a turn in flight does not stay in flight forever.
 \* (Approval waits are covered too: `FailRequest` is one of the steps.)
 TurnStep(i) ==
   \/ RecordAttempt(i) \/ LostAttempt(i) \/ ImportResponse(i) \/ ConsumeDecision(i)
-  \/ FailRequest(i) \/ CancelRequest(i)
+  \/ FailRequest(i) \/ CancelRequest(i) \/ CloseCompletion(i) \/ WakeWait(i)
+  \/ \E status \in {"SUCCEEDED", "FAILED", "BLOCKED"} : SettleGoal(i, status)
   \/ \E o \in Ops : ops[o].instance = i /\
         (RequestApproval(o) \/ Dispatch(o) \/ StartEffect(o) \/ \E x \in OpTerminal : Complete(o, x))
 
@@ -586,8 +660,8 @@ Spec == Init /\ [][Next]_vars
              THEN (\A i \in Instances : SF_vars(ApplyQueued(i)))
              ELSE SF_vars(\E i \in Instances : ApplyQueued(i)))
        /\ (IF PerInstanceFairness
-             THEN (\A i \in Instances : WF_vars(TurnStep(i)))
-             ELSE WF_vars(\E i \in Instances : TurnStep(i)))
+             THEN (\A i \in Instances : SF_vars(TurnStep(i)))
+             ELSE SF_vars(\E i \in Instances : TurnStep(i)))
 
 \* ---------------------------------------------------------------- invariants --
 TypeOK ==
@@ -597,8 +671,15 @@ TypeOK ==
   /\ \A i \in Instances : inst[i].queue \in BOOLEAN
   /\ \A i \in Instances : inst[i].inputMidTurn \in BOOLEAN
   /\ \A i \in Instances : inst[i].afterLanding \in BOOLEAN
-  /\ \A i \in Instances : inst[i].settledAfterTurn \in BOOLEAN
-  /\ \A o \in Ops : ops[o].status \in OpNonTerminal \cup OpTerminal
+  /\ \A i \in Instances : inst[i].settledAfterTurn \in BOOLEAN /\ inst[i].hadWork \in BOOLEAN
+                          /\ inst[i].contextOps \subseteq Ops
+  /\ \A o \in Ops : ops[o].cancelRequested \in BOOLEAN
+  /\ \A r \in ReqIds : requests[r].status \in ReqClosed \cup {"none", "PENDING"}
+                        /\ requests[r].selected \in BOOLEAN
+                        /\ requests[r].selectedAttempt \in AttIds \cup {nil}
+  /\ \A a \in AttIds : attempts[a].status \in {"none", "COMPLETE", "LOST"}
+                        /\ attempts[a].req \in ReqIds \cup {nil}
+  /\ \A o \in Ops : ops[o].status \in OpNonTerminal \cup OpTerminal \cup {"none"}
   /\ \A o \in Ops : ops[o].effect \in {0, 1}
   /\ goal.status \in {"ACTIVE", "SUCCEEDED", "FAILED", "BLOCKED", "CANCELLED"}
   /\ goal.deadlinePassed \in BOOLEAN
@@ -629,19 +710,26 @@ ReservationReleased ==
 
 \* §6.1: at most one live request per instance, and it is the active one
 OneActiveRequest ==
-  \A i \in Instances : inst[i].phase = "MODEL_PENDING" =>
-      (inst[i].activeReq \in ReqIds /\ requests[inst[i].activeReq].status = "PENDING")
+  \A i \in Instances :
+    /\ Cardinality({r \in ReqIds : requests[r].instance = i /\ requests[r].status = "PENDING"}) <= 1
+    /\ (inst[i].phase = "MODEL_PENDING" =>
+          (inst[i].activeReq \in ReqIds /\ requests[inst[i].activeReq].status = "PENDING"
+           /\ requests[inst[i].activeReq].instance = i
+           /\ requests[inst[i].activeReq].epoch = inst[i].epoch))
 
 \* §7/A19: only a selected complete attempt exists, and it is unique per request
 SelectionIsComplete ==
   \A r \in ReqIds : requests[r].selected =>
-     \E a \in AttIds : attempts[a].req = r /\ attempts[a].status = "COMPLETE"
+     /\ requests[r].selectedAttempt \in AttIds
+     /\ attempts[requests[r].selectedAttempt].req = r
+     /\ attempts[requests[r].selectedAttempt].status = "COMPLETE"
 
 \* the idle rule: a turn only starts when the last word is not already committed —
 \* neither the model's own text nor the runtime's own closing note (§8, D-71)
+\* The input snapshot at request admission decides whether a turn had work.
+\* Importing a tool response legitimately changes the live tail to assistant.
 NoTurnWithoutWork ==
-  \A i \in Instances : inst[i].phase \in {"MODEL_PENDING", "TOOLS_PENDING"} =>
-      inst[i].tail \notin CommittedTails
+  \A i \in Instances : inst[i].phase \in {"MODEL_PENDING", "TOOLS_PENDING"} => inst[i].hadWork
 
 \* D-72: an outcome belongs to the turn that produced it. A settlement must follow
 \* a request that began *after* the instance's last input landing — because a
@@ -703,9 +791,11 @@ StaleExecutorRejected ==
 \* state-only form is too strong because historical terminal operations keep
 \* their own epoch after a reset. See NoReceiptAcrossEpochs below.
 
-\* A13/§6.4: a terminated instance runs no effect
-NoEffectOnTerminated ==
-  \A o \in Ops : ops[o].effect > 0 => inst[ops[o].instance].lifecycle # "TERMINATED"
+\* Termination forbids a new dispatch linearization. It cannot erase an earlier
+\* effect or prove that an already-dispatched external process has stopped.
+NoDispatchOnTerminated ==
+  [][\A o \in Ops : (~ops[o].dispatched /\ ops'[o].dispatched)
+         => inst[ops[o].instance].lifecycle # "TERMINATED"]_vars
 
 \* a PREPARED operation has produced nothing yet
 PreparedIsNotTerminal ==
@@ -729,11 +819,10 @@ TerminalOpStable ==
 TerminalGoalStatusStable ==
   [][ goal.status # "ACTIVE" => goal'["status"] = goal.status ]_vars
 
-\* A24: a receipt only ever lands while its operation's epoch is current
+\* A24: late receipts settle their original operation, but never enter another
+\* context epoch. Reset clears context references without rewriting old receipts.
 NoReceiptAcrossEpochs ==
-  [][ \A o \in Ops :
-        (ops'[o].status \in {"SUCCEEDED", "FAILED"} /\ ops[o].status \notin {"SUCCEEDED", "FAILED"})
-          => ops[o].epoch = inst[ops[o].instance].ctxEpoch ]_vars
+  [](\A i \in Instances : \A o \in inst[i].contextOps : ops[o].epoch = inst[i].ctxEpoch)
 
 \* D-410: a warning is only appended while the deadline is still ahead and the goal is live. Stated over the
 \* appending step (`warns` grows) rather than as a state invariant, because a timely warning survives the deadline

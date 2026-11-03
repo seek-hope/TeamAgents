@@ -7,6 +7,54 @@ in [README.md](README.md); the fix ledger is in
 
 ## 0. Gate status (re-run 2026-11-03 at `0027ffe2`)
 
+**Working-tree draft: the hash above is the D-494 baseline, not the D-495 material pin. Do not publish
+this draft. Replace it after committing and rechecking the new material.**
+
+The current targets verified all **58** configurations and refuted all **298** negative controls across
+**46** modules. One separate wide configuration brings the inventory to **357**; it did not complete.
+The completed positive batch includes the final export publication/cancellation boundary; the final
+counterexample batch was re-run after that correction. The earlier pinned section below is historical.
+The current Kani run reports `Complete - 9 successfully verified harnesses, 0 failures, 9 total`:
+seven existing paging/viewport harnesses and two finite capability-vocabulary harnesses compiling production
+`core/src/v2/capability.rs`. Broader bounded-string scope proofs were stopped for excessive resource use;
+no arbitrary-string transitivity or prefix theorem is claimed.
+
+All **65** normal-path witnesses completed on the current model material, covering all **45** active modules.
+They are existential reachability evidence, not safety proofs or additional fault controls. The historical
+`V2Isolation` module remains outside current product coverage. Guided paths intersect the original next-state
+relation and retain its initialization/fairness; executed checker fixtures reject forged and absent paths.
+
+The central model's fixed reply response had made tool, wait and completion branches unreachable. Equal
+reservation amounts had been collapsed by a set projection. Both are repaired, along with attempt identity,
+operation ownership, epoch closure, completion exits and per-instance strong fairness for recurring crashes.
+Artifact owner release/ordinary reference removal and split GC deletion/collection are now reachable;
+release is checked as an action property. Deferred wait facts and normal task grants/two concrete instance
+scopes have dedicated witnesses. These were model defects, not newly demonstrated production bugs.
+
+Five finite models add execution-chain composition, stream boundaries, profile switching, skill authority
+and export snapshot publication. Their exact claims, controls, anchors and limitations are in [README.md](README.md).
+The generated [current requirement inventory](REQUIREMENTS.md) classifies every Q1-Q19 and A01-A36, names
+checked claims and concrete bridge files, and retains unproved obligations. It supersedes the historical
+coverage subtotal below; neither an inventory row nor a passing finite model establishes complete formal
+coverage of the product. In particular, full implementation refinement/composition, MCP framing/correlation,
+all actor/command pairs, lifecycle/fork/retention composition and reviewer usage remain outstanding.
+
+The **wide configuration did not complete**: a 30-minute attempt with six TLC workers and a 6 GiB Java
+heap ended with timeout exit 124. The last progress sample was 113,184,192 generated states, 31,898,082
+distinct states and 24,088,013 still queued (depth 11). No violation was printed before termination, but
+that is not a safety or liveness result. Its bounds were not reduced or renamed to claim success.
+
+Re-run `make verify-model-all`, `make verify-model-counterexamples`, `make verify-witnesses`,
+`make verify-kani` and `python3 review/verification_catalogue.py --self-check`. Current local logs are under
+`review/tmp/d495/`; they are scratch evidence, not a substitute for the committed material and CI receipt.
+The final aggregate logs are `positive-final.log` and `negative-current.log`; both exit receipts are 0.
+`witness-gate.log` and `kani-final.log` also exited 0. The largest completed central scenarios were
+`MC_control_two.cfg` (39,666,529 generated / 5,428,960 distinct) and `MC_control_decisions.cfg`
+(74,053,023 generated / 13,846,024 distinct), both with an empty frontier and no error. `make hygiene`
+also passed in an independent staged checkout excluding the ten preexisting documentation changes.
+
+## D-494 historical gate (2026-11-03 at `0027ffe2`)
+
 D-494 material commit `0027ffe2ffbbba57acf852f59bf8904dce5b0ac3` contains the models, controls and verdict
 gate used by the final committed-source run. The targets verified all **50** configurations and refuted
 all **273** negative controls across **41** modules. The separate wide
@@ -864,7 +912,10 @@ D-87 defect itself.
 | **Ten claims the mapping never named** (D-222) | `verification/README.md` is the property-by-spec mapping the report sends a reader to; ten of the 148 marked claims were absent from it — all four of `V2Retention`'s substantive claims (`EvictionOnlyUnderTheGuards`, `NoReferenceToEvictedFact`, `EvidenceIsNeverEvicted`, `OnlyOldFactsAreEvicted`), `V2Grants`' four `TypeOK*` components and `V2Wait`'s `SatisfiedHoldsConditions` and `AnswerImpliesResolved` | — (a documentation gap, not a model defect: every one was listed by a configuration and checked) | all ten are named in the mapping beside the module that marks them, and `review/verification_catalogue.py` fails a marked claim the mapping never mentions (control: `--mapping` on a copy with one name deleted) |
 | Property fix | nested quantifiers in `V2Checks`' `BlockForInfra`/`BlockWhenExhausted` shared a name | parse error | separate quantifier variables |
 
-## 4. Per-item ledger A01–A36
+## 4. Historical per-item ledger A01–A36
+
+This table records the earlier mapping, not the current coverage count. D-495's generated
+[REQUIREMENTS.md](REQUIREMENTS.md) is the current Q/A inventory with explicit residual proof obligations.
 
 The "formal layer" column lists only what the model, the code-level correspondence or the pure-function layer
 **really** covers; everything else relies on sample tests and real-environment acceptance (evidence in
@@ -923,25 +974,26 @@ It is a historical ledger, not the current coverage inventory; current evidence 
 
 1. **The model is not the code.** The model is an abstract state machine; the code-level correspondence is
    bounded exploration, not a refinement proof. Crossing that line would require mapping every invariant onto
-   an executable assertion in the code (done) **and** proving that every implementation step lies within the
-   model's step set (not done).
+   executable assertions and proving that every implementation step lies within the model's step set. The
+   current bridge checks cover a subset; neither exhaustive mapping nor refinement is complete.
 2. **Liveness**: `V2Wait::NoStrandedPending` depends on weak fairness of the parked drain; `V2Control`'s
    liveness depends on three assumptions about the driver and the provider (D-63): weak fairness of each
    instance's recovery (`\A i : WF(Recover(i))`), strong fairness of each instance's boundary drain
-   (`\A i : SF(ApplyQueued(i))`, strong so that a crash loop cannot starve it) and weak fairness of each
-   instance's turn taking its next step (`\A i : WF(TurnStep(i))` — the provider eventually answers or the
-   transport times out into `FailRequest`). All three are assumptions about a scheduler and a provider outside
+   (`\A i : SF(ApplyQueued(i))`, strong so that a crash loop cannot starve it) and strong fairness of each
+   instance's turn taking its next step (`\A i : SF(TurnStep(i))` — recurring crashes may repeatedly interrupt
+   the enabling interval, so weak fairness was insufficient). All three are assumptions about a scheduler
+   and a provider outside
    the verified system. The fairness is deliberately *per instance*: the older
    `WF_vars(\E i : Recover(i))` let one instance's recovery carry the other's starvation, which the
    two-instance configuration refutes once a per-instance liveness property exists.
 3. **Boundedness**: every enumeration stays inside a bounded configuration (finite requests, attempts, tasks
    and log lengths, `MaxOps` and so on). Unbounded counters (budget, usage, event sequence) appear in the
    model only as bounded placeholders.
-4. **Code outside the model**: provider adapters and retry classification, MCP, Skills, TUI rendering and
-   hit-testing, shell and bubblewrap isolation, job/process lifetimes and real provider behaviour, and the
-   `require_user` identity gate (a user-only command's refusal of an instance identity is tested per command at
-   the control boundary, not modelled). These are
-   covered by sample tests and real-environment acceptance only.
+4. **Code outside the model**: complete provider parsing/retry classification, MCP framing/correlation,
+   TUI rendering/hit-testing, actual job/process behavior and all actor/command identity checks are not
+   implementation-proved. D-495 models slices of stream admission, skill authority, user profile switching
+   and export publication, not their full implementations. Bubblewrap and other OS sandbox backends were
+   removed in D-480; their old model is historical, not evidence for current host isolation.
 5. ~~A modeled rule without an implementation (D-192)~~ — **implemented in D-245**: `control::prune_history`
    drops ordinary history at a session's boot under the four guards this model pins, and its test
    `retention_sweep_keeps_the_models_invariants` exercises each guard *and* its counterfactual over the real

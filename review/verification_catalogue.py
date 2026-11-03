@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The formal-verification material, against the targets that drive it and the report that counts it (D-185).
 
-`verification/tla/` holds forty-one TLA+ modules and three-hundred-and-twenty-four configurations — and **these numbers are
+`verification/tla/` holds forty-six TLA+ modules and three-hundred-and-fifty-seven configurations — and **these numbers are
 checked against the directory by this script's own rule**, because the sentence that said "forty" was the
 kind of count nothing looked at (the module count in this line and the two the report states are all
 compared with what the tree holds); `verification/REPORT.md`
@@ -93,7 +93,9 @@ REPO = pathlib.Path(__file__).resolve().parents[1]
 TLA = "verification/tla"
 KANI_SRC = "verification/kani/src"
 CONTROL = "core/src/v2/control.rs"
-MATERIAL = ("verification/tla", "verification/kani")
+MATERIAL = ("verification/tla", "verification/kani", "verification/witnesses.json",
+            "verification/requirements.json", "review/verification_witnesses.py",
+            "review/verification_requirements.py", "review/tlc_verdict.py")
 # (D-224) the version the Makefile pins and the documents that state it: a reader of either trusts the number
 TLA_VERSION = re.compile(r"^TLA_VERSION\s*:=\s*(\S+)", re.M)
 STATED_TLC = re.compile(r"TLC v([0-9][0-9.]*)")
@@ -648,6 +650,14 @@ def main(argv) -> int:
             findings.append(f"this script's docstring says {stated.group(2)!r} ({configs_stated}) configurations, "
                             f"{tla} holds {on_disk}")
 
+    if not findings and args.makefile == "Makefile" and args.tla == TLA:
+        for script, arguments in [("verification_witnesses.py", ["--check"]),
+                                  ("verification_witnesses.py", ["--self-check"]),
+                                  ("verification_requirements.py", ["--self-check"])]:
+            run = subprocess.run([sys.executable, str(REPO / "review" / script), *arguments],
+                                 cwd=REPO, capture_output=True, text=True)
+            if run.returncode:
+                findings.append(f"{script} failed: {run.stdout}{run.stderr}")
     for finding in findings:
         print(f"FAIL: {finding}")
     if findings:

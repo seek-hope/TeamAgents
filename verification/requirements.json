@@ -1,0 +1,1356 @@
+{
+  "schema": 1,
+  "requirements": [
+    {
+      "id": "Q1",
+      "status": "external",
+      "scope": "Success and long-horizon reliability are empirical objectives.",
+      "formal": [],
+      "bridges": [
+        {
+          "kind": "evaluation",
+          "path": "review/eval/r2-p6/run.py"
+        }
+      ],
+      "remaining": "No formal theorem establishes model ability, cost or equal-budget comparative gain."
+    },
+    {
+      "id": "Q2",
+      "status": "constraint",
+      "scope": "Rust-native component choice.",
+      "formal": [],
+      "bridges": [
+        {
+          "kind": "constraint",
+          "path": "docs/DESIGN.md"
+        },
+        {
+          "kind": "constraint",
+          "path": "Makefile"
+        }
+      ],
+      "remaining": "Build/language gates enforce the selected implementation language, not functional correctness."
+    },
+    {
+      "id": "Q3",
+      "status": "constraint",
+      "scope": "Kernel/runtime-first delivery scope.",
+      "formal": [],
+      "bridges": [
+        {
+          "kind": "constraint",
+          "path": "docs/DESIGN.md"
+        }
+      ],
+      "remaining": "Release completeness is not a temporal property."
+    },
+    {
+      "id": "Q4",
+      "status": "partial",
+      "scope": "Logical history and grant boundaries.",
+      "formal": [
+        {
+          "module": "V2History",
+          "config": "MC_history.cfg",
+          "claim": "InstancesReadOnlyTheirOwn"
+        },
+        {
+          "module": "V2Grants",
+          "config": "MC_grants.cfg",
+          "claim": "AuthorityTracesToTheUser"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "core/tests/v2_invariants.rs",
+          "symbol": "spec_invariants_hold_over_short_command_sequences"
+        },
+        {
+          "kind": "test",
+          "path": "engine/tests/v2_mcp.rs"
+        }
+      ],
+      "remaining": "Same-user host processes are not confined; arbitrary command authorization is not fully proved."
+    },
+    {
+      "id": "Q5",
+      "status": "partial",
+      "scope": "Delegation attenuation and controlled envelope application.",
+      "formal": [
+        {
+          "module": "V2Grants",
+          "config": "MC_grants.cfg",
+          "claim": "ChildGrantsAreCoveredByTheirParent"
+        },
+        {
+          "module": "V2Inbox",
+          "config": "MC_inbox.cfg",
+          "claim": "AtMostOncePerEnvelope"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "core/tests/v2_invariants.rs",
+          "symbol": "spec_invariants_hold_over_short_command_sequences"
+        },
+        {
+          "kind": "test",
+          "path": "engine/tests/v2_driver.rs"
+        }
+      ],
+      "remaining": "Full communication topology and every send/delivery authorization combination are not composed."
+    },
+    {
+      "id": "Q6",
+      "status": "partial",
+      "scope": "Detach semantics and explicitly confirmed session deletion.",
+      "formal": [
+        {
+          "module": "V2Tui",
+          "config": "MC_tui.cfg",
+          "claim": "ExitOnlyDetaches"
+        },
+        {
+          "module": "V2SessionUi",
+          "config": "MC_sessionui.cfg",
+          "claim": "ConfirmedDelete"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "tui/tests/conversation.rs"
+        },
+        {
+          "kind": "test",
+          "path": "tui/tests/sessions.rs"
+        }
+      ],
+      "remaining": "Rendering, accessibility, terminal behavior and full management CLI require regression/PTY evidence."
+    },
+    {
+      "id": "Q7",
+      "status": "partial",
+      "scope": "UI detaches independently and daemon commands deduplicate.",
+      "formal": [
+        {
+          "module": "V2Tui",
+          "config": "MC_tui.cfg",
+          "claim": "ExitOnlyDetaches"
+        },
+        {
+          "module": "V2Daemon",
+          "config": "MC_daemon.cfg",
+          "claim": "CommandApplicationCountIsBounded"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "engine/tests/v2_daemon.rs"
+        },
+        {
+          "kind": "test",
+          "path": "engine/tests/v2_supervisor.rs"
+        }
+      ],
+      "remaining": "Real socket failure, process lifetime and reconnect timing remain environment/test boundaries."
+    },
+    {
+      "id": "Q8",
+      "status": "partial",
+      "scope": "User-versus-instance history and turn-boundary intervention.",
+      "formal": [
+        {
+          "module": "V2History",
+          "config": "MC_history.cfg",
+          "claim": "InstancesReadOnlyTheirOwn"
+        },
+        {
+          "module": "V2Control",
+          "config": "MC.cfg",
+          "claim": "InputLandsAtTheBoundary"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "core/tests/v2_invariants.rs",
+          "symbol": "spec_invariants_hold_over_short_command_sequences"
+        },
+        {
+          "kind": "test",
+          "path": "engine/tests/v2_driver.rs"
+        }
+      ],
+      "remaining": "All actor/command pairs and notification recipients are not exhaustively proved."
+    },
+    {
+      "id": "Q9",
+      "status": "partial",
+      "scope": "Epoch-isolated context and distinct registry paths.",
+      "formal": [
+        {
+          "module": "V2Control",
+          "config": "MC.cfg",
+          "claim": "NoReceiptAcrossEpochs"
+        },
+        {
+          "module": "V2Sessions",
+          "config": "MC_sessions.cfg",
+          "claim": "RegistryIsInjective"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "core/tests/v2_invariants.rs",
+          "symbol": "spec_invariants_hold_over_short_command_sequences"
+        },
+        {
+          "kind": "test",
+          "path": "engine/tests/session_browser.rs"
+        }
+      ],
+      "remaining": "Bootstrap, schema migration, reset/fork and all session operations lack a complete composition proof."
+    },
+    {
+      "id": "Q10",
+      "status": "partial",
+      "scope": "Bounded continuation with shared request admission and deadline gates.",
+      "formal": [
+        {
+          "module": "V2Work",
+          "config": "MC_work.cfg",
+          "claim": "RecoveryRemainsBounded"
+        },
+        {
+          "module": "V2Control",
+          "config": "MC.cfg",
+          "claim": "ReservationsAdmitted"
+        },
+        {
+          "module": "V2Control",
+          "config": "MC.cfg",
+          "claim": "NoRequestAfterDeadline"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "engine/tests/cases/autonomy.rs"
+        },
+        {
+          "kind": "test",
+          "path": "core/src/v2/control/work_tests.rs"
+        }
+      ],
+      "remaining": "Scheduler/provider fairness is assumed; reviewer usage propagation remains an accounting gap."
+    },
+    {
+      "id": "Q11",
+      "status": "partial",
+      "scope": "Required checks gate success.",
+      "formal": [
+        {
+          "module": "V2Checks",
+          "config": "MC_checks.cfg",
+          "claim": "NoUnverifiedSuccess"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "engine/tests/v2_driver.rs"
+        },
+        {
+          "kind": "test",
+          "path": "engine/tests/cases/autonomy.rs"
+        }
+      ],
+      "remaining": "Review quality, arbitrary check commands and dependency identity are not mathematically established."
+    },
+    {
+      "id": "Q12",
+      "status": "partial",
+      "scope": "Tool approval, effect recovery and skill authority.",
+      "formal": [
+        {
+          "module": "V2Approval",
+          "config": "MC_approval.cfg",
+          "claim": "EffectImpliesApproved"
+        },
+        {
+          "module": "V2ExecutionChain",
+          "config": "MC_executionchain.cfg",
+          "claim": "UnknownIsNeverReplayed"
+        },
+        {
+          "module": "V2SkillAuthority",
+          "config": "MC_skillauthority.cfg",
+          "claim": "SkillContentCannotGrant"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "engine/tests/v2_mcp.rs"
+        },
+        {
+          "kind": "test",
+          "path": "engine/tests/v2_mcp.rs",
+          "symbol": "skill_tool_searches_and_reads_through_the_same_contract"
+        }
+      ],
+      "remaining": "MCP framing/correlation and each basic tool implementation are tested, not fully proved."
+    },
+    {
+      "id": "Q13",
+      "status": "partial",
+      "scope": "Frozen request profiles and complete-response execution.",
+      "formal": [
+        {
+          "module": "V2ProfileSwitch",
+          "config": "MC_profileswitch.cfg",
+          "claim": "RequestProfileIsFrozen"
+        },
+        {
+          "module": "V2StreamBoundary",
+          "config": "MC_streamboundary.cfg",
+          "claim": "OnlyCompleteResponsesExecute"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "engine/tests/providers_fake.rs"
+        },
+        {
+          "kind": "test",
+          "path": "engine/tests/v2_driver.rs"
+        }
+      ],
+      "remaining": "Native protocol fields, real providers and native context windows need adapter tests/live evidence."
+    },
+    {
+      "id": "Q14",
+      "status": "partial",
+      "scope": "Retirement never discards dirty or unmerged work in the abstraction.",
+      "formal": [
+        {
+          "module": "V2Workspace",
+          "config": "MC_workspace.cfg",
+          "claim": "RetirementNeverBuriesWork"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "engine/src/workspace.rs"
+        }
+      ],
+      "remaining": "Git, filesystem races and shared-workspace side effects are external assumptions."
+    },
+    {
+      "id": "Q15",
+      "status": "partial",
+      "scope": "Unknown effects are not replayed and recovery is bounded.",
+      "formal": [
+        {
+          "module": "V2ExecutionChain",
+          "config": "MC_executionchain.cfg",
+          "claim": "UnknownIsNeverReplayed"
+        },
+        {
+          "module": "V2Work",
+          "config": "MC_work.cfg",
+          "claim": "RecoveryRemainsBounded"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "engine/tests/jobs_runner.rs"
+        },
+        {
+          "kind": "test",
+          "path": "engine/tests/cases/autonomy.rs"
+        }
+      ],
+      "remaining": "Host/remote stop observations and complete journal/DB failure composition are not proved."
+    },
+    {
+      "id": "Q16",
+      "status": "external",
+      "scope": "Single-agent nonregression and multi-agent benefit require frozen matched evaluation.",
+      "formal": [],
+      "bridges": [
+        {
+          "kind": "evaluation",
+          "path": "review/eval/r2-p6/run.py"
+        }
+      ],
+      "remaining": "No bounded protocol model proves comparative task success."
+    },
+    {
+      "id": "Q17",
+      "status": "external",
+      "scope": "Pilot cost estimation is measured.",
+      "formal": [],
+      "bridges": [
+        {
+          "kind": "evaluation",
+          "path": "review/eval/r2-p6/run.py"
+        }
+      ],
+      "remaining": "No statistical significance or cost forecast follows from formal gates."
+    },
+    {
+      "id": "Q18",
+      "status": "partial",
+      "scope": "Foreign stores are refused and accepted stores are stamped.",
+      "formal": [
+        {
+          "module": "V2Store",
+          "config": "MC_store.cfg",
+          "claim": "AcceptedMeansStamped"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "engine/tests/cli.rs"
+        },
+        {
+          "kind": "test",
+          "path": "core/tests/v2_invariants.rs",
+          "symbol": "spec_invariants_hold_over_short_command_sequences"
+        }
+      ],
+      "remaining": "All historical schema migrations and configuration versions are not proved."
+    },
+    {
+      "id": "Q19",
+      "status": "partial",
+      "scope": "Explicit retention guards before deletion.",
+      "formal": [
+        {
+          "module": "V2Prune",
+          "config": "MC_prune.cfg",
+          "claim": "NothingThatShouldStayLeaves"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "engine/tests/session_browser.rs"
+        },
+        {
+          "kind": "test",
+          "path": "engine/tests/cli.rs"
+        }
+      ],
+      "remaining": "Machine-wide cleanup and credential/evidence preservation require inventory and real filesystem checks."
+    },
+    {
+      "id": "A01",
+      "status": "partial",
+      "scope": "Selected complete responses and checked completion.",
+      "formal": [
+        {
+          "module": "V2Control",
+          "config": "MC.cfg",
+          "claim": "SelectionIsComplete"
+        },
+        {
+          "module": "V2Checks",
+          "config": "MC_checks.cfg",
+          "claim": "NoUnverifiedSuccess"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "engine/tests/v2_driver.rs"
+        }
+      ],
+      "remaining": "Every basic tool and actual deliverable quality are not proved by this slice."
+    },
+    {
+      "id": "A02",
+      "status": "partial",
+      "scope": "No duplicate application of a delivered envelope.",
+      "formal": [
+        {
+          "module": "V2Inbox",
+          "config": "MC_inbox.cfg",
+          "claim": "AtMostOncePerEnvelope"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "core/tests/v2_invariants.rs",
+          "symbol": "spec_invariants_hold_over_short_command_sequences"
+        },
+        {
+          "kind": "test",
+          "path": "engine/tests/v2_driver.rs"
+        }
+      ],
+      "remaining": "A full three-node ring and every grant/delivery permutation are not composed."
+    },
+    {
+      "id": "A03",
+      "status": "partial",
+      "scope": "Child scopes stay under their parents.",
+      "formal": [
+        {
+          "module": "V2Grants",
+          "config": "MC_grants.cfg",
+          "claim": "ChildGrantsAreCoveredByTheirParent"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "core/tests/v2_invariants.rs",
+          "symbol": "spec_invariants_hold_over_short_command_sequences"
+        }
+      ],
+      "remaining": "Concrete arbitrary-string scope algebra is not fully proved; Kani covers only stated vocabularies."
+    },
+    {
+      "id": "A04",
+      "status": "partial",
+      "scope": "Stale dispatch is rejected and uncertain effects are not replayed.",
+      "formal": [
+        {
+          "module": "V2Grants",
+          "config": "MC_grants.cfg",
+          "claim": "OnceStaleNeverExecutes"
+        },
+        {
+          "module": "V2ExecutionChain",
+          "config": "MC_executionchain.cfg",
+          "claim": "UnknownIsNeverReplayed"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "core/tests/v2_invariants.rs",
+          "symbol": "spec_invariants_hold_over_short_command_sequences"
+        },
+        {
+          "kind": "test",
+          "path": "engine/tests/v2_driver.rs"
+        }
+      ],
+      "remaining": "Runtime linearization relies on the control transaction; external effects already in flight may finish."
+    },
+    {
+      "id": "A05",
+      "status": "partial",
+      "scope": "Instances read only their own controlled history.",
+      "formal": [
+        {
+          "module": "V2History",
+          "config": "MC_history.cfg",
+          "claim": "InstancesReadOnlyTheirOwn"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "core/tests/v2_invariants.rs"
+        }
+      ],
+      "remaining": "This is not a same-user host-process security boundary."
+    },
+    {
+      "id": "A06",
+      "status": "partial",
+      "scope": "At-most-once envelope application and boundary landing.",
+      "formal": [
+        {
+          "module": "V2Inbox",
+          "config": "MC_inbox.cfg",
+          "claim": "AtMostOncePerEnvelope"
+        },
+        {
+          "module": "V2Control",
+          "config": "MC.cfg",
+          "claim": "InputLandsAtTheBoundary"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "core/tests/input_queue.rs"
+        },
+        {
+          "kind": "test",
+          "path": "core/tests/v2_invariants.rs",
+          "symbol": "spec_invariants_hold_over_short_command_sequences"
+        }
+      ],
+      "remaining": "SQLite durability and complete crash trace refinement are assumed/not proved."
+    },
+    {
+      "id": "A07",
+      "status": "partial",
+      "scope": "Bounded recovery and persistent parked work.",
+      "formal": [
+        {
+          "module": "V2Work",
+          "config": "MC_work.cfg",
+          "claim": "RecoveryRemainsBounded"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "engine/tests/v2_supervisor.rs"
+        },
+        {
+          "kind": "test",
+          "path": "engine/tests/cases/autonomy.rs"
+        }
+      ],
+      "remaining": "Every bootstrap failure and exactly-one real notification are not fully composed."
+    },
+    {
+      "id": "A08",
+      "status": "partial",
+      "scope": "Journal recovery without replay; terminal receipt immutability.",
+      "formal": [
+        {
+          "module": "V2ExecutionChain",
+          "config": "MC_executionchain.cfg",
+          "claim": "UnknownIsNeverReplayed"
+        },
+        {
+          "module": "V2ExecutionChain",
+          "config": "MC_executionchain.cfg",
+          "claim": "TerminalReceiptIsImmutable"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "engine/tests/v2_driver.rs"
+        },
+        {
+          "kind": "test",
+          "path": "engine/tests/jobs_runner.rs"
+        }
+      ],
+      "remaining": "Actual fsync/write ordering and every crash window remain implementation-test obligations."
+    },
+    {
+      "id": "A09",
+      "status": "partial",
+      "scope": "Unknown work does not replay and recovery can block.",
+      "formal": [
+        {
+          "module": "V2Work",
+          "config": "MC_work.cfg",
+          "claim": "RecoveryRemainsBounded"
+        },
+        {
+          "module": "V2ExecutionChain",
+          "config": "MC_executionchain.cfg",
+          "claim": "UnknownIsNeverReplayed"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "engine/tests/cases/autonomy.rs"
+        },
+        {
+          "kind": "test",
+          "path": "engine/tests/v2_supervisor.rs"
+        }
+      ],
+      "remaining": "Independent-instance scheduling is fair only under stated scheduling/environment assumptions."
+    },
+    {
+      "id": "A10",
+      "status": "partial",
+      "scope": "At most one executor per abstract job.",
+      "formal": [
+        {
+          "module": "V2Jobs",
+          "config": "MC_jobs.cfg",
+          "claim": "AtMostOneExecutor"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "engine/tests/jobs_runner.rs"
+        }
+      ],
+      "remaining": "PID identity, journal bytes and actual lock behavior need real-process checks."
+    },
+    {
+      "id": "A11",
+      "status": "partial",
+      "scope": "Separate runner/control recovery cannot blindly restart unknown work.",
+      "formal": [
+        {
+          "module": "V2Jobs",
+          "config": "MC_jobs.cfg",
+          "claim": "AtMostOneExecutor"
+        },
+        {
+          "module": "V2ExecutionChain",
+          "config": "MC_executionchain.cfg",
+          "claim": "UnknownIsNeverReplayed"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "engine/tests/jobs_runner.rs"
+        },
+        {
+          "kind": "test",
+          "path": "engine/tests/v2_supervisor.rs"
+        }
+      ],
+      "remaining": "All physical crash timings are not a completed DB/filesystem refinement proof."
+    },
+    {
+      "id": "A12",
+      "status": "partial",
+      "scope": "Normal service preservation and UI detachment.",
+      "formal": [
+        {
+          "module": "V2JobSupervision",
+          "config": "MC_jobsupervision.cfg",
+          "claim": "NormalServicesArePreserved"
+        },
+        {
+          "module": "V2Tui",
+          "config": "MC_tui.cfg",
+          "claim": "ExitOnlyDetaches"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "engine/tests/cases/jobs_robustness.rs"
+        },
+        {
+          "kind": "test",
+          "path": "engine/tests/jobs_runner.rs"
+        }
+      ],
+      "remaining": "Real process group lifetime and host scheduling remain empirical."
+    },
+    {
+      "id": "A13",
+      "status": "partial",
+      "scope": "Terminal receipt stability and observed completion before a late timeout tick.",
+      "formal": [
+        {
+          "module": "V2ExecutionChain",
+          "config": "MC_executionchain.cfg",
+          "claim": "TerminalReceiptIsImmutable"
+        },
+        {
+          "module": "V2JobSupervision",
+          "config": "MC_jobsupervision.cfg",
+          "claim": "NormalServicesArePreserved"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "engine/tests/cases/jobs_robustness.rs"
+        },
+        {
+          "kind": "test",
+          "path": "core/tests/v2_invariants.rs",
+          "symbol": "spec_invariants_hold_over_short_command_sequences"
+        }
+      ],
+      "remaining": "Cancellation does not imply escaped or remote effects stopped."
+    },
+    {
+      "id": "A14",
+      "status": "external",
+      "scope": "Host execution and rejection of retired sandbox settings.",
+      "formal": [],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "engine/tests/v2_mcp.rs"
+        },
+        {
+          "kind": "test",
+          "path": "engine/src/config.rs"
+        }
+      ],
+      "remaining": "V2Isolation is historical and cannot establish a current sandbox guarantee."
+    },
+    {
+      "id": "A15",
+      "status": "external",
+      "scope": "Target-environment diagnostics and recorded identity.",
+      "formal": [],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "engine/tests/cli.rs"
+        },
+        {
+          "kind": "test",
+          "path": "engine/tests/cases/autonomy.rs"
+        }
+      ],
+      "remaining": "Environment identity is an observation, not a proof that all external dependencies are equivalent."
+    },
+    {
+      "id": "A16",
+      "status": "partial",
+      "scope": "Failed/unverified required checks cannot produce success.",
+      "formal": [
+        {
+          "module": "V2Checks",
+          "config": "MC_checks.cfg",
+          "claim": "NoUnverifiedSuccess"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "engine/tests/v2_driver.rs"
+        },
+        {
+          "kind": "test",
+          "path": "engine/tests/cases/autonomy.rs"
+        }
+      ],
+      "remaining": "Check commands and deliverable content are outside finite symbolic outcomes."
+    },
+    {
+      "id": "A17",
+      "status": "partial",
+      "scope": "Verified candidate cannot be upgraded by the check phase.",
+      "formal": [
+        {
+          "module": "V2Checks",
+          "config": "MC_checks.cfg",
+          "claim": "NoUnverifiedSuccess"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "engine/tests/v2_driver.rs"
+        }
+      ],
+      "remaining": "Arbitrary artifact dependency changes and complete content-version validation are not proved."
+    },
+    {
+      "id": "A18",
+      "status": "partial",
+      "scope": "Reservation multiplicity is preserved and admission is bounded.",
+      "formal": [
+        {
+          "module": "V2Control",
+          "config": "MC.cfg",
+          "claim": "ReservationsAdmitted"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "core/tests/v2_invariants.rs",
+          "symbol": "spec_invariants_hold_over_short_command_sequences"
+        },
+        {
+          "kind": "test",
+          "path": "engine/tests/cases/autonomy.rs"
+        }
+      ],
+      "remaining": "Reviewer usage propagation remains incomplete; unknown prices cannot be made exact by a model."
+    },
+    {
+      "id": "A19",
+      "status": "partial",
+      "scope": "Only complete responses execute, with bounded retry and no replay after visible text.",
+      "formal": [
+        {
+          "module": "V2StreamBoundary",
+          "config": "MC_streamboundary.cfg",
+          "claim": "OnlyCompleteResponsesExecute"
+        },
+        {
+          "module": "V2Control",
+          "config": "MC.cfg",
+          "claim": "SelectionIsComplete"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "engine/tests/cases/provider_robustness.rs"
+        },
+        {
+          "kind": "test",
+          "path": "engine/tests/providers_fake.rs"
+        }
+      ],
+      "remaining": "Actual UTF-8/JSON parsing, transport behavior and truthful provider usage are not proved."
+    },
+    {
+      "id": "A20",
+      "status": "partial",
+      "scope": "Original entries remain and persistent work survives compaction.",
+      "formal": [
+        {
+          "module": "V2Compress",
+          "config": "MC_compress.cfg",
+          "claim": "NoEntryIsEverLost"
+        },
+        {
+          "module": "V2Work",
+          "config": "MC_work.cfg",
+          "claim": "RecoveryRemainsBounded"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "core/tests/v2_invariants.rs",
+          "symbol": "spec_invariants_hold_over_short_command_sequences"
+        },
+        {
+          "kind": "test",
+          "path": "engine/tests/cases/autonomy.rs"
+        }
+      ],
+      "remaining": "Semantic adequacy of a model-written summary is an empirical judgment."
+    },
+    {
+      "id": "A21",
+      "status": "partial",
+      "scope": "Direct intervention lands at a turn boundary.",
+      "formal": [
+        {
+          "module": "V2Control",
+          "config": "MC.cfg",
+          "claim": "InputLandsAtTheBoundary"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "core/tests/input_queue.rs"
+        },
+        {
+          "kind": "test",
+          "path": "engine/tests/v2_driver.rs"
+        }
+      ],
+      "remaining": "All notification/affiliation combinations are not composed into this state-machine proof."
+    },
+    {
+      "id": "A22",
+      "status": "partial",
+      "scope": "ALL/ANY conditions and external wake progress under fairness.",
+      "formal": [
+        {
+          "module": "V2Wait",
+          "config": "MC_wait_deferred.cfg",
+          "claim": "NoStrandedPending"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "core/tests/v2_invariants.rs",
+          "symbol": "spec_invariants_hold_over_short_command_sequences"
+        },
+        {
+          "kind": "test",
+          "path": "engine/tests/v2_driver.rs"
+        }
+      ],
+      "remaining": "Full wait-graph diagnosis is not proved; the implementation diagnoses impossible closed conditions, not arbitrary cycles."
+    },
+    {
+      "id": "A23",
+      "status": "partial",
+      "scope": "Deferred facts and sweeps cannot strand pending waits under stated fairness.",
+      "formal": [
+        {
+          "module": "V2Wait",
+          "config": "MC_wait_deferred.cfg",
+          "claim": "NoStrandedPending"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "core/tests/v2_invariants.rs",
+          "symbol": "spec_invariants_hold_over_short_command_sequences"
+        },
+        {
+          "kind": "test",
+          "path": "engine/tests/v2_driver.rs"
+        }
+      ],
+      "remaining": "Actual polling/transaction scheduling and clock fairness are external assumptions."
+    },
+    {
+      "id": "A24",
+      "status": "partial",
+      "scope": "Late receipts settle old operations but do not enter new context.",
+      "formal": [
+        {
+          "module": "V2Control",
+          "config": "MC.cfg",
+          "claim": "NoReceiptAcrossEpochs"
+        },
+        {
+          "module": "V2ExecutionChain",
+          "config": "MC_executionchain.cfg",
+          "claim": "UnknownIsNeverReplayed"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "core/tests/v2_invariants.rs",
+          "symbol": "spec_invariants_hold_over_short_command_sequences"
+        },
+        {
+          "kind": "test",
+          "path": "engine/tests/cases/autonomy.rs"
+        }
+      ],
+      "remaining": "Original-budget settlement across every reset/fork/retention interleaving is not fully composed."
+    },
+    {
+      "id": "A25",
+      "status": "partial",
+      "scope": "MCP shares approval and unknown-outcome contracts.",
+      "formal": [
+        {
+          "module": "V2Approval",
+          "config": "MC_approval.cfg",
+          "claim": "EffectImpliesApproved"
+        },
+        {
+          "module": "V2ExecutionChain",
+          "config": "MC_executionchain.cfg",
+          "claim": "UnknownIsNeverReplayed"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "engine/tests/v2_mcp.rs"
+        }
+      ],
+      "remaining": "JSON-RPC correlation, transport cancellation and remote idempotence are not proved."
+    },
+    {
+      "id": "A26",
+      "status": "partial",
+      "scope": "Skill content cannot mint authority.",
+      "formal": [
+        {
+          "module": "V2SkillAuthority",
+          "config": "MC_skillauthority.cfg",
+          "claim": "SkillContentCannotGrant"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "engine/tests/v2_mcp.rs",
+          "symbol": "skill_tool_searches_and_reads_through_the_same_contract"
+        }
+      ],
+      "remaining": "Canonical path checks are premises; filesystem races and all skill parsing are not proved."
+    },
+    {
+      "id": "A27",
+      "status": "partial",
+      "scope": "Per-request profile identity, grant attenuation and complete response selection.",
+      "formal": [
+        {
+          "module": "V2ProfileSwitch",
+          "config": "MC_profileswitch.cfg",
+          "claim": "RequestProfileIsFrozen"
+        },
+        {
+          "module": "V2Grants",
+          "config": "MC_grants.cfg",
+          "claim": "ChildGrantsAreCoveredByTheirParent"
+        },
+        {
+          "module": "V2StreamBoundary",
+          "config": "MC_streamboundary.cfg",
+          "claim": "OnlyCompleteResponsesExecute"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "engine/tests/providers_fake.rs"
+        },
+        {
+          "kind": "test",
+          "path": "engine/tests/v2_driver.rs"
+        }
+      ],
+      "remaining": "Native provider fields and real cross-provider cooperation require adapter/live tests."
+    },
+    {
+      "id": "A28",
+      "status": "partial",
+      "scope": "Deduplicated commands and writer progress despite a stalled reader.",
+      "formal": [
+        {
+          "module": "V2Daemon",
+          "config": "MC_daemon.cfg",
+          "claim": "CommandApplicationCountIsBounded"
+        },
+        {
+          "module": "V2Concurrency",
+          "config": "MC_concurrency.cfg",
+          "claim": "WriterProgressesDespiteAStalledReader"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "engine/tests/v2_daemon.rs"
+        },
+        {
+          "kind": "test",
+          "path": "engine/tests/v2_supervisor.rs"
+        }
+      ],
+      "remaining": "Unbounded client streams, network behavior and all reconnect framing are outside the model."
+    },
+    {
+      "id": "A29",
+      "status": "partial",
+      "scope": "Distinct state paths and controlled private history.",
+      "formal": [
+        {
+          "module": "V2Sessions",
+          "config": "MC_sessions.cfg",
+          "claim": "RegistryIsInjective"
+        },
+        {
+          "module": "V2History",
+          "config": "MC_history.cfg",
+          "claim": "InstancesReadOnlyTheirOwn"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "engine/tests/session_browser.rs"
+        },
+        {
+          "kind": "test",
+          "path": "core/tests/v2_invariants.rs",
+          "symbol": "spec_invariants_hold_over_short_command_sequences"
+        }
+      ],
+      "remaining": "Explicit project sharing and all registry/coordinator operations are not fully composed."
+    },
+    {
+      "id": "A30",
+      "status": "partial",
+      "scope": "No live reference precedes persistence; release and GC have separate boundaries.",
+      "formal": [
+        {
+          "module": "V2Artifact",
+          "config": "MC_artifact.cfg",
+          "claim": "NoReferenceToUnpersisted"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "core/tests/v2_invariants.rs",
+          "symbol": "spec_invariants_hold_over_short_command_sequences"
+        }
+      ],
+      "remaining": "Real rename/fsync behavior and complete retention/export/fork interactions are assumptions or tests."
+    },
+    {
+      "id": "A31",
+      "status": "partial",
+      "scope": "No fake success or uncommitted dispatch when writes fail.",
+      "formal": [
+        {
+          "module": "V2DiskFull",
+          "config": "MC_diskfull.cfg",
+          "claim": "NoFakedSuccess"
+        },
+        {
+          "module": "V2ExecutionChain",
+          "config": "MC_executionchain.cfg",
+          "claim": "UnknownIsNeverReplayed"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "engine/tests/cases/jobs_robustness.rs"
+        },
+        {
+          "kind": "test",
+          "path": "engine/tests/v2_supervisor.rs"
+        }
+      ],
+      "remaining": "Actual filesystem failures and queue behavior are not full implementation proofs."
+    },
+    {
+      "id": "A32",
+      "status": "external",
+      "scope": "Reader isolation has a protocol model; memory and latency are measured separately.",
+      "formal": [
+        {
+          "module": "V2Concurrency",
+          "config": "MC_concurrency.cfg",
+          "claim": "WriterProgressesDespiteAStalledReader"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "evaluation",
+          "path": "tui/examples/redraw_probe.rs"
+        },
+        {
+          "kind": "test",
+          "path": "engine/tests/v2_supervisor.rs"
+        }
+      ],
+      "remaining": "Asymptotic cost, peak RSS, disk growth and workload representativeness are not established by TLC."
+    },
+    {
+      "id": "A33",
+      "status": "partial",
+      "scope": "At most one coordinator and no inherited-lock recovery obstruction in the abstraction.",
+      "formal": [
+        {
+          "module": "V2Coordinator",
+          "config": "MC_coordinator.cfg",
+          "claim": "AtMostOneCoordinator"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "engine/tests/v2_supervisor.rs"
+        },
+        {
+          "kind": "test",
+          "path": "engine/tests/jobs_runner.rs"
+        }
+      ],
+      "remaining": "Kernel lock semantics and fork/exec behavior remain real-process test obligations."
+    },
+    {
+      "id": "A34",
+      "status": "partial",
+      "scope": "Accepted stores require the expected format stamp.",
+      "formal": [
+        {
+          "module": "V2Store",
+          "config": "MC_store.cfg",
+          "claim": "AcceptedMeansStamped"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "core/tests/v2_invariants.rs",
+          "symbol": "spec_invariants_hold_over_short_command_sequences"
+        },
+        {
+          "kind": "test",
+          "path": "engine/tests/cli.rs"
+        }
+      ],
+      "remaining": "Every schema migration and downgrade compatibility case is not proved."
+    },
+    {
+      "id": "A35",
+      "status": "partial",
+      "scope": "No request starts past the recorded goal deadline.",
+      "formal": [
+        {
+          "module": "V2Control",
+          "config": "MC.cfg",
+          "claim": "NoRequestAfterDeadline"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "engine/tests/v2_driver.rs"
+        },
+        {
+          "kind": "test",
+          "path": "engine/tests/v2_daemon.rs"
+        }
+      ],
+      "remaining": "Real clocks, in-flight provider cancellation and grading-client behavior are external."
+    },
+    {
+      "id": "A36",
+      "status": "partial",
+      "scope": "Store identity, guarded deletion and snapshot export.",
+      "formal": [
+        {
+          "module": "V2Store",
+          "config": "MC_store.cfg",
+          "claim": "AcceptedMeansStamped"
+        },
+        {
+          "module": "V2Prune",
+          "config": "MC_prune.cfg",
+          "claim": "NothingThatShouldStayLeaves"
+        },
+        {
+          "module": "V2ExportSnapshot",
+          "config": "MC_exportsnapshot.cfg",
+          "claim": "PagesShareSnapshot"
+        }
+      ],
+      "bridges": [
+        {
+          "kind": "test",
+          "path": "engine/tests/cli.rs"
+        },
+        {
+          "kind": "test",
+          "path": "engine/tests/session_browser.rs"
+        },
+        {
+          "kind": "test",
+          "path": "engine/tests/session_browser.rs",
+          "symbol": "search_and_export_cli_are_current_read_only_surfaces"
+        }
+      ],
+      "remaining": "Full install/update/bootstrap/schema/fork/delete lifecycle composition and machine cleanup remain unproved."
+    }
+  ]
+}

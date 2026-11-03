@@ -41,6 +41,8 @@ a row here is not a `TypeOK*` claim.
 | `V2Discovery` | `TypeOK` |
 | `V2DiskFull` | `TypeOK` |
 | `V2DisplayWorker` | `TypeOK` |
+| `V2ExecutionChain` | `TypeOK` |
+| `V2ExportSnapshot` | `TypeOK` |
 | `V2Grants` | `TypeOK` |
 | `V2Grants` | `TypeOKGrants` |
 | `V2Grants` | `TypeOKOffered` |
@@ -56,6 +58,7 @@ a row here is not a `TypeOK*` claim.
 | `V2Memory` | `TypeOK` |
 | `V2Oauth` | `TypeOK` |
 | `V2Presentation` | `TypeOK` |
+| `V2ProfileSwitch` | `TypeOK` |
 | `V2ProjectTrust` | `TypeOK` |
 | `V2Prompt` | `TypeOK` |
 | `V2Prune` | `TypeOK` |
@@ -64,7 +67,9 @@ a row here is not a `TypeOK*` claim.
 | `V2Schedule` | `TypeOK` |
 | `V2SessionUi` | `TypeOK` |
 | `V2Sessions` | `TypeOK` |
+| `V2SkillAuthority` | `TypeOK` |
 | `V2Store` | `TypeOK` |
+| `V2StreamBoundary` | `TypeOK` |
 | `V2Task` | `TypeOK` |
 | `V2Trust` | `TypeOK` |
 | `V2Tui` | `TypeOK` |

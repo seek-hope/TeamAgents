@@ -1,5 +1,12 @@
 # Development handoff
 
+D-495 formal material is locally validated: 58 positive configurations, 298 named counterexamples,
+65 normal-path witnesses and nine Kani harnesses pass. The wide configuration timed out and is unproved.
+Final immutable pinning and CI are pending. [The formal report](../verification/REPORT.md) and its generated
+requirement inventory separate partial formal support from outstanding implementation/refinement/composition
+work. Runtime source and installed binaries remain D-494; no new public release or user-state change is
+part of this work.
+
 Updated **2026-11-03**. **D-494** repairs provider/runner ingestion and supervision, durable start acceptance,
 storage-backpressure recovery, idle context loading and TUI rendering/frame deadlines. The material source
 and installed native binaries are pinned to `0027ffe2ffbbba57acf852f59bf8904dce5b0ac3`. Both binaries were
@@ -98,7 +105,13 @@ Current local regression belongs in ACCEPTANCE; formal results and abstraction l
 [verification/REPORT.md](../verification/REPORT.md). The [D-451 maturity report](../review/maturity-2026-10-11/REPORT.md)
 and D-452 audit keep their original source pins. Passing later tests does not renew them.
 
-The [D-494 review](../review/optimization-2026-11-03/REPORT.md) records old-code failures and a synthetic debug\nredraw fixture: at 201,599 wrapped rows, median frame time changes from 77.206 to 1.812 ms and allocations\nfrom 49,052,488 to 23,210 bytes/frame. Full-history hashing remains linear. The formal catalogue has 41\nmodules, 50 positive configurations, 273 negative controls and one uncompleted wide configuration; seven\nKani arithmetic harnesses pass. Catalogue completeness is not Rust/SQLite refinement or full-system proof.\n\nThe [goal-autonomy source study](../review/goal-autonomy-2026-10-28/REPORT.md) informed D-487; upstream source
+The [D-494 review](../review/optimization-2026-11-03/REPORT.md) records old-code failures and a synthetic debug
+redraw fixture: at 201,599 wrapped rows, median frame time changes from 77.206 to 1.812 ms and allocations
+from 49,052,488 to 23,210 bytes/frame. Full-history hashing remains linear. The formal catalogue has 41
+modules, 50 positive configurations, 273 negative controls and one uncompleted wide configuration; seven
+Kani arithmetic harnesses pass. Catalogue completeness is not Rust/SQLite refinement or full-system proof.
+
+The [goal-autonomy source study](../review/goal-autonomy-2026-10-28/REPORT.md) informed D-487; upstream source
 inspection is not an executed comparison. Local scripted providers and process tests do not establish real-model
 success, comparative cost or reduced user intervention. Reviewer accounting, broader provider/terminal
 acceptance and matched Pi trials remain separate candidates. No paid trial or public release is part of D-487.
