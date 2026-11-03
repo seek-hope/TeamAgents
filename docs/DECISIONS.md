@@ -40,6 +40,29 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Command idempotency | a replay with the same `command_id` returns the stored receipt for control-plane state, and the authoritative check runs under the write lock (D-463); result bodies are shared by content digest and zstd-compressed (D-464), while the receipt **rows** remain one per command | D-463, D-464 |
 | Model actions and code windows | a deciding read shares the write's transaction, or the guard is a predicate on the write itself; `verification/REPORT.md` §6 lists the protocol transitions and the three engine windows that span two transactions with their predicates | D-465 |
 
+## D-496 Formal search cost without reducing coverage (2026-11-03)
+
+The user approved proceeding in the proposed order: remove repeated traversals, measure and optimize
+successor evaluation, then explore identity reduction without admitting an unjustified abstraction.
+The positive runner now checks 58 source configurations in 55 traversals by unioning claims only for
+identical model/specification/domain inputs. Source configs, named negative controls and normal-path
+witnesses retain their identities. Unknown parser syntax fails closed, and executed fixtures reject a
+lost second-config safety or liveness obligation. Runner/Makefile provenance joins the material pin.
+
+The control model directly looks up its guarded active request and enumerates operation subsets only
+for tool responses. The old and new choice sets are equal; bounds, business alternatives, lifecycle,
+stuttering and WF/SF assumptions are unchanged. Algebraic reasoning and an executed bounded action
+comparison support the rewrite; a reply-only mutation refutes the comparison. A single small timing
+pair does not demonstrate a speedup. The measured saving from batching is repeated graph traversal.
+
+Canonical request/attempt allocation and removal of explicit stutter remain isolated experiments.
+Canonical IDs reduce the successive-decisions state count, but no general trace/fairness preservation
+proof is claimed. Ordinary TLC symmetry is not enabled for liveness. The wide run and full-system
+refinement/composition remain unproved. Evidence, measurements, reproduction commands and the next proof
+obligations are in the [optimization report](../review/formal-optimization-2026-11-03/REPORT.md).
+No runtime source, installed binary, user state or public release changes. Preexisting docs remain outside
+the scoped commits; this work does not repair reviewer usage propagation or renew real-service acceptance.
+
 ## D-495 Formal reachability and evidence coverage (2026-11-03)
 
 The user asked to complete formal-verification coverage. This work repairs model defects and adds

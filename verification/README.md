@@ -24,6 +24,23 @@ shape D-206 was committed in.
 
 <!-- maps: verification/REPORT.md reader=evidence -->
 
+## D-496 positive traversal batching
+
+The 58 positive source configurations run in **55 traversals**. The
+[batch runner](../review/verification_batches.py) groups only the same root module and identical non-claim
+configuration, then checks every invariant/property in their union. Original configurations remain the
+catalogue, requirement and witness inputs; 298 negative controls still run separately. Unknown syntax,
+indented directive keywords, fault-control inputs and colliding config basenames are rejected. Actual TLC
+fixtures check that a failure in the second source configuration cannot disappear when claims are combined.
+Replay directories preserve original/generated configs, module sources, logs, commands and SHA-256 values.
+
+The control model avoids repeated active-request searches and enumerates operation subsets after choosing
+the response branch. It retains every original transition choice and fairness assumption. The
+[measurement report](../review/formal-optimization-2026-11-03/REPORT.md) records exact action comparison,
+profiling and isolated canonical-ID/stutter experiments. Those experiments are not part of the accepted
+model, and neither a smaller experimental graph nor a green finite run completes the wide or implementation
+proof obligations. The current verified material and gate results remain in [REPORT.md](REPORT.md).
+
 ## D-495 reachability, repaired abstractions and current requirements
 
 The current inventory has **46 modules**, **58 positive configurations**, **298 negative controls**,

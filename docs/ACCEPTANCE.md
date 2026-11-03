@@ -35,6 +35,13 @@ classifies every Q/A requirement and its remaining obligations. It does not upgr
 below or renew real-service results. Model fixes, normal-path witnesses and bounded production-code Kani
 proofs are recorded in the formal report; runtime source and installed binaries remain D-494.
 
+D-496 preserves the same formal scope while checking the 58 positive configurations in 55 traversals.
+All 298 controls, 65 witnesses, nine Kani harnesses and 737 Rust tests re-passed, with lint, hygiene and leak
+checks. The [formal search report](../review/formal-optimization-2026-11-03/REPORT.md) records equivalent
+request/subset evaluation, three serial timing pairs and isolated identity/stutter experiments. Canonical
+IDs are not in the accepted model; the wide and full implementation proofs remain open. These results do
+not renew PTY, installation, independent audit or real-service acceptance.
+
 D-451 added attachment, pending-input, export/search and bounded-display evidence for
 A01/A06/A08/A11/A16/A21/A28/A29/A36. The [maturity report](../review/maturity-2026-10-11/REPORT.md) retains
 its source pins, negative tests, immutable receipts and installation rehearsal. Those deterministic local

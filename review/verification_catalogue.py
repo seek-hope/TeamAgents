@@ -95,7 +95,8 @@ KANI_SRC = "verification/kani/src"
 CONTROL = "core/src/v2/control.rs"
 MATERIAL = ("verification/tla", "verification/kani", "verification/witnesses.json",
             "verification/requirements.json", "review/verification_witnesses.py",
-            "review/verification_requirements.py", "review/tlc_verdict.py")
+            "review/verification_requirements.py", "review/tlc_verdict.py",
+            "review/verification_batches.py", "Makefile")
 # (D-224) the version the Makefile pins and the documents that state it: a reader of either trusts the number
 TLA_VERSION = re.compile(r"^TLA_VERSION\s*:=\s*(\S+)", re.M)
 STATED_TLC = re.compile(r"TLC v([0-9][0-9.]*)")
@@ -651,7 +652,8 @@ def main(argv) -> int:
                             f"{tla} holds {on_disk}")
 
     if not findings and args.makefile == "Makefile" and args.tla == TLA:
-        for script, arguments in [("verification_witnesses.py", ["--check"]),
+        for script, arguments in [("verification_batches.py", ["--self-check"]),
+                                  ("verification_witnesses.py", ["--check"]),
                                   ("verification_witnesses.py", ["--self-check"]),
                                   ("verification_requirements.py", ["--self-check"])]:
             run = subprocess.run([sys.executable, str(REPO / "review" / script), *arguments],

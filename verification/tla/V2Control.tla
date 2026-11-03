@@ -235,8 +235,8 @@ BeginRequest(i) ==
 \* the atomic response selection bills the goal; late completes only archive
 RecordAttempt(i) ==
   /\ Alive(i)
-  /\ \E r \in UsedReqs :
-       /\ inst[i].activeReq = r /\ requests[r].status = "PENDING"
+  /\ LET r == inst[i].activeReq IN
+       /\ r \in UsedReqs /\ requests[r].status = "PENDING"
        /\ ~requests[r].selected
        /\ \E a \in FreeAtts, kind \in Result :
             attempts' = [attempts EXCEPT ![a] = [req |-> r, status |-> "COMPLETE"]]
@@ -249,8 +249,8 @@ RecordAttempt(i) ==
 LostAttempt(i) ==
   /\ Alive(i)
   /\ goal.unknown < MaxUnknown
-  /\ \E r \in UsedReqs :
-       /\ inst[i].activeReq = r /\ requests[r].status = "PENDING"
+  /\ LET r == inst[i].activeReq IN
+       /\ r \in UsedReqs /\ requests[r].status = "PENDING"
        /\ \E a \in FreeAtts :
             attempts' = [attempts EXCEPT ![a] = [req |-> r, status |-> "LOST"]]
        /\ goal' = [goal EXCEPT !.unknown = @ + 1]
@@ -267,12 +267,9 @@ RecordLateAttempt(r) ==
   /\ UNCHANGED <<inst, requests, ops, approvals, dead, nearDeadline, warns>>
 
 \* response import: context append + decision + phase, one transaction
-ImportResponse(i) ==
-  /\ Alive(i)
-  /\ \E r \in UsedReqs, chosen \in SUBSET FreeOps :
-       /\ inst[i].activeReq = r /\ requests[r].status = "PENDING"
-       /\ requests[r].selected
-       /\ IF requests[r].result = "ops" THEN chosen # {} ELSE chosen = {}
+\* Branch before enumerating subsets; non-tool responses have exactly one
+\* empty choice. The request lookup is guarded before dereferencing its slot.
+ImportChosen(i, r, chosen) ==
        /\ requests' = [requests EXCEPT ![r].status = "COMPLETE"]
        /\ goal' = [goal EXCEPT !.reserved = @ \ {<<r, requests[r].est>>}]
        /\ inst' = [inst EXCEPT ![i].phase =
@@ -288,6 +285,14 @@ ImportResponse(i) ==
                             request |-> r, effect |-> 0, dispatched |-> FALSE, cancelRequested |-> FALSE]
                       ELSE ops[o]]
        /\ approvals' = [o \in Ops |-> IF o \in chosen THEN "none" ELSE approvals[o]]
+
+ImportResponse(i) ==
+  /\ Alive(i)
+  /\ LET r == inst[i].activeReq IN
+       /\ r \in UsedReqs /\ requests[r].status = "PENDING"
+       /\ requests[r].selected
+       /\ \E chosen \in (IF requests[r].result = "ops" THEN (SUBSET FreeOps) \ {{}} ELSE {{}}) :
+          /\ ImportChosen(i, r, chosen)
   /\ UNCHANGED <<attempts, dead, nearDeadline, warns>>
 
 \* a shell-like operation asks the user; the runtime never self-approves (§6.2)
@@ -337,8 +342,8 @@ Complete(o, outcome) ==
 \* decision consumption: receipts join the context, phase READY, approvals expire
 ConsumeDecision(i) ==
   /\ Alive(i) /\ inst[i].phase = "TOOLS_PENDING"
-  /\ \E r \in UsedReqs :
-       /\ inst[i].activeReq = r /\ requests[r].result = "ops"
+  /\ LET r == inst[i].activeReq IN
+       /\ r \in UsedReqs /\ requests[r].result = "ops"
        /\ requests[r].epoch = inst[i].ctxEpoch
        /\ RequestOps(r) # {} /\ RequestOps(r) \subseteq DoneOps(i)
        /\ inst' = [inst EXCEPT ![i].phase = "READY", ![i].tail = "tool", ![i].activeReq = nil,
@@ -364,8 +369,8 @@ Recover(i) ==
 \* user cancel: request closes, reservation released, instance READY (A13)
 CancelRequest(i) ==
   /\ Alive(i)
-  /\ \E r \in UsedReqs :
-       /\ inst[i].activeReq = r /\ requests[r].status = "PENDING"
+  /\ LET r == inst[i].activeReq IN
+       /\ r \in UsedReqs /\ requests[r].status = "PENDING"
        /\ requests' = [requests EXCEPT ![r].status = "CANCELLED"]
        /\ goal' = [goal EXCEPT !.reserved = @ \ {<<r, requests[r].est>>}]
        /\ inst' = [inst EXCEPT ![i].phase = "READY", ![i].activeReq = nil,
@@ -375,8 +380,8 @@ CancelRequest(i) ==
 \* permanent failure parks the instance and keeps the input (§5.4/A07)
 FailRequest(i) ==
   /\ Alive(i)
-  /\ \E r \in UsedReqs :
-       /\ inst[i].activeReq = r /\ requests[r].status = "PENDING"
+  /\ LET r == inst[i].activeReq IN
+       /\ r \in UsedReqs /\ requests[r].status = "PENDING"
        /\ requests' = [requests EXCEPT ![r].status = "FAILED"]
        /\ goal' = [goal EXCEPT !.reserved = @ \ {<<r, requests[r].est>>}]
        /\ inst' = [inst EXCEPT ![i].lifecycle = "PARKED", ![i].activeReq = nil,
