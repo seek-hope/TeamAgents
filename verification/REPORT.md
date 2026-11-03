@@ -5,10 +5,12 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
-## 0. Gate status (re-run 2026-11-03 at `0027ffe2`)
+## 0. Gate status (re-run 2026-11-03 at `36afc59b`)
 
-**Working-tree draft: the hash above is the D-494 baseline, not the D-495 material pin. Do not publish
-this draft. Replace it after committing and rechecking the new material.**
+D-495 material commit `36afc59b6fa00128f8ecd886ab1817f41412bc32` pins the checked models, configurations,
+Kani sources and proof subjects, witness manifest and requirement inventory. After committing, the 410
+material-file SHA-256 values were compared with the validated tree and matched exactly. The run occurred
+on those bytes before commit; this is not a claim of another post-commit execution.
 
 The current targets verified all **58** configurations and refuted all **298** negative controls across
 **46** modules. One separate wide configuration brings the inventory to **357**; it did not complete.
@@ -52,6 +54,11 @@ The final aggregate logs are `positive-final.log` and `negative-current.log`; bo
 `MC_control_two.cfg` (39,666,529 generated / 5,428,960 distinct) and `MC_control_decisions.cfg`
 (74,053,023 generated / 13,846,024 distinct), both with an empty frontier and no error. `make hygiene`
 also passed in an independent staged checkout excluding the ten preexisting documentation changes.
+The final `make check` passed all 737 Rust tests (core 174 / engine 459 / tui 104), formatting, Clippy,
+hygiene and the process/scratch leak guard. Two earlier orchestration runs failed only after the Rust suites:
+one on newly changed citation counts and one because this review created its own staged worktree during the
+leak-guard interval. Counts were synchronized, the owned worktrees removed, and the whole gate re-run cleanly.
+No runtime source changed. PTY, live services, installation and public release were not repeated or renewed.
 
 ## D-494 historical gate (2026-11-03 at `0027ffe2`)
 

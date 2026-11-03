@@ -27,7 +27,10 @@ backups. Installed checks pass for idempotent init, schema 7, idle daemon with z
 shutdown, conversation PTY and both graphics protocols. The user config is unchanged and no user daemon was
 started. The optimization report records binary hashes; the public v0.2.0 remains the D-493 artifact.
 
-D-495 is formal-only work: the current [requirement evidence inventory](../verification/REQUIREMENTS.md)
+D-495 is formal-only work, pinned at `36afc59b6fa00128f8ecd886ab1817f41412bc32`: 58 positive configurations,
+298 controls, 65 normal-path witnesses and nine Kani harnesses pass. The wide run timed out; no full-system
+proof is claimed. The full local regression re-passed 737 tests, lint, hygiene and leak checks, without
+renewing the earlier PTY/install/live-service results. The current [requirement evidence inventory](../verification/REQUIREMENTS.md)
 classifies every Q/A requirement and its remaining obligations. It does not upgrade the acceptance icons
 below or renew real-service results. Model fixes, normal-path witnesses and bounded production-code Kani
 proofs are recorded in the formal report; runtime source and installed binaries remain D-494.

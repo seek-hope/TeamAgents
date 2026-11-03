@@ -1,8 +1,9 @@
 # Development handoff
 
-D-495 formal material is locally validated: 58 positive configurations, 298 named counterexamples,
-65 normal-path witnesses and nine Kani harnesses pass. The wide configuration timed out and is unproved.
-Final immutable pinning and CI are pending. [The formal report](../verification/REPORT.md) and its generated
+D-495 formal material is pinned at `36afc59b6fa00128f8ecd886ab1817f41412bc32`: 58 positive configurations,
+298 named counterexamples, 65 normal-path witnesses and nine Kani harnesses pass. The wide configuration
+timed out and is unproved. The full local regression passed 737 tests, lint, hygiene and leak checks.
+CI is pending. [The formal report](../verification/REPORT.md) and its generated
 requirement inventory separate partial formal support from outstanding implementation/refinement/composition
 work. Runtime source and installed binaries remain D-494; no new public release or user-state change is
 part of this work.
