@@ -102,7 +102,7 @@ UnpricedAttempt ==
   /\ s' = [s EXCEPT !.data.unknown = @ + 1]
 InformationAnswer ==
   /\ ~s.data.active /\ ~s.data.info
-  /\ s' = [s EXCEPT !.data.info = TRUE, !.data.active = Bad = "info_goal"]
+  /\ s' = [s EXCEPT !.data.info = TRUE, !.data.active = Bad = "info_work"]
 AdmitWork ==
   /\ ~s.data.active /\ ~s.data.info /\ s.data.known + s.data.unknown > 0
   /\ s' = [s EXCEPT !.data.active = TRUE, !.data.transfers = 1, !.data.billed = s.data.known, !.data.unpriced = s.data.unknown]

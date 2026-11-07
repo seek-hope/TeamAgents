@@ -29,7 +29,7 @@ Validate changed fences with an actual Mermaid renderer in light and dark themes
 For example, with Mermaid CLI installed, run `mmdc -i docs/ARCHITECTURE.md -o /tmp/teamagents-architecture.md
 -t default` and repeat with `-t dark` and a different output name. Keep generated previews outside the source
 tree. The D-488 diagrams were checked with Mermaid CLI 12.0.0; GitHub selects its own renderer version.
-Repository hygiene checks links, inventory and bilingual structure but do not themselves render Mermaid.
+Repository hygiene checks links, inventory and bilingual structure, but does not render Mermaid itself.
 
 ## Environment and the single entry point
 
@@ -196,8 +196,10 @@ cargo test --offline --locked --manifest-path core/Cargo.toml --test v2_invarian
 ```
 
 These targets are outside `make check`; they need Java or Kani, and the first TLC run downloads the pinned
-tool. Each TLC invocation uses a separate temporary meta directory under `review/tmp/tla/` and removes it on
-return. Regenerable intermediates are excluded by `.gitignore`.
+tool. Each TLC invocation uses an isolated temporary directory under the system temporary root (for example,
+`/tmp/teamagents-positive-*` or `/tmp/teamagents-witnesses-*` on Linux). Replay logs and traces remain available
+for inspection; disposable `states-*` stores may be removed after the process exits. Regenerable intermediates
+and scratch receipts are excluded by `.gitignore`.
 
 Formal models cover bounded protocol properties, not refinement of the whole implementation. Liveness depends
 on its stated fairness assumptions. Update affected models and invariants when commands, phases or arithmetic
@@ -264,9 +266,9 @@ Give each document one job:
 | HANDOFF | Latest baseline, focused checks and preservation rules | Remote/install identity or blanket work authorization |
 | Dated reports and manifests | Evidence for their recorded sources and runs | Claims that later source passed the same run |
 
-When behavior changes, update its user-facing home, evidence boundary and handoff together. Link to shared
-lists instead of copying them. Record the inspected commit and actual run date. Distinguish implemented,
-partially verified, absent and intentionally excluded capabilities. Correct current summaries without
+When behavior changes, update its user-facing docs, evidence boundary, and handoff together. Link to shared
+lists instead of copying them. Record the inspected commit and actual run date. Distinguish capabilities that are
+implemented, partially verified, absent, or intentionally excluded. Correct current summaries without
 rewriting frozen receipts or regrading historical runs.
 
 Write for the reader: state current behavior first, use direct sentences, and keep decision chronology in

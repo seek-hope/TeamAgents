@@ -22,7 +22,7 @@ fn checkpoint() -> Json {
                {"id": "i-leader", "lifecycle": "ACTIVE", "phase": "READY", "model": "deepseek-flash"},
                {"id": "i-worker", "lifecycle": "ACTIVE", "phase": "MODEL_PENDING", "model": "k3-256k"}
            ],
-           "goal": {"status": "ACTIVE", "known_usage": {"prompt": 7, "completion": 3, "total": 10},
+           "work": {"status": "ACTIVE", "known_usage": {"prompt": 7, "completion": 3, "total": 10},
                     "unknown_usage": 0, "limits": {"max_total_tokens": 1000},
                     // 30m+59s out: the floor is 30 minutes for the next 59 seconds,
                     // so the rendered "ends in 30m" is stable for this test
@@ -110,36 +110,36 @@ fn word_wise_editing_is_wired() {
 }
 
 /// D-433: a command's answer survives a checkpoint refresh, a runtime note does not. The pty smoke found this the
-/// hard way: `/mcp`, `/sessions` and `/goals` printed into entries that `apply_checkpoint` wipes within one poll,
+/// hard way: `/mcp`, `/sessions` and `/work_scopes` printed into entries that `apply_checkpoint` wipes within one poll,
 /// so the commands looked like they did nothing. The distinction is the *kind*: a note is chatter, an answer is
 /// what the user asked for.
 #[test]
 fn a_command_answer_survives_a_checkpoint_and_a_note_does_not() {
     let mut app = V2App::new("s-test");
-    app.command_note("goals in this session: turn-2 ACTIVE");
+    app.command_note("work_scopes in this session: turn-2 ACTIVE");
     app.apply_events(&[json!({"kind":"instance_created","scope":"transient-worker","sequence":5,"payload":{}})]);
     app.apply_checkpoint(checkpoint(), 6);
     let text: String = app.entries.iter().map(|entry| entry.text.as_str()).collect::<Vec<_>>().join("\n");
-    assert!(text.contains("goals in this session: turn-2 ACTIVE"), "the answer must stay: {text}");
+    assert!(text.contains("work_scopes in this session: turn-2 ACTIVE"), "the answer must stay: {text}");
     assert!(!text.contains("transient-worker"), "a note is superseded by a checkpoint: {text}");
 }
 
-/// D-431: a model can settle a goal by calling `finish` without writing any prose (measured on the tau3 retail
+/// D-431: a model can settle a work by calling `finish` without writing any prose (measured on the tau3 retail
 /// split: 12 of 114 dialogues ended that way, and the user read nothing). The checkpoint carries the completion
 /// summary, and the conversation renders it as the complete Markdown answer.
 #[test]
-fn a_settled_goal_shows_the_models_own_completion_summary() {
+fn a_settled_work_shows_the_models_own_completion_summary() {
     let mut app = app();
-    assert_eq!(app.status_line().find("cancelled"), None, "an active goal has no summary to show");
+    assert_eq!(app.status_line().find("cancelled"), None, "an active work has no summary to show");
     let mut settled = checkpoint();
-    settled["goal"]["status"] = Json::String("SUCCEEDED".into());
+    settled["work"]["status"] = Json::String("SUCCEEDED".into());
     let summary = format!(
         "# Finished\n\n{}\n\n```sh\nprintf 'one\\ntwo\\n'\n```\n\nFinal answer remains visible.",
         "A detailed explanation. ".repeat(8)
     );
-    settled["goal"]["summary"] = Json::String(summary.clone());
+    settled["work"]["summary"] = Json::String(summary.clone());
     app.apply_checkpoint(settled, 6);
-    assert_eq!(app.goal.as_ref().unwrap().summary.as_deref(), Some(summary.as_str()));
+    assert_eq!(app.work.as_ref().unwrap().summary.as_deref(), Some(summary.as_str()));
     let mut terminal = Terminal::new(TestBackend::new(100, 32)).unwrap();
     terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
     let frame = frame_lines(&terminal).join("\n");
@@ -148,7 +148,7 @@ fn a_settled_goal_shows_the_models_own_completion_summary() {
     // and an empty summary is not shown as a dangling separator
     let mut blank = V2App::new("s-test");
     let mut quiet = checkpoint();
-    quiet["goal"]["summary"] = Json::String("   ".into());
+    quiet["work"]["summary"] = Json::String("   ".into());
     blank.apply_checkpoint(quiet, 5);
     assert!(!blank.status_line().ends_with(" · "), "{}", blank.status_line());
 }
@@ -158,20 +158,20 @@ fn checkpoint_defaults_to_the_leader_and_tracks_budget() {
     let app = app();
     assert_eq!(app.active_instance().unwrap().id, "i-leader");
     assert_eq!(app.watermark, 5);
-    let goal = app.goal.as_ref().unwrap();
-    assert_eq!(goal.known_total, 10);
-    assert_eq!(goal.limit_total, Some(1000));
-    assert!(!goal.unknown);
-    assert_eq!(goal.deadline.map(|deadline| deadline > 0.0), Some(true), "the goal carries its deadline");
+    let work = app.work.as_ref().unwrap();
+    assert_eq!(work.known_total, 10);
+    assert_eq!(work.limit_total, Some(1000));
+    assert!(!work.unknown);
+    assert_eq!(work.deadline.map(|deadline| deadline > 0.0), Some(true), "the work carries its deadline");
     let status = app.status_line();
     assert!(status.contains("Ready"), "{status}");
     assert!(status.contains("10/1000 tokens"), "{status}");
     // the configured deadline is visible, not just enforced (D-64)
     assert!(status.contains("ends in 30m"), "{status}");
-    // a goal without a deadline says nothing about one
+    // a work without a deadline says nothing about one
     let mut plain = V2App::new("s-test");
     let mut checkpoint = checkpoint();
-    checkpoint["goal"]["deadline"] = Json::Null;
+    checkpoint["work"]["deadline"] = Json::Null;
     plain.apply_checkpoint(checkpoint, 5);
     assert!(!plain.status_line().contains("ends in"), "{}", plain.status_line());
 }
@@ -180,7 +180,7 @@ fn checkpoint_defaults_to_the_leader_and_tracks_budget() {
 fn history_rebuilds_the_conversation_and_keeps_system_notes() {
     let mut app = app();
     app.apply_events(&[
-        json!({"sequence": 6, "kind": "goal_completed", "scope": "g1", "payload": {"status": "SUCCEEDED"}}),
+        json!({"sequence": 6, "kind": "work_completed", "scope": "g1", "payload": {"status": "SUCCEEDED"}}),
     ]);
     assert_eq!(app.entries.len(), 1); // the note
     app.apply_history(json!({"entries": [
@@ -200,7 +200,7 @@ fn history_rebuilds_the_conversation_and_keeps_system_notes() {
     assert_eq!(tool.arguments, "{\"command\": \"ls\"}");
     assert_eq!(tool.output.as_deref(), Some("file.txt"));
     // the system note survived the rebuild, layered after the conversation
-    assert!(app.entries[4].text.contains("goal finished"));
+    assert!(app.entries[4].text.contains("work finished"));
 }
 
 /// R22/A20: a compaction summary is shown as its own entry, so the user can
@@ -238,19 +238,19 @@ fn the_runtimes_closing_note_is_not_the_members_message() {
     app.apply_history(json!({"entries": [
         {"idx": 1, "kind": "assistant", "message": {"role": "assistant", "content": "done"}},
         {"idx": 2, "kind": "runtime", "message": {"role": "user",
-             "content": "runtime: goal g1 closed as SUCCEEDED"}}
+             "content": "runtime: work g1 closed as SUCCEEDED"}}
     ]}));
     let kinds: Vec<_> = app.entries.iter().map(|e| e.kind.clone()).collect();
     assert_eq!(kinds, vec![ChatKind::Assistant, ChatKind::Runtime]);
     assert_eq!(app.entries[1].who, "runtime");
     assert!(app.entries[1].text.contains("closed as SUCCEEDED"), "{:?}", app.entries[1]);
-    // a runtime block announces itself through `goal_blocked` (which carries the
+    // a runtime block announces itself through `work_blocked` (which carries the
     // reason); the settlement event does not add a second, reason-less note
-    app.apply_events(&[json!({"sequence": 7, "kind": "goal_completed", "scope": "g1",
+    app.apply_events(&[json!({"sequence": 7, "kind": "work_completed", "scope": "g1",
                               "payload": {"status": "BLOCKED", "blocked_by": "runtime",
                                           "reason": "required checks failed"}})]);
-    assert!(app.entries.iter().all(|e| !e.text.contains("goal finished")), "{:?}", app.entries);
-    app.apply_events(&[json!({"sequence": 8, "kind": "goal_blocked", "scope": "g1",
+    assert!(app.entries.iter().all(|e| !e.text.contains("work finished")), "{:?}", app.entries);
+    app.apply_events(&[json!({"sequence": 8, "kind": "work_blocked", "scope": "g1",
                               "payload": {"status": "BLOCKED", "reason": "required checks failed (never:exit)"}})]);
     assert!(
         app.entries.iter().any(|e| e.kind == ChatKind::System && e.text.contains("never:exit")),
@@ -265,10 +265,10 @@ fn events_drive_refreshes_and_notes() {
     let refresh = app.apply_events(&[
         json!({"sequence": 6, "kind": "input", "scope": "i-leader", "payload": {"envelope_id": "e1", "applied": true}}),
         json!({"sequence": 7, "kind": "check_round_registered", "scope": "g1",
-               "payload": {"goal_id": "g1", "round": 1,
+               "payload": {"work_id": "g1", "round": 1,
                            "checks": [{"id": "tests", "command": "cargo test"}, {"id": "docs"}]}}),
         json!({"sequence": 8, "kind": "completion_repair", "scope": "i-leader",
-               "payload": {"goal_id": "g1", "round": 1,
+               "payload": {"work_id": "g1", "round": 1,
                            "failures": [{"check_id": "tests", "class": "exit", "reason": "1 failed"}]}}),
         json!({"sequence": 9, "kind": "approval_requested", "scope": "op-1", "payload": {"approval_id": "ap-1"}}),
         json!({"sequence": 10, "kind": "operation_completed", "scope": "op-2", "payload": {"status": "OUTCOME_UNKNOWN"}}),
@@ -325,13 +325,13 @@ fn a_lifecycle_note_carries_the_runtime_reason() {
 }
 
 #[test]
-fn goal_events_mark_checkpoint_refresh() {
+fn work_events_mark_checkpoint_refresh() {
     let mut app = app();
     for kind in ["request_began", "request_failed", "operation_dispatched", "request_cancelled"] {
         assert!(app.apply_events(&[json!({"kind": kind, "payload": {}})]).checkpoint, "{kind}");
     }
     let refresh = app.apply_events(&[
-        json!({"sequence": 6, "kind": "goal_blocked", "scope": "g1", "payload": {"reason": "checks failed"}}),
+        json!({"sequence": 6, "kind": "work_blocked", "scope": "g1", "payload": {"reason": "checks failed"}}),
         json!({"sequence": 7, "kind": "instance_spawned", "scope": "i-w2", "payload": {"spawner": "i-leader", "task": true}}),
     ]);
     assert!(refresh.checkpoint);

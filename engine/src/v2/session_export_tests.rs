@@ -35,16 +35,16 @@ fn full_exports_keep_associations_and_refuse_overwrite_limits_and_cancellation()
     conn.execute("INSERT INTO input_attachments VALUES ('pending',0,'input-missing')", []).unwrap();
     conn.execute("INSERT INTO input_revisions VALUES ('pending',0,'submitted','{\"text\":\"original\"}',0)", [])
         .unwrap();
-    conn.execute("INSERT INTO work_states(goal_id,instance_id,epoch,state,checkpoint_json) VALUES ('g','i-leader',1,'NEEDS_INPUT',?1)",
+    conn.execute("INSERT INTO work_states(work_id,instance_id,epoch,state,checkpoint_json) VALUES ('g','i-leader',1,'NEEDS_INPUT',?1)",
         [json!({"decisions":["Preserve the public API"]}).to_string()]).unwrap();
     conn.execute(
-        "INSERT INTO work_inputs(goal_id,instance_id,epoch,envelope_id) VALUES ('g','i-leader',1,'input')",
+        "INSERT INTO work_inputs(work_id,instance_id,epoch,envelope_id) VALUES ('g','i-leader',1,'input')",
         [],
     )
     .unwrap();
     conn.execute(
-        "INSERT INTO work_requests(request_id,context_json,billed_goal_id,unknown_usage) VALUES ('request',?1,'g',1)",
-        [json!({"goal_id":"g","state":"NEEDS_INPUT"}).to_string()],
+        "INSERT INTO work_requests(request_id,context_json,billed_work_id,unknown_usage) VALUES ('request',?1,'g',1)",
+        [json!({"work_id":"g","state":"NEEDS_INPUT"}).to_string()],
     )
     .unwrap();
     let cancel = AtomicBool::new(false);
@@ -60,9 +60,9 @@ fn full_exports_keep_associations_and_refuse_overwrite_limits_and_cancellation()
     assert_eq!(data["input_revisions"][0]["payload"]["text"], "original");
     assert_eq!(data["work_states"][0]["checkpoint"]["decisions"][0], "Preserve the public API");
     assert_eq!(data["work_states"][0]["checkpoint_provenance"], "model_claim");
-    assert_eq!(data["work_inputs"][0]["goal_id"], "g");
+    assert_eq!(data["work_inputs"][0]["work_id"], "g");
     assert_eq!(data["work_requests"][0]["projection"]["state"], "NEEDS_INPUT");
-    assert_eq!(data["work_requests"][0]["billed_goal_id"], "g");
+    assert_eq!(data["work_requests"][0]["billed_work_id"], "g");
     assert_eq!(data["work_requests"][0]["unknown_usage"], 1);
     let before = std::fs::read(&path).unwrap();
     assert!(export(&registry, "default", &path, Format::Json, &cancel).is_err());

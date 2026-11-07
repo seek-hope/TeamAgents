@@ -11,7 +11,7 @@ absent after the first turn and present after the second. The probe also records
 grant was addressed to, the revocation (`authority revoke`) and that the capability disappears again.
 
 Two things it guards against, because both were observed here: a model that answers with prose while
-its task stays open is re-asked by the runtime (unbounded without a goal budget), so the probe parks
+its task stays open is re-asked by the runtime (unbounded without a work budget), so the probe parks
 such a worker and reports it; and the same session shape (a turn that ends on an accepted `finish`,
 then a new task) is what produced D-62's wire error, which the first run of this probe found.
 
@@ -53,7 +53,7 @@ generation_options = { reasoning_effort = "high" }
 
 FIRST = """Spawn one worker, and delegate this task to it: say in one sentence whether you can run shell
 commands in the shared workspace right now, and which tools you have for that. Report the worker's answer
-to me, then wait for my next message — do not finish or settle the goal yet."""
+to me, then wait for my next message — do not finish or settle the work yet."""
 
 SECOND = """I have granted that worker shell access to the shared workspace. Ask the same worker to run the
 shell command `printf granted > {proof}` in that workspace and report the command's output."""
@@ -72,7 +72,7 @@ def session_state(state_root: pathlib.Path, worker: str) -> tuple[int, str]:
     """(model requests so far, the worker's open task or "none").
 
     A turn whose model answers with prose while its task stays open is re-asked by the runtime (see the
-    known gap in docs/ACCEPTANCE.md), which is unbounded without a goal budget. A probe must notice that
+    known gap in docs/ACCEPTANCE.md), which is unbounded without a work budget. A probe must notice that
     instead of letting it run, so the caller parks the instance and reports the finding.
     """
     db = sqlite3.connect(f"file:{state_root}/session.sqlite?mode=ro", uri=True)

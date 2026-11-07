@@ -1,5 +1,6 @@
-> Development source validation (D-494, 2026-11-03): core 174 / engine 459 / tui 104. These source
+> Development source validation (D-499, 2026-11-07): core 175 / engine 459 / tui 104. These source
 > changes have not been published as a replacement archive. The release description below records D-493.
+> Current source uses work scopes and schema 8 with explicit legacy migration; the published archive does not.
 
 > These notes describe the D-493 same-version replacement of v0.2.0, built from current main after the
 > D-492 robustness review. Earlier v0.2.0 artifacts and hashes are historical.
@@ -9,8 +10,9 @@
 - One authoritative SQLite database per session, with tasks, grants, budgets, approvals, receipts and events
   committed together. Recovery reuses verified results and records unknown outcomes without blind replay.
 - Persistent work across turns, compaction and restart, with bounded continuation, explicit questions and
-  stops, scoped completion evidence and internal admission of subsequent work. Checkpoints retain model
-  claims; input, authority, costs and execution outcomes keep separate provenance.
+  stops, scoped completion evidence and internal admission of subsequent work. Work scopes own budget,
+  deadlines and acceptance; schema 8 migrates legacy records. Checkpoints retain model claims; input,
+  authority, costs and execution outcomes keep separate provenance.
 - One daemon per session. The TUI and `teamagents exec` use its Unix-socket JSON protocol and resume from the
   last event watermark.
 - Dependency-advisory CI, locked atomic OAuth credential writes, bounded OAuth/MCP/update inputs and current

@@ -1,6 +1,6 @@
 //! Durable memory across sessions (D-405).
 //!
-//! A session's context dies with its goal and its database is per session; what survives is this: one
+//! A session's context dies with its work and its database is per session; what survives is this: one
 //! append-only note store at the state root (`<state root>/memory.json`), which any session under that root can
 //! recall from. It is the smallest thing that answers "the agent learned this last week", and the three rules that
 //! matter are the module's whole design:

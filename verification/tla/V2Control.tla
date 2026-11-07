@@ -26,18 +26,18 @@ CONSTANTS Instances,  \* {"L"} or {"L","W"}
           ReqIds,  \* request slots, e.g. 1..3
           AttIds,  \* attempt slots, e.g. 1..2
           ApprovalOps,  \* subset of Ops needing user approval
-          TokenLimit,  \* goal budget limit
+          TokenLimit,  \* work budget limit
           AllowMidTurnInput,  \* counterfactual: apply input while a request is in flight (pre-D-63)
           PerInstanceFairness,  \* counterfactual: fairness as one disjunction over instances (pre-D-63)
-          IgnoreDeadline,  \* counterfactual: a runtime that ignores the goal deadline (A35)
-          ReleaseOnCancel,  \* counterfactual: a runtime that closes a spent goal and leaves the instance its
+          IgnoreDeadline,  \* counterfactual: a runtime that ignores the work deadline (A35)
+          ReleaseOnCancel,  \* counterfactual: a runtime that closes a spent work and leaves the instance its
           ReaskAfterReply,  \* counterfactual: re-open a turn when the last word is the model's own (D-65)
           RuntimeTailIsWork,  \* counterfactual: treat the runtime's own closing note as unaddressed (D-71)
           MaxEpoch,  \* bound on ResetInstance (keeps the state graph finite)
           MaxUnknown,  \* bound on lost-attempt accounting
-          WarnLate,  \* counterfactual: warn a goal that is already past its deadline (D-410)
-          WarnRepeatedly,  \* counterfactual: warn one goal more than once (D-410)
-          MaxWarns,  \* bound on the warnings one goal may receive
+          WarnLate,  \* counterfactual: warn a work that is already past its deadline (D-410)
+          WarnRepeatedly,  \* counterfactual: warn one work more than once (D-410)
+          MaxWarns,  \* bound on the warnings one work may receive
           BadAdmission,
           BadActiveRequest,
           EffectBeforeDispatch,
@@ -47,7 +47,7 @@ CONSTANTS Instances,  \* {"L"} or {"L","W"}
           StaleExecutor,
           DoubleEffect,
           RewriteTerminalOp,
-          RewriteTerminalGoal,
+          RewriteTerminalWork,
           CrossEpochReceipt,
           EffectUnauthorized,
           EffectOnTerminated,
@@ -76,19 +76,19 @@ VARIABLES
              \*               activeReq, ctxEpoch, tail, queue, inputMidTurn]
              \*               inputMidTurn: a user input landed while a turn was in
              \*               flight (monitor for `InputLandsAtTheBoundary`, D-63)
-  goal,      \* [status, known, unknown, reserved, deadlinePassed]
-             \* deadlinePassed: the goal's wall-clock deadline has passed (a fixed
+  work,      \* [status, known, unknown, reserved, deadlinePassed]
+             \* deadlinePassed: the work's wall-clock deadline has passed (a fixed
              \* timestamp in the code; monotone here) — past it no new request begins
   requests,  \* request slot -> [status, instance, epoch, est, selected, result]
   attempts,  \* attempt slot -> [req, status]
   ops,       \* operation -> [status, instance, epoch, effect, dispatched]
   approvals, \* operation -> "none" | "PENDING" | ApprovalDone
   dead,      \* crashed instances (in-memory view lost; durable state stays)
-  nearDeadline, \* the goal's wall-clock deadline is within the runtime's warning window (D-410);
+  nearDeadline, \* the work's wall-clock deadline is within the runtime's warning window (D-410);
                 \* a second monotone clock fact, because the code observes two thresholds of one clock
-  warns      \* warnings appended to the goal's conversation (at most one in the code, D-410)
+  warns      \* warnings appended to the work's conversation (at most one in the code, D-410)
 
-vars == <<inst, goal, requests, attempts, ops, approvals, dead, nearDeadline, warns>>
+vars == <<inst, work, requests, attempts, ops, approvals, dead, nearDeadline, warns>>
 
 \* ------------------------------------------------------------------- helpers --
 UsedReqs == { r \in ReqIds : requests[r].status # "none" }
@@ -96,8 +96,8 @@ FreeReqs == ReqIds \ UsedReqs
 FreeAtts == { a \in AttIds : attempts[a].status = "none" }
 FreeOps == { o \in Ops : ops[o].status = "none" }
 RequestOps(r) == { o \in Ops : ops[o].request = r }
-ReservedTotal == SumReservations(goal.reserved)
-BudgetFits(e) == goal.known + ReservedTotal + e <= TokenLimit
+ReservedTotal == SumReservations(work.reserved)
+BudgetFits(e) == work.known + ReservedTotal + e <= TokenLimit
 Fresh(i) == inst[i].expectRev = inst[i].revision
 Alive(i) == i \notin dead
 ApprovalSatisfied(o) == o \notin ApprovalOps \/ approvals[o] = "APPROVED"
@@ -137,7 +137,7 @@ Input(i) ==
   /\ Alive(i) /\ inst[i].phase = "READY" /\ inst[i].lifecycle = "ACTIVE"
   /\ inst' = [inst EXCEPT ![i].tail = "user", ![i].queue = FALSE,
                               ![i].afterLanding = FALSE]
-  /\ UNCHANGED <<goal, requests, attempts, ops, approvals, dead, nearDeadline, warns>>
+  /\ UNCHANGED <<work, requests, attempts, ops, approvals, dead, nearDeadline, warns>>
 
 \* the driver's boundary: apply the queued input once the turn in flight ended.
 \* Weak fairness on this action is the liveness assumption behind
@@ -147,14 +147,14 @@ ApplyQueued(i) ==
   /\ inst[i].lifecycle = "ACTIVE"
   /\ inst' = [inst EXCEPT ![i].tail = "user", ![i].queue = FALSE,
                               ![i].phase = "READY", ![i].afterLanding = FALSE]
-  /\ UNCHANGED <<goal, requests, attempts, ops, approvals, dead, nearDeadline, warns>>
+  /\ UNCHANGED <<work, requests, attempts, ops, approvals, dead, nearDeadline, warns>>
 
 \* the user submits while a walk is in flight: the input waits for the boundary
 QueueInput(i) ==
   /\ Alive(i) /\ inst[i].lifecycle = "ACTIVE"
   /\ inst[i].phase \in {"MODEL_PENDING", "TOOLS_PENDING", "COMPLETION_PENDING", "WAITING"}
   /\ inst' = [inst EXCEPT ![i].queue = TRUE]
-  /\ UNCHANGED <<goal, requests, attempts, ops, approvals, dead, nearDeadline, warns>>
+  /\ UNCHANGED <<work, requests, attempts, ops, approvals, dead, nearDeadline, warns>>
 
 \* Counterfactual (AllowMidTurnInput = TRUE): the pre-D-63 code stored the input
 \* in the running turn's context. The turn's own reply then lands *after* it, so
@@ -166,24 +166,24 @@ MidTurnInput(i) ==
   /\ Alive(i) /\ inst[i].lifecycle = "ACTIVE" /\ inst[i].phase # "READY"
   /\ inst' = [inst EXCEPT ![i].tail = "user", ![i].inputMidTurn = TRUE,
                               ![i].afterLanding = FALSE]
-  /\ UNCHANGED <<goal, requests, attempts, ops, approvals, dead, nearDeadline, warns>>
+  /\ UNCHANGED <<work, requests, attempts, ops, approvals, dead, nearDeadline, warns>>
 
-\* the wall clock passes the goal's deadline (a fixed timestamp in the code; the
+\* the wall clock passes the work's deadline (a fixed timestamp in the code; the
 \* model only needs the monotone fact that it has passed)
 DeadlinePasses ==
-  /\ ~goal.deadlinePassed
-  /\ goal' = [goal EXCEPT !.deadlinePassed = TRUE]
+  /\ ~work.deadlinePassed
+  /\ work' = [work EXCEPT !.deadlinePassed = TRUE]
   /\ UNCHANGED <<inst, requests, attempts, ops, approvals, dead, nearDeadline, warns>>
 
 \* D-410: the wall clock reaches the runtime's warning window (the code's `remaining <= 120s`). Modelled as its
 \* own monotone fact beside `DeadlinePasses`, so the two thresholds of one clock stay distinct: the warning is
 \* only ever timely while the deadline itself is still ahead.
 DeadlineNears ==
-  /\ ~nearDeadline /\ ~goal.deadlinePassed
+  /\ ~nearDeadline /\ ~work.deadlinePassed
   /\ nearDeadline' = TRUE
-  /\ UNCHANGED <<inst, goal, requests, attempts, ops, approvals, dead, warns>>
+  /\ UNCHANGED <<inst, work, requests, attempts, ops, approvals, dead, warns>>
 
-\* D-410: once the deadline is close, the runtime tells the goal's instance in its own voice that time is nearly
+\* D-410: once the deadline is close, the runtime tells the work's instance in its own voice that time is nearly
 \* up. The note is conversation content, not a state change: it settles nothing, cancels nothing and — the point
 \* — does not move the deadline gate (`NoRequestAfterDeadline` still holds, and `WarnIsTimely` pins the guard).
 \* It speaks in the conversation like a message (tail "user"), which is what opens the turn the model answers — but
@@ -193,13 +193,13 @@ DeadlineNears ==
 \* `WarnRepeatedly` drops the guard; `WarnLate` drops "before the deadline" and must be refuted.
 Warn(i) ==
   /\ Alive(i) /\ inst[i].lifecycle = "ACTIVE"
-  /\ goal.status = "ACTIVE"              \* a settled goal is never warned: the runtime cannot stand behind it
+  /\ work.status = "ACTIVE"              \* a settled work is never warned: the runtime cannot stand behind it
   /\ nearDeadline                        \* only inside the window
-  /\ (WarnLate \/ ~goal.deadlinePassed)  \* the counterfactual drops the "still ahead" guard
+  /\ (WarnLate \/ ~work.deadlinePassed)  \* the counterfactual drops the "still ahead" guard
   /\ (WarnRepeatedly \/ warns = 0)       \* the counterfactual drops the "at most once" guard
   /\ warns' = warns + 1
   /\ inst' = [inst EXCEPT ![i].tail = "user"]
-  /\ UNCHANGED <<goal, requests, attempts, ops, approvals, dead, nearDeadline>>
+  /\ UNCHANGED <<work, requests, attempts, ops, approvals, dead, nearDeadline>>
 
 \* READY -> MODEL_PENDING: revision guard, idle rule, budget reservation
 BeginRequest(i) ==
@@ -215,14 +215,14 @@ BeginRequest(i) ==
   /\ (ReaskAfterReply \/ inst[i].tail \in UnaddressedTails)
   /\ ~inst[i].queue                      \* the boundary applies the queued input first
   /\ BudgetFits(1)
-  \* A35: past the goal's deadline no new request begins. The counterfactual drops
+  \* A35: past the work's deadline no new request begins. The counterfactual drops
   \* only this clause, so `NoRequestAfterDeadline` is sensitive to exactly it.
-  /\ (IgnoreDeadline \/ ~goal.deadlinePassed)
+  /\ (IgnoreDeadline \/ ~work.deadlinePassed)
   /\ \E r \in FreeReqs :
        /\ requests' = [requests EXCEPT ![r] = [status |-> "PENDING", instance |-> i,
                                               epoch |-> inst[i].epoch, est |-> 1,
                                               selected |-> FALSE, selectedAttempt |-> nil, result |-> "reply"]]
-       /\ goal' = [goal EXCEPT !.reserved = @ \cup {<<r, 1>>}]
+       /\ work' = [work EXCEPT !.reserved = @ \cup {<<r, 1>>}]
        /\ inst' = [inst EXCEPT ![i].phase = "MODEL_PENDING", ![i].activeReq = r,
                                   ![i].revision = @ + 1, ![i].expectRev = @ + 1,
                                   \* a request of i's own is now addressing whatever
@@ -232,7 +232,7 @@ BeginRequest(i) ==
                                   ![i].hadWork = inst[i].tail \notin CommittedTails]
   /\ UNCHANGED <<attempts, ops, approvals, dead, nearDeadline, warns>>
 
-\* the atomic response selection bills the goal; late completes only archive
+\* the atomic response selection bills the work; late completes only archive
 RecordAttempt(i) ==
   /\ Alive(i)
   /\ LET r == inst[i].activeReq IN
@@ -242,18 +242,18 @@ RecordAttempt(i) ==
             attempts' = [attempts EXCEPT ![a] = [req |-> r, status |-> "COMPLETE"]]
             /\ requests' = [requests EXCEPT ![r].selected = TRUE, ![r].selectedAttempt = a,
                                            ![r].result = kind]
-            /\ goal' = [goal EXCEPT !.known = @ + 1]
+            /\ work' = [work EXCEPT !.known = @ + 1]
   /\ UNCHANGED <<inst, ops, approvals, dead, nearDeadline, warns>>
 
 \* an in-flight attempt lost to a crash: counted as unknown, never replayed
 LostAttempt(i) ==
   /\ Alive(i)
-  /\ goal.unknown < MaxUnknown
+  /\ work.unknown < MaxUnknown
   /\ LET r == inst[i].activeReq IN
        /\ r \in UsedReqs /\ requests[r].status = "PENDING"
        /\ \E a \in FreeAtts :
             attempts' = [attempts EXCEPT ![a] = [req |-> r, status |-> "LOST"]]
-       /\ goal' = [goal EXCEPT !.unknown = @ + 1]
+       /\ work' = [work EXCEPT !.unknown = @ + 1]
   /\ UNCHANGED <<inst, requests, ops, approvals, dead, nearDeadline, warns>>
 
 \* A second complete response while the request is still pending is archived
@@ -263,7 +263,7 @@ RecordLateAttempt(r) ==
   /\ requests[r].selected /\ requests[r].status = "PENDING"
   /\ \E a \in FreeAtts :
        attempts' = [attempts EXCEPT ![a] = [req |-> r, status |-> "COMPLETE"]]
-  /\ goal' = [goal EXCEPT !.known = @ + 1]
+  /\ work' = [work EXCEPT !.known = @ + 1]
   /\ UNCHANGED <<inst, requests, ops, approvals, dead, nearDeadline, warns>>
 
 \* response import: context append + decision + phase, one transaction
@@ -271,7 +271,7 @@ RecordLateAttempt(r) ==
 \* empty choice. The request lookup is guarded before dereferencing its slot.
 ImportChosen(i, r, chosen) ==
        /\ requests' = [requests EXCEPT ![r].status = "COMPLETE"]
-       /\ goal' = [goal EXCEPT !.reserved = @ \ {<<r, requests[r].est>>}]
+       /\ work' = [work EXCEPT !.reserved = @ \ {<<r, requests[r].est>>}]
        /\ inst' = [inst EXCEPT ![i].phase =
                       CASE requests[r].result = "ops"        -> "TOOLS_PENDING"
                         [] requests[r].result = "reply"      -> "READY"
@@ -300,18 +300,18 @@ RequestApproval(o) ==
   /\ Alive(ops[o].instance) /\ ops[o].status = "PREPARED"
   /\ o \in ApprovalOps /\ approvals[o] = "none"
   /\ approvals' = [approvals EXCEPT ![o] = "PENDING"]
-  /\ UNCHANGED <<inst, goal, requests, attempts, ops, dead, nearDeadline, warns>>
+  /\ UNCHANGED <<inst, work, requests, attempts, ops, dead, nearDeadline, warns>>
 
 Approve(o) ==
   /\ approvals[o] = "PENDING" /\ ops[o].status = "PREPARED"
   /\ approvals' = [approvals EXCEPT ![o] = "APPROVED"]
-  /\ UNCHANGED <<inst, goal, requests, attempts, ops, dead, nearDeadline, warns>>
+  /\ UNCHANGED <<inst, work, requests, attempts, ops, dead, nearDeadline, warns>>
 
 Deny(o) ==
   /\ approvals[o] = "PENDING" /\ ops[o].status = "PREPARED"
   /\ approvals' = [approvals EXCEPT ![o] = "DENIED"]
   /\ ops' = [ops EXCEPT ![o].status = "CANCELLED_BEFORE_START"]
-  /\ UNCHANGED <<inst, goal, requests, attempts, dead, nearDeadline, warns>>
+  /\ UNCHANGED <<inst, work, requests, attempts, dead, nearDeadline, warns>>
 
 \* the linearization point: durable dispatch record after the re-checks
 Dispatch(o) ==
@@ -321,14 +321,14 @@ Dispatch(o) ==
   /\ inst[ops[o].instance].lifecycle = "ACTIVE"
   /\ ApprovalSatisfied(o)
   /\ ops' = [ops EXCEPT ![o].status = "DISPATCH_COMMITTED", ![o].dispatched = TRUE]
-  /\ UNCHANGED <<inst, goal, requests, attempts, approvals, dead, nearDeadline, warns>>
+  /\ UNCHANGED <<inst, work, requests, attempts, approvals, dead, nearDeadline, warns>>
 
 \* the external effect only starts after its durable record (A08)
 StartEffect(o) ==
   /\ Alive(ops[o].instance)
   /\ ops[o].status = "DISPATCH_COMMITTED"
   /\ ops' = [ops EXCEPT ![o].status = "RUNNING", ![o].effect = @ + 1]
-  /\ UNCHANGED <<inst, goal, requests, attempts, approvals, dead, nearDeadline, warns>>
+  /\ UNCHANGED <<inst, work, requests, attempts, approvals, dead, nearDeadline, warns>>
 
 Complete(o, outcome) ==
   /\ outcome \in OpTerminal
@@ -337,7 +337,7 @@ Complete(o, outcome) ==
   /\ (outcome # "CANCELLED_BEFORE_START" \/ ops[o].effect = 0)
   /\ ops' = [ops EXCEPT ![o].status = outcome]
   /\ approvals' = [approvals EXCEPT ![o] = IF @ = "PENDING" THEN "EXPIRED" ELSE @]
-  /\ UNCHANGED <<inst, goal, requests, attempts, dead, nearDeadline, warns>>
+  /\ UNCHANGED <<inst, work, requests, attempts, dead, nearDeadline, warns>>
 
 \* decision consumption: receipts join the context, phase READY, approvals expire
 ConsumeDecision(i) ==
@@ -350,12 +350,12 @@ ConsumeDecision(i) ==
                                   ![i].contextOps = @ \cup RequestOps(r)]
        /\ approvals' = [ o \in Ops |-> IF o \in RequestOps(r) /\ approvals[o] = "PENDING"
                                         THEN "EXPIRED" ELSE approvals[o] ]
-       /\ UNCHANGED <<goal, requests, attempts, ops, dead, nearDeadline, warns>>
+       /\ UNCHANGED <<work, requests, attempts, ops, dead, nearDeadline, warns>>
 
 Crash(i) ==
   /\ Alive(i)
   /\ dead' = dead \cup {i}
-  /\ UNCHANGED <<inst, goal, requests, attempts, ops, approvals, nearDeadline, warns>>
+  /\ UNCHANGED <<inst, work, requests, attempts, ops, approvals, nearDeadline, warns>>
 
 \* recovery never restarts a possibly-started effect (A08/A11)
 Recover(i) ==
@@ -363,8 +363,8 @@ Recover(i) ==
   /\ dead' = dead \ {i}
   /\ \/ \E o \in Ops : ops[o].instance = i /\ ops[o].status \in {"DISPATCH_COMMITTED", "RUNNING"}
                         /\ ops' = [ops EXCEPT ![o].status = "OUTCOME_UNKNOWN"]
-                        /\ UNCHANGED <<inst, goal, requests, attempts, approvals, nearDeadline, warns>>
-     \/ UNCHANGED <<inst, goal, requests, attempts, ops, approvals, nearDeadline, warns>>
+                        /\ UNCHANGED <<inst, work, requests, attempts, approvals, nearDeadline, warns>>
+     \/ UNCHANGED <<inst, work, requests, attempts, ops, approvals, nearDeadline, warns>>
 
 \* user cancel: request closes, reservation released, instance READY (A13)
 CancelRequest(i) ==
@@ -372,7 +372,7 @@ CancelRequest(i) ==
   /\ LET r == inst[i].activeReq IN
        /\ r \in UsedReqs /\ requests[r].status = "PENDING"
        /\ requests' = [requests EXCEPT ![r].status = "CANCELLED"]
-       /\ goal' = [goal EXCEPT !.reserved = @ \ {<<r, requests[r].est>>}]
+       /\ work' = [work EXCEPT !.reserved = @ \ {<<r, requests[r].est>>}]
        /\ inst' = [inst EXCEPT ![i].phase = "READY", ![i].activeReq = nil,
                                   ![i].revision = @ + 1, ![i].expectRev = @ + 1]
   /\ UNCHANGED <<attempts, ops, approvals, dead, nearDeadline, warns>>
@@ -383,12 +383,12 @@ FailRequest(i) ==
   /\ LET r == inst[i].activeReq IN
        /\ r \in UsedReqs /\ requests[r].status = "PENDING"
        /\ requests' = [requests EXCEPT ![r].status = "FAILED"]
-       /\ goal' = [goal EXCEPT !.reserved = @ \ {<<r, requests[r].est>>}]
+       /\ work' = [work EXCEPT !.reserved = @ \ {<<r, requests[r].est>>}]
        /\ inst' = [inst EXCEPT ![i].lifecycle = "PARKED", ![i].activeReq = nil,
                                   ![i].phase = "READY"]
   /\ UNCHANGED <<attempts, ops, approvals, dead, nearDeadline, warns>>
 
-\* goal settlement happens once and only from ACTIVE (§8). The settlement leaves
+\* work settlement happens once and only from ACTIVE (§8). The settlement leaves
 \* the runtime's own closing note as the instance's last word: the runtime states
 \* the ending, the model does not have to answer for it, and the idle rule
 \* therefore leaves the instance alone (D-71). It also *records* whether the turn
@@ -396,48 +396,48 @@ FailRequest(i) ==
 \* fact a client's outcome attribution rests on (D-72).
 \* `tail = "assistant"` is the model's abstraction for "the model's own response is
 \* what this settlement is about": in the code both settlement paths read a
-\* completion decision of a request (`complete_goal`'s candidate, the check round's
+\* completion decision of a request (`complete_work`'s candidate, the check round's
 \* finish), so a settlement cannot be produced out of thin air or by an input alone.
-SettleGoal(i, status) ==
+SettleWork(i, status) ==
   \* CANCELLED is not in this set: the runtime settles what it concluded (SUCCEEDED/FAILED/BLOCKED), while
-  \* CANCELLED comes only from the user's own cancel (CancelGoal), which is what the code does (complete_goal
-  \* and block_goal never write it).
+  \* CANCELLED comes only from the user's own cancel (CancelWork), which is what the code does (complete_work
+  \* and block_work never write it).
   /\ Alive(i) /\ status \in {"SUCCEEDED", "FAILED", "BLOCKED"}
-  /\ goal.status = "ACTIVE"
+  /\ work.status = "ACTIVE"
   /\ inst[i].phase = "COMPLETION_PENDING" /\ inst[i].lifecycle = "ACTIVE"
   /\ inst[i].tail = "assistant"
   /\ NonTerminalOps(i) = {}                       \* no open operation survives a close
   /\ ~(\E r \in UsedReqs : requests[r].instance = i /\ requests[r].status = "PENDING")
-  /\ goal' = [goal EXCEPT !.status = status]
+  /\ work' = [work EXCEPT !.status = status]
   /\ inst' = [inst EXCEPT ![i].phase = "READY", ![i].tail = "runtime",
                               ![i].settledAfterTurn = inst[i].afterLanding]
   /\ UNCHANGED <<requests, attempts, ops, approvals, dead, nearDeadline, warns>>
 
-\* The driver closes a completion against an already-settled goal without
-\* rewriting that goal or re-running its checks (Driver::step_completion).
+\* The driver closes a completion against an already-settled work without
+\* rewriting that work or re-running its checks (Driver::step_completion).
 CloseCompletion(i) ==
-  /\ Alive(i) /\ inst[i].phase = "COMPLETION_PENDING" /\ goal.status # "ACTIVE"
+  /\ Alive(i) /\ inst[i].phase = "COMPLETION_PENDING" /\ work.status # "ACTIVE"
   /\ inst' = [inst EXCEPT ![i].phase = "READY", ![i].tail = "runtime"]
-  /\ UNCHANGED <<goal, requests, attempts, ops, approvals, dead, nearDeadline, warns>>
+  /\ UNCHANGED <<work, requests, attempts, ops, approvals, dead, nearDeadline, warns>>
 
 \* The wait contract supplies the matching result/timer externally; queued user
 \* input instead wakes through ApplyQueued in the same transaction as its landing.
 WakeWait(i) ==
   /\ Alive(i) /\ inst[i].phase = "WAITING"
   /\ inst' = [inst EXCEPT ![i].phase = "READY", ![i].tail = "tool"]
-  /\ UNCHANGED <<goal, requests, attempts, ops, approvals, dead, nearDeadline, warns>>
+  /\ UNCHANGED <<work, requests, attempts, ops, approvals, dead, nearDeadline, warns>>
 
-\* D-341/D-344: the user's lever on a goal nothing can spend. A goal whose ceiling or deadline is gone stays
+\* D-341/D-344: the user's lever on a work nothing can spend. A work whose ceiling or deadline is gone stays
 \* ACTIVE for ever, refusing new work (A18's gate) and still listed (A18's known gap); the instance its refusal
-\* parked has no path back. This is the user's cancel: the goal goes terminal and the instances the refusal
+\* parked has no path back. This is the user's cancel: the work goes terminal and the instances the refusal
 \* parked are released, so the session keeps its workers. `set_lifecycle` keeps resume with the user, so this
-\* does too — and `ReleaseOnCancel = FALSE` is the counterfactual that closes the goal and leaves them parked.
-CancelGoal ==
-  /\ goal.status = "ACTIVE"
+\* does too — and `ReleaseOnCancel = FALSE` is the counterfactual that closes the work and leaves them parked.
+CancelWork ==
+  /\ work.status = "ACTIVE"
   /\ \A i \in Instances : inst[i].activeReq = nil           \* no running work
   /\ \A r \in UsedReqs : requests[r].status # "PENDING"
   /\ \A o \in Ops : ops[o].status \notin OpNonTerminal
-  /\ goal' = [goal EXCEPT !.status = "CANCELLED"]
+  /\ work' = [work EXCEPT !.status = "CANCELLED"]
   /\ inst' = [ j \in Instances |->
                  IF ReleaseOnCancel /\ inst[j].lifecycle = "PARKED"
                    THEN [inst[j] EXCEPT !.lifecycle = "ACTIVE"]
@@ -455,7 +455,7 @@ ResetInstance(i) ==
                               ![i].queue = FALSE, ![i].contextOps = {},
                               ![i].revision = @ + 1, ![i].expectRev = @ + 1]
        /\ requests' = ClosedRequests(i)
-       /\ goal' = [goal EXCEPT !.reserved = { e \in goal.reserved : requests[e[1]].instance # i }]
+       /\ work' = [work EXCEPT !.reserved = { e \in work.reserved : requests[e[1]].instance # i }]
        /\ ops' = ClosedOperations(i)
        /\ approvals' = ClosedApprovals(i)
   /\ UNCHANGED <<attempts, dead, nearDeadline, warns>>
@@ -467,11 +467,11 @@ SetLifecycle(i, l) ==
         THEN /\ inst' = [inst EXCEPT ![i].lifecycle = l, ![i].queue = FALSE,
                                     ![i].phase = "READY", ![i].activeReq = nil]
              /\ requests' = ClosedRequests(i)
-             /\ goal' = [goal EXCEPT !.reserved = { e \in goal.reserved : requests[e[1]].instance # i }]
+             /\ work' = [work EXCEPT !.reserved = { e \in work.reserved : requests[e[1]].instance # i }]
              /\ ops' = ClosedOperations(i)
              /\ approvals' = ClosedApprovals(i)
         ELSE /\ inst' = [inst EXCEPT ![i].lifecycle = l]
-             /\ UNCHANGED <<goal, requests, ops, approvals>>
+             /\ UNCHANGED <<work, requests, ops, approvals>>
   /\ UNCHANGED <<attempts, dead, nearDeadline, warns>>
 
 \* ---------------------------------------------------------------------- spec --
@@ -483,52 +483,52 @@ Stutter == UNCHANGED vars
 
 BadAdmissionStep ==
   /\ BadAdmission
-  /\ ( \E i \in Instances : inst[i].phase # "MODEL_PENDING" /\ inst' = [inst EXCEPT ![i].phase = "MODEL_PENDING"] /\ goal' = [goal EXCEPT !.known = TokenLimit] )
+  /\ ( \E i \in Instances : inst[i].phase # "MODEL_PENDING" /\ inst' = [inst EXCEPT ![i].phase = "MODEL_PENDING"] /\ work' = [work EXCEPT !.known = TokenLimit] )
   /\ UNCHANGED <<requests, attempts, ops, approvals, dead, nearDeadline, warns>>
 
 BadActiveRequestStep ==
   /\ BadActiveRequest
   /\ ( \E i \in Instances : inst' = [inst EXCEPT ![i].phase = "MODEL_PENDING", ![i].activeReq = nil] )
-  /\ UNCHANGED <<goal, requests, attempts, ops, approvals, dead, nearDeadline, warns>>
+  /\ UNCHANGED <<work, requests, attempts, ops, approvals, dead, nearDeadline, warns>>
 
 EffectBeforeDispatchStep ==
   /\ EffectBeforeDispatch
   /\ ( \E o \in Ops : ops' = [ops EXCEPT ![o].effect = 1, ![o].dispatched = FALSE] )
-  /\ UNCHANGED <<inst, goal, requests, attempts, approvals, dead, nearDeadline, warns>>
+  /\ UNCHANGED <<inst, work, requests, attempts, approvals, dead, nearDeadline, warns>>
 
 KeepClosedReservationStep ==
   /\ KeepClosedReservation
-  /\ ( \E r \in ReqIds : requests' = [requests EXCEPT ![r].status = "COMPLETE"] /\ goal' = [goal EXCEPT !.reserved = @ \cup {<<r, requests[r].est>>}] )
+  /\ ( \E r \in ReqIds : requests' = [requests EXCEPT ![r].status = "COMPLETE"] /\ work' = [work EXCEPT !.reserved = @ \cup {<<r, requests[r].est>>}] )
   /\ UNCHANGED <<inst, attempts, ops, approvals, dead, nearDeadline, warns>>
 
 OverReserveStep ==
   /\ OverReserve
-  /\ ( \E r \in ReqIds : goal' = [goal EXCEPT !.reserved = @ \cup {<<r, TokenLimit + 1>>}] )
+  /\ ( \E r \in ReqIds : work' = [work EXCEPT !.reserved = @ \cup {<<r, TokenLimit + 1>>}] )
   /\ UNCHANGED <<inst, requests, attempts, ops, approvals, dead, nearDeadline, warns>>
 
 SelectIncompleteStep ==
   /\ SelectIncomplete
   /\ ( \E r \in ReqIds : requests' = [requests EXCEPT ![r].selected = TRUE] )
-  /\ UNCHANGED <<inst, goal, attempts, ops, approvals, dead, nearDeadline, warns>>
+  /\ UNCHANGED <<inst, work, attempts, ops, approvals, dead, nearDeadline, warns>>
 
 StaleExecutorStep ==
   /\ StaleExecutor
   /\ ( \E i \in Instances : inst' = [inst EXCEPT ![i].phase = "MODEL_PENDING", ![i].revision = @ + 1] )
-  /\ UNCHANGED <<goal, requests, attempts, ops, approvals, dead, nearDeadline, warns>>
+  /\ UNCHANGED <<work, requests, attempts, ops, approvals, dead, nearDeadline, warns>>
 
 DoubleEffectStep ==
   /\ DoubleEffect
   /\ ( \E o \in Ops : ops' = [ops EXCEPT ![o].effect = 2] )
-  /\ UNCHANGED <<inst, goal, requests, attempts, approvals, dead, nearDeadline, warns>>
+  /\ UNCHANGED <<inst, work, requests, attempts, approvals, dead, nearDeadline, warns>>
 
 RewriteTerminalOpStep ==
   /\ RewriteTerminalOp
   /\ ( \E o \in Ops : ops[o].status \in OpTerminal /\ ops' = [ops EXCEPT ![o].status = "RUNNING"] )
-  /\ UNCHANGED <<inst, goal, requests, attempts, approvals, dead, nearDeadline, warns>>
+  /\ UNCHANGED <<inst, work, requests, attempts, approvals, dead, nearDeadline, warns>>
 
-RewriteTerminalGoalStep ==
-  /\ RewriteTerminalGoal
-  /\ ( goal.status # "ACTIVE" /\ goal' = [goal EXCEPT !.status = "ACTIVE"] )
+RewriteTerminalWorkStep ==
+  /\ RewriteTerminalWork
+  /\ ( work.status # "ACTIVE" /\ work' = [work EXCEPT !.status = "ACTIVE"] )
   /\ UNCHANGED <<inst, requests, attempts, ops, approvals, dead, nearDeadline, warns>>
 
 CrossEpochReceiptStep ==
@@ -537,12 +537,12 @@ CrossEpochReceiptStep ==
        /\ ops[o].status \in OpTerminal
        /\ ops[o].epoch # inst[ops[o].instance].ctxEpoch
        /\ inst' = [inst EXCEPT ![ops[o].instance].contextOps = @ \cup {o}]
-  /\ UNCHANGED <<goal, requests, attempts, ops, approvals, dead, nearDeadline, warns>>
+  /\ UNCHANGED <<work, requests, attempts, ops, approvals, dead, nearDeadline, warns>>
 
 EffectUnauthorizedStep ==
   /\ EffectUnauthorized
   /\ ( \E o \in ApprovalOps : approvals[o] # "APPROVED" /\ ops' = [ops EXCEPT ![o].effect = 1] )
-  /\ UNCHANGED <<inst, goal, requests, attempts, approvals, dead, nearDeadline, warns>>
+  /\ UNCHANGED <<inst, work, requests, attempts, approvals, dead, nearDeadline, warns>>
 
 EffectOnTerminatedStep ==
   /\ EffectOnTerminated
@@ -550,17 +550,17 @@ EffectOnTerminatedStep ==
        /\ inst[ops[o].instance].lifecycle = "TERMINATED"
        /\ ~ops[o].dispatched
        /\ ops' = [ops EXCEPT ![o].dispatched = TRUE]
-  /\ UNCHANGED <<inst, goal, requests, attempts, approvals, dead, nearDeadline, warns>>
+  /\ UNCHANGED <<inst, work, requests, attempts, approvals, dead, nearDeadline, warns>>
 
 EffectAfterCancelStep ==
   /\ EffectAfterCancel
   /\ ( \E o \in Ops : ops' = [ops EXCEPT ![o].status = "CANCELLED_BEFORE_START", ![o].effect = 1] )
-  /\ UNCHANGED <<inst, goal, requests, attempts, approvals, dead, nearDeadline, warns>>
+  /\ UNCHANGED <<inst, work, requests, attempts, approvals, dead, nearDeadline, warns>>
 
 PreparedEffectStep ==
   /\ PreparedEffect
   /\ ( \E o \in Ops : ops' = [ops EXCEPT ![o].status = "PREPARED", ![o].effect = 1] )
-  /\ UNCHANGED <<inst, goal, requests, attempts, approvals, dead, nearDeadline, warns>>
+  /\ UNCHANGED <<inst, work, requests, attempts, approvals, dead, nearDeadline, warns>>
 
 Next ==
   \/ BadAdmissionStep
@@ -572,7 +572,7 @@ Next ==
   \/ StaleExecutorStep
   \/ DoubleEffectStep
   \/ RewriteTerminalOpStep
-  \/ RewriteTerminalGoalStep
+  \/ RewriteTerminalWorkStep
   \/ CrossEpochReceiptStep
   \/ EffectUnauthorizedStep
   \/ EffectOnTerminatedStep
@@ -601,9 +601,9 @@ Next ==
   \/ \E i \in Instances : Recover(i)
   \/ \E i \in Instances : CancelRequest(i)
   \/ \E i \in Instances : FailRequest(i)
-  \/ \E i \in Instances, status \in {"SUCCEEDED", "FAILED", "BLOCKED"} : SettleGoal(i, status)
+  \/ \E i \in Instances, status \in {"SUCCEEDED", "FAILED", "BLOCKED"} : SettleWork(i, status)
   \/ \E i \in Instances : CloseCompletion(i) \/ WakeWait(i)
-  \/ CancelGoal
+  \/ CancelWork
   \/ \E i \in Instances : ResetInstance(i)
   \/ \E i \in Instances : \E l \in {"ACTIVE", "PAUSED", "PARKED", "TERMINATED"} : SetLifecycle(i, l)
   \/ Stutter   \* the system is open-ended: an idle step is always possible
@@ -619,7 +619,7 @@ Init ==
                  \* already addressed, so this starts TRUE), and what that was
                  \* worth at settlement time (the invariant below reads it).
                  afterLanding |-> TRUE, settledAfterTurn |-> TRUE, hadWork |-> TRUE, contextOps |-> {}] ]
-  /\ goal = [status |-> "ACTIVE", known |-> 0, unknown |-> 0, reserved |-> {}, deadlinePassed |-> FALSE]
+  /\ work = [status |-> "ACTIVE", known |-> 0, unknown |-> 0, reserved |-> {}, deadlinePassed |-> FALSE]
   /\ requests = [ r \in ReqIds |->
                     [status |-> "none", instance |-> "", epoch |-> 0, est |-> 1,
                      selected |-> FALSE, selectedAttempt |-> nil, result |-> "reply"] ]
@@ -641,7 +641,7 @@ Init ==
 TurnStep(i) ==
   \/ RecordAttempt(i) \/ LostAttempt(i) \/ ImportResponse(i) \/ ConsumeDecision(i)
   \/ FailRequest(i) \/ CancelRequest(i) \/ CloseCompletion(i) \/ WakeWait(i)
-  \/ \E status \in {"SUCCEEDED", "FAILED", "BLOCKED"} : SettleGoal(i, status)
+  \/ \E status \in {"SUCCEEDED", "FAILED", "BLOCKED"} : SettleWork(i, status)
   \/ \E o \in Ops : ops[o].instance = i /\
         (RequestApproval(o) \/ Dispatch(o) \/ StartEffect(o) \/ \E x \in OpTerminal : Complete(o, x))
 
@@ -686,8 +686,8 @@ TypeOK ==
                         /\ attempts[a].req \in ReqIds \cup {nil}
   /\ \A o \in Ops : ops[o].status \in OpNonTerminal \cup OpTerminal \cup {"none"}
   /\ \A o \in Ops : ops[o].effect \in {0, 1}
-  /\ goal.status \in {"ACTIVE", "SUCCEEDED", "FAILED", "BLOCKED", "CANCELLED"}
-  /\ goal.deadlinePassed \in BOOLEAN
+  /\ work.status \in {"ACTIVE", "SUCCEEDED", "FAILED", "BLOCKED", "CANCELLED"}
+  /\ work.deadlinePassed \in BOOLEAN
   /\ nearDeadline \in BOOLEAN
   /\ warns \in 0..MaxWarns
 
@@ -711,7 +711,7 @@ ReservationsAdmitted ==
 
 \* §8: closing a request always releases its reservation
 ReservationReleased ==
-  \A r \in ReqIds : requests[r].status \in ReqClosed => <<r, requests[r].est>> \notin goal.reserved
+  \A r \in ReqIds : requests[r].status \in ReqClosed => <<r, requests[r].est>> \notin work.reserved
 
 \* §6.1: at most one live request per instance, and it is the active one
 OneActiveRequest ==
@@ -744,7 +744,7 @@ NoTurnWithoutWork ==
 \*
 \* The counterfactual `AllowMidTurnInput` (the pre-D-63 code, refuted by D-63's own
 \* property) refutes this too: an input stored *inside* a running turn is not in
-\* that turn's fixed request, yet the turn's completion still settles the goal — an
+\* that turn's fixed request, yet the turn's completion still settles the work — an
 \* outcome a waiting client would attribute to an input the model never saw.
 SettlementFollowsATurnAfterTheLanding ==
   \A i \in Instances : inst[i].settledAfterTurn
@@ -766,23 +766,23 @@ QueuedInputEntersTheContext ==
     []( (inst[i].queue /\ inst[i].lifecycle = "ACTIVE")
         => <>(inst[i].tail = "user" \/ ~inst[i].queue \/ inst[i].lifecycle # "ACTIVE") )
 
-\* A35: a goal that is past its deadline begins no new request (the gate in
+\* A35: a work that is past its deadline begins no new request (the gate in
 \* `begin_request`/`begin_compression`). The refusal itself parks the instance
 \* through the same classified path `FailRequest` models; this property is the
 \* gate, which is what the configured ceiling promises.
 NoRequestAfterDeadline ==
   [][ \A i \in Instances : (inst[i].phase # "MODEL_PENDING" /\ inst'[i].phase = "MODEL_PENDING") =>
-        ~goal.deadlinePassed ]_vars
+        ~work.deadlinePassed ]_vars
 
-\* D-341/D-344: closing a goal nothing can spend gives the session its workers back — the step that makes the
-\* goal CANCELLED may not leave an instance parked behind it. Every positive config sets `ReleaseOnCancel =
-\* TRUE`; the control that drops it must be refuted. (One goal per session in this model, so the release is
-\* stated over every instance; the code releases the instances that goal\'s refusal parked.)
-CancelledGoalReleasesParkedInstances ==
-  [][ (goal.status # "CANCELLED" /\ goal' = [goal EXCEPT !.status = "CANCELLED"])
+\* D-341/D-344: closing a work nothing can spend gives the session its workers back — the step that makes the
+\* work CANCELLED may not leave an instance parked behind it. Every positive config sets `ReleaseOnCancel =
+\* TRUE`; the control that drops it must be refuted. (One work per session in this model, so the release is
+\* stated over every instance; the code releases the instances that work\'s refusal parked.)
+CancelledWorkReleasesParkedInstances ==
+  [][ (work.status # "CANCELLED" /\ work' = [work EXCEPT !.status = "CANCELLED"])
       => \A i \in Instances : inst'[i].lifecycle # "PARKED" ]_vars
 
-\* D-410: the runtime warns a goal at most once — one note, not one per step (the settlement note is written once
+\* D-410: the runtime warns a work at most once — one note, not one per step (the settlement note is written once
 \* for the same reason: a runtime that repeats itself is the turn storm again). `WarnRepeatedly` is the
 \* counterfactual that must refute it.
 AtMostOneWarning ==
@@ -816,29 +816,29 @@ CancelledBeforeStartHasNoEffect ==
 TerminalOpStable ==
   [][ \A o \in Ops : ops[o].status \in OpTerminal => ops'[o].status = ops[o].status ]_vars
 
-\* §8: a settled goal never changes status again. (Its *usage record* may keep
+\* §8: a settled work never changes status again. (Its *usage record* may keep
 \* growing: like the implementation, the model admits a new request against a
-\* goal that already reached a terminal status, because reserve_budget and
+\* work that already reached a terminal status, because reserve_budget and
 \* settle_usage carry no status guard. Recorded as a modelled boundary rather
 \* than assumed away — see verification/README.md.)
-TerminalGoalStatusStable ==
-  [][ goal.status # "ACTIVE" => goal'["status"] = goal.status ]_vars
+TerminalWorkStatusStable ==
+  [][ work.status # "ACTIVE" => work'["status"] = work.status ]_vars
 
 \* A24: late receipts settle their original operation, but never enter another
 \* context epoch. Reset clears context references without rewriting old receipts.
 NoReceiptAcrossEpochs ==
   [](\A i \in Instances : \A o \in inst[i].contextOps : ops[o].epoch = inst[i].ctxEpoch)
 
-\* D-410: a warning is only appended while the deadline is still ahead and the goal is live. Stated over the
+\* D-410: a warning is only appended while the deadline is still ahead and the work is live. Stated over the
 \* appending step (`warns` grows) rather than as a state invariant, because a timely warning survives the deadline
 \* passing later; `WarnLate` must refute it.
 WarnIsTimely ==
   [][ (warns' > warns)
-        => (~goal.deadlinePassed /\ goal.status = "ACTIVE" /\ nearDeadline) ]_vars
+        => (~work.deadlinePassed /\ work.status = "ACTIVE" /\ nearDeadline) ]_vars
 
 \* the admission gate: a request only starts while known + reserved + est fits
 AdmissionGate ==
   [][ \A i \in Instances : (inst'[i].phase = "MODEL_PENDING" /\ inst[i].phase # "MODEL_PENDING")
-        => goal.known + ReservedTotal + 1 <= TokenLimit ]_vars
+        => work.known + ReservedTotal + 1 <= TokenLimit ]_vars
 
 =============================================================================

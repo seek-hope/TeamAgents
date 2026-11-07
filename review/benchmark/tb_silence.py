@@ -4,7 +4,7 @@
     python3 review/benchmark/tb_silence.py JOBS_DIR [JOBS_DIR ...]
 
 `tau3_silence.py` reads the adapter's per-turn `exec` reports, which the Terminal-Bench adapter does not keep;
-what it keeps is the product's own state per trial, so this reads that instead: for every settled goal in every
+what it keeps is the product's own state per trial, so this reads that instead: for every settled work in every
 `session.sqlite` under the given job directories it asks whether the run left any **assistant text** and whether
 the settlement carried a **summary**. Both are reported because they are different things — a tau3 dialogue can
 settle with a rich summary and no text at all, which is exactly the case D-431 reports.
@@ -31,7 +31,7 @@ def probe(root: pathlib.Path) -> dict:
     for db in sorted(root.rglob("session.sqlite")):
         try:
             connection = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-            events = list(connection.execute("SELECT payload_json FROM events WHERE kind = 'goal_completed'"))
+            events = list(connection.execute("SELECT payload_json FROM events WHERE kind = 'work_completed'"))
             if not events:
                 continue
             settled += 1

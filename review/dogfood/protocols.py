@@ -5,7 +5,7 @@ DESIGN §7 keeps four protocol families apart — Chat Completions, DeepSeek ext
 and requires that "each is accepted with a real service separately". The tree had contract samples for all four
 (`engine/tests/providers_fake.rs` drives a fake HTTP server through each adapter) and live runs on two of them
 (DeepSeek, whose protocol is the chat-completions wire plus the `xhigh`→`max` mapping, and Kimi over
-`responses`). This probe is the live half for **every** family, one small goal each in its own state root:
+`responses`). This probe is the live half for **every** family, one small work each in its own state root:
 
     python3 review/dogfood/protocols.py                    # every family whose credential is set
     python3 review/dogfood/protocols.py --family anthropic  # one family
@@ -16,7 +16,7 @@ Per family the probe asks the service for its own model list first and takes the
 service declares** — value and source, which is what D-36 requires and the only source that cannot go stale
 silently (the tree's own entries say 1048576 for `deepseek-flash` and 262144 for `k3-256k`; this probe reports
 whether the service still agrees) — and writes that value into the config it runs with, so a window the vendor
-changed shows up as a mismatch instead of a quiet shrink. The goal asks for a file and `--check` verifies it, so
+changed shows up as a mismatch instead of a quiet shrink. The work asks for a file and `--check` verifies it, so
 a family is accepted only when the whole path works on that wire: request, streamed response, tool call,
 settlement. The probe also checks the design's retention promise ("opaque provider fields are stored with their
 origin and version, and never flattened") by looking for the native field the family's own adapter stores —

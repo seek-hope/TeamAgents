@@ -59,13 +59,13 @@ CREATE TABLE IF NOT EXISTS instances (
     lifecycle TEXT NOT NULL,
     phase TEXT NOT NULL,
     revision INTEGER NOT NULL DEFAULT 0,
-    active_goal_id TEXT,
+    active_work_id TEXT,
     active_request_id TEXT,
     context_head INTEGER NOT NULL DEFAULT 0,
     profile_json TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS goals (
+CREATE TABLE IF NOT EXISTS work_scopes (
     id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,
     original_request_ref TEXT NOT NULL,
@@ -78,9 +78,9 @@ CREATE TABLE IF NOT EXISTS goals (
     unknown_usage INTEGER NOT NULL DEFAULT 0
 );
 
--- D-487: schema v7 adds work state without enrolling or rewriting historical goals.
+-- D-487: schema v7 adds work state without enrolling or rewriting historical work_scopes.
 CREATE TABLE IF NOT EXISTS work_states (
-    goal_id TEXT NOT NULL,
+    work_id TEXT NOT NULL,
     instance_id TEXT NOT NULL,
     epoch INTEGER NOT NULL,
     task_id TEXT NOT NULL DEFAULT '',
@@ -92,16 +92,16 @@ CREATE TABLE IF NOT EXISTS work_states (
     fingerprints_json TEXT NOT NULL DEFAULT '[]',
     reason TEXT NOT NULL DEFAULT '',
     revision INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY(goal_id, instance_id, epoch, task_id)
+    PRIMARY KEY(work_id, instance_id, epoch, task_id)
 );
 CREATE TABLE IF NOT EXISTS work_requests (
     request_id TEXT PRIMARY KEY,
     context_json TEXT NOT NULL,
-    billed_goal_id TEXT,
+    billed_work_id TEXT,
     unknown_usage INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS work_inputs (
-    goal_id TEXT NOT NULL,
+    work_id TEXT NOT NULL,
     instance_id TEXT NOT NULL,
     epoch INTEGER NOT NULL,
     envelope_id TEXT NOT NULL,
@@ -111,7 +111,7 @@ CREATE TABLE IF NOT EXISTS work_inputs (
 
 CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
-    goal_id TEXT NOT NULL,
+    work_id TEXT NOT NULL,
     session_id TEXT NOT NULL,
     requester TEXT NOT NULL,
     assignee TEXT NOT NULL,
@@ -210,12 +210,12 @@ CREATE TABLE IF NOT EXISTS model_requests (
     request_id TEXT PRIMARY KEY,
     instance_id TEXT NOT NULL,
     epoch INTEGER NOT NULL,
-    goal_id TEXT,
+    work_id TEXT,
     request_ref TEXT NOT NULL,
     selected_attempt_id TEXT,
     status TEXT NOT NULL,
     est_prompt_tokens INTEGER,
-    -- 'turn' | 'compression' (R22/A20): both are billed to the goal and
+    -- 'turn' | 'compression' (R22/A20): both are billed to the work and
     -- archived as attempts; only a turn request moves the instance phase.
     kind TEXT NOT NULL DEFAULT 'turn',
     -- D-349 (the decision D-341 made for D-143): what the request was *offered* — the tool names, as a JSON
@@ -248,7 +248,7 @@ CREATE TABLE IF NOT EXISTS operations (
     operation_id TEXT PRIMARY KEY,
     decision_id TEXT NOT NULL,
     tool_index INTEGER NOT NULL,
-    goal_id TEXT,
+    work_id TEXT,
     epoch INTEGER NOT NULL,
     intent_json TEXT NOT NULL DEFAULT '',
     args_hash TEXT NOT NULL,
@@ -620,11 +620,15 @@ fn migrate(conn: &Connection, from: i64) -> Result<(), String> {
                 .map_err(|e| format!("migrate 5 -> 6 requests: {e}"))?;
             }
             // 6 -> 7 (D-487): older writers must not ignore durable work stops,
-            // admission or takeover state. Historical goals remain unenrolled.
+            // admission or takeover state. Historical work_scopes remain unenrolled.
             6 => {
                 tx.execute_batch(SCHEMA).map_err(|e| format!("migrate 6 -> 7 work tables: {e}"))?;
                 ensure_columns(&tx)?;
             }
+            // 7 -> 8: remove the goal persistence/API vocabulary without losing its
+            // budget, acceptance, ownership or event history. The old tables are
+            // copied before any legacy table is dropped.
+            7 => migrate_work_scope_vocabulary(&tx)?,
             other => return Err(format!("no migration step from v2 schema version {other}")),
         }
         version += 1;
@@ -632,6 +636,153 @@ fn migrate(conn: &Connection, from: i64) -> Result<(), String> {
             .map_err(|e| format!("migrate stamp: {e}"))?;
     }
     tx.commit().map_err(|e| format!("migrate commit: {e}"))?;
+    Ok(())
+}
+
+fn table_exists(conn: &Connection, table: &str) -> Result<bool, String> {
+    conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)", [table], |row| {
+        row.get(0)
+    })
+    .map_err(|e| format!("inspect table {table}: {e}"))
+}
+
+/// Rebuild a v7 table so the old goal column disappears rather than surviving
+/// as an unused compatibility field. This is required for the old NOT NULL and
+/// primary-key constraints, and keeps exports from exposing the retired shape.
+fn rebuild_legacy_work_table(tx: &rusqlite::Transaction, table: &str, columns: &str) -> Result<(), String> {
+    let legacy = format!("legacy_{table}");
+    // SQLite keeps an index's name when its table is renamed. Drop the one
+    // non-auto index on these tables before SCHEMA recreates it for the new table.
+    if table == "operations" {
+        tx.execute_batch("DROP INDEX IF EXISTS idx_operations_status")
+            .map_err(|e| format!("migrate operations index: {e}"))?;
+    }
+    tx.execute_batch(&format!("ALTER TABLE {table} RENAME TO {legacy}"))
+        .map_err(|e| format!("migrate {table} rename: {e}"))?;
+    tx.execute_batch(SCHEMA).map_err(|e| format!("migrate {table} schema: {e}"))?;
+    let select_columns = columns
+        .split(',')
+        .map(|column| match column {
+            "work_id" => "goal_id",
+            "active_work_id" => "active_goal_id",
+            "billed_work_id" => "billed_goal_id",
+            other => other,
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    tx.execute(&format!("INSERT INTO {table} ({columns}) SELECT {select_columns} FROM {legacy}"), [])
+        .map_err(|e| format!("migrate {table} rows: {e}"))?;
+    tx.execute_batch(&format!("DROP TABLE {legacy}")).map_err(|e| format!("migrate {table} cleanup: {e}"))?;
+    Ok(())
+}
+
+fn rename_legacy_work_json_keys(value: &mut Json) -> bool {
+    match value {
+        Json::Object(map) => {
+            let mut changed = false;
+            for (old, new) in [
+                ("goal_id", "work_id"),
+                ("active_goal_id", "active_work_id"),
+                ("billed_goal_id", "billed_work_id"),
+                ("goal", "work"),
+            ] {
+                if map.contains_key(old) && !map.contains_key(new) {
+                    if let Some(item) = map.remove(old) {
+                        map.insert(new.to_string(), item);
+                        changed = true;
+                    }
+                }
+            }
+            for item in map.values_mut() {
+                changed |= rename_legacy_work_json_keys(item);
+            }
+            changed
+        }
+        Json::Array(items) => {
+            let mut changed = false;
+            for item in items {
+                changed |= rename_legacy_work_json_keys(item);
+            }
+            changed
+        }
+        _ => false,
+    }
+}
+
+fn migrate_work_scope_events(tx: &rusqlite::Transaction) -> Result<(), String> {
+    tx.execute_batch(
+        "UPDATE events SET kind = CASE kind
+             WHEN 'goal_created' THEN 'work_created'
+             WHEN 'goal_updated' THEN 'work_updated'
+             WHEN 'goal_completed' THEN 'work_completed'
+             WHEN 'goal_blocked' THEN 'work_blocked'
+             WHEN 'goal_checks_briefed' THEN 'work_checks_briefed'
+             WHEN 'goal_checks_required' THEN 'work_checks_required'
+             WHEN 'goal_deadline_refused' THEN 'work_deadline_refused'
+             WHEN 'goal_deadline_warning' THEN 'work_deadline_warning'
+             WHEN 'goal_canceled' THEN 'work_cancelled'
+             WHEN 'goal_cancelled' THEN 'work_cancelled'
+             ELSE kind END;",
+    )
+    .map_err(|e| format!("migrate work event kinds: {e}"))?;
+    let rows: Vec<(String, i64, Option<String>)> = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT session_id, sequence, payload_json FROM events
+                 WHERE payload_json IS NOT NULL AND
+                   (payload_json LIKE '%\"goal_id\"%' OR payload_json LIKE '%\"active_goal_id\"%'
+                    OR payload_json LIKE '%\"billed_goal_id\"%' OR payload_json LIKE '%\"goal\"%')",
+            )
+            .map_err(|e| format!("migrate work events prepare: {e}"))?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .map_err(|e| format!("migrate work events query: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("migrate work events rows: {e}"))?
+    };
+    for (session_id, sequence, raw) in rows {
+        let Some(raw) = raw else { continue };
+        let mut payload: Json =
+            serde_json::from_str(&raw).map_err(|e| format!("migrate event {session_id}/{sequence}: {e}"))?;
+        if rename_legacy_work_json_keys(&mut payload) {
+            tx.execute(
+                "UPDATE events SET payload_json=?1 WHERE session_id=?2 AND sequence=?3",
+                rusqlite::params![payload.to_string(), session_id, sequence],
+            )
+            .map_err(|e| format!("migrate event {session_id}/{sequence}: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+fn migrate_work_scope_vocabulary(tx: &rusqlite::Transaction) -> Result<(), String> {
+    // Ensure the new scope table exists before copying a v7 `goals` table.
+    tx.execute_batch(SCHEMA).map_err(|e| format!("migrate 7 -> 8 schema: {e}"))?;
+
+    for (table, legacy_column, columns) in [
+        ("work_states", "goal_id", "work_id,instance_id,epoch,task_id,state,checkpoint_json,policy_json,pending_reason,empty_turns,fingerprints_json,reason,revision"),
+        ("work_inputs", "goal_id", "work_id,instance_id,epoch,envelope_id,state"),
+        ("tasks", "goal_id", "work_id,id,session_id,requester,assignee,dependencies_json,acceptance_refs_json,status,result_refs_json,revision"),
+        ("instances", "active_goal_id", "id,session_id,profile_revision,workspace_ref,context_epoch,lifecycle,phase,revision,active_work_id,active_request_id,context_head,profile_json"),
+        ("work_requests", "billed_goal_id", "request_id,context_json,billed_work_id,unknown_usage"),
+        ("model_requests", "goal_id", "request_id,instance_id,epoch,work_id,request_ref,selected_attempt_id,status,est_prompt_tokens,kind,offered_tools,surface_authorized"),
+        ("operations", "goal_id", "operation_id,decision_id,tool_index,work_id,epoch,intent_json,args_hash,grant_revision,cancel_requested,status,receipt_json,quiescence_json,dispatch_wait_json"),
+    ] {
+        if column_present(tx, table, legacy_column)? {
+            rebuild_legacy_work_table(tx, table, columns)?;
+        }
+    }
+
+    if table_exists(tx, "goals")? {
+        tx.execute(
+            "INSERT INTO work_scopes
+             (id,session_id,original_request_ref,requirement_revision,status,deadline,limits_json,known_usage_json,reservations_json,unknown_usage)
+             SELECT id,session_id,original_request_ref,requirement_revision,status,deadline,limits_json,known_usage_json,reservations_json,unknown_usage FROM goals",
+            [],
+        )
+        .map_err(|e| format!("migrate work scopes: {e}"))?;
+        tx.execute_batch("DROP TABLE goals").map_err(|e| format!("drop legacy goals: {e}"))?;
+    }
+    migrate_work_scope_events(tx)?;
     Ok(())
 }
 
@@ -644,7 +795,7 @@ fn rewrite_closing_notes(tx: &rusqlite::Transaction) -> Result<(), String> {
             .prepare(
                 "SELECT id, message_json FROM context_entries
                  WHERE kind = 'assistant'
-                   AND (envelope_id LIKE 'goal-close-%' OR envelope_id LIKE 'goal-block-%'
+                   AND (envelope_id LIKE 'work-close-%' OR envelope_id LIKE 'work-block-%'
                         OR envelope_id LIKE 'turn-close-%')",
             )
             .map_err(|e| format!("migrate 2 -> 3 scan: {e}"))?;
@@ -904,7 +1055,7 @@ mod tests {
     }
 
     #[test]
-    fn work_migration_preserves_old_goals_without_enrolling_them() {
+    fn work_migration_preserves_old_work_scopes_without_enrolling_them() {
         let p = path("migrate-work");
         {
             let conn = open(&p, true).unwrap();
@@ -912,7 +1063,7 @@ mod tests {
                 ALTER TABLE operations DROP COLUMN quiescence_json;
                 ALTER TABLE operations DROP COLUMN dispatch_wait_json;
                 UPDATE meta SET value='6' WHERE key='schema_version';
-                INSERT INTO goals(id,session_id,original_request_ref,status,limits_json,known_usage_json,reservations_json)
+                INSERT INTO work_scopes(id,session_id,original_request_ref,status,limits_json,known_usage_json,reservations_json)
                     VALUES('old','s','input','SUCCEEDED','{}','{\"total\":15}','{}');").unwrap();
         }
         let reader = open_read_only(&p).unwrap();
@@ -923,9 +1074,11 @@ mod tests {
         let conn = open(&p, false).unwrap();
         let version: String =
             conn.query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap();
-        assert_eq!(version, "7");
+        assert_eq!(version, "8");
         let row: (String, String) = conn
-            .query_row("SELECT status,known_usage_json FROM goals WHERE id='old'", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .query_row("SELECT status,known_usage_json FROM work_scopes WHERE id='old'", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
             .unwrap();
         assert_eq!(row, ("SUCCEEDED".into(), "{\"total\":15}".into()));
         for table in ["work_states", "work_inputs", "work_requests"] {
@@ -936,6 +1089,157 @@ mod tests {
         }
         assert!(column_present(&conn, "operations", "quiescence_json").unwrap());
         assert!(column_present(&conn, "operations", "dispatch_wait_json").unwrap());
+        drop(conn);
+        cleanup(&p);
+    }
+
+    #[test]
+    fn work_scope_migration_preserves_state_and_history() {
+        let p = path("migrate-work-vocabulary");
+        {
+            let conn = Connection::open(&p).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 INSERT INTO meta VALUES ('format_id','teamagents-v2'),('schema_version','7');
+                 CREATE TABLE instances (
+                   id TEXT PRIMARY KEY, session_id TEXT NOT NULL, profile_revision INTEGER NOT NULL,
+                   workspace_ref TEXT NOT NULL DEFAULT '', context_epoch INTEGER NOT NULL DEFAULT 0,
+                   lifecycle TEXT NOT NULL, phase TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0,
+                   active_goal_id TEXT, active_request_id TEXT, context_head INTEGER NOT NULL DEFAULT 0,
+                   profile_json TEXT NOT NULL);
+                 CREATE TABLE goals (
+                   id TEXT PRIMARY KEY, session_id TEXT NOT NULL, original_request_ref TEXT NOT NULL,
+                   requirement_revision INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL, deadline REAL,
+                   limits_json TEXT NOT NULL, known_usage_json TEXT NOT NULL, reservations_json TEXT NOT NULL,
+                   unknown_usage INTEGER NOT NULL DEFAULT 0);
+                 CREATE TABLE work_states (
+                   goal_id TEXT NOT NULL, instance_id TEXT NOT NULL, epoch INTEGER NOT NULL,
+                   task_id TEXT NOT NULL DEFAULT '', state TEXT NOT NULL DEFAULT 'RUNNING',
+                   checkpoint_json TEXT NOT NULL DEFAULT '{}', policy_json TEXT NOT NULL DEFAULT '{}',
+                   pending_reason TEXT NOT NULL DEFAULT 'Assigned work', empty_turns INTEGER NOT NULL DEFAULT 0,
+                   fingerprints_json TEXT NOT NULL DEFAULT '[]', reason TEXT NOT NULL DEFAULT '',
+                   revision INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(goal_id,instance_id,epoch,task_id));
+                 CREATE TABLE work_requests (
+                   request_id TEXT PRIMARY KEY, context_json TEXT NOT NULL, billed_goal_id TEXT,
+                   unknown_usage INTEGER NOT NULL DEFAULT 0);
+                 CREATE TABLE work_inputs (
+                   goal_id TEXT NOT NULL, instance_id TEXT NOT NULL, epoch INTEGER NOT NULL,
+                   envelope_id TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'ASSIGNED',
+                   PRIMARY KEY(instance_id,epoch,envelope_id));
+                 CREATE TABLE tasks (
+                   id TEXT PRIMARY KEY, goal_id TEXT NOT NULL, session_id TEXT NOT NULL,
+                   requester TEXT NOT NULL, assignee TEXT NOT NULL, dependencies_json TEXT NOT NULL,
+                   acceptance_refs_json TEXT NOT NULL, status TEXT NOT NULL, result_refs_json TEXT NOT NULL,
+                   revision INTEGER NOT NULL DEFAULT 0);
+                 CREATE TABLE model_requests (
+                   request_id TEXT PRIMARY KEY, instance_id TEXT NOT NULL, epoch INTEGER NOT NULL,
+                   goal_id TEXT, request_ref TEXT NOT NULL, selected_attempt_id TEXT, status TEXT NOT NULL,
+                   est_prompt_tokens INTEGER, kind TEXT NOT NULL DEFAULT 'turn', offered_tools TEXT,
+                   surface_authorized INTEGER NOT NULL DEFAULT 0);
+                 CREATE TABLE operations (
+                   operation_id TEXT PRIMARY KEY, decision_id TEXT NOT NULL, tool_index INTEGER NOT NULL,
+                   goal_id TEXT, epoch INTEGER NOT NULL, intent_json TEXT NOT NULL DEFAULT '',
+                   args_hash TEXT NOT NULL, grant_revision INTEGER NOT NULL DEFAULT 0,
+                   cancel_requested INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL, receipt_json TEXT,
+                   quiescence_json TEXT, dispatch_wait_json TEXT);
+                 CREATE TABLE events (
+                   session_id TEXT NOT NULL, sequence INTEGER NOT NULL, kind TEXT NOT NULL,
+                   scope TEXT NOT NULL DEFAULT '', payload_json TEXT, payload_ref TEXT, created REAL NOT NULL,
+                   PRIMARY KEY(session_id,sequence));
+                 INSERT INTO goals VALUES
+                   ('g-old','s','input',2,'ACTIVE',123,'{\"max_check_rounds\":4}','{\"total\":15}','{\"r\":1}',2);
+                 INSERT INTO instances VALUES
+                   ('i-old','s',1,'',0,'ACTIVE','READY',0,'g-old',NULL,0,'{}');
+                 INSERT INTO work_states VALUES
+                   ('g-old','i-old',0,'t-old','RUNNING','{}','{}','Assigned work',0,'[]','',3);
+                 INSERT INTO work_requests VALUES ('r-old','{}','g-old',2);
+                 INSERT INTO work_inputs VALUES ('g-old','i-old',0,'e-old','ASSIGNED');
+                 INSERT INTO tasks VALUES
+                   ('t-old','g-old','s','i-leader','i-old','[]','[]','OPEN','[]',4);
+                 INSERT INTO model_requests VALUES
+                   ('r-old','i-old',0,'g-old','ref',NULL,'PENDING',NULL,'turn',NULL,0);
+                 INSERT INTO operations VALUES
+                   ('op-old','d-old',0,'g-old',0,'{}','hash',0,0,'OPEN',NULL,NULL,NULL);
+                 INSERT INTO events(session_id,sequence,kind,scope,payload_json,created) VALUES
+                   ('s',1,'goal_created','g-old','{\"goal_id\":\"g-old\",\"nested\":{\"goal_id\":\"g-old\"}}',0),
+                   ('s',2,'goal_completed','g-old','{\"goal_id\":\"g-old\",\"status\":\"SUCCEEDED\"}',1),
+                   ('s',3,'goal_checks_required','g-old','{\"goal_id\":\"g-old\",\"checks\":[\"tests\"]}',2),
+                   ('s',4,'goal_deadline_warning','g-old','{\"goal_id\":\"g-old\",\"seconds_left\":5}',3);",
+            )
+            .unwrap();
+        }
+        let conn = open(&p, false).expect("migrate old work vocabulary");
+        let version: String =
+            conn.query_row("SELECT value FROM meta WHERE key='schema_version'", [], |row| row.get(0)).unwrap();
+        assert_eq!(version, "8");
+        assert!(!table_exists(&conn, "goals").unwrap());
+        let scope: (String, i64, String, String, String, i64) = conn
+            .query_row(
+                "SELECT status,requirement_revision,limits_json,known_usage_json,reservations_json,unknown_usage
+                 FROM work_scopes WHERE id='g-old'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            scope,
+            ("ACTIVE".into(), 2, "{\"max_check_rounds\":4}".into(), "{\"total\":15}".into(), "{\"r\":1}".into(), 2)
+        );
+        for (sql, expected) in [
+            ("SELECT active_work_id FROM instances WHERE id='i-old'", "g-old"),
+            ("SELECT work_id FROM work_states WHERE instance_id='i-old'", "g-old"),
+            ("SELECT billed_work_id FROM work_requests WHERE request_id='r-old'", "g-old"),
+            ("SELECT work_id FROM work_inputs WHERE envelope_id='e-old'", "g-old"),
+            ("SELECT work_id FROM tasks WHERE id='t-old'", "g-old"),
+            ("SELECT work_id FROM model_requests WHERE request_id='r-old'", "g-old"),
+            ("SELECT work_id FROM operations WHERE operation_id='op-old'", "g-old"),
+        ] {
+            let actual: String = conn.query_row(sql, [], |row| row.get(0)).unwrap();
+            assert_eq!(actual, expected, "{sql}");
+        }
+        for (table, column) in [
+            ("instances", "active_goal_id"),
+            ("work_states", "goal_id"),
+            ("work_requests", "billed_goal_id"),
+            ("work_inputs", "goal_id"),
+            ("tasks", "goal_id"),
+            ("model_requests", "goal_id"),
+            ("operations", "goal_id"),
+        ] {
+            assert!(!column_present(&conn, table, column).unwrap(), "{table}.{column} survived migration");
+        }
+        assert!(conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_operations_status')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap());
+        let event: (String, String) = conn
+            .query_row("SELECT kind,payload_json FROM events WHERE sequence=1", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(event.0, "work_created");
+        assert!(event.1.contains("work_id"));
+        assert!(!event.1.contains("goal_id"));
+        let legacy_events: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE kind LIKE 'goal_%' OR payload_json LIKE '%\"goal_id\"%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(legacy_events, 0);
+        // The old primary-key/NOT NULL columns must not reject new writes.
+        conn.execute("INSERT INTO work_states(work_id,instance_id,epoch,task_id) VALUES ('g-old','i-new',0,'')", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO tasks(id,work_id,session_id,requester,assignee,dependencies_json,acceptance_refs_json,status,result_refs_json)
+             VALUES ('t-new','g-old','s','i-leader','i-new','[]','[]','OPEN','[]')",
+            [],
+        )
+        .unwrap();
         drop(conn);
         cleanup(&p);
     }
@@ -996,8 +1300,8 @@ mod tests {
             conn.execute_batch(
                 "INSERT INTO context_entries (instance_id, epoch, idx, id, kind, message_json, envelope_id, created)
                  VALUES ('i1', 0, 1, 'i1:0:1', 'assistant',
-                         '{\"role\":\"assistant\",\"content\":\"runtime: goal g1 closed as SUCCEEDED\"}',
-                         'goal-close-g1', 0),
+                         '{\"role\":\"assistant\",\"content\":\"runtime: work g1 closed as SUCCEEDED\"}',
+                         'work-close-g1', 0),
                         ('i1', 0, 2, 'i1:0:2', 'assistant',
                          '{\"role\":\"assistant\",\"content\":\"the real answer\"}', 'dec-1', 0),
                         ('i1', 0, 3, 'i1:0:3', 'tool_result',

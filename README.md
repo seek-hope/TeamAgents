@@ -4,11 +4,11 @@
 [Full architecture](docs/ARCHITECTURE.md)
 
 TeamAgents is a Linux terminal coding agent built around a Leader and optional worker instances. You describe
-the goal; the Leader decides whether to work alone or delegate parts of it. A daemon keeps the session running
+the work; the Leader decides whether to work alone or delegate parts of it. A daemon keeps the session running
 when you close the TUI, and each session stores its authoritative state in one SQLite database.
 
 Within your instructions and intent, the agents are encouraged to explore, exercise judgment and deliver
-thorough, verified work. Admitted goals persist across turns, compaction and restart; progress updates do not
+thorough, verified work. Admitted work_scopes persist across turns, compaction and restart; progress updates do not
 finish the work, and routine choices need no repeated confirmation.
 
 - The TUI and `teamagents exec` share a daemon, with snapshots and event watermarks for reconnect.
@@ -19,23 +19,21 @@ finish the work, and routine choices need no repeated confirmation.
 
 ## Design in five views
 
-These five views explain the product and its execution model. The [full visual architecture](docs/ARCHITECTURE.md)
-expands them into numbered diagrams, persistent keys, transition guards, wire frames and recovery cases.
-Read that atlas alongside the linked source to implement the same behavior.
+These five views summarize the product and its execution model. The [full visual architecture](docs/ARCHITECTURE.md) expands them into numbered diagrams, persistent keys, transition guards, wire frames, and recovery cases. Use that document alongside the linked source to reproduce the behavior.
 
-### 1. One goal, an optional team
+### 1. One work, an optional team
 
-A **goal** owns the whole admitted user request, its requirements and shared budget. A **task** is one delegated
+A **work** owns the whole admitted user request, its requirements and shared budget. A **task** is one delegated
 assignment. An **instance** is a reusable actor with private context; the Leader is an instance with management
-authority, not a different model engine. A turn or a progress message does not complete the goal.
+authority, not a different model engine. A turn or a progress message does not complete the work.
 
 ```mermaid
 flowchart TB
     accTitle: From user request to verified result
-    accDescr: The Leader can work alone or delegate assignments under one persistent goal. Results are reconciled and checked before success; questions, blocked work and repair remain explicit.
-    user["User request and later steering"] --> goal["Persistent goal: requirements and shared budget"]
-    goal --> leader["Leader plans and acts"]
-    subgraph execution["Work under the same goal"]
+    accDescr: The Leader can work alone or delegate assignments under one persistent work. Results are reconciled and checked before success; questions, blocked work and repair remain explicit.
+    user["User request and later steering"] --> work["Persistent work: requirements and shared budget"]
+    work --> leader["Leader plans and acts"]
+    subgraph execution["Work under the same work"]
         own["Leader tools"]
         members["Optional member tasks"]
         evidence["Files, messages and execution receipts"]
@@ -47,12 +45,12 @@ flowchart TB
     leader -->|"material question or blocker"| attention["Needs input / BLOCKED"]
     evidence --> reconcile["Reconcile latest input and remaining work"]
     reconcile --> checks{"Completion guards and checks pass?"}
-    checks -->|"yes"| result["Settle goal and report result"]
+    checks -->|"yes"| result["Settle work and report result"]
     checks -->|"repair within bounds"| leader
     checks -->|"cannot proceed"| attention
 ```
 
-[Goal/task/work states](docs/ARCHITECTURE.md#3-state-machines) ·
+[Work/task/work states](docs/ARCHITECTURE.md#3-state-machines) ·
 [Completion and evidence](docs/ARCHITECTURE.md#7-budget-and-completion)
 
 ### 2. Clients, runtime and the source of truth
@@ -83,7 +81,7 @@ flowchart TB
 
 Closing a client leaves the daemon running. A committed job can survive a daemon restart. The kernel prepares
 requests and interprets responses; the control plane owns authoritative state; the engine owns I/O; the TUI
-owns presentation. The current format is database schema 7, socket protocol 1 and work policy 1.
+owns presentation. The current format is database schema 8, socket protocol 1 and work policy 1.
 
 [Deployment and bootstrap](docs/ARCHITECTURE.md#1-deployment-and-ownership) ·
 [Data relationships and transactions](docs/ARCHITECTURE.md#2-durable-data)
@@ -111,7 +109,7 @@ stateDiagram-v2
 
 Enrolled work continues after progress prose, with bounded recovery for empty or repeating behavior. Material
 questions wait for an answer; explicit user stops survive late results and restarts. After terminal work, an
-information-only answer creates no goal, while actionable work is admitted internally with its original input,
+information-only answer creates no work, while actionable work is admitted internally with its original input,
 policy and costs. Upgrading an old session does not silently enroll or restart it.
 
 [Context construction and admission](docs/ARCHITECTURE.md#4-model-and-context-loop) ·
@@ -135,10 +133,7 @@ flowchart TB
     claims["Prompts, Skills and tool output"] -.->|"information only"| member
 ```
 
-Workers have no ambient Shell. Missing authority produces a capability request for the user. Revoking a parent
-revokes its children, and dispatch checks current grants again. A task result does not grant general messaging
-or another member's history. Ordinary authorized Shell and local MCP run on the host; these logical boundaries
-are not an OS sandbox. Self-update retains its separate approval.
+Workers have no default Shell access; missing permissions trigger a capability request to the user. Revoking a parent grant also revokes its child grants, and dispatch re-checks current grants before running. Returning a task result does not open a general messaging channel or expose another member's history. Authorized Shell commands and local MCP servers run directly on the host—these logical permission boundaries are not an OS sandbox. Self-update still requires separate approval.
 
 [Delegation, messages, waits and approvals](docs/ARCHITECTURE.md#5-team-and-authority) ·
 [Tools and workspaces](docs/ARCHITECTURE.md#9-tools-and-resources)
@@ -207,9 +202,7 @@ local evidence and its limits are recorded in the [maturity report](review/matur
 <!-- maps: docs/PRODUCT-COMPARISON.md reader=user -->
 <!-- maps: docs/USER-GUIDE.md reader=user -->
 
-New here? Start with the [install guide](docs/INSTALL.md). The published **v0.2.0** archive is an older
-Linux x86_64 baseline; use a [source build](docs/INSTALL.md#build-and-install-from-source) for the current
-behavior described here.
+Start with the [install guide](docs/INSTALL.md). The published v0.2.0 archive is an older Linux x86_64 baseline; build from [source](docs/INSTALL.md#build-and-install-from-source) for the current behavior described here.
 
 ## Install
 
@@ -287,12 +280,12 @@ git diff | teamagents exec -
 `--stream-json` emits one event object per line, followed by the same report object that `--json` prints.
 Closing the consumer ends the stream, not the underlying run.
 
-Exit codes are `0` for a completed goal or direct answer, `1` for failure or an unfinished run, `2` for usage
+Exit codes are `0` for a completed work or direct answer, `1` for failure or an unfinished run, `2` for usage
 or infrastructure errors, `3` when approval or a material user answer is needed, and `124` when `--timeout` expires.
 
 `--check COMMAND` runs after a finished turn and stops at the first failure. `--accept ID=COMMAND` attaches a
-required check to the goal before the input is submitted, so a failure can trigger bounded repair instead of
-merely changing the exit code. See [goal limits](docs/USER-GUIDE.md#22-goal-limits-limits) for token, deadline
+required check to the work before the input is submitted, so a failure can trigger bounded repair instead of
+merely changing the exit code. See [work limits](docs/USER-GUIDE.md#22-work-limits-limits) for token, deadline
 and per-tool limits.
 
 Manage capabilities through the same session:
@@ -320,7 +313,7 @@ expire with their task or instance.
 | `--full-auto` | Compatibility flag; new sessions already use automatic host Shell |
 
 Use `teamagents --help` for the complete command list. The main groups are `init`, `doctor`, `daemon`, `exec`,
-`authority`, `approvals`, `instances`, `tasks`, `goals`, `runners`, `artifacts`, `sessions`, `automations`,
+`authority`, `approvals`, `instances`, `tasks`, `work_scopes`, `runners`, `artifacts`, `sessions`, `automations`,
 `mcp`, `status`, `history`, `surface` and `version`. `daemon --stop` stops the session that owns the selected
 state root; closing the TUI does not.
 

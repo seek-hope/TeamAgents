@@ -227,7 +227,7 @@ fn retired_commands_are_local_and_approval_arrival_does_not_steal_typing() {
         "/tasks",
         "/instances",
         "/topology",
-        "/goals cancel x",
+        "/work_scopes cancel x",
         "/switch other",
         "/mcp",
         "/status",
@@ -413,7 +413,7 @@ fn responsive_status_and_hints_prioritize_current_actions() {
         let mut app = app();
         app.session_name = "project".into();
         app.apply_checkpoint(json!({"instances":[{"id":"i-leader","lifecycle":"ACTIVE","phase":"READY","model":"deepseek-flash","effort":"high"}],
-            "goal":{"status":"ACTIVE","known_usage":{"total":42}}}), 2);
+            "work":{"status":"ACTIVE","known_usage":{"total":42}}}), 2);
         let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
         terminal.draw(|frame| v2ui::render(frame, &mut app)).unwrap();
         let row = |y| (0..width).map(|x| terminal.backend().buffer()[(x, y)].symbol()).collect::<String>();

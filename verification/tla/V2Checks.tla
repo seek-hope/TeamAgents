@@ -2,11 +2,11 @@
 (***************************************************************************)
 (* Required checks (plan §8/A16): only a *claimed success* is verified, a       *)
 (* failing check enters a bounded repair round, exhausted rounds (or an        *)
-(* infrastructure failure the model cannot repair) settle the goal BLOCKED —   *)
+(* infrastructure failure the model cannot repair) settle the work BLOCKED —   *)
 (* never SUCCEEDED. The runtime never upgrades the model's candidate.          *)
 (*                                                                          *)
 (* The contract's *ingress* is modelled too (D-385): `require_checks` lets the  *)
-(* user attach acceptance commands to a goal that has not started verifying,    *)
+(* user attach acceptance commands to a work that has not started verifying,    *)
 (* so `required` is a variable and a round records which set it actually ran    *)
 (* (`roundChecks`). A check added after a claim would never be run by the       *)
 (* registered round, which is why the rule is "before any candidate" and why    *)
@@ -21,25 +21,25 @@
 (* failure class, not a pass); core/src/v2/control.rs — require_checks (a       *)
 (* user/project ingress; refused once a round is registered), register_check_runs, *)
 (* validate_required_checks (user/project-defined contracts only),              *)
-(* repair_completion, block_goal, complete_goal (closes with the *stored*       *)
+(* repair_completion, block_work, complete_work (closes with the *stored*       *)
 (* candidate outcome).                                                          *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets
 
 CONSTANTS AllChecks,   \* every check a client could require, e.g. {"k1","k2"}
-          Independent, \* D-393: do the goal's limits require a round another instance registered?
+          Independent, \* D-393: do the work's limits require a round another instance registered?
           SelfVerified, \* counterfactual (D-393): accept a round the producing instance registered itself
           MaxRounds,   \* repair-round budget, e.g. 2
           RewindRounds, \* counterfactual (D-219): opening a round resets the counter instead of advancing it
           LateRequire, \* counterfactual (D-385): a check may join after a claim, so no round covers it
-          BriefWithoutChecks, \* counterfactual (D-418): the instance is told about checks the goal does not require
+          BriefWithoutChecks, \* counterfactual (D-418): the instance is told about checks the work does not require
           \* D-462 counterfactuals, one per claim:
           BriefTwice,         \* the instance is briefed a second time
           RoundWithoutClaim,  \* a round is registered for a candidate that claims nothing
           UpgradeCandidate,   \* a failed candidate settles as SUCCEEDED
           UnverifiedAccept,   \* a success settles with no passing verdict at all
           UnboundedRounds,    \* a round opens past the repair budget
-          BlockWithoutCause   \* the goal blocks with no exhausted budget and no stale check
+          BlockWithoutCause   \* the work blocks with no exhausted budget and no stale check
 
 ASSUME AllChecks # {} /\ MaxRounds > 0
 
@@ -47,51 +47,51 @@ Registrar == {"producer", "verifier"}
 Producer == "producer"
 Verifier == "verifier"
 Outcomes == {"none", "success", "failed", "blocked"}
-GoalStatus == {"ACTIVE", "SUCCEEDED", "BLOCKED", "FAILED"}
+WorkStatus == {"ACTIVE", "SUCCEEDED", "BLOCKED", "FAILED"}
 CheckResult == {"none", "pass", "fail", "stale"}
 Verdict == {"none", "pass", "fail", "infra", "stale"}
 
 VARIABLES
   candidate,   \* the stored completion candidate's outcome
-  goalStatus,  \* the goal's status
-  required,    \* the checks the goal's `limits.required_checks` names *now*
+  workStatus,  \* the work's status
+  required,    \* the checks the work's `limits.required_checks` names *now*
   round,       \* rounds registered so far
   openOps,     \* open check operations of the current round
   result,      \* check -> this round's result
   roundChecks, \* the checks the registered round was computed over
   registrar,   \* who registered the current round (D-393): the producing instance or a verifier
-  briefings,   \* D-418: how many times the instance was told the goal's required checks
+  briefings,   \* D-418: how many times the instance was told the work's required checks
   lastVerdict, \* the verdict of the last completed round
   roundOpen,   \* is a round registered but not yet verdicted
-  upgrades,    \* monitor: goals that succeeded without a passing verdict
+  upgrades,    \* monitor: work_scopes that succeeded without a passing verdict
   lateRound,   \* monitor: a round registered for a non-success candidate
   rewound,     \* monitor: the round counter ever went backwards
   lateJoin, \* monitor: a check joined the contract after a claim
   nonSuccessSuccess \* monitor: a failed/blocked candidate ended SUCCEEDED
 
-vars == <<candidate, goalStatus, required, round, openOps, result, roundChecks, registrar, lastVerdict, roundOpen,
+vars == <<candidate, workStatus, required, round, openOps, result, roundChecks, registrar, lastVerdict, roundOpen,
           briefings>>
 monVars == <<vars, upgrades, lateRound, rewound, lateJoin, nonSuccessSuccess>>
 
 \* ------------------------------------------------------------------- actions --
-\* D-418: the runtime tells the instance, once, which checks the goal must satisfy. It is a *briefing*, not a
+\* D-418: the runtime tells the instance, once, which checks the work must satisfy. It is a *briefing*, not a
 \* verdict: it states the criterion while the work is planned, where the gate that enforces it runs only at the
 \* completion boundary (`NextCheck`/`ComputeVerdict` below). The text is the runtime's own composition of the
-\* goal's stored contract, so a goal with nothing required is told nothing — the counterfactual that briefs
-\* anyway must refute `BriefingIsForAGoalWithChecks`.
+\* work's stored contract, so a work with nothing required is told nothing — the counterfactual that briefs
+\* anyway must refute `BriefingIsForAWorkWithChecks`.
 Brief ==
-  /\ goalStatus = "ACTIVE"
+  /\ workStatus = "ACTIVE"
   /\ (BriefWithoutChecks \/ required # {})
   /\ (BriefTwice \/ briefings = 0)
   /\ briefings' = IF BriefTwice THEN briefings + 1 ELSE 1
-  /\ UNCHANGED <<candidate, goalStatus, required, round, openOps, result, roundChecks, registrar, lastVerdict,
+  /\ UNCHANGED <<candidate, workStatus, required, round, openOps, result, roundChecks, registrar, lastVerdict,
                  roundOpen, upgrades, lateRound, rewound, lateJoin, nonSuccessSuccess>>
 
-\* `require_checks` (D-385): the user's acceptance joins the goal. Only before the
+\* `require_checks` (D-385): the user's acceptance joins the work. Only before the
 \* model has claimed anything — a round decides from its own stored receipts, so a
-\* check added later would never be run and the goal could still be accepted.
+\* check added later would never be run and the work could still be accepted.
 RequireCheck(c) ==
-  /\ goalStatus = "ACTIVE"
+  /\ workStatus = "ACTIVE"
   /\ c \in AllChecks
   /\ c \notin required
   /\ (candidate = "none" \/ LateRequire)
@@ -101,9 +101,9 @@ RequireCheck(c) ==
   /\ rewound' = rewound
   /\ nonSuccessSuccess' = nonSuccessSuccess
   /\ lateJoin' = (lateJoin \/ (candidate # "none"))
-  /\ UNCHANGED <<candidate, goalStatus, round, openOps, result, roundChecks, lastVerdict, roundOpen, registrar, briefings>>
+  /\ UNCHANGED <<candidate, workStatus, round, openOps, result, roundChecks, lastVerdict, roundOpen, registrar, briefings>>
 
-\* The finish import stores the model's candidate; it never moves the goal.
+\* The finish import stores the model's candidate; it never moves the work.
 StoreCandidate(outcome) ==
   /\ candidate = "none"
   /\ outcome \in {"success", "failed", "blocked"}
@@ -113,14 +113,14 @@ StoreCandidate(outcome) ==
   /\ rewound' = rewound
   /\ lateJoin' = lateJoin
   /\ nonSuccessSuccess' = nonSuccessSuccess
-  /\ UNCHANGED <<goalStatus, required, round, openOps, result, roundChecks, lastVerdict, roundOpen, registrar, briefings>>
+  /\ UNCHANGED <<workStatus, required, round, openOps, result, roundChecks, lastVerdict, roundOpen, registrar, briefings>>
 
 \* A candidate that does not claim success is settled as itself — no check runs
 \* for it (the driver verifies only a claimed success, §8).
 SettleWithoutChecks ==
   /\ candidate \in {"failed", "blocked"}
-  /\ goalStatus = "ACTIVE"
-  /\ goalStatus' = IF UpgradeCandidate THEN "SUCCEEDED" ELSE (IF candidate = "failed" THEN "FAILED" ELSE "BLOCKED")
+  /\ workStatus = "ACTIVE"
+  /\ workStatus' = IF UpgradeCandidate THEN "SUCCEEDED" ELSE (IF candidate = "failed" THEN "FAILED" ELSE "BLOCKED")
   /\ upgrades' = upgrades
   /\ lateRound' = lateRound
   /\ rewound' = rewound
@@ -129,12 +129,12 @@ SettleWithoutChecks ==
   /\ UNCHANGED <<candidate, required, round, openOps, result, roundChecks, lastVerdict, roundOpen, registrar, briefings>>
 
 \* A claimed success with an empty contract settles on the candidate alone
-\* (`step_completion`: no checks configured ⇒ `complete_goal`).
+\* (`step_completion`: no checks configured ⇒ `complete_work`).
 SettleSuccessWithoutChecks ==
   /\ candidate = "success"
   /\ required = {}
-  /\ goalStatus = "ACTIVE"
-  /\ goalStatus' = "SUCCEEDED"
+  /\ workStatus = "ACTIVE"
+  /\ workStatus' = "SUCCEEDED"
   /\ upgrades' = upgrades
   /\ lateRound' = lateRound
   /\ rewound' = rewound
@@ -147,7 +147,7 @@ SettleSuccessWithoutChecks ==
 \* (rounds < budget).
 RegisterRound ==
   /\ (RoundWithoutClaim \/ candidate = "success")
-  /\ goalStatus = "ACTIVE"
+  /\ workStatus = "ACTIVE"
   /\ required # {}
   /\ ~roundOpen
   /\ (UnboundedRounds \/ round < MaxRounds)
@@ -162,14 +162,14 @@ RegisterRound ==
   /\ nonSuccessSuccess' = nonSuccessSuccess
   /\ lateRound' = IF candidate = "success" THEN lateRound ELSE TRUE
   /\ lateJoin' = lateJoin
-  /\ UNCHANGED <<candidate, goalStatus, required, lastVerdict, briefings>>
+  /\ UNCHANGED <<candidate, workStatus, required, lastVerdict, briefings>>
 
 \* D-393: another instance runs the same contract and registers the round. This is what the
-\* `verify_goal` tool does mid-turn (`register_verification`), and the only round an independent goal
+\* `verify_work` tool does mid-turn (`register_verification`), and the only round an independent work
 \* may settle on.
 RegisterVerifierRound ==
   /\ candidate = "success"
-  /\ goalStatus = "ACTIVE"
+  /\ workStatus = "ACTIVE"
   /\ required # {}
   /\ roundOpen
   /\ registrar = Producer
@@ -179,7 +179,7 @@ RegisterVerifierRound ==
   /\ rewound' = rewound
   /\ lateJoin' = lateJoin
   /\ nonSuccessSuccess' = nonSuccessSuccess
-  /\ UNCHANGED <<candidate, goalStatus, required, round, openOps, result, roundChecks, lastVerdict, roundOpen, briefings>>
+  /\ UNCHANGED <<candidate, workStatus, required, round, openOps, result, roundChecks, lastVerdict, roundOpen, briefings>>
 
 \* ... this version runs one check operation per step (execute_check_ops); each
 \* terminal receipt lands as a result — and only for a check the round runs.
@@ -194,13 +194,13 @@ LandResult(k, r) ==
   /\ rewound' = rewound
   /\ lateJoin' = lateJoin
   /\ nonSuccessSuccess' = nonSuccessSuccess
-  /\ UNCHANGED <<candidate, goalStatus, required, round, openOps, roundChecks, lastVerdict, roundOpen, registrar, briefings>>
+  /\ UNCHANGED <<candidate, workStatus, required, round, openOps, roundChecks, lastVerdict, roundOpen, registrar, briefings>>
 
 \* D-462 counterfactual: a claimed success settles with no passing verdict.
 AcceptUnverified ==
   /\ UnverifiedAccept
-  /\ goalStatus = "ACTIVE"
-  /\ goalStatus' = "SUCCEEDED"
+  /\ workStatus = "ACTIVE"
+  /\ workStatus' = "SUCCEEDED"
   /\ upgrades' = TRUE
   /\ UNCHANGED <<candidate, required, round, openOps, result, roundChecks, lastVerdict, roundOpen, registrar,
                  briefings, lateRound, rewound, lateJoin, nonSuccessSuccess>>
@@ -214,7 +214,7 @@ NextCheck ==
   /\ rewound' = rewound
   /\ lateJoin' = lateJoin
   /\ nonSuccessSuccess' = nonSuccessSuccess
-  /\ UNCHANGED <<candidate, goalStatus, required, round, result, roundChecks, lastVerdict, roundOpen, registrar, briefings>>
+  /\ UNCHANGED <<candidate, workStatus, required, round, result, roundChecks, lastVerdict, roundOpen, registrar, briefings>>
 
 \* The verdict of a completed round: all pass ⇒ pass; an unavailable
 \* verification path (dispatch refused / runner never started) or a stale
@@ -233,17 +233,17 @@ ComputeVerdict ==
      /\ rewound' = rewound
      /\ lateJoin' = lateJoin
      /\ nonSuccessSuccess' = nonSuccessSuccess
-     /\ UNCHANGED <<candidate, goalStatus, required, round, openOps, result, roundChecks, registrar, briefings>>
+     /\ UNCHANGED <<candidate, workStatus, required, round, openOps, result, roundChecks, registrar, briefings>>
 
 \* Infrastructure failures are not model-repairable: they block at once.
 BlockForInfra ==
   /\ roundOpen
   /\ openOps = 0
-  /\ goalStatus = "ACTIVE"
+  /\ workStatus = "ACTIVE"
   \* a stale observation means the verification path itself is unavailable —
   \* like a refused dispatch, the model cannot repair it
   /\ \E k \in roundChecks : (BlockWithoutCause \/ result[k] = "stale")
-  /\ goalStatus' = "BLOCKED"
+  /\ workStatus' = "BLOCKED"
   /\ roundOpen' = FALSE
   /\ lastVerdict' = "stale"
   /\ upgrades' = upgrades
@@ -253,17 +253,17 @@ BlockForInfra ==
   /\ nonSuccessSuccess' = nonSuccessSuccess
   /\ UNCHANGED <<candidate, required, round, openOps, result, roundChecks, registrar, briefings>>
 
-\* A passing verdict closes the goal with the *stored* candidate — over the round's
+\* A passing verdict closes the work with the *stored* candidate — over the round's
 \* own checks, which is the code's shape and the reason `LateRequire` refutes
 \* `EveryRequiredCheckWasVerified`.
 Accept ==
   /\ roundOpen
   /\ openOps = 0
   /\ \A k \in roundChecks : result[k] = "pass"
-  \* D-393: an independent goal settles only on a round a *different* instance registered.
+  \* D-393: an independent work settles only on a round a *different* instance registered.
   /\ (~Independent \/ registrar = Verifier \/ SelfVerified)
-  /\ goalStatus = "ACTIVE"
-  /\ goalStatus' = "SUCCEEDED"
+  /\ workStatus = "ACTIVE"
+  /\ workStatus' = "SUCCEEDED"
   /\ lastVerdict' = "pass"
   /\ roundOpen' = FALSE
   /\ upgrades' = IF candidate = "success" THEN upgrades ELSE TRUE
@@ -273,14 +273,14 @@ Accept ==
   /\ nonSuccessSuccess' = IF candidate = "success" THEN nonSuccessSuccess ELSE TRUE
   /\ UNCHANGED <<candidate, required, round, openOps, result, roundChecks, registrar, briefings>>
 
-\* A failing round below the budget buys another repair turn: the goal stays
+\* A failing round below the budget buys another repair turn: the work stays
 \* ACTIVE, the round is cleared so the driver can register the next one.
 Repair ==
   /\ roundOpen
   /\ openOps = 0
   /\ \E k \in roundChecks : result[k] = "fail"
   /\ \A k \in roundChecks : result[k] # "stale"
-  /\ goalStatus = "ACTIVE"
+  /\ workStatus = "ACTIVE"
   /\ round < MaxRounds
   /\ roundOpen' = FALSE
   /\ lastVerdict' = "fail"
@@ -289,15 +289,15 @@ Repair ==
   /\ lateJoin' = lateJoin
   /\ nonSuccessSuccess' = nonSuccessSuccess
   /\ lateRound' = lateRound
-  /\ UNCHANGED <<candidate, goalStatus, required, round, openOps, result, roundChecks, registrar, briefings>>
+  /\ UNCHANGED <<candidate, workStatus, required, round, openOps, result, roundChecks, registrar, briefings>>
 
-\* Exhausted budget: the goal is settled BLOCKED, never upgraded
-\* (complete_goal is never reached with a failing verdict).
+\* Exhausted budget: the work is settled BLOCKED, never upgraded
+\* (complete_work is never reached with a failing verdict).
 BlockWhenExhausted ==
   /\ \/ (roundOpen /\ openOps = 0 /\ (\E k \in roundChecks : result[k] = "fail")
                        /\ (\A j \in roundChecks : result[j] # "stale") /\ round >= MaxRounds)
-     \/ (~roundOpen /\ round >= MaxRounds /\ goalStatus = "ACTIVE" /\ candidate = "success")
-  /\ goalStatus' = "BLOCKED"
+     \/ (~roundOpen /\ round >= MaxRounds /\ workStatus = "ACTIVE" /\ candidate = "success")
+  /\ workStatus' = "BLOCKED"
   /\ roundOpen' = FALSE
   /\ upgrades' = upgrades
   /\ lateRound' = lateRound
@@ -328,7 +328,7 @@ Next ==
 
 Init ==
   /\ candidate = "none"
-  /\ goalStatus = "ACTIVE"
+  /\ workStatus = "ACTIVE"
   /\ required = {}
   /\ round = 0
   /\ openOps = 0
@@ -349,7 +349,7 @@ Spec == Init /\ [][Next]_monVars
 \* --------------------------------------------------------------- invariants --
 TypeOK ==
   /\ candidate \in Outcomes
-  /\ goalStatus \in GoalStatus
+  /\ workStatus \in WorkStatus
   /\ required \subseteq AllChecks
   /\ roundChecks \subseteq AllChecks
   /\ registrar \in Registrar
@@ -359,8 +359,8 @@ TypeOK ==
   /\ lastVerdict \in Verdict
   /\ roundOpen \in BOOLEAN
 
-\* A16: a goal only reaches SUCCEEDED when every *required* check really passed,
-\* and it passed in the round the goal was closed on. This is stated over the
+\* A16: a work only reaches SUCCEEDED when every *required* check really passed,
+\* and it passed in the round the work was closed on. This is stated over the
 \* *observed results* (not over the recorded verdict): writing "pass" into a
 \* verdict variable is exactly the kind of self-fulfilling claim this invariant
 \* must not accept. `LateRequire` is the control that breaks the second half.
@@ -369,24 +369,24 @@ TypeOK ==
 BriefingIsOnce ==
   briefings <= 1
 
-\* One briefing per goal, and only while the goal is live and really requires something.
-BriefingIsForAGoalWithChecks ==
-  [][ (briefings' > briefings) => (required # {} /\ goalStatus = "ACTIVE") ]_vars
+\* One briefing per work, and only while the work is live and really requires something.
+BriefingIsForAWorkWithChecks ==
+  [][ (briefings' > briefings) => (required # {} /\ workStatus = "ACTIVE") ]_vars
 
 EveryRequiredCheckWasVerified ==
-  goalStatus = "SUCCEEDED" => (\A k \in required : k \in roundChecks /\ result[k] = "pass")
+  workStatus = "SUCCEEDED" => (\A k \in required : k \in roundChecks /\ result[k] = "pass")
 
-\* D-393: a goal that requires independent verification never settles on the producing instance's own round.
-\* The rule is about a settlement *on a round*: a goal with no required checks has nothing an independent pass
+\* D-393: a work that requires independent verification never settles on the producing instance's own round.
+\* The rule is about a settlement *on a round*: a work with no required checks has nothing an independent pass
 \* could run, so it settles on its candidate alone (`round = 0`) and the flag never applies to it.
 IndependenceIsNotSelfVerified ==
-  (goalStatus = "SUCCEEDED" /\ round > 0) => (~Independent \/ registrar = Verifier)
+  (workStatus = "SUCCEEDED" /\ round > 0) => (~Independent \/ registrar = Verifier)
 
 \* §8: the runtime never upgrades the model's candidate — a candidate that
 \* admits undelivered work cannot end SUCCEEDED (monitored too)
 NoUpgradeOfTheCandidate ==
   /\ nonSuccessSuccess = FALSE
-  /\ candidate \in {"failed", "blocked"} => goalStatus # "SUCCEEDED"
+  /\ candidate \in {"failed", "blocked"} => workStatus # "SUCCEEDED"
 
 \* checks are only run for a claimed success (monitored)
 ChecksOnlyVerifyAClaimedSuccess == lateRound = FALSE
@@ -402,10 +402,10 @@ RoundsAreBounded == round <= MaxRounds
 \* the verification path itself was unavailable (stale observation / refused
 \* dispatch) — never a silent close
 BlockedAfterTheBudgetOrStale ==
-  candidate = "success" /\ goalStatus = "BLOCKED" =>
+  candidate = "success" /\ workStatus = "BLOCKED" =>
     round >= MaxRounds \/ (\E k \in roundChecks : result[k] = "stale")
 
-\* no goal ever succeeded without a passing verdict (monitored)
+\* no work ever succeeded without a passing verdict (monitored)
 NoUnverifiedSuccess == upgrades = FALSE
 
 =============================================================================

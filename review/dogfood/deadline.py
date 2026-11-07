@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The goal deadline, end to end: the daemon refuses past it and the client says so (A35).
+"""The work deadline, end to end: the daemon refuses past it and the client says so (A35).
 
 A35's row has formal coverage (`V2Control`'s deadline gate plus the refuted control
 `MC_control_deadline.cfg`) and a config test; what a user meets is the *product* path: a session whose
@@ -10,10 +10,10 @@ must report that refusal with the runtime's reason instead of waiting out its ow
     python3 review/dogfood/deadline.py                 # ~70 s: one minute of waiting is the point
     python3 review/dogfood/deadline.py --state-dir /tmp/ta-deadline
 
-The probe runs one short turn (which creates the goal with its one-minute deadline), waits until the deadline
+The probe runs one short turn (which creates the work with its one-minute deadline), waits until the deadline
 the runtime recorded has passed, and runs a second turn with a `--check` attached. It then asserts on the
-session itself: exactly one model request (the second turn never reached a model), a `goal_deadline_refused`
-event, the leader `PARKED` with "goal … deadline passed", the client's `failure` carrying the same words, and
+session itself: exactly one model request (the second turn never reached a model), a `work_deadline_refused`
+event, the leader `PARKED` with "work … deadline passed", the client's `failure` carrying the same words, and
 no acceptance command run for the refused turn (D-96: an unfinished turn verifies nothing).
 
 It needs `DEEPSEEK_API_KEY`, uses the native window (D-36) and writes only under `--state-dir`.
@@ -69,11 +69,11 @@ def run_exec(state_root: pathlib.Path, workspace: pathlib.Path, env: dict, promp
 
 def session(state_root: pathlib.Path) -> dict:
     db = sqlite3.connect(f"file:{state_root}/session.sqlite?mode=ro", uri=True)
-    goals = list(db.execute("SELECT id, status, deadline FROM goals ORDER BY rowid"))
+    work_scopes = list(db.execute("SELECT id, status, deadline FROM work_scopes ORDER BY rowid"))
     events = [(row[0], row[1]) for row in db.execute("SELECT kind, payload_json FROM events ORDER BY sequence")]
     requests = list(db.execute("SELECT request_id, status FROM model_requests"))
     instances = list(db.execute("SELECT id, lifecycle, phase FROM instances"))
-    return {"goals": goals, "events": events, "requests": requests, "instances": instances}
+    return {"work_scopes": work_scopes, "events": events, "requests": requests, "instances": instances}
 
 
 
@@ -112,11 +112,11 @@ def main() -> int:
     failures: list[str] = []
     marker = workspace / "check-ran"
 
-    # 1. a short turn creates the goal and its one-minute deadline. The scenario needs a goal that is still
-    #    *open* — the gate refuses a request for a running goal — and the model sometimes settles the goal in
+    # 1. a short turn creates the work and its one-minute deadline. The scenario needs a work that is still
+    #    *open* — the gate refuses a request for a running work — and the model sometimes settles the work in
     #    this first turn instead of only replying, which is the intermittency D-129 records for the A27 probe.
     #    Set the premise up again rather than reporting its absence as product failures: measured 2026-09-26, a
-    #    run whose first turn settled the goal reported seven FAILs (deadline not refused, a model reached, the
+    #    run whose first turn settled the work reported seven FAILs (deadline not refused, a model reached, the
     #    `--check` run) for what was a scenario that never started.
     deadline = None
     for attempt in (1, 2):
@@ -126,26 +126,26 @@ def main() -> int:
         started = time.time()
         first, report = run_exec(state_root, workspace, env, FIRST, [])
         facts = session(state_root)
-        goal = facts["goals"][0] if facts["goals"] else None
+        work = facts["work_scopes"][0] if facts["work_scopes"] else None
         elapsed = round(time.time() - started, 1)
         if first.returncode != 0:
             print(f"1. first turn: exit={first.returncode} end={report.get('end')} ({elapsed}s)")
             failures.append(f"the first turn should succeed, got {first.returncode}: {report}")
             break
-        if goal is None or goal[2] is None:
-            print(f"1. first turn: exit=0 end={report.get('end')} ({elapsed}s), goal={goal}")
-            failures.append(f"the goal carries no deadline: {facts['goals']}")
+        if work is None or work[2] is None:
+            print(f"1. first turn: exit=0 end={report.get('end')} ({elapsed}s), work={work}")
+            failures.append(f"the work carries no deadline: {facts['work_scopes']}")
             break
-        print(f"1. first turn (attempt {attempt}): exit=0 end={report.get('end')} ({elapsed}s); goal {goal[0]} "
-              f"is {goal[1]} with an absolute deadline {round(goal[2] - time.time())}s ahead")
-        if goal[1] == "ACTIVE":
-            deadline = goal[2]
+        print(f"1. first turn (attempt {attempt}): exit=0 end={report.get('end')} ({elapsed}s); work {work[0]} "
+              f"is {work[1]} with an absolute deadline {round(work[2] - time.time())}s ahead")
+        if work[1] == "ACTIVE":
+            deadline = work[2]
             break
-        print(f"   the goal is {goal[1]}, not ACTIVE, so a later request can never reach the deadline gate; "
+        print(f"   the work is {work[1]}, not ACTIVE, so a later request can never reach the deadline gate; "
               f"setting the premise up again")
     if deadline is None:
         if not failures:
-            print("SETUP: the first turn left no open goal twice, and this probe needs one that is still open "
+            print("SETUP: the first turn left no open work twice, and this probe needs one that is still open "
                   "(the model chooses; D-129 records the same intermittency for the A27 probe). Just re-run it.")
         for failure in failures:
             print("FAIL:", failure)
@@ -161,7 +161,7 @@ def main() -> int:
     print(f"   second turn: exit={second.returncode} end={report.get('end')} "
           f"failure={report.get('failure')!r} ({elapsed}s)")
     if second.returncode != 1:
-        failures.append(f"a request past the goal deadline must exit 1, got {second.returncode}")
+        failures.append(f"a request past the work deadline must exit 1, got {second.returncode}")
     if report.get("end") != "failed":
         failures.append(f"the refusal is this run's outcome, not {report.get('end')!r}")
     failure = report.get("failure") or ""
@@ -180,7 +180,7 @@ def main() -> int:
         failures.append(f"the refused turn reached a model: {facts['requests']}")
     else:
         print("   the session holds exactly one model request (the refused turn never called a model)")
-    refused = [payload for kind, payload in facts["events"] if kind == "goal_deadline_refused"]
+    refused = [payload for kind, payload in facts["events"] if kind == "work_deadline_refused"]
     if not refused:
         failures.append("the session did not record the refusal")
     else:

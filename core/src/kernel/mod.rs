@@ -103,7 +103,7 @@ mod tests {
     /// A `finish` without a usable status states no outcome, so it must never
     /// become a completion: the runtime reads it as a protocol problem, hands
     /// it back as an ordinary call (so the model can correct it and the turn
-    /// continues) and keeps the goal open. Reading it as "failed" would report
+    /// continues) and keeps the work open. Reading it as "failed" would report
     /// a failure the model never claimed and skip the required checks.
     #[test]
     fn a_finish_without_a_usable_status_is_not_a_completion() {
@@ -396,9 +396,9 @@ mod tests {
     /// A call id can repeat within one conversation, and then each answer must
     /// stay with the call it actually answers. The runtime's own required-check
     /// round names its synthetic call `check-<round>-<position>` and the round
-    /// counter is per goal, so two goals in one instance both produce
-    /// `check-1-0` — measured in the operator's session DB (goal-task2 at
-    /// entries 151/152, goal-task4 at 343/344). Pairing by id alone let the
+    /// counter is per work, so two work_scopes in one instance both produce
+    /// `check-1-0` — measured in the operator's session DB (work-task2 at
+    /// entries 151/152, work-task4 at 343/344). Pairing by id alone let the
     /// first assistant steal the *second* call's answer, leaving the second
     /// assistant answered by a synthesized note and the wire with two tool
     /// messages for one call; a real DeepSeek request built from that shape
@@ -424,16 +424,16 @@ mod tests {
             )
         };
         let entries = vec![
-            kernel.user_entry("first goal", "e1"),
-            round("e2", "runtime required-check round 1 for goal-one"),
+            kernel.user_entry("first work", "e1"),
+            round("e2", "runtime required-check round 1 for work-one"),
             answer("e3", "first round output"),
             ContextEntry::new(
                 "e4",
                 EntryKind::Runtime,
-                json!({"role": "user", "content": "runtime: goal-one closed as SUCCEEDED"}),
+                json!({"role": "user", "content": "runtime: work-one closed as SUCCEEDED"}),
             ),
-            kernel.user_entry("second goal", "e5"),
-            round("e6", "runtime required-check round 1 for goal-two"),
+            kernel.user_entry("second work", "e5"),
+            round("e6", "runtime required-check round 1 for work-two"),
             answer("e7", "second round output"),
         ];
         let request = kernel.prepare_request(&entries, "req-reused");

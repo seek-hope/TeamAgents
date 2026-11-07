@@ -175,7 +175,7 @@ where
         max_retries: 2,
         storage_queue: 64,
         poll: Duration::from_millis(15),
-        goal_limits: json!({}),
+        work_limits: json!({}),
         require_shell_approval: false,
         provider_factory,
     }
@@ -274,7 +274,7 @@ async fn spawned_worker_settles_and_the_leader_completes() {
         )
         .expect("manage grant");
     handle.input("i-leader", "get me 2+2 via a worker").await.expect("input");
-    let closed = wait_event(&handle, "goal_completed", 20_000).await;
+    let closed = wait_event(&handle, "work_completed", 20_000).await;
     assert_eq!(closed["payload"]["status"], json!("SUCCEEDED"));
     // the spawned worker joined, ran and settled the delegated task
     let task: String =
@@ -329,7 +329,7 @@ async fn a_waiting_leader_wakes_when_the_peers_message_is_applied() {
     // leader is WAITING, so its own parked drain is the only wake path
     wait_instance_phase(&handle, "i-leader", "WAITING", 10_000).await;
     handle.input("i-peer", "greet the leader").await.expect("peer input");
-    let closed = wait_event(&handle, "goal_completed", 20_000).await;
+    let closed = wait_event(&handle, "work_completed", 20_000).await;
     assert_eq!(closed["payload"]["status"], json!("SUCCEEDED"));
     // the message was applied to the leader's context, not left queued
     let applied: i64 = control
@@ -645,7 +645,7 @@ async fn the_offered_surface_follows_the_grants() {
     .expect("start");
     // no grant is issued by hand: the session bootstrap authorizes its leader (D-58)
     handle.input("i-leader", "delegate the file to a worker").await.expect("input");
-    let closed = wait_event(&handle, "goal_completed", 20_000).await;
+    let closed = wait_event(&handle, "work_completed", 20_000).await;
     assert_eq!(closed["payload"]["status"], json!("SUCCEEDED"), "{closed}");
     handle.shutdown().await.expect("shutdown");
 
@@ -755,7 +755,7 @@ for line in sys.stdin:
     );
     let handle = start(cfg).await.expect("start");
     handle.input("i-leader", "do the probe").await.expect("input");
-    let closed = wait_event(&handle, "goal_completed", 20_000).await;
+    let closed = wait_event(&handle, "work_completed", 20_000).await;
     assert_eq!(closed["payload"]["status"], json!("SUCCEEDED"), "{closed}");
     handle.shutdown().await.expect("shutdown");
 
@@ -1070,35 +1070,35 @@ async fn a_users_grant_reaches_the_workers_surface_at_the_next_request() {
     handle.shutdown().await.expect("shutdown");
 }
 
-/// A settled goal leaves no product surface to open a new one (known gap, D-64's
-/// audit): the kernel offers no create-goal tool, `delegate_task` requires an ACTIVE
-/// goal, and the runtime creates no goal when a later input arrives — so the second
+/// A settled work leaves no product surface to open a new one (known gap, D-64's
+/// audit): the kernel offers no create-work tool, `delegate_task` requires an ACTIVE
+/// work, and the runtime creates no work when a later input arrives — so the second
 /// instruction of a session cannot build a team, and the model is told (in its own
-/// protocol note) to "create a new goal first" without a way to do it.
+/// protocol note) to "create a new work first" without a way to do it.
 ///
 /// This pins the *current* behaviour so that changing it is deliberate. Whether the
-/// runtime should open a goal per user input, or the Leader should be given a way to
+/// runtime should open a work per user input, or the Leader should be given a way to
 /// open one, is a design decision for the user (recorded in docs/ACCEPTANCE.md).
-/// D-266: the other side of the test below. A settled goal leaves later delegation with nowhere to charge —
-/// and until now **no product surface could open a goal**: the command is in the protocol and the daemon forwards
-/// it as an ordinary user command (`goals open`, the CLI added with this entry), but nothing in the product sent
-/// it. Here the *user* opens a goal, attaches it to the leader, and gives it a required check: the later
+/// D-266: the other side of the test below. A settled work leaves later delegation with nowhere to charge —
+/// and until now **no product surface could open a work**: the command is in the protocol and the daemon forwards
+/// it as an ordinary user command (`work_scopes open`, the CLI added with this entry), but nothing in the product sent
+/// it. Here the *user* opens a work, attaches it to the leader, and gives it a required check: the later
 /// delegation then charges to it and the worker runs.
 #[tokio::test]
-async fn a_user_opened_goal_lets_a_later_delegation_charge_somewhere() {
+async fn a_user_opened_work_lets_a_later_delegation_charge_somewhere() {
     // the check the user predefines is a real shell command, and a check runs through the runner: an
     // integration test must point the runner at the built binary (the same rule `jobs_runner.rs` follows)
     let previous = std::env::var_os("TEAMAGENTS_RUNNER_BIN");
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
     let leader = vec![
-        Step::Message(finish_call("first goal done")),
+        Step::Message(finish_call("first work done")),
         Step::Message(json!({"role": "assistant", "content": "", "tool_calls": [
             {"id": "c1", "type": "function", "function": {"name": "delegate",
              "arguments": json!({"assignee": "i-worker", "task_id": "t-late", "description": "later work"}).to_string()}}]})),
         Step::Message(finish_call("the later work is delegated")),
     ];
     let worker = vec![Step::Message(finish_call("did the later work"))];
-    let root = root("user-opened-goal");
+    let root = root("user-opened-work");
     std::fs::create_dir_all(root.dir.join("ws")).unwrap();
     let handle = start(config(
         &root,
@@ -1107,7 +1107,7 @@ async fn a_user_opened_goal_lets_a_later_delegation_charge_somewhere() {
     .await
     .expect("start");
     handle.input("i-leader", "do the first thing").await.expect("input");
-    let closed = wait_event(&handle, "goal_completed", 20_000).await;
+    let closed = wait_event(&handle, "work_completed", 20_000).await;
     handle
         .submit_user(cmd(
             "late-worker",
@@ -1116,16 +1116,16 @@ async fn a_user_opened_goal_lets_a_later_delegation_charge_somewhere() {
         ))
         .await
         .expect("create the worker");
-    // the user's own lever: open a goal, attach it to the leader, and predefine a required check on it
+    // the user's own lever: open a work, attach it to the leader, and predefine a required check on it
     let opened = handle
         .submit_user(cmd(
-            "goals-open",
-            "create_goal",
-            json!({"id": "goal-later", "instance_id": "i-leader",
+            "work_scopes-open",
+            "create_work",
+            json!({"id": "work-later", "instance_id": "i-leader",
                    "limits": {"required_checks": [{"id": "later-tests", "command": "true"}]}}),
         ))
         .await
-        .expect("the user opens a goal");
+        .expect("the user opens a work");
     // the second instruction can now charge its work somewhere
     handle.input("i-leader", "now delegate some work").await.expect("input");
     // The fact this test is about is the worker *settling* the delegated task. A
@@ -1138,10 +1138,10 @@ async fn a_user_opened_goal_lets_a_later_delegation_charge_somewhere() {
     // read everything first, shut the session down, and only then assert: a failed assertion inside a running
     // session leaves the supervisor's task alive and the test *hangs* instead of failing (measured here)
     let control = second_control(&root);
-    let goal_row: Option<(Option<String>, String, String)> = control
+    let work_row: Option<(Option<String>, String, String)> = control
         .connection()
         .query_row(
-            "SELECT i.active_goal_id, g.status, g.limits_json FROM instances i JOIN goals g ON g.id = i.active_goal_id
+            "SELECT i.active_work_id, g.status, g.limits_json FROM instances i JOIN work_scopes g ON g.id = i.active_work_id
              WHERE i.id = 'i-leader'",
             [],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
@@ -1149,7 +1149,7 @@ async fn a_user_opened_goal_lets_a_later_delegation_charge_somewhere() {
         .ok();
     let later_task: Option<(String, String, String)> = control
         .connection()
-        .query_row("SELECT goal_id, status, assignee FROM tasks WHERE id = 't-late'", [], |row| {
+        .query_row("SELECT work_id, status, assignee FROM tasks WHERE id = 't-late'", [], |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?))
         })
         .ok();
@@ -1160,34 +1160,34 @@ async fn a_user_opened_goal_lets_a_later_delegation_charge_somewhere() {
         None => std::env::remove_var("TEAMAGENTS_RUNNER_BIN"),
     }
     assert_eq!(closed["payload"]["status"], json!("SUCCEEDED"), "{closed}");
-    assert_eq!(opened["goal_id"], json!("goal-later"), "{opened}");
+    assert_eq!(opened["work_id"], json!("work-later"), "{opened}");
     assert_eq!(settled["payload"]["status"], json!("SUCCEEDED"), "{settled}");
     assert_eq!(
         settled["payload"]["assignee"],
         json!("i-worker"),
         "the worker runs the second instruction's task: {settled}"
     );
-    let (attached, status, checks) = goal_row.expect("the leader's active goal");
-    assert_eq!(attached.as_deref(), Some("goal-later"));
+    let (attached, status, checks) = work_row.expect("the leader's active work");
+    assert_eq!(attached.as_deref(), Some("work-later"));
     assert_eq!(status, "ACTIVE");
-    assert!(checks.contains("later-tests"), "the user's required check rides on the goal: {checks}");
-    let (later_goal, later_status, later_assignee) = later_task.expect("the later task row");
-    assert_eq!(later_goal, "goal-later", "the later task is charged to the user's goal");
+    assert!(checks.contains("later-tests"), "the user's required check rides on the work: {checks}");
+    let (later_work, later_status, later_assignee) = later_task.expect("the later task row");
+    assert_eq!(later_work, "work-later", "the later task is charged to the user's work");
     assert_eq!(later_status, "SUCCEEDED", "the later task settled");
     assert_eq!(later_assignee, "i-worker", "and the worker ran it");
 }
 
 #[tokio::test]
-async fn a_settled_goal_leaves_a_later_delegation_without_an_active_goal() {
+async fn a_settled_work_leaves_a_later_delegation_without_an_active_work() {
     let leader = vec![
-        Step::Message(finish_call("first goal done")),
+        Step::Message(finish_call("first work done")),
         Step::Message(json!({"role": "assistant", "content": "", "tool_calls": [
             {"id": "c1", "type": "function", "function": {"name": "delegate",
              "arguments": json!({"assignee": "i-worker", "task_id": "t-late", "description": "later work"}).to_string()}}]})),
     ];
     let worker = vec![Step::Message(reply("should never run"))];
     let seen: Seen = Arc::new(Mutex::new(HashMap::new()));
-    let root = root("settled-goal-delegation");
+    let root = root("settled-work-delegation");
     std::fs::create_dir_all(root.dir.join("ws")).unwrap();
     let handle = start(config(
         &root,
@@ -1199,10 +1199,10 @@ async fn a_settled_goal_leaves_a_later_delegation_without_an_active_goal() {
     .await
     .expect("start");
     handle.input("i-leader", "do the first thing").await.expect("input");
-    let closed = wait_event(&handle, "goal_completed", 20_000).await;
+    let closed = wait_event(&handle, "work_completed", 20_000).await;
     assert_eq!(closed["payload"]["status"], json!("SUCCEEDED"), "{closed}");
     // the worker the second turn delegates to must exist, or the refusal would be
-    // about the assignee instead of the goal (the question under test). The write goes
+    // about the assignee instead of the work (the question under test). The write goes
     // through the supervisor (the daemon's own path) rather than a second `Control`
     // connection: two writers on one SQLite file can lose the writer race under a
     // loaded suite, and the product serializes its writers through this one.
@@ -1214,7 +1214,7 @@ async fn a_settled_goal_leaves_a_later_delegation_without_an_active_goal() {
         ))
         .await
         .expect("create the worker");
-    // a second instruction: the runtime opens no goal for it
+    // a second instruction: the runtime opens no work for it
     handle.input("i-leader", "now delegate some work").await.expect("input");
     for _ in 0..800 {
         if seen.lock().unwrap().get("i-leader").map(Vec::len).unwrap_or(0) >= 2 {
@@ -1228,7 +1228,7 @@ async fn a_settled_goal_leaves_a_later_delegation_without_an_active_goal() {
         seen.lock().unwrap().get("i-leader")
     );
     let control = second_control(&root);
-    // The delegation the model attempted must report the missing goal instead of spawning a
+    // The delegation the model attempted must report the missing work instead of spawning a
     // member for work that has nowhere to be charged. The receipt lands *after* the model's
     // answer, so wait for it rather than reading once after a fixed sleep: under a loaded
     // suite (every test binary in parallel) the receipt had not arrived and the read saw only
@@ -1253,28 +1253,28 @@ async fn a_settled_goal_leaves_a_later_delegation_without_an_active_goal() {
         tokio::time::sleep(Duration::from_millis(50)).await;
         results = read_results(&control);
     }
-    let goals: Vec<(String, String)> = control
+    let work_scopes: Vec<(String, String)> = control
         .connection()
-        .prepare("SELECT id, status FROM goals ORDER BY id")
+        .prepare("SELECT id, status FROM work_scopes ORDER BY id")
         .unwrap()
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
         .unwrap()
         .map(|row| row.unwrap())
         .collect();
-    assert_eq!(goals.len(), 1, "no new goal is created for the second input: {goals:?}");
-    assert_eq!(goals[0].1, "SUCCEEDED", "{goals:?}");
-    // D-266: the refusal now names the real cause. Before the fix the driver charged a *hard-coded* goal id, so
-    // the model was told "goal goal-s-test is not active; create a new goal" — pointing at a goal that was
+    assert_eq!(work_scopes.len(), 1, "no new work is created for the second input: {work_scopes:?}");
+    assert_eq!(work_scopes[0].1, "SUCCEEDED", "{work_scopes:?}");
+    // D-266: the refusal now names the real cause. Before the fix the driver charged a *hard-coded* work id, so
+    // the model was told "work work-s-test is not active; create a new work" — pointing at a work that was
     // already closed and at a step no model-facing tool can take. With the arms resolving the requester's
-    // *active* goal, the same situation reads as what it is: the requester has none.
+    // *active* work, the same situation reads as what it is: the requester has none.
     let refusal = results
         .iter()
-        .find(|entry| entry.contains("no active goal"))
+        .find(|entry| entry.contains("no active work"))
         .cloned()
         .unwrap_or_else(|| panic!("no delegation refusal in the receipts: {results:?}"));
     assert!(
-        refusal.contains("delegate_task.goal_id required: requester has no active goal"),
-        "the refusal names the missing goal: {refusal}"
+        refusal.contains("delegate_task.work_id required: requester has no active work"),
+        "the refusal names the missing work: {refusal}"
     );
     assert_eq!(seen.lock().unwrap().get("i-worker").map(Vec::len), None, "the worker never runs: no task reached it");
     handle.shutdown().await.expect("shutdown");
@@ -1286,7 +1286,7 @@ async fn a_settled_goal_leaves_a_later_delegation_without_an_active_goal() {
 /// produced: a new request while the last entry is the model's own text).
 ///
 /// The delegator is then the one who resolves it: cancelling the task satisfies its
-/// wait (a BLOCKED task would not), so the leader wakes, reports, and the goal
+/// wait (a BLOCKED task would not), so the leader wakes, reports, and the work
 /// settles honestly instead of the session burning a budget on a loop.
 #[tokio::test]
 async fn a_prose_reply_leaves_one_turn_and_the_delegator_resolves_the_task() {
@@ -1355,7 +1355,7 @@ async fn a_prose_reply_leaves_one_turn_and_the_delegator_resolves_the_task() {
         .expect("cancel the task");
     assert_eq!(status("t-prose").as_deref(), Some("CANCELLED"));
     // the delegator's wait is satisfied by the cancellation and it finishes honestly
-    let closed = wait_event(&handle, "goal_completed", 20_000).await;
+    let closed = wait_event(&handle, "work_completed", 20_000).await;
     assert_eq!(closed["payload"]["status"], json!("SUCCEEDED"), "{closed}");
     assert_eq!(seen.lock().unwrap().get("i-leader").map(Vec::len), Some(3), "the leader ran its three turns");
     handle.shutdown().await.expect("shutdown");
@@ -1399,7 +1399,7 @@ async fn the_delegator_cancels_its_own_abandoned_task_and_its_wait_resolves() {
     .await
     .expect("start");
     handle.input("i-leader", "delegate the file to a worker").await.expect("input");
-    let closed = wait_event(&handle, "goal_completed", 20_000).await;
+    let closed = wait_event(&handle, "work_completed", 20_000).await;
     assert_eq!(closed["payload"]["status"], json!("SUCCEEDED"), "{closed}");
     let control = second_control(&root);
     let status: String = control

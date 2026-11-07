@@ -3,8 +3,8 @@
 
 The product has two acceptance mechanisms and they answer different questions:
 
-* `[[checks]]` in the user config gate the **goal**: the driver runs them at the completion boundary, a failure
-  enters a bounded repair round and then blocks the goal (§8, A16);
+* `[[checks]]` in the user config gate the **work**: the driver runs them at the completion boundary, a failure
+  enters a bounded repair round and then blocks the work (§8, A16);
 * `exec --check` is the **client's** own command, run after the turn, and it decides the **exit code** (D-49).
 
 Nothing documented what happens when both are configured at once, and nothing had driven that combination
@@ -12,15 +12,15 @@ live. This probe does, with two scenarios that separate the two roles:
 
 1. a runtime check that cannot pass in any workspace state (`exit 1`, a builtin — a file test would be
    satisfiable by writing the file the check names, which is how this scenario first failed, D-146) + a client
-   check that passes → the **goal** is `BLOCKED` and the exit code is `1`, while the client's verdict is
-   `ok: true` — the goal's gate is not the client's, and the run still fails;
-2. a runtime check that passes + a client check that fails → the goal really settles `SUCCEEDED` and the run
+   check that passes → the **work** is `BLOCKED` and the exit code is `1`, while the client's verdict is
+   `ok: true` — the work's gate is not the client's, and the run still fails;
+2. a runtime check that passes + a client check that fails → the work really settles `SUCCEEDED` and the run
    still exits `1`: the client's command is the last word on a finished turn.
 
     python3 review/dogfood/two_gates.py
 
 It needs `DEEPSEEK_API_KEY`, uses the native window (D-36), runs each scenario on its own fresh state root
-(runtime checks belong to the goal) and writes only under `--state-dir`.
+(runtime checks belong to the work) and writes only under `--state-dir`.
 """
 import argparse
 import atexit
@@ -82,12 +82,12 @@ def run_scenario(name: str, root: pathlib.Path, runtime_check: str, client_check
     report = json.loads(run.stdout) if run.stdout.strip().startswith("{") else {}
     db = sqlite3.connect(f"file:{state_root}/session.sqlite?mode=ro", uri=True)
     facts = {
-        "goals": list(db.execute("SELECT id, status FROM goals")),
-        # a goal can end BLOCKED either because the runtime exhausted its repair rounds (then the event
+        "work_scopes": list(db.execute("SELECT id, status FROM work_scopes")),
+        # a work can end BLOCKED either because the runtime exhausted its repair rounds (then the event
         # carries the reason) or because the model itself reported `blocked` after seeing the failing check —
         # so the probe reads the *check ledger* for the check's name and the completions for the status
         "completions": [row[1] for row in db.execute(
-            "SELECT kind, payload_json FROM events WHERE kind IN ('goal_completed', 'goal_blocked') ORDER BY sequence")],
+            "SELECT kind, payload_json FROM events WHERE kind IN ('work_completed', 'work_blocked') ORDER BY sequence")],
         "repairs": [row[0] for row in db.execute(
             "SELECT payload_json FROM events WHERE kind = 'completion_repair' ORDER BY sequence")],
         "entries": [row[0] for row in db.execute("SELECT message_json FROM context_entries ORDER BY idx")],
@@ -125,16 +125,16 @@ def main() -> int:
     env_base = dict(os.environ)
     failures: list[str] = []
 
-    # 1. the runtime gate blocks the goal, the client's check still passes
+    # 1. the runtime gate blocks the work, the client's check still passes
     run, report, facts = run_scenario("runtime-fails", base / "a", "exit 1", "test -f hello.txt", env_base)
     print(f"1. runtime gate fails, client check passes: exit={run.returncode} end={report.get('end')} "
-          f"goal={report.get('goal_status')} ({facts['elapsed']}s)")
+          f"work={report.get('work_status')} ({facts['elapsed']}s)")
     verdicts = report.get("verification") or []
     print(f"   client verdicts: {[(v.get('command'), v.get('ok')) for v in verdicts]}")
     if run.returncode != 1:
-        failures.append(f"a blocked goal must exit 1, got {run.returncode}")
-    if report.get("goal_status") != "BLOCKED":
-        failures.append(f"the goal should be BLOCKED, got {report.get('goal_status')!r}")
+        failures.append(f"a blocked work must exit 1, got {run.returncode}")
+    if report.get("work_status") != "BLOCKED":
+        failures.append(f"the work should be BLOCKED, got {report.get('work_status')!r}")
     if len(verdicts) != 1 or verdicts[0].get("ok") is not True:
         failures.append(f"the client check should still run and pass: {verdicts}")
     named = [failure.get("check_id", "") for payload in facts["repairs"]
@@ -151,15 +151,15 @@ def main() -> int:
     if not any("runtime-gate" in entry for entry in facts["entries"]):
         failures.append("the model was never told about the runtime check's failure")
 
-    # 2. the runtime gate passes, the client's check fails: settled goal, exit 1
+    # 2. the runtime gate passes, the client's check fails: settled work, exit 1
     run, report, facts = run_scenario("client-fails", base / "b", "test -f hello.txt", "test -f missing.txt",
                                       env_base)
     print(f"2. runtime gate passes, client check fails: exit={run.returncode} end={report.get('end')} "
-          f"goal={report.get('goal_status')} ({facts['elapsed']}s)")
+          f"work={report.get('work_status')} ({facts['elapsed']}s)")
     verdicts = report.get("verification") or []
     print(f"   client verdicts: {[(v.get('command'), v.get('ok'), v.get('exit_code')) for v in verdicts]}")
-    if report.get("goal_status") != "SUCCEEDED":
-        failures.append(f"the runtime gate passed, so the goal should settle SUCCEEDED: {report.get('goal_status')!r}")
+    if report.get("work_status") != "SUCCEEDED":
+        failures.append(f"the runtime gate passed, so the work should settle SUCCEEDED: {report.get('work_status')!r}")
     if run.returncode != 1:
         failures.append(f"a failing client check must fail the run even after a settlement, got {run.returncode}")
     if len(verdicts) != 1 or verdicts[0].get("ok") is not False:

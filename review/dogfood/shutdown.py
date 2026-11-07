@@ -13,7 +13,7 @@ while writing this probe, and this is that measurement as a re-runnable check:
 * the **runner** survives (A12) and finishes the command on its own, writing its journal;
 * the next daemon over that state root **settles the operation from the runner's journal** — A11's "reconnect
   when verifiable", never a guess and never a replay;
-* the command ran **once** (A08/A09: the effect is not re-executed), and the session is usable again: the goal
+* the command ran **once** (A08/A09: the effect is not re-executed), and the session is usable again: the work
   settles with the user's continuation.
 
 It needs **no credentials and no network**: a local chat-completions server answers the first turn with a
@@ -67,7 +67,7 @@ def tool_call(name: str, arguments: dict) -> bytes:
 
 
 SHELL_TURN = tool_call("shell", {"command": COMMAND, "timeout": 60})
-# Every later turn ends the goal: the recovery after the stop may itself continue the turn, so the script holds
+# Every later turn ends the work: the recovery after the stop may itself continue the turn, so the script holds
 # more finishes than the probe asks for and never depends on which turn consumes which.
 FINISH_TURNS = [tool_call("finish", {"status": "success", "summary": "the command finished and was imported"})
                 for _ in range(3)]
@@ -117,8 +117,8 @@ max_retries = 1
 
 
 def facts(state_root: pathlib.Path) -> dict:
-    """The session's own record: phases, operations, goals and the runner journals on disk."""
-    out = {"phase": "none", "operations": [], "goals": [], "journal": None, "requests": 0}
+    """The session's own record: phases, operations, work_scopes and the runner journals on disk."""
+    out = {"phase": "none", "operations": [], "work_scopes": [], "journal": None, "requests": 0}
     if not (state_root / "session.sqlite").exists():
         return out
     try:
@@ -127,7 +127,7 @@ def facts(state_root: pathlib.Path) -> dict:
             row = db.execute("SELECT phase FROM instances WHERE id = 'i-leader'").fetchone()
             out["phase"] = row[0] if row else "none"
             out["operations"] = list(db.execute("SELECT operation_id, status FROM operations ORDER BY rowid"))
-            out["goals"] = list(db.execute("SELECT id, status FROM goals"))
+            out["work_scopes"] = list(db.execute("SELECT id, status FROM work_scopes"))
             out["receipts"] = list(db.execute("SELECT status, receipt_json FROM operations ORDER BY rowid"))
             out["requests"] = db.execute("SELECT COUNT(*) FROM model_requests").fetchone()[0]
         finally:
@@ -223,8 +223,8 @@ def main() -> int:
     settled = wait_for(lambda: [row for row in facts(state_root)["operations"] if row[1] not in open_states], 60,
                        "recovery to settle the operation")
     recovery = facts(state_root)
-    settled_goal = wait_for(lambda: facts(state_root)["goals"] and facts(state_root)["goals"][0][1] == "SUCCEEDED",
-                            60, "the goal")
+    settled_work = wait_for(lambda: facts(state_root)["work_scopes"] and facts(state_root)["work_scopes"][0][1] == "SUCCEEDED",
+                            60, "the work")
     print(f"4. recovery settled it: operations={recovery['operations']}")
     if not settled or any(status != "SUCCEEDED" for _id, status in settled):
         failures.append(f"recovery did not settle the interrupted operation from the journal: {recovery['operations']}")
@@ -242,23 +242,23 @@ def main() -> int:
     # the trace may be missing when the premise above already failed: that is a reported failure, not a
     # traceback (a probe that crashes hides the FAIL line the reader needs)
     runs = (workspace / "runs.log").read_text().split() if (workspace / "runs.log").is_file() else []
-    route = "the recovery's own turn settled the goal" if settled_goal else "the user's continuation settled it"
+    route = "the recovery's own turn settled the work" if settled_work else "the user's continuation settled it"
     print(f"5. the user continues: exit={resumed.returncode} end={report.get('end')} "
-          f"goal={report.get('goal_status')} goals={final['goals']} runs.log={runs} "
+          f"work={report.get('work_status')} work_scopes={final['work_scopes']} runs.log={runs} "
           f"requests seen by the server={len(FakeChat.seen)} — {route}")
-    if not final["goals"] or final["goals"][0][1] != "SUCCEEDED":
-        failures.append(f"the goal did not settle after the stop: exit={resumed.returncode} "
-                        f"{report.get('failure')} {final['goals']}")
+    if not final["work_scopes"] or final["work_scopes"][0][1] != "SUCCEEDED":
+        failures.append(f"the work did not settle after the stop: exit={resumed.returncode} "
+                        f"{report.get('failure')} {final['work_scopes']}")
     # A run reports its *own* input's outcome (D-72): the input that arrives after the recovery already settled
-    # the goal cannot claim that settlement, so `unsettled` is the honest word for it — and a timeout or a hang
+    # the work cannot claim that settlement, so `unsettled` is the honest word for it — and a timeout or a hang
     # is not. Either route is fine; what is not fine is a run that reports the earlier settlement as its own.
     if resumed.returncode not in (0, 1) or report.get("end") not in ("completed", "reply", "unsettled"):
         failures.append(f"the continuation ended outside the documented contract: exit={resumed.returncode} "
                         f"end={report.get('end')!r} failure={report.get('failure')}")
-    if report.get("end") == "unsettled" and report.get("goal_status") == "SUCCEEDED":
+    if report.get("end") == "unsettled" and report.get("work_status") == "SUCCEEDED":
         failures.append("a run reported the settlement of an earlier turn as its own outcome (D-72)")
-    if report.get("end") == "unsettled" and not settled_goal:
-        failures.append("the run ended unsettled although nothing had settled the goal before it")
+    if report.get("end") == "unsettled" and not settled_work:
+        failures.append("the run ended unsettled although nothing had settled the work before it")
     if runs != ["run"]:
         failures.append(f"the command did not run exactly once across the stop: {runs}")
     if any(status in open_states for _id, status in final["operations"]):

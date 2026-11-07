@@ -162,7 +162,7 @@ def main() -> int:
     elapsed = round(time.time() - started, 1)
     report = json.loads(run.stdout) if run.stdout.strip().startswith("{") else {}
     print(f"provider={args.provider} exec exit={run.returncode} elapsed={elapsed}s end={report.get('end')} "
-          f"goal={report.get('goal_status')}")
+          f"work={report.get('work_status')}")
     if run.stderr.strip().startswith("exec:"):
         print("stderr:", run.stderr.strip()[:300])
 

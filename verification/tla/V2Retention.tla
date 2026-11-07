@@ -58,7 +58,7 @@ ASSUME Facts # {}
 VARIABLES
   age,       \* fact -> age in days, bounded by MaxAge
   present,   \* fact -> whether the fact is still in the database
-  live,      \* fact -> a live reference currently protects it (an open goal's receipts, a running operation)
+  live,      \* fact -> a live reference currently protects it (an open work's receipts, a running operation)
   evidence   \* fact -> it is part of a recorded evaluation
 
 vars == <<age, present, live, evidence>>
@@ -95,7 +95,7 @@ AttachReference(f) ==
   /\ live' = [live EXCEPT ![f] = TRUE]
   /\ UNCHANGED <<age, present, evidence>>
 
-\* The goal holding it closes: the fact becomes evictable again if it is old.
+\* The work holding it closes: the fact becomes evictable again if it is old.
 DetachReference(f) ==
   /\ live[f]
   /\ live' = [live EXCEPT ![f] = FALSE]

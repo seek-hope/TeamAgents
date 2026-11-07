@@ -171,7 +171,7 @@ impl Root {
             max_retries: 2,
             storage_queue: 64,
             poll: Duration::from_millis(15),
-            goal_limits: json!({}),
+            work_limits: json!({}),
             require_shell_approval: false,
         }
     }
@@ -230,8 +230,8 @@ async fn wait_lifecycle(handle: &DriverHandle, lifecycle: &str, timeout_ms: u64)
     panic!("lifecycle {lifecycle} not reached within {timeout_ms}ms");
 }
 
-async fn run_to_goal_close(handle: &DriverHandle) -> String {
-    let event = wait_event(handle, "goal_completed", 15_000).await;
+async fn run_to_work_close(handle: &DriverHandle) -> String {
+    let event = wait_event(handle, "work_completed", 15_000).await;
     event["payload"]["status"].as_str().unwrap_or("").to_string()
 }
 
@@ -363,9 +363,9 @@ async fn wait_task_settled(handle: &DriverHandle, task_id: &str, timeout_ms: u64
     panic!("task {task_id} not settled within {timeout_ms}ms");
 }
 
-/// Create an instance with no goal — the worker shape (§5.3): the driver
-/// bootstrap skips existing instances, so no goal is attached and
-/// completions settle tasks instead of goals.
+/// Create an instance with no work — the worker shape (§5.3): the driver
+/// bootstrap skips existing instances, so no work is attached and
+/// completions settle tasks instead of work_scopes.
 fn make_worker(control: &mut teamagents_core::v2::Control, root: &Root, instance: &str) {
     control
         .submit(
@@ -379,7 +379,7 @@ fn make_worker(control: &mut teamagents_core::v2::Control, root: &Root, instance
         .expect("worker instance");
 }
 
-/// Start the driver for a pre-created (goal-less) worker instance.
+/// Start the driver for a pre-created (work-less) worker instance.
 async fn start_worker(root: &Root, instance: &str, script: Vec<Step>) -> DriverHandle {
     let mut config = root.config(ScriptedProvider { script: Mutex::new(script.into()) });
     config.instance_id = instance.into();
@@ -398,11 +398,11 @@ async fn end_to_end_shell_then_finish() {
     ];
     let handle = start(root.config(ScriptedProvider { script: Mutex::new(script.into()) })).await.expect("start");
     handle.input("write the marker").await.expect("input");
-    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
     assert_eq!(std::fs::read_to_string(&marker).unwrap().trim(), "v2-works");
     let snapshot = handle.snapshot().await.unwrap();
     assert_eq!(snapshot["instance"]["phase"], json!("READY"));
-    assert_eq!(snapshot["goal"]["known_usage"]["total"], json!(10)); // two attempts billed
+    assert_eq!(snapshot["work"]["known_usage"]["total"], json!(10)); // two attempts billed
                                                                      // context: user input, assistant tool call, tool result, assistant finish
     let events = handle.events(0).await.unwrap();
     assert!(events.iter().any(|e| e["kind"] == json!("response_imported")));
@@ -428,7 +428,7 @@ async fn a_settled_shell_job_leaves_no_runner_behind() {
     ];
     let handle = start(root.config(ScriptedProvider { script: Mutex::new(script.into()) })).await.expect("start");
     handle.input("run one command").await.expect("input");
-    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
     let jobs: Vec<PathBuf> = std::fs::read_dir(root.dir.join("state").join("jobs"))
         .expect("the job directory exists")
         .map(|entry| entry.unwrap().path())
@@ -452,7 +452,7 @@ async fn the_configured_ceiling_bounds_a_model_picked_tool_timeout() {
     for (case, ceiling, asked, expected) in
         [(1, Some(60_u64), 3600_u64, 60_u64), (2, None, 3600, 3600), (3, Some(600), 30, 30)]
     {
-        // a fresh root per case: a second goal on the same session would be refused
+        // a fresh root per case: a second work on the same session would be refused
         let root = root(&format!("timeout-ceiling-{case}"));
         std::fs::create_dir_all(root.dir.join("ws")).unwrap();
         let mut config = root.config(ScriptedProvider {
@@ -467,7 +467,7 @@ async fn the_configured_ceiling_bounds_a_model_picked_tool_timeout() {
         config.catalog.limits.max_tool_seconds = ceiling;
         let handle = start(config).await.expect("start");
         handle.input("run one command").await.expect("input");
-        assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+        assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
         let jobs: Vec<PathBuf> = std::fs::read_dir(root.dir.join("state").join("jobs"))
             .expect("the job directory exists")
             .map(|entry| entry.unwrap().path())
@@ -506,7 +506,7 @@ async fn wait_parks_and_the_timer_wake_lets_the_model_continue() {
     wait_phase(&handle, "WAITING", 5_000).await;
     // the driver fires due timers at poll granularity; the wake reason joins
     // the context and the model is prompted again
-    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
     let events = handle.events(0).await.unwrap();
     assert!(events.iter().any(|e| e["kind"] == json!("wait_satisfied")), "{events:?}");
     handle.shutdown().await.expect("shutdown");
@@ -543,7 +543,7 @@ async fn send_executes_through_the_control_plane_with_a_grant() {
         )
         .expect("grant");
     handle.input("say hello").await.expect("input");
-    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
     // the envelope persists for the peer's boundary (§5.3)
     let queued: i64 = control
         .connection()
@@ -573,10 +573,10 @@ async fn crash_before_model_response_recovers_with_honest_billing() {
     // request retries under the same request and completes (§6.3)
     let recovering = ScriptedProvider { script: Mutex::new(vec![Step::Message(finish_call("recovered"))].into()) };
     let handle = start(root.config(recovering)).await.expect("restart");
-    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
     let snapshot = handle.snapshot().await.unwrap();
-    assert_eq!(snapshot["goal"]["unknown_usage"], json!(1), "the lost attempt must stay visible");
-    assert_eq!(snapshot["goal"]["known_usage"]["total"], json!(5), "exactly one complete attempt billed");
+    assert_eq!(snapshot["work"]["unknown_usage"], json!(1), "the lost attempt must stay visible");
+    assert_eq!(snapshot["work"]["known_usage"]["total"], json!(5), "exactly one complete attempt billed");
     handle.shutdown().await.expect("shutdown");
 }
 
@@ -599,7 +599,7 @@ async fn tool_result_is_reused_after_crash_not_reexecuted() {
     handle.crash().await;
     let recovering = ScriptedProvider { script: Mutex::new(vec![Step::Message(finish_call("consumed"))].into()) };
     let handle = start(root.config(recovering)).await.expect("restart");
-    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
     let runs = std::fs::read_to_string(&marker).unwrap();
     assert_eq!(runs.matches("ran").count(), 1, "the committed receipt must be reused, not re-executed");
     handle.shutdown().await.expect("shutdown");
@@ -681,7 +681,7 @@ async fn budget_exhaustion_parks_the_instance() {
     let root = root("budget");
     std::fs::create_dir_all(root.dir.join("ws")).unwrap();
     let mut config = root.config(ScriptedProvider { script: Mutex::new(vec![].into()) });
-    config.goal_limits = json!({"max_total_tokens": 1});
+    config.work_limits = json!({"max_total_tokens": 1});
     let handle = start(config).await.expect("start");
     handle.input("impossible within budget").await.expect("input");
     wait_event(&handle, "budget_refused", 5_000).await;
@@ -690,11 +690,11 @@ async fn budget_exhaustion_parks_the_instance() {
     handle.shutdown().await.expect("shutdown");
 }
 
-/// A35: the goal deadline is enforced by the daemon even if the eval
+/// A35: the work deadline is enforced by the daemon even if the eval
 /// client died — past it, new requests are refused and the instance parks
 /// with the reason instead of silently continuing to answer.
 #[tokio::test]
-async fn goal_deadline_parks_the_instance() {
+async fn work_deadline_parks_the_instance() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
     let root = root("deadline");
     std::fs::create_dir_all(root.dir.join("ws")).unwrap();
@@ -703,10 +703,10 @@ async fn goal_deadline_parks_the_instance() {
     let handle = start(config).await.expect("start");
     {
         let conn = rusqlite::Connection::open(&db).expect("open db");
-        conn.execute("UPDATE goals SET deadline = ?1", [teamagents_core::models::now() - 1.0]).expect("deadline");
+        conn.execute("UPDATE work_scopes SET deadline = ?1", [teamagents_core::models::now() - 1.0]).expect("deadline");
     }
     handle.input("answer after the deadline").await.expect("input");
-    wait_event(&handle, "goal_deadline_refused", 5_000).await;
+    wait_event(&handle, "work_deadline_refused", 5_000).await;
     wait_lifecycle(&handle, "PARKED", 5_000).await;
     handle.shutdown().await.expect("shutdown");
 }
@@ -789,7 +789,7 @@ async fn disk_full_stops_dispatch_reports_and_resumes_after_parking() {
         let snapshot = handle.snapshot().await.expect("snapshot");
         assert_eq!(snapshot["instance"]["phase"], json!("MODEL_PENDING"));
         let events = handle.events(0).await.expect("events");
-        assert!(!events.iter().any(|e| e["kind"] == json!("goal_completed")), "no completion may land while full");
+        assert!(!events.iter().any(|e| e["kind"] == json!("work_completed")), "no completion may land while full");
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     // free space: the parked instance can finish the interrupted write again
@@ -815,9 +815,9 @@ async fn disk_full_stops_dispatch_reports_and_resumes_after_parking() {
     }
     assert!(parked_reason.contains("storage full"), "the park reason reports the loss: {parked_reason}");
     // the user resumes: the stored response imports (or the attempt re-runs
-    // exactly once) and the goal completes exactly once
+    // exactly once) and the work completes exactly once
     handle.resume().await.expect("resume");
-    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
     let attempts = handle
         .with_control(|control| {
             control
@@ -848,7 +848,7 @@ async fn a_read_only_batch_runs_together_and_keeps_call_order() {
     }}));
     let handle = start(config).await.expect("start");
     handle.input("read both files").await.expect("input");
-    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
     let requests = recorded(&seen);
     assert!(requests.len() >= 2, "{requests:?}");
     let text = request_text(&requests[1]);
@@ -889,7 +889,7 @@ async fn shell_approval_blocks_then_allows_and_denial_cancels() {
     // second shell: deny → the operation is cancelled before any execution
     let asked = wait_for_second_approval(&handle).await;
     handle.deny(&asked).await.expect("deny");
-    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
     assert!(!denied_marker.exists(), "a denied command never runs");
     handle.shutdown().await.expect("shutdown");
 }
@@ -916,7 +916,7 @@ async fn auto_review_allows_one_operation_without_a_user_decision() {
     let reviewed = wait_event(&handle, "approval_reviewed", 10_000).await;
     assert_eq!(reviewed["payload"]["outcome"], json!("allow"));
     assert_eq!(reviewed["payload"]["review"]["decided_by"], json!("auto_review"));
-    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
 
     for _ in 0..200 {
         if marker.exists() {
@@ -956,13 +956,13 @@ async fn worker_finish_settles_the_delegated_task_from_the_stored_candidate() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
     let root = root("worker-settle");
     std::fs::create_dir_all(root.dir.join("ws")).unwrap();
-    // goal + delegation land before the worker driver starts (§5.3)
+    // work + delegation land before the worker driver starts (§5.3)
     let mut control = second_control(&root);
     make_worker(&mut control, &root, "i-worker");
-    control.submit(cmd("mk-g", "create_goal", json!({"id": "g1"})), teamagents_core::v2::Identity::User).expect("goal");
+    control.submit(cmd("mk-g", "create_work", json!({"id": "g1"})), teamagents_core::v2::Identity::User).expect("work");
     control
         .submit(
-            cmd("dt-1", "delegate_task", json!({"task_id": "t1", "assignee": "i-worker", "goal_id": "g1"})),
+            cmd("dt-1", "delegate_task", json!({"task_id": "t1", "assignee": "i-worker", "work_id": "g1"})),
             teamagents_core::v2::Identity::User,
         )
         .expect("delegate");
@@ -992,11 +992,11 @@ async fn worker_queue_continues_after_a_settlement_until_empty() {
     std::fs::create_dir_all(root.dir.join("ws")).unwrap();
     let mut control = second_control(&root);
     make_worker(&mut control, &root, "i-worker");
-    control.submit(cmd("mk-g", "create_goal", json!({"id": "g1"})), teamagents_core::v2::Identity::User).expect("goal");
+    control.submit(cmd("mk-g", "create_work", json!({"id": "g1"})), teamagents_core::v2::Identity::User).expect("work");
     for (tag, task) in [("dt-1", "t1"), ("dt-2", "t2")] {
         control
             .submit(
-                cmd(tag, "delegate_task", json!({"task_id": task, "assignee": "i-worker", "goal_id": "g1"})),
+                cmd(tag, "delegate_task", json!({"task_id": task, "assignee": "i-worker", "work_id": "g1"})),
                 teamagents_core::v2::Identity::User,
             )
             .expect("delegate");
@@ -1041,7 +1041,7 @@ async fn worker_finish_with_an_empty_queue_just_closes_the_turn() {
     let script = vec![Step::Message(finish_call("nothing to settle"))];
     let handle = start_worker(&root, "i-worker", script).await;
     handle.input("hello worker").await.expect("input");
-    // no goal, no tasks: the finish closes without an error (§5.2)
+    // no work, no tasks: the finish closes without an error (§5.2)
     wait_event(&handle, "completion_closed", 15_000).await;
     wait_phase(&handle, "READY", 5_000).await;
     handle.shutdown().await.expect("shutdown");
@@ -1080,24 +1080,24 @@ async fn no_event(handle: &DriverHandle, kind: &str) -> bool {
 }
 
 #[tokio::test]
-async fn required_checks_pass_settles_the_goal() {
+async fn required_checks_pass_settles_the_work() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
     let root = root("checks-pass");
     std::fs::create_dir_all(root.dir.join("ws")).unwrap();
     let script = vec![Step::Message(finish_call("all done")), Step::Message(finish_call("all done again"))];
     let mut config = root.config(ScriptedProvider { script: Mutex::new(script.into()) });
-    config.goal_limits = json!({"required_checks": [{"id": "tests", "command": "true"}]});
+    config.work_limits = json!({"required_checks": [{"id": "tests", "command": "true"}]});
     let handle = start(config).await.expect("start");
     handle.input("do the work").await.expect("input");
-    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
-    // a second finish after the goal closed must settle, not park the
+    assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
+    // a second finish after the work closed must settle, not park the
     // instance in COMPLETION_PENDING (§8): no turn starts after the close
     tokio::time::sleep(Duration::from_millis(300)).await;
     let settled = handle.events(0).await.unwrap();
-    let closed = settled.iter().position(|e| e["kind"] == json!("goal_completed")).expect("goal_completed");
+    let closed = settled.iter().position(|e| e["kind"] == json!("work_completed")).expect("work_completed");
     assert!(
         !settled[closed + 1..].iter().any(|e| e["kind"] == json!("request_began")),
-        "no turn may start after the goal closed: {settled:?}"
+        "no turn may start after the work closed: {settled:?}"
     );
     assert_eq!(handle.snapshot().await.unwrap()["instance"]["phase"], json!("READY"));
     // the check rode the same operation ledger and auto-associated (§8)
@@ -1105,17 +1105,17 @@ async fn required_checks_pass_settles_the_goal() {
     let registered = events.iter().find(|e| e["kind"] == json!("check_round_registered")).expect("registered");
     assert_eq!(registered["payload"]["round"], json!(1));
     assert!(events.iter().any(|e| e["kind"] == json!("operation_completed")
-        && e["scope"].as_str().unwrap_or("").starts_with("check:goal-s-test:1:")));
+        && e["scope"].as_str().unwrap_or("").starts_with("check:work-s-test:1:")));
     let snapshot = handle.snapshot().await.unwrap();
     assert_eq!(snapshot["instance"]["phase"], json!("READY"));
     handle.shutdown().await.expect("shutdown");
 }
 
 /// The completion gate is only real for users if their own config drives it:
-/// the `[[checks]]` block of a config file becomes the goal limits, and a
+/// the `[[checks]]` block of a config file becomes the work limits, and a
 /// failing check sends the turn into repair instead of letting "done" land.
 #[tokio::test]
-async fn configured_checks_gate_the_goal_through_the_config_edge() {
+async fn configured_checks_gate_the_work_through_the_config_edge() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
     let root = root("checks-config");
     std::fs::create_dir_all(root.dir.join("ws")).unwrap();
@@ -1131,11 +1131,11 @@ async fn configured_checks_gate_the_goal_through_the_config_edge() {
         Step::Message(finish_call("actually done now")),
     ];
     let mut config = root.config(ScriptedProvider { script: Mutex::new(script.into()) });
-    config.goal_limits = teamagents_engine::config::goal_limits(&catalog).unwrap();
-    assert_eq!(config.goal_limits["required_checks"][0]["id"], json!("marker"));
+    config.work_limits = teamagents_engine::config::work_limits(&catalog).unwrap();
+    assert_eq!(config.work_limits["required_checks"][0]["id"], json!("marker"));
     let handle = start(config).await.expect("start");
     handle.input("do the work").await.expect("input");
-    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
     // the configured check is what gated the first finish: a repair round names it
     let repair = wait_event_where("completion_repair", &handle, 5_000, |_| true).await;
     assert_eq!(repair["payload"]["failures"][0]["check_id"], json!("marker"));
@@ -1210,10 +1210,10 @@ async fn the_check_repair_path_keeps_the_transcript_wire_valid() {
         Step::Message(finish_call("actually done now")),
     ];
     let mut config = root.config(ScriptedProvider { script: Mutex::new(script.into()) });
-    config.goal_limits = json!({"required_checks": [{"id": "marker", "command": "test -f done-marker"}]});
+    config.work_limits = json!({"required_checks": [{"id": "marker", "command": "test -f done-marker"}]});
     let handle = start(config).await.expect("start");
     handle.input("do the work").await.expect("input");
-    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
     let entries = read_transcript(&handle, "i-main").await;
     assert_wire_valid(&entries);
     handle.shutdown().await.expect("shutdown");
@@ -1221,9 +1221,9 @@ async fn the_check_repair_path_keeps_the_transcript_wire_valid() {
 
 /// A call id can repeat within one conversation and every answer must still
 /// ride with the call it answers. The runtime's required-check round names its
-/// synthetic call `check-<round>-<position>` and the round counter is per goal,
-/// so two goals in one instance both produce `check-1-0` — the shape measured
-/// in the operator's session DB (goal-task2 entries 151/152, goal-task4
+/// synthetic call `check-<round>-<position>` and the round counter is per work,
+/// so two work_scopes in one instance both produce `check-1-0` — the shape measured
+/// in the operator's session DB (work-task2 entries 151/152, work-task4
 /// 343/344). Pairing the wire view by id alone let the first round claim the
 /// second round's answer, so the next request carried two `tool` messages for
 /// one call and a synthesized answer for the other; a real DeepSeek run
@@ -1237,33 +1237,33 @@ async fn a_reused_check_call_id_keeps_every_request_wire_valid() {
     let root = root("checks-wire-reused");
     std::fs::create_dir_all(root.dir.join("ws")).unwrap();
     let script = vec![
-        Step::Message(finish_call("first goal done")),
-        Step::Message(finish_call("second goal done")),
+        Step::Message(finish_call("first work done")),
+        Step::Message(finish_call("second work done")),
         Step::Message(reply("ack")),
     ];
     let (provider, log) = recording(script);
     let mut config = root.config_with(provider);
-    config.goal_limits = json!({"required_checks": [{"id": "always", "command": "true"}]});
+    config.work_limits = json!({"required_checks": [{"id": "always", "command": "true"}]});
     let handle = start(config).await.expect("start");
-    handle.input("do the first goal").await.expect("input");
-    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
-    // the second goal runs its own round 1, so its synthetic call is `check-1-0`
-    // again — the same id the first goal's round already used
+    handle.input("do the first work").await.expect("input");
+    assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
+    // the second work runs its own round 1, so its synthetic call is `check-1-0`
+    // again — the same id the first work's round already used
     let mut control = second_control(&root);
     control
         .submit(
             cmd(
-                "mk-goal-two",
-                "create_goal",
-                json!({"id": "goal-two", "instance_id": "i-main",
+                "mk-work-two",
+                "create_work",
+                json!({"id": "work-two", "instance_id": "i-main",
                        "limits": {"required_checks": [{"id": "always", "command": "true"}]}}),
             ),
             teamagents_core::v2::Identity::User,
         )
-        .expect("second goal");
+        .expect("second work");
     drop(control);
-    handle.input("do the second goal").await.expect("input");
-    wait_event_count(&handle, "goal_completed", 2, 20_000).await;
+    handle.input("do the second work").await.expect("input");
+    wait_event_count(&handle, "work_completed", 2, 20_000).await;
     // one more turn: its request view holds both check rounds, so the duplicate
     // call id is what the wire sees
     handle.input("summarize").await.expect("input");
@@ -1298,7 +1298,7 @@ async fn a_reused_check_call_id_keeps_every_request_wire_valid() {
     handle.shutdown().await.expect("shutdown");
 }
 
-/// A model that forgets the `status` field used to close the goal as FAILED
+/// A model that forgets the `status` field used to close the work as FAILED
 /// (a failure it never claimed) and skip the required checks entirely — a real
 /// DeepSeek run did exactly that. The runtime now hands the problem back, the
 /// turn continues, and the corrected finish goes through the checks.
@@ -1312,10 +1312,10 @@ async fn a_finish_without_a_status_is_corrected_in_the_same_turn() {
                         "function": {"name": "finish", "arguments": json!({"summary": "did the work"}).to_string()}}]});
     let script = vec![Step::Message(no_status), Step::Message(finish_call("did the work"))];
     let mut config = root.config(ScriptedProvider { script: Mutex::new(script.into()) });
-    config.goal_limits = json!({"required_checks": [{"id": "always", "command": "true"}]});
+    config.work_limits = json!({"required_checks": [{"id": "always", "command": "true"}]});
     let handle = start(config).await.expect("start");
     handle.input("do the work").await.expect("input");
-    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED", "the corrected finish settles the goal");
+    assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED", "the corrected finish settles the work");
     let events = handle.events(0).await.unwrap();
     assert!(
         events.iter().any(|event| event["kind"] == json!("check_round_registered")),
@@ -1343,7 +1343,7 @@ async fn an_ignored_finish_reaches_the_model_as_a_note() {
     let root = root("notes-channel");
     std::fs::create_dir_all(root.dir.join("ws")).unwrap();
     // round one: finish plus a shell call in one response (finish is ignored);
-    // round two: a sole finish, which settles the goal
+    // round two: a sole finish, which settles the work
     let both = json!({"role": "assistant", "content": "",
         "tool_calls": [
             {"id": format!("finish-{}", uuid::Uuid::new_v4()), "type": "function",
@@ -1354,7 +1354,7 @@ async fn an_ignored_finish_reaches_the_model_as_a_note() {
     let (provider, log) = recording(script);
     let handle = start(root.config_with(provider)).await.expect("start");
     handle.input("do the work").await.expect("input");
-    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
     let requests = recorded(&log);
     let saw_note = requests
         .iter()
@@ -1446,10 +1446,10 @@ async fn required_checks_failure_repairs_then_passes() {
         Step::Message(finish_call("actually done now")),
     ];
     let mut config = root.config(ScriptedProvider { script: Mutex::new(script.into()) });
-    config.goal_limits = json!({"required_checks": [{"id": "marker", "command": "test -f done-marker"}]});
+    config.work_limits = json!({"required_checks": [{"id": "marker", "command": "test -f done-marker"}]});
     let handle = start(config).await.expect("start");
     handle.input("do the work").await.expect("input");
-    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
     let repair = wait_event_where("completion_repair", &handle, 5_000, |_| true).await;
     assert_eq!(repair["payload"]["round"], json!(1));
     assert_eq!(repair["payload"]["failures"][0]["check_id"], json!("marker"));
@@ -1462,28 +1462,28 @@ async fn required_checks_failure_repairs_then_passes() {
 }
 
 #[tokio::test]
-async fn required_checks_exhausted_parks_the_goal_blocked() {
+async fn required_checks_exhausted_parks_the_work_blocked() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
     let root = root("checks-exhaust");
     std::fs::create_dir_all(root.dir.join("ws")).unwrap();
     let script = vec![Step::Message(finish_call("try one")), Step::Message(finish_call("try two"))];
     let mut config = root.config(ScriptedProvider { script: Mutex::new(script.into()) });
-    config.goal_limits = json!({"required_checks": [{"id": "never", "command": "exit 1"}], "max_check_rounds": 2});
+    config.work_limits = json!({"required_checks": [{"id": "never", "command": "exit 1"}], "max_check_rounds": 2});
     let handle = start(config).await.expect("start");
     handle.input("do the work").await.expect("input");
-    let blocked = wait_event_where("goal_blocked", &handle, 20_000, |_| true).await;
+    let blocked = wait_event_where("work_blocked", &handle, 20_000, |_| true).await;
     assert_eq!(blocked["payload"]["status"], json!("BLOCKED"));
     let reason = blocked["payload"]["reason"].as_str().unwrap_or("");
     assert!(reason.contains("never:exit"), "{reason}");
     let snapshot = handle.snapshot().await.unwrap();
-    assert_eq!(snapshot["goal"]["status"], json!("BLOCKED"));
+    assert_eq!(snapshot["work"]["status"], json!("BLOCKED"));
     assert_eq!(snapshot["instance"]["phase"], json!("READY"));
-    // A block *is* a settlement (D-71): a client that keys on the goal's ending
+    // A block *is* a settlement (D-71): a client that keys on the work's ending
     // must learn about it, or it reports the runtime's own block note as the
-    // member's answer. The distinct `goal_blocked` event still carries the reason
+    // member's answer. The distinct `work_blocked` event still carries the reason
     // and keeps who decided auditable.
     let completed =
-        wait_event_where("goal_completed", &handle, 5_000, |event| event["payload"]["goal_id"] == json!("goal-s-test"))
+        wait_event_where("work_completed", &handle, 5_000, |event| event["payload"]["work_id"] == json!("work-s-test"))
             .await;
     assert_eq!(completed["payload"]["status"], json!("BLOCKED"));
     assert_eq!(completed["payload"]["blocked_by"], json!("runtime"));
@@ -1500,33 +1500,33 @@ async fn blocked_candidate_never_runs_the_checks() {
     // passing checks — the checks do not even run
     let script = vec![Step::Message(finish_call_blocked("could not finish the migration"))];
     let mut config = root.config(ScriptedProvider { script: Mutex::new(script.into()) });
-    config.goal_limits = json!({"required_checks": [{"id": "tests", "command": "true"}]});
+    config.work_limits = json!({"required_checks": [{"id": "tests", "command": "true"}]});
     let handle = start(config).await.expect("start");
     handle.input("migrate").await.expect("input");
     let closed =
-        wait_event_where("goal_completed", &handle, 15_000, |e| e["payload"]["status"] == json!("BLOCKED")).await;
+        wait_event_where("work_completed", &handle, 15_000, |e| e["payload"]["status"] == json!("BLOCKED")).await;
     assert_eq!(closed["payload"]["completion"]["outcome"], json!("blocked"));
     assert!(no_event(&handle, "check_round_registered").await);
     handle.shutdown().await.expect("shutdown");
 }
 
-/// The third arm of the outcome contract (§8): a Leader whose model reports `failed` closes its goal `FAILED`,
+/// The third arm of the outcome contract (§8): a Leader whose model reports `failed` closes its work `FAILED`,
 /// and — like the `blocked` arm beside this one — its checks never run, because only a claimed `success` is
-/// verified. The kernel's parse of the status is a unit test and the report maps a FAILED goal to a failed run;
-/// the *end-to-end* arm (a model closing a goal `failed`) had none: `"status": "failed"` appeared in no test.
+/// verified. The kernel's parse of the status is a unit test and the report maps a FAILED work to a failed run;
+/// the *end-to-end* arm (a model closing a work `failed`) had none: `"status": "failed"` appeared in no test.
 #[tokio::test]
-async fn a_failed_candidate_closes_the_goal_failed_and_never_runs_the_checks() {
+async fn a_failed_candidate_closes_the_work_failed_and_never_runs_the_checks() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
     let root = root("outcome-failed");
     std::fs::create_dir_all(root.dir.join("ws")).unwrap();
     let script = vec![Step::Message(finish_call_failed("the migration did not land"))];
     let mut config = root.config(ScriptedProvider { script: Mutex::new(script.into()) });
     // a check that leaves a witness if it runs: a failed candidate must not run it at all
-    config.goal_limits = json!({"required_checks": [{"id": "tests", "command": "touch ran"}]});
+    config.work_limits = json!({"required_checks": [{"id": "tests", "command": "touch ran"}]});
     let handle = start(config).await.expect("start");
     handle.input("migrate").await.expect("input");
     let closed =
-        wait_event_where("goal_completed", &handle, 15_000, |e| e["payload"]["status"] == json!("FAILED")).await;
+        wait_event_where("work_completed", &handle, 15_000, |e| e["payload"]["status"] == json!("FAILED")).await;
     assert_eq!(closed["payload"]["completion"]["outcome"], json!("failed"), "{closed}");
     assert!(no_event(&handle, "check_round_registered").await);
     assert!(
@@ -1548,12 +1548,12 @@ async fn check_inputs_must_still_hold_at_completion() {
     // result bound nothing (§8 hash re-verification before completion)
     let script = vec![Step::Message(finish_call("done"))];
     let mut config = root.config(ScriptedProvider { script: Mutex::new(script.into()) });
-    config.goal_limits = json!({"required_checks": [{"id": "bound", "command": "printf changed > input.txt",
+    config.work_limits = json!({"required_checks": [{"id": "bound", "command": "printf changed > input.txt",
                                                      "inputs": ["input.txt"]}],
                                 "max_check_rounds": 1});
     let handle = start(config).await.expect("start");
     handle.input("do the work").await.expect("input");
-    let blocked = wait_event_where("goal_blocked", &handle, 20_000, |_| true).await;
+    let blocked = wait_event_where("work_blocked", &handle, 20_000, |_| true).await;
     assert!(blocked["payload"]["reason"].as_str().unwrap_or("").contains("bound:stale_inputs"));
     handle.shutdown().await.expect("shutdown");
 }
@@ -1637,7 +1637,7 @@ async fn a_boot_collects_claimed_artifacts_and_leaves_protected_ones() {
 /// §8/D-187: a repair round says *which* check failed and why. A check that fails on its own leaves its output
 /// and exit code in the conversation; the stale-input verdict is the runtime's own — the check exited 0 — so
 /// without this entry the next request sees only "the required checks must pass" and has to guess (a live run
-/// spent eleven requests re-deriving the state before settling the goal itself).
+/// spent eleven requests re-deriving the state before settling the work itself).
 #[tokio::test]
 async fn a_repair_round_names_the_failed_check_and_its_reason() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
@@ -1648,7 +1648,7 @@ async fn a_repair_round_names_the_failed_check_and_its_reason() {
     // second answer reaches a settling turn (round 2's check no longer sees a changed input — see the wait below)
     let script = vec![Step::Message(finish_call("claimed done")), Step::Message(finish_call("done again"))];
     let mut config = root.config(ScriptedProvider { script: Mutex::new(script.into()) });
-    config.goal_limits = json!({"required_checks": [{"id": "bound", "command": "printf changed > input.txt",
+    config.work_limits = json!({"required_checks": [{"id": "bound", "command": "printf changed > input.txt",
                                                      "inputs": ["input.txt"]}],
                                 "max_check_rounds": 2});
     let handle = start(config).await.expect("start");
@@ -1664,11 +1664,11 @@ async fn a_repair_round_names_the_failed_check_and_its_reason() {
     assert!(verdict.contains("stale_inputs"), "and its class: {verdict}");
     // The verdict is read from the transcript while the *second* round is already under way (the scripted provider
     // answers at once, so the next check dispatches immediately), and a shutdown there lands on a job in flight —
-    // refused with "driver shutdown with a job in flight". Wait for the goal's terminal state the way the sibling
-    // `required_checks_exhausted_parks_the_goal_blocked` does, so the shutdown is deterministic. Round 2's check
+    // refused with "driver shutdown with a job in flight". Wait for the work's terminal state the way the sibling
+    // `required_checks_exhausted_parks_the_work_blocked` does, so the shutdown is deterministic. Round 2's check
     // *passes*: it rewrites the declared input to the bytes it already holds, so the stale-inputs verdict does not
-    // fire twice and the goal settles `SUCCEEDED`.
-    let completed = wait_event_where("goal_completed", &handle, 20_000, |_| true).await;
+    // fire twice and the work settles `SUCCEEDED`.
+    let completed = wait_event_where("work_completed", &handle, 20_000, |_| true).await;
     assert_eq!(completed["payload"]["status"], json!("SUCCEEDED"));
     handle.shutdown().await.expect("shutdown");
 }
@@ -1691,7 +1691,7 @@ async fn an_invented_tool_name_is_answered_with_what_the_instance_can_call() {
     config.bindings = vec!["files".into(), "shell".into()];
     let handle = start(config).await.expect("start");
     handle.input("do the thing").await.expect("input");
-    let _ = run_to_goal_close(&handle).await;
+    let _ = run_to_work_close(&handle).await;
     let connection = rusqlite::Connection::open(root.dir.join("session.sqlite")).expect("session db");
     let receipt: String = connection
         .query_row(
@@ -1707,18 +1707,18 @@ async fn an_invented_tool_name_is_answered_with_what_the_instance_can_call() {
     handle.shutdown().await.expect("shutdown");
 }
 
-/// D-410: a goal whose deadline is close is told once, in the conversation, how long is left — and the note is
-/// written *before* the request that sees it. A goal with a distant (or absent) deadline is told nothing: the
+/// D-410: a work whose deadline is close is told once, in the conversation, how long is left — and the note is
+/// written *before* the request that sees it. A work with a distant (or absent) deadline is told nothing: the
 /// warning is about a moment, not a policy.
-/// D-418: a goal that carries required checks tells its instance *before* the turn is planned — the criterion is
+/// D-418: a work that carries required checks tells its instance *before* the turn is planned — the criterion is
 /// the user's own text, and the runtime used to keep it until the completion boundary (where D-386/D-400/D-403 all
-/// measured that arriving late is too late). A goal with no checks is told nothing.
+/// measured that arriving late is too late). A work with no checks is told nothing.
 #[tokio::test]
-async fn a_goal_with_required_checks_is_told_them_before_the_first_request() {
+async fn a_work_with_required_checks_is_told_them_before_the_first_request() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
     let root = root("check-briefing");
     std::fs::create_dir_all(root.dir.join("ws")).unwrap();
-    // the goal carries the user's checks: `create_goal` with the same limits shape the daemon writes
+    // the work carries the user's checks: `create_work` with the same limits shape the daemon writes
     let mut control = second_control(&root);
     control
         .submit(
@@ -1734,39 +1734,39 @@ async fn a_goal_with_required_checks_is_told_them_before_the_first_request() {
         .submit(
             cmd(
                 "mk-g",
-                "create_goal",
-                json!({"id": "goal-b-test", "instance_id": "i-main",
+                "create_work",
+                json!({"id": "work-b-test", "instance_id": "i-main",
                        "limits": {"required_checks": [{"id": "answer", "command": "grep -q 42 answer.txt"}]}}),
             ),
             teamagents_core::v2::Identity::User,
         )
-        .expect("goal");
+        .expect("work");
     drop(control);
     let script = vec![Step::Message(reply("working")), Step::Message(reply("still here"))];
     let handle = start(root.config(ScriptedProvider { script: Mutex::new(script.into()) })).await.expect("start");
     handle.input("do the work").await.expect("input");
-    let briefed = wait_event_where("goal_checks_briefed", &handle, 20_000, |_| true).await;
+    let briefed = wait_event_where("work_checks_briefed", &handle, 20_000, |_| true).await;
     assert_eq!(briefed["payload"]["checks"], json!(1), "{briefed}");
     let connection = rusqlite::Connection::open(root.dir.join("session.sqlite")).expect("session db");
     let note: String = connection
         .query_row(
-            "SELECT message_json FROM context_entries WHERE envelope_id = 'goal-checks-briefing-goal-b-test'",
+            "SELECT message_json FROM context_entries WHERE envelope_id = 'work-checks-briefing-work-b-test'",
             [],
             |row| row.get(0),
         )
         .expect("the note exists");
     assert!(note.contains("grep -q 42 answer.txt"), "{note}");
     let count: i64 = connection
-        .query_row("SELECT COUNT(*) FROM context_entries WHERE envelope_id LIKE 'goal-checks-briefing-%'", [], |row| {
+        .query_row("SELECT COUNT(*) FROM context_entries WHERE envelope_id LIKE 'work-checks-briefing-%'", [], |row| {
             row.get(0)
         })
         .unwrap();
-    assert_eq!(count, 1, "one briefing per goal");
+    assert_eq!(count, 1, "one briefing per work");
     handle.shutdown().await.expect("shutdown");
 }
 
 #[tokio::test]
-async fn a_goal_close_to_its_deadline_is_told_once_to_wrap_up() {
+async fn a_work_close_to_its_deadline_is_told_once_to_wrap_up() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
     let root = root("deadline-warning");
     std::fs::create_dir_all(root.dir.join("ws")).unwrap();
@@ -1784,21 +1784,21 @@ async fn a_goal_close_to_its_deadline_is_told_once_to_wrap_up() {
     let soon = teamagents_core::models::now() + 30.0;
     control
         .submit(
-            cmd("mk-g", "create_goal", json!({"id": "goal-s-test", "instance_id": "i-main", "deadline": soon})),
+            cmd("mk-g", "create_work", json!({"id": "work-s-test", "instance_id": "i-main", "deadline": soon})),
             teamagents_core::v2::Identity::User,
         )
-        .expect("goal");
+        .expect("work");
     drop(control);
     let script = vec![Step::Message(reply("working on it")), Step::Message(reply("still here"))];
     let handle = start(root.config(ScriptedProvider { script: Mutex::new(script.into()) })).await.expect("start");
     handle.input("do the work").await.expect("input");
-    let warned = wait_event_where("goal_deadline_warning", &handle, 20_000, |_| true).await;
+    let warned = wait_event_where("work_deadline_warning", &handle, 20_000, |_| true).await;
     assert!(warned["payload"]["seconds_left"].as_i64().unwrap_or(0) > 0, "{warned}");
     // the note is in the conversation the model reads, and it names the lever
     let connection = rusqlite::Connection::open(root.dir.join("session.sqlite")).expect("session db");
     let note: String = connection
         .query_row(
-            "SELECT message_json FROM context_entries WHERE envelope_id = 'goal-deadline-warning-goal-s-test'",
+            "SELECT message_json FROM context_entries WHERE envelope_id = 'work-deadline-warning-work-s-test'",
             [],
             |row| row.get(0),
         )
@@ -1806,11 +1806,11 @@ async fn a_goal_close_to_its_deadline_is_told_once_to_wrap_up() {
     assert!(note.contains("finish"), "{note}");
     // and it is one note, not one per turn
     let count: i64 = connection
-        .query_row("SELECT COUNT(*) FROM context_entries WHERE envelope_id LIKE 'goal-deadline-warning-%'", [], |row| {
+        .query_row("SELECT COUNT(*) FROM context_entries WHERE envelope_id LIKE 'work-deadline-warning-%'", [], |row| {
             row.get(0)
         })
         .unwrap();
-    assert_eq!(count, 1, "at most one warning per goal");
+    assert_eq!(count, 1, "at most one warning per work");
     handle.shutdown().await.expect("shutdown");
 }
 
@@ -1832,25 +1832,25 @@ async fn check_dispatch_refused_parks_without_burning_repair_rounds() {
         .submit(
             cmd(
                 "mk-g",
-                "create_goal",
-                json!({"id": "goal-s-test", "instance_id": "i-main",
+                "create_work",
+                json!({"id": "work-s-test", "instance_id": "i-main",
                                               "limits": {"required_checks": [{"id": "tests", "command": "true"}]}}),
             ),
             teamagents_core::v2::Identity::User,
         )
-        .expect("goal");
+        .expect("work");
     drop(control);
     let script = vec![Step::Message(finish_call("claimed done"))];
     let handle = start(root.config(ScriptedProvider { script: Mutex::new(script.into()) })).await.expect("start");
     handle.input("do the work").await.expect("input");
-    let blocked = wait_event_where("goal_blocked", &handle, 20_000, |_| true).await;
+    let blocked = wait_event_where("work_blocked", &handle, 20_000, |_| true).await;
     assert!(blocked["payload"]["reason"].as_str().unwrap_or("").contains("dispatch_refused"));
     assert!(no_event(&handle, "completion_repair").await);
     handle.shutdown().await.expect("shutdown");
 }
 
 /// R22/A20: a context that no longer fits the native window is compacted
-/// before the turn is fixed. The summary call is billed to the goal, the
+/// before the turn is fixed. The summary call is billed to the work, the
 /// covered text stays reachable through readback, and a restarted driver
 /// keeps using the compacted view.
 #[tokio::test]
@@ -1898,9 +1898,9 @@ async fn long_context_compacts_before_the_turn_and_survives_a_restart() {
     assert!(compacted_turn.contains("Compacted conversation summary"), "{compacted_turn}");
     assert!(!compacted_turn.contains("the long specification"), "covered text must leave the view");
     assert!(compacted_turn.contains("now continue"), "the newest input stays verbatim");
-    // the compression call is billed to the same goal (A18/A20): 5 attempts
+    // the compression call is billed to the same work (A18/A20): 5 attempts
     let snapshot = handle.snapshot().await.unwrap();
-    assert_eq!(snapshot["goal"]["known_usage"]["total"], json!(25));
+    assert_eq!(snapshot["work"]["known_usage"]["total"], json!(25));
     let mut control = second_control(&root);
     let (kind, status): (String, String) = control
         .connection()
@@ -2004,8 +2004,8 @@ async fn failed_summaries_fall_back_uncompressed_and_break_after_three() {
     let control = second_control(&root);
     let reservations: String = control
         .connection()
-        .query_row("SELECT reservations_json FROM goals LIMIT 1", [], |row| row.get(0))
-        .expect("goal");
+        .query_row("SELECT reservations_json FROM work_scopes LIMIT 1", [], |row| row.get(0))
+        .expect("work");
     assert_eq!(reservations, "{}");
     let open: i64 = control
         .connection()
@@ -2041,8 +2041,8 @@ async fn a_pre_tool_hook_vetoes_a_tool_call_and_the_turn_continues() {
     config.catalog.hooks.pre_tool = vec![deny];
     let handle = start(config).await.expect("start");
     handle.input("run the forbidden command").await.expect("input");
-    // the veto is a tool result, not a crash: the goal still closes
-    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    // the veto is a tool result, not a crash: the work still closes
+    assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
     assert!(!marker.exists(), "the hook stopped the command before it ran");
     let requests = wait_for_requests(&seen, 2, 10_000).await;
     let second = request_text(&requests[1]);
@@ -2070,7 +2070,7 @@ async fn notify_hooks_receive_tool_call_and_run_completed() {
     config.catalog.hooks.notify = vec![hook];
     let handle = start(config).await.expect("start");
     handle.input("do the thing").await.expect("input");
-    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
     // the hook runs on its own thread; poll for the two events of this turn
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     let mut text = String::new();
@@ -2136,7 +2136,7 @@ async fn spawn_resolves_the_requested_workspace_policy() {
         )
         .expect("manage grant");
     handle.input("spawn helpers with different workspaces").await.expect("input");
-    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
 
     let instances = root.dir.join("state/instances");
     let iso = instances.join("i-iso/work");
@@ -2203,7 +2203,7 @@ fn attempt_rows(root: &Root) -> Vec<(String, String)> {
 
 /// A19's retry shape end to end, which nothing exercised before D-117: a transient provider failure is retried
 /// *inside the same turn* (the driver waits and asks again), so a flaky network costs latency instead of the
-/// goal. The record stays honest at the same time — two attempts, the lost one with no usage to bill and the
+/// work. The record stays honest at the same time — two attempts, the lost one with no usage to bill and the
 /// complete one priced — which is §6.3's "double billing is possible, and the runtime does not pretend to know".
 #[tokio::test]
 async fn a_transient_model_failure_is_retried_inside_the_turn() {
@@ -2215,7 +2215,7 @@ async fn a_transient_model_failure_is_retried_inside_the_turn() {
     ];
     let handle = start(root.config(script.into_provider())).await.expect("start");
     handle.input("do the work").await.expect("input");
-    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED", "the retry carried the turn");
+    assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED", "the retry carried the turn");
     let events = handle.events(0).await.unwrap();
     let statuses: Vec<String> = events
         .iter()
@@ -2230,8 +2230,8 @@ async fn a_transient_model_failure_is_retried_inside_the_turn() {
     assert_eq!(rows[1].0, "COMPLETE");
     assert!(rows[1].1.contains("total_tokens"), "the complete attempt carries its usage: {rows:?}");
     let snapshot = handle.snapshot().await.unwrap();
-    assert_eq!(snapshot["goal"]["known_usage"]["total"], json!(5), "only the complete attempt is priced");
-    assert_eq!(snapshot["goal"]["unknown_usage"], json!(0), "a known failure is not an unknown outcome");
+    assert_eq!(snapshot["work"]["known_usage"]["total"], json!(5), "only the complete attempt is priced");
+    assert_eq!(snapshot["work"]["unknown_usage"], json!(0), "a known failure is not an unknown outcome");
     handle.shutdown().await.expect("shutdown");
 }
 
@@ -2260,8 +2260,8 @@ async fn transient_retries_exhausted_parks_with_the_reason() {
     assert!(rows.iter().all(|(status, _)| status == "FAILED"), "{rows:?}");
     let events = handle.events(0).await.unwrap();
     assert!(
-        !events.iter().any(|event| event["kind"] == json!("goal_completed")),
-        "no goal settled out of a failed turn: {events:?}"
+        !events.iter().any(|event| event["kind"] == json!("work_completed")),
+        "no work settled out of a failed turn: {events:?}"
     );
     handle.shutdown().await.expect("shutdown");
 }

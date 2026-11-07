@@ -269,7 +269,7 @@ fn dispatch(
         "reauthorize_operation" => reauthorize_operation(tx, session_id, params),
         "reset_instance" => reset_instance(tx, session_id, params, identity),
         "configure_work" => work::configure(tx, session_id, params, identity),
-        "create_goal" => create_goal(tx, session_id, params, identity),
+        "create_work" => create_work(tx, session_id, params, identity),
         "require_checks" => require_checks(tx, session_id, params, identity),
         "send_message" => send_message(tx, session_id, params, identity),
         "drain_inbox" => drain_inbox(tx, session_id, params, identity),
@@ -300,14 +300,14 @@ fn dispatch(
         "fail_request" => fail_request(tx, session_id, params),
         "cancel_request" => cancel_request(tx, session_id, params),
         "interrupt_instance" => interrupt_instance(tx, session_id, params, identity),
-        "complete_goal" => complete_goal(tx, session_id, params),
+        "complete_work" => complete_work(tx, session_id, params),
         "register_check_runs" => register_check_runs(tx, session_id, params, identity),
         "register_verification" => register_verification(tx, session_id, params, identity),
         "repair_completion" => repair_completion(tx, session_id, params, identity),
-        "block_goal" => block_goal(tx, session_id, params, identity),
+        "block_work" => block_work(tx, session_id, params, identity),
         "deadline_warning" => deadline_warning(tx, session_id, params, identity),
-        "goal_checks_briefing" => goal_checks_briefing(tx, session_id, params, identity),
-        "cancel_goal" => cancel_goal(tx, session_id, params, identity),
+        "work_checks_briefing" => work_checks_briefing(tx, session_id, params, identity),
+        "cancel_work" => cancel_work(tx, session_id, params, identity),
         "close_completion" => close_completion(tx, session_id, params),
         "artifact_abandon" => artifact_abandon(tx, session_id, params),
         "set_lifecycle" => set_lifecycle(tx, session_id, params, identity),
@@ -453,11 +453,11 @@ fn capability_gap(
     check_owner: Option<&str>,
 ) -> Result<Option<String>, String> {
     let gap = match intent["name"].as_str() {
-        // §8/D-393: a required-check operation runs under the authority of the **goal's owner** — the instance
+        // §8/D-393: a required-check operation runs under the authority of the **work's owner** — the instance
         // that produced the claim — not of whoever triggered the round. That keeps the rule this boundary already
-        // had (a goal whose owner holds no `shell@workspace` cannot run its checks, which the driver parks as
+        // had (a work whose owner holds no `shell@workspace` cannot run its checks, which the driver parks as
         // verification-infrastructure failure) while letting another instance trigger the very same checks through
-        // `verify_goal`. Measured 2026-10-03: gating on the *caller* made every verification round fail with
+        // `verify_work`. Measured 2026-10-03: gating on the *caller* made every verification round fail with
         // "instance i-verifier holds no shell@workspace grant". The subject comes from the *decision record* (the
         // request is a `required_check` round) and never from the arguments, so a model cannot forge a `check_id`
         // to borrow another instance's authority.
@@ -853,7 +853,7 @@ fn record_sealed_envelopes(
     Ok(())
 }
 
-/// Reset (§5.4, Q9): the instance keeps its id, goal and tasks but starts a
+/// Reset (§5.4, Q9): the instance keeps its id, work and tasks but starts a
 /// fresh context epoch. Everything from the old epoch closes in the same
 /// transaction; late receipts of the old epoch keep landing on their
 /// original operations and budget without entering the new epoch (A24).
@@ -950,7 +950,7 @@ fn create_instance(tx: &Connection, session_id: &str, params: &Json, identity: &
     tx.execute(
         "INSERT INTO instances
          (id, session_id, profile_revision, workspace_ref, context_epoch, lifecycle, phase,
-          revision, active_goal_id, active_request_id, context_head, profile_json)
+          revision, active_work_id, active_request_id, context_head, profile_json)
          VALUES (?1, ?2, 1, ?3, 0, 'ACTIVE', 'READY', 0, NULL, NULL, 0, ?4)",
         rusqlite::params![id, session_id, workspace, profile.to_string()],
     )
@@ -1017,8 +1017,8 @@ fn spawn_instance(tx: &Connection, session_id: &str, params: &Json, identity: &I
         let task_id =
             params["task_id"].as_str().map(str::to_string).unwrap_or_else(|| format!("t-{}", uuid::Uuid::new_v4()));
         let mut delegate = json!({"task_id": task_id, "assignee": instance_id, "description": description});
-        if let Some(goal) = params["goal_id"].as_str() {
-            delegate["goal_id"] = json!(goal);
+        if let Some(work) = params["work_id"].as_str() {
+            delegate["work_id"] = json!(work);
         }
         if let Some(acceptance) = params.get("acceptance_refs") {
             delegate["acceptance_refs"] = acceptance.clone();
@@ -1522,24 +1522,24 @@ fn delegate_task(tx: &Connection, session_id: &str, params: &Json, identity: &Id
             (actor.clone(), Some(grant_id))
         }
     };
-    let goal_id = match params["goal_id"].as_str() {
-        Some(goal) => goal.to_string(),
+    let work_id = match params["work_id"].as_str() {
+        Some(work) => work.to_string(),
         None => {
             if requester == "user" {
-                return Err("delegate_task.goal_id required when the user delegates".into());
+                return Err("delegate_task.work_id required when the user delegates".into());
             }
-            tx.query_row("SELECT active_goal_id FROM instances WHERE id = ?1", [&requester], |row| {
+            tx.query_row("SELECT active_work_id FROM instances WHERE id = ?1", [&requester], |row| {
                 row.get::<_, Option<String>>(0)
             })
-            .map_err(|e| format!("requester goal: {e}"))?
-            .ok_or("delegate_task.goal_id required: requester has no active goal")?
+            .map_err(|e| format!("requester work: {e}"))?
+            .ok_or("delegate_task.work_id required: requester has no active work")?
         }
     };
-    // The goal the task serves must still be open (§8, finding V-G1): a task
-    // registered on a settled goal would be new work charged to a closed
-    // record with no one left to settle it. Create or attach a new goal first.
-    if !goal_is_active(tx, &goal_id)? {
-        return Err(format!("goal {goal_id} is not active; create a new goal (create_goal) before delegating"));
+    // The work the task serves must still be open (§8, finding V-G1): a task
+    // registered on a settled work would be new work charged to a closed
+    // record with no one left to settle it. Create or attach a new work first.
+    if !work_is_active(tx, &work_id)? {
+        return Err(format!("work {work_id} is not active; create a new work (create_work) before delegating"));
     }
     let deps: Vec<String> = dependencies
         .as_array()
@@ -1562,12 +1562,12 @@ fn delegate_task(tx: &Connection, session_id: &str, params: &Json, identity: &Id
         }
     }
     tx.execute(
-        "INSERT INTO tasks (id, goal_id, session_id, requester, assignee, dependencies_json,
+        "INSERT INTO tasks (id, work_id, session_id, requester, assignee, dependencies_json,
                             acceptance_refs_json, status, result_refs_json, revision)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'PENDING', '[]', 0)",
         rusqlite::params![
             task_id,
-            goal_id,
+            work_id,
             session_id,
             requester,
             assignee,
@@ -1604,7 +1604,7 @@ fn delegate_task(tx: &Connection, session_id: &str, params: &Json, identity: &Id
         session_id,
         "task_delegated",
         assignee,
-        &json!({"task_id": task_id, "requester": requester, "goal_id": goal_id,
+        &json!({"task_id": task_id, "requester": requester, "work_id": work_id,
                 "envelope_id": envelope_id, "capabilities": capabilities}),
     )?;
     let mut status = "PENDING";
@@ -1778,7 +1778,7 @@ fn deny_capability(tx: &Connection, session_id: &str, params: &Json, identity: &
 
 fn load_task(tx: &Connection, session_id: &str, task_id: &str) -> Result<(String, String, String, String), String> {
     tx.query_row(
-        "SELECT goal_id, requester, assignee, status FROM tasks WHERE id = ?1 AND session_id = ?2",
+        "SELECT work_id, requester, assignee, status FROM tasks WHERE id = ?1 AND session_id = ?2",
         rusqlite::params![task_id, session_id],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
     )
@@ -1852,7 +1852,7 @@ fn complete_task(tx: &Connection, session_id: &str, params: &Json, identity: &Id
     // with the settlement, in this same transaction.
     revoke_task_grants(tx, session_id, task_id)?;
     // a settlement reported from the assignee's finish turn closes that
-    // turn (mirror of complete_goal's phase rule); conditional, so settling
+    // turn (mirror of complete_work's phase rule); conditional, so settling
     // mid-turn or by the user never rewires a live phase
     let closed_turn = tx
         .execute(
@@ -2032,8 +2032,8 @@ fn read_history(tx: &Connection, session_id: &str, params: &Json, identity: &Ide
     Ok(json!({"instance_id": instance_id, "epoch": epoch, "entries": entries}))
 }
 
-fn create_goal(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
-    let id = params["id"].as_str().ok_or("create_goal.id required")?;
+fn create_work(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
+    let id = params["id"].as_str().ok_or("create_work.id required")?;
     let original = params["original_request_ref"].as_str().unwrap_or("");
     let limits = params.get("limits").cloned().unwrap_or(json!({}));
     let deadline = params["deadline"].as_f64();
@@ -2044,7 +2044,7 @@ fn create_goal(tx: &Connection, session_id: &str, params: &Json, identity: &Iden
         // masquerade as user-confirmed required checks
         if !matches!(identity, Identity::User | Identity::System) {
             return Err(
-                "create_goal limits.required_checks: only the user or the project bootstrap predefines required checks"
+                "create_work limits.required_checks: only the user or the project bootstrap predefines required checks"
                     .into(),
             );
         }
@@ -2052,18 +2052,18 @@ fn create_goal(tx: &Connection, session_id: &str, params: &Json, identity: &Iden
     }
     if let Some(flag) = limits.get("independent_verification") {
         // D-393: the same provenance gate as the checks themselves — a *user* statement about who may settle the
-        // goal, never something a model distills from its own turn.
+        // work, never something a model distills from its own turn.
         if !matches!(identity, Identity::User | Identity::System) {
             return Err(
-                "create_goal limits.independent_verification: only the user or the project bootstrap sets it".into()
+                "create_work limits.independent_verification: only the user or the project bootstrap sets it".into()
             );
         }
         if flag.as_bool().is_none() {
-            return Err("create_goal limits.independent_verification must be true/false".into());
+            return Err("create_work limits.independent_verification must be true/false".into());
         }
     }
     tx.execute(
-        "INSERT INTO goals
+        "INSERT INTO work_scopes
          (id, session_id, original_request_ref, requirement_revision, status, deadline,
           limits_json, known_usage_json, reservations_json, unknown_usage)
          VALUES (?1, ?2, ?3, 1, 'ACTIVE', ?4, ?5, ?6, '{}', 0)",
@@ -2076,36 +2076,36 @@ fn create_goal(tx: &Connection, session_id: &str, params: &Json, identity: &Iden
             json!(crate::kernel::Usage::default()).to_string()
         ],
     )
-    .map_err(|e| format!("create_goal {id}: {e}"))?;
+    .map_err(|e| format!("create_work {id}: {e}"))?;
     if let Some(instance) = attach {
         let changed = tx
             .execute(
-                "UPDATE instances SET active_goal_id = ?1, revision = revision + 1 WHERE id = ?2 AND session_id = ?3",
+                "UPDATE instances SET active_work_id = ?1, revision = revision + 1 WHERE id = ?2 AND session_id = ?3",
                 rusqlite::params![id, instance, session_id],
             )
-            .map_err(|e| format!("attach goal: {e}"))?;
+            .map_err(|e| format!("attach work: {e}"))?;
         if changed != 1 {
-            return Err(format!("cannot attach goal {id}: instance {instance} not in this session"));
+            return Err(format!("cannot attach work {id}: instance {instance} not in this session"));
         }
     }
-    event(tx, session_id, "goal_created", id, &json!({"goal_id": id}))?;
-    Ok(json!({"goal_id": id, "status": "ACTIVE"}))
+    event(tx, session_id, "work_created", id, &json!({"work_id": id}))?;
+    Ok(json!({"work_id": id, "status": "ACTIVE"}))
 }
 
 /// User-side ingress for required checks (§8/D-268): the headless `exec` can attach the acceptance commands it
-/// wants a goal judged by **before** the work starts, which is what makes the driver's repair round reachable
-/// without a hand-written `[[checks]]` config. The gate is `create_goal`'s: only the user or the project
+/// wants a work judged by **before** the work starts, which is what makes the driver's repair round reachable
+/// without a hand-written `[[checks]]` config. The gate is `create_work`'s: only the user or the project
 /// bootstrap predefines required checks, so a model can never install its own acceptance test. Checks are
 /// unioned by id and a second definition of an id is refused (an id names one contract).
 ///
-/// A goal that has already registered a check round is refused: the contract a round was computed over stays
+/// A work that has already registered a check round is refused: the contract a round was computed over stays
 /// fixed, because the driver decides a round from its own stored receipts and a check added afterwards would
 /// never be verified (the upgrade path is a checks revision recorded on the round — see `V2Checks.tla`).
 fn require_checks(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
     if !matches!(identity, Identity::User | Identity::System) {
         return Err("require_checks: only the user or the project bootstrap predefines required checks".into());
     }
-    let goal_id = params["goal_id"].as_str().ok_or("require_checks.goal_id required")?;
+    let work_id = params["work_id"].as_str().ok_or("require_checks.work_id required")?;
     let incoming = params["checks"].clone();
     let list = incoming.as_array().ok_or("require_checks.checks must be an array")?;
     if list.is_empty() {
@@ -2114,27 +2114,27 @@ fn require_checks(tx: &Connection, session_id: &str, params: &Json, identity: &I
     validate_required_checks(&incoming)?;
     let stored: Option<(String, String)> = tx
         .query_row(
-            "SELECT status, limits_json FROM goals WHERE id = ?1 AND session_id = ?2",
-            rusqlite::params![goal_id, session_id],
+            "SELECT status, limits_json FROM work_scopes WHERE id = ?1 AND session_id = ?2",
+            rusqlite::params![work_id, session_id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()
-        .map_err(|e| format!("require_checks goal {goal_id}: {e}"))?;
-    let (status, limits_json) = stored.ok_or_else(|| format!("goal {goal_id} is not in this session"))?;
+        .map_err(|e| format!("require_checks work {work_id}: {e}"))?;
+    let (status, limits_json) = stored.ok_or_else(|| format!("work {work_id} is not in this session"))?;
     if status != "ACTIVE" {
-        return Err(format!("goal {goal_id} is {status}, not ACTIVE: a settled goal cannot take new checks"));
+        return Err(format!("work {work_id} is {status}, not ACTIVE: a settled work cannot take new checks"));
     }
     let rounds: i64 = tx
         .query_row(
-            "SELECT COUNT(*) FROM model_requests WHERE goal_id = ?1 AND request_ref = 'required_check'",
-            [goal_id],
+            "SELECT COUNT(*) FROM model_requests WHERE work_id = ?1 AND request_ref = 'required_check'",
+            [work_id],
             |row| row.get(0),
         )
-        .map_err(|e| format!("require_checks rounds {goal_id}: {e}"))?;
+        .map_err(|e| format!("require_checks rounds {work_id}: {e}"))?;
     if rounds > 0 {
         return Err(format!(
-            "goal {goal_id} has already registered a check round: its acceptance contract is fixed \
-             (cancel the goal and open the next one with the checks you want)"
+            "work {work_id} has already registered a check round: its acceptance contract is fixed \
+             (cancel the work and open the next one with the checks you want)"
         ));
     }
     let mut limits: Json = serde_json::from_str(&limits_json).unwrap_or_else(|_| json!({}));
@@ -2145,7 +2145,7 @@ fn require_checks(tx: &Connection, session_id: &str, params: &Json, identity: &I
             Some(position) => {
                 if merged[position] != *check {
                     return Err(format!(
-                        "required check {id:?} is already attached to goal {goal_id} with a different definition"
+                        "required check {id:?} is already attached to work {work_id} with a different definition"
                     ));
                 }
             }
@@ -2154,19 +2154,19 @@ fn require_checks(tx: &Connection, session_id: &str, params: &Json, identity: &I
     }
     limits["required_checks"] = Json::Array(merged.clone());
     tx.execute(
-        "UPDATE goals SET limits_json = ?1 WHERE id = ?2 AND session_id = ?3",
-        rusqlite::params![limits.to_string(), goal_id, session_id],
+        "UPDATE work_scopes SET limits_json = ?1 WHERE id = ?2 AND session_id = ?3",
+        rusqlite::params![limits.to_string(), work_id, session_id],
     )
-    .map_err(|e| format!("require_checks update {goal_id}: {e}"))?;
+    .map_err(|e| format!("require_checks update {work_id}: {e}"))?;
     let ids: Vec<&str> = merged.iter().filter_map(|check| check["id"].as_str()).collect();
     event(
         tx,
         session_id,
-        "goal_checks_required",
-        goal_id,
-        &json!({"goal_id": goal_id, "checks": ids, "added": list.len()}),
+        "work_checks_required",
+        work_id,
+        &json!({"work_id": work_id, "checks": ids, "added": list.len()}),
     )?;
-    Ok(json!({"goal_id": goal_id, "required_checks": merged}))
+    Ok(json!({"work_id": work_id, "required_checks": merged}))
 }
 
 /// Accept boundary for input (§4.2, §5.4): context append + apply dedup +
@@ -2181,7 +2181,7 @@ fn submit_input(tx: &Connection, session_id: &str, params: &Json, identity: &Ide
     let mut payload = json!({"text": text});
     if let Some(checks) = params.get("checks") {
         if work::policy(tx)?.is_none() {
-            return Err("input checks require the durable work policy; use require_checks on the active goal".into());
+            return Err("input checks require the durable work policy; use require_checks on the active work".into());
         }
         validate_required_checks(checks)?;
         payload["checks"] = checks.clone();
@@ -2528,41 +2528,41 @@ fn begin_request(tx: &Connection, session_id: &str, params: &Json, identity: &Id
     if let Some(prepared) = params.get("prepared_work") {
         work::check_prepared(tx, instance_id, prepared)?;
     }
-    let goal_id = budget_goal(tx, instance_id)?;
-    if let Some(goal) = goal_id.as_deref() {
-        // A35: past the goal deadline no new request begins — the daemon
+    let work_id = budget_work(tx, instance_id)?;
+    if let Some(work) = work_id.as_deref() {
+        // A35: past the work deadline no new request begins — the daemon
         // honors the deadline even if an eval client expired or was killed.
         // A committed refusal with an auditable event, same as the budget
         // gate; the request never registers and the instance stays READY.
-        if goal_deadline_passed(tx, goal)? {
+        if work_deadline_passed(tx, work)? {
             event(
                 tx,
                 session_id,
-                "goal_deadline_refused",
+                "work_deadline_refused",
                 instance_id,
-                &json!({"goal_id": goal, "request_id": request_id}),
+                &json!({"work_id": work, "request_id": request_id}),
             )?;
             return Ok(json!({"request_id": request_id, "deadline_refused": true,
-                             "reason": format!("goal {goal} deadline passed")}));
+                             "reason": format!("work {work} deadline passed")}));
         }
         // Budget refusal is a committed outcome, not a transaction failure:
         // rolling back would lose the auditable event (§8). The request
         // never registers and the instance stays READY.
-        if let Some(reason) = reserve_budget(tx, session_id, goal, instance_id, request_id, est)? {
+        if let Some(reason) = reserve_budget(tx, session_id, work, instance_id, request_id, est)? {
             return Ok(json!({"request_id": request_id, "budget_refused": true, "reason": reason}));
         }
     }
-    if goal_id.is_none() {
+    if work_id.is_none() {
         if let Some(reason) = work::admission_budget(tx, session_id, instance_id, est)? {
             return Ok(json!({"request_id":request_id,"budget_refused":true,"reason":reason}));
         }
     }
     work::begin(tx, instance_id, request_id)?;
     tx.execute(
-        "INSERT INTO model_requests (request_id, instance_id, epoch, goal_id, request_ref, status, est_prompt_tokens,
+        "INSERT INTO model_requests (request_id, instance_id, epoch, work_id, request_ref, status, est_prompt_tokens,
                                      offered_tools, surface_authorized)
          VALUES (?1, ?2, ?3, ?4, ?5, 'PENDING', ?6, ?7, ?8)",
-        rusqlite::params![request_id, instance_id, epoch, goal_id, request_ref, est, offered, authorized],
+        rusqlite::params![request_id, instance_id, epoch, work_id, request_ref, est, offered, authorized],
     )
     .map_err(|e| format!("begin_request {request_id}: {e}"))?;
     tx.execute(
@@ -2576,88 +2576,88 @@ fn begin_request(tx: &Connection, session_id: &str, params: &Json, identity: &Id
     Ok(json!({"request_id": request_id, "phase": "MODEL_PENDING", "epoch": epoch}))
 }
 
-/// The goal an instance's requests are billed to (A18): its own active goal,
-/// or — for a worker — the goal its task queue serves, running work first,
+/// The work an instance's requests are billed to (A18): its own active work,
+/// or — for a worker — the work its task queue serves, running work first,
 /// then the pending queue in FIFO order, so reservations and usage from every
-/// instance stay visible on one goal.
+/// instance stay visible on one work.
 ///
-/// Only an ACTIVE goal is a billing target (§8, verification finding V-G1): a
-/// SUCCEEDED/FAILED/BLOCKED goal has been settled, so new requests run under a
-/// live goal or with no goal at all — never charged to a closed record.
-fn budget_goal(tx: &Connection, instance_id: &str) -> Result<Option<String>, String> {
-    let goal_id: Option<String> = tx
-        .query_row("SELECT active_goal_id FROM instances WHERE id = ?1", [instance_id], |row| row.get(0))
-        .map_err(|e| format!("goal read: {e}"))?;
-    if let Some(goal) = goal_id {
-        if goal_is_active(tx, &goal)? {
-            return Ok(Some(goal));
+/// Only an ACTIVE work is a billing target (§8, verification finding V-G1): a
+/// SUCCEEDED/FAILED/BLOCKED work has been settled, so new requests run under a
+/// live work or with no work at all — never charged to a closed record.
+fn budget_work(tx: &Connection, instance_id: &str) -> Result<Option<String>, String> {
+    let work_id: Option<String> = tx
+        .query_row("SELECT active_work_id FROM instances WHERE id = ?1", [instance_id], |row| row.get(0))
+        .map_err(|e| format!("work read: {e}"))?;
+    if let Some(work) = work_id {
+        if work_is_active(tx, &work)? {
+            return Ok(Some(work));
         }
     }
-    let task_goal: Option<String> = tx
+    let task_work: Option<String> = tx
         .query_row(
-            "SELECT goal_id FROM tasks WHERE assignee = ?1 AND status IN ('RUNNING', 'PENDING')
+            "SELECT work_id FROM tasks WHERE assignee = ?1 AND status IN ('RUNNING', 'PENDING')
              ORDER BY CASE status WHEN 'RUNNING' THEN 0 ELSE 1 END, rowid LIMIT 1",
             [instance_id],
             |row| row.get(0),
         )
         .optional()
-        .map_err(|e| format!("task goal read: {e}"))?;
-    match task_goal {
-        Some(goal) if goal_is_active(tx, &goal)? => Ok(Some(goal)),
+        .map_err(|e| format!("task work read: {e}"))?;
+    match task_work {
+        Some(work) if work_is_active(tx, &work)? => Ok(Some(work)),
         _ => Ok(None),
     }
 }
 
-/// A goal accepts new work only while it is ACTIVE (§8, verification finding
+/// A work accepts new work only while it is ACTIVE (§8, verification finding
 /// V-G1): settling it detaches it from every instance, so later work needs a
-/// new goal instead of extending a closed record.
-fn goal_is_active(tx: &Connection, goal_id: &str) -> Result<bool, String> {
+/// new work instead of extending a closed record.
+fn work_is_active(tx: &Connection, work_id: &str) -> Result<bool, String> {
     let status: Option<String> = tx
-        .query_row("SELECT status FROM goals WHERE id = ?1", [goal_id], |row| row.get(0))
+        .query_row("SELECT status FROM work_scopes WHERE id = ?1", [work_id], |row| row.get(0))
         .optional()
-        .map_err(|e| format!("goal status read: {e}"))?;
+        .map_err(|e| format!("work status read: {e}"))?;
     Ok(status.as_deref() == Some("ACTIVE"))
 }
 
-/// Detach a settled goal from the instances that pointed at it (§8). The
-/// pointer is what admits new requests, so a closed goal must not keep one;
+/// Detach a settled work from the instances that pointed at it (§8). The
+/// pointer is what admits new requests, so a closed work must not keep one;
 /// an idempotent repair that also covers rows written before this rule.
-fn detach_goal(tx: &Connection, goal_id: &str) -> Result<usize, String> {
+fn detach_work(tx: &Connection, work_id: &str) -> Result<usize, String> {
     tx.execute(
-        "UPDATE instances SET active_goal_id = NULL, revision = revision + 1 WHERE active_goal_id = ?1",
-        [goal_id],
+        "UPDATE instances SET active_work_id = NULL, revision = revision + 1 WHERE active_work_id = ?1",
+        [work_id],
     )
-    .map_err(|e| format!("detach goal {goal_id}: {e}"))
+    .map_err(|e| format!("detach work {work_id}: {e}"))
 }
 
-/// Goal deadline gate (A35): the absolute deadline lives on the goal; once
+/// Work deadline gate (A35): the absolute deadline lives on the work; once
 /// it passes, new requests and new side-effect dispatches are refused.
-fn goal_deadline_passed(tx: &Connection, goal_id: &str) -> Result<bool, String> {
+fn work_deadline_passed(tx: &Connection, work_id: &str) -> Result<bool, String> {
     let deadline: Option<f64> = tx
-        .query_row("SELECT deadline FROM goals WHERE id = ?1", [goal_id], |row| row.get(0))
-        .map_err(|e| format!("goal deadline read: {e}"))?;
+        .query_row("SELECT deadline FROM work_scopes WHERE id = ?1", [work_id], |row| row.get(0))
+        .map_err(|e| format!("work deadline read: {e}"))?;
     Ok(deadline.is_some_and(|d| crate::models::now() > d))
 }
 
 /// Budget gate and reservation (§8): a request may only start while known +
-/// reserved + its estimate fits the goal limit. Reservations release when the
+/// reserved + its estimate fits the work limit. Reservations release when the
 /// request closes (import or fail); unknown usage stays a visible counter.
 /// Returns the refusal reason when the gate rejects the request.
 fn reserve_budget(
     tx: &Connection,
     session_id: &str,
-    goal_id: &str,
+    work_id: &str,
     instance_id: &str,
     request_id: &str,
     est: i64,
 ) -> Result<Option<String>, String> {
     let (limits, known_json, reservations_json): (String, String, String) = tx
         .query_row(
-            "SELECT limits_json, known_usage_json, reservations_json FROM goals WHERE id = ?1",
-            [goal_id],
+            "SELECT limits_json, known_usage_json, reservations_json FROM work_scopes WHERE id = ?1",
+            [work_id],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
-        .map_err(|e| format!("goal budget read: {e}"))?;
+        .map_err(|e| format!("work budget read: {e}"))?;
     let limits: Json = serde_json::from_str(&limits).unwrap_or(json!({}));
     let known: crate::kernel::Usage = serde_json::from_str(&known_json).unwrap_or_default();
     let mut reservations: serde_json::Map<String, Json> = serde_json::from_str(&reservations_json).unwrap_or_default();
@@ -2670,19 +2670,19 @@ fn reserve_budget(
                 session_id,
                 "budget_refused",
                 instance_id,
-                &json!({"goal_id": goal_id, "request_id": request_id, "known": known.total,
+                &json!({"work_id": work_id, "request_id": request_id, "known": known.total,
                         "reserved": reserved, "est": est, "max": max}),
             )?;
             return Ok(Some(format!(
-                "goal {goal_id} budget exceeded: known {} + reserved {reserved} + est {est} > max {max}",
+                "work {work_id} budget exceeded: known {} + reserved {reserved} + est {est} > max {max}",
                 known.total
             )));
         }
     }
     reservations.insert(request_id.to_string(), json!(est));
     tx.execute(
-        "UPDATE goals SET reservations_json = ?1 WHERE id = ?2",
-        rusqlite::params![json!(reservations).to_string(), goal_id],
+        "UPDATE work_scopes SET reservations_json = ?1 WHERE id = ?2",
+        rusqlite::params![json!(reservations).to_string(), work_id],
     )
     .map_err(|e| format!("reservation: {e}"))?;
     Ok(None)
@@ -2690,15 +2690,15 @@ fn reserve_budget(
 
 /// Release the request's reservation when the request closes (§8).
 fn release_reservation(tx: &Connection, request_id: &str) -> Result<(), String> {
-    let Some(goal) = request_goal(tx, request_id)? else { return Ok(()) };
+    let Some(work) = request_work(tx, request_id)? else { return Ok(()) };
     let current: String = tx
-        .query_row("SELECT reservations_json FROM goals WHERE id = ?1", [&goal], |row| row.get(0))
+        .query_row("SELECT reservations_json FROM work_scopes WHERE id = ?1", [&work], |row| row.get(0))
         .map_err(|e| format!("reservations read: {e}"))?;
     let mut reservations: serde_json::Map<String, Json> = serde_json::from_str(&current).unwrap_or_default();
     if reservations.remove(request_id).is_some() {
         tx.execute(
-            "UPDATE goals SET reservations_json = ?1 WHERE id = ?2",
-            rusqlite::params![json!(reservations).to_string(), goal],
+            "UPDATE work_scopes SET reservations_json = ?1 WHERE id = ?2",
+            rusqlite::params![json!(reservations).to_string(), work],
         )
         .map_err(|e| format!("reservation release: {e}"))?;
     }
@@ -2748,17 +2748,17 @@ fn record_attempt(tx: &Connection, session_id: &str, params: &Json) -> Result<Js
             )
             .map_err(|e| format!("select attempt: {e}"))?;
         selected = changed == 1;
-        // every complete response is billed to the goal; only the selected
+        // every complete response is billed to the work; only the selected
         // one advances the context (§7: others are archived and accounted)
-        if let Some(goal) = request_goal(tx, request_id)? {
-            settle_usage(tx, &goal, &usage)?;
+        if let Some(work) = request_work(tx, request_id)? {
+            settle_usage(tx, &work, &usage)?;
         }
     }
     // attempts lost mid-flight (crash between dispatch and response) keep the
     // possibly-duplicated billing honest: a visible unknown counter (§8)
     if params["unknown_usage"].as_bool().unwrap_or(false) {
-        if let Some(goal) = request_goal(tx, request_id)? {
-            tx.execute("UPDATE goals SET unknown_usage = unknown_usage + 1 WHERE id = ?1", [&goal])
+        if let Some(work) = request_work(tx, request_id)? {
+            tx.execute("UPDATE work_scopes SET unknown_usage = unknown_usage + 1 WHERE id = ?1", [&work])
                 .map_err(|e| format!("unknown usage: {e}"))?;
         } else {
             tx.execute("UPDATE work_requests SET unknown_usage=unknown_usage+1 WHERE request_id=?1", [request_id])
@@ -2771,7 +2771,7 @@ fn record_attempt(tx: &Connection, session_id: &str, params: &Json) -> Result<Js
     // and the event log is where the rest of a turn's evidence already lives.
     let stream = params.get("stream").cloned().unwrap_or(Json::Null);
     // D-427: the provider's usage rides the event too, so a client can report what a *run* cost without reading
-    // the goal's settled total (which may cover other runs). `null` means the provider never priced the attempt —
+    // the work's settled total (which may cover other runs). `null` means the provider never priced the attempt —
     // the executor counts those rather than showing a free run.
     event(
         tx,
@@ -2784,7 +2784,7 @@ fn record_attempt(tx: &Connection, session_id: &str, params: &Json) -> Result<Js
     Ok(json!({"attempt_id": attempt_id, "selected": selected}))
 }
 
-/// R22/A20 begin step: register a compression call against the goal budget
+/// R22/A20 begin step: register a compression call against the work budget
 /// WITHOUT touching the instance phase or revision — the turn that asked for
 /// the summary keeps its single-writer guarantee, and the compression request
 /// is a billed, archived request like any other (§7, §8).
@@ -2807,24 +2807,24 @@ fn begin_compression(tx: &Connection, session_id: &str, params: &Json, identity:
     if let Some(prepared) = params.get("prepared_work") {
         work::check_prepared(tx, instance_id, prepared)?;
     }
-    let goal_id = budget_goal(tx, instance_id)?;
-    if let Some(goal) = goal_id.as_deref() {
-        if goal_deadline_passed(tx, goal)? {
+    let work_id = budget_work(tx, instance_id)?;
+    if let Some(work) = work_id.as_deref() {
+        if work_deadline_passed(tx, work)? {
             event(
                 tx,
                 session_id,
-                "goal_deadline_refused",
+                "work_deadline_refused",
                 instance_id,
-                &json!({"goal_id": goal, "request_id": request_id, "kind": REQUEST_KIND_COMPRESSION}),
+                &json!({"work_id": work, "request_id": request_id, "kind": REQUEST_KIND_COMPRESSION}),
             )?;
             return Ok(json!({"request_id": request_id, "deadline_refused": true,
-                             "reason": format!("goal {goal} deadline passed")}));
+                             "reason": format!("work {work} deadline passed")}));
         }
-        if let Some(reason) = reserve_budget(tx, session_id, goal, instance_id, request_id, est)? {
+        if let Some(reason) = reserve_budget(tx, session_id, work, instance_id, request_id, est)? {
             return Ok(json!({"request_id": request_id, "budget_refused": true, "reason": reason}));
         }
     }
-    if goal_id.is_none() {
+    if work_id.is_none() {
         if let Some(reason) = work::admission_budget(tx, session_id, instance_id, est)? {
             return Ok(json!({"request_id":request_id,"budget_refused":true,"reason":reason}));
         }
@@ -2834,10 +2834,10 @@ fn begin_compression(tx: &Connection, session_id: &str, params: &Json, identity:
         // A compression request carries no tools, so its record says exactly that (D-350) rather than
         // repeating the instance's surface, which it was never offered.
         "INSERT INTO model_requests
-             (request_id, instance_id, epoch, goal_id, request_ref, status, est_prompt_tokens, kind,
+             (request_id, instance_id, epoch, work_id, request_ref, status, est_prompt_tokens, kind,
               offered_tools, surface_authorized)
          VALUES (?1, ?2, ?3, ?4, ?5, 'PENDING', ?6, ?7, '[]', 1)",
-        rusqlite::params![request_id, instance_id, epoch, goal_id, request_ref, est, REQUEST_KIND_COMPRESSION],
+        rusqlite::params![request_id, instance_id, epoch, work_id, request_ref, est, REQUEST_KIND_COMPRESSION],
     )
     .map_err(|e| format!("begin_compression {request_id}: {e}"))?;
     let _ = identity;
@@ -2846,9 +2846,9 @@ fn begin_compression(tx: &Connection, session_id: &str, params: &Json, identity:
         session_id,
         "compression_began",
         instance_id,
-        &json!({"request_id": request_id, "goal_id": goal_id, "est_prompt_tokens": est}),
+        &json!({"request_id": request_id, "work_id": work_id, "est_prompt_tokens": est}),
     )?;
-    Ok(json!({"request_id": request_id, "goal_id": goal_id, "epoch": epoch, "kind": REQUEST_KIND_COMPRESSION}))
+    Ok(json!({"request_id": request_id, "work_id": work_id, "epoch": epoch, "kind": REQUEST_KIND_COMPRESSION}))
 }
 
 /// R22/A20 commit step, one transaction: append the summary entry, hide the
@@ -2966,23 +2966,23 @@ fn fail_compression(tx: &Connection, session_id: &str, params: &Json) -> Result<
     Ok(json!({"request_id": request_id, "status": "FAILED"}))
 }
 
-fn request_goal(tx: &Connection, request_id: &str) -> Result<Option<String>, String> {
+fn request_work(tx: &Connection, request_id: &str) -> Result<Option<String>, String> {
     tx.query_row(
-        "SELECT COALESCE(r.goal_id,w.billed_goal_id) FROM model_requests r
+        "SELECT COALESCE(r.work_id,w.billed_work_id) FROM model_requests r
         LEFT JOIN work_requests w ON w.request_id=r.request_id WHERE r.request_id=?1",
         [request_id],
         |row| row.get(0),
     )
-    .map_err(|e| format!("request goal: {e}"))
+    .map_err(|e| format!("request work: {e}"))
 }
 
-/// Settle reported usage into the goal budget (§8); unknown usage stays a
+/// Settle reported usage into the work budget (§8); unknown usage stays a
 /// separate visible counter, never silently dropped.
-fn settle_usage(tx: &Connection, goal_id: &str, usage: &Json) -> Result<(), String> {
+fn settle_usage(tx: &Connection, work_id: &str, usage: &Json) -> Result<(), String> {
     let parsed = crate::kernel::Usage::from_json(&json!({"usage": usage})).unwrap_or_default();
     let current: String = tx
-        .query_row("SELECT known_usage_json FROM goals WHERE id = ?1", [goal_id], |row| row.get(0))
-        .map_err(|e| format!("goal usage read: {e}"))?;
+        .query_row("SELECT known_usage_json FROM work_scopes WHERE id = ?1", [work_id], |row| row.get(0))
+        .map_err(|e| format!("work usage read: {e}"))?;
     let mut known: crate::kernel::Usage = serde_json::from_str(&current).unwrap_or_default();
     known.prompt += parsed.prompt;
     known.completion += parsed.completion;
@@ -2991,10 +2991,10 @@ fn settle_usage(tx: &Connection, goal_id: &str, usage: &Json) -> Result<(), Stri
     known.cache_miss += parsed.cache_miss;
     known.cache_write += parsed.cache_write;
     tx.execute(
-        "UPDATE goals SET known_usage_json = ?1 WHERE id = ?2",
-        rusqlite::params![json!(known).to_string(), goal_id],
+        "UPDATE work_scopes SET known_usage_json = ?1 WHERE id = ?2",
+        rusqlite::params![json!(known).to_string(), work_id],
     )
-    .map_err(|e| format!("goal usage settle: {e}"))?;
+    .map_err(|e| format!("work usage settle: {e}"))?;
     Ok(())
 }
 
@@ -3528,7 +3528,7 @@ fn import_response(tx: &Connection, session_id: &str, params: &Json, identity: &
             )?;
         }
     }
-    let goal_id = request_goal(tx, request_id)?;
+    let work_id = request_work(tx, request_id)?;
     let grant_revision = match params["grant_revision"].as_i64() {
         Some(revision) => revision,
         None => grant_revision(tx)?,
@@ -3545,13 +3545,13 @@ fn import_response(tx: &Connection, session_id: &str, params: &Json, identity: &
         let fixed = json!({"index": index, "call_id": call_id, "name": name, "args": args, "args_hash": args_hash});
         tx.execute(
             "INSERT INTO operations
-             (operation_id, decision_id, tool_index, goal_id, epoch, intent_json, args_hash, grant_revision, status)
+             (operation_id, decision_id, tool_index, work_id, epoch, intent_json, args_hash, grant_revision, status)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'PREPARED')",
             rusqlite::params![
                 operation_id,
                 decision_id,
                 index,
-                goal_id,
+                work_id,
                 epoch,
                 fixed.to_string(),
                 args_hash,
@@ -3708,9 +3708,9 @@ fn park_tasks_for_unknown(
     decision_id: &str,
     operation_id: &str,
 ) -> Result<(), String> {
-    let (instance, goal, source_task): (String, Option<String>, Option<String>) = tx
+    let (instance, work, source_task): (String, Option<String>, Option<String>) = tx
         .query_row(
-            "SELECT r.instance_id,r.goal_id,json_extract(w.context_json,'$.task_id')
+            "SELECT r.instance_id,r.work_id,json_extract(w.context_json,'$.task_id')
              FROM decisions d JOIN model_requests r ON d.request_id = r.request_id
              LEFT JOIN work_requests w ON w.request_id=r.request_id WHERE d.decision_id = ?1",
             [decision_id],
@@ -3720,12 +3720,12 @@ fn park_tasks_for_unknown(
     let tasks: Vec<String> = {
         let mut stmt = tx
             .prepare(
-                "SELECT id FROM tasks WHERE assignee = ?1 AND goal_id = ?2 AND status = 'RUNNING'
+                "SELECT id FROM tasks WHERE assignee = ?1 AND work_id = ?2 AND status = 'RUNNING'
                 AND (?3 IS NULL OR id=?3)",
             )
             .map_err(|e| format!("running tasks: {e}"))?;
         let rows = stmt
-            .query_map(rusqlite::params![instance, goal, source_task], |row| row.get::<_, String>(0))
+            .query_map(rusqlite::params![instance, work, source_task], |row| row.get::<_, String>(0))
             .map_err(|e| format!("running tasks: {e}"))?;
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("running tasks: {e}"))?
     };
@@ -3853,20 +3853,20 @@ fn dispatch_operation(tx: &Connection, session_id: &str, params: &Json) -> Resul
             "operation {operation_id} authorized at permission revision {grant_revision}, current {permission_revision}: refusing dispatch"
         ));
     }
-    let (instance, op_goal, request_ref): (String, Option<String>, String) = tx
+    let (instance, op_work, request_ref): (String, Option<String>, String) = tx
         .query_row(
-            "SELECT r.instance_id, r.goal_id, r.request_ref FROM decisions d JOIN model_requests r ON d.request_id = r.request_id
+            "SELECT r.instance_id, r.work_id, r.request_ref FROM decisions d JOIN model_requests r ON d.request_id = r.request_id
              WHERE d.decision_id = ?1",
             [&decision_id],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .map_err(|e| format!("decision instance: {e}"))?;
     let (_, _, lifecycle, _, _) = load_instance(tx, &instance)?;
-    // A35: no new side effects past the goal deadline either — the driver
+    // A35: no new side effects past the work deadline either — the driver
     // lands this as a dispatch_refused receipt and the turn closes out.
-    if let Some(goal) = op_goal.as_deref() {
-        if goal_deadline_passed(tx, goal)? {
-            return Err(format!("operation {operation_id} refused: goal {goal} deadline passed"));
+    if let Some(work) = op_work.as_deref() {
+        if work_deadline_passed(tx, work)? {
+            return Err(format!("operation {operation_id} refused: work {work} deadline passed"));
         }
     }
     if lifecycle != "ACTIVE" {
@@ -3876,11 +3876,11 @@ fn dispatch_operation(tx: &Connection, session_id: &str, params: &Json) -> Resul
     // authorization is re-checked at dispatch, the linearization point (§6.1)
     let intent: Json = serde_json::from_str(&intent_json).map_err(|e| format!("intent {operation_id}: {e}"))?;
     let check_owner: Option<String> = if request_ref == "required_check" {
-        match op_goal.as_deref() {
-            Some(goal) => tx
-                .query_row("SELECT id FROM instances WHERE active_goal_id = ?1 LIMIT 1", [goal], |row| row.get(0))
+        match op_work.as_deref() {
+            Some(work) => tx
+                .query_row("SELECT id FROM instances WHERE active_work_id = ?1 LIMIT 1", [work], |row| row.get(0))
                 .optional()
-                .map_err(|e| format!("goal owner: {e}"))?,
+                .map_err(|e| format!("work owner: {e}"))?,
             None => None,
         }
     } else {
@@ -4303,7 +4303,7 @@ fn cancel_request(tx: &Connection, session_id: &str, params: &Json) -> Result<Js
 /// It is `cancel_request`'s transition with the *instance* in place of a request id and the user gate the
 /// `cancel_request` command never had: the in-flight model request is cancelled, its reservation released and
 /// the instance left `READY`, so a queued input enters at the boundary and gets a turn of its own
-/// (`V2Control`'s `CancelRequest`, A13). It never settles a goal or a task, and it does not touch an open tool
+/// (`V2Control`'s `CancelRequest`, A13). It never settles a work or a task, and it does not touch an open tool
 /// operation: a running command keeps running, because stopping it is the process-group lever of
 /// `set_lifecycle` TERMINATED (D-88). Only the user may interrupt; an instance never gets this.
 fn interrupt_instance(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
@@ -4368,10 +4368,10 @@ fn interrupt_instance(tx: &Connection, session_id: &str, params: &Json, identity
               "request_id": request}))
 }
 
-/// Shape check for goal-level required checks (§8): each check is a shell
+/// Shape check for work-level required checks (§8): each check is a shell
 /// command the runtime executes at the completion boundary, with an optional
 /// timeout, network flag and declared inputs whose hashes bind the result.
-/// Validation of the user-defined acceptance checks that `create_goal` stores
+/// Validation of the user-defined acceptance checks that `create_work` stores
 /// (§8): the same gate the config edge uses, so a check that reaches the
 /// runtime is one the runtime can execute.
 pub fn validate_required_checks(checks: &Json) -> Result<(), String> {
@@ -4413,8 +4413,8 @@ pub fn validate_required_checks(checks: &Json) -> Result<(), String> {
 /// Required-check round registration (§8): the synthetic request, its
 /// decision and one PREPARED shell operation per check commit in one
 /// transaction, so check execution rides the same operation/receipt ledger
-/// as model tools and the receipts auto-associate with the goal. Checks
-/// enter only through create_goal limits (user-gated); the driver dispatches
+/// as model tools and the receipts auto-associate with the work. Checks
+/// enter only through create_work limits (user-gated); the driver dispatches
 /// them without an approval prompt because the user pre-authorized exactly
 /// these commands — never because a model asked. The grant revision is
 /// pinned to 0 like the driver's own registrations; the live capability
@@ -4423,10 +4423,10 @@ fn register_check_runs(tx: &Connection, session_id: &str, params: &Json, identit
     register_check_round(tx, session_id, params, identity, "register_check_runs", true)
 }
 
-/// D-393: the independent-verification half of the same machinery. An instance that is *not* the goal's producer
-/// runs the goal's user-pre-authorized checks in its own turn and records the round under its own instance id.
-/// The completion-boundary requirement is deliberately absent — this is a member acting mid-turn, on a goal it
-/// does not own — and the provenance (whose instance registered the round) is what `complete_goal` reads.
+/// D-393: the independent-verification half of the same machinery. An instance that is *not* the work's producer
+/// runs the work's user-pre-authorized checks in its own turn and records the round under its own instance id.
+/// The completion-boundary requirement is deliberately absent — this is a member acting mid-turn, on a work it
+/// does not own — and the provenance (whose instance registered the round) is what `complete_work` reads.
 fn register_verification(
     tx: &Connection,
     session_id: &str,
@@ -4447,7 +4447,7 @@ fn register_check_round(
     if !matches!(identity, Identity::System) {
         return Err(format!("{caller} is driver-internal (system identity required)"));
     }
-    let goal_id = params["goal_id"].as_str().ok_or("register_check_runs.goal_id required")?;
+    let work_id = params["work_id"].as_str().ok_or("register_check_runs.work_id required")?;
     let instance_id = params["instance_id"].as_str().ok_or("register_check_runs.instance_id required")?;
     let round = params["round"].as_i64().ok_or("register_check_runs.round required")?;
     if round < 1 {
@@ -4457,15 +4457,15 @@ fn register_check_round(
     if checks.is_empty() {
         return Err("register_check_runs.checks must not be empty".into());
     }
-    let goal_status: String = tx
+    let work_status: String = tx
         .query_row(
-            "SELECT status FROM goals WHERE id = ?1 AND session_id = ?2",
-            rusqlite::params![goal_id, session_id],
+            "SELECT status FROM work_scopes WHERE id = ?1 AND session_id = ?2",
+            rusqlite::params![work_id, session_id],
             |row| row.get(0),
         )
-        .map_err(|e| format!("register_check_runs goal {goal_id}: {e}"))?;
-    if goal_status != "ACTIVE" {
-        return Err(format!("goal {goal_id} is {goal_status}; not registering checks"));
+        .map_err(|e| format!("register_check_runs work {work_id}: {e}"))?;
+    if work_status != "ACTIVE" {
+        return Err(format!("work {work_id} is {work_status}; not registering checks"));
     }
     let (session, epoch, _, phase, _) = load_instance(tx, instance_id)?;
     if session != session_id {
@@ -4474,7 +4474,7 @@ fn register_check_round(
     if at_completion_boundary && phase != "COMPLETION_PENDING" {
         return Err(format!("instance {instance_id} is {phase}; checks register only at the completion boundary"));
     }
-    let request_id = format!("check:{goal_id}:{round}");
+    let request_id = format!("check:{work_id}:{round}");
     let exists: bool = tx
         .query_row("SELECT COUNT(*) FROM model_requests WHERE request_id = ?1", [&request_id], |row| {
             row.get::<_, i64>(0)
@@ -4486,9 +4486,9 @@ fn register_check_round(
     }
     validate_required_checks(&json!(checks))?;
     tx.execute(
-        "INSERT INTO model_requests (request_id, instance_id, epoch, goal_id, request_ref, selected_attempt_id, status)
+        "INSERT INTO model_requests (request_id, instance_id, epoch, work_id, request_ref, selected_attempt_id, status)
          VALUES (?1, ?2, ?3, ?4, 'required_check', NULL, 'COMPLETE')",
-        rusqlite::params![request_id, instance_id, epoch, goal_id],
+        rusqlite::params![request_id, instance_id, epoch, work_id],
     )
     .map_err(|e| format!("check request {request_id}: {e}"))?;
     tx.execute(
@@ -4519,13 +4519,13 @@ fn register_check_round(
             json!({"index": position, "call_id": call_id, "name": "shell", "args": args, "args_hash": args_hash});
         tx.execute(
             "INSERT INTO operations
-             (operation_id, decision_id, tool_index, goal_id, epoch, intent_json, args_hash, grant_revision, status)
+             (operation_id, decision_id, tool_index, work_id, epoch, intent_json, args_hash, grant_revision, status)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, 'PREPARED')",
             rusqlite::params![
                 format!("{request_id}:{position}"),
                 request_id,
                 position as i64,
-                goal_id,
+                work_id,
                 epoch,
                 fixed.to_string(),
                 args_hash
@@ -4545,7 +4545,7 @@ fn register_check_round(
         tx,
         instance_id,
         epoch,
-        &format!("[finish received: required checks round {round} must pass before the goal can settle]"),
+        &format!("[finish received: required checks round {round} must pass before the work can settle]"),
     )?
     .is_some()
     {}
@@ -4555,9 +4555,9 @@ fn register_check_round(
         epoch,
         "assistant",
         &json!({"role": "assistant",
-                "content": format!("runtime required-check round {round} for goal {goal_id}"),
+                "content": format!("runtime required-check round {round} for work {work_id}"),
                 "tool_calls": tool_calls}),
-        Some(&format!("check-round-{goal_id}-{round}")),
+        Some(&format!("check-round-{work_id}-{round}")),
         &json!([]),
     )?;
     let summary: Vec<Json> = checks.iter().map(|c| json!({"id": c["id"], "command": c["command"]})).collect();
@@ -4565,8 +4565,8 @@ fn register_check_round(
         tx,
         session_id,
         "check_round_registered",
-        goal_id,
-        &json!({"goal_id": goal_id, "round": round, "checks": summary}),
+        work_id,
+        &json!({"work_id": work_id, "round": round, "checks": summary}),
     )?;
     Ok(json!({"decision_id": request_id, "round": round, "operations": checks.len()}))
 }
@@ -4582,7 +4582,7 @@ fn repair_completion(tx: &Connection, session_id: &str, params: &Json, identity:
         return Err("repair_completion is driver-internal (system identity required)".into());
     }
     let instance_id = params["instance_id"].as_str().ok_or("repair_completion.instance_id required")?;
-    let goal_id = params["goal_id"].as_str().ok_or("repair_completion.goal_id required")?;
+    let work_id = params["work_id"].as_str().ok_or("repair_completion.work_id required")?;
     let round = params["round"].as_i64().unwrap_or(0);
     let failures = params.get("failures").cloned().unwrap_or(json!([]));
     let (session, epoch, _, phase, _) = load_instance(tx, instance_id)?;
@@ -4597,7 +4597,7 @@ fn repair_completion(tx: &Connection, session_id: &str, params: &Json, identity:
     // stale-input verdict belongs to the *runtime*: the check exited 0 and only the re-verification of its
     // declared inputs says why the completion was refused. Measured live (D-187): with the verdict recorded as
     // an event and nowhere else, the model spent eleven requests re-deriving the workspace state and settled
-    // the goal itself, because no one had told it what the runtime had found.
+    // the work itself, because no one had told it what the runtime had found.
     let summary: Vec<String> = failures
         .as_array()
         .map(|list| {
@@ -4614,10 +4614,10 @@ fn repair_completion(tx: &Connection, session_id: &str, params: &Json, identity:
         })
         .unwrap_or_default();
     let verdict = if summary.is_empty() {
-        format!("[completion refused: round {round}; goal {goal_id} cannot settle yet]")
+        format!("[completion refused: round {round}; work {work_id} cannot settle yet]")
     } else {
         format!(
-            "[completion refused: round {round}; repair these before goal {goal_id} can settle]\n{}",
+            "[completion refused: round {round}; repair these before work {work_id} can settle]\n{}",
             summary.join("\n")
         )
     };
@@ -4631,7 +4631,7 @@ fn repair_completion(tx: &Connection, session_id: &str, params: &Json, identity:
         epoch,
         "note",
         &json!({"role": "user", "content": verdict}),
-        Some(&format!("completion-repair-{goal_id}-{round}")),
+        Some(&format!("completion-repair-{work_id}-{round}")),
         &json!([]),
     )?;
     tx.execute(
@@ -4644,7 +4644,7 @@ fn repair_completion(tx: &Connection, session_id: &str, params: &Json, identity:
         session_id,
         "completion_repair",
         instance_id,
-        &json!({"goal_id": goal_id, "round": round, "failures": failures}),
+        &json!({"work_id": work_id, "round": round, "failures": failures}),
     )?;
     Ok(json!({"instance_id": instance_id, "phase": "READY", "round": round}))
 }
@@ -4653,45 +4653,45 @@ fn repair_completion(tx: &Connection, session_id: &str, params: &Json, identity:
 /// rounds or the verification infrastructure itself failed. Never an
 /// upgrade of the model's candidate — the distinct event keeps who decided
 /// auditable.
-fn block_goal(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
+fn block_work(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
     if !matches!(identity, Identity::System) {
-        return Err("block_goal is driver-internal (system identity required)".into());
+        return Err("block_work is driver-internal (system identity required)".into());
     }
-    let goal_id = params["goal_id"].as_str().ok_or("block_goal.goal_id required")?;
-    let instance_id = params["instance_id"].as_str().ok_or("block_goal.instance_id required")?;
+    let work_id = params["work_id"].as_str().ok_or("block_work.work_id required")?;
+    let instance_id = params["instance_id"].as_str().ok_or("block_work.instance_id required")?;
     let reason = params["reason"].as_str().unwrap_or("required checks did not pass");
-    let goal_status: String = tx
+    let work_status: String = tx
         .query_row(
-            "SELECT status FROM goals WHERE id = ?1 AND session_id = ?2",
-            rusqlite::params![goal_id, session_id],
+            "SELECT status FROM work_scopes WHERE id = ?1 AND session_id = ?2",
+            rusqlite::params![work_id, session_id],
             |row| row.get(0),
         )
-        .map_err(|e| format!("block_goal {goal_id}: {e}"))?;
-    if goal_status != "ACTIVE" {
-        // same rule as complete_goal: a terminal goal frees the instance
+        .map_err(|e| format!("block_work {work_id}: {e}"))?;
+    if work_status != "ACTIVE" {
+        // same rule as complete_work: a terminal work frees the instance
         tx.execute(
             "UPDATE instances SET phase = 'READY', revision = revision + 1
              WHERE id = ?1 AND phase = 'COMPLETION_PENDING'",
             [instance_id],
         )
-        .map_err(|e| format!("close finished goal: {e}"))?;
-        detach_goal(tx, goal_id)?;
-        return Ok(json!({"goal_id": goal_id, "status": goal_status, "already_closed": true}));
+        .map_err(|e| format!("close finished work: {e}"))?;
+        detach_work(tx, work_id)?;
+        return Ok(json!({"work_id": work_id, "status": work_status, "already_closed": true}));
     }
-    tx.execute("UPDATE goals SET status = 'BLOCKED' WHERE id = ?1", [goal_id])
-        .map_err(|e| format!("goal block: {e}"))?;
-    let detached = detach_goal(tx, goal_id)?;
+    tx.execute("UPDATE work_scopes SET status = 'BLOCKED' WHERE id = ?1", [work_id])
+        .map_err(|e| format!("work block: {e}"))?;
+    let detached = detach_work(tx, work_id)?;
     let epoch: i64 = tx
         .query_row("SELECT context_epoch FROM instances WHERE id = ?1", [instance_id], |row| row.get(0))
         .map_err(|e| format!("block epoch: {e}"))?;
-    answer_dangling_calls(tx, instance_id, epoch, &format!("[finish rejected: goal {goal_id} blocked]"))?;
+    answer_dangling_calls(tx, instance_id, epoch, &format!("[finish rejected: work {work_id} blocked]"))?;
     append_context(
         tx,
         instance_id,
         epoch,
         "runtime",
-        &json!({"role": "user", "content": format!("runtime: goal {goal_id} blocked: {reason}")}),
-        Some(&format!("goal-block-{goal_id}")),
+        &json!({"role": "user", "content": format!("runtime: work {work_id} blocked: {reason}")}),
+        Some(&format!("work-block-{work_id}")),
         &json!([]),
     )?;
     tx.execute(
@@ -4699,66 +4699,66 @@ fn block_goal(tx: &Connection, session_id: &str, params: &Json, identity: &Ident
         [instance_id],
     )
     .map_err(|e| format!("block instance: {e}"))?;
-    // A block is a *settlement*: `complete_goal` announces one, and without the same
-    // event here a client that keys on the goal's settlement (the headless run, the
-    // TUI) never learns the goal ended — the block was invisible and `exec` read the
+    // A block is a *settlement*: `complete_work` announces one, and without the same
+    // event here a client that keys on the work's settlement (the headless run, the
+    // TUI) never learns the work ended — the block was invisible and `exec` read the
     // runtime's own note as an answer, reporting a false success (D-71).
     event(
         tx,
         session_id,
-        "goal_completed",
-        goal_id,
-        &json!({"goal_id": goal_id, "status": "BLOCKED", "reason": reason, "detached": detached,
+        "work_completed",
+        work_id,
+        &json!({"work_id": work_id, "status": "BLOCKED", "reason": reason, "detached": detached,
                 "blocked_by": "runtime"}),
     )?;
     event(
         tx,
         session_id,
-        "goal_blocked",
-        goal_id,
-        &json!({"goal_id": goal_id, "status": "BLOCKED", "reason": reason, "detached": detached}),
+        "work_blocked",
+        work_id,
+        &json!({"work_id": work_id, "status": "BLOCKED", "reason": reason, "detached": detached}),
     )?;
-    Ok(json!({"goal_id": goal_id, "status": "BLOCKED", "detached": detached}))
+    Ok(json!({"work_id": work_id, "status": "BLOCKED", "detached": detached}))
 }
 
-/// The runtime's wrap-up note (D-410): as a goal approaches its deadline the model is told **once** how much time is
+/// The runtime's wrap-up note (D-410): as a work approaches its deadline the model is told **once** how much time is
 /// left and what to do with it.
 ///
 /// The measurement behind it: a deadline used to be invisible until it *refused* a request, and one N = 3 run had
 /// ten trials that had already produced a passing result and were still working when the window closed (D-397),
 /// while the acceptance gate only acts after the model claims to be done (D-400). Nothing here changes the
 /// deadline — the same absolute time is still enforced by `begin_request` — and the note cannot repeat: the entry
-/// id is the goal's, so a restarted driver appends it at most once.
-/// D-418: tell the goal's instance, once, which acceptance commands the goal must satisfy — the note the driver
+/// id is the work's, so a restarted driver appends it at most once.
+/// D-418: tell the work's instance, once, which acceptance commands the work must satisfy — the note the driver
 /// writes when a turn opens, so the criterion is known while the work is planned instead of at the completion
 /// boundary (the gate that checks it runs there, and three measurements say that is too late: D-386/D-400/D-403).
 ///
-/// The text is composed here from the goal's own stored limits, never taken from the caller, and the guards mirror
-/// `deadline_warning`'s: a model identity is refused, a goal that is not ACTIVE sends nothing, a goal with no
-/// required checks sends nothing (there is no criterion to state), and the entry id is the goal's, so a restarted
+/// The text is composed here from the work's own stored limits, never taken from the caller, and the guards mirror
+/// `deadline_warning`'s: a model identity is refused, a work that is not ACTIVE sends nothing, a work with no
+/// required checks sends nothing (there is no criterion to state), and the entry id is the work's, so a restarted
 /// driver appends it at most once.
-fn goal_checks_briefing(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
+fn work_checks_briefing(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
     if !matches!(identity, Identity::System) {
-        return Err("goal_checks_briefing is driver-internal (system identity required)".into());
+        return Err("work_checks_briefing is driver-internal (system identity required)".into());
     }
-    let goal_id = params["goal_id"].as_str().ok_or("goal_checks_briefing.goal_id required")?;
-    let instance_id = params["instance_id"].as_str().ok_or("goal_checks_briefing.instance_id required")?;
+    let work_id = params["work_id"].as_str().ok_or("work_checks_briefing.work_id required")?;
+    let instance_id = params["instance_id"].as_str().ok_or("work_checks_briefing.instance_id required")?;
     let (status, limits): (String, String) = tx
         .query_row(
-            "SELECT status, limits_json FROM goals WHERE id = ?1 AND session_id = ?2",
-            rusqlite::params![goal_id, session_id],
+            "SELECT status, limits_json FROM work_scopes WHERE id = ?1 AND session_id = ?2",
+            rusqlite::params![work_id, session_id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
-        .map_err(|e| format!("goal_checks_briefing {goal_id}: {e}"))?;
+        .map_err(|e| format!("work_checks_briefing {work_id}: {e}"))?;
     if status != "ACTIVE" {
-        return Ok(json!({"goal_id": goal_id, "sent": false, "reason": "not ACTIVE"}));
+        return Ok(json!({"work_id": work_id, "sent": false, "reason": "not ACTIVE"}));
     }
     let checks = serde_json::from_str::<Json>(&limits)
         .ok()
         .and_then(|limits| limits["required_checks"].as_array().cloned())
         .unwrap_or_default();
     if checks.is_empty() {
-        return Ok(json!({"goal_id": goal_id, "sent": false, "reason": "no required checks"}));
+        return Ok(json!({"work_id": work_id, "sent": false, "reason": "no required checks"}));
     }
     let (session, epoch, _, _, _) = load_instance(tx, instance_id)?;
     if session != session_id {
@@ -4775,7 +4775,7 @@ fn goal_checks_briefing(tx: &Connection, session_id: &str, params: &Json, identi
     // checked, that the runtime runs it, and what to do when the work cannot satisfy it — the model is not made
     // responsible for a gate it may be unable to pass.
     let text = format!(
-        "runtime: when this goal ends, {} acceptance command(s) will be run and the goal settles only if they pass \
+        "runtime: when this work ends, {} acceptance command(s) will be run and the work settles only if they pass \
          — {listed}. They are the user's own criteria; plan so they hold. You do not have to run them (the runtime \
          does, at the end). If your work cannot satisfy one, say so with `finish` and report what is missing \
          rather than continuing.",
@@ -4787,48 +4787,48 @@ fn goal_checks_briefing(tx: &Connection, session_id: &str, params: &Json, identi
         epoch,
         "note",
         &json!({"role": "user", "content": text}),
-        Some(&format!("goal-checks-briefing-{goal_id}")),
+        Some(&format!("work-checks-briefing-{work_id}")),
         &json!([]),
     )?;
     if appended {
-        event(tx, session_id, "goal_checks_briefed", goal_id, &json!({"checks": checks.len()}))?;
+        event(tx, session_id, "work_checks_briefed", work_id, &json!({"checks": checks.len()}))?;
     }
-    Ok(json!({"goal_id": goal_id, "sent": appended, "checks": checks.len()}))
+    Ok(json!({"work_id": work_id, "sent": appended, "checks": checks.len()}))
 }
 
 fn deadline_warning(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
     if !matches!(identity, Identity::System) {
         return Err("deadline_warning is driver-internal (system identity required)".into());
     }
-    let goal_id = params["goal_id"].as_str().ok_or("deadline_warning.goal_id required")?;
+    let work_id = params["work_id"].as_str().ok_or("deadline_warning.work_id required")?;
     let instance_id = params["instance_id"].as_str().ok_or("deadline_warning.instance_id required")?;
     let (status, deadline): (String, Option<f64>) = tx
         .query_row(
-            "SELECT status, deadline FROM goals WHERE id = ?1 AND session_id = ?2",
-            rusqlite::params![goal_id, session_id],
+            "SELECT status, deadline FROM work_scopes WHERE id = ?1 AND session_id = ?2",
+            rusqlite::params![work_id, session_id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
-        .map_err(|e| format!("deadline_warning {goal_id}: {e}"))?;
+        .map_err(|e| format!("deadline_warning {work_id}: {e}"))?;
     if status != "ACTIVE" {
-        return Ok(json!({"goal_id": goal_id, "sent": false, "reason": "not ACTIVE"}));
+        return Ok(json!({"work_id": work_id, "sent": false, "reason": "not ACTIVE"}));
     }
     // the remaining time is computed here, never taken from the caller: a warning that states a number the
     // runtime cannot stand behind is worse than none
     let Some(deadline) = deadline else {
-        return Ok(json!({"goal_id": goal_id, "sent": false, "reason": "no deadline"}));
+        return Ok(json!({"work_id": work_id, "sent": false, "reason": "no deadline"}));
     };
     let remaining = deadline - crate::models::now();
     if remaining <= 0.0 {
-        return Ok(json!({"goal_id": goal_id, "sent": false, "reason": "deadline passed"}));
+        return Ok(json!({"work_id": work_id, "sent": false, "reason": "deadline passed"}));
     }
     let (session, epoch, _, _, _) = load_instance(tx, instance_id)?;
     if session != session_id {
         return Err(format!("instance {instance_id} does not belong to this session"));
     }
     let text = format!(
-        "runtime: about {} seconds remain before goal {goal_id}'s deadline. Settle it now — call `finish` with what \
+        "runtime: about {} seconds remain before work {work_id}'s deadline. Settle it now — call `finish` with what \
          you have (and say what is unfinished if it is not all done) — because after the deadline the runtime \
-         starts no further request and the goal ends as it stands.",
+         starts no further request and the work ends as it stands.",
         remaining as i64
     );
     let appended = append_context(
@@ -4837,23 +4837,23 @@ fn deadline_warning(tx: &Connection, session_id: &str, params: &Json, identity: 
         epoch,
         "note",
         &json!({"role": "user", "content": text}),
-        Some(&format!("goal-deadline-warning-{goal_id}")),
+        Some(&format!("work-deadline-warning-{work_id}")),
         &json!([]),
     )?;
     if appended {
         event(
             tx,
             session_id,
-            "goal_deadline_warning",
-            goal_id,
-            &json!({"goal_id": goal_id, "seconds_left": remaining as i64}),
+            "work_deadline_warning",
+            work_id,
+            &json!({"work_id": work_id, "seconds_left": remaining as i64}),
         )?;
     }
-    Ok(json!({"goal_id": goal_id, "sent": appended, "seconds_left": remaining as i64}))
+    Ok(json!({"work_id": work_id, "sent": appended, "seconds_left": remaining as i64}))
 }
 
 /// End a completion turn with nothing to settle (§5.2): a finish from an
-/// instance that owns no goal and holds no open assigned task simply
+/// instance that owns no work and holds no open assigned task simply
 /// returns to READY. The stored candidate stays on its decision for audit.
 fn close_completion(tx: &Connection, session_id: &str, params: &Json) -> Result<Json, String> {
     let instance_id = params["instance_id"].as_str().ok_or("close_completion.instance_id required")?;
@@ -4886,78 +4886,78 @@ fn close_completion(tx: &Connection, session_id: &str, params: &Json) -> Result<
     Ok(json!({"instance_id": instance_id, "phase": "READY"}))
 }
 
-/// Goal completion (§4.2, §8): the open-operation check, goal result and the
+/// Work completion (§4.2, §8): the open-operation check, work result and the
 /// outward event commit atomically. The candidate comes from the decision
 /// that proposed it — never re-taken from the model.
-/// The user's lever on a goal nothing can spend (D-341/D-344, A18's known gap).
-/// A goal whose ceiling or deadline is gone stays `ACTIVE` for ever, detached
+/// The user's lever on a work nothing can spend (D-341/D-344, A18's known gap).
+/// A work whose ceiling or deadline is gone stays `ACTIVE` for ever, detached
 /// from every instance, refusing new work (the budget and deadline gates) and
-/// still listed by `goals list`; the instance its refusal parked has no path
+/// still listed by `work_scopes list`; the instance its refusal parked has no path
 /// back, so the user's only way out was to abandon the session. This closes the
-/// goal terminal — `CANCELLED`, the state the goal lifecycle already carries
-/// (`V2Control.tla`'s `SettleGoal`, and the only one of the four that reports
+/// work terminal — `CANCELLED`, the state the work lifecycle already carries
+/// (`V2Control.tla`'s `SettleWork`, and the only one of the four that reports
 /// the user's own decision rather than a runtime conclusion) — and releases the
-/// instances that goal's refusal parked, so the session keeps its workers. It
+/// instances that work's refusal parked, so the session keeps its workers. It
 /// stays with the user, exactly as `set_lifecycle` does: the system may park,
 /// never resume.
-fn cancel_goal(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
+fn cancel_work(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
     if !matches!(identity, Identity::User) {
-        return Err("cancel_goal stays with the user".into());
+        return Err("cancel_work stays with the user".into());
     }
-    let goal_id = params["goal_id"].as_str().ok_or("cancel_goal.goal_id required")?;
+    let work_id = params["work_id"].as_str().ok_or("cancel_work.work_id required")?;
     let status: Option<String> = tx
         .query_row(
-            "SELECT status FROM goals WHERE id = ?1 AND session_id = ?2",
-            rusqlite::params![goal_id, session_id],
+            "SELECT status FROM work_scopes WHERE id = ?1 AND session_id = ?2",
+            rusqlite::params![work_id, session_id],
             |row| row.get(0),
         )
         .optional()
-        .map_err(|e| format!("cancel_goal {goal_id}: {e}"))?;
-    let status = status.ok_or_else(|| format!("goal {goal_id} is not in this session"))?;
+        .map_err(|e| format!("cancel_work {work_id}: {e}"))?;
+    let status = status.ok_or_else(|| format!("work {work_id} is not in this session"))?;
     if status != "ACTIVE" {
-        return Err(format!("goal {goal_id} is {status}, not ACTIVE: a settled goal cannot be cancelled"));
+        return Err(format!("work {work_id} is {status}, not ACTIVE: a settled work cannot be cancelled"));
     }
-    // "Running work" is what `complete_goal` refuses on, plus the requests a
+    // "Running work" is what `complete_work` refuses on, plus the requests a
     // turn is actually occupying. A request the gate *refused* never registered
-    // (`begin_request`'s deadline/budget refusals), which is why a spent goal is
+    // (`begin_request`'s deadline/budget refusals), which is why a spent work is
     // cancellable at all.
     let open: i64 = tx
         .query_row(
-            "SELECT COUNT(*) FROM operations WHERE goal_id = ?1 AND status IN ('PREPARED', 'DISPATCH_COMMITTED', 'RUNNING')",
-            [goal_id],
+            "SELECT COUNT(*) FROM operations WHERE work_id = ?1 AND status IN ('PREPARED', 'DISPATCH_COMMITTED', 'RUNNING')",
+            [work_id],
             |row| row.get(0),
         )
-        .map_err(|e| format!("goal open ops: {e}"))?;
+        .map_err(|e| format!("work open ops: {e}"))?;
     let running: i64 = tx
         .query_row(
-            "SELECT COUNT(*) FROM model_requests WHERE goal_id = ?1 AND status IN ('PENDING', 'RUNNING')",
-            [goal_id],
+            "SELECT COUNT(*) FROM model_requests WHERE work_id = ?1 AND status IN ('PENDING', 'RUNNING')",
+            [work_id],
             |row| row.get(0),
         )
-        .map_err(|e| format!("goal open requests: {e}"))?;
+        .map_err(|e| format!("work open requests: {e}"))?;
     if open > 0 || running > 0 {
         return Err(format!(
-            "goal {goal_id} still carries running work ({running} open request(s), {open} open operation(s)); \
+            "work {work_id} still carries running work ({running} open request(s), {open} open operation(s)); \
              finish or abandon that work before cancelling"
         ));
     }
-    // The instances this goal's refusal parked: attached to it, and PARKED.
+    // The instances this work's refusal parked: attached to it, and PARKED.
     // Read before the detach, which is what clears the attachment.
     let parked: Vec<String> = {
         let mut stmt = tx
             .prepare(
-                "SELECT id FROM instances WHERE session_id = ?1 AND active_goal_id = ?2
+                "SELECT id FROM instances WHERE session_id = ?1 AND active_work_id = ?2
                  AND lifecycle = 'PARKED' ORDER BY id",
             )
-            .map_err(|e| format!("cancel_goal parked: {e}"))?;
+            .map_err(|e| format!("cancel_work parked: {e}"))?;
         let rows = stmt
-            .query_map(rusqlite::params![session_id, goal_id], |row| row.get(0))
-            .map_err(|e| format!("cancel_goal parked: {e}"))?;
-        rows.collect::<Result<Vec<String>, _>>().map_err(|e| format!("cancel_goal parked: {e}"))?
+            .query_map(rusqlite::params![session_id, work_id], |row| row.get(0))
+            .map_err(|e| format!("cancel_work parked: {e}"))?;
+        rows.collect::<Result<Vec<String>, _>>().map_err(|e| format!("cancel_work parked: {e}"))?
     };
-    tx.execute("UPDATE goals SET status = 'CANCELLED' WHERE id = ?1", [goal_id])
-        .map_err(|e| format!("goal cancel: {e}"))?;
-    let detached = detach_goal(tx, goal_id)?;
+    tx.execute("UPDATE work_scopes SET status = 'CANCELLED' WHERE id = ?1", [work_id])
+        .map_err(|e| format!("work cancel: {e}"))?;
+    let detached = detach_work(tx, work_id)?;
     let mut released: Vec<String> = Vec::new();
     for instance in &parked {
         let changed = tx
@@ -4974,70 +4974,70 @@ fn cancel_goal(tx: &Connection, session_id: &str, params: &Json, identity: &Iden
                 session_id,
                 "instance_lifecycle",
                 instance,
-                &json!({"lifecycle": "ACTIVE", "reason": format!("goal {goal_id} cancelled by the user")}),
+                &json!({"lifecycle": "ACTIVE", "reason": format!("work {work_id} cancelled by the user")}),
             )?;
             released.push(instance.clone());
         }
     }
-    event(tx, session_id, "goal_cancelled", goal_id, &json!({"goal_id": goal_id, "released": released}))?;
-    Ok(json!({"goal_id": goal_id, "status": "CANCELLED", "released": released, "detached": detached}))
+    event(tx, session_id, "work_cancelled", work_id, &json!({"work_id": work_id, "released": released}))?;
+    Ok(json!({"work_id": work_id, "status": "CANCELLED", "released": released, "detached": detached}))
 }
 
-fn complete_goal(tx: &Connection, session_id: &str, params: &Json) -> Result<Json, String> {
-    let goal_id = params["goal_id"].as_str().ok_or("complete_goal.goal_id required")?;
-    let instance_id = params["instance_id"].as_str().ok_or("complete_goal.instance_id required")?;
-    let goal_status: String = tx
+fn complete_work(tx: &Connection, session_id: &str, params: &Json) -> Result<Json, String> {
+    let work_id = params["work_id"].as_str().ok_or("complete_work.work_id required")?;
+    let instance_id = params["instance_id"].as_str().ok_or("complete_work.instance_id required")?;
+    let work_status: String = tx
         .query_row(
-            "SELECT status FROM goals WHERE id = ?1 AND session_id = ?2",
-            rusqlite::params![goal_id, session_id],
+            "SELECT status FROM work_scopes WHERE id = ?1 AND session_id = ?2",
+            rusqlite::params![work_id, session_id],
             |row| row.get(0),
         )
-        .map_err(|e| format!("complete_goal {goal_id}: {e}"))?;
-    if goal_status != "ACTIVE" {
-        // a goal that is already terminal never leaves the instance in a
+        .map_err(|e| format!("complete_work {work_id}: {e}"))?;
+    if work_status != "ACTIVE" {
+        // a work that is already terminal never leaves the instance in a
         // completion state: a late finish ends its turn here (§8)
         tx.execute(
             "UPDATE instances SET phase = 'READY', revision = revision + 1
              WHERE id = ?1 AND phase = 'COMPLETION_PENDING'",
             [instance_id],
         )
-        .map_err(|e| format!("close finished goal: {e}"))?;
-        detach_goal(tx, goal_id)?;
-        return Ok(json!({"goal_id": goal_id, "status": goal_status, "already_closed": true}));
+        .map_err(|e| format!("close finished work: {e}"))?;
+        detach_work(tx, work_id)?;
+        return Ok(json!({"work_id": work_id, "status": work_status, "already_closed": true}));
     }
     let open: i64 = tx
         .query_row(
-            "SELECT COUNT(*) FROM operations WHERE goal_id = ?1 AND status IN ('PREPARED', 'DISPATCH_COMMITTED', 'RUNNING')",
-            [goal_id],
+            "SELECT COUNT(*) FROM operations WHERE work_id = ?1 AND status IN ('PREPARED', 'DISPATCH_COMMITTED', 'RUNNING')",
+            [work_id],
             |row| row.get(0),
         )
-        .map_err(|e| format!("goal open ops: {e}"))?;
+        .map_err(|e| format!("work open ops: {e}"))?;
     if open > 0 {
-        return Err(format!("goal {goal_id} has {open} open operations; cannot complete"));
+        return Err(format!("work {work_id} has {open} open operations; cannot complete"));
     }
-    // D-393: a goal that requires independent verification does not settle on its producer's own round. This is
+    // D-393: a work that requires independent verification does not settle on its producer's own round. This is
     // the backstop behind the driver's rule — the driver decides the verdict, and this asks the question the
-    // *record* can answer: did an instance other than the claimant register a check round for this goal?
+    // *record* can answer: did an instance other than the claimant register a check round for this work?
     let limits: String = tx
-        .query_row("SELECT limits_json FROM goals WHERE id = ?1", [goal_id], |row| row.get(0))
-        .map_err(|e| format!("goal limits: {e}"))?;
+        .query_row("SELECT limits_json FROM work_scopes WHERE id = ?1", [work_id], |row| row.get(0))
+        .map_err(|e| format!("work limits: {e}"))?;
     let limits: Json = serde_json::from_str(&limits).unwrap_or(json!({}));
     let has_checks = limits["required_checks"].as_array().is_some_and(|checks| !checks.is_empty());
     if limits["independent_verification"] == json!(true) && has_checks {
         let independent: Option<String> = tx
             .query_row(
                 "SELECT r.instance_id FROM model_requests r
-                 WHERE r.goal_id = ?1 AND r.request_ref = 'required_check' AND r.instance_id <> ?2
+                 WHERE r.work_id = ?1 AND r.request_ref = 'required_check' AND r.instance_id <> ?2
                  ORDER BY r.rowid DESC LIMIT 1",
-                rusqlite::params![goal_id, instance_id],
+                rusqlite::params![work_id, instance_id],
                 |row| row.get(0),
             )
             .optional()
             .map_err(|e| format!("independent verification read: {e}"))?;
         let Some(verifier) = independent else {
             return Err(format!(
-                "goal {goal_id} requires independent verification and {instance_id} cannot verify its own \
-                 claim: have another instance run its checks (`verify_goal`) before settling"
+                "work {work_id} requires independent verification and {instance_id} cannot verify its own \
+                 claim: have another instance run its checks (`verify_work`) before settling"
             ));
         };
         let _ = verifier;
@@ -5055,15 +5055,15 @@ fn complete_goal(tx: &Connection, session_id: &str, params: &Json) -> Result<Jso
         .map_err(|e| format!("completion read: {e}"))?;
     if work::policy(tx)?.is_some()
         && completion.is_some()
-        && completion.as_ref().map(|(_, request)| request_goal(tx, request)).transpose()?.flatten().as_deref()
-            != Some(goal_id)
+        && completion.as_ref().map(|(_, request)| request_work(tx, request)).transpose()?.flatten().as_deref()
+            != Some(work_id)
     {
         let epoch = load_instance(tx, instance_id)?.1;
         answer_dangling_calls(
             tx,
             instance_id,
             epoch,
-            "This completion does not belong to the selected goal; reconcile the current work first",
+            "This completion does not belong to the selected work; reconcile the current work first",
         )?;
         tx.execute(
             "UPDATE instances SET phase='READY',revision=revision+1 WHERE id=?1 AND phase='COMPLETION_PENDING'",
@@ -5071,7 +5071,7 @@ fn complete_goal(tx: &Connection, session_id: &str, params: &Json) -> Result<Jso
         )
         .map_err(|e| format!("reject foreign completion: {e}"))?;
         return Ok(
-            json!({"goal_id":goal_id,"status":"ACTIVE","completion_deferred":true,"reason":"completion belongs to a different work scope"}),
+            json!({"work_id":work_id,"status":"ACTIVE","completion_deferred":true,"reason":"completion belongs to a different work scope"}),
         );
     }
     let candidate: Json = completion.as_ref().and_then(|(raw, _)| serde_json::from_str(raw).ok()).unwrap_or(Json::Null);
@@ -5088,18 +5088,18 @@ fn complete_goal(tx: &Connection, session_id: &str, params: &Json) -> Result<Jso
         candidate["summary"].as_str().unwrap_or(""),
         &candidate["evidence"],
     )? {
-        return Ok(json!({"goal_id":goal_id,"status":"ACTIVE","completion_deferred":true}));
+        return Ok(json!({"work_id":work_id,"status":"ACTIVE","completion_deferred":true}));
     }
-    tx.execute("UPDATE goals SET status = ?1 WHERE id = ?2", rusqlite::params![status, goal_id])
-        .map_err(|e| format!("goal close: {e}"))?;
-    let detached = detach_goal(tx, goal_id)?;
+    tx.execute("UPDATE work_scopes SET status = ?1 WHERE id = ?2", rusqlite::params![status, work_id])
+        .map_err(|e| format!("work close: {e}"))?;
+    let detached = detach_work(tx, work_id)?;
     let epoch: i64 = tx
         .query_row("SELECT context_epoch FROM instances WHERE id = ?1", [instance_id], |row| row.get(0))
         .map_err(|e| format!("close epoch: {e}"))?;
     // the finish call is answered by the runtime (§8: the completion is
     // accepted once) — a dangling control call would break strict wire
     // endpoints on the next request
-    answer_dangling_calls(tx, instance_id, epoch, &format!("[finish accepted: goal {goal_id} closed as {status}]"))?;
+    answer_dangling_calls(tx, instance_id, epoch, &format!("[finish accepted: work {work_id} closed as {status}]"))?;
     // the runtime's own closing statement: without it the verification
     // receipts left at the tail would look like pending model work and the
     // driver would ask for one more turn (§8 completes once, not per round).
@@ -5111,8 +5111,8 @@ fn complete_goal(tx: &Connection, session_id: &str, params: &Json) -> Result<Jso
         instance_id,
         epoch,
         "runtime",
-        &json!({"role": "user", "content": format!("runtime: goal {goal_id} closed as {status}")}),
-        Some(&format!("goal-close-{goal_id}")),
+        &json!({"role": "user", "content": format!("runtime: work {work_id} closed as {status}")}),
+        Some(&format!("work-close-{work_id}")),
         &json!([]),
     )?;
     tx.execute(
@@ -5123,11 +5123,11 @@ fn complete_goal(tx: &Connection, session_id: &str, params: &Json) -> Result<Jso
     event(
         tx,
         session_id,
-        "goal_completed",
-        goal_id,
-        &json!({"goal_id": goal_id, "status": status, "completion": candidate, "detached": detached}),
+        "work_completed",
+        work_id,
+        &json!({"work_id": work_id, "status": status, "completion": candidate, "detached": detached}),
     )?;
-    Ok(json!({"goal_id": goal_id, "status": status, "detached": detached}))
+    Ok(json!({"work_id": work_id, "status": status, "detached": detached}))
 }
 
 /// STAGING → ABANDONED (§4.3): orphans from a crash between staging and the
@@ -5338,7 +5338,7 @@ fn artifact_release_spent_owners(tx: &Connection, session_id: &str, params: &Jso
 /// The sweep never runs on a timer: DESIGN §4.4 says collection is "scheduled separately", so the driver submits
 /// this once per boot, the shape D-191 gave artifact collection. It writes one `history_pruned` event, which is
 /// itself ordinary history and can be dropped by a later sweep.
-/// Fork reset (D-365): the copied session keeps the conversation and the goals but no execution state.
+/// Fork reset (D-365): the copied session keeps the conversation and the work_scopes but no execution state.
 ///
 /// A fork is a branch of the *context*, not of the running team: the copied `instances/` directories and member
 /// workspaces are not carried (a git worktree cannot be duplicated safely), so this transaction leaves one
@@ -5381,7 +5381,7 @@ fn fork_reset(tx: &Connection, session_id: &str, params: &Json, identity: &Ident
         [keep],
     )
     .map_err(|e| format!("fork reset instance: {e}"))?;
-    tx.execute("UPDATE goals SET reservations_json = '[]' WHERE session_id = ?1", [session_id])
+    tx.execute("UPDATE work_scopes SET reservations_json = '[]' WHERE session_id = ?1", [session_id])
         .map_err(|e| format!("fork reset reservations: {e}"))?;
     if !source_root.is_empty() && !target_root.is_empty() && source_root != target_root {
         tx.execute(
@@ -5455,7 +5455,7 @@ fn prune_history(tx: &Connection, session_id: &str, params: &Json) -> Result<Jso
                 AND NOT EXISTS (
                     SELECT 1 FROM work_inputs w
                     JOIN instances i ON i.id=w.instance_id
-                    LEFT JOIN goals g ON g.id=w.goal_id
+                    LEFT JOIN work_scopes g ON g.id=w.work_id
                     WHERE w.instance_id=envelopes.recipient AND w.epoch=envelopes.epoch
                       AND w.envelope_id=envelopes.id AND i.lifecycle!='TERMINATED'
                       AND (w.state='PENDING' OR (w.state='ASSIGNED' AND g.status='ACTIVE')))
@@ -6219,10 +6219,10 @@ mod tests {
     #[test]
     fn attempt_selection_is_atomic_and_every_complete_is_billed() {
         let (mut ctl, path) = control("attempts");
-        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1", "original_request_ref": "orig"})), Identity::User)
-            .expect("goal");
+        ctl.submit(cmd("g1", "create_work", json!({"id": "g1", "original_request_ref": "orig"})), Identity::User)
+            .expect("work");
         create_instance(&mut ctl, "i1");
-        ctl.connection().execute("UPDATE instances SET active_goal_id = 'g1' WHERE id = 'i1'", []).unwrap();
+        ctl.connection().execute("UPDATE instances SET active_work_id = 'g1' WHERE id = 'i1'", []).unwrap();
         ctl.submit(
             cmd("b1", "begin_request", json!({"instance_id": "i1", "request_id": "r1", "revision": 0})),
             Identity::Instance("i1".into()),
@@ -6267,7 +6267,7 @@ mod tests {
         assert_eq!(selected, "at1");
         let usage: String = ctl
             .connection()
-            .query_row("SELECT known_usage_json FROM goals WHERE id = 'g1'", [], |row| row.get(0))
+            .query_row("SELECT known_usage_json FROM work_scopes WHERE id = 'g1'", [], |row| row.get(0))
             .unwrap();
         let usage: Json = serde_json::from_str(&usage).unwrap();
         assert_eq!(usage["prompt"], json!(30));
@@ -7067,10 +7067,10 @@ mod tests {
         let (mut ctl, path) = control("reset-close");
         create_instance(&mut ctl, "i1");
         ctl.submit(
-            cmd("g1", "create_goal", json!({"id": "g1", "instance_id": "i1", "limits": {"max_total_tokens": 1000}})),
+            cmd("g1", "create_work", json!({"id": "g1", "instance_id": "i1", "limits": {"max_total_tokens": 1000}})),
             Identity::User,
         )
-        .expect("goal");
+        .expect("work");
         ctl.submit(
             cmd(
                 "b-1",
@@ -7083,7 +7083,7 @@ mod tests {
         // the reservation of 800/1000 is held while the request is pending
         let held: String = ctl
             .connection()
-            .query_row("SELECT reservations_json FROM goals WHERE id = 'g1'", [], |row| row.get(0))
+            .query_row("SELECT reservations_json FROM work_scopes WHERE id = 'g1'", [], |row| row.get(0))
             .unwrap();
         assert!(held.contains("r1"), "{held}");
         // reset cancels the pending request and releases its reservation (§8)
@@ -7097,7 +7097,7 @@ mod tests {
         assert_eq!(status, "CANCELLED");
         let reservations: String = ctl
             .connection()
-            .query_row("SELECT reservations_json FROM goals WHERE id = 'g1'", [], |row| row.get(0))
+            .query_row("SELECT reservations_json FROM work_scopes WHERE id = 'g1'", [], |row| row.get(0))
             .unwrap();
         assert_eq!(reservations, "{}");
         // budget is whole again: the same estimate fits in the new epoch
@@ -7153,10 +7153,10 @@ mod tests {
             .expect("derived grant");
         let derived_id = derived["grant_id"].as_str().unwrap().to_string();
         // a running task assigned to i2 and a queued operation
-        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1"})), Identity::User).expect("goal");
+        ctl.submit(cmd("g1", "create_work", json!({"id": "g1"})), Identity::User).expect("work");
         ctl.connection()
             .execute(
-                "INSERT INTO tasks (id, goal_id, session_id, requester, assignee, dependencies_json,
+                "INSERT INTO tasks (id, work_id, session_id, requester, assignee, dependencies_json,
                                     acceptance_refs_json, status, result_refs_json, revision)
                  VALUES ('t1', 'g1', 's1', 'user', 'i2', '[]', '[]', 'RUNNING', '[]', 0)",
                 [],
@@ -7465,14 +7465,14 @@ mod tests {
         let (mut ctl, path) = control("delegate");
         create_instance(&mut ctl, "i1");
         create_instance(&mut ctl, "i2");
-        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1"})), Identity::User).expect("goal");
+        ctl.submit(cmd("g1", "create_work", json!({"id": "g1"})), Identity::User).expect("work");
         // unknown and self dependencies are refused (§5.3 acyclic prerequisites)
         let err = ctl
             .submit(
                 cmd(
                     "dt-bad",
                     "delegate_task",
-                    json!({"task_id": "t-bad", "assignee": "i2", "goal_id": "g1", "dependencies": ["t-missing"]}),
+                    json!({"task_id": "t-bad", "assignee": "i2", "work_id": "g1", "dependencies": ["t-missing"]}),
                 ),
                 Identity::User,
             )
@@ -7484,7 +7484,7 @@ mod tests {
                 cmd(
                     "dt-ng",
                     "delegate_task",
-                    json!({"task_id": "t0", "assignee": "i2", "goal_id": "g1", "description": "nope"}),
+                    json!({"task_id": "t0", "assignee": "i2", "work_id": "g1", "description": "nope"}),
                 ),
                 Identity::Instance("i1".into()),
             )
@@ -7500,7 +7500,7 @@ mod tests {
                 cmd(
                     "dt-1",
                     "delegate_task",
-                    json!({"task_id": "t1", "assignee": "i2", "goal_id": "g1",
+                    json!({"task_id": "t1", "assignee": "i2", "work_id": "g1",
                            "description": "summarise the report", "acceptance_refs": ["spec:1"]}),
                 ),
                 Identity::Instance("i1".into()),
@@ -7579,9 +7579,9 @@ mod tests {
         let (mut ctl, path) = control("cancel-task");
         create_instance(&mut ctl, "i1");
         create_instance(&mut ctl, "i2");
-        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1"})), Identity::User).expect("goal");
+        ctl.submit(cmd("g1", "create_work", json!({"id": "g1"})), Identity::User).expect("work");
         ctl.submit(
-            cmd("dt-1", "delegate_task", json!({"task_id": "t1", "assignee": "i2", "goal_id": "g1"})),
+            cmd("dt-1", "delegate_task", json!({"task_id": "t1", "assignee": "i2", "work_id": "g1"})),
             Identity::User,
         )
         .expect("delegate");
@@ -7816,9 +7816,9 @@ mod tests {
         let (mut ctl, path) = control("wait-task");
         create_instance(&mut ctl, "i1");
         create_instance(&mut ctl, "i2");
-        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1"})), Identity::User).expect("goal");
+        ctl.submit(cmd("g1", "create_work", json!({"id": "g1"})), Identity::User).expect("work");
         ctl.submit(
-            cmd("dt-1", "delegate_task", json!({"task_id": "t1", "assignee": "i2", "goal_id": "g1"})),
+            cmd("dt-1", "delegate_task", json!({"task_id": "t1", "assignee": "i2", "work_id": "g1"})),
             Identity::User,
         )
         .expect("delegate");
@@ -7858,9 +7858,9 @@ mod tests {
         let (mut ctl, path) = control("wait-idle");
         create_instance(&mut ctl, "i1");
         create_instance(&mut ctl, "i2");
-        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1"})), Identity::User).expect("goal");
+        ctl.submit(cmd("g1", "create_work", json!({"id": "g1"})), Identity::User).expect("work");
         ctl.submit(
-            cmd("dt-1", "delegate_task", json!({"task_id": "t1", "assignee": "i2", "goal_id": "g1"})),
+            cmd("dt-1", "delegate_task", json!({"task_id": "t1", "assignee": "i2", "work_id": "g1"})),
             Identity::User,
         )
         .expect("delegate");
@@ -7906,14 +7906,14 @@ mod tests {
         let (mut ctl, path) = control("wait-msgkind");
         create_instance(&mut ctl, "i1");
         create_instance(&mut ctl, "i2");
-        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1"})), Identity::User).expect("goal");
+        ctl.submit(cmd("g1", "create_work", json!({"id": "g1"})), Identity::User).expect("work");
         ctl.submit(
             cmd("gd-1", "issue_grant", json!({"subject": "i1", "action": "delegate", "resource_scope": "instance:i2"})),
             Identity::User,
         )
         .expect("grant delegate");
         ctl.submit(
-            cmd("dt-1", "delegate_task", json!({"task_id": "t1", "assignee": "i2", "goal_id": "g1"})),
+            cmd("dt-1", "delegate_task", json!({"task_id": "t1", "assignee": "i2", "work_id": "g1"})),
             Identity::Instance("i1".into()),
         )
         .expect("delegate");
@@ -7962,14 +7962,14 @@ mod tests {
         create_instance(&mut ctl, "i1");
         create_instance(&mut ctl, "i2");
         create_instance(&mut ctl, "i3");
-        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1"})), Identity::User).expect("goal");
+        ctl.submit(cmd("g1", "create_work", json!({"id": "g1"})), Identity::User).expect("work");
         ctl.submit(
             cmd("gd-1", "issue_grant", json!({"subject": "i1", "action": "delegate", "resource_scope": "instance:i2"})),
             Identity::User,
         )
         .expect("grant delegate");
         ctl.submit(
-            cmd("dt-1", "delegate_task", json!({"task_id": "t1", "assignee": "i2", "goal_id": "g1"})),
+            cmd("dt-1", "delegate_task", json!({"task_id": "t1", "assignee": "i2", "work_id": "g1"})),
             Identity::Instance("i1".into()),
         )
         .expect("delegate");
@@ -8008,9 +8008,9 @@ mod tests {
         let (mut ctl, path) = control("wait-blocked");
         create_instance(&mut ctl, "i1");
         create_instance(&mut ctl, "i2");
-        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1"})), Identity::User).expect("goal");
+        ctl.submit(cmd("g1", "create_work", json!({"id": "g1"})), Identity::User).expect("work");
         ctl.submit(
-            cmd("dt-1", "delegate_task", json!({"task_id": "t1", "assignee": "i2", "goal_id": "g1"})),
+            cmd("dt-1", "delegate_task", json!({"task_id": "t1", "assignee": "i2", "work_id": "g1"})),
             Identity::User,
         )
         .expect("delegate");
@@ -8046,14 +8046,14 @@ mod tests {
     fn task_settlement_closes_the_turn_and_notes_queue_continuation() {
         let (mut ctl, path) = control("settle-note");
         create_instance(&mut ctl, "i2");
-        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1"})), Identity::User).expect("goal");
+        ctl.submit(cmd("g1", "create_work", json!({"id": "g1"})), Identity::User).expect("work");
         ctl.submit(
-            cmd("dt-1", "delegate_task", json!({"task_id": "t1", "assignee": "i2", "goal_id": "g1"})),
+            cmd("dt-1", "delegate_task", json!({"task_id": "t1", "assignee": "i2", "work_id": "g1"})),
             Identity::User,
         )
         .expect("delegate t1");
         ctl.submit(
-            cmd("dt-2", "delegate_task", json!({"task_id": "t2", "assignee": "i2", "goal_id": "g1"})),
+            cmd("dt-2", "delegate_task", json!({"task_id": "t2", "assignee": "i2", "work_id": "g1"})),
             Identity::User,
         )
         .expect("delegate t2");
@@ -8118,9 +8118,9 @@ mod tests {
     fn settling_a_task_mid_turn_leaves_the_live_phase_alone() {
         let (mut ctl, path) = control("settle-mid-turn");
         create_instance(&mut ctl, "i2");
-        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1"})), Identity::User).expect("goal");
+        ctl.submit(cmd("g1", "create_work", json!({"id": "g1"})), Identity::User).expect("work");
         ctl.submit(
-            cmd("dt-1", "delegate_task", json!({"task_id": "t1", "assignee": "i2", "goal_id": "g1"})),
+            cmd("dt-1", "delegate_task", json!({"task_id": "t1", "assignee": "i2", "work_id": "g1"})),
             Identity::User,
         )
         .expect("delegate");
@@ -8142,7 +8142,7 @@ mod tests {
     fn close_completion_returns_to_ready_without_a_settlement() {
         let (mut ctl, path) = control("close-completion");
         create_instance(&mut ctl, "i1");
-        // a finish from an instance with no goal and no tasks parks in
+        // a finish from an instance with no work and no tasks parks in
         // COMPLETION_PENDING; nothing needs settling
         let request = begin_and_complete(&mut ctl, "fin", "i1", 0);
         ctl.submit(
@@ -8170,25 +8170,25 @@ mod tests {
     }
 
     #[test]
-    fn a_worker_shares_the_budget_of_the_goal_its_queue_serves() {
+    fn a_worker_shares_the_budget_of_the_work_its_queue_serves() {
         let (mut ctl, path) = control("a18-budget");
         create_instance(&mut ctl, "i-leader");
         create_instance(&mut ctl, "i-worker");
         ctl.submit(
             cmd(
                 "g1",
-                "create_goal",
+                "create_work",
                 json!({"id": "g1", "instance_id": "i-leader", "limits": {"max_total_tokens": 100}}),
             ),
             Identity::User,
         )
-        .expect("goal");
+        .expect("work");
         ctl.submit(
-            cmd("dt-1", "delegate_task", json!({"task_id": "t1", "assignee": "i-worker", "goal_id": "g1"})),
+            cmd("dt-1", "delegate_task", json!({"task_id": "t1", "assignee": "i-worker", "work_id": "g1"})),
             Identity::User,
         )
         .expect("delegate");
-        // the goal-less worker reserves against the shared goal (A18)
+        // the work-less worker reserves against the shared work (A18)
         let begun = ctl
             .submit(
                 cmd(
@@ -8202,10 +8202,10 @@ mod tests {
         assert!(begun.get("budget_refused").is_none(), "{begun}");
         let reservations: String = ctl
             .connection()
-            .query_row("SELECT reservations_json FROM goals WHERE id = 'g1'", [], |row| row.get(0))
+            .query_row("SELECT reservations_json FROM work_scopes WHERE id = 'g1'", [], |row| row.get(0))
             .unwrap();
-        assert!(reservations.contains("r1"), "the worker reservation is visible on the goal: {reservations}");
-        // the worker's completed attempt bills to the shared goal
+        assert!(reservations.contains("r1"), "the worker reservation is visible on the work: {reservations}");
+        // the worker's completed attempt bills to the shared work
         ctl.submit(
             cmd(
                 "a-1",
@@ -8227,9 +8227,9 @@ mod tests {
         .expect("import");
         let known: String = ctl
             .connection()
-            .query_row("SELECT known_usage_json FROM goals WHERE id = 'g1'", [], |row| row.get(0))
+            .query_row("SELECT known_usage_json FROM work_scopes WHERE id = 'g1'", [], |row| row.get(0))
             .unwrap();
-        assert!(known.contains("45"), "worker usage billed to the shared goal: {known}");
+        assert!(known.contains("45"), "worker usage billed to the shared work: {known}");
         // 45 known + 60 estimated > 100: the shared gate refuses the worker…
         let refused = ctl
             .submit(
@@ -8444,7 +8444,7 @@ mod tests {
     fn capability_requests_are_delegable_task_scoped_and_user_approved() {
         let (mut ctl, path) = control("capability");
         create_instance(&mut ctl, "leader");
-        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1"})), Identity::User).expect("goal");
+        ctl.submit(cmd("g1", "create_work", json!({"id": "g1"})), Identity::User).expect("work");
         ctl.submit(
             cmd("mg-1", "issue_grant", json!({"subject": "leader", "action": "manage", "resource_scope": "session"})),
             Identity::User,
@@ -8466,7 +8466,7 @@ mod tests {
                     "sp-1",
                     "spawn_instance",
                     json!({"instance_id": "w1", "instructions": "work", "task": "dig", "task_id": "t-w1",
-                           "goal_id": "g1", "capabilities": ["shell@workspace"]}),
+                           "work_id": "g1", "capabilities": ["shell@workspace"]}),
                 ),
                 Identity::Instance("leader".into()),
             )
@@ -8510,7 +8510,7 @@ mod tests {
                     "sp-4",
                     "spawn_instance",
                     json!({"instance_id": "w4", "instructions": "work", "task": "dig", "task_id": "t-w4",
-                           "goal_id": "g1", "capabilities": ["shell@workspace"]}),
+                           "work_id": "g1", "capabilities": ["shell@workspace"]}),
                 ),
                 Identity::Instance("leader".into()),
             )
@@ -8546,7 +8546,7 @@ mod tests {
                     "sp-2",
                     "spawn_instance",
                     json!({"instance_id": "w2", "instructions": "work", "task": "dig", "task_id": "t-w2",
-                           "goal_id": "g1", "capabilities": ["shell@workspace"]}),
+                           "work_id": "g1", "capabilities": ["shell@workspace"]}),
                 ),
                 Identity::Instance("leader".into()),
             )
@@ -8613,7 +8613,7 @@ mod tests {
                     "sp-3",
                     "spawn_instance",
                     json!({"instance_id": "w3", "instructions": "work", "task": "dig", "task_id": "t-w3",
-                           "goal_id": "g1", "capabilities": ["shell@workspace"]}),
+                           "work_id": "g1", "capabilities": ["shell@workspace"]}),
                 ),
                 Identity::Instance("leader".into()),
             )
@@ -8640,7 +8640,7 @@ mod tests {
     fn spawn_registers_everything_in_one_transaction() {
         let (mut ctl, path) = control("spawn-ok");
         create_instance(&mut ctl, "leader");
-        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1"})), Identity::User).expect("goal");
+        ctl.submit(cmd("g1", "create_work", json!({"id": "g1"})), Identity::User).expect("work");
         ctl.submit(
             cmd("mg-1", "issue_grant", json!({"subject": "leader", "action": "manage", "resource_scope": "session"})),
             Identity::User,
@@ -8651,7 +8651,7 @@ mod tests {
                 cmd(
                     "sp-1",
                     "spawn_instance",
-                    json!({"instance_id": "w1", "instructions": "work", "task": "dig", "task_id": "t-w1", "goal_id": "g1"}),
+                    json!({"instance_id": "w1", "instructions": "work", "task": "dig", "task_id": "t-w1", "work_id": "g1"}),
                 ),
                 Identity::Instance("leader".into()),
             )
@@ -8991,14 +8991,14 @@ mod tests {
         let (mut ctl, path) = control("unknown-park");
         create_instance(&mut ctl, "i1");
         create_instance(&mut ctl, "i2");
-        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1"})), Identity::User).expect("goal");
+        ctl.submit(cmd("g1", "create_work", json!({"id": "g1"})), Identity::User).expect("work");
         ctl.submit(
-            cmd("dt-1", "delegate_task", json!({"task_id": "t1", "assignee": "i2", "goal_id": "g1"})),
+            cmd("dt-1", "delegate_task", json!({"task_id": "t1", "assignee": "i2", "work_id": "g1"})),
             Identity::User,
         )
         .expect("delegate");
         ctl.submit(
-            cmd("dt-2", "delegate_task", json!({"task_id": "t2", "assignee": "i2", "goal_id": "g1"})),
+            cmd("dt-2", "delegate_task", json!({"task_id": "t2", "assignee": "i2", "work_id": "g1"})),
             Identity::User,
         )
         .expect("delegate 2");
@@ -9054,15 +9054,15 @@ mod tests {
     }
 
     #[test]
-    fn goal_deadline_refuses_new_requests_and_dispatches() {
-        let (mut ctl, path) = control("goal-deadline");
+    fn work_deadline_refuses_new_requests_and_dispatches() {
+        let (mut ctl, path) = control("work-deadline");
         create_instance(&mut ctl, "i1");
         let past = crate::models::now() - 100.0;
         ctl.submit(
-            cmd("g1", "create_goal", json!({"id": "g1", "instance_id": "i1", "deadline": past})),
+            cmd("g1", "create_work", json!({"id": "g1", "instance_id": "i1", "deadline": past})),
             Identity::User,
         )
-        .expect("goal");
+        .expect("work");
         // A35: past the deadline no new request registers; the refusal is a
         // committed, auditable outcome and the instance stays READY
         let refused = ctl
@@ -9077,12 +9077,12 @@ mod tests {
         assert_eq!(phase, "READY");
         let refused_events: i64 = ctl
             .connection()
-            .query_row("SELECT COUNT(*) FROM events WHERE kind = 'goal_deadline_refused'", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM events WHERE kind = 'work_deadline_refused'", [], |row| row.get(0))
             .unwrap();
         assert_eq!(refused_events, 1);
         // move the deadline forward: requests begin again
         let future = crate::models::now() + 1000.0;
-        ctl.connection().execute("UPDATE goals SET deadline = ?1 WHERE id = 'g1'", [future]).unwrap();
+        ctl.connection().execute("UPDATE work_scopes SET deadline = ?1 WHERE id = 'g1'", [future]).unwrap();
         let ok = ctl
             .submit(
                 cmd("b-2", "begin_request", json!({"instance_id": "i1", "request_id": "r1", "revision": 1})),
@@ -9114,7 +9114,7 @@ mod tests {
         .expect("import");
         // the deadline passes mid-turn: no new side-effect dispatch either
         ctl.connection()
-            .execute("UPDATE goals SET deadline = ?1 WHERE id = 'g1'", [crate::models::now() - 1.0])
+            .execute("UPDATE work_scopes SET deadline = ?1 WHERE id = 'g1'", [crate::models::now() - 1.0])
             .unwrap();
         let error = ctl
             .submit(
@@ -9133,14 +9133,14 @@ mod tests {
         ctl.submit(
             cmd(
                 "g1",
-                "create_goal",
+                "create_work",
                 json!({"id": "g1", "original_request_ref": "orig", "limits": {"max_total_tokens": 1000}}),
             ),
             Identity::User,
         )
-        .expect("goal");
+        .expect("work");
         create_instance(&mut ctl, "i1");
-        ctl.connection().execute("UPDATE instances SET active_goal_id = 'g1' WHERE id = 'i1'", []).unwrap();
+        ctl.connection().execute("UPDATE instances SET active_work_id = 'g1' WHERE id = 'i1'", []).unwrap();
         // est 600 fits (0 + 0 + 600 <= 1000)
         ctl.submit(
             cmd(
@@ -9153,7 +9153,7 @@ mod tests {
         .expect("begin");
         let reserved: String = ctl
             .connection()
-            .query_row("SELECT reservations_json FROM goals WHERE id = 'g1'", [], |row| row.get(0))
+            .query_row("SELECT reservations_json FROM work_scopes WHERE id = 'g1'", [], |row| row.get(0))
             .unwrap();
         assert!(reserved.contains("r1"), "{reserved}");
         // complete with usage 800, then the next est 600 exceeds (800 + 600 > 1000)
@@ -9178,7 +9178,7 @@ mod tests {
         .expect("import");
         let released: String = ctl
             .connection()
-            .query_row("SELECT reservations_json FROM goals WHERE id = 'g1'", [], |row| row.get(0))
+            .query_row("SELECT reservations_json FROM work_scopes WHERE id = 'g1'", [], |row| row.get(0))
             .unwrap();
         assert_eq!(released, "{}");
         let refused = ctl
@@ -9207,7 +9207,7 @@ mod tests {
     /// The ceiling counts provider-reported usage, the request's estimate and live reservations only — the
     /// design's own gate (`BudgetFits`/`AdmissionGate` in `verification/tla/V2Control.tla`, and §8: "settlement
     /// from real usage and unknown usage are all kept", "incomplete provider billing is never turned into a
-    /// false promise that the ceiling can never be exceeded"). Usage a provider never reported moves the goal's
+    /// false promise that the ceiling can never be exceeded"). Usage a provider never reported moves the work's
     /// `unknown_usage` counter and does **not** charge the ceiling, which is why incomplete billing can
     /// overshoot it afterwards. The documents said the opposite ("usage ceiling … provider-reported and unknown
     /// usage included", `core/src/models.rs` → `docs/CONFIG.md`), so nothing pinned the gate's arithmetic; the
@@ -9218,10 +9218,10 @@ mod tests {
         let (mut ctl, path) = control("unknown-budget");
         create_instance(&mut ctl, "i1");
         ctl.submit(
-            cmd("g1", "create_goal", json!({"id": "g1", "instance_id": "i1", "limits": {"max_total_tokens": 1000}})),
+            cmd("g1", "create_work", json!({"id": "g1", "instance_id": "i1", "limits": {"max_total_tokens": 1000}})),
             Identity::User,
         )
-        .expect("goal");
+        .expect("work");
         // r1 reserves 200 and is then lost: its usage is unknown, so the counter moves and settled usage stays 0
         ctl.submit(
             cmd(
@@ -9245,11 +9245,11 @@ mod tests {
         ctl.submit(cmd("c1", "cancel_request", json!({"request_id": "r1"})), Identity::User).expect("cancel");
         let unknown: i64 = ctl
             .connection()
-            .query_row("SELECT unknown_usage FROM goals WHERE id = 'g1'", [], |row| row.get(0))
+            .query_row("SELECT unknown_usage FROM work_scopes WHERE id = 'g1'", [], |row| row.get(0))
             .unwrap();
         let known: String = ctl
             .connection()
-            .query_row("SELECT known_usage_json FROM goals WHERE id = 'g1'", [], |row| row.get(0))
+            .query_row("SELECT known_usage_json FROM work_scopes WHERE id = 'g1'", [], |row| row.get(0))
             .unwrap();
         assert_eq!(unknown, 1, "one attempt's usage is unknown");
         assert_eq!(known, json!(crate::kernel::Usage::default()).to_string(), "and none of it is settled usage");
@@ -9393,17 +9393,17 @@ mod tests {
         cleanup(&path);
     }
     #[test]
-    fn create_goal_attaches_to_instance() {
+    fn create_work_attaches_to_instance() {
         let (mut ctl, path) = control("attach");
         create_instance(&mut ctl, "i1");
-        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1", "instance_id": "i1"})), Identity::User).expect("goal");
+        ctl.submit(cmd("g1", "create_work", json!({"id": "g1", "instance_id": "i1"})), Identity::User).expect("work");
         let attached: Option<String> = ctl
             .connection()
-            .query_row("SELECT active_goal_id FROM instances WHERE id = 'i1'", [], |row| row.get(0))
+            .query_row("SELECT active_work_id FROM instances WHERE id = 'i1'", [], |row| row.get(0))
             .unwrap();
         assert_eq!(attached.as_deref(), Some("g1"));
         let err = ctl
-            .submit(cmd("g2", "create_goal", json!({"id": "g2", "instance_id": "ghost"})), Identity::User)
+            .submit(cmd("g2", "create_work", json!({"id": "g2", "instance_id": "ghost"})), Identity::User)
             .unwrap_err();
         assert!(err.contains("not in this session"), "{err}");
         cleanup(&path);
@@ -9413,8 +9413,8 @@ mod tests {
     fn attempts_for_closed_requests_are_refused_and_unknown_usage_is_visible() {
         let (mut ctl, path) = control("closed-attempt");
         create_instance(&mut ctl, "i1");
-        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1", "instance_id": "i1"})), Identity::User).expect("goal");
-        ctl.connection().execute("UPDATE instances SET active_goal_id = 'g1' WHERE id = 'i1'", []).unwrap();
+        ctl.submit(cmd("g1", "create_work", json!({"id": "g1", "instance_id": "i1"})), Identity::User).expect("work");
+        ctl.connection().execute("UPDATE instances SET active_work_id = 'g1' WHERE id = 'i1'", []).unwrap();
         ctl.submit(
             cmd("b1", "begin_request", json!({"instance_id": "i1", "request_id": "r1", "revision": 1})),
             Identity::Instance("i1".into()),
@@ -9439,7 +9439,7 @@ mod tests {
         assert_eq!(class.as_deref(), Some("lost"), "the attempted failure class is dropped: {class:?}");
         let unknown: i64 = ctl
             .connection()
-            .query_row("SELECT unknown_usage FROM goals WHERE id = 'g1'", [], |row| row.get(0))
+            .query_row("SELECT unknown_usage FROM work_scopes WHERE id = 'g1'", [], |row| row.get(0))
             .unwrap();
         assert_eq!(unknown, 1);
         ctl.submit(cmd("c1", "cancel_request", json!({"request_id": "r1"})), Identity::User).expect("cancel");
@@ -9463,8 +9463,8 @@ mod tests {
         let (mut ctl, path) = control("interrupt");
         create_instance(&mut ctl, "i1");
         create_instance(&mut ctl, "i2");
-        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1", "instance_id": "i1"})), Identity::User).expect("goal");
-        ctl.connection().execute("UPDATE instances SET active_goal_id = 'g1' WHERE id = 'i1'", []).unwrap();
+        ctl.submit(cmd("g1", "create_work", json!({"id": "g1", "instance_id": "i1"})), Identity::User).expect("work");
+        ctl.connection().execute("UPDATE instances SET active_work_id = 'g1' WHERE id = 'i1'", []).unwrap();
         ctl.submit(
             cmd("b1", "begin_request", json!({"instance_id": "i1", "request_id": "r1", "revision": 1})),
             Identity::Instance("i1".into()),
@@ -9498,10 +9498,10 @@ mod tests {
         let again =
             ctl.submit(cmd("x2", "interrupt_instance", json!({"instance_id": "i1"})), Identity::User).expect("again");
         assert_eq!(again["interrupted"], json!(false));
-        // an interrupt is not a settlement: the goal stays open
-        let goal: String =
-            ctl.connection().query_row("SELECT status FROM goals WHERE id = 'g1'", [], |row| row.get(0)).unwrap();
-        assert_eq!(goal, "ACTIVE");
+        // an interrupt is not a settlement: the work stays open
+        let work: String =
+            ctl.connection().query_row("SELECT status FROM work_scopes WHERE id = 'g1'", [], |row| row.get(0)).unwrap();
+        assert_eq!(work, "ACTIVE");
         // a terminated instance has no turn left to interrupt
         ctl.submit(cmd("t1", "set_lifecycle", json!({"instance_id": "i1", "lifecycle": "TERMINATED"})), Identity::User)
             .expect("terminate");
@@ -9511,7 +9511,7 @@ mod tests {
         cleanup(&path);
     }
 
-    /// D-365: a fork keeps the conversation and the goals but none of the execution state — the leader is left
+    /// D-365: a fork keeps the conversation and the work_scopes but none of the execution state — the leader is left
     /// idle and runnable, and the state a fork reset produces is one the control plane's own invariants admit
     /// (the engine test drives the checker over a reset store).
     #[test]
@@ -9520,9 +9520,9 @@ mod tests {
         let session = ctl.session_id.clone();
         create_instance(&mut ctl, "i-leader");
         create_instance(&mut ctl, "i-worker");
-        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1", "instance_id": "i-leader"})), Identity::User)
-            .expect("goal");
-        ctl.connection().execute("UPDATE instances SET active_goal_id = 'g1' WHERE id = 'i-leader'", []).unwrap();
+        ctl.submit(cmd("g1", "create_work", json!({"id": "g1", "instance_id": "i-leader"})), Identity::User)
+            .expect("work");
+        ctl.connection().execute("UPDATE instances SET active_work_id = 'g1' WHERE id = 'i-leader'", []).unwrap();
         // the leader is mid-turn with two open operations, one decision and one recorded request
         let revision: i64 = ctl
             .connection()
@@ -9532,7 +9532,7 @@ mod tests {
         // the worker has a delegated task, a queued envelope and a grant
         ctl.connection()
             .execute(
-                "INSERT INTO tasks (id, goal_id, session_id, requester, assignee, dependencies_json, \
+                "INSERT INTO tasks (id, work_id, session_id, requester, assignee, dependencies_json, \
                  acceptance_refs_json, status, result_refs_json) VALUES ('t1','g1',?1,'i-leader','i-worker','[]','[]',\
                  'RUNNING','[]')",
                 [&session],
@@ -9585,7 +9585,7 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM grants WHERE subject = 'i-worker'", [], |row| row.get(0))
             .unwrap();
         assert_eq!(worker_grants, 0);
-        // the leader is idle and runnable; the conversation and the goal survive
+        // the leader is idle and runnable; the conversation and the work survive
         let (lifecycle, phase, active): (String, String, Option<String>) = ctl
             .connection()
             .query_row("SELECT lifecycle, phase, active_request_id FROM instances WHERE id = 'i-leader'", [], |row| {
@@ -9600,7 +9600,7 @@ mod tests {
         assert_eq!(after, before, "the fork keeps the conversation");
         let (status, reserved): (String, String) = ctl
             .connection()
-            .query_row("SELECT status, reservations_json FROM goals WHERE id = 'g1'", [], |row| {
+            .query_row("SELECT status, reservations_json FROM work_scopes WHERE id = 'g1'", [], |row| {
                 Ok((row.get(0)?, row.get(1)?))
             })
             .unwrap();
@@ -9610,10 +9610,10 @@ mod tests {
     }
 
     #[test]
-    fn complete_goal_uses_the_stored_candidate_and_checks_open_operations() {
-        let (mut ctl, path) = control("goal-complete");
+    fn complete_work_uses_the_stored_candidate_and_checks_open_operations() {
+        let (mut ctl, path) = control("work-complete");
         create_instance(&mut ctl, "i1");
-        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1", "instance_id": "i1"})), Identity::User).expect("goal");
+        ctl.submit(cmd("g1", "create_work", json!({"id": "g1", "instance_id": "i1"})), Identity::User).expect("work");
         // a finish decision lands the instance in COMPLETION_PENDING
         let request = begin_and_complete(&mut ctl, "fin", "i1", 1);
         ctl.submit(
@@ -9629,88 +9629,88 @@ mod tests {
         .expect("import");
         assert_eq!(phase_of(&ctl, "i1"), "COMPLETION_PENDING");
         let closed = ctl
-            .submit(cmd("cg-1", "complete_goal", json!({"goal_id": "g1", "instance_id": "i1"})), Identity::System)
+            .submit(cmd("cg-1", "complete_work", json!({"work_id": "g1", "instance_id": "i1"})), Identity::System)
             .expect("complete");
         assert_eq!(closed["status"], json!("SUCCEEDED"));
         assert_eq!(phase_of(&ctl, "i1"), "READY");
         // idempotent for clients that missed the reply
         let again = ctl
-            .submit(cmd("cg-2", "complete_goal", json!({"goal_id": "g1", "instance_id": "i1"})), Identity::System)
+            .submit(cmd("cg-2", "complete_work", json!({"work_id": "g1", "instance_id": "i1"})), Identity::System)
             .expect("recomplete");
         assert_eq!(again["already_closed"], json!(true));
         cleanup(&path);
     }
 
     #[test]
-    fn cancel_goal_closes_a_spent_goal_and_releases_the_instance_it_parked() {
-        // A18's gap: a goal whose ceiling or deadline is gone stays ACTIVE for
+    fn cancel_work_closes_a_spent_work_and_releases_the_instance_it_parked() {
+        // A18's gap: a work whose ceiling or deadline is gone stays ACTIVE for
         // ever and the instance its refusal parked has no path back. The user's
-        // lever closes the goal (CANCELLED) and gives the instance back.
-        let (mut ctl, path) = control("goal-cancel");
+        // lever closes the work (CANCELLED) and gives the instance back.
+        let (mut ctl, path) = control("work-cancel");
         create_instance(&mut ctl, "i1");
-        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1", "instance_id": "i1"})), Identity::User).expect("goal");
+        ctl.submit(cmd("g1", "create_work", json!({"id": "g1", "instance_id": "i1"})), Identity::User).expect("work");
         // the refusal path parks the instance, as the driver does when the gate
         // answers `deadline_refused` (set_lifecycle by the system)
         ctl.submit(
             cmd(
                 "p1",
                 "set_lifecycle",
-                json!({"instance_id": "i1", "lifecycle": "PARKED", "reason": "goal g1 deadline passed"}),
+                json!({"instance_id": "i1", "lifecycle": "PARKED", "reason": "work g1 deadline passed"}),
             ),
             Identity::System,
         )
         .expect("park");
         assert_eq!(lifecycle_of(&ctl, "i1"), "PARKED");
-        let closed = ctl.submit(cmd("cg-1", "cancel_goal", json!({"goal_id": "g1"})), Identity::User).expect("cancel");
+        let closed = ctl.submit(cmd("cg-1", "cancel_work", json!({"work_id": "g1"})), Identity::User).expect("cancel");
         assert_eq!(closed["status"], json!("CANCELLED"));
         assert_eq!(closed["released"], json!(["i1"]));
         assert_eq!(closed["detached"], json!(1));
-        assert_eq!(goal_status_of(&ctl, "g1"), "CANCELLED");
-        // the instance accepts new work again, and the goal no longer owns it
+        assert_eq!(work_status_of(&ctl, "g1"), "CANCELLED");
+        // the instance accepts new work again, and the work no longer owns it
         assert_eq!(lifecycle_of(&ctl, "i1"), "ACTIVE");
         assert_eq!(phase_of(&ctl, "i1"), "READY");
         let attached: Option<String> = ctl
             .connection()
-            .query_row("SELECT active_goal_id FROM instances WHERE id = ?1", ["i1"], |row| row.get(0))
+            .query_row("SELECT active_work_id FROM instances WHERE id = ?1", ["i1"], |row| row.get(0))
             .unwrap();
         assert_eq!(attached, None);
         // a second cancel says why instead of repeating the release
-        let again = ctl.submit(cmd("cg-2", "cancel_goal", json!({"goal_id": "g1"})), Identity::User).unwrap_err();
+        let again = ctl.submit(cmd("cg-2", "cancel_work", json!({"work_id": "g1"})), Identity::User).unwrap_err();
         assert!(again.contains("not ACTIVE"), "{again}");
         cleanup(&path);
     }
 
     #[test]
-    fn cancel_goal_refuses_running_work_a_settled_goal_and_an_unknown_id() {
-        let (mut ctl, path) = control("goal-cancel-refuse");
+    fn cancel_work_refuses_running_work_a_settled_work_and_an_unknown_id() {
+        let (mut ctl, path) = control("work-cancel-refuse");
         create_instance(&mut ctl, "i1");
-        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1", "instance_id": "i1"})), Identity::User).expect("goal");
+        ctl.submit(cmd("g1", "create_work", json!({"id": "g1", "instance_id": "i1"})), Identity::User).expect("work");
         // an id nothing resolves to
-        let unknown = ctl.submit(cmd("cg-x", "cancel_goal", json!({"goal_id": "ghost"})), Identity::User).unwrap_err();
+        let unknown = ctl.submit(cmd("cg-x", "cancel_work", json!({"work_id": "ghost"})), Identity::User).unwrap_err();
         assert!(unknown.contains("not in this session"), "{unknown}");
-        // a turn in flight is running work: the request never closes, so the goal
+        // a turn in flight is running work: the request never closes, so the work
         // cannot be closed under it
         ctl.submit(
             cmd("b-1", "begin_request", json!({"instance_id": "i1", "request_id": "r1", "revision": 1})),
             Identity::Instance("i1".into()),
         )
         .expect("begin"); // the attach above bumped the revision
-        let busy = ctl.submit(cmd("cg-busy", "cancel_goal", json!({"goal_id": "g1"})), Identity::User).unwrap_err();
+        let busy = ctl.submit(cmd("cg-busy", "cancel_work", json!({"work_id": "g1"})), Identity::User).unwrap_err();
         assert!(busy.contains("running work"), "{busy}");
-        assert_eq!(goal_status_of(&ctl, "g1"), "ACTIVE");
+        assert_eq!(work_status_of(&ctl, "g1"), "ACTIVE");
         // the system may park but never resume, and may not cancel either
-        let system = ctl.submit(cmd("cg-sys", "cancel_goal", json!({"goal_id": "g1"})), Identity::System).unwrap_err();
+        let system = ctl.submit(cmd("cg-sys", "cancel_work", json!({"work_id": "g1"})), Identity::System).unwrap_err();
         assert!(system.contains("stays with the user"), "{system}");
-        // a settled goal is not ACTIVE to cancel
+        // a settled work is not ACTIVE to cancel
         ctl.submit(cmd("fr-1", "fail_request", json!({"request_id": "r1", "reason": "crash"})), Identity::System)
             .expect("fail");
         ctl.submit(
-            cmd("bg-1", "block_goal", json!({"goal_id": "g1", "instance_id": "i1", "reason": "no way forward"})),
+            cmd("bg-1", "block_work", json!({"work_id": "g1", "instance_id": "i1", "reason": "no way forward"})),
             Identity::System,
         )
         .expect("block");
         let settled =
-            ctl.submit(cmd("cg-settled", "cancel_goal", json!({"goal_id": "g1"})), Identity::User).unwrap_err();
+            ctl.submit(cmd("cg-settled", "cancel_work", json!({"work_id": "g1"})), Identity::User).unwrap_err();
         assert!(settled.contains("not ACTIVE"), "{settled}");
         cleanup(&path);
     }
@@ -9721,8 +9721,8 @@ mod tests {
             .unwrap()
     }
 
-    fn goal_status_of(ctl: &Control, goal: &str) -> String {
-        ctl.connection().query_row("SELECT status FROM goals WHERE id = ?1", [goal], |row| row.get(0)).unwrap()
+    fn work_status_of(ctl: &Control, work: &str) -> String {
+        ctl.connection().query_row("SELECT status FROM work_scopes WHERE id = ?1", [work], |row| row.get(0)).unwrap()
     }
 
     fn revision_of(ctl: &Control, instance: &str) -> i64 {
@@ -9734,9 +9734,9 @@ mod tests {
     /// Finish import helper: lands the instance in COMPLETION_PENDING with a
     /// stored candidate of the given outcome.
     /// Drive one registered check round's operations to SUCCEEDED, the way the driver's `execute_check_ops`
-    /// does, so a goal's open-operation guard is not what the test is measuring.
-    fn complete_round(ctl: &mut Control, goal: &str, round: i64) {
-        let decision = format!("check:{goal}:{round}");
+    /// does, so a work's open-operation guard is not what the test is measuring.
+    fn complete_round(ctl: &mut Control, work: &str, round: i64) {
+        let decision = format!("check:{work}:{round}");
         let ops: Vec<String> = ctl
             .connection()
             .prepare("SELECT operation_id FROM operations WHERE decision_id = ?1 ORDER BY tool_index")
@@ -9776,15 +9776,15 @@ mod tests {
     }
 
     #[test]
-    fn create_goal_required_checks_are_user_defined_machine_contracts() {
-        let (mut ctl, path) = control("goal-checks-gate");
+    fn create_work_required_checks_are_user_defined_machine_contracts() {
+        let (mut ctl, path) = control("work-checks-gate");
         create_instance(&mut ctl, "i1");
         // an instance can never mint user-grade machine contracts (§8)
         let err = ctl
             .submit(
                 cmd(
                     "g-bad",
-                    "create_goal",
+                    "create_work",
                     json!({"id": "g-bad", "limits": {"required_checks": [{"id": "c1", "command": "true"}]}}),
                 ),
                 Identity::Instance("i1".into()),
@@ -9799,24 +9799,24 @@ mod tests {
             json!({"required_checks": [{"id": "c1", "command": "true", "timeout": 0}]}),
         ] {
             assert!(ctl
-                .submit(cmd("g-x", "create_goal", json!({"id": "g-x", "limits": limits})), Identity::User)
+                .submit(cmd("g-x", "create_work", json!({"id": "g-x", "limits": limits})), Identity::User)
                 .is_err());
         }
         // the user (or project bootstrap) predefines them; limits persist
         ctl.submit(
             cmd(
                 "g-ok",
-                "create_goal",
+                "create_work",
                 json!({"id": "g-ok", "limits": {"required_checks": [{"id": "c1", "command": "cargo test",
                                                                         "timeout": 30, "inputs": ["src/lib.rs"]}],
                                                 "max_check_rounds": 2}}),
             ),
             Identity::User,
         )
-        .expect("goal with checks");
+        .expect("work with checks");
         let limits: String = ctl
             .connection()
-            .query_row("SELECT limits_json FROM goals WHERE id = 'g-ok'", [], |row| row.get(0))
+            .query_row("SELECT limits_json FROM work_scopes WHERE id = 'g-ok'", [], |row| row.get(0))
             .unwrap();
         let limits: Json = serde_json::from_str(&limits).unwrap();
         assert_eq!(limits["required_checks"][0]["command"], json!("cargo test"));
@@ -9828,20 +9828,20 @@ mod tests {
     fn require_checks_attaches_the_users_acceptance_before_the_round_then_freezes_it() {
         let (mut ctl, path) = control("require-checks");
         create_instance(&mut ctl, "i1");
-        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1", "instance_id": "i1"})), Identity::User).expect("goal");
-        // the gate is create_goal's: conditions a model distills cannot masquerade as user-confirmed checks
+        ctl.submit(cmd("g1", "create_work", json!({"id": "g1", "instance_id": "i1"})), Identity::User).expect("work");
+        // the gate is create_work's: conditions a model distills cannot masquerade as user-confirmed checks
         let err = ctl
             .submit(
                 cmd(
                     "rc-model",
                     "require_checks",
-                    json!({"goal_id": "g1", "checks": [{"id": "c1", "command": "true"}]}),
+                    json!({"work_id": "g1", "checks": [{"id": "c1", "command": "true"}]}),
                 ),
                 Identity::Instance("i1".into()),
             )
             .unwrap_err();
         assert!(err.contains("only the user"), "{err}");
-        // malformed shapes and unknown goals fail closed
+        // malformed shapes and unknown work_scopes fail closed
         for checks in [
             json!([]),
             json!("not-an-array"),
@@ -9849,7 +9849,7 @@ mod tests {
             json!([{"id": "c1", "command": "true", "inputs": ["../escape"]}]),
         ] {
             assert!(ctl
-                .submit(cmd("rc-bad", "require_checks", json!({"goal_id": "g1", "checks": checks})), Identity::User)
+                .submit(cmd("rc-bad", "require_checks", json!({"work_id": "g1", "checks": checks})), Identity::User)
                 .is_err());
         }
         assert!(ctl
@@ -9857,7 +9857,7 @@ mod tests {
                 cmd(
                     "rc-none",
                     "require_checks",
-                    json!({"goal_id": "nope", "checks": [{"id": "c1", "command": "true"}]})
+                    json!({"work_id": "nope", "checks": [{"id": "c1", "command": "true"}]})
                 ),
                 Identity::User,
             )
@@ -9868,7 +9868,7 @@ mod tests {
                 cmd(
                     "rc-1",
                     "require_checks",
-                    json!({"goal_id": "g1", "checks": [{"id": "c1", "command": "make check"}]}),
+                    json!({"work_id": "g1", "checks": [{"id": "c1", "command": "make check"}]}),
                 ),
                 Identity::User,
             )
@@ -9876,39 +9876,39 @@ mod tests {
         assert_eq!(attached["required_checks"][0]["command"], json!("make check"));
         let recorded: i64 = ctl
             .connection()
-            .query_row("SELECT COUNT(*) FROM events WHERE kind = 'goal_checks_required'", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM events WHERE kind = 'work_checks_required'", [], |row| row.get(0))
             .unwrap();
         assert_eq!(recorded, 1, "attaching checks is auditable");
         // the same id with the same definition is idempotent; a different one is refused (an id names one contract)
         ctl.submit(
-            cmd("rc-2", "require_checks", json!({"goal_id": "g1", "checks": [{"id": "c1", "command": "make check"}]})),
+            cmd("rc-2", "require_checks", json!({"work_id": "g1", "checks": [{"id": "c1", "command": "make check"}]})),
             Identity::User,
         )
         .expect("idempotent");
         let err = ctl
             .submit(
-                cmd("rc-3", "require_checks", json!({"goal_id": "g1", "checks": [{"id": "c1", "command": "true"}]})),
+                cmd("rc-3", "require_checks", json!({"work_id": "g1", "checks": [{"id": "c1", "command": "true"}]})),
                 Identity::User,
             )
             .unwrap_err();
         assert!(err.contains("different definition"), "{err}");
-        // checks create_goal already stored are unioned, never replaced
+        // checks create_work already stored are unioned, never replaced
         ctl.submit(
             cmd(
                 "g2",
-                "create_goal",
+                "create_work",
                 json!({"id": "g2", "instance_id": "i1",
                        "limits": {"required_checks": [{"id": "u1", "command": "cargo test"}]}}),
             ),
             Identity::User,
         )
-        .expect("goal 2");
+        .expect("work 2");
         let merged = ctl
             .submit(
                 cmd(
                     "rc-4",
                     "require_checks",
-                    json!({"goal_id": "g2", "checks": [{"id": "u2", "command": "cargo fmt --check"}]}),
+                    json!({"work_id": "g2", "checks": [{"id": "u2", "command": "cargo fmt --check"}]}),
                 ),
                 Identity::User,
             )
@@ -9924,7 +9924,7 @@ mod tests {
             cmd(
                 "rc-round",
                 "register_check_runs",
-                json!({"goal_id": "g2", "instance_id": "i1", "round": 1,
+                json!({"work_id": "g2", "instance_id": "i1", "round": 1,
                        "checks": [{"id": "u1", "command": "cargo test"}, {"id": "u2", "command": "cargo fmt --check"}]}),
             ),
             Identity::System,
@@ -9932,17 +9932,17 @@ mod tests {
         .expect("round");
         let err = ctl
             .submit(
-                cmd("rc-5", "require_checks", json!({"goal_id": "g2", "checks": [{"id": "u3", "command": "true"}]})),
+                cmd("rc-5", "require_checks", json!({"work_id": "g2", "checks": [{"id": "u3", "command": "true"}]})),
                 Identity::User,
             )
             .unwrap_err();
         assert!(err.contains("check round"), "{err}");
-        // and a settled goal takes nothing new
-        ctl.submit(cmd("g3", "create_goal", json!({"id": "g3", "instance_id": "i1"})), Identity::User).expect("goal 3");
-        ctl.submit(cmd("cancel-g3", "cancel_goal", json!({"goal_id": "g3"})), Identity::User).expect("cancel");
+        // and a settled work takes nothing new
+        ctl.submit(cmd("g3", "create_work", json!({"id": "g3", "instance_id": "i1"})), Identity::User).expect("work 3");
+        ctl.submit(cmd("cancel-g3", "cancel_work", json!({"work_id": "g3"})), Identity::User).expect("cancel");
         let err = ctl
             .submit(
-                cmd("rc-6", "require_checks", json!({"goal_id": "g3", "checks": [{"id": "c1", "command": "true"}]})),
+                cmd("rc-6", "require_checks", json!({"work_id": "g3", "checks": [{"id": "c1", "command": "true"}]})),
                 Identity::User,
             )
             .unwrap_err();
@@ -9976,7 +9976,7 @@ mod tests {
         .expect("assistant entry");
         tx.execute(
             "INSERT INTO operations
-             (operation_id, decision_id, tool_index, goal_id, epoch, intent_json, args_hash, grant_revision, status)
+             (operation_id, decision_id, tool_index, work_id, epoch, intent_json, args_hash, grant_revision, status)
              VALUES ('d-req-test:0', 'd-req-test', 0, NULL, 0, ?1, 'h', 0, 'RUNNING')",
             rusqlite::params![json!({"call_id": "running-call", "name": "shell", "args": {}}).to_string()],
         )
@@ -10000,16 +10000,16 @@ mod tests {
         cleanup(&path);
     }
 
-    /// D-418: the criterion note goes out once, only for a live goal that really has required checks, and never
+    /// D-418: the criterion note goes out once, only for a live work that really has required checks, and never
     /// from a model identity — the text is the runtime's own composition of the user's commands.
     #[test]
-    fn the_check_briefing_names_the_required_checks_once_and_only_for_a_live_goal() {
+    fn the_check_briefing_names_the_required_checks_once_and_only_for_a_live_work() {
         let (mut ctl, path) = control("check-briefing");
         create_instance(&mut ctl, "i1");
         ctl.submit(
             cmd(
                 "g1",
-                "create_goal",
+                "create_work",
                 json!({"id": "g1", "instance_id": "i1",
                        "limits": {"required_checks": [
                            {"id": "rows", "command": "diff -q want.txt got.txt"},
@@ -10017,27 +10017,27 @@ mod tests {
             ),
             Identity::User,
         )
-        .expect("goal with checks");
+        .expect("work with checks");
         // a model cannot brief itself
         assert!(ctl
             .submit(
-                cmd("b-bad", "goal_checks_briefing", json!({"goal_id": "g1", "instance_id": "i1"})),
+                cmd("b-bad", "work_checks_briefing", json!({"work_id": "g1", "instance_id": "i1"})),
                 Identity::Instance("i1".into()),
             )
             .is_err());
         let first = ctl
-            .submit(cmd("b1", "goal_checks_briefing", json!({"goal_id": "g1", "instance_id": "i1"})), Identity::System)
+            .submit(cmd("b1", "work_checks_briefing", json!({"work_id": "g1", "instance_id": "i1"})), Identity::System)
             .expect("briefing");
         assert_eq!(first["sent"], json!(true), "{first}");
         assert_eq!(first["checks"], json!(2));
         let again = ctl
-            .submit(cmd("b2", "goal_checks_briefing", json!({"goal_id": "g1", "instance_id": "i1"})), Identity::System)
+            .submit(cmd("b2", "work_checks_briefing", json!({"work_id": "g1", "instance_id": "i1"})), Identity::System)
             .expect("replay");
-        assert_eq!(again["sent"], json!(false), "at most one note per goal: {again}");
+        assert_eq!(again["sent"], json!(false), "at most one note per work: {again}");
         let note: String = ctl
             .connection()
             .query_row(
-                "SELECT message_json FROM context_entries WHERE envelope_id = 'goal-checks-briefing-g1'",
+                "SELECT message_json FROM context_entries WHERE envelope_id = 'work-checks-briefing-g1'",
                 [],
                 |row| row.get(0),
             )
@@ -10047,17 +10047,17 @@ mod tests {
         // the work cannot satisfy it (the first wording made the model responsible for the gate and measured worse)
         assert!(note.contains("the runtime \\n does") || note.contains("the runtime does"), "{note}");
         assert!(note.contains("`finish`") && note.contains("report what is missing"), "{note}");
-        // a goal without checks has no criterion to state
-        ctl.submit(cmd("g2", "create_goal", json!({"id": "g2", "instance_id": "i1"})), Identity::User).expect("g2");
+        // a work without checks has no criterion to state
+        ctl.submit(cmd("g2", "create_work", json!({"id": "g2", "instance_id": "i1"})), Identity::User).expect("g2");
         let none = ctl
-            .submit(cmd("b3", "goal_checks_briefing", json!({"goal_id": "g2", "instance_id": "i1"})), Identity::System)
+            .submit(cmd("b3", "work_checks_briefing", json!({"work_id": "g2", "instance_id": "i1"})), Identity::System)
             .expect("no checks");
         assert_eq!(none["sent"], json!(false));
         assert_eq!(none["reason"], json!("no required checks"));
         cleanup(&path);
     }
 
-    /// D-410: the wrap-up note goes out once per goal, only while the goal is live and the deadline is still
+    /// D-410: the wrap-up note goes out once per work, only while the work is live and the deadline is still
     /// ahead, and never from a model identity — a note the runtime cannot stand behind is worse than none.
     #[test]
     fn the_deadline_warning_is_sent_once_and_only_before_a_live_deadline() {
@@ -10065,68 +10065,68 @@ mod tests {
         create_instance(&mut ctl, "i1");
         let now = crate::models::now();
         ctl.submit(
-            cmd("g1", "create_goal", json!({"id": "g1", "instance_id": "i1", "deadline": now + 120.0})),
+            cmd("g1", "create_work", json!({"id": "g1", "instance_id": "i1", "deadline": now + 120.0})),
             Identity::User,
         )
-        .expect("goal with a deadline");
+        .expect("work with a deadline");
         // the model cannot issue it
         assert!(ctl
             .submit(
-                cmd("w-bad", "deadline_warning", json!({"goal_id": "g1", "instance_id": "i1"})),
+                cmd("w-bad", "deadline_warning", json!({"work_id": "g1", "instance_id": "i1"})),
                 Identity::Instance("i1".into()),
             )
             .is_err());
         let first = ctl
-            .submit(cmd("w1", "deadline_warning", json!({"goal_id": "g1", "instance_id": "i1"})), Identity::System)
+            .submit(cmd("w1", "deadline_warning", json!({"work_id": "g1", "instance_id": "i1"})), Identity::System)
             .expect("warning");
         assert_eq!(first["sent"], json!(true));
         assert!(first["seconds_left"].as_i64().unwrap_or(0) > 100, "{first}");
         let again = ctl
-            .submit(cmd("w2", "deadline_warning", json!({"goal_id": "g1", "instance_id": "i1"})), Identity::System)
+            .submit(cmd("w2", "deadline_warning", json!({"work_id": "g1", "instance_id": "i1"})), Identity::System)
             .expect("replay");
-        assert_eq!(again["sent"], json!(false), "at most one note per goal: {again}");
+        assert_eq!(again["sent"], json!(false), "at most one note per work: {again}");
         let note: String = ctl
             .connection()
             .query_row(
-                "SELECT message_json FROM context_entries WHERE envelope_id = 'goal-deadline-warning-g1'",
+                "SELECT message_json FROM context_entries WHERE envelope_id = 'work-deadline-warning-g1'",
                 [],
                 |row| row.get(0),
             )
             .expect("the note is in the conversation");
         assert!(note.contains("remain") && note.contains("finish"), "{note}");
 
-        // a goal with no deadline has nothing to warn about; a passed one cannot be warned about
-        ctl.submit(cmd("g2", "create_goal", json!({"id": "g2", "instance_id": "i1"})), Identity::User).expect("g2");
+        // a work with no deadline has nothing to warn about; a passed one cannot be warned about
+        ctl.submit(cmd("g2", "create_work", json!({"id": "g2", "instance_id": "i1"})), Identity::User).expect("g2");
         let none = ctl
-            .submit(cmd("w3", "deadline_warning", json!({"goal_id": "g2", "instance_id": "i1"})), Identity::System)
+            .submit(cmd("w3", "deadline_warning", json!({"work_id": "g2", "instance_id": "i1"})), Identity::System)
             .expect("no deadline");
         assert_eq!(none["sent"], json!(false));
         assert_eq!(none["reason"], json!("no deadline"));
         ctl.submit(
-            cmd("g3", "create_goal", json!({"id": "g3", "instance_id": "i1", "deadline": now - 5.0})),
+            cmd("g3", "create_work", json!({"id": "g3", "instance_id": "i1", "deadline": now - 5.0})),
             Identity::User,
         )
         .expect("g3");
         let passed = ctl
-            .submit(cmd("w4", "deadline_warning", json!({"goal_id": "g3", "instance_id": "i1"})), Identity::System)
+            .submit(cmd("w4", "deadline_warning", json!({"work_id": "g3", "instance_id": "i1"})), Identity::System)
             .expect("passed deadline");
         assert_eq!(passed["reason"], json!("deadline passed"));
-        // and a settled goal gets nothing
-        ctl.submit(cmd("cancel-g2", "cancel_goal", json!({"goal_id": "g2"})), Identity::User).expect("cancel");
+        // and a settled work gets nothing
+        ctl.submit(cmd("cancel-g2", "cancel_work", json!({"work_id": "g2"})), Identity::User).expect("cancel");
         let closed = ctl
-            .submit(cmd("w5", "deadline_warning", json!({"goal_id": "g2", "instance_id": "i1"})), Identity::System)
+            .submit(cmd("w5", "deadline_warning", json!({"work_id": "g2", "instance_id": "i1"})), Identity::System)
             .expect("settled");
         assert_eq!(closed["reason"], json!("not ACTIVE"));
         cleanup(&path);
     }
 
-    /// D-393: a goal that requires independent verification does not settle on its producer's own round, and it
+    /// D-393: a work that requires independent verification does not settle on its producer's own round, and it
     /// does settle once another instance has registered one.
-    /// D-393: a verification round runs under the **goal owner's** authority, so an instance that holds no
+    /// D-393: a verification round runs under the **work owner's** authority, so an instance that holds no
     /// `shell@workspace` grant of its own can still trigger the owner's pre-authorized checks — while the old rule
-    /// stands for a goal whose owner has no grant at all (`check_dispatch_refused_parks_without_burning_rounds`).
+    /// stands for a work whose owner has no grant at all (`check_dispatch_refused_parks_without_burning_rounds`).
     #[test]
-    fn a_verification_round_rides_the_goal_owners_authority_not_the_triggers() {
+    fn a_verification_round_rides_the_work_owners_authority_not_the_triggers() {
         let (mut ctl, path) = control("check-authority");
         // the owner has the shared workspace (which is what grants shell@workspace); the verifier does not
         ctl.submit(
@@ -10142,20 +10142,20 @@ mod tests {
         ctl.submit(
             cmd(
                 "g1",
-                "create_goal",
+                "create_work",
                 json!({"id": "g1", "instance_id": "i-leader",
                        "limits": {"required_checks": [{"id": "c1", "command": "true"}],
                                   "independent_verification": true}}),
             ),
             Identity::User,
         )
-        .expect("goal");
+        .expect("work");
         assert!(!ctl.holds_covering_grant("i-verifier", "shell", "workspace").unwrap(), "the trigger holds none");
         ctl.submit(
             cmd(
                 "v-round",
                 "register_verification",
-                json!({"goal_id": "g1", "instance_id": "i-verifier", "round": 1,
+                json!({"work_id": "g1", "instance_id": "i-verifier", "round": 1,
                        "checks": [{"id": "c1", "command": "true"}]}),
             ),
             Identity::System,
@@ -10181,25 +10181,25 @@ mod tests {
         ctl.submit(
             cmd(
                 "g1",
-                "create_goal",
+                "create_work",
                 json!({"id": "g1", "instance_id": "i-leader",
                        "limits": {"required_checks": [{"id": "c1", "command": "true"}],
                                   "independent_verification": true}}),
             ),
             Identity::User,
         )
-        .expect("goal");
+        .expect("work");
         // the flag is the user's statement, and only theirs
         let err = ctl
             .submit(
-                cmd("g-bad", "create_goal", json!({"id": "g-bad", "limits": {"independent_verification": true}})),
+                cmd("g-bad", "create_work", json!({"id": "g-bad", "limits": {"independent_verification": true}})),
                 Identity::Instance("i-leader".into()),
             )
             .unwrap_err();
         assert!(err.contains("independent_verification"), "{err}");
         assert!(ctl
             .submit(
-                cmd("g-bad2", "create_goal", json!({"id": "g-bad2", "limits": {"independent_verification": "yes"}})),
+                cmd("g-bad2", "create_work", json!({"id": "g-bad2", "limits": {"independent_verification": "yes"}})),
                 Identity::User,
             )
             .is_err());
@@ -10214,7 +10214,7 @@ mod tests {
             cmd(
                 "own-round",
                 "register_check_runs",
-                json!({"goal_id": "g1", "instance_id": "i-leader", "round": 1,
+                json!({"work_id": "g1", "instance_id": "i-leader", "round": 1,
                        "checks": [{"id": "c1", "command": "true"}]}),
             ),
             Identity::System,
@@ -10223,18 +10223,18 @@ mod tests {
         complete_round(&mut ctl, "g1", 1);
         let err = ctl
             .submit(
-                cmd("close-own", "complete_goal", json!({"goal_id": "g1", "instance_id": "i-leader"})),
+                cmd("close-own", "complete_work", json!({"work_id": "g1", "instance_id": "i-leader"})),
                 Identity::System,
             )
             .unwrap_err();
         assert!(err.contains("independent verification"), "the producer's own round must not settle it: {err}");
 
-        // another instance verifies: its round is what the goal settles on
+        // another instance verifies: its round is what the work settles on
         ctl.submit(
             cmd(
                 "verifier-round",
                 "register_verification",
-                json!({"goal_id": "g1", "instance_id": "i-verifier", "round": 2,
+                json!({"work_id": "g1", "instance_id": "i-verifier", "round": 2,
                        "checks": [{"id": "c1", "command": "true"}]}),
             ),
             Identity::System,
@@ -10243,7 +10243,7 @@ mod tests {
         complete_round(&mut ctl, "g1", 2);
         let closed = ctl
             .submit(
-                cmd("close-verified", "complete_goal", json!({"goal_id": "g1", "instance_id": "i-leader"})),
+                cmd("close-verified", "complete_work", json!({"work_id": "g1", "instance_id": "i-leader"})),
                 Identity::System,
             )
             .expect("a verified claim settles");
@@ -10255,7 +10255,7 @@ mod tests {
     fn register_check_runs_commits_the_round_atomically() {
         let (mut ctl, path) = control("check-register");
         create_instance(&mut ctl, "i1");
-        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1", "instance_id": "i1"})), Identity::User).expect("goal");
+        ctl.submit(cmd("g1", "create_work", json!({"id": "g1", "instance_id": "i1"})), Identity::User).expect("work");
         finish_import(&mut ctl, "fin", "i1", 1, "success");
         assert_eq!(phase_of(&ctl, "i1"), "COMPLETION_PENDING");
         // driver-internal: the user cannot register rounds directly
@@ -10264,7 +10264,7 @@ mod tests {
                 cmd(
                     "cr-u",
                     "register_check_runs",
-                    json!({"goal_id": "g1", "instance_id": "i1", "round": 1,
+                    json!({"work_id": "g1", "instance_id": "i1", "round": 1,
                                                          "checks": [{"id": "c1", "command": "true"}]})
                 ),
                 Identity::User,
@@ -10272,7 +10272,7 @@ mod tests {
             .is_err());
         let registered = ctl
             .submit(
-                cmd("cr-1", "register_check_runs", json!({"goal_id": "g1", "instance_id": "i1", "round": 1,
+                cmd("cr-1", "register_check_runs", json!({"work_id": "g1", "instance_id": "i1", "round": 1,
                                                          "checks": [{"id": "c1", "command": "cargo test", "timeout": 30,
                                                                      "inputs": ["src/lib.rs"], "inputs_observed": {"src/lib.rs": "abc"}},
                                                                     {"id": "c2", "command": "cargo clippy"}]})),
@@ -10280,7 +10280,7 @@ mod tests {
             )
             .expect("register");
         assert_eq!(registered["operations"], json!(2));
-        // synthetic request + decision + two PREPARED ops under the goal
+        // synthetic request + decision + two PREPARED ops under the work
         let request: (String, String, i64) = ctl
             .connection()
             .query_row(
@@ -10327,7 +10327,7 @@ mod tests {
                 cmd(
                     "cr-1b",
                     "register_check_runs",
-                    json!({"goal_id": "g1", "instance_id": "i1", "round": 1,
+                    json!({"work_id": "g1", "instance_id": "i1", "round": 1,
                                                           "checks": [{"id": "c1", "command": "true"}]}),
                 ),
                 Identity::System,
@@ -10336,7 +10336,7 @@ mod tests {
         assert_eq!(again["already_registered"], json!(true));
         // wrong phase fails closed
         ctl.submit(
-            cmd("rs-1", "repair_completion", json!({"instance_id": "i1", "goal_id": "g1", "round": 1})),
+            cmd("rs-1", "repair_completion", json!({"instance_id": "i1", "work_id": "g1", "round": 1})),
             Identity::System,
         )
         .expect("repair");
@@ -10345,7 +10345,7 @@ mod tests {
                 cmd(
                     "cr-2",
                     "register_check_runs",
-                    json!({"goal_id": "g1", "instance_id": "i1", "round": 2,
+                    json!({"work_id": "g1", "instance_id": "i1", "round": 2,
                                                          "checks": [{"id": "c1", "command": "true"}]})
                 ),
                 Identity::System,
@@ -10358,13 +10358,13 @@ mod tests {
     fn check_consumption_feeds_context_without_flipping_completion_phase() {
         let (mut ctl, path) = control("check-consume");
         create_instance(&mut ctl, "i1");
-        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1", "instance_id": "i1"})), Identity::User).expect("goal");
+        ctl.submit(cmd("g1", "create_work", json!({"id": "g1", "instance_id": "i1"})), Identity::User).expect("work");
         finish_import(&mut ctl, "fin", "i1", 1, "success");
         ctl.submit(
             cmd(
                 "cr-1",
                 "register_check_runs",
-                json!({"goal_id": "g1", "instance_id": "i1", "round": 1,
+                json!({"work_id": "g1", "instance_id": "i1", "round": 1,
                                                      "checks": [{"id": "c1", "command": "cargo test"}]}),
             ),
             Identity::System,
@@ -10402,20 +10402,20 @@ mod tests {
     }
 
     #[test]
-    fn repair_completion_and_block_goal_settle_honestly() {
+    fn repair_completion_and_block_work_settle_honestly() {
         let (mut ctl, path) = control("check-settle");
         create_instance(&mut ctl, "i1");
-        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1", "instance_id": "i1"})), Identity::User).expect("goal");
+        ctl.submit(cmd("g1", "create_work", json!({"id": "g1", "instance_id": "i1"})), Identity::User).expect("work");
         finish_import(&mut ctl, "fin", "i1", 1, "success");
         // repair: back to READY for a repair turn, replay-safe
         assert!(ctl
             .submit(
-                cmd("rp-u", "repair_completion", json!({"instance_id": "i1", "goal_id": "g1", "round": 1})),
+                cmd("rp-u", "repair_completion", json!({"instance_id": "i1", "work_id": "g1", "round": 1})),
                 Identity::User
             )
             .is_err());
         ctl.submit(
-            cmd("rp-1", "repair_completion", json!({"instance_id": "i1", "goal_id": "g1", "round": 1,
+            cmd("rp-1", "repair_completion", json!({"instance_id": "i1", "work_id": "g1", "round": 1,
                                                     "failures": [{"check_id": "c1", "class": "exit", "reason": "command exited 1"}]})),
             Identity::System,
         )
@@ -10423,7 +10423,7 @@ mod tests {
         assert_eq!(phase_of(&ctl, "i1"), "READY");
         let again = ctl
             .submit(
-                cmd("rp-1b", "repair_completion", json!({"instance_id": "i1", "goal_id": "g1", "round": 1})),
+                cmd("rp-1b", "repair_completion", json!({"instance_id": "i1", "work_id": "g1", "round": 1})),
                 Identity::System,
             )
             .expect("repair replay");
@@ -10433,7 +10433,7 @@ mod tests {
         finish_import(&mut ctl, "fin2", "i1", revision, "success");
         assert!(ctl
             .submit(
-                cmd("bg-u", "block_goal", json!({"goal_id": "g1", "instance_id": "i1", "reason": "x"})),
+                cmd("bg-u", "block_work", json!({"work_id": "g1", "instance_id": "i1", "reason": "x"})),
                 Identity::User
             )
             .is_err());
@@ -10441,8 +10441,8 @@ mod tests {
             .submit(
                 cmd(
                     "bg-1",
-                    "block_goal",
-                    json!({"goal_id": "g1", "instance_id": "i1",
+                    "block_work",
+                    json!({"work_id": "g1", "instance_id": "i1",
                                                      "reason": "required checks failed (c1:exit) after 3 round(s)"}),
                 ),
                 Identity::System,
@@ -10451,18 +10451,18 @@ mod tests {
         assert_eq!(blocked["status"], json!("BLOCKED"));
         assert_eq!(phase_of(&ctl, "i1"), "READY");
         let status: String =
-            ctl.connection().query_row("SELECT status FROM goals WHERE id = 'g1'", [], |row| row.get(0)).unwrap();
+            ctl.connection().query_row("SELECT status FROM work_scopes WHERE id = 'g1'", [], |row| row.get(0)).unwrap();
         assert_eq!(status, "BLOCKED");
         let again = ctl
             .submit(
-                cmd("bg-1b", "block_goal", json!({"goal_id": "g1", "instance_id": "i1", "reason": "x"})),
+                cmd("bg-1b", "block_work", json!({"work_id": "g1", "instance_id": "i1", "reason": "x"})),
                 Identity::System,
             )
             .expect("block replay");
         assert_eq!(again["already_closed"], json!(true));
         let events: i64 = ctl
             .connection()
-            .query_row("SELECT COUNT(*) FROM events WHERE kind = 'goal_blocked'", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM events WHERE kind = 'work_blocked'", [], |row| row.get(0))
             .unwrap();
         assert_eq!(events, 1);
         cleanup(&path);
@@ -10520,7 +10520,7 @@ mod tests {
     fn compression_covers_the_view_and_keeps_the_originals() {
         let (mut ctl, path) = control("compression");
         create_instance(&mut ctl, "i1");
-        ctl.submit(cmd("cg", "create_goal", json!({"id": "g1", "instance_id": "i1"})), Identity::User).expect("goal");
+        ctl.submit(cmd("cg", "create_work", json!({"id": "g1", "instance_id": "i1"})), Identity::User).expect("work");
         for (envelope, text) in [("e1", "do the first thing"), ("e2", "actually do the second")] {
             ctl.submit(
                 cmd(
@@ -10554,7 +10554,7 @@ mod tests {
                 Identity::System,
             )
             .expect("begin compression");
-        assert_eq!(begun["goal_id"], json!("g1"));
+        assert_eq!(begun["work_id"], json!("g1"));
         // a compression call is a billed request like any other (§8)
         ctl.submit(
             cmd(
@@ -10614,7 +10614,7 @@ mod tests {
             .map(|status| {
                 let reservations: String = ctl
                     .connection()
-                    .query_row("SELECT reservations_json FROM goals WHERE id = 'g1'", [], |row| row.get(0))
+                    .query_row("SELECT reservations_json FROM work_scopes WHERE id = 'g1'", [], |row| row.get(0))
                     .unwrap();
                 (status, reservations)
             })
@@ -10683,14 +10683,14 @@ mod tests {
     /// turns, and a failure only loses the summary — the instance keeps
     /// working and the reservation is released.
     #[test]
-    fn compression_shares_the_goal_gates_and_fails_honestly() {
+    fn compression_shares_the_work_gates_and_fails_honestly() {
         let (mut ctl, path) = control("compression-gates");
         create_instance(&mut ctl, "i1");
         ctl.submit(
-            cmd("cg", "create_goal", json!({"id": "g1", "instance_id": "i1", "limits": {"max_total_tokens": 200}})),
+            cmd("cg", "create_work", json!({"id": "g1", "instance_id": "i1", "limits": {"max_total_tokens": 200}})),
             Identity::User,
         )
-        .expect("goal");
+        .expect("work");
         // over budget: a committed refusal with an event, no request row
         let refused = ctl
             .submit(
@@ -10708,7 +10708,7 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM model_requests WHERE request_id = 'comp-big'", [], |row| row.get(0))
             .unwrap();
         assert_eq!(rows, 0);
-        // within budget: the reservation is visible on the shared goal (A18)
+        // within budget: the reservation is visible on the shared work (A18)
         ctl.submit(
             cmd(
                 "bc-1",
@@ -10720,7 +10720,7 @@ mod tests {
         .expect("begin");
         let reservations: String = ctl
             .connection()
-            .query_row("SELECT reservations_json FROM goals WHERE id = 'g1'", [], |row| row.get(0))
+            .query_row("SELECT reservations_json FROM work_scopes WHERE id = 'g1'", [], |row| row.get(0))
             .unwrap();
         assert!(reservations.contains("comp1"), "{reservations}");
         // a failed summary releases the reservation and leaves the instance alone
@@ -10737,7 +10737,7 @@ mod tests {
             .map(|status| {
                 let reservations: String = ctl
                     .connection()
-                    .query_row("SELECT reservations_json FROM goals WHERE id = 'g1'", [], |row| row.get(0))
+                    .query_row("SELECT reservations_json FROM work_scopes WHERE id = 'g1'", [], |row| row.get(0))
                     .unwrap();
                 (status, reservations)
             })
@@ -10762,7 +10762,7 @@ mod tests {
             .submit(cmd("fc-1b", "fail_compression", json!({"request_id": "comp1"})), Identity::System)
             .expect("idempotent");
         assert_eq!(again["already_closed"], json!(true));
-        // a retry under a new request id is billed to the same goal (A18)
+        // a retry under a new request id is billed to the same work (A18)
         ctl.submit(
             cmd(
                 "bc-2",
@@ -10784,15 +10784,15 @@ mod tests {
         .expect("attempt 2");
         let known: String = ctl
             .connection()
-            .query_row("SELECT known_usage_json FROM goals WHERE id = 'g1'", [], |row| row.get(0))
+            .query_row("SELECT known_usage_json FROM work_scopes WHERE id = 'g1'", [], |row| row.get(0))
             .unwrap();
         assert!(known.contains("\"total\":120"), "{known}");
-        // an expired goal deadline refuses a summary exactly like a turn (A35)
+        // an expired work deadline refuses a summary exactly like a turn (A35)
         ctl.submit(
-            cmd("cg-2", "create_goal", json!({"id": "g2", "instance_id": "i1", "deadline": 1.0})),
+            cmd("cg-2", "create_work", json!({"id": "g2", "instance_id": "i1", "deadline": 1.0})),
             Identity::User,
         )
-        .expect("expired goal");
+        .expect("expired work");
         let refused = ctl
             .submit(
                 cmd("bc-late", "begin_compression", json!({"instance_id": "i1", "request_id": "comp-late"})),
@@ -10802,14 +10802,14 @@ mod tests {
         assert_eq!(refused["deadline_refused"], json!(true));
         cleanup(&path);
     }
-    /// §8: closing a goal states the close in the context exactly once, and a
+    /// §8: closing a work states the close in the context exactly once, and a
     /// late finish after the close ends its turn instead of leaving the
     /// instance parked in COMPLETION_PENDING.
     #[test]
-    fn a_closed_goal_states_its_close_and_settles_a_late_finish() {
-        let (mut ctl, path) = control("goal-close");
+    fn a_closed_work_states_its_close_and_settles_a_late_finish() {
+        let (mut ctl, path) = control("work-close");
         create_instance(&mut ctl, "i1");
-        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1", "instance_id": "i1"})), Identity::User).expect("goal");
+        ctl.submit(cmd("g1", "create_work", json!({"id": "g1", "instance_id": "i1"})), Identity::User).expect("work");
         let request = begin_and_complete(&mut ctl, "fin", "i1", 1);
         ctl.submit(
             cmd(
@@ -10823,7 +10823,7 @@ mod tests {
         )
         .expect("import");
         assert_eq!(phase_of(&ctl, "i1"), "COMPLETION_PENDING");
-        ctl.submit(cmd("cg-1", "complete_goal", json!({"goal_id": "g1", "instance_id": "i1"})), Identity::System)
+        ctl.submit(cmd("cg-1", "complete_work", json!({"work_id": "g1", "instance_id": "i1"})), Identity::System)
             .expect("complete");
         assert_eq!(phase_of(&ctl, "i1"), "READY");
         let marker: String = ctl
@@ -10834,9 +10834,9 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert!(marker.contains("goal g1 closed as SUCCEEDED"), "{marker}");
+        assert!(marker.contains("work g1 closed as SUCCEEDED"), "{marker}");
         // a replayed close adds nothing
-        ctl.submit(cmd("cg-1b", "complete_goal", json!({"goal_id": "g1", "instance_id": "i1"})), Identity::System)
+        ctl.submit(cmd("cg-1b", "complete_work", json!({"work_id": "g1", "instance_id": "i1"})), Identity::System)
             .expect("replay");
         assert_eq!(context_count(&ctl, "i1"), 2);
         // a late finish after the close ends its turn: READY, no stuck phase
@@ -10855,11 +10855,11 @@ mod tests {
         )
         .expect("import");
         assert_eq!(phase_of(&ctl, "i1"), "COMPLETION_PENDING");
-        ctl.submit(cmd("cg-2", "complete_goal", json!({"goal_id": "g1", "instance_id": "i1"})), Identity::System)
+        ctl.submit(cmd("cg-2", "complete_work", json!({"work_id": "g1", "instance_id": "i1"})), Identity::System)
             .expect("late complete");
         assert_eq!(phase_of(&ctl, "i1"), "READY");
         let status: String =
-            ctl.connection().query_row("SELECT status FROM goals WHERE id = 'g1'", [], |row| row.get(0)).unwrap();
+            ctl.connection().query_row("SELECT status FROM work_scopes WHERE id = 'g1'", [], |row| row.get(0)).unwrap();
         assert_eq!(status, "SUCCEEDED");
         cleanup(&path);
     }
@@ -10996,13 +10996,13 @@ mod tests {
         cleanup(&path);
     }
 
-    /// §8: a blocked goal frees its instance the same way, and the block is
+    /// §8: a blocked work frees its instance the same way, and the block is
     /// stated once with the reason the checks gave.
     #[test]
-    fn a_blocked_goal_states_the_block_and_frees_the_instance() {
-        let (mut ctl, path) = control("goal-block");
+    fn a_blocked_work_states_the_block_and_frees_the_instance() {
+        let (mut ctl, path) = control("work-block");
         create_instance(&mut ctl, "i1");
-        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1", "instance_id": "i1"})), Identity::User).expect("goal");
+        ctl.submit(cmd("g1", "create_work", json!({"id": "g1", "instance_id": "i1"})), Identity::User).expect("work");
         let request = begin_and_complete(&mut ctl, "fin", "i1", 1);
         ctl.submit(
             cmd(
@@ -11018,8 +11018,8 @@ mod tests {
         ctl.submit(
             cmd(
                 "bg-1",
-                "block_goal",
-                json!({"goal_id": "g1", "instance_id": "i1", "reason": "required checks failed (never:exit)"}),
+                "block_work",
+                json!({"work_id": "g1", "instance_id": "i1", "reason": "required checks failed (never:exit)"}),
             ),
             Identity::System,
         )
@@ -11033,10 +11033,10 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert!(marker.contains("goal g1 blocked: required checks failed (never:exit)"), "{marker}");
+        assert!(marker.contains("work g1 blocked: required checks failed (never:exit)"), "{marker}");
         // a replayed block is idempotent and never re-adds the marker
         let again = ctl
-            .submit(cmd("bg-2", "block_goal", json!({"goal_id": "g1", "instance_id": "i1"})), Identity::System)
+            .submit(cmd("bg-2", "block_work", json!({"work_id": "g1", "instance_id": "i1"})), Identity::System)
             .expect("replay");
         assert_eq!(again["already_closed"], json!(true));
         assert_eq!(context_count(&ctl, "i1"), 2);
@@ -11089,7 +11089,7 @@ mod tests {
     fn terminating_an_instance_normalizes_its_execution_pointer() {
         let (mut ctl, path) = control("terminate-pointer");
         create_instance(&mut ctl, "i1");
-        ctl.submit(cmd("g1", "create_goal", json!({"id": "g1", "instance_id": "i1"})), Identity::User).expect("goal");
+        ctl.submit(cmd("g1", "create_work", json!({"id": "g1", "instance_id": "i1"})), Identity::User).expect("work");
         let rev = revision_of(&ctl, "i1");
         begin_and_complete(&mut ctl, "live", "i1", rev);
         assert_eq!(phase_of(&ctl, "i1"), "MODEL_PENDING");
@@ -11112,33 +11112,33 @@ mod tests {
         cleanup(&path);
     }
 
-    /// Regression for V-G1 (see verification/README.md): a settled goal takes no new
-    /// work. Settling detaches the instance's active_goal_id, delegation is refused and
-    /// new requests stop billing the settled goal; a fresh goal restores both, and the
-    /// settled goal's records never change again.
+    /// Regression for V-G1 (see verification/README.md): a settled work takes no new
+    /// work. Settling detaches the instance's active_work_id, delegation is refused and
+    /// new requests stop billing the settled work; a fresh work restores both, and the
+    /// settled work's records never change again.
     #[test]
-    fn a_settled_goal_takes_no_new_work() {
-        let (mut ctl, path) = control("goal-settled");
+    fn a_settled_work_takes_no_new_work() {
+        let (mut ctl, path) = control("work-settled");
         create_instance(&mut ctl, "i1");
         create_instance(&mut ctl, "i2");
         ctl.submit(
-            cmd("g1", "create_goal", json!({"id": "g1", "instance_id": "i1", "limits": {"max_total_tokens": 1000}})),
+            cmd("g1", "create_work", json!({"id": "g1", "instance_id": "i1", "limits": {"max_total_tokens": 1000}})),
             Identity::User,
         )
-        .expect("goal");
-        let active_goal = |ctl: &Control, instance: &str| -> Option<String> {
+        .expect("work");
+        let active_work = |ctl: &Control, instance: &str| -> Option<String> {
             ctl.connection()
-                .query_row("SELECT active_goal_id FROM instances WHERE id = ?1", [instance], |row| row.get(0))
+                .query_row("SELECT active_work_id FROM instances WHERE id = ?1", [instance], |row| row.get(0))
                 .unwrap()
         };
-        let billed_goal = |ctl: &Control, request: &str| -> Option<String> {
+        let billed_work = |ctl: &Control, request: &str| -> Option<String> {
             ctl.connection()
-                .query_row("SELECT goal_id FROM model_requests WHERE request_id = ?1", [request], |row| row.get(0))
+                .query_row("SELECT work_id FROM model_requests WHERE request_id = ?1", [request], |row| row.get(0))
                 .unwrap()
         };
-        let goal_usage = |ctl: &Control| -> (String, String) {
+        let work_usage = |ctl: &Control| -> (String, String) {
             ctl.connection()
-                .query_row("SELECT known_usage_json, reservations_json FROM goals WHERE id = 'g1'", [], |row| {
+                .query_row("SELECT known_usage_json, reservations_json FROM work_scopes WHERE id = 'g1'", [], |row| {
                     Ok((row.get(0)?, row.get(1)?))
                 })
                 .unwrap()
@@ -11155,8 +11155,8 @@ mod tests {
             )
             .expect("import plain");
         };
-        assert_eq!(active_goal(&ctl, "i1").as_deref(), Some("g1"));
-        // while the goal is ACTIVE its work is billed to it
+        assert_eq!(active_work(&ctl, "i1").as_deref(), Some("g1"));
+        // while the work is ACTIVE its work is billed to it
         let rev = revision_of(&ctl, "i1");
         finish_import(&mut ctl, "fin", "i1", rev, "success");
         let request = ctl
@@ -11167,24 +11167,24 @@ mod tests {
                 |row| row.get::<_, String>(0),
             )
             .unwrap();
-        assert_eq!(billed_goal(&ctl, &request).as_deref(), Some("g1"));
-        let (usage_at_close, reservations_at_close) = goal_usage(&ctl);
+        assert_eq!(billed_work(&ctl, &request).as_deref(), Some("g1"));
+        let (usage_at_close, reservations_at_close) = work_usage(&ctl);
         assert!(usage_at_close.contains("15"), "{usage_at_close}");
         assert_eq!(reservations_at_close, "{}");
-        // the leader settles the goal
+        // the leader settles the work
         let closed = ctl
-            .submit(cmd("cg-1", "complete_goal", json!({"goal_id": "g1", "instance_id": "i1"})), Identity::System)
+            .submit(cmd("cg-1", "complete_work", json!({"work_id": "g1", "instance_id": "i1"})), Identity::System)
             .expect("complete");
         assert_eq!(closed["status"], json!("SUCCEEDED"));
-        assert_eq!(closed["detached"], json!(1), "settling detaches the goal pointer from the instance");
-        assert_eq!(active_goal(&ctl, "i1"), None, "the settled goal is no longer attached to the instance");
-        // new work on the settled goal is refused, both explicitly and implicitly
+        assert_eq!(closed["detached"], json!(1), "settling detaches the work pointer from the instance");
+        assert_eq!(active_work(&ctl, "i1"), None, "the settled work is no longer attached to the instance");
+        // new work on the settled work is refused, both explicitly and implicitly
         let err = ctl
             .submit(
                 cmd(
                     "dt-1",
                     "delegate_task",
-                    json!({"task_id": "t1", "assignee": "i2", "goal_id": "g1", "description": "x"}),
+                    json!({"task_id": "t1", "assignee": "i2", "work_id": "g1", "description": "x"}),
                 ),
                 Identity::User,
             )
@@ -11201,32 +11201,32 @@ mod tests {
                 Identity::Instance("i1".into()),
             )
             .unwrap_err();
-        assert!(err.contains("no active goal"), "{err}");
-        // a new request runs without a goal: nothing lands on the settled record
+        assert!(err.contains("no active work"), "{err}");
+        // a new request runs without a work: nothing lands on the settled record
         let rev = revision_of(&ctl, "i1");
         let request = begin_and_complete(&mut ctl, "b", "i1", rev);
-        assert_eq!(billed_goal(&ctl, &request), None, "the settled goal is no longer the billing goal");
-        assert_eq!(goal_usage(&ctl), (usage_at_close.clone(), reservations_at_close.clone()));
+        assert_eq!(billed_work(&ctl, &request), None, "the settled work is no longer the billing work");
+        assert_eq!(work_usage(&ctl), (usage_at_close.clone(), reservations_at_close.clone()));
         import_plain(&mut ctl, "b", &request);
-        assert_eq!(goal_usage(&ctl), (usage_at_close.clone(), reservations_at_close.clone()));
+        assert_eq!(work_usage(&ctl), (usage_at_close.clone(), reservations_at_close.clone()));
         assert_eq!(phase_of(&ctl, "i1"), "READY");
-        // a fresh goal restores the gate, the billing and the delegation right
-        ctl.submit(cmd("g2", "create_goal", json!({"id": "g2", "instance_id": "i1"})), Identity::User)
-            .expect("new goal");
+        // a fresh work restores the gate, the billing and the delegation right
+        ctl.submit(cmd("g2", "create_work", json!({"id": "g2", "instance_id": "i1"})), Identity::User)
+            .expect("new work");
         ctl.submit(
             cmd(
                 "dt-2",
                 "delegate_task",
-                json!({"task_id": "t2", "assignee": "i2", "goal_id": "g2", "description": "y"}),
+                json!({"task_id": "t2", "assignee": "i2", "work_id": "g2", "description": "y"}),
             ),
             Identity::User,
         )
-        .expect("delegation on a live goal");
+        .expect("delegation on a live work");
         let rev = revision_of(&ctl, "i1");
         let request = begin_and_complete(&mut ctl, "c", "i1", rev);
-        assert_eq!(billed_goal(&ctl, &request).as_deref(), Some("g2"));
-        // the settled goal's record stays frozen
-        assert_eq!(goal_usage(&ctl), (usage_at_close, reservations_at_close));
+        assert_eq!(billed_work(&ctl, &request).as_deref(), Some("g2"));
+        // the settled work's record stays frozen
+        assert_eq!(work_usage(&ctl), (usage_at_close, reservations_at_close));
         cleanup(&path);
     }
 }

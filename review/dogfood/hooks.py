@@ -137,7 +137,7 @@ def main() -> int:
     elapsed = round(time.time() - started, 1)
     report = json.loads(run.stdout) if run.stdout.strip().startswith("{") else {}
     print(f"mode={args.mode} exec exit={run.returncode} elapsed={elapsed}s end={report.get('end')} "
-          f"goal={report.get('goal_status')}")
+          f"work={report.get('work_status')}")
 
     # the hook saw the calls it is asked about, with the real arguments
     saw = log_lines(pre_tool_log)

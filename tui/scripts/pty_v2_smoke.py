@@ -21,14 +21,14 @@ INSTANCES = [
     {"id": "i-leader", "lifecycle": "ACTIVE", "phase": "READY", "model": "deepseek-flash", "effort": "high"},
     {"id": "i-worker", "lifecycle": "ACTIVE", "phase": "WAITING"},
 ]
-TASKS = [{"id": "t-smoke", "goal_id": "g1", "assignee": "i-worker", "status": "RUNNING"}]
+TASKS = [{"id": "t-smoke", "work_id": "g1", "assignee": "i-worker", "status": "RUNNING"}]
 GRANTS = [{"subject": "i-leader", "action": "manage", "resource_scope": "session", "revoked": False}]
-GOAL = {"status": "ACTIVE", "known_usage": {"prompt": 7, "completion": 3, "total": 10},
+WORK = {"status": "ACTIVE", "known_usage": {"prompt": 7, "completion": 3, "total": 10},
         "unknown_usage": 0, "limits": {"max_total_tokens": 1000}}
-# D-433: the goal *list* (the `goals` read), which is what `/goals` prints — one settled goal whose model wrote no
-# prose (so its summary is the only account of the work, D-431) and one ACTIVE goal the user closes.
-GOALS = [
-    {"id": "goal-s-main", "status": "SUCCEEDED", "known_usage": {"total": 41},
+# D-433: the work *list* (the `work_scopes` read), which is what `/work_scopes` prints — one settled work whose model wrote no
+# prose (so its summary is the only account of the work, D-431) and one ACTIVE work the user closes.
+WORK_SCOPES = [
+    {"id": "work-s-main", "status": "SUCCEEDED", "known_usage": {"total": 41},
      "limits": {"max_total_tokens": 1000}, "attached_instances": [],
      "summary": "answered the question and wrote the report"},
     {"id": "turn-2", "status": "ACTIVE", "known_usage": {"total": 0}, "limits": {},
@@ -47,7 +47,7 @@ class FakeDaemon:
         self.history = []
         self.instances = [dict(i) for i in INSTANCES]
         self.tasks = [dict(t) for t in TASKS]
-        self.goals = [dict(g) for g in GOALS]
+        self.work_scopes = [dict(g) for g in WORK_SCOPES]
         self.approvals = []
         self.frames = []
         self.error = None
@@ -96,7 +96,7 @@ class FakeDaemon:
                 method = frame.get("method")
                 params = frame.get("params", {})
                 if method == "checkpoint":
-                    out = {"snapshot": {"instances": self.instances, "goal": GOAL}, "watermark": self.sequence}
+                    out = {"snapshot": {"instances": self.instances, "work": WORK}, "watermark": self.sequence}
                 elif method == "history":
                     out = {"instance_id": params.get("instance_id", ""), "entries": list(self.history)}
                 elif method == "approvals":
@@ -113,18 +113,18 @@ class FakeDaemon:
                     out = {"interrupted": False, "reason": "no model request is in flight"}
                 elif method == "tasks":
                     out = {"tasks": list(self.tasks)}
-                elif method == "goals":
-                    out = {"goals": list(self.goals)}
-                elif method == "cancel_goal" and frame.get("command_id"):
-                    goal_id = params.get("goal_id", "")
-                    for goal in self.goals:
-                        if goal["id"] == goal_id:
-                            goal["status"] = "CANCELLED"
-                    if goal_id not in [goal["id"] for goal in self.goals]:
-                        f.write(self.reply(request_id, False, f"no such goal: {goal_id}"))
+                elif method == "work_scopes":
+                    out = {"work_scopes": list(self.work_scopes)}
+                elif method == "cancel_work" and frame.get("command_id"):
+                    work_id = params.get("work_id", "")
+                    for work in self.work_scopes:
+                        if work["id"] == work_id:
+                            work["status"] = "CANCELLED"
+                    if work_id not in [work["id"] for work in self.work_scopes]:
+                        f.write(self.reply(request_id, False, f"no such work: {work_id}"))
                         f.flush()
                         continue
-                    out = {"goal_id": goal_id, "status": "CANCELLED"}
+                    out = {"work_id": work_id, "status": "CANCELLED"}
                 elif method == "grants":
                     out = {"grants": list(GRANTS)}
                 elif method == "events":
@@ -353,7 +353,7 @@ def main():
         failures.append("Ctrl+C did not interrupt the Leader")
     if os.waitpid(pid, os.WNOHANG)[0]:
         failures.append("Ctrl+C exited the TUI")
-    forbidden = {"tasks", "grants", "goals", "set_lifecycle", "cancel_task", "cancel_goal"}
+    forbidden = {"tasks", "grants", "work_scopes", "set_lifecycle", "cancel_task", "cancel_work"}
     if any(f["method"] in forbidden for f in daemon.frames):
         failures.append("the TUI still accesses management surfaces")
 

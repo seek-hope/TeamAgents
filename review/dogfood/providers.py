@@ -9,7 +9,7 @@ The artifact decides: `answer.txt` must contain exactly what the task asked for.
 session really is heterogeneous — the two instances carry different resolved model names — and that the
 delegation exchanged a task assignment and a task start. The task result is expected as a `task_completed`
 event too, but the worker is a model, so the probe accepts the one recorded shape where it is missing (the
-worker answers with prose, its task stays open, and the leader settles the goal on the artifact itself) and
+worker answers with prose, its task stays open, and the leader settles the work on the artifact itself) and
 reports that as the known gap it is — any other shape fails. `--self-check` checks that classification
 without a model, a network or credentials.
 
@@ -83,7 +83,7 @@ def session_facts(state_root: pathlib.Path) -> dict:
     return {"instances": instances, "tasks": tasks, "events": kinds, "requests": requests}
 
 
-def classify_task_result(events: list, tasks: list, artifact_ok: bool, goal_status) -> tuple:
+def classify_task_result(events: list, tasks: list, artifact_ok: bool, work_status) -> tuple:
     """Classify how the delegated task ended: `completed`, `known_gap`, or `unexpected`.
 
     Split out of `main` so the three shapes are checkable without a model or credentials (`--self-check`).
@@ -92,16 +92,16 @@ def classify_task_result(events: list, tasks: list, artifact_ok: bool, goal_stat
     if "task_completed" in events:
         return "completed", "the worker settled its task (task_completed event present)"
     unsettled = [task for task in tasks if task[2] in ("PENDING", "RUNNING")]
-    if artifact_ok and goal_status == "SUCCEEDED" and unsettled:
+    if artifact_ok and work_status == "SUCCEEDED" and unsettled:
         return "known_gap", (
             "known gap (docs/ACCEPTANCE.md, 'A model that stops settling its task leaves a visible wait'): "
             f"the worker answered with prose instead of calling `finish`, so task {unsettled[0][0]} stayed "
-            f"{unsettled[0][2]} while the leader verified the artifact itself and settled the goal "
+            f"{unsettled[0][2]} while the leader verified the artifact itself and settled the work "
             "SUCCEEDED — the runtime does not resolve an unsettled task"
         )
     return "unexpected", (
         "no task_completed event and not the recorded known-gap shape: "
-        f"artifact_ok={artifact_ok} goal_status={goal_status!r} "
+        f"artifact_ok={artifact_ok} work_status={work_status!r} "
         f"unsettled_tasks={[(task[0], task[2]) for task in unsettled]}"
     )
 
@@ -112,7 +112,7 @@ def self_check() -> int:
     running = [("t-1", "i-worker", "RUNNING", "i-leader")]
     cases = [
         (["task_completed"], settled, True, "SUCCEEDED", "completed"),
-        # the recorded known gap: prose answer, artifact still exact, goal settled with the task open
+        # the recorded known gap: prose answer, artifact still exact, work settled with the task open
         (["task_delegated"], running, True, "SUCCEEDED", "known_gap"),
         # every other shape stays a failure, including a settled task with no completion event
         (["task_delegated"], settled, True, "SUCCEEDED", "unexpected"),
@@ -120,10 +120,10 @@ def self_check() -> int:
         (["task_delegated"], running, True, "BLOCKED", "unexpected"),
         (["task_delegated"], running, True, None, "unexpected"),
     ]
-    for events, tasks, artifact_ok, goal_status, expected in cases:
-        got, detail = classify_task_result(events, tasks, artifact_ok, goal_status)
+    for events, tasks, artifact_ok, work_status, expected in cases:
+        got, detail = classify_task_result(events, tasks, artifact_ok, work_status)
         if got != expected:
-            print(f"FAIL: {events} {tasks} artifact_ok={artifact_ok} goal={goal_status!r} -> {got}, want {expected}")
+            print(f"FAIL: {events} {tasks} artifact_ok={artifact_ok} work={work_status!r} -> {got}, want {expected}")
             return 1
     print(f"self-check ok: {len(cases)} task-result shapes classified as expected")
     return 0
@@ -177,7 +177,7 @@ def main() -> int:
     )
     elapsed = round(time.time() - started, 1)
     report = json.loads(run.stdout) if run.stdout.strip().startswith("{") else {}
-    print(f"exec exit={run.returncode} elapsed={elapsed}s end={report.get('end')} goal={report.get('goal_status')}")
+    print(f"exec exit={run.returncode} elapsed={elapsed}s end={report.get('end')} work={report.get('work_status')}")
     if run.stderr.strip():
         print("stderr:", run.stderr.strip()[:400])
 
@@ -212,18 +212,18 @@ def main() -> int:
     else:
         failures.append(f"answer.txt is missing or wrong: {answer.read_text() if answer.is_file() else '(absent)'!r}")
 
-    # 4. the task result, read together with the artifact and the goal: `task_completed` is expected
+    # 4. the task result, read together with the artifact and the work: `task_completed` is expected
     #    (the worker called `finish`), and the one recorded shape where it is missing is reported as the
     #    known gap instead of passing silently. `classify_task_result` holds the rule and `--self-check`
     #    checks it without a model.
-    verdict, detail = classify_task_result(facts["events"], facts["tasks"], artifact_ok, report.get("goal_status"))
+    verdict, detail = classify_task_result(facts["events"], facts["tasks"], artifact_ok, report.get("work_status"))
     print(detail)
     if verdict == "unexpected":
         failures.append(detail)
 
-    # 5. the goal settled on its own report
-    if report.get("goal_status") not in (None, "SUCCEEDED") and report.get("end") != "reply":
-        failures.append(f"the goal did not settle successfully: {report.get('goal_status')} / {report.get('end')}")
+    # 5. the work settled on its own report
+    if report.get("work_status") not in (None, "SUCCEEDED") and report.get("end") != "reply":
+        failures.append(f"the work did not settle successfully: {report.get('work_status')} / {report.get('end')}")
 
     for failure in failures:
         print("FAIL:", failure)

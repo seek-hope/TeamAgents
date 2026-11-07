@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""D-410: does telling a goal its deadline is close convert *cuts* into *settlements*?
+"""D-410: does telling a work its deadline is close convert *cuts* into *settlements*?
 
 The arms differ in one harness variable, `TEAMAGENTS_DEADLINE_MINUTES` (the config's `[limits] deadline_minutes`):
 
-* `bare`   — no goal deadline, so the client's own `TEAMAGENTS_TURN_TIMEOUT_SEC` cuts the turn.
+* `bare`   — no work deadline, so the client's own `TEAMAGENTS_TURN_TIMEOUT_SEC` cuts the turn.
 * `deadline` — a deadline inside that window, so the runtime warns the model when ~120 s remain and refuses the
   requests that follow the deadline. The task's own budget still governs the whole attempt.
 
@@ -12,7 +12,7 @@ The measured set is the tasks that actually hit the deadline in the N=3 full-set
 **Two ways this measurement lies, both measured and both kept in the record (D-410).**
 
 1. A deadline **after** the client's cut (`--minutes 15` against `--turn-timeout 890`) never arrives inside the
-   turn: an instrumented check of three tasks found `goal_deadline_warning` events = 0 and no note in any
+   turn: an instrumented check of three tasks found `work_deadline_warning` events = 0 and no note in any
    conversation, so the arm's higher pass count cannot be credited to the warning — it is the deadline ending runs
    a few seconds early plus run-to-run variation. This script therefore *always* reports, per arm, whether the
    warning fired (from `deadline_warnings.json`, written by the adapter's artifact collection), so a void
@@ -72,15 +72,15 @@ def run_arm(arm: str, tree: str, jobs: str, minutes: str, args: argparse.Namespa
 
 def mechanism(attempt: pathlib.Path) -> tuple[int, int]:
     """The mechanism's own receipt, read from the state the run committed (never inferred from the outcome):
-    the `goal_deadline_warning` events and the `goal-deadline-warning-<goal>` entries in the conversation."""
+    the `work_deadline_warning` events and the `work-deadline-warning-<work>` entries in the conversation."""
     import sqlite3
     warned = notes = 0
     for db in attempt.glob("artifacts/**/session.sqlite"):
         connection = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
         warned += connection.execute(
-            "SELECT COUNT(*) FROM events WHERE kind = 'goal_deadline_warning'").fetchone()[0]
+            "SELECT COUNT(*) FROM events WHERE kind = 'work_deadline_warning'").fetchone()[0]
         notes += connection.execute(
-            "SELECT COUNT(*) FROM context_entries WHERE envelope_id LIKE 'goal-deadline-warning-%'").fetchone()[0]
+            "SELECT COUNT(*) FROM context_entries WHERE envelope_id LIKE 'work-deadline-warning-%'").fetchone()[0]
         connection.close()
     return warned, notes
 
@@ -136,7 +136,7 @@ def main() -> int:
               "collected their state, so `warnings` cannot show whether the note fired — add "
               '`artifacts = ["/opt/teamagents/state"]` to each task.toml and re-run.', file=sys.stderr)
     elif deadline["warnings"] == 0:
-        print("\nVOID as evidence about the warning: no `goal_deadline_warning` reached any conversation in the\n"
+        print("\nVOID as evidence about the warning: no `work_deadline_warning` reached any conversation in the\n"
               "deadline arm. Try a `--minutes` that lands inside the turn (shorter than `--turn-timeout`), and keep\n"
               "this run as the record of a deadline-only effect.", file=sys.stderr)
     print(f"\nbare {bare['passed']} vs deadline {deadline['passed']}; "

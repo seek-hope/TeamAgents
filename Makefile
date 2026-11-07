@@ -201,7 +201,7 @@ verify-model-counterexamples: verify-tools
 		MC_executionchain_takeover.cfg:V2ExecutionChain.tla MC_executionchain_receipt.cfg:V2ExecutionChain.tla \
 		MC_work_restart.cfg:V2Work.tla MC_work_stop.cfg:V2Work.tla MC_work_attention.cfg:V2Work.tla MC_work_unanswered.cfg:V2Work.tla \
 		MC_work_cancel_stop.cfg:V2Work.tla MC_work_rewrite.cfg:V2Work.tla MC_work_prepare.cfg:V2Work.tla MC_work_completion.cfg:V2Work.tla \
-		MC_work_early_effect.cfg:V2Work.tla MC_work_info_goal.cfg:V2Work.tla MC_work_double_bill.cfg:V2Work.tla \
+		MC_work_early_effect.cfg:V2Work.tla MC_work_info_scope.cfg:V2Work.tla MC_work_double_bill.cfg:V2Work.tla \
 		MC_tui_target.cfg:V2Tui.tla MC_tui_approval.cfg:V2Tui.tla MC_tui_exit.cfg:V2Tui.tla \
 		MC_inputqueue_settled.cfg:V2InputQueue.tla MC_inputqueue_revision.cfg:V2InputQueue.tla MC_inputqueue_original.cfg:V2InputQueue.tla MC_inputqueue_snapshot.cfg:V2InputQueue.tla MC_inputqueue_replay.cfg:V2InputQueue.tla MC_inputqueue_unverified.cfg:V2InputQueue.tla \
 		MC_displayworker_stale.cfg:V2DisplayWorker.tla MC_displayworker_deadline.cfg:V2DisplayWorker.tla MC_displayworker_leak.cfg:V2DisplayWorker.tla MC_displayworker_apply.cfg:V2DisplayWorker.tla MC_displayworker_overflow.cfg:V2DisplayWorker.tla MC_displayworker_drop.cfg:V2DisplayWorker.tla \
@@ -215,7 +215,7 @@ verify-model-counterexamples: verify-tools
 		MC_control_midturninput.cfg:V2Control.tla \
 		MC_control_two_disjunction.cfg:V2Control.tla MC_control_deadline.cfg:V2Control.tla \
 		MC_control_reask.cfg:V2Control.tla MC_control_runtimeTail.cfg:V2Control.tla \
-		MC_control_warn_late.cfg:V2Control.tla MC_control_warn_repeat.cfg:V2Control.tla MC_control_BadAdmission.cfg:V2Control.tla MC_control_BadActiveRequest.cfg:V2Control.tla MC_control_EffectBeforeDispatch.cfg:V2Control.tla MC_control_KeepClosedReservation.cfg:V2Control.tla MC_control_OverReserve.cfg:V2Control.tla MC_control_SelectIncomplete.cfg:V2Control.tla MC_control_StaleExecutor.cfg:V2Control.tla MC_control_DoubleEffect.cfg:V2Control.tla MC_control_RewriteTerminalOp.cfg:V2Control.tla MC_control_RewriteTerminalGoal.cfg:V2Control.tla MC_control_CrossEpochReceipt.cfg:V2Control.tla MC_control_EffectUnauthorized.cfg:V2Control.tla MC_control_EffectOnTerminated.cfg:V2Control.tla MC_control_EffectAfterCancel.cfg:V2Control.tla MC_control_PreparedEffect.cfg:V2Control.tla \
+		MC_control_warn_late.cfg:V2Control.tla MC_control_warn_repeat.cfg:V2Control.tla MC_control_BadAdmission.cfg:V2Control.tla MC_control_BadActiveRequest.cfg:V2Control.tla MC_control_EffectBeforeDispatch.cfg:V2Control.tla MC_control_KeepClosedReservation.cfg:V2Control.tla MC_control_OverReserve.cfg:V2Control.tla MC_control_SelectIncomplete.cfg:V2Control.tla MC_control_StaleExecutor.cfg:V2Control.tla MC_control_DoubleEffect.cfg:V2Control.tla MC_control_RewriteTerminalOp.cfg:V2Control.tla MC_control_RewriteTerminalWork.cfg:V2Control.tla MC_control_CrossEpochReceipt.cfg:V2Control.tla MC_control_EffectUnauthorized.cfg:V2Control.tla MC_control_EffectOnTerminated.cfg:V2Control.tla MC_control_EffectAfterCancel.cfg:V2Control.tla MC_control_PreparedEffect.cfg:V2Control.tla \
 		MC_checks_brief_without.cfg:V2Checks.tla MC_checks_brief_twice.cfg:V2Checks.tla MC_checks_late_join.cfg:V2Checks.tla MC_checks_round_without_claim.cfg:V2Checks.tla MC_checks_upgrade_candidate.cfg:V2Checks.tla MC_checks_unverified_accept.cfg:V2Checks.tla MC_checks_unbounded_rounds.cfg:V2Checks.tla MC_checks_block_without_cause.cfg:V2Checks.tla \
 		MC_oauth_wrong_resource.cfg:V2Oauth.tla MC_oauth_reuses_code.cfg:V2Oauth.tla \
 		MC_oauth_verifier_leaks.cfg:V2Oauth.tla MC_oauth_uses_expired.cfg:V2Oauth.tla \
@@ -248,7 +248,7 @@ verify-model-counterexamples: verify-tools
 		MC_coordinator_shared.cfg:V2Coordinator.tla \
 		MC_coordinator_sweep_beside_a_session.cfg:V2Coordinator.tla MC_coordinator_never_recovers.cfg:V2Coordinator.tla \
 		MC_task_delegates_to_settled.cfg:V2Task.tla MC_task_bills_settled.cfg:V2Task.tla \
-		MC_task_unordered_dependency.cfg:V2Task.tla MC_task_self_dependency.cfg:V2Task.tla MC_task_stale_active_goal.cfg:V2Task.tla MC_task_stranger_writes.cfg:V2Task.tla MC_task_return_path_closed.cfg:V2Task.tla MC_task_rewrite_settled.cfg:V2Task.tla MC_task_system_settles.cfg:V2Task.tla MC_task_terminate_leaves_tasks.cfg:V2Task.tla \
+		MC_task_unordered_dependency.cfg:V2Task.tla MC_task_self_dependency.cfg:V2Task.tla MC_task_stale_active_work.cfg:V2Task.tla MC_task_stranger_writes.cfg:V2Task.tla MC_task_return_path_closed.cfg:V2Task.tla MC_task_rewrite_settled.cfg:V2Task.tla MC_task_system_settles.cfg:V2Task.tla MC_task_terminate_leaves_tasks.cfg:V2Task.tla \
 		MC_compress_deletes_originals.cfg:V2Compress.tla MC_compress_append_in_hole.cfg:V2Compress.tla MC_compress_keep_reservation.cfg:V2Compress.tla MC_compress_cover_backwards.cfg:V2Compress.tla MC_compress_cover_to_non_summary.cfg:V2Compress.tla MC_compress_cover_self.cfg:V2Compress.tla MC_compress_lifts_coverage.cfg:V2Compress.tla \
 		MC_compress_rewrites_closed.cfg:V2Compress.tla MC_daemon_rewrites_receipt.cfg:V2Daemon.tla \
 		MC_daemon_rolls_back_log.cfg:V2Daemon.tla MC_daemon_reclaims_events.cfg:V2Daemon.tla \

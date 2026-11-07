@@ -140,7 +140,7 @@ fn config(root: &Path, provider: ScriptedProvider, policy: &str) -> DriverConfig
         max_retries: 1,
         storage_queue: 64,
         poll: Duration::from_millis(15),
-        goal_limits: json!({}),
+        work_limits: json!({}),
         require_shell_approval: false,
     }
 }

@@ -66,7 +66,7 @@ generation_options = { reasoning_effort = "high" }
 """
 
 FIRST = """Spawn exactly one worker and reply with its instance id. Do not delegate or ask it anything yet —
-just report the id and end your turn without settling the goal."""
+just report the id and end your turn without settling the work."""
 
 INSTRUCTION = """Run exactly this shell command in the shared workspace `{workspace}` and then report what it
 printed:

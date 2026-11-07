@@ -1367,12 +1367,12 @@ fn exec_takes_the_prompt_from_stdin_and_runs_the_acceptance_check() {
     std::fs::remove_dir_all(&root).expect("the state root goes away with its daemon");
 }
 
-/// The acceptance checks a user writes in `[[checks]]` really reach the goal the
-/// runtime boots: the daemon stores them in the goal's `limits_json`, which is
+/// The acceptance checks a user writes in `[[checks]]` really reach the work the
+/// runtime boots: the daemon stores them in the work's `limits_json`, which is
 /// exactly what the completion boundary reads (the gate itself is covered by
-/// `v2_driver::configured_checks_gate_the_goal_through_the_config_edge`).
+/// `v2_driver::configured_checks_gate_the_work_through_the_config_edge`).
 #[test]
-fn the_daemon_carries_configured_checks_into_the_goal() {
+fn the_daemon_carries_configured_checks_into_the_work() {
     let root = Scratch::new("checks");
     let (config_home, state) = (root.join("config"), root.join("root"));
     std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
@@ -1391,7 +1391,7 @@ fn the_daemon_carries_configured_checks_into_the_goal() {
             .env("TA_CHECKS_KEY", "test-value");
     };
 
-    // doctor reports what will gate every goal in this session
+    // doctor reports what will gate every work in this session
     let mut doctor = Command::new(env!("CARGO_BIN_EXE_teamagents"));
     env(&mut doctor);
     let doctor = doctor.arg("doctor").output().expect("run doctor");
@@ -1416,14 +1416,15 @@ fn the_daemon_carries_configured_checks_into_the_goal() {
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
 
-    // the goal is created at bootstrap: read the stored limits until it lands
+    // the work is created at bootstrap: read the stored limits until it lands
     let db = state.join("session.sqlite");
     let mut limits = String::new();
     for _ in 0..200 {
         if let Ok(control) = teamagents_core::v2::Control::open(&db, "test", false) {
-            if let Ok(stored) = control
-                .connection()
-                .query_row("SELECT limits_json FROM goals LIMIT 1", [], |row| row.get::<_, String>(0))
+            if let Ok(stored) =
+                control
+                    .connection()
+                    .query_row("SELECT limits_json FROM work_scopes LIMIT 1", [], |row| row.get::<_, String>(0))
             {
                 limits = stored;
                 break;
@@ -1431,7 +1432,7 @@ fn the_daemon_carries_configured_checks_into_the_goal() {
         }
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
-    let limits: serde_json::Value = serde_json::from_str(&limits).expect("the goal carries limits");
+    let limits: serde_json::Value = serde_json::from_str(&limits).expect("the work carries limits");
     let checks = limits["required_checks"].as_array().unwrap_or_else(|| panic!("no checks in {limits}"));
     assert_eq!(checks.len(), 2, "{limits}");
     assert_eq!(checks[0]["id"], "tests");
@@ -2103,7 +2104,7 @@ fn an_unbootable_instance_parks_itself_and_the_session_survives() {
                            "profile": {"model": "gpt-9", "instructions": "never boots"}}),
     );
     assert_eq!(broken["ok"], true, "{broken}");
-    command("c-goal", "create_goal", serde_json::json!({"id": "g-broken", "instance_id": "i-broken"}));
+    command("c-work", "create_work", serde_json::json!({"id": "g-broken", "instance_id": "i-broken"}));
     command(
         "c-input",
         "submit_input",
@@ -2389,20 +2390,20 @@ fn the_authority_surface_grants_and_revokes_through_the_daemon() {
     std::fs::remove_dir_all(&root).expect("the state root goes away with its daemon");
 }
 
-/// D-267: the user's goal surface, through the real binary and a real daemon. A session is anchored to a goal and
-/// a settled goal cannot be reopened, so without a lever "what do I do next in this session?" had no answer a user
-/// could act on: `create_goal` is an ordinary user command the daemon forwards, but nothing in the product sent it
-/// (and until D-266 a goal opened this way could not be charged either).
+/// D-267: the user's work surface, through the real binary and a real daemon. A session is anchored to a work and
+/// a settled work cannot be reopened, so without a lever "what do I do next in this session?" had no answer a user
+/// could act on: `create_work` is an ordinary user command the daemon forwards, but nothing in the product sent it
+/// (and until D-266 a work opened this way could not be charged either).
 #[test]
-fn the_goal_surface_lists_and_opens_goals_through_the_daemon() {
-    let root = Scratch::new("goals");
+fn the_work_surface_lists_and_opens_work_scopes_through_the_daemon() {
+    let root = Scratch::new("work_scopes");
     let (config_home, state, ws) = (root.join("config"), root.join("root"), root.join("ws"));
     std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
     std::fs::create_dir_all(&ws).unwrap();
     std::fs::write(
         config_home.join("teamagents/config.toml"),
         "[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\n\
-         api_key_env = \"TA_GOALS_KEY\"\nbase_url = \"http://127.0.0.1:1/v1\"\n\
+         api_key_env = \"TA_WORK_KEY\"\nbase_url = \"http://127.0.0.1:1/v1\"\n\
          [limits]\nmax_total_tokens = 400000\ndeadline_minutes = 15\n\
          [[checks]]\nid = \"session-tests\"\ncommand = \"true\"\n",
     )
@@ -2411,15 +2412,15 @@ fn the_goal_surface_lists_and_opens_goals_through_the_daemon() {
         command
             .env("XDG_CONFIG_HOME", &config_home)
             .env("XDG_STATE_HOME", root.join("state"))
-            .env("TA_GOALS_KEY", "test-value")
-            // the goal carries required checks, and a check runs through the runner: point it at the built binary
-            // (the rule `jobs_runner.rs` follows) or the daemon would fail the check and settle the goal FAILED
+            .env("TA_WORK_KEY", "test-value")
+            // the work carries required checks, and a check runs through the runner: point it at the built binary
+            // (the rule `jobs_runner.rs` follows) or the daemon would fail the check and settle the work FAILED
             .env("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
     };
-    let goals = |args: &[&str]| -> (i32, String, String) {
+    let work_scopes = |args: &[&str]| -> (i32, String, String) {
         let mut command = Command::new(env!("CARGO_BIN_EXE_teamagents"));
         env(&mut command);
-        let output = command.args(args).arg("--state-root").arg(&state).output().expect("run goals");
+        let output = command.args(args).arg("--state-root").arg(&state).output().expect("run work_scopes");
         (
             output.status.code().unwrap_or(-1),
             String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -2429,7 +2430,7 @@ fn the_goal_surface_lists_and_opens_goals_through_the_daemon() {
     let json = |text: &str| -> serde_json::Value { serde_json::from_str(text).expect("JSON report") };
 
     // no session yet: the surface says so instead of writing into the void
-    let (code, _, stderr) = goals(&["goals"]);
+    let (code, _, stderr) = work_scopes(&["work_scopes"]);
     assert_eq!(code, 2, "{stderr}");
     assert!(stderr.contains("start one with"), "the error points at a session: {stderr}");
 
@@ -2450,43 +2451,43 @@ fn the_goal_surface_lists_and_opens_goals_through_the_daemon() {
         }
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
-    // wait for the bootstrap's own goal
+    // wait for the bootstrap's own work
     let mut listed = serde_json::Value::Null;
     for _ in 0..400 {
-        let (code, out, _) = goals(&["goals", "--json"]);
+        let (code, out, _) = work_scopes(&["work_scopes", "--json"]);
         if code == 0 {
             listed = json(&out);
-            if !listed["goals"].as_array().map(|g| g.is_empty()).unwrap_or(true) {
+            if !listed["work_scopes"].as_array().map(|g| g.is_empty()).unwrap_or(true) {
                 break;
             }
         }
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
-    let boot = listed["goals"].as_array().cloned().unwrap_or_default();
-    assert_eq!(boot.len(), 1, "the bootstrap opens exactly one goal: {listed}");
+    let boot = listed["work_scopes"].as_array().cloned().unwrap_or_default();
+    assert_eq!(boot.len(), 1, "the bootstrap opens exactly one work: {listed}");
     assert_eq!(boot[0]["status"], serde_json::json!("ACTIVE"), "{listed}");
     assert_eq!(
         boot[0]["attached_instances"],
         serde_json::json!(["i-leader"]),
-        "the boot goal is attached to the leader: {listed}"
+        "the boot work is attached to the leader: {listed}"
     );
-    // (opening and attaching a second goal moves the instance's pointer — asserted where it happens, below)
+    // (opening and attaching a second work moves the instance's pointer — asserted where it happens, below)
     let first = boot[0]["id"].as_str().unwrap_or_default().to_string();
 
     // a usage error stays a usage error
-    let (code, _, stderr) = goals(&["goals", "open", "--id", "g2", "--check", "no-equals-sign"]);
+    let (code, _, stderr) = work_scopes(&["work_scopes", "open", "--id", "g2", "--check", "no-equals-sign"]);
     assert_eq!(code, 2, "{stderr}");
     assert!(stderr.contains("ID=COMMAND"), "{stderr}");
-    let (code, _, stderr) = goals(&["goals", "open"]);
+    let (code, _, stderr) = work_scopes(&["work_scopes", "open"]);
     assert_eq!(code, 2, "{stderr}");
     assert!(stderr.contains("needs --id"), "{stderr}");
 
-    // 1. open the next goal, attached to the leader, carrying the user's own required check
-    let (code, out, stderr) = goals(&[
-        "goals",
+    // 1. open the next work, attached to the leader, carrying the user's own required check
+    let (code, out, stderr) = work_scopes(&[
+        "work_scopes",
         "open",
         "--id",
-        "goal-second",
+        "work-second",
         "--attach",
         "i-leader",
         "--check",
@@ -2494,71 +2495,71 @@ fn the_goal_surface_lists_and_opens_goals_through_the_daemon() {
         "--json",
     ]);
     assert_eq!(code, 0, "{stderr}");
-    assert_eq!(json(&out)["goal_id"], serde_json::json!("goal-second"), "{out}");
-    // D-283: the report says what the goal *got*. One --check was asked for and the session's own
-    // `session-tests` is unioned in by the daemon (D-268), so the goal carries two; before this the
+    assert_eq!(json(&out)["work_id"], serde_json::json!("work-second"), "{out}");
+    // D-283: the report says what the work *got*. One --check was asked for and the session's own
+    // `session-tests` is unioned in by the daemon (D-268), so the work carries two; before this the
     // report echoed the asked-for count.
-    assert_eq!(json(&out)["checks"], serde_json::json!(2), "the report carries the goal's own checks: {out}");
+    assert_eq!(json(&out)["checks"], serde_json::json!(2), "the report carries the work's own checks: {out}");
 
     // 2. the list carries both, names the active one, and says what is attached to what
-    let (code, out, stderr) = goals(&["goals", "--json"]);
+    let (code, out, stderr) = work_scopes(&["work_scopes", "--json"]);
     assert_eq!(code, 0, "{stderr}");
     let report = json(&out);
-    let rows = report["goals"].as_array().cloned().unwrap_or_default();
+    let rows = report["work_scopes"].as_array().cloned().unwrap_or_default();
     assert_eq!(rows.len(), 2, "the settled-or-not pair the session now carries: {report}");
-    let second = rows.iter().find(|g| g["id"] == serde_json::json!("goal-second")).expect("the opened goal");
+    let second = rows.iter().find(|g| g["id"] == serde_json::json!("work-second")).expect("the opened work");
     assert_eq!(second["status"], serde_json::json!("ACTIVE"), "{report}");
     assert_eq!(second["attached_instances"], serde_json::json!(["i-leader"]), "{report}");
     let checks = second["limits"]["required_checks"].as_array().cloned().unwrap_or_default();
     let ids: Vec<&str> = checks.iter().filter_map(|c| c["id"].as_str()).collect();
-    assert!(ids.contains(&"later-tests"), "the check the CLI named rides on the goal: {report}");
-    // D-268: the *session's* configured ceiling and checks bound a goal a client opens too (D-64) — the bootstrap
-    // is not the only path that creates goals any more
+    assert!(ids.contains(&"later-tests"), "the check the CLI named rides on the work: {report}");
+    // D-268: the *session's* configured ceiling and checks bound a work a client opens too (D-64) — the bootstrap
+    // is not the only path that creates work_scopes any more
     assert_eq!(
         second["limits"]["max_total_tokens"],
         serde_json::json!(400000),
-        "the session's ceiling travels to a client-opened goal: {report}"
+        "the session's ceiling travels to a client-opened work: {report}"
     );
     assert!(ids.contains(&"session-tests"), "the session's configured check is unioned in: {report}");
     assert!(
         second["deadline"].as_f64().is_some(),
         "the session's deadline_minutes becomes an absolute deadline: {report}"
     );
-    // the *live* goal is the first row: the one an instance is attached to (attaching moves that pointer, so the
-    // boot goal keeps its row and loses the attachment — which is why the order is "attached first", not "newest")
-    assert_eq!(rows[0]["id"], serde_json::json!("goal-second"), "{report}");
-    let boot_row = rows.iter().find(|g| g["id"] == serde_json::json!(first)).expect("the boot goal");
+    // the *live* work is the first row: the one an instance is attached to (attaching moves that pointer, so the
+    // boot work keeps its row and loses the attachment — which is why the order is "attached first", not "newest")
+    assert_eq!(rows[0]["id"], serde_json::json!("work-second"), "{report}");
+    let boot_row = rows.iter().find(|g| g["id"] == serde_json::json!(first)).expect("the boot work");
     assert_eq!(boot_row["attached_instances"], serde_json::json!([]), "{report}");
 
-    // 3. the plain-text form names the goal, its attachments and its checks (read *before* the removal below,
+    // 3. the plain-text form names the work, its attachments and its checks (read *before* the removal below,
     // which detaches the leader: the text form reports the attachments the record holds at read time)
-    let (code, out, stderr) = goals(&["goals"]);
+    let (code, out, stderr) = work_scopes(&["work_scopes"]);
     assert_eq!(code, 0, "{stderr}");
-    assert!(out.contains("goal-second"), "{out}");
+    assert!(out.contains("work-second"), "{out}");
     assert!(!out.contains("later-tests"), "the text form counts checks rather than listing them: {out}");
     assert!(out.contains("checks: 1"), "{out}");
     assert!(out.contains("attached: i-leader"), "{out}");
 
-    // D-487: durable-work sessions admit a later input without the legacy manual-goal advisory.
-    // The unattached ACTIVE boot goal must still not be confused with the leader's own goal.
+    // D-487: durable-work sessions admit a later input without the legacy manual-work advisory.
+    // The unattached ACTIVE boot work must still not be confused with the leader's own work.
     let mut rpc = Rpc::connect(&socket);
     let settled = rpc.command(
-        "settle-goal-second",
-        "complete_goal",
-        serde_json::json!({"goal_id": "goal-second", "instance_id": "i-leader", "status": "SUCCEEDED",
+        "settle-work-second",
+        "complete_work",
+        serde_json::json!({"work_id": "work-second", "instance_id": "i-leader", "status": "SUCCEEDED",
                            "summary": "the probe settles it to test the advisory"}),
     );
     assert_eq!(settled["ok"], serde_json::json!(true), "{settled}");
-    let (code, out, stderr) = goals(&["goals", "--json"]);
+    let (code, out, stderr) = work_scopes(&["work_scopes", "--json"]);
     assert_eq!(code, 0, "{stderr}");
     let after = json(&out);
-    // the premise: the goal is terminal and the leader is detached from it (`complete_goal` derives the status
+    // the premise: the work is terminal and the leader is detached from it (`complete_work` derives the status
     // from the instance's last model completion, and there is none with a stub provider, so it reads FAILED — the
     // advisory keys on the attachment, not on the status, so the assertion follows the record rather than
     // assuming SUCCEEDED). Settling detaches, so the row is found by id, not by the list's position.
-    let settled = after["goals"]
+    let settled = after["work_scopes"]
         .as_array()
-        .and_then(|rows| rows.iter().find(|g| g["id"] == serde_json::json!("goal-second")))
+        .and_then(|rows| rows.iter().find(|g| g["id"] == serde_json::json!("work-second")))
         .cloned()
         .unwrap_or(serde_json::Value::Null);
     assert_ne!(settled["status"], serde_json::json!("ACTIVE"), "{after}");
@@ -2568,16 +2569,19 @@ fn the_goal_surface_lists_and_opens_goals_through_the_daemon() {
     let output = exec.args(["exec", "--state-root"]).arg(&state).arg("say something").output().expect("run exec");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        !stderr.contains("no active goal is attached to i-leader"),
+        !stderr.contains("no active work is attached to i-leader"),
         "durable input admission needs no legacy advisory: {stderr}"
     );
-    assert!(!stderr.contains("teamagents goals open"), "the next input is admitted through the work policy: {stderr}");
+    assert!(
+        !stderr.contains("teamagents work_scopes open"),
+        "the next input is admitted through the work policy: {stderr}"
+    );
 
-    // D-283: the shape the operator watched — a goal opened with no --check at all still carries the
+    // D-283: the shape the operator watched — a work opened with no --check at all still carries the
     // session's configured check, and the plain line must report it instead of "(0 required check(s))".
-    let (code, out, stderr) = goals(&["goals", "open", "--id", "goal-third", "--attach", "i-leader"]);
+    let (code, out, stderr) = work_scopes(&["work_scopes", "open", "--id", "work-third", "--attach", "i-leader"]);
     assert_eq!(code, 0, "{stderr}");
-    assert!(out.contains("opened goal goal-third (1 required check(s))"), "{out}");
+    assert!(out.contains("opened work work-third (1 required check(s))"), "{out}");
 }
 
 /// D-349 (the decision D-341 made for D-143): `teamagents surface` reads back, per model request, the tool
@@ -2672,7 +2676,7 @@ fn the_surface_verb_reads_back_what_a_request_was_offered() {
     let status: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(status["schema_version"], 1);
     assert_eq!(status["snapshot"]["instances"][0]["id"], "i-leader");
-    assert!(status["snapshot"]["goal"]["known_usage"].is_object());
+    assert!(status["snapshot"]["work"]["known_usage"].is_object());
     let (code, out, stderr) = report(&["history", "--id", "i-l", "--limit", "1000", "--json"]);
     assert_eq!(code, 0, "{stderr}");
     let history: serde_json::Value = serde_json::from_str(&out).unwrap();
@@ -2729,14 +2733,14 @@ fn the_surface_verb_reads_back_what_a_request_was_offered() {
     std::fs::remove_dir_all(&root).expect("the state root goes away with its daemon");
 }
 
-/// D-341/D-344: the user's lever on a goal nothing can spend — A18's known gap. A goal whose ceiling or
-/// deadline is gone stays `ACTIVE` for ever, refusing new work and still listed as the status `goals list`
-/// reports, and the instance its refusal parked has no path back; `goals cancel --id ID` is the missing half.
-/// It settles the goal terminal (`CANCELLED`) and releases the instances that goal's refusal parked, and it
+/// D-341/D-344: the user's lever on a work nothing can spend — A18's known gap. A work whose ceiling or
+/// deadline is gone stays `ACTIVE` for ever, refusing new work and still listed as the status `work_scopes list`
+/// reports, and the instance its refusal parked has no path back; `work_scopes cancel --id ID` is the missing half.
+/// It settles the work terminal (`CANCELLED`) and releases the instances that work's refusal parked, and it
 /// answers what it cannot do with a reason instead of failing silently.
 #[test]
-fn goals_cancel_closes_a_spent_goal_and_the_parked_leader_works_again() {
-    let root = Scratch::new("goals-cancel");
+fn work_scopes_cancel_closes_a_spent_work_and_the_parked_leader_works_again() {
+    let root = Scratch::new("work_scopes-cancel");
     let (config_home, state, ws) = (root.join("config"), root.join("root"), root.join("ws"));
     std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
     std::fs::create_dir_all(&ws).unwrap();
@@ -2787,8 +2791,12 @@ fn goals_cancel_closes_a_spent_goal_and_the_parked_leader_works_again() {
             .cloned()
             .unwrap_or_default()
     };
-    let goal = |report: &serde_json::Value, id: &str| -> serde_json::Value {
-        report["goals"].as_array().and_then(|rows| rows.iter().find(|row| row["id"] == id)).cloned().unwrap_or_default()
+    let work = |report: &serde_json::Value, id: &str| -> serde_json::Value {
+        report["work_scopes"]
+            .as_array()
+            .and_then(|rows| rows.iter().find(|row| row["id"] == id))
+            .cloned()
+            .unwrap_or_default()
     };
 
     // the premise: the session's leader exists and can work
@@ -2796,63 +2804,63 @@ fn goals_cancel_closes_a_spent_goal_and_the_parked_leader_works_again() {
     assert_eq!(code, 0, "{stderr}");
     assert_eq!(instance(&json(&out), "i-leader")["lifecycle"], serde_json::json!("ACTIVE"), "{out}");
 
-    // the user's own goal on the leader, then the park a spent goal's refusal causes (the driver parks
+    // the user's own work on the leader, then the park a spent work's refusal causes (the driver parks
     // through `set_lifecycle` with the reason; the user's own park reaches the same state)
-    let (code, out, stderr) = report(&["goals", "open", "--id", "g-cancel", "--attach", "i-leader"]);
+    let (code, out, stderr) = report(&["work_scopes", "open", "--id", "g-cancel", "--attach", "i-leader"]);
     assert_eq!(code, 0, "{stderr}");
-    assert!(out.contains("opened goal g-cancel"), "{out}");
+    assert!(out.contains("opened work g-cancel"), "{out}");
     let mut rpc = Rpc::connect(&socket);
     let parked = rpc.command(
         "park-leader",
         "set_lifecycle",
         serde_json::json!({"instance_id": "i-leader", "lifecycle": "PARKED",
-                           "reason": "goal g-cancel ceiling spent"}),
+                           "reason": "work g-cancel ceiling spent"}),
     );
     assert_eq!(parked["ok"], serde_json::json!(true), "{parked}");
     let (code, out, stderr) = report(&["instances", "--json"]);
     assert_eq!(code, 0, "{stderr}");
     assert_eq!(instance(&json(&out), "i-leader")["lifecycle"], serde_json::json!("PARKED"), "{out}");
 
-    // the lever: the goal closes, the leader is released
-    let (code, out, stderr) = report(&["goals", "cancel", "--id", "g-cancel"]);
+    // the lever: the work closes, the leader is released
+    let (code, out, stderr) = report(&["work_scopes", "cancel", "--id", "g-cancel"]);
     assert_eq!(code, 0, "{stderr}");
-    assert!(out.contains("cancelled goal g-cancel"), "{out}");
+    assert!(out.contains("cancelled work g-cancel"), "{out}");
     assert!(out.contains("released i-leader"), "{out}");
-    let (code, out, stderr) = report(&["goals", "--json"]);
+    let (code, out, stderr) = report(&["work_scopes", "--json"]);
     assert_eq!(code, 0, "{stderr}");
     let after = json(&out);
-    assert_eq!(goal(&after, "g-cancel")["status"], serde_json::json!("CANCELLED"), "{after}");
-    assert_eq!(goal(&after, "g-cancel")["attached_instances"], serde_json::json!([]), "{after}");
+    assert_eq!(work(&after, "g-cancel")["status"], serde_json::json!("CANCELLED"), "{after}");
+    assert_eq!(work(&after, "g-cancel")["attached_instances"], serde_json::json!([]), "{after}");
     // and the instance it parked accepts new work again (ACTIVE is what the dispatch gate requires)
     let (code, out, stderr) = report(&["instances", "--json"]);
     assert_eq!(code, 0, "{stderr}");
     assert_eq!(instance(&json(&out), "i-leader")["lifecycle"], serde_json::json!("ACTIVE"), "{out}");
-    let (code, _, stderr) = report(&["goals", "open", "--id", "g-next", "--attach", "i-leader"]);
+    let (code, _, stderr) = report(&["work_scopes", "open", "--id", "g-next", "--attach", "i-leader"]);
     assert_eq!(code, 0, "{stderr}");
 
-    // the receipt rule the surface already has: the command id is derived from the goal, so a second run
+    // the receipt rule the surface already has: the command id is derived from the work, so a second run
     // replays the stored success rather than releasing twice
-    let (code, out, stderr) = report(&["goals", "cancel", "--id", "g-cancel"]);
+    let (code, out, stderr) = report(&["work_scopes", "cancel", "--id", "g-cancel"]);
     assert_eq!(code, 0, "{stderr}");
-    assert!(out.contains("cancelled goal g-cancel"), "{out}");
+    assert!(out.contains("cancelled work g-cancel"), "{out}");
 
-    // what it cannot do, it says with a reason: an id nothing resolves to, a goal another path settled, and a
+    // what it cannot do, it says with a reason: an id nothing resolves to, a work another path settled, and a
     // missing --id (usage, not the session's refusal)
-    let (code, _, stderr) = report(&["goals", "cancel", "--id", "ghost"]);
+    let (code, _, stderr) = report(&["work_scopes", "cancel", "--id", "ghost"]);
     assert_eq!(code, 1, "{stderr}");
     assert!(stderr.contains("not in this session"), "{stderr}");
-    let (code, _, stderr) = report(&["goals", "open", "--id", "g-closed", "--attach", "i-leader"]);
+    let (code, _, stderr) = report(&["work_scopes", "open", "--id", "g-closed", "--attach", "i-leader"]);
     assert_eq!(code, 0, "{stderr}");
     let settled = rpc.command(
         "settle-g-closed",
-        "complete_goal",
-        serde_json::json!({"goal_id": "g-closed", "instance_id": "i-leader"}),
+        "complete_work",
+        serde_json::json!({"work_id": "g-closed", "instance_id": "i-leader"}),
     );
     assert_eq!(settled["ok"], serde_json::json!(true), "{settled}");
-    let (code, _, stderr) = report(&["goals", "cancel", "--id", "g-closed"]);
+    let (code, _, stderr) = report(&["work_scopes", "cancel", "--id", "g-closed"]);
     assert_eq!(code, 1, "{stderr}");
     assert!(stderr.contains("not ACTIVE"), "{stderr}");
-    let (code, _, stderr) = report(&["goals", "cancel"]);
+    let (code, _, stderr) = report(&["work_scopes", "cancel"]);
     assert_eq!(code, 2, "{stderr}");
     assert!(stderr.contains("needs --id"), "{stderr}");
 
@@ -2860,21 +2868,21 @@ fn goals_cancel_closes_a_spent_goal_and_the_parked_leader_works_again() {
     std::fs::remove_dir_all(&root).expect("the state root goes away with its daemon");
 }
 
-/// D-284, the reporting half of the budget-exhausted-goal gap in `docs/ACCEPTANCE.md`: a goal the runtime will
+/// D-284, the reporting half of the budget-exhausted-work gap in `docs/ACCEPTANCE.md`: a work the runtime will
 /// refuse used to read exactly like one taking work — `ACTIVE`, the status column's only word — while the
-/// `goals` read already carried the numbers that show it. The plain line now carries the goal's budget and,
+/// `work_scopes` read already carried the numbers that show it. The plain line now carries the work's budget and,
 /// when the record proves it, why it cannot accept a new request: A18's ceiling (known usage leaves no room for
 /// even a one-token request) and A35's deadline. No lever, no new read, and no new field in the JSON report.
 #[test]
-fn a_goal_that_cannot_accept_work_is_not_presented_as_in_force() {
-    let root = Scratch::new("goals-exhausted");
+fn a_work_that_cannot_accept_work_is_not_presented_as_in_force() {
+    let root = Scratch::new("work_scopes-exhausted");
     let (config_home, state, ws) = (root.join("config"), root.join("root"), root.join("ws"));
     std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
     std::fs::create_dir_all(&ws).unwrap();
     std::fs::write(
         config_home.join("teamagents/config.toml"),
         "[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\n\
-         api_key_env = \"TA_GOALS_KEY\"\nbase_url = \"http://127.0.0.1:1/v1\"\n\
+         api_key_env = \"TA_WORK_KEY\"\nbase_url = \"http://127.0.0.1:1/v1\"\n\
          [limits]\nmax_total_tokens = 5000000\n",
     )
     .unwrap();
@@ -2882,13 +2890,13 @@ fn a_goal_that_cannot_accept_work_is_not_presented_as_in_force() {
         command
             .env("XDG_CONFIG_HOME", &config_home)
             .env("XDG_STATE_HOME", root.join("state"))
-            .env("TA_GOALS_KEY", "test-value")
+            .env("TA_WORK_KEY", "test-value")
             .env("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
     };
-    let goals = |args: &[&str]| -> (i32, String, String) {
+    let work_scopes = |args: &[&str]| -> (i32, String, String) {
         let mut command = Command::new(env!("CARGO_BIN_EXE_teamagents"));
         env(&mut command);
-        let output = command.args(args).arg("--state-root").arg(&state).output().expect("run goals");
+        let output = command.args(args).arg("--state-root").arg(&state).output().expect("run work_scopes");
         (
             output.status.code().unwrap_or(-1),
             String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -2915,66 +2923,66 @@ fn a_goal_that_cannot_accept_work_is_not_presented_as_in_force() {
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
 
-    // the record these three goals need, made through the ordinary user command: no model, no tokens spent
+    // the record these three work_scopes need, made through the ordinary user command: no model, no tokens spent
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
     let mut rpc = Rpc::connect(&socket);
     let exhausted = rpc.command(
         "mk-exhausted",
-        "create_goal",
-        serde_json::json!({"id": "goal-exhausted", "limits": {"max_total_tokens": 0}}),
+        "create_work",
+        serde_json::json!({"id": "work-exhausted", "limits": {"max_total_tokens": 0}}),
     );
     assert_eq!(exhausted["ok"], serde_json::json!(true), "{exhausted}");
     let expired =
-        rpc.command("mk-expired", "create_goal", serde_json::json!({"id": "goal-expired", "deadline": now - 60.0}));
+        rpc.command("mk-expired", "create_work", serde_json::json!({"id": "work-expired", "deadline": now - 60.0}));
     assert_eq!(expired["ok"], serde_json::json!(true), "{expired}");
     let live = rpc.command(
         "mk-live",
-        "create_goal",
-        serde_json::json!({"id": "goal-live", "limits": {"max_total_tokens": 1000000}}),
+        "create_work",
+        serde_json::json!({"id": "work-live", "limits": {"max_total_tokens": 1000000}}),
     );
     assert_eq!(live["ok"], serde_json::json!(true), "{live}");
 
-    let (code, out, stderr) = goals(&["goals"]);
+    let (code, out, stderr) = work_scopes(&["work_scopes"]);
     assert_eq!(code, 0, "{stderr}");
     let line = |id: &str| {
         out.lines().find(|l| l.contains(id)).unwrap_or_else(|| panic!("no line for {id}: {out}")).to_string()
     };
     assert!(
-        line("goal-exhausted").contains("cannot accept new work: ceiling reached (0/0)"),
+        line("work-exhausted").contains("cannot accept new work: ceiling reached (0/0)"),
         "the ceiling the runtime refuses on is shown: {out}"
     );
     assert!(
-        line("goal-expired").contains("cannot accept new work: deadline passed"),
+        line("work-expired").contains("cannot accept new work: deadline passed"),
         "the passed deadline the runtime refuses on is shown: {out}"
     );
-    let live = line("goal-live");
-    assert!(!live.contains("cannot accept new work"), "a goal with room is not marked: {live}");
+    let live = line("work-live");
+    assert!(!live.contains("cannot accept new work"), "a work with room is not marked: {live}");
     assert!(live.contains("tokens: 0/1000000"), "and its budget is visible: {live}");
 
     // the JSON report keeps the read's own field names: the marker is what a client renders, not protocol
-    let (code, out, stderr) = goals(&["goals", "--json"]);
+    let (code, out, stderr) = work_scopes(&["work_scopes", "--json"]);
     assert_eq!(code, 0, "{stderr}");
-    for row in json(&out)["goals"].as_array().cloned().unwrap_or_default() {
-        let mut keys: Vec<&str> = row.as_object().expect("a goal row").keys().map(String::as_str).collect();
+    for row in json(&out)["work_scopes"].as_array().cloned().unwrap_or_default() {
+        let mut keys: Vec<&str> = row.as_object().expect("a work row").keys().map(String::as_str).collect();
         keys.sort();
-        // `summary` is the model's own account of the work when it settled that goal (D-431): null for a goal
-        // that never settled, and the completion summary once it has — per goal, because a session can carry
+        // `summary` is the model's own account of the work when it settled that work (D-431): null for a work
+        // that never settled, and the completion summary once it has — per work, because a session can carry
         // several (D-266).
         assert_eq!(
             keys,
             ["attached_instances", "deadline", "id", "known_usage", "limits", "status", "summary", "unknown_usage"],
-            "the goal row's shape is unchanged apart from D-431's summary: {row}"
+            "the work row's shape is unchanged apart from D-431's summary: {row}"
         );
     }
 }
 
-/// `[limits]` in the user config bounds every goal the session creates (D-64): the
-/// usage ceiling travels on the goal's `limits` and the deadline is an absolute
+/// `[limits]` in the user config bounds every work the session creates (D-64): the
+/// usage ceiling travels on the work's `limits` and the deadline is an absolute
 /// timestamp the bootstrap derives from the configured minutes. The daemon really
 /// applies them: a tiny ceiling parks the leader with the budget as the reason
 /// instead of letting the session run.
 #[test]
-fn configured_limits_reach_the_goal_and_really_bound_the_session() {
+fn configured_limits_reach_the_work_and_really_bound_the_session() {
     let root = Scratch::new("limits");
     let (config_home, state, ws) = (root.join("config"), root.join("root"), root.join("ws"));
     std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
@@ -2995,16 +3003,16 @@ fn configured_limits_reach_the_goal_and_really_bound_the_session() {
             .env("XDG_STATE_HOME", root.join("state"))
             .env("TA_LIMITS_KEY", "test-value");
     };
-    // doctor says what bounds the goals (nothing, when nothing is configured)
+    // doctor says what bounds the work_scopes (nothing, when nothing is configured)
     config("");
     let mut doctor = Command::new(env!("CARGO_BIN_EXE_teamagents"));
     env(&mut doctor);
     let doctor = doctor.arg("doctor").output().expect("run doctor");
     let text = format!("{}{}", String::from_utf8_lossy(&doctor.stdout), String::from_utf8_lossy(&doctor.stderr));
-    assert!(text.contains("[WARN] goal limits"), "an unbounded session is reported: {text}");
+    assert!(text.contains("[WARN] work limits"), "an unbounded session is reported: {text}");
     assert!(text.contains("runs until you stop it"), "{text}");
 
-    // a ceiling and a deadline: doctor reports both and the goal carries both
+    // a ceiling and a deadline: doctor reports both and the work carries both
     config("[limits]\nmax_total_tokens = 400000\ndeadline_minutes = 15\n");
     let mut doctor = Command::new(env!("CARGO_BIN_EXE_teamagents"));
     env(&mut doctor);
@@ -3038,7 +3046,7 @@ fn configured_limits_reach_the_goal_and_really_bound_the_session() {
         if let Ok(control) = teamagents_core::v2::Control::open(&db, "test", false) {
             row = control
                 .connection()
-                .query_row("SELECT limits_json, deadline FROM goals LIMIT 1", [], |row| {
+                .query_row("SELECT limits_json, deadline FROM work_scopes LIMIT 1", [], |row| {
                     Ok((row.get::<_, String>(0)?, row.get::<_, Option<f64>>(1)?))
                 })
                 .ok();
@@ -3048,21 +3056,21 @@ fn configured_limits_reach_the_goal_and_really_bound_the_session() {
         }
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
-    let (limits, deadline) = row.expect("the bootstrap creates the goal");
+    let (limits, deadline) = row.expect("the bootstrap creates the work");
     let limits: serde_json::Value = serde_json::from_str(&limits).unwrap();
     assert_eq!(limits["max_total_tokens"], serde_json::json!(400000), "{limits}");
     assert!(
         limits.get("deadline_minutes").is_none(),
-        "the duration is consumed by the bootstrap, never stored on the goal: {limits}"
+        "the duration is consumed by the bootstrap, never stored on the work: {limits}"
     );
-    let deadline = deadline.expect("a configured deadline lands on the goal");
+    let deadline = deadline.expect("a configured deadline lands on the work");
     let expected = before + 15.0 * 60.0;
     assert!((deadline - expected).abs() < 120.0, "the deadline is ~15 minutes out: {deadline} vs {expected}");
     daemon_guard.stop();
     std::fs::remove_dir_all(&root).expect("the state root goes away with its daemon");
 }
 
-/// The ceiling is not decoration: a goal whose budget cannot cover even one request
+/// The ceiling is not decoration: a work whose budget cannot cover even one request
 /// parks the instance with the budget as the reason (A18) instead of running.
 #[test]
 fn a_tiny_configured_ceiling_parks_the_session_instead_of_running_it() {
@@ -3683,10 +3691,10 @@ fn sessions_fork_snapshots_a_session_and_refuses_a_live_source() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// D-367: a due automation makes the daemon open one goal and submit its prompt, and it does not overlap itself
-/// while that goal is still open.
+/// D-367: a due automation makes the daemon open one work and submit its prompt, and it does not overlap itself
+/// while that work is still open.
 #[test]
-fn a_due_automation_opens_one_goal_and_does_not_overlap_itself() {
+fn a_due_automation_opens_one_work_and_does_not_overlap_itself() {
     let home = Scratch::new("automations");
     let state = home.join("state/teamagents/v2");
     let config_home = home.join("config");
@@ -3728,21 +3736,21 @@ fn a_due_automation_opens_one_goal_and_does_not_overlap_itself() {
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
     assert!(socket.exists(), "the daemon must listen");
-    // wait for the automation to fire (the schedule records the goal it opened)
+    // wait for the automation to fire (the schedule records the work it opened)
     let mut fired = None;
     for _ in 0..200 {
         let schedule: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(state.join("automations.json")).unwrap()).unwrap();
-        if let Some(goal) = schedule["automations"][0]["last_goal"].as_str() {
-            fired = Some((goal.to_string(), schedule["automations"][0]["next_at"].as_f64().unwrap_or(0.0)));
+        if let Some(work) = schedule["automations"][0]["last_work"].as_str() {
+            fired = Some((work.to_string(), schedule["automations"][0]["next_at"].as_f64().unwrap_or(0.0)));
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    let (goal_id, next_at) = fired.expect("the due automation must fire");
-    assert_eq!(goal_id, "goal-auto-a1");
+    let (work_id, next_at) = fired.expect("the due automation must fire");
+    assert_eq!(work_id, "work-auto-a1");
     assert!(next_at > 0.0, "the slot advanced past the missed one");
-    // give the scheduler several more ticks: the goal it opened is still open, so no second run opens
+    // give the scheduler several more ticks: the work it opened is still open, so no second run opens
     std::thread::sleep(std::time::Duration::from_millis(400));
     let (code, out, err) = {
         let mut command = Command::new(env!("CARGO_BIN_EXE_teamagents"));
@@ -3757,9 +3765,9 @@ fn a_due_automation_opens_one_goal_and_does_not_overlap_itself() {
     assert_eq!(code, Some(0), "{out}{err}");
     let _ = daemon_guard.0.wait();
     let control = teamagents_core::v2::store::open_read_only(&state.join("session.sqlite")).expect("open the store");
-    let goals: i64 = control
-        .query_row("SELECT COUNT(*) FROM goals WHERE id = 'goal-auto-a1'", [], |row| row.get(0))
-        .expect("count goals");
-    assert_eq!(goals, 1, "exactly one goal for the automation's run");
+    let work_scopes: i64 = control
+        .query_row("SELECT COUNT(*) FROM work_scopes WHERE id = 'work-auto-a1'", [], |row| row.get(0))
+        .expect("count work_scopes");
+    assert_eq!(work_scopes, 1, "exactly one work for the automation's run");
     let _ = std::fs::remove_dir_all(&home);
 }

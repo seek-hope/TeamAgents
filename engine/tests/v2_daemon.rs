@@ -132,7 +132,7 @@ fn config_recording(
     scripts: HashMap<String, Vec<Json>>,
     catalog: UserConfig,
     bindings: Vec<String>,
-    goal_limits: Json,
+    work_limits: Json,
     seen: &SeenRequests,
 ) -> DaemonConfig<ScriptedProvider, impl Fn(&str, &KernelProfile) -> ScriptedProvider> {
     let scripts = Mutex::new(scripts);
@@ -169,7 +169,7 @@ fn config_recording(
             max_retries: 2,
             storage_queue: 64,
             poll: Duration::from_millis(15),
-            goal_limits,
+            work_limits,
             require_shell_approval: false,
             provider_factory: factory,
         },
@@ -216,13 +216,13 @@ impl Client {
     }
 }
 
-/// Poll events after `since` until the goal completes; returns (status, watermark).
-async fn wait_goal(client: &mut Client, since: i64) -> (String, i64) {
+/// Poll events after `since` until the work completes; returns (status, watermark).
+async fn wait_work(client: &mut Client, since: i64) -> (String, i64) {
     for _ in 0..600 {
         let reply = client.call("events", json!({"since": since})).await;
         assert_eq!(reply["ok"], json!(true), "{reply}");
         if let Some(event) =
-            reply["result"]["events"].as_array().unwrap().iter().find(|e| e["kind"] == json!("goal_completed"))
+            reply["result"]["events"].as_array().unwrap().iter().find(|e| e["kind"] == json!("work_completed"))
         {
             return (
                 event["payload"]["status"].as_str().unwrap_or("").to_string(),
@@ -231,7 +231,7 @@ async fn wait_goal(client: &mut Client, since: i64) -> (String, i64) {
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    panic!("goal not completed within 15s");
+    panic!("work not completed within 15s");
 }
 
 async fn boot(tag: &str, scripts: HashMap<String, Vec<Json>>) -> (Root, DaemonHandle) {
@@ -720,41 +720,41 @@ async fn the_checkpoint_says_which_instances_may_run_commands() {
     assert!(!can_shell(&after["result"]["snapshot"], "i-leader"), "{after}");
 }
 
-/// D-433: `cancel_goal` closes a goal, and the `goals` read says so. The command had **no test at all** until this
-/// one — the TUI's new `/goals cancel <id>` is what exposed it — and it is the lever that keeps a session from
-/// accumulating ACTIVE goals (D-266), which is the shape the tau3 harness produced.
+/// D-433: `cancel_work` closes a work, and the `work_scopes` read says so. The command had **no test at all** until this
+/// one — the TUI's new `/work_scopes cancel <id>` is what exposed it — and it is the lever that keeps a session from
+/// accumulating ACTIVE work_scopes (D-266), which is the shape the tau3 harness produced.
 #[tokio::test]
-async fn cancel_goal_closes_a_goal_and_the_list_says_which() {
+async fn cancel_work_closes_a_work_and_the_list_says_which() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
-    let (root, _handle) = boot("cancel-goal", HashMap::new()).await;
+    let (root, _handle) = boot("cancel-work", HashMap::new()).await;
     let mut client = Client::connect(&root.dir.join("state/daemon.sock")).await;
-    let opened = client.command("cmd-open", "create_goal", json!({"id": "turn-2"})).await;
+    let opened = client.command("cmd-open", "create_work", json!({"id": "turn-2"})).await;
     assert_eq!(opened["ok"], json!(true), "{opened}");
     let open_row = |reply: &Json, id: &str| {
-        reply["result"]["goals"]
+        reply["result"]["work_scopes"]
             .as_array()
             .and_then(|rows| rows.iter().find(|row| row["id"] == json!(id)).cloned())
             .unwrap_or_else(|| panic!("{id} is listed: {reply}"))
     };
-    let before = client.call("goals", json!({})).await;
+    let before = client.call("work_scopes", json!({})).await;
     assert_eq!(open_row(&before, "turn-2")["status"], json!("ACTIVE"), "{before}");
     // the command is idempotent by command id (§6.3): a replay returns the same receipt
-    let cancelled = client.command("cmd-cancel", "cancel_goal", json!({"goal_id": "turn-2"})).await;
+    let cancelled = client.command("cmd-cancel", "cancel_work", json!({"work_id": "turn-2"})).await;
     assert_eq!(cancelled["ok"], json!(true), "{cancelled}");
-    let replayed = client.command("cmd-cancel", "cancel_goal", json!({"goal_id": "turn-2"})).await;
+    let replayed = client.command("cmd-cancel", "cancel_work", json!({"work_id": "turn-2"})).await;
     assert_eq!(replayed["result"], cancelled["result"], "replay dedups by command id");
-    let after = client.call("goals", json!({})).await;
+    let after = client.call("work_scopes", json!({})).await;
     assert_eq!(open_row(&after, "turn-2")["status"], json!("CANCELLED"), "{after}");
-    // and a goal that does not exist is refused, not invented
-    let missing = client.command("cmd-cancel-missing", "cancel_goal", json!({"goal_id": "nope"})).await;
+    // and a work that does not exist is refused, not invented
+    let missing = client.command("cmd-cancel-missing", "cancel_work", json!({"work_id": "nope"})).await;
     assert_eq!(missing["ok"], json!(false), "{missing}");
 }
 
-/// D-431: the checkpoint carries the completion summary of the goal it reports, because a model can settle a goal
+/// D-431: the checkpoint carries the completion summary of the work it reports, because a model can settle a work
 /// by calling `finish` without writing a word of prose — and then the summary it recorded *is* the only account of
 /// the work a user can read. Measured on the tau3 retail split: 12 of 114 dialogues ended that way.
 #[tokio::test]
-async fn the_checkpoint_carries_the_completion_summary_of_the_goal_it_reports() {
+async fn the_checkpoint_carries_the_completion_summary_of_the_work_it_reports() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
     let scripts =
         HashMap::from([("i-leader".to_string(), vec![finish_call("cancelled order W1 and refunded the other card")])]);
@@ -762,41 +762,41 @@ async fn the_checkpoint_carries_the_completion_summary_of_the_goal_it_reports() 
     let mut client = Client::connect(&root.dir.join("state/daemon.sock")).await;
     // before anything settles there is no summary to report
     let before = client.call("checkpoint", json!({})).await;
-    assert_eq!(before["result"]["snapshot"]["goal"]["summary"], Json::Null, "{before}");
+    assert_eq!(before["result"]["snapshot"]["work"]["summary"], Json::Null, "{before}");
     let since = before["result"]["watermark"].as_i64().unwrap();
     client.command("cmd-summary", "submit_input", input_params("cancel it")).await;
-    let (status, _) = wait_goal(&mut client, since).await;
+    let (status, _) = wait_work(&mut client, since).await;
     assert_eq!(status, "SUCCEEDED");
     let after = client.call("checkpoint", json!({})).await;
     assert_eq!(
-        after["result"]["snapshot"]["goal"]["summary"],
+        after["result"]["snapshot"]["work"]["summary"],
         json!("cancelled order W1 and refunded the other card"),
         "{after}"
     );
-    // …and the same summary rides on the goal's own row, which is what a run reads when the goal it settled is
-    // not the one the checkpoint reports. This is the tau3 harness's shape (`goals open` per user turn, left
-    // ACTIVE, beside the boot goal that settles) and the reason the *first* version of D-431's fallback — which
+    // …and the same summary rides on the work's own row, which is what a run reads when the work it settled is
+    // not the one the checkpoint reports. This is the tau3 harness's shape (`work_scopes open` per user turn, left
+    // ACTIVE, beside the boot work that settles) and the reason the *first* version of D-431's fallback — which
     // read the checkpoint — changed nothing for 12 of 114 dialogues: the checkpoint reports the newest ACTIVE
-    // goal, whose summary is necessarily empty.
-    let opened = client.command("cmd-open-second", "create_goal", json!({"id": "turn-2"})).await;
+    // work, whose summary is necessarily empty.
+    let opened = client.command("cmd-open-second", "create_work", json!({"id": "turn-2"})).await;
     assert_eq!(opened["ok"], json!(true), "{opened}");
-    let listed = client.call("goals", json!({})).await;
-    let rows = listed["result"]["goals"].as_array().unwrap();
+    let listed = client.call("work_scopes", json!({})).await;
+    let rows = listed["result"]["work_scopes"].as_array().unwrap();
     let settled = rows
         .iter()
         .find(|row| row["status"] == json!("SUCCEEDED"))
-        .unwrap_or_else(|| panic!("the settled goal is listed: {listed}"));
+        .unwrap_or_else(|| panic!("the settled work is listed: {listed}"));
     assert_eq!(settled["summary"], json!("cancelled order W1 and refunded the other card"), "{listed}");
-    let active = rows.iter().find(|row| row["id"] == json!("turn-2")).expect("the new goal is listed");
-    assert_eq!(active["summary"], Json::Null, "a goal that never settled has no summary: {listed}");
-    // the checkpoint now reports the *new* goal (newest ACTIVE), so its summary is empty while the settled
-    // goal's row keeps its own — which is exactly why the fallback reads the row and not the checkpoint
+    let active = rows.iter().find(|row| row["id"] == json!("turn-2")).expect("the new work is listed");
+    assert_eq!(active["summary"], Json::Null, "a work that never settled has no summary: {listed}");
+    // the checkpoint now reports the *new* work (newest ACTIVE), so its summary is empty while the settled
+    // work's row keeps its own — which is exactly why the fallback reads the row and not the checkpoint
     let after_second = client.call("checkpoint", json!({})).await;
-    assert_eq!(after_second["result"]["snapshot"]["goal"]["summary"], Json::Null, "{after_second}");
+    assert_eq!(after_second["result"]["snapshot"]["work"]["summary"], Json::Null, "{after_second}");
 }
 
 #[tokio::test]
-async fn handshake_checkpoint_command_and_goal_completion() {
+async fn handshake_checkpoint_command_and_work_completion() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
     let scripts = HashMap::from([("i-leader".to_string(), vec![finish_call("done over the wire")])]);
     let (root, handle) = boot("e2e", scripts).await;
@@ -822,7 +822,7 @@ async fn handshake_checkpoint_command_and_goal_completion() {
     assert_eq!(replayed["result"], submitted["result"], "replay dedups by command id");
     let conflicted = client.command("cmd-first-input", "submit_input", input_params("different text")).await;
     assert_eq!(conflicted["ok"], json!(false), "same id, different payload must be rejected");
-    let (status, _) = wait_goal(&mut client, since).await;
+    let (status, _) = wait_work(&mut client, since).await;
     assert_eq!(status, "SUCCEEDED");
     // reads: history of the leader holds the input and the finish
     let history = client.call("history", json!({"instance_id": "i-leader"})).await;
@@ -856,20 +856,20 @@ async fn reconnect_backfills_events_after_the_watermark() {
     let mut client = Client::connect(&root.dir.join("state/daemon.sock")).await;
     let checkpoint = client.call("checkpoint", json!({})).await;
     let since = checkpoint["result"]["watermark"].as_i64().unwrap();
-    client.command("cmd-input-a", "submit_input", input_params("first goal")).await;
-    let (status, watermark) = wait_goal(&mut client, since).await;
+    client.command("cmd-input-a", "submit_input", input_params("first work")).await;
+    let (status, watermark) = wait_work(&mut client, since).await;
     assert_eq!(status, "SUCCEEDED");
     drop(client); // the client goes away; the daemon keeps running (§9)
                   // reconnect: checkpoint again, then read everything after the watermark
     let mut client = Client::connect(&root.dir.join("state/daemon.sock")).await;
     let checkpoint = client.call("checkpoint", json!({})).await;
     assert_eq!(checkpoint["ok"], json!(true));
-    let goal = &checkpoint["result"]["snapshot"]["goal"];
-    assert_eq!(goal["status"], json!("SUCCEEDED"), "{checkpoint}");
+    let work = &checkpoint["result"]["snapshot"]["work"];
+    assert_eq!(work["status"], json!("SUCCEEDED"), "{checkpoint}");
     let events = client.call("events", json!({"since": 0})).await;
     let kinds: Vec<&str> =
         events["result"]["events"].as_array().unwrap().iter().filter_map(|e| e["kind"].as_str()).collect();
-    assert!(kinds.contains(&"goal_completed"), "{kinds:?}");
+    assert!(kinds.contains(&"work_completed"), "{kinds:?}");
     assert_eq!(events["result"]["resync_required"], json!(false));
     // lifecycle control through the same command surface
     let paused =
@@ -929,7 +929,7 @@ async fn approvals_surface_lists_and_decides_pending_operations() {
     // the decision rides the write surface with a stable command id
     let decided = client.command("cmd-approve-1", "approve", json!({"approval_id": approval_id})).await;
     assert_eq!(decided["ok"], json!(true), "{decided}");
-    // no longer pending, and the goal eventually completes
+    // no longer pending, and the work eventually completes
     for _ in 0..100 {
         let approvals = client.call("approvals", json!({})).await;
         if approvals["result"]["approvals"].as_array().unwrap().is_empty() {
@@ -937,7 +937,7 @@ async fn approvals_surface_lists_and_decides_pending_operations() {
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    let (status, _) = wait_goal(&mut client, since).await;
+    let (status, _) = wait_work(&mut client, since).await;
     assert_eq!(status, "SUCCEEDED");
     handle.shutdown().await.expect("shutdown");
 }
@@ -945,7 +945,7 @@ async fn approvals_surface_lists_and_decides_pending_operations() {
 /// The same decision through the **real binary** (D-67): `exec` reports a parked
 /// approval and exits 3, and a headless user previously had to start the TUI or use
 /// `--full-auto`. `teamagents approvals` lists it and decides it; the session then
-/// dispatches the call the decision was bound to and the goal completes.
+/// dispatches the call the decision was bound to and the work completes.
 #[tokio::test]
 async fn the_approvals_cli_lists_and_decides_a_parked_operation() {
     use std::process::Command;
@@ -1021,7 +1021,7 @@ async fn the_approvals_cli_lists_and_decides_a_parked_operation() {
     let decided: Json = serde_json::from_str(&out).expect("JSON");
     assert_eq!(decided["decision"], json!("approve"), "{out}");
     assert_eq!(decided["approval_id"], json!(approval_id), "the prefix must resolve to that approval: {out}");
-    let (status, _) = wait_goal(&mut client, since).await;
+    let (status, _) = wait_work(&mut client, since).await;
     assert_eq!(status, "SUCCEEDED", "the approved call was dispatched and the turn continued");
     let (code, out, _) = approvals(vec!["approvals".into()], state_root.clone()).await;
     assert_eq!(code, 0);
@@ -1152,12 +1152,12 @@ async fn the_intervention_cli_cancels_a_task_and_pauses_and_resumes_an_instance(
         cli(vec!["instances".into(), "resume".into(), "--id".into(), "i-worker".into()], state_root.clone()).await;
     assert_eq!(code, 0, "{err}");
     assert!(out.contains("i-worker: ACTIVE /"), "{out}");
-    // cancelling the task releases the delegator: the goal settles
+    // cancelling the task releases the delegator: the work settles
     let (code, out, err) =
         cli(vec!["tasks".into(), "cancel".into(), "--id".into(), "t-prose".into()], state_root.clone()).await;
     assert_eq!(code, 0, "{err}");
     assert!(out.contains("cancelled t-prose"), "{out}");
-    let (status, _) = wait_goal(&mut client, since).await;
+    let (status, _) = wait_work(&mut client, since).await;
     assert_eq!(status, "SUCCEEDED", "the delegator woke on the cancellation and settled");
     let tasks = client.call("tasks", json!({})).await;
     assert_eq!(tasks["result"]["tasks"][0]["status"], json!("CANCELLED"), "{tasks}");
@@ -1228,7 +1228,7 @@ async fn explicit_input_recovers_an_idle_unsettled_worker_without_automatic_prom
     .unwrap()
     .unwrap();
     assert!(result["envelope_id"].is_string());
-    assert_eq!(wait_goal(&mut client, since).await.0, "SUCCEEDED");
+    assert_eq!(wait_work(&mut client, since).await.0, "SUCCEEDED");
     let tasks = client.call("tasks", json!({})).await;
     assert_eq!(tasks["result"]["tasks"][0]["status"], "SUCCEEDED");
     assert_eq!(seen.lock().unwrap().len(), 5, "only the instructed worker and then the woken Leader ran");
@@ -1329,7 +1329,7 @@ fn exec_options(socket: &Path, workspace: &Path, prompt: &str, checks: Vec<Strin
         stream_events: false,
         checks,
         accept: Vec::new(),
-        accept_goal: None,
+        accept_work: None,
         workspace: workspace.to_path_buf(),
     }
 }
@@ -1368,7 +1368,7 @@ async fn autonomy_headless_question_answer_and_successor_acceptance() {
         ],
     )]);
     let mut cfg = config(&root, scripts);
-    cfg.supervisor.goal_limits = json!({"autonomous_work":true});
+    cfg.supervisor.work_limits = json!({"autonomous_work":true});
     let handle = serve(cfg).await.unwrap();
     let (socket, workspace) = (root.dir.join("state/daemon.sock"), root.dir.join("ws"));
     let first =
@@ -1385,7 +1385,7 @@ async fn autonomy_headless_question_answer_and_successor_acceptance() {
     })
     .await;
     assert_eq!(third.end, End::Completed, "{}", third.report);
-    assert_ne!(third.report["acceptance_goal"], "goal-s-test");
+    assert_ne!(third.report["acceptance_work"], "work-s-test");
     assert_eq!(third.report["acceptance"][0]["id"], "file");
     assert!(third.checks_ok, "{}", third.report);
     assert!(workspace.join("accepted.txt").exists());
@@ -1408,7 +1408,7 @@ async fn autonomy_headless_distinguishes_information_from_new_work() {
         ],
     )]);
     let mut cfg = config(&root, scripts);
-    cfg.supervisor.goal_limits = json!({"autonomous_work":true});
+    cfg.supervisor.work_limits = json!({"autonomous_work":true});
     let handle = serve(cfg).await.unwrap();
     let (socket, workspace) = (root.dir.join("state/daemon.sock"), root.dir.join("ws"));
     let first = headless(exec_options(&socket, &workspace, "Give the first result.", Vec::new())).await;
@@ -1420,13 +1420,13 @@ async fn autonomy_headless_distinguishes_information_from_new_work() {
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
     )
     .unwrap();
-    let count: i64 = db.query_row("SELECT COUNT(*) FROM goals", [], |row| row.get(0)).unwrap();
-    assert_eq!(count, 1, "a status question must not create a new work goal");
+    let count: i64 = db.query_row("SELECT COUNT(*) FROM work_scopes", [], |row| row.get(0)).unwrap();
+    assert_eq!(count, 1, "a status question must not create a new work work");
     let next = headless(exec_options(&socket, &workspace, "Give the second result.", Vec::new())).await;
     assert_eq!(next.end, End::Completed, "{}", next.report);
     assert_eq!(next.report["reply"], "Second result.");
     assert_eq!(next.report["usage"]["requests"], 2, "the admission call remains visible in this run's usage");
-    let count: i64 = db.query_row("SELECT COUNT(*) FROM goals", [], |row| row.get(0)).unwrap();
+    let count: i64 = db.query_row("SELECT COUNT(*) FROM work_scopes", [], |row| row.get(0)).unwrap();
     assert_eq!(count, 2);
     drop(db);
     handle.shutdown().await.unwrap();
@@ -1441,7 +1441,7 @@ async fn autonomy_headless_reports_bounded_blocking_without_timing_out() {
         vec![reply("Planning"), reply("More planning"), reply("Still planning")],
     )]);
     let mut cfg = config(&root, scripts);
-    cfg.supervisor.goal_limits = json!({"autonomous_work":true});
+    cfg.supervisor.work_limits = json!({"autonomous_work":true});
     let handle = serve(cfg).await.unwrap();
     let run = headless(ExecOptions {
         timeout_s: 10,
@@ -1461,7 +1461,7 @@ async fn headless(options: ExecOptions) -> ExecRun {
     headless_result(options).await.expect("headless run")
 }
 
-/// The run reports its own outcome: a settled goal carries the real goal status
+/// The run reports its own outcome: a settled work carries the real work status
 /// and exit code 0, and the settlement stored by an *earlier* run is history
 /// (the client drains the event log before submitting), never this run's result.
 #[tokio::test]
@@ -1473,12 +1473,12 @@ async fn headless_runs_report_their_own_outcome_not_an_earlier_settlement() {
     let (socket, workspace) = (root.dir.join("state/daemon.sock"), root.dir.join("ws"));
     let first = headless(exec_options(&socket, &workspace, "finish it", Vec::new())).await;
     assert_eq!(first.end, End::Completed, "{}", first.report);
-    assert_eq!(first.report["goal_status"], json!("SUCCEEDED"));
+    assert_eq!(first.report["work_status"], json!("SUCCEEDED"));
     assert_eq!(first.report["end"], json!("completed"));
     assert_eq!(first.end.exit_code(first.checks_ok), 0);
     assert!(first.report["watermark"].as_i64().unwrap() > 0, "{}", first.report);
-    // the goal is settled for good: the next run ends on a plain reply, and the
-    // stored `goal_completed` event is not replayed as its outcome
+    // the work is settled for good: the next run ends on a plain reply, and the
+    // stored `work_completed` event is not replayed as its outcome
     let second = headless(exec_options(&socket, &workspace, "just answer", Vec::new())).await;
     assert_eq!(second.end, End::Reply, "{}", second.report);
     assert_eq!(second.report["reply"], json!("a plain answer"));
@@ -1486,13 +1486,13 @@ async fn headless_runs_report_their_own_outcome_not_an_earlier_settlement() {
     handle.shutdown().await.expect("shutdown");
 }
 
-/// D-385: `exec --accept ID=COMMAND` attaches the user's own acceptance commands to the goal this run's work is
+/// D-385: `exec --accept ID=COMMAND` attaches the user's own acceptance commands to the work this run's work is
 /// charged to **before** the input lands, so the driver's §8 repair round runs them at the completion boundary.
 /// A failing check is not a coloured exit code: it sends the turn back to work, and after the bounded rounds the
-/// goal is settled BLOCKED — never SUCCEEDED. This is the same mechanism `[[checks]]` feeds, reachable from the
+/// work is settled BLOCKED — never SUCCEEDED. This is the same mechanism `[[checks]]` feeds, reachable from the
 /// entry point a CI job actually runs.
 #[tokio::test]
-async fn exec_accept_makes_a_failing_check_repair_the_turn_then_block_the_goal() {
+async fn exec_accept_makes_a_failing_check_repair_the_turn_then_block_the_work() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
     let scripts = HashMap::from([(
         "i-leader".to_string(),
@@ -1500,7 +1500,7 @@ async fn exec_accept_makes_a_failing_check_repair_the_turn_then_block_the_goal()
             finish_call("claiming success"),
             finish_call("claiming success again"),
             // the default repair budget is three rounds (`DEFAULT_MAX_CHECK_ROUNDS`), so the third claim is the
-            // one that finds the budget spent and parks the goal
+            // one that finds the budget spent and parks the work
             finish_call("claiming success a third time"),
         ],
     )]);
@@ -1513,9 +1513,9 @@ async fn exec_accept_makes_a_failing_check_repair_the_turn_then_block_the_goal()
     };
     let run = headless(options).await;
     assert_eq!(run.report["acceptance"][0]["id"], json!("never"), "{}", run.report);
-    assert_eq!(run.report["acceptance_goal"], json!("goal-s-test"), "{}", run.report);
+    assert_eq!(run.report["acceptance_work"], json!("work-s-test"), "{}", run.report);
     assert_eq!(
-        run.report["goal_status"],
+        run.report["work_status"],
         json!("BLOCKED"),
         "a failing acceptance check never upgrades the candidate: {}",
         run.report
@@ -1524,11 +1524,11 @@ async fn exec_accept_makes_a_failing_check_repair_the_turn_then_block_the_goal()
     handle.shutdown().await.expect("shutdown");
 }
 
-/// The same attachment with a check that passes: the goal settles SUCCEEDED, so the feature gates without
-/// obstructing. The two runs also pin the attachment point — the check is on the goal *before* the input, which
-/// is why a later `exec --accept` cannot retro-fit a goal that already registered a round.
+/// The same attachment with a check that passes: the work settles SUCCEEDED, so the feature gates without
+/// obstructing. The two runs also pin the attachment point — the check is on the work *before* the input, which
+/// is why a later `exec --accept` cannot retro-fit a work that already registered a round.
 #[tokio::test]
-async fn exec_accept_lets_a_passing_check_settle_the_goal() {
+async fn exec_accept_lets_a_passing_check_settle_the_work() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
     let scripts = HashMap::from([("i-leader".to_string(), vec![finish_call("done, and it was checked")])]);
     let (root, handle) = boot("exec-accept-pass", scripts).await;
@@ -1539,38 +1539,38 @@ async fn exec_accept_lets_a_passing_check_settle_the_goal() {
         ..exec_options(&socket, &workspace, "claim it", Vec::new())
     };
     let run = headless(options).await;
-    assert_eq!(run.report["goal_status"], json!("SUCCEEDED"), "{}", run.report);
+    assert_eq!(run.report["work_status"], json!("SUCCEEDED"), "{}", run.report);
     assert_eq!(run.end.exit_code(run.checks_ok), 0, "{}", run.report);
     handle.shutdown().await.expect("shutdown");
 }
 
-/// D-275: a settlement is read against the goal this run's turn was working on, not against the session's single
-/// goal. A session carrying an *older* ACTIVE goal beside the run's own (D-267/D-268) makes the checkpoint report
-/// that older goal once the run's goal settles, so the client read its own committed settlement as
+/// D-275: a settlement is read against the work this run's turn was working on, not against the session's single
+/// work. A session carrying an *older* ACTIVE work beside the run's own (D-267/D-268) makes the checkpoint report
+/// that older work once the run's work settles, so the client read its own committed settlement as
 /// not-yet-committed and waited out the caller's deadline — the worst kind of wrong answer for a CI job
-/// (measured in this repository's self-refine session, 2026-09-28: `goal-s-main` ACTIVE and detached beside a
-/// settled `goal-task2`, and the run was still waiting fourteen minutes later). The runtime's closing entry
-/// names its goal (`goal-close-<goal_id>`), so the client can confirm the settlement without touching the
-/// checkpoint's single-goal semantics.
+/// (measured in this repository's self-refine session, 2026-09-28: `work-s-main` ACTIVE and detached beside a
+/// settled `work-task2`, and the run was still waiting fourteen minutes later). The runtime's closing entry
+/// names its work (`work-close-<work_id>`), so the client can confirm the settlement without touching the
+/// checkpoint's single-work semantics.
 #[tokio::test]
-async fn a_settlement_is_read_against_the_runs_own_goal_not_the_sessions_active_one() {
+async fn a_settlement_is_read_against_the_runs_own_work_not_the_sessions_active_one() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
     let scripts = HashMap::from([("i-leader".to_string(), vec![finish_call("done over the wire")])]);
-    let (root, handle) = boot("exec-two-goals", scripts).await;
+    let (root, handle) = boot("exec-two-work_scopes", scripts).await;
     let (socket, workspace) = (root.dir.join("state/daemon.sock"), root.dir.join("ws"));
-    // the boot goal (`goal-s-test`) stays ACTIVE and detached when a second goal attaches to the leader: that is
-    // the goal the checkpoint reports once this run's own goal has settled, and it is not this run's outcome
+    // the boot work (`work-s-test`) stays ACTIVE and detached when a second work attaches to the leader: that is
+    // the work the checkpoint reports once this run's own work has settled, and it is not this run's outcome
     let mut client = Client::connect(&socket).await;
     let opened =
-        client.command("open-run-goal", "create_goal", json!({"id": "g-run", "instance_id": "i-leader"})).await;
+        client.command("open-run-work", "create_work", json!({"id": "g-run", "instance_id": "i-leader"})).await;
     assert_eq!(opened["ok"], json!(true), "{opened}");
     let checkpoint = client.call("checkpoint", json!({})).await;
-    assert_eq!(checkpoint["result"]["snapshot"]["goal"]["status"], json!("ACTIVE"), "{checkpoint}");
+    assert_eq!(checkpoint["result"]["snapshot"]["work"]["status"], json!("ACTIVE"), "{checkpoint}");
     let options = ExecOptions { timeout_s: 10, ..exec_options(&socket, &workspace, "finish it", Vec::new()) };
     let started = std::time::Instant::now();
     let run = headless(options).await;
     assert_eq!(run.end, End::Completed, "{}", run.report);
-    assert_eq!(run.report["goal_status"], json!("SUCCEEDED"), "{}", run.report);
+    assert_eq!(run.report["work_status"], json!("SUCCEEDED"), "{}", run.report);
     assert_eq!(run.report["end"], json!("completed"));
     assert_eq!(run.end.exit_code(run.checks_ok), 0);
     assert!(
@@ -1578,11 +1578,17 @@ async fn a_settlement_is_read_against_the_runs_own_goal_not_the_sessions_active_
         "the settlement is reported, not waited out ({}s)",
         started.elapsed().as_secs()
     );
-    // the session still carries the older goal, and it is still ACTIVE: the state the client had to look past
-    let goals = client.call("goals", json!({})).await;
-    let rows = goals["result"]["goals"].as_array().cloned().unwrap_or_default();
-    assert!(rows.iter().any(|goal| goal["id"] == json!("g-run") && goal["status"] == json!("SUCCEEDED")), "{goals}");
-    assert!(rows.iter().any(|goal| goal["id"] == json!("goal-s-test") && goal["status"] == json!("ACTIVE")), "{goals}");
+    // the session still carries the older work, and it is still ACTIVE: the state the client had to look past
+    let work_scopes = client.call("work_scopes", json!({})).await;
+    let rows = work_scopes["result"]["work_scopes"].as_array().cloned().unwrap_or_default();
+    assert!(
+        rows.iter().any(|work| work["id"] == json!("g-run") && work["status"] == json!("SUCCEEDED")),
+        "{work_scopes}"
+    );
+    assert!(
+        rows.iter().any(|work| work["id"] == json!("work-s-test") && work["status"] == json!("ACTIVE")),
+        "{work_scopes}"
+    );
     handle.shutdown().await.expect("shutdown");
 }
 
@@ -1674,13 +1680,13 @@ async fn a_second_resume_is_a_new_operation_not_the_first_ones_recorded_reply() 
     handle.shutdown().await.expect("shutdown");
 }
 
-/// D-393 end to end through the real driver: a goal that requires independent verification does **not** settle on
+/// D-393 end to end through the real driver: a work that requires independent verification does **not** settle on
 /// its producer's own passing round. The checks here pass, the producer claims success three times (the driver's
-/// default repair budget) and the goal parks BLOCKED — with the repair reason naming the tool another instance
+/// default repair budget) and the work parks BLOCKED — with the repair reason naming the tool another instance
 /// would have to call. That reason is the driver's own (the control plane's backstop would answer differently), so
 /// this is what proves the rule is live and not only a record check.
 #[tokio::test]
-async fn an_independent_goal_does_not_settle_on_its_producers_own_passing_round() {
+async fn an_independent_work_does_not_settle_on_its_producers_own_passing_round() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
     let scripts = HashMap::from([(
         "i-leader".to_string(),
@@ -1701,7 +1707,7 @@ async fn an_independent_goal_does_not_settle_on_its_producers_own_passing_round(
     let handle = serve(cfg).await.expect("daemon");
     let (socket, workspace) = (root.dir.join("state/daemon.sock"), root.dir.join("ws"));
     let run = headless(exec_options(&socket, &workspace, "finish it", Vec::new())).await;
-    assert_eq!(run.report["goal_status"], json!("BLOCKED"), "{}", run.report);
+    assert_eq!(run.report["work_status"], json!("BLOCKED"), "{}", run.report);
     assert_eq!(run.end.exit_code(run.checks_ok), 1);
     // the reason is the driver's, and it names what resolves it
     let mut client = Client::connect(&socket).await;
@@ -1714,23 +1720,23 @@ async fn an_independent_goal_does_not_settle_on_its_producers_own_passing_round(
         .filter_map(|event| event["payload"]["failures"][0]["reason"].as_str().map(str::to_string))
         .collect();
     assert!(
-        reasons.iter().any(|reason| reason.contains("verify_goal")),
+        reasons.iter().any(|reason| reason.contains("verify_work")),
         "the producer must be told how another instance can verify it: {reasons:?}"
     );
     handle.shutdown().await.expect("shutdown");
 }
 
-/// A goal the *runtime* blocks (its required checks never pass) is not a success
+/// A work the *runtime* blocks (its required checks never pass) is not a success
 /// either: `exec` must report it and exit non-zero. The runtime's own block note is
 /// what the instance stops on — an assistant-shaped one was exactly what a naive
 /// "the last assistant entry is the reply" reading mistook for the model's answer —
 /// and the block emitted no settlement event at all (D-71).
 #[tokio::test]
-async fn a_runtime_blocked_goal_is_not_reported_as_a_reply() {
+async fn a_runtime_blocked_work_is_not_reported_as_a_reply() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
     // three finishes: each one runs the check round, the round never passes, the
     // third exhausts the driver's default repair budget and the runtime blocks the
-    // goal (a fourth step would mean the runtime asked again — the storm, not this)
+    // work (a fourth step would mean the runtime asked again — the storm, not this)
 
     let scripts = HashMap::from([(
         "i-leader".to_string(),
@@ -1739,12 +1745,12 @@ async fn a_runtime_blocked_goal_is_not_reported_as_a_reply() {
     let root = root("exec-runtime-blocked");
     std::fs::create_dir_all(root.dir.join("ws")).unwrap();
     let mut cfg = config(&root, scripts);
-    cfg.supervisor.goal_limits = json!({"required_checks": [{"id": "never", "command": "false", "timeout": 30}]});
+    cfg.supervisor.work_limits = json!({"required_checks": [{"id": "never", "command": "false", "timeout": 30}]});
     let handle = serve(cfg).await.expect("daemon");
     let (socket, workspace) = (root.dir.join("state/daemon.sock"), root.dir.join("ws"));
     let run = headless(exec_options(&socket, &workspace, "finish it", Vec::new())).await;
     assert_eq!(run.end, End::Failed, "{}", run.report);
-    assert_eq!(run.report["goal_status"], json!("BLOCKED"), "{}", run.report);
+    assert_eq!(run.report["work_status"], json!("BLOCKED"), "{}", run.report);
     assert_eq!(run.report["reply"], Json::Null, "the runtime's own note is not a reply: {}", run.report);
     assert_eq!(run.end.exit_code(run.checks_ok), 1);
     // and the settlement is visible to any client, not only to the one that was polling
@@ -1752,12 +1758,12 @@ async fn a_runtime_blocked_goal_is_not_reported_as_a_reply() {
     let events = client.call("events", json!({"since": 0})).await;
     let kinds: Vec<&str> =
         events["result"]["events"].as_array().unwrap().iter().filter_map(|event| event["kind"].as_str()).collect();
-    assert!(kinds.contains(&"goal_completed"), "the block must be an event too: {kinds:?}");
+    assert!(kinds.contains(&"work_completed"), "the block must be an event too: {kinds:?}");
     let completed = events["result"]["events"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|event| event["kind"] == json!("goal_completed"))
+        .find(|event| event["kind"] == json!("work_completed"))
         .unwrap();
     assert_eq!(completed["payload"]["status"], json!("BLOCKED"), "{completed}");
     assert_eq!(completed["payload"]["blocked_by"], json!("runtime"), "{completed}");
@@ -1771,10 +1777,10 @@ async fn a_runtime_blocked_goal_is_not_reported_as_a_reply() {
     handle.shutdown().await.expect("shutdown");
 }
 
-/// A goal that settles as BLOCKED is not a success: the run reports it and
-/// exits 1, so a CI job cannot read a blocked goal as delivered work.
+/// A work that settles as BLOCKED is not a success: the run reports it and
+/// exits 1, so a CI job cannot read a blocked work as delivered work.
 #[tokio::test]
-async fn a_blocked_goal_is_not_reported_as_a_success() {
+async fn a_blocked_work_is_not_reported_as_a_success() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
     let blocked = json!({"role": "assistant", "content": "",
         "tool_calls": [{"id": "finish-1", "type": "function",
@@ -1785,16 +1791,16 @@ async fn a_blocked_goal_is_not_reported_as_a_success() {
     let (socket, workspace) = (root.dir.join("state/daemon.sock"), root.dir.join("ws"));
     let run = headless(exec_options(&socket, &workspace, "try it", Vec::new())).await;
     assert_eq!(run.end, End::Failed, "{}", run.report);
-    assert_eq!(run.report["goal_status"], json!("BLOCKED"));
+    assert_eq!(run.report["work_status"], json!("BLOCKED"));
     assert_eq!(run.end.exit_code(run.checks_ok), 1);
     handle.shutdown().await.expect("shutdown");
 }
 
-/// The outcome contract's third arm, through the whole surface: a model that reports `failed` closes its goal
+/// The outcome contract's third arm, through the whole surface: a model that reports `failed` closes its work
 /// `FAILED`, and the run is a failure — not a success, not a reply, not a timeout. Its `blocked` sibling is
 /// above this one; before this test the string `"status": "failed"` appeared in no test (D-317).
 #[tokio::test]
-async fn a_failed_goal_is_not_reported_as_a_success() {
+async fn a_failed_work_is_not_reported_as_a_success() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
     let failed = json!({"role": "assistant", "content": "",
         "tool_calls": [{"id": "finish-1", "type": "function",
@@ -1805,13 +1811,13 @@ async fn a_failed_goal_is_not_reported_as_a_success() {
     let (socket, workspace) = (root.dir.join("state/daemon.sock"), root.dir.join("ws"));
     let run = headless(exec_options(&socket, &workspace, "try it", Vec::new())).await;
     assert_eq!(run.end, End::Failed, "{}", run.report);
-    assert_eq!(run.report["goal_status"], json!("FAILED"));
+    assert_eq!(run.report["work_status"], json!("FAILED"));
     assert_eq!(run.end.exit_code(run.checks_ok), 1);
     handle.shutdown().await.expect("shutdown");
 }
 
 /// A turn the runtime closes with nothing to settle is not the member's reply:
-/// the goal settled in an earlier run, so this run's `finish` only ends the turn
+/// the work settled in an earlier run, so this run's `finish` only ends the turn
 /// (`close_completion`) and the runtime says so. Reporting that closing word as a
 /// reply would be a success the run never had; waiting for the deadline would
 /// call a finished turn a timeout (D-71).
@@ -1826,13 +1832,13 @@ async fn a_turn_closed_by_the_runtime_without_a_settlement_is_not_a_reply() {
     let (socket, workspace) = (root.dir.join("state/daemon.sock"), root.dir.join("ws"));
     let first = headless(exec_options(&socket, &workspace, "finish it", Vec::new())).await;
     assert_eq!(first.end, End::Completed, "{}", first.report);
-    // the second run's goal is already terminal: its finish closes the turn
+    // the second run's work is already terminal: its finish closes the turn
     let options = ExecOptions { timeout_s: 30, ..exec_options(&socket, &workspace, "finish again", Vec::new()) };
     let started = std::time::Instant::now();
     let second = headless(options).await;
     assert_eq!(second.end, End::Unsettled, "{}", second.report);
     assert_eq!(second.report["end"], json!("unsettled"));
-    assert_eq!(second.report["goal_status"], Json::Null, "{}", second.report);
+    assert_eq!(second.report["work_status"], Json::Null, "{}", second.report);
     assert_eq!(second.report["reply"], Json::Null, "the runtime's note is not a reply: {}", second.report);
     assert_eq!(second.end.exit_code(second.checks_ok), 1);
     assert!(
@@ -1987,7 +1993,7 @@ async fn a_failing_acceptance_command_fails_the_run() {
     let (socket, workspace) = (root.dir.join("state/daemon.sock"), root.dir.join("ws"));
     let checks = vec!["echo broken; exit 7".to_string(), "echo never".to_string()];
     let run = headless(exec_options(&socket, &workspace, "finish it", checks)).await;
-    assert_eq!(run.end, End::Completed, "the goal itself did settle: {}", run.report);
+    assert_eq!(run.end, End::Completed, "the work itself did settle: {}", run.report);
     assert!(!run.checks_ok);
     assert_eq!(run.end.exit_code(run.checks_ok), 1, "a failed acceptance is not a success");
     let verdicts = run.report["verification"].as_array().unwrap();
@@ -2021,9 +2027,9 @@ async fn start_a_turn_in_flight(client: &mut Client, text: &str) {
 }
 
 /// An input that arrives while a turn is in flight is queued (D-63). Its run is
-/// *its own* (D-49's "own outcome only", applied to the queued case): the goal the
+/// *its own* (D-49's "own outcome only", applied to the queued case): the work the
 /// earlier turn settled on its way out must not be reported as this input's
-/// outcome — the input was not part of that goal, and before D-72 `exec` reported
+/// outcome — the input was not part of that work, and before D-72 `exec` reported
 /// `end: completed` with the earlier turn's settlement and exited 0.
 #[tokio::test]
 async fn a_queued_input_is_not_answered_by_the_previous_turns_settlement() {
@@ -2042,15 +2048,15 @@ async fn a_queued_input_is_not_answered_by_the_previous_turns_settlement() {
     assert_eq!(run.end, End::Reply, "the run's own turn answered it: {}", run.report);
     assert_eq!(run.report["reply"], json!("answer to the queued question"), "{}", run.report);
     assert_eq!(
-        run.report["goal_status"],
+        run.report["work_status"],
         Json::Null,
         "the earlier turn's settlement is not this run's outcome: {}",
         run.report
     );
     assert_eq!(run.end.exit_code(run.checks_ok), 0);
-    // the session's goal really did settle — as the *first* turn's outcome
+    // the session's work really did settle — as the *first* turn's outcome
     let settled = client.call("checkpoint", json!({})).await;
-    assert_eq!(settled["result"]["snapshot"]["goal"]["status"], json!("SUCCEEDED"), "{settled}");
+    assert_eq!(settled["result"]["snapshot"]["work"]["status"], json!("SUCCEEDED"), "{settled}");
     handle.shutdown().await.expect("shutdown");
 }
 
@@ -2115,7 +2121,7 @@ async fn a_queued_input_a_reset_sealed_is_reported_undelivered() {
     assert_eq!(run.end, End::Undelivered, "{}", run.report);
     assert_eq!(run.end.exit_code(run.checks_ok), 1);
     assert!(
-        run.report["reply"] == Json::Null && run.report["goal_status"] == Json::Null,
+        run.report["reply"] == Json::Null && run.report["work_status"] == Json::Null,
         "an input that never landed answers nothing: {}",
         run.report
     );
@@ -2265,7 +2271,7 @@ async fn a_budget_refusal_ends_the_headless_run_instead_of_timing_out() {
     std::fs::create_dir_all(root.dir.join("ws")).unwrap();
     // a ceiling below one request's estimate: the runtime refuses before any model call (A18)
     let mut cfg = config(&root, scripts);
-    cfg.supervisor.goal_limits = json!({"max_total_tokens": 1});
+    cfg.supervisor.work_limits = json!({"max_total_tokens": 1});
     let handle = serve(cfg).await.expect("daemon");
     let (socket, workspace) = (root.dir.join("state/daemon.sock"), root.dir.join("ws"));
     let marker = workspace.join("check-ran");
@@ -2495,7 +2501,7 @@ async fn the_instances_merge_lever_brings_a_worktree_members_branch_into_the_ses
     let (code, out, err) = merge("i-git").await;
     assert_eq!(code, 1, "a turn in flight is not a stable snapshot: {out}{err}");
     assert!(err.contains("middle of a turn"), "{err}");
-    assert_eq!(wait_goal(&mut client, since).await.0, "SUCCEEDED");
+    assert_eq!(wait_work(&mut client, since).await.0, "SUCCEEDED");
     // the member's own turn ends on its own (a plain reply; D-65 leaves its task RUNNING, which does not block
     // merging what it has committed so far)
     let mut idle = false;
@@ -2601,7 +2607,7 @@ async fn the_streaming_headless_mode_prints_the_events_then_the_report() {
     let report = &report_line[0]["report"];
     assert_eq!(report["end"], json!("completed"), "{report}");
     assert!(
-        events.iter().any(|line| line["event"]["kind"] == json!("goal_completed")),
+        events.iter().any(|line| line["event"]["kind"] == json!("work_completed")),
         "the event that ended the run is streamed, not skipped by the settle race: {out}"
     );
     assert_eq!(report["usage"]["requests"], json!(1), "the drained attempt is accounted: {report}");
@@ -2621,7 +2627,7 @@ async fn the_streaming_headless_mode_prints_the_events_then_the_report() {
     streamed_keys.sort_unstable();
     plain_keys.sort_unstable();
     assert_eq!(streamed_keys, plain_keys, "the streamed report is the `--json` report, in an envelope");
-    assert_eq!(code, 1, "the second run has no active goal to settle, so it is the documented exit 1: {out}{err}");
+    assert_eq!(code, 1, "the second run has no active work to settle, so it is the documented exit 1: {out}{err}");
 
     // 3. the two output shapes are refused together, with both flags named (D-230)
     let (code, out, err) = cli(vec![

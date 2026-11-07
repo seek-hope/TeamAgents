@@ -38,7 +38,7 @@ pub enum InterventionCommand {
     /// Retire an instance: its open tasks and derived grants are dealt with
     /// explicitly and its workspace is retired (§5.4) — hence `--yes`.
     Terminate { id: String },
-    /// The session's tasks with their assignee, goal and status.
+    /// The session's tasks with their assignee, work and status.
     ListTasks,
     /// Cancel one task: the only documented way to release a delegator whose
     /// assignee stopped without settling it (D-65).
@@ -400,11 +400,11 @@ fn print_report(options: &InterventionOptions, report: &Json) {
             println!("session {}: {} task(s)", report["session_id"].as_str().unwrap_or(""), tasks.len());
             for task in &tasks {
                 println!(
-                    "  {}  {}  assignee {}  goal {}",
+                    "  {}  {}  assignee {}  work {}",
                     task["id"].as_str().unwrap_or(""),
                     task["status"].as_str().unwrap_or(""),
                     task["assignee"].as_str().unwrap_or(""),
-                    task["goal_id"].as_str().unwrap_or("")
+                    task["work_id"].as_str().unwrap_or("")
                 );
                 print_diagnosis(&task["diagnosis"]);
                 if task["diagnosis"]["code"] != task["assignee_activity"]["code"] {

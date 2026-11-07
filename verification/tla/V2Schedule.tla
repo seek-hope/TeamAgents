@@ -1,6 +1,6 @@
 ------------------------------ MODULE V2Schedule ----------------------------
 (***************************************************************************)
-(* Automations (D-367): user-defined schedules that start a goal on their   *)
+(* Automations (D-367): user-defined schedules that start a work on their   *)
 (* own.                                                                     *)
 (*                                                                          *)
 (* An automation is enabled or paused, has a next due slot, and running     *)
@@ -17,8 +17,8 @@
 (*                                                                          *)
 (* The model is safety only — a run need not ever happen — and it           *)
 (* abstracts the period into "the slot advances by one"; the coalescing of  *)
-(* missed slots and the goal the run opens are the code's, pinned by        *)
-(* `automations.rs`'s tests and `cli::a_due_automation_opens_one_goal_and_   *)
+(* missed slots and the work the run opens are the code's, pinned by        *)
+(* `automations.rs`'s tests and `cli::a_due_automation_opens_one_work_and_   *)
 (* does_not_overlap_itself`. The four negative controls at the end each     *)
 (* forget one rule and must be refuted.                                     *)
 (*                                                                          *)

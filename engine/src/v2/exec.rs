@@ -133,13 +133,13 @@ pub struct ExecOptions {
     /// (`--check`). They run in the client's workspace after the turn ends and
     /// gate the exit code; an empty list means no client-side verification.
     pub checks: Vec<String>,
-    /// D-385: goal-level acceptance (`--accept ID=COMMAND`) — the user's own required checks, attached to the
-    /// goal this run's work is charged to *before* the input lands, so the driver's §8 repair round runs them at
+    /// D-385: work-level acceptance (`--accept ID=COMMAND`) — the user's own required checks, attached to the
+    /// work this run's work is charged to *before* the input lands, so the driver's §8 repair round runs them at
     /// the completion boundary: a failing check sends the turn back to work instead of only colouring the exit
-    /// code. Empty means the goal is judged by whatever `[[checks]]`/`create_goal` already put on it.
+    /// code. Empty means the work is judged by whatever `[[checks]]`/`create_work` already put on it.
     pub accept: Vec<Json>,
-    /// The id of the goal `accept` was attached to, for the report (`None` when `accept` is empty).
-    pub accept_goal: Option<String>,
+    /// The id of the work `accept` was attached to, for the report (`None` when `accept` is empty).
+    pub accept_work: Option<String>,
     /// The workspace the acceptance commands run in (the client's `--cwd` or
     /// its current directory).
     pub workspace: PathBuf,
@@ -150,13 +150,13 @@ pub struct ExecOptions {
 /// (2 is reserved for usage and infrastructure errors, raised before this).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum End {
-    /// The goal settled as SUCCEEDED.
+    /// The work settled as SUCCEEDED.
     Completed,
-    /// The leader ended its turn with a plain reply and no goal settlement.
+    /// The leader ended its turn with a plain reply and no work settlement.
     Reply,
     /// The turn ended on the runtime's own closing word with nothing settled
     /// this run can claim: the model's `finish` had nothing to settle, or the
-    /// goal it addressed had already settled earlier. Not a `Reply` (that text
+    /// work it addressed had already settled earlier. Not a `Reply` (that text
     /// is the runtime's, not the member's) and not a settlement, so the run is
     /// unfinished — exit 1 (D-71).
     Unsettled,
@@ -165,12 +165,12 @@ pub enum End {
     /// run happened, so there is nothing to report as its outcome — exit 1
     /// (D-72).
     Undelivered,
-    /// The goal settled as something other than SUCCEEDED.
+    /// The work settled as something other than SUCCEEDED.
     Failed,
     /// The turn is parked on a user approval: a non-interactive run has nobody
     /// to answer it, so it reports immediately instead of burning the timeout.
     ApprovalRequired,
-    /// Work awaits a material user decision while retaining its goal and budget.
+    /// Work awaits a material user decision while retaining its work and budget.
     NeedsInput,
     /// The deadline passed with the instance still running.
     Timeout,
@@ -214,9 +214,9 @@ const CHECK_OUTPUT_CAP: usize = 8000;
 /// answer, and everything else is somebody else's.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Attribution {
-    /// The entry that ends the turn which started at this input: the goal settled, and *which* goal — a session
+    /// The entry that ends the turn which started at this input: the work settled, and *which* work — a session
     /// can carry several (D-266) and the one a run settled is not necessarily the one the checkpoint reports, so
-    /// the id is what lets a client read that goal's own completion summary (D-431).
+    /// the id is what lets a client read that work's own completion summary (D-431).
     Settled(String, String),
     /// The entry that ends that turn: the member's own text.
     Reply(String),
@@ -244,33 +244,33 @@ impl Attribution {
     }
 
     /// The runtime's own word for a settlement, told apart from a closed turn by
-    /// the envelope the runtime generated for it (`goal-close-*`, `goal-block-*`).
-    fn settles_a_goal(entry: &Json) -> bool {
-        entry["kind"] == json!("runtime") && Attribution::closing_goal(entry).is_some()
+    /// the envelope the runtime generated for it (`work-close-*`, `work-block-*`).
+    fn settles_a_work(entry: &Json) -> bool {
+        entry["kind"] == json!("runtime") && Attribution::closing_work(entry).is_some()
     }
 
-    /// The goal a settlement's own word is about: the runtime builds that envelope as `goal-close-<goal_id>` /
-    /// `goal-block-<goal_id>` (`control.rs::complete_goal`/`block_goal`), so the closing entry *names* its goal.
-    /// That is what lets this run confirm its own settlement without asking the checkpoint about "the" goal,
-    /// which can be a different goal once a session carries more than one (D-275).
-    fn closing_goal(entry: &Json) -> Option<&str> {
+    /// The work a settlement's own word is about: the runtime builds that envelope as `work-close-<work_id>` /
+    /// `work-block-<work_id>` (`control.rs::complete_work`/`block_work`), so the closing entry *names* its work.
+    /// That is what lets this run confirm its own settlement without asking the checkpoint about "the" work,
+    /// which can be a different work once a session carries more than one (D-275).
+    fn closing_work(entry: &Json) -> Option<&str> {
         let id = entry["envelope_id"].as_str()?;
-        id.strip_prefix("goal-close-").or_else(|| id.strip_prefix("goal-block-"))
+        id.strip_prefix("work-close-").or_else(|| id.strip_prefix("work-block-"))
     }
 
-    /// `goals` is the session's goal list (`goals` read method), `history` this run's view of the conversation.
-    /// The settlement is confirmed against the status of the goal its own closing entry names — never against the
-    /// checkpoint's *single* goal, which is the session's active goal (D-266) and, in a session that carries an
-    /// older active goal beside this run's own (D-267/D-268), is another goal entirely: the run then read a
+    /// `work_scopes` is the session's work list (`work_scopes` read method), `history` this run's view of the conversation.
+    /// The settlement is confirmed against the status of the work its own closing entry names — never against the
+    /// checkpoint's *single* work, which is the session's active work (D-266) and, in a session that carries an
+    /// older active work beside this run's own (D-267/D-268), is another work entirely: the run then read a
     /// settlement that was committed and in its own history as not-yet-committed and waited out its deadline
     /// (measured 2026-09-28, D-275).
-    fn read(envelope: &str, goals: &Json, history: &[Json]) -> Attribution {
+    fn read(envelope: &str, work_scopes: &Json, history: &[Json]) -> Attribution {
         let Some(mine) = history.iter().position(|entry| entry["envelope_id"].as_str() == Some(envelope)) else {
             // the input has not landed yet (a turn was in flight when it arrived):
             // nothing the session did in the meantime is its outcome
             return Attribution::Pending;
         };
-        let work_goal = history[mine]["work_goal_id"].as_str();
+        let work_work = history[mine]["work_work_id"].as_str();
         let Some(end) = history[mine + 1..].iter().find(|entry| {
             let source = entry["envelope_id"].as_str().unwrap_or("");
             if source.starts_with("work-question-")
@@ -279,8 +279,8 @@ impl Attribution {
             {
                 return true;
             }
-            if let Some(goal) = work_goal {
-                Attribution::closing_goal(entry) == Some(goal)
+            if let Some(work) = work_work {
+                Attribution::closing_work(entry) == Some(work)
             } else {
                 Attribution::ends_a_turn(entry)
             }
@@ -294,13 +294,13 @@ impl Attribution {
         if source.starts_with("work-blocked-") || source.starts_with("work-stopped-") {
             return Attribution::Closed;
         }
-        if Attribution::settles_a_goal(end) {
-            // the settlement's own word was written in the same transaction as its goal's status, so a status
+        if Attribution::settles_a_work(end) {
+            // the settlement's own word was written in the same transaction as its work's status, so a status
             // that still reads ACTIVE has simply not caught up: decide on the next pass instead of guessing one
-            let status = Attribution::closing_goal(end).and_then(|goal_id| status_of_goal(goals, goal_id));
+            let status = Attribution::closing_work(end).and_then(|work_id| status_of_work(work_scopes, work_id));
             return match status {
                 Some(status) if status != "ACTIVE" => {
-                    Attribution::Settled(status, Attribution::closing_goal(end).unwrap_or_default().to_string())
+                    Attribution::Settled(status, Attribution::closing_work(end).unwrap_or_default().to_string())
                 }
                 _ => Attribution::Pending,
             };
@@ -322,19 +322,19 @@ pub struct ExecRun {
 }
 
 /// D-270: the advisory a run prints *before* it submits anything, when the leader's turn cannot charge work to a
-/// goal in a legacy session. Durable-work sessions use input admission instead of this advisory. The predicate is
-/// the delegation's own: an ACTIVE goal must be *attached* to the leader. The checkpoint's single goal object
-/// cannot answer it (it reports the session's active goal, which may be one no instance points at — the state
-/// D-267's ordering exists for), so the run reads the `goals` list. A session with no goals at all is the
+/// work in a legacy session. Durable-work sessions use input admission instead of this advisory. The predicate is
+/// the delegation's own: an ACTIVE work must be *attached* to the leader. The checkpoint's single work object
+/// cannot answer it (it reports the session's active work, which may be one no instance points at — the state
+/// D-267's ordering exists for), so the run reads the `work_scopes` list. A session with no work_scopes at all is the
 /// bootstrap's own instant, not a state to warn about: it stays silent.
-fn unchargeable_goal_advisory(goals: &Json, instance: &str) -> Option<String> {
-    let rows = goals["goals"].as_array()?;
+fn unchargeable_work_advisory(work_scopes: &Json, instance: &str) -> Option<String> {
+    let rows = work_scopes["work_scopes"].as_array()?;
     if rows.is_empty() {
         return None;
     }
-    let chargeable = rows.iter().any(|goal| {
-        goal["status"] == json!("ACTIVE")
-            && goal["attached_instances"]
+    let chargeable = rows.iter().any(|work| {
+        work["status"] == json!("ACTIVE")
+            && work["attached_instances"]
                 .as_array()
                 .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some(instance)))
     });
@@ -342,37 +342,37 @@ fn unchargeable_goal_advisory(goals: &Json, instance: &str) -> Option<String> {
         return None;
     }
     Some(format!(
-        "exec: no active goal is attached to {instance}, so the turn can still run local work but a delegation \
-         inside it will be refused. Open the next goal with `teamagents goals open --id ID --attach {instance}` \
+        "exec: no active work is attached to {instance}, so the turn can still run local work but a delegation \
+         inside it will be refused. Open the next work with `teamagents work_scopes open --id ID --attach {instance}` \
          (or `g` in the TUI's instances panel) and run this input again."
     ))
 }
 
-/// The goal this run's work will be charged to: the ACTIVE goal **attached** to the leader instance — the same
-/// predicate the pre-submit advisory uses (§5.3, D-270), and the goal `exec --accept` attaches its checks to
+/// The work this run's work will be charged to: the ACTIVE work **attached** to the leader instance — the same
+/// predicate the pre-submit advisory uses (§5.3, D-270), and the work `exec --accept` attaches its checks to
 /// (`require_checks`, D-385).
-fn chargeable_goal<'a>(goals: &'a Json, instance: &str) -> Option<&'a str> {
-    goals["goals"].as_array()?.iter().find_map(|goal| {
-        (goal["status"] == json!("ACTIVE")
-            && goal["attached_instances"]
+fn chargeable_work<'a>(work_scopes: &'a Json, instance: &str) -> Option<&'a str> {
+    work_scopes["work_scopes"].as_array()?.iter().find_map(|work| {
+        (work["status"] == json!("ACTIVE")
+            && work["attached_instances"]
                 .as_array()
                 .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some(instance))))
-        .then(|| goal["id"].as_str())
+        .then(|| work["id"].as_str())
         .flatten()
     })
 }
 
-/// The status of one *named* goal, read off the session's goal list (`goals` read method) — the same list the
-/// advisory above reads, and for the same reason: the checkpoint's single goal cannot answer a question about a
-/// named goal once a session carries more than one (D-266/D-275).
-fn status_of_goal(goals: &Json, goal_id: &str) -> Option<String> {
-    let rows = goals["goals"].as_array()?;
-    let goal = rows.iter().find(|goal| goal["id"].as_str() == Some(goal_id))?;
-    goal["status"].as_str().map(str::to_string)
+/// The status of one *named* work, read off the session's work list (`work_scopes` read method) — the same list the
+/// advisory above reads, and for the same reason: the checkpoint's single work cannot answer a question about a
+/// named work once a session carries more than one (D-266/D-275).
+fn status_of_work(work_scopes: &Json, work_id: &str) -> Option<String> {
+    let rows = work_scopes["work_scopes"].as_array()?;
+    let work = rows.iter().find(|work| work["id"].as_str() == Some(work_id))?;
+    work["status"].as_str().map(str::to_string)
 }
 
 /// The runtime's own words for a fact that ends *this* run while its turn can never finish: a request it
-/// refused before it began (a goal budget ceiling, A18; a passed goal deadline, A35 — D-97), an instance the
+/// refused before it began (a work budget ceiling, A18; a passed work deadline, A35 — D-97), an instance the
 /// user retired mid-run (D-98), or a reset that took the turn's epoch away (D-100). `None` for every other
 /// kind. Keeping every such fact in one place is deliberate: the client used to learn about them one at a
 /// time, and three of them were found only by driving the product (`end=timeout` for work nobody was doing).
@@ -380,16 +380,16 @@ fn run_fate(event: &Json, instance: &str) -> Option<String> {
     let payload = &event["payload"];
     match event["kind"].as_str()? {
         "budget_refused" => Some(format!(
-            "goal {} budget exceeded: known {} + reserved {} + est {} > max {}",
-            payload["goal_id"].as_str().unwrap_or("?"),
+            "work {} budget exceeded: known {} + reserved {} + est {} > max {}",
+            payload["work_id"].as_str().unwrap_or("?"),
             payload["known"].as_i64().unwrap_or(0),
             payload["reserved"].as_i64().unwrap_or(0),
             payload["est"].as_i64().unwrap_or(0),
             payload["max"].as_i64().unwrap_or(0),
         )),
-        "goal_deadline_refused" => Some(format!(
-            "goal {} deadline passed before request {} could start",
-            payload["goal_id"].as_str().unwrap_or("?"),
+        "work_deadline_refused" => Some(format!(
+            "work {} deadline passed before request {} could start",
+            payload["work_id"].as_str().unwrap_or("?"),
             payload["request_id"].as_str().unwrap_or("?"),
         )),
         // The user retired the instance: the control plane closes the epoch's execution, so nothing will ever
@@ -445,34 +445,34 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
     let mut client = Client::connect(&options.socket)
         .map_err(|error| (2, format!("exec: {error}; start teamagents daemon first (or just run teamagents)")))?;
     // Drain the events recorded before this input and keep the watermark: a
-    // goal settlement from an earlier run is history, not this run's outcome.
+    // work settlement from an earlier run is history, not this run's outcome.
     client.events().map_err(|error| socket_lost("reading the event stream", &error))?;
     let checkpoint =
         client.call("checkpoint", json!({})).map_err(|error| socket_lost("reading the checkpoint", &error))?;
     let (instance, lifecycle) = leader_instance(&checkpoint)
         .ok_or_else(|| (2, format!("exec: the session has no usable leader instance: {checkpoint}")))?;
-    // Legacy sessions retain their explicit goal-opening behavior. Enrolled sessions
+    // Legacy sessions retain their explicit work-opening behavior. Enrolled sessions
     // attach acceptance commands atomically when the input is admitted.
     let autonomous = checkpoint["snapshot"]["work_policy_version"] == json!(1);
-    let goals = client.call("goals", json!({})).unwrap_or(Json::Null);
+    let work_scopes = client.call("work_scopes", json!({})).unwrap_or(Json::Null);
     if !autonomous {
-        if let Some(advisory) = unchargeable_goal_advisory(&goals, &instance) {
+        if let Some(advisory) = unchargeable_work_advisory(&work_scopes, &instance) {
             eprintln!("{advisory}");
         }
     }
-    // D-385: `--accept` is the *goal-level* half of acceptance. It is attached here, before the input is
-    // submitted, because a check can only join a goal that has not started verifying yet (`require_checks`
-    // refuses once a round is registered) — and because the driver reads the goal's checks at the completion
+    // D-385: `--accept` is the *work-level* half of acceptance. It is attached here, before the input is
+    // submitted, because a check can only join a work that has not started verifying yet (`require_checks`
+    // refuses once a round is registered) — and because the driver reads the work's checks at the completion
     // boundary, so attaching late would be a race with the model's own `finish`.
-    let mut accept_goal = if options.accept.is_empty() || autonomous {
+    let mut accept_work = if options.accept.is_empty() || autonomous {
         None
     } else {
-        let goal = chargeable_goal(&goals, &instance).map(str::to_string).ok_or_else(|| {
+        let work = chargeable_work(&work_scopes, &instance).map(str::to_string).ok_or_else(|| {
             (
                 2,
                 format!(
-                    "exec --accept: no active goal is attached to {instance}, so the acceptance commands have nothing \
-                 to gate; open one with `teamagents goals open --id ID --attach {instance} --check ID=COMMAND` \
+                    "exec --accept: no active work is attached to {instance}, so the acceptance commands have nothing \
+                 to gate; open one with `teamagents work_scopes open --id ID --attach {instance} --check ID=COMMAND` \
                  and run this input again"
                 ),
             )
@@ -481,10 +481,10 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
             .command(
                 &format!("require-checks-{}", uuid::Uuid::new_v4().simple()),
                 "require_checks",
-                json!({"goal_id": goal, "checks": options.accept}),
+                json!({"work_id": work, "checks": options.accept}),
             )
             .map_err(|error| (2, format!("exec --accept: {error}")))?;
-        Some(goal)
+        Some(work)
     };
     // A parked or paused leader will not run the input: saying so beats
     // submitting work that sits in a queue nobody is draining until the caller's
@@ -523,9 +523,9 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
     let mut input_applied = submitted["applied"] == json!(true);
     let mut model_request_failed = false;
     let deadline = Instant::now() + Duration::from_secs(options.timeout_s);
-    let mut goal_status: Option<String> = None;
+    let mut work_status: Option<String> = None;
     // D-427: what *this run* cost, summed from the provider's own reported usage on each recorded attempt (the
-    // goal's settled total lives elsewhere; a run is what a user is looking at when they wonder about the bill).
+    // work's settled total lives elsewhere; a run is what a user is looking at when they wonder about the bill).
     // An attempt the provider never priced is counted, not hidden: `unpriced_attempts` says how many.
     let mut usage = json!({"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
                            "cache_hit_tokens": 0, "cache_miss_tokens": 0, "cache_write_tokens": 0,
@@ -533,11 +533,11 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
     let mut turn_failure: Option<String> = None;
     let mut reply: Option<String> = None;
     let mut pending_approval: Option<String> = None;
-    // D-431: the goal this run settled, so the reply fallback reads *that* goal's completion summary rather
-    // than the checkpoint's goal (which is the session's active one, D-266).
-    let mut settled_goal: Option<String> = None;
-    let mut admitted_work_goal: Option<String> = None;
-    // set when the runtime refused a request before it began (budget ceiling, passed goal deadline)
+    // D-431: the work this run settled, so the reply fallback reads *that* work's completion summary rather
+    // than the checkpoint's work (which is the session's active one, D-266).
+    let mut settled_work: Option<String> = None;
+    let mut admitted_work_work: Option<String> = None;
+    // set when the runtime refused a request before it began (budget ceiling, passed work deadline)
     let mut refused: Option<String> = None;
     // the lifecycle as the loop last saw it: a run that ends on its deadline has to say *what* the instance
     // was doing, because "still running" is wrong for a paused or retired one (D-98)
@@ -585,9 +585,9 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
                     {
                         input_applied = true;
                         model_request_failed = false;
-                        admitted_work_goal = event["payload"]["goal_id"].as_str().map(str::to_string);
+                        admitted_work_work = event["payload"]["work_id"].as_str().map(str::to_string);
                         if !options.accept.is_empty() {
-                            accept_goal = admitted_work_goal.clone();
+                            accept_work = admitted_work_work.clone();
                         }
                     }
                     if event["kind"] == json!("work_input_pending")
@@ -667,22 +667,22 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
         // What *this* run's input produced (D-72): its own entry, and the first
         // turn-ending entry after it. A settlement or a reply that happened before
         // this input landed belongs to another turn, however the instance looks now.
-        // D-275: the settlement is confirmed against the goal its own closing entry names, read off the `goals`
-        // list, never against the checkpoint's single goal — that one is the session's active goal (D-266) and a
-        // session can carry an older active goal beside this run's own, which made this run read its own
+        // D-275: the settlement is confirmed against the work its own closing entry names, read off the `work_scopes`
+        // list, never against the checkpoint's single work — that one is the session's active work (D-266) and a
+        // session can carry an older active work beside this run's own, which made this run read its own
         // committed settlement as not-yet-committed and wait out the caller's deadline.
         let mut attribution = Attribution::Pending;
         if settled {
-            if let (Ok(entries), Ok(goals)) = (client.history(&instance), client.call("goals", json!({}))) {
+            if let (Ok(entries), Ok(work_scopes)) = (client.history(&instance), client.call("work_scopes", json!({}))) {
                 input_applied |= entries.iter().any(|entry| entry["envelope_id"].as_str() == Some(envelope.as_str()));
-                attribution = Attribution::read(&envelope, &goals, &entries);
+                attribution = Attribution::read(&envelope, &work_scopes, &entries);
                 // The admission event retains identity after the input leaves the history page.
-                if let Some(goal) = admitted_work_goal.as_deref() {
-                    if let Some(status) = status_of_goal(&goals, goal).filter(|status| status != "ACTIVE") {
-                        attribution = Attribution::Settled(status, goal.into());
+                if let Some(work) = admitted_work_work.as_deref() {
+                    if let Some(status) = status_of_work(&work_scopes, work).filter(|status| status != "ACTIVE") {
+                        attribution = Attribution::Settled(status, work.into());
                     } else if let Some(work) = leader_row
                         .map(|row| &row["diagnosis"]["work"])
-                        .filter(|work| work["goal_id"].as_str() == Some(goal))
+                        .filter(|work_scope| work_scope["work_id"].as_str() == Some(work))
                     {
                         match work["state"].as_str() {
                             Some("NEEDS_INPUT") => {
@@ -696,9 +696,9 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
             }
         }
         match &attribution {
-            Attribution::Settled(status, goal_id) => {
-                goal_status = Some(status.clone());
-                settled_goal = Some(goal_id.clone());
+            Attribution::Settled(status, work_id) => {
+                work_status = Some(status.clone());
+                settled_work = Some(work_id.clone());
             }
             Attribution::Reply(text) | Attribution::NeedsInput(text) => reply = Some(text.clone()),
             Attribution::Closed => {
@@ -777,7 +777,7 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
     }
     // The user's acceptance commands run on the host in this workspace after a finished turn.
     // Nothing runs when the turn is not finished — an approval no headless caller can give, the caller's own
-    // deadline passing, or a request the runtime *refused before it began* (a budget ceiling, a passed goal
+    // deadline passing, or a request the runtime *refused before it began* (a budget ceiling, a passed work
     // deadline: `refused`) — because there is no acceptance to verify (§8), or when the input never landed,
     // where there is no turn to accept at all (D-72). The deadline belongs here for a second reason: a check
     // inherits `timeout_s`, so running one *after* the deadline would stretch the run's wall clock past the
@@ -794,16 +794,16 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
     };
     let verification_path = write_verification(&client.state_root, &verification);
     let checks_ok = verification.iter().all(|entry| entry["ok"] == json!(true));
-    // D-431: a goal can settle with the model writing nothing — it called `finish` and stopped (measured on the
+    // D-431: a work can settle with the model writing nothing — it called `finish` and stopped (measured on the
     // tau3 retail split: 12 of 114 dialogues ended that way, and the user read an empty reply). The model did
     // say what it did, in the completion candidate it settled with, and the checkpoint carries that summary for
-    // the goal it reports; so a silent settlement reports the summary and says where the words came from. This
+    // the work it reports; so a silent settlement reports the summary and says where the words came from. This
     // is the last read of the run, and only when there is no reply to report.
-    let goals_for_reply = match (&reply, &settled_goal) {
-        (None, Some(_)) => client.call("goals", json!({})).unwrap_or(Json::Null),
+    let work_scopes_for_reply = match (&reply, &settled_work) {
+        (None, Some(_)) => client.call("work_scopes", json!({})).unwrap_or(Json::Null),
         _ => Json::Null,
     };
-    let (reply, reply_source) = reply_for_report(reply, settled_goal.as_deref(), &goals_for_reply);
+    let (reply, reply_source) = reply_for_report(reply, settled_work.as_deref(), &work_scopes_for_reply);
     let cache_hit = usage["cache_hit_tokens"].as_u64().unwrap_or(0);
     let cache_miss = usage["cache_miss_tokens"].as_u64().unwrap_or(0);
     usage["cache_hit_rate"] =
@@ -818,7 +818,7 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
         "instance_id": instance,
         "instance_lifecycle": if lifecycle_now.is_empty() { "ACTIVE" } else { lifecycle_now.as_str() },
         "end": end.name(),
-        "goal_status": goal_status,
+        "work_status": work_status,
         "reply": reply.as_ref().map(|text| text.chars().take(2000).collect::<String>()),
         // D-431: where `reply` came from — the model's own words (`model`), its completion summary when it went
         // silent (`summary`), or nothing (`""`, no reply to report). A consumer that shows the reply to a user
@@ -831,9 +831,9 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
         "workspace": options.workspace.to_string_lossy(),
         "verification": verification,
         "verification_path": verification_path,
-        // D-385: what the goal itself was judged by, as opposed to the client-side `verification` above
+        // D-385: what the work itself was judged by, as opposed to the client-side `verification` above
         "acceptance": options.accept,
-        "acceptance_goal": accept_goal,
+        "acceptance_work": accept_work,
         "watermark": client.watermark,
         // D-427/D-459: the tokens this run spent, as the provider reported them
         "usage": usage,
@@ -946,26 +946,30 @@ fn run_streaming(options: &ExecOptions) -> Result<ExecRun, (i32, String)> {
 
 /// D-431: what a run reports as the user's `reply`, and where the words came from.
 ///
-/// The member's own last text wins whenever there is one. A goal that settled without any text — the model
+/// The member's own last text wins whenever there is one. A work that settled without any text — the model
 /// called `finish` and stopped — has nothing of its own to report, but its completion summary *is* its own
 /// account of the work, so it stands in; `reply_source` says so, and plain mode says it in words. Neither a
-/// missing summary nor a goal that never settled invents anything: an empty reply stays empty.
+/// missing summary nor a work that never settled invents anything: an empty reply stays empty.
 ///
-/// `goal_id` is the goal **this run settled**, not the checkpoint's goal: a session can carry several (D-266),
-/// and in the tau3 harness's shape (one goal per user turn, left ACTIVE, beside the boot goal that settles) the
-/// checkpoint reports a different goal whose summary is necessarily empty — measured 2026-10-06, where the first
+/// `work_id` is the work **this run settled**, not the checkpoint's work: a session can carry several (D-266),
+/// and in the tau3 harness's shape (one work per user turn, left ACTIVE, beside the boot work that settles) the
+/// checkpoint reports a different work whose summary is necessarily empty — measured 2026-10-06, where the first
 /// version of this fallback read the checkpoint and changed nothing for 12 of 114 dialogues (D-431).
-fn reply_for_report(reply: Option<String>, goal_id: Option<&str>, goals: &Json) -> (Option<String>, &'static str) {
+fn reply_for_report(
+    reply: Option<String>,
+    work_id: Option<&str>,
+    work_scopes: &Json,
+) -> (Option<String>, &'static str) {
     // a model that emitted only whitespace wrote nothing a user can read, which is the case this whole
     // function exists for: it must not be reported as `model` text, and it must not hide a summary either.
     let reply = reply.filter(|text| !text.trim().is_empty());
     if reply.is_some() {
         return (reply, "model");
     }
-    if let Some(goal_id) = goal_id {
-        let summary = goals["goals"]
+    if let Some(work_id) = work_id {
+        let summary = work_scopes["work_scopes"]
             .as_array()
-            .and_then(|rows| rows.iter().find(|row| row["id"] == json!(goal_id)))
+            .and_then(|rows| rows.iter().find(|row| row["id"] == json!(work_id)))
             .and_then(|row| row["summary"].as_str())
             .filter(|text| !text.trim().is_empty());
         if let Some(summary) = summary {
@@ -989,11 +993,11 @@ fn print_human(report: &Json, options: &ExecOptions) {
                 options.timeout_s
             )
         ),
-        // the instance stopped on the runtime's own closing word and no goal
+        // the instance stopped on the runtime's own closing word and no work
         // settled in this run: say so instead of leaving the caller to guess
         // from a missing reply (D-71)
         "unsettled" => println!(
-            "the turn closed without settling anything: no goal ended in this run and the last word was the runtime's"
+            "the turn closed without settling anything: no work ended in this run and the last word was the runtime's"
         ),
         "undelivered" => println!(
             "undelivered: the input waited behind a running turn and a context reset sealed it before it landed; nothing was answered"
@@ -1002,7 +1006,7 @@ fn print_human(report: &Json, options: &ExecOptions) {
             if report["input_queued"] == json!(true) {
                 println!("queued: a turn was already running, so this input enters after it ends");
             }
-            // D-431: the status and the reply are not alternatives. A model can settle a goal in the same
+            // D-431: the status and the reply are not alternatives. A model can settle a work in the same
             // message it answers in, and the branch order here used to print one *or* the other — so a settled
             // run hid the model's own words, and a run that settled without writing anything printed a status
             // and nothing a user could read. The reply now follows the status whenever there is one, and says
@@ -1010,17 +1014,17 @@ fn print_human(report: &Json, options: &ExecOptions) {
             if let Some(reason) = report["failure"].as_str() {
                 println!("turn failed: {reason}");
             }
-            if let Some(status) = report["goal_status"].as_str() {
-                println!("goal ended: {status}");
+            if let Some(status) = report["work_status"].as_str() {
+                println!("work ended: {status}");
             }
             match report["reply"].as_str() {
                 Some(text) => {
                     if report["reply_source"] == json!("summary") {
-                        println!("the model settled the goal without writing anything; its own summary of the work:");
+                        println!("the model settled the work without writing anything; its own summary of the work:");
                     }
                     println!("{text}");
                 }
-                None if report["failure"].is_null() && report["goal_status"].is_null() => {
+                None if report["failure"].is_null() && report["work_status"].is_null() => {
                     println!("the run ended without a reply");
                 }
                 None => {}
@@ -1223,33 +1227,33 @@ fn leader_instance(checkpoint: &Json) -> Option<(String, String)> {
 mod tests {
     use super::{
         add_attempt_usage, capped, leader_instance, parked_fate, parse_check_result, reply_for_report, resolve_prefix,
-        run_checks, run_fate, socket_lost, timeout_line, unchargeable_goal_advisory, Attribution, End, Json,
+        run_checks, run_fate, socket_lost, timeout_line, unchargeable_work_advisory, Attribution, End, Json,
     };
     use serde_json::json;
     use std::path::Path;
 
     #[test]
     fn autonomy_exec_ignores_progress_and_returns_explicit_questions() {
-        let goals = json!({"goals":[{"id":"g1","status":"ACTIVE"}]});
+        let work_scopes = json!({"work_scopes":[{"id":"g1","status":"ACTIVE"}]});
         let mut history = vec![
-            json!({"kind":"user","envelope_id":"input","work_goal_id":"g1","message":{"role":"user","content":"Implement it"}}),
+            json!({"kind":"user","envelope_id":"input","work_work_id":"g1","message":{"role":"user","content":"Implement it"}}),
             json!({"kind":"assistant","envelope_id":"d1","message":{"role":"assistant","content":"I will investigate"}}),
         ];
-        assert!(matches!(Attribution::read("input", &goals, &history), Attribution::Pending));
+        assert!(matches!(Attribution::read("input", &work_scopes, &history), Attribution::Pending));
         history.push(json!({"kind":"assistant","envelope_id":"work-question-d2","message":{"role":"assistant","content":"Which API?"}}));
         assert!(
-            matches!(Attribution::read("input",&goals,&history),Attribution::NeedsInput(text) if text=="Which API?")
+            matches!(Attribution::read("input",&work_scopes,&history),Attribution::NeedsInput(text) if text=="Which API?")
         );
-        history.push(json!({"kind":"user","envelope_id":"answer","work_goal_id":"g1","message":{"role":"user","content":"Stable"}}));
+        history.push(json!({"kind":"user","envelope_id":"answer","work_work_id":"g1","message":{"role":"user","content":"Stable"}}));
         history.push(
             json!({"kind":"assistant","envelope_id":"d3","message":{"role":"assistant","content":"Applying it"}}),
         );
-        assert!(matches!(Attribution::read("answer", &goals, &history), Attribution::Pending));
+        assert!(matches!(Attribution::read("answer", &work_scopes, &history), Attribution::Pending));
         history.push(
-            json!({"kind":"runtime","envelope_id":"goal-close-g1","message":{"role":"user","content":"Goal complete"}}),
+            json!({"kind":"runtime","envelope_id":"work-close-g1","message":{"role":"user","content":"Work complete"}}),
         );
         assert!(
-            matches!(Attribution::read("answer",&json!({"goals":[{"id":"g1","status":"SUCCEEDED"}]}),&history),Attribution::Settled(status,goal) if status=="SUCCEEDED" && goal=="g1")
+            matches!(Attribution::read("answer",&json!({"work_scopes":[{"id":"g1","status":"SUCCEEDED"}]}),&history),Attribution::Settled(status,work) if status=="SUCCEEDED" && work=="g1")
         );
         assert_eq!(End::NeedsInput.exit_code(true), 3);
     }
@@ -1280,17 +1284,17 @@ mod tests {
     fn the_facts_that_end_a_run_are_named_in_the_runtimes_words() {
         // the budget gate's committed event: the sentence matches what the runtime parks the instance with
         let budget = json!({"kind": "budget_refused", "scope": "i-leader", "payload": {
-            "goal_id": "goal-s-main", "request_id": "req-1", "known": 0, "reserved": 0, "est": 2235, "max": 1000}});
+            "work_id": "work-s-main", "request_id": "req-1", "known": 0, "reserved": 0, "est": 2235, "max": 1000}});
         assert_eq!(
             run_fate(&budget, "i-leader").unwrap(),
-            "goal goal-s-main budget exceeded: known 0 + reserved 0 + est 2235 > max 1000"
+            "work work-s-main budget exceeded: known 0 + reserved 0 + est 2235 > max 1000"
         );
         // the deadline gate's event
-        let deadline = json!({"kind": "goal_deadline_refused", "scope": "i-leader",
-                              "payload": {"goal_id": "goal-s-main", "request_id": "req-2"}});
+        let deadline = json!({"kind": "work_deadline_refused", "scope": "i-leader",
+                              "payload": {"work_id": "work-s-main", "request_id": "req-2"}});
         assert_eq!(
             run_fate(&deadline, "i-leader").unwrap(),
-            "goal goal-s-main deadline passed before request req-2 could start"
+            "work work-s-main deadline passed before request req-2 could start"
         );
         // a retired instance ends the run; a *paused* one must not (D-98)
         let terminated =
@@ -1322,37 +1326,37 @@ mod tests {
         assert_eq!(leader_instance(&none), None);
     }
 
-    /// D-270: the advisory's predicate is the delegation's own — an ACTIVE goal *attached* to the leader — and it
-    /// is read off the `goals` list, not the checkpoint's single goal object, because the two disagree exactly in
-    /// the shape D-267 built: a session whose live goal settled while an earlier goal is still ACTIVE but attached
-    /// to nobody (the state the test `the_goal_surface_lists_and_opens_goals_through_the_daemon` drives).
+    /// D-270: the advisory's predicate is the delegation's own — an ACTIVE work *attached* to the leader — and it
+    /// is read off the `work_scopes` list, not the checkpoint's single work object, because the two disagree exactly in
+    /// the shape D-267 built: a session whose live work settled while an earlier work is still ACTIVE but attached
+    /// to nobody (the state the test `the_work_surface_lists_and_opens_work_scopes_through_the_daemon` drives).
     #[test]
     fn the_unchargeable_advisory_follows_the_leaders_own_attachment() {
-        // the bootstrap's instant: no goals yet is not a state to warn about
-        assert_eq!(unchargeable_goal_advisory(&json!({}), "i-leader"), None);
-        assert_eq!(unchargeable_goal_advisory(&json!({"goals": []}), "i-leader"), None);
+        // the bootstrap's instant: no work_scopes yet is not a state to warn about
+        assert_eq!(unchargeable_work_advisory(&json!({}), "i-leader"), None);
+        assert_eq!(unchargeable_work_advisory(&json!({"work_scopes": []}), "i-leader"), None);
         // the ordinary chargeable turn
-        let attached = json!({"goals": [{"id": "g", "status": "ACTIVE", "attached_instances": ["i-leader"]}]});
-        assert_eq!(unchargeable_goal_advisory(&attached, "i-leader"), None);
-        // a settled goal detached the leader: the turn runs, but nothing can be charged
-        let settled = json!({"goals": [{"id": "g", "status": "FAILED", "attached_instances": []}]});
-        let advisory = unchargeable_goal_advisory(&settled, "i-leader").expect("a settled goal warns");
-        assert!(advisory.contains("no active goal is attached to i-leader"), "{advisory}");
-        assert!(advisory.contains("teamagents goals open --id ID --attach i-leader"), "{advisory}");
-        // an ACTIVE goal nobody points at is not chargeable, and another instance's attachment is not the leader's
-        let elsewhere = json!({"goals": [
+        let attached = json!({"work_scopes": [{"id": "g", "status": "ACTIVE", "attached_instances": ["i-leader"]}]});
+        assert_eq!(unchargeable_work_advisory(&attached, "i-leader"), None);
+        // a settled work detached the leader: the turn runs, but nothing can be charged
+        let settled = json!({"work_scopes": [{"id": "g", "status": "FAILED", "attached_instances": []}]});
+        let advisory = unchargeable_work_advisory(&settled, "i-leader").expect("a settled work warns");
+        assert!(advisory.contains("no active work is attached to i-leader"), "{advisory}");
+        assert!(advisory.contains("teamagents work_scopes open --id ID --attach i-leader"), "{advisory}");
+        // an ACTIVE work nobody points at is not chargeable, and another instance's attachment is not the leader's
+        let elsewhere = json!({"work_scopes": [
             {"id": "boot", "status": "ACTIVE", "attached_instances": []},
             {"id": "second", "status": "FAILED", "attached_instances": []},
         ]});
-        assert!(unchargeable_goal_advisory(&elsewhere, "i-leader").is_some(), "{elsewhere}");
-        let worker_only = json!({"goals": [{"id": "g", "status": "ACTIVE", "attached_instances": ["i-worker"]}]});
-        assert!(unchargeable_goal_advisory(&worker_only, "i-leader").is_some(), "{worker_only}");
-        // a second, attached goal makes the turn chargeable again, wherever the row sorts
-        let reopened = json!({"goals": [
+        assert!(unchargeable_work_advisory(&elsewhere, "i-leader").is_some(), "{elsewhere}");
+        let worker_only = json!({"work_scopes": [{"id": "g", "status": "ACTIVE", "attached_instances": ["i-worker"]}]});
+        assert!(unchargeable_work_advisory(&worker_only, "i-leader").is_some(), "{worker_only}");
+        // a second, attached work makes the turn chargeable again, wherever the row sorts
+        let reopened = json!({"work_scopes": [
             {"id": "boot", "status": "ACTIVE", "attached_instances": []},
             {"id": "second", "status": "ACTIVE", "attached_instances": ["i-leader"]},
         ]});
-        assert_eq!(unchargeable_goal_advisory(&reopened, "i-leader"), None, "{reopened}");
+        assert_eq!(unchargeable_work_advisory(&reopened, "i-leader"), None, "{reopened}");
     }
 
     /// A daemon that stops under a run is a supported thing to do (D-150), so the client says what it means
@@ -1375,7 +1379,7 @@ mod tests {
     }
 
     /// The documented headless contract (D-32/D-49): a plain success is 0, a
-    /// failed goal or a failed acceptance check is 1, nobody can answer an
+    /// failed work or a failed acceptance check is 1, nobody can answer an
     /// approval in a headless run so it is 3, and a deadline is 124.
     #[test]
     fn exit_codes_follow_the_documented_contract() {
@@ -1391,35 +1395,35 @@ mod tests {
         assert_eq!(End::Timeout.exit_code(true), 124);
     }
 
-    /// D-431: a goal that settled with no text reports *that goal's* own completion summary, and says that is
-    /// what it is; a run with the member's text keeps it; a settled goal with no summary reports nothing. The
-    /// goal is looked up by the id the closing entry named, never by "the" goal of the checkpoint (measured: the
-    /// checkpoint's goal is another, still-active one in a session that opens a goal per user turn).
+    /// D-431: a work that settled with no text reports *that work's* own completion summary, and says that is
+    /// what it is; a run with the member's text keeps it; a settled work with no summary reports nothing. The
+    /// work is looked up by the id the closing entry named, never by "the" work of the checkpoint (measured: the
+    /// checkpoint's work is another, still-active one in a session that opens a work per user turn).
     #[test]
-    fn a_silent_settlement_reports_that_goals_summary_and_names_it() {
-        let goals = json!({"goals": [
+    fn a_silent_settlement_reports_that_work_scopes_summary_and_names_it() {
+        let work_scopes = json!({"work_scopes": [
             {"id": "turn-5", "status": "ACTIVE"},
-            {"id": "goal-s-main", "status": "SUCCEEDED", "summary": "cancelled order W1 and refunded it"}
+            {"id": "work-s-main", "status": "SUCCEEDED", "summary": "cancelled order W1 and refunded it"}
         ]});
         assert_eq!(
-            reply_for_report(None, Some("goal-s-main"), &goals),
+            reply_for_report(None, Some("work-s-main"), &work_scopes),
             (Some("cancelled order W1 and refunded it".to_string()), "summary")
         );
         assert_eq!(
-            reply_for_report(Some("all done".to_string()), Some("goal-s-main"), &goals),
+            reply_for_report(Some("all done".to_string()), Some("work-s-main"), &work_scopes),
             (Some("all done".to_string()), "model")
         );
         // whitespace is not text: it neither counts as the model's words nor hides a summary
         assert_eq!(
-            reply_for_report(Some("   \n".to_string()), Some("goal-s-main"), &goals),
+            reply_for_report(Some("   \n".to_string()), Some("work-s-main"), &work_scopes),
             (Some("cancelled order W1 and refunded it".to_string()), "summary")
         );
-        // the goal the checkpoint would report has no summary, and a run that settled nothing has no goal
-        assert_eq!(reply_for_report(None, Some("turn-5"), &goals), (None, ""));
-        assert_eq!(reply_for_report(None, None, &goals), (None, ""));
-        assert_eq!(reply_for_report(Some("  ".to_string()), None, &goals), (None, ""), "nothing to report");
-        // an unreadable goals list invents nothing
-        assert_eq!(reply_for_report(None, Some("goal-s-main"), &Json::Null), (None, ""));
+        // the work the checkpoint would report has no summary, and a run that settled nothing has no work
+        assert_eq!(reply_for_report(None, Some("turn-5"), &work_scopes), (None, ""));
+        assert_eq!(reply_for_report(None, None, &work_scopes), (None, ""));
+        assert_eq!(reply_for_report(Some("  ".to_string()), None, &work_scopes), (None, ""), "nothing to report");
+        // an unreadable work_scopes list invents nothing
+        assert_eq!(reply_for_report(None, Some("work-s-main"), &Json::Null), (None, ""));
     }
 
     /// D-72: the client reports what *its own* input produced. The conversation
@@ -1427,9 +1431,9 @@ mod tests {
     /// the first turn-ending entry after it — a settlement or a reply that happened
     /// before this input landed belongs to the turn the input was not part of.
     ///
-    /// D-275: a settlement is confirmed against the status of the goal the runtime's own closing entry names
-    /// (`goal-close-<goal_id>`), read off the `goals` list — never against the session's single goal, which is
-    /// one goal of a session that may carry several.
+    /// D-275: a settlement is confirmed against the status of the work the runtime's own closing entry names
+    /// (`work-close-<work_id>`), read off the `work_scopes` list — never against the session's single work, which is
+    /// one work of a session that may carry several.
     #[test]
     fn an_outcome_before_the_runs_own_input_is_not_its_outcome() {
         let user = |envelope: &str, text: &str| json!({"kind": "user", "envelope_id": envelope, "message": {"role": "user", "content": text}});
@@ -1438,18 +1442,18 @@ mod tests {
             "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "read", "arguments": "{}"}}]}});
         let result =
             json!({"kind": "tool_result", "message": {"role": "tool", "tool_call_id": "c1", "content": "out"}});
-        let close = json!({"kind": "runtime", "envelope_id": "goal-close-g1",
-                           "message": {"role": "user", "content": "runtime: goal g1 closed as SUCCEEDED"}});
+        let close = json!({"kind": "runtime", "envelope_id": "work-close-g1",
+                           "message": {"role": "user", "content": "runtime: work g1 closed as SUCCEEDED"}});
         let turn_close = json!({"kind": "runtime", "envelope_id": "turn-close-i-leader",
                                 "message": {"role": "user", "content": "runtime: turn closed"}});
-        let goals = |status: &str| json!({"goals": [{"id": "g1", "status": status}]});
+        let work_scopes = |status: &str| json!({"work_scopes": [{"id": "g1", "status": status}]});
 
         // the run's input never landed: nothing in the conversation is its outcome
         let queued = vec![user("env-old", "first question"), reply("first answer")];
-        assert_eq!(Attribution::read("env-mine", &goals("ACTIVE"), &queued), Attribution::Pending);
-        // …even when an earlier turn settled the goal on its way out
+        assert_eq!(Attribution::read("env-mine", &work_scopes("ACTIVE"), &queued), Attribution::Pending);
+        // …even when an earlier turn settled the work on its way out
         let settled_earlier = vec![reply("first answer"), close.clone(), user("env-mine", "second question")];
-        assert_eq!(Attribution::read("env-mine", &goals("SUCCEEDED"), &settled_earlier), Attribution::Pending);
+        assert_eq!(Attribution::read("env-mine", &work_scopes("SUCCEEDED"), &settled_earlier), Attribution::Pending);
 
         // this run's own turn: tool traffic does not end it, its reply does
         let mine = vec![
@@ -1461,7 +1465,7 @@ mod tests {
             reply("the answer to the second question"),
         ];
         assert_eq!(
-            Attribution::read("env-mine", &goals("SUCCEEDED"), &mine),
+            Attribution::read("env-mine", &work_scopes("SUCCEEDED"), &mine),
             Attribution::Reply("the answer to the second question".to_string())
         );
         // a later turn's entries are not mine either: the first ending after my
@@ -1470,42 +1474,44 @@ mod tests {
         later.push(user("env-someone-else", "third question"));
         later.push(reply("an answer to somebody else"));
         assert_eq!(
-            Attribution::read("env-mine", &goals("SUCCEEDED"), &later),
+            Attribution::read("env-mine", &work_scopes("SUCCEEDED"), &later),
             Attribution::Reply("the answer to the second question".to_string())
         );
 
         // the settlement this run caused: the note follows its own entry, and its status is the status of the
-        // goal that note names — a goal whose row still reads ACTIVE has not caught up yet, and one the list does
+        // work that note names — a work whose row still reads ACTIVE has not caught up yet, and one the list does
         // not carry at all is not guessed either
         let settled = vec![user("env-old", "first"), reply("first answer"), user("env-mine", "second"), close.clone()];
         assert_eq!(
-            Attribution::read("env-mine", &goals("SUCCEEDED"), &settled),
+            Attribution::read("env-mine", &work_scopes("SUCCEEDED"), &settled),
             Attribution::Settled("SUCCEEDED".into(), "g1".into())
         );
-        assert_eq!(Attribution::read("env-mine", &goals("ACTIVE"), &settled), Attribution::Pending);
-        assert_eq!(Attribution::read("env-mine", &json!({"goals": []}), &settled), Attribution::Pending);
-        // D-275, the state that made the run wait out its deadline: a session carrying an older ACTIVE goal
-        // beside this run's own. The closing note names its own goal, so the settlement is read…
-        let two_goals = json!({"goals": [{"id": "g-old", "status": "ACTIVE"}, {"id": "g1", "status": "SUCCEEDED"}]});
+        assert_eq!(Attribution::read("env-mine", &work_scopes("ACTIVE"), &settled), Attribution::Pending);
+        assert_eq!(Attribution::read("env-mine", &json!({"work_scopes": []}), &settled), Attribution::Pending);
+        // D-275, the state that made the run wait out its deadline: a session carrying an older ACTIVE work
+        // beside this run's own. The closing note names its own work, so the settlement is read…
+        let two_work_scopes =
+            json!({"work_scopes": [{"id": "g-old", "status": "ACTIVE"}, {"id": "g1", "status": "SUCCEEDED"}]});
         assert_eq!(
-            Attribution::read("env-mine", &two_goals, &settled),
+            Attribution::read("env-mine", &two_work_scopes, &settled),
             Attribution::Settled("SUCCEEDED".into(), "g1".into())
         );
-        // …and a *blocked* goal's note is read the same way, from the goal it names
-        let blocked = json!({"kind": "runtime", "envelope_id": "goal-block-g1",
-                             "message": {"role": "user", "content": "runtime: goal g1 blocked: checks"}});
+        // …and a *blocked* work's note is read the same way, from the work it names
+        let blocked = json!({"kind": "runtime", "envelope_id": "work-block-g1",
+                             "message": {"role": "user", "content": "runtime: work g1 blocked: checks"}});
         let block_history = vec![user("env-mine", "second"), blocked];
-        let blocked_goals = json!({"goals": [{"id": "g-old", "status": "ACTIVE"}, {"id": "g1", "status": "BLOCKED"}]});
+        let blocked_work_scopes =
+            json!({"work_scopes": [{"id": "g-old", "status": "ACTIVE"}, {"id": "g1", "status": "BLOCKED"}]});
         assert_eq!(
-            Attribution::read("env-mine", &blocked_goals, &block_history),
+            Attribution::read("env-mine", &blocked_work_scopes, &block_history),
             Attribution::Settled("BLOCKED".into(), "g1".into())
         );
         // a closed turn is the runtime's word too, but it settles nothing
         let closed = vec![user("env-mine", "second"), turn_close];
-        assert_eq!(Attribution::read("env-mine", &goals("SUCCEEDED"), &closed), Attribution::Closed);
+        assert_eq!(Attribution::read("env-mine", &work_scopes("SUCCEEDED"), &closed), Attribution::Closed);
         // a bare tool call is not an answer (D-49)
         let calling = vec![user("env-mine", "second"), call];
-        assert_eq!(Attribution::read("env-mine", &goals("ACTIVE"), &calling), Attribution::Pending);
+        assert_eq!(Attribution::read("env-mine", &work_scopes("ACTIVE"), &calling), Attribution::Pending);
     }
 
     /// The exit code comes from the marker the wrapper prints, not from

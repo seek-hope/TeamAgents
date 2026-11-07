@@ -182,13 +182,13 @@ pub struct UserConfig {
     /// Acceptance checks run on the host at the completion boundary. Project configuration cannot define them.
     #[serde(default)]
     pub checks: Vec<CheckSpec>,
-    /// Usage and wall-clock ceilings every goal this session creates carries
-    /// (§8, A18/A35): the goal's `max_total_tokens` refuses a new request once
+    /// Usage and wall-clock ceilings every work this session creates carries
+    /// (§8, A18/A35): the work's `max_total_tokens` refuses a new request once
     /// the settled usage would pass it, and its deadline refuses one past that
     /// moment. Both are the user's own bounds; a session with neither runs until
     /// the user stops it (see `docs/USER-GUIDE.md` §2.2).
     #[serde(default)]
-    pub limits: GoalLimits,
+    pub limits: WorkLimits,
     /// Governed self-update policy (`[update]`). The user config is the only
     /// source: a repository-local file may never change how its own agent is
     /// replaced (D-453).
@@ -248,21 +248,21 @@ impl Default for UpdateConfig {
     }
 }
 
-/// User-config ceilings for every goal (`[limits]` in the config).
+/// User-config ceilings for every work (`[limits]` in the config).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-pub struct GoalLimits {
+pub struct WorkLimits {
     /// Usage ceiling in tokens, counted from provider-reported usage, live reservations and each request's
-    /// estimate; usage a provider never reported stays the goal's `unknown_usage` counter and does not charge
+    /// estimate; usage a provider never reported stays the work's `unknown_usage` counter and does not charge
     /// the ceiling (D-287).
     #[serde(default)]
     pub max_total_tokens: Option<u64>,
-    /// Wall-clock ceiling in minutes. Initial goals start at creation; subsequent work admission starts
-    /// at its first pending input and keeps that clock when it creates a goal.
+    /// Wall-clock ceiling in minutes. Initial work_scopes start at creation; subsequent work admission starts
+    /// at its first pending input and keeps that clock when it creates a work.
     #[serde(default)]
     pub deadline_minutes: Option<u64>,
-    /// D-393/D-395: does a goal with required checks need a round another instance registered before it may
-    /// settle? Opt-in, and the session's own statement about *who* may settle its goals.
+    /// D-393/D-395: does a work with required checks need a round another instance registered before it may
+    /// settle? Opt-in, and the session's own statement about *who* may settle its work_scopes.
     #[serde(default)]
     pub independent_verification: bool,
     /// D-426: the most characters of one tool output the model is shown (unset keeps the built-in 24 000). A
@@ -305,9 +305,9 @@ pub struct CheckSpec {
 }
 
 impl CheckSpec {
-    /// The check in the shape `create_goal limits.required_checks` stores and
+    /// The check in the shape `create_work limits.required_checks` stores and
     /// the runtime reads: absent fields stay absent (a JSON `null` would not
-    /// survive the create_goal gate).
+    /// survive the create_work gate).
     pub fn to_json(&self) -> serde_json::Value {
         let mut value = serde_json::json!({"id": self.id, "command": self.command});
         if let Some(timeout) = self.timeout {

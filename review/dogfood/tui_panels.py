@@ -74,9 +74,9 @@ def lifecycle(state_root: pathlib.Path, env: dict, instance: str) -> str:
     return next((row["lifecycle"] for row in rows if row["id"] == instance), "missing")
 
 
-def active_goal(state_root: pathlib.Path) -> str | None:
+def active_work(state_root: pathlib.Path) -> str | None:
     db = sqlite3.connect(f"file:{state_root}/session.sqlite?mode=ro", uri=True)
-    row = db.execute("SELECT id FROM goals WHERE status = 'ACTIVE' ORDER BY rowid LIMIT 1").fetchone()
+    row = db.execute("SELECT id FROM work_scopes WHERE status = 'ACTIVE' ORDER BY rowid LIMIT 1").fetchone()
     return row[0] if row else None
 
 
@@ -187,9 +187,9 @@ def main() -> int:
         if lifecycle(state_root, env, WORKER) != "ACTIVE":
             failures.append("CLI resume did not land")
         cli("instances", "pause", "--id", WORKER)
-        goal = active_goal(state_root)
+        work = active_work(state_root)
         delegated = protocol(socket_path, "delegate_task",
-                             {"task_id": TASK, "assignee": WORKER, "goal_id": goal,
+                             {"task_id": TASK, "assignee": WORKER, "work_id": work,
                               "description": "management probe: a task to cancel"}, "panel-delegate")
         if not delegated.get("ok"):
             failures.append(f"delegate_task refused: {delegated.get('error')}")
@@ -207,7 +207,7 @@ def main() -> int:
         if not any(i["id"] == WORKER and i["lifecycle"] == "TERMINATED" for i in status["snapshot"]["instances"]):
             failures.append("status does not report the managed worker")
         cli("history", "--id", WORKER, "--json")
-        cli("goals", "--json")
+        cli("work_scopes", "--json")
         cli("authority", "--json")
         print("  minimal TUI with CLI pause/resume/cancel/confirmed termination/status/history: exercised")
         os.write(fd, b"\x11")

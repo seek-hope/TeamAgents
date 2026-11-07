@@ -490,16 +490,16 @@ fn validate_tools(catalog: &UserConfig) -> Result<(), String> {
 /// Local MCP services execute on the host in the member workspace (D-480).
 const MCP_EXECUTIONS: &[&str] = &["host"];
 
-/// The goal limits the runtime boots with (`create_goal limits`): the user's
+/// The work limits the runtime boots with (`create_work limits`): the user's
 /// acceptance checks and usage ceiling, or `{}` when neither is configured — the
 /// shape travels through the same validation the control plane applies, so the
-/// config edge and the `create_goal` gate can never disagree.
+/// config edge and the `create_work` gate can never disagree.
 ///
 /// `max_total_tokens` is part of `limits` because the core enforces it from there
 /// (`begin_request`'s budget gate, A18). The *deadline* is not: the core takes an
-/// absolute timestamp at `create_goal`, so `goal_deadline_minutes` below gives the
+/// absolute timestamp at `create_work`, so `work_deadline_minutes` below gives the
 /// bootstrap the duration to convert.
-pub fn goal_limits(catalog: &UserConfig) -> Result<Json, String> {
+pub fn work_limits(catalog: &UserConfig) -> Result<Json, String> {
     let mut limits = serde_json::Map::new();
     if !catalog.checks.is_empty() {
         let checks = Json::Array(catalog.checks.iter().map(|check| check.to_json()).collect());
@@ -531,11 +531,11 @@ pub fn goal_limits(catalog: &UserConfig) -> Result<Json, String> {
     }
     // The deadline travels the same way and is consumed by the bootstrap
     // (`driver::bootstrap` removes it and sets the absolute `deadline` the core
-    // takes); a key the core does not enforce never reaches the stored goal.
-    if let Some(minutes) = goal_deadline_minutes(catalog)? {
+    // takes); a key the core does not enforce never reaches the stored work.
+    if let Some(minutes) = work_deadline_minutes(catalog)? {
         limits.insert("deadline_minutes".into(), json!(minutes));
     }
-    // D-393: the same way the checks travel — a session-wide statement that a goal with checks settles only on a
+    // D-393: the same way the checks travel — a session-wide statement that a work with checks settles only on a
     // round another instance registered. Only meaningful together with checks, which the core re-checks.
     if catalog.limits.independent_verification {
         limits.insert("independent_verification".into(), json!(true));
@@ -543,10 +543,10 @@ pub fn goal_limits(catalog: &UserConfig) -> Result<Json, String> {
     Ok(Json::Object(limits))
 }
 
-/// The wall-clock ceiling of every goal in minutes (DESIGN §8, A35): a static
+/// The wall-clock ceiling of every work in minutes (DESIGN §8, A35): a static
 /// config cannot hold an absolute timestamp, so the bootstrap converts this into
-/// the goal's `deadline` when it creates it.
-pub fn goal_deadline_minutes(catalog: &UserConfig) -> Result<Option<u64>, String> {
+/// the work's `deadline` when it creates it.
+pub fn work_deadline_minutes(catalog: &UserConfig) -> Result<Option<u64>, String> {
     match catalog.limits.deadline_minutes {
         Some(0) => Err("[limits] deadline_minutes must be a positive number of minutes".into()),
         other => Ok(other),
@@ -554,7 +554,7 @@ pub fn goal_deadline_minutes(catalog: &UserConfig) -> Result<Option<u64>, String
 }
 
 /// Reject a broken `[[checks]]` entry at load time (doctor and every entry
-/// point report it), never at the completion boundary where the goal would
+/// point report it), never at the completion boundary where the work would
 /// just fail to settle.
 fn validate_checks(catalog: &UserConfig) -> Result<(), String> {
     for check in &catalog.checks {
@@ -581,8 +581,8 @@ fn validate_checks(catalog: &UserConfig) -> Result<(), String> {
             }
         }
     }
-    goal_limits(catalog).map(|_| ())?;
-    goal_deadline_minutes(catalog).map(|_| ())
+    work_limits(catalog).map(|_| ())?;
+    work_deadline_minutes(catalog).map(|_| ())
 }
 
 /// api_key_env -> present in the environment (doctor output).
@@ -920,25 +920,25 @@ notify = ["/bin/sh", "-c", "echo hi", "hook"]
         assert_eq!(cfg.hooks.notify.first().map(String::as_str), Some("/bin/sh"), "hooks configure a command");
     }
 
-    /// The user's acceptance checks (`[[checks]]`) reach the goal exactly in the
+    /// The user's acceptance checks (`[[checks]]`) reach the work exactly in the
     /// shape the runtime's check boundary reads: absent fields stay absent,
-    /// because a JSON `null` would be rejected by the `create_goal` gate.
-    /// `[limits]` gives every goal a usage ceiling and a wall-clock deadline
+    /// because a JSON `null` would be rejected by the `create_work` gate.
+    /// `[limits]` gives every work a usage ceiling and a wall-clock deadline
     /// (§8/A18/A35, D-64): the ceiling travels inside `limits` because the core
     /// enforces it from there, the deadline as the duration the bootstrap converts
-    /// at goal creation. A zero is a config error, never a silent default.
+    /// at work creation. A zero is a config error, never a silent default.
     #[test]
-    fn user_limits_bound_every_goal() {
+    fn user_limits_bound_every_work() {
         let cfg = parse_user_config("[models.m]\nprovider = \"openai\"\nmodel = \"x\"\n\n[limits]\nmax_total_tokens = 250000\ndeadline_minutes = 45\n")
             .unwrap();
-        let limits = goal_limits(&cfg).unwrap();
+        let limits = work_limits(&cfg).unwrap();
         assert_eq!(limits["max_total_tokens"], json!(250000));
         assert_eq!(limits["deadline_minutes"], json!(45));
-        assert_eq!(goal_deadline_minutes(&cfg).unwrap(), Some(45));
+        assert_eq!(work_deadline_minutes(&cfg).unwrap(), Some(45));
         // neither ceiling configured: `{}`, and no deadline
         let plain = parse_user_config("[models.m]\nprovider = \"openai\"\nmodel = \"x\"\n").unwrap();
-        assert_eq!(goal_limits(&plain).unwrap(), json!({}));
-        assert_eq!(goal_deadline_minutes(&plain).unwrap(), None);
+        assert_eq!(work_limits(&plain).unwrap(), json!({}));
+        assert_eq!(work_deadline_minutes(&plain).unwrap(), None);
         // zero is refused at load time (it would otherwise mean "no request ever")
         for text in ["[limits]\nmax_total_tokens = 0\n", "[limits]\ndeadline_minutes = 0\n"] {
             let error = parse_user_config(text).unwrap_err();
@@ -950,7 +950,7 @@ notify = ["/bin/sh", "-c", "echo hi", "hook"]
     }
 
     #[test]
-    fn user_checks_become_goal_limits() {
+    fn user_checks_become_work_limits() {
         let cfg = parse_user_config(
             r#"
 [models.m]
@@ -970,7 +970,7 @@ command = "test -s README.md"
         )
         .unwrap();
         assert_eq!(cfg.checks.len(), 2);
-        let limits = goal_limits(&cfg).unwrap();
+        let limits = work_limits(&cfg).unwrap();
         let checks = limits["required_checks"].as_array().unwrap();
         assert_eq!(checks[0]["id"], json!("tests"));
         assert_eq!(checks[0]["command"], json!("cargo test --offline"));
@@ -978,14 +978,14 @@ command = "test -s README.md"
         assert_eq!(checks[0]["inputs"], json!(["src", "Cargo.toml"]));
         assert!(checks[0].get("network").is_none(), "an unset flag stays absent: {}", checks[0]);
         assert_eq!(checks[1]["id"], json!("docs"));
-        assert!(checks[1].get("timeout").is_none(), "no `null` timeout may reach create_goal: {}", checks[1]);
-        // no configured check leaves the goal limits empty (the runtime then
+        assert!(checks[1].get("timeout").is_none(), "no `null` timeout may reach create_work: {}", checks[1]);
+        // no configured check leaves the work limits empty (the runtime then
         // settles on the candidate alone)
-        assert_eq!(goal_limits(&UserConfig::default()).unwrap(), json!({}));
+        assert_eq!(work_limits(&UserConfig::default()).unwrap(), json!({}));
     }
 
     /// A broken check fails at load time with the check's own id, not at the
-    /// completion boundary where the goal would silently never settle.
+    /// completion boundary where the work would silently never settle.
     #[test]
     fn a_broken_check_is_rejected_when_the_config_loads() {
         for (label, body) in [
@@ -1710,7 +1710,7 @@ model = "project-loses"
     /// D-244: the two loaders must end up with the *same* catalog for a config only the user wrote. The merge
     /// path had drifted from the product path on coverage, not on rules: it carried models, tools, skills,
     /// instruction files, hooks, checks and retention, and silently dropped `[limits]` — so wiring the merge
-    /// (D-244) would have lost every goal ceiling and deadline the user set. Found while writing that wiring;
+    /// (D-244) would have lost every work ceiling and deadline the user set. Found while writing that wiring;
     /// this test is what keeps the two rule sets equal.
     /// D-246: what `instruction_files` delivers to a prompt — content in config order under a heading naming
     /// each file, and every file that could not be read named back to the caller (never dropped in silence).
@@ -1785,7 +1785,7 @@ deadline_minutes = 5
         let product = load_user_config(&user_config_path()).unwrap();
         let merged = load_user_config_for(&project).unwrap().0;
         assert_eq!(product, merged, "one config, one catalog: the two loaders must not disagree");
-        assert!(merged.limits.max_total_tokens.is_some(), "the merge carries the user's goal limits");
+        assert!(merged.limits.max_total_tokens.is_some(), "the merge carries the user's work limits");
         let _ = std::fs::remove_dir_all(&root);
     }
 

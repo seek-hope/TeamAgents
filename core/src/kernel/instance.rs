@@ -302,7 +302,7 @@ fn pair_tool_results(messages: &[Json]) -> Vec<Json> {
             continue;
         }
         // One answer per call: an id can repeat within a conversation (the
-        // runtime's own `check-<round>-<position>` is per goal, so two goals
+        // runtime's own `check-<round>-<position>` is per work, so two work_scopes
         // reuse `check-1-0`), and pairing by membership alone let an earlier
         // assistant claim a *later* call's answer — the wire then carried two
         // tool messages for one call and a synthesized answer for the other, and

@@ -13,13 +13,13 @@ check passed; this does not change the comparison evidence below.
 
 | Area | Current behavior | Evidence boundary |
 |---|---|---|
-| Work continuity (D-487 / DD-11) | Shared behavior emphasizes user intent, initiative and excellent results. Goals persist across turns, compaction and restart; continuation is bounded; questions, attention, stops and completion are distinct. Subsequent work is admitted internally with its costs and limits | Scripted providers, SQLite/fault tests and recorded process groups; no measured long-task success rate. Heuristics can block legitimate repetition |
+| Work continuity (D-487 / DD-11) | Shared behavior emphasizes user intent, initiative and excellent results. Works persist across turns, compaction and restart; continuation is bounded; questions, attention, stops and completion are distinct. Subsequent work is admitted internally with its costs and limits | Scripted providers, SQLite/fault tests and recorded process groups; no measured long-task success rate. Heuristics can block legitimate repetition |
 | Repository setup | TeamAgents reads repository-local configuration for trusted canonical roots and discovers instruction files; user-only policy stays at user level | Configuration tests and isolated probes; dependency diagnosis is not a complete build or Skill-workflow acceptance |
 | Diagnosis and inputs (DD-01 / DD-04) | Read-only diagnosis, explicit recovery, instruction/source observations, immutable queued-input revisions and delivery receipts | Observation does not prove execution or completion; a config change is not a hot reload |
 | Editing and tools (DD-05) | Atomic disjoint edits, bounded read parallelism, file/Shell/Skill tools, provider-neutral search, MCP and codemode | Host execution is not confinement. Complete cross-language/Skill workflows need broader evidence |
 | Conversation and models (D-489–D-491 / DD-06) | Grok-style Leader conversation with elevated prompts, grouped activity, live status, compact model chrome and `@` file references; shared message/queue editing and complete answers | Scripted TestBackend/PTY checks, not a usability benchmark or every terminal/provider |
 | Collaboration and recovery | Scoped task grants, independent members, worktrees, durable operations, runner recovery and declared-workspace takeover checks | Task cancellation is not process stop. Unknown effects are not replayed; remote/escaped effects are outside the local group observer |
-| Verification and accounting | User-required checks, scoped completion evidence, known/unknown usage, native windows and cache telemetry | Check quality and semantic completeness remain distinct. Reviewer usage is still not charged to the goal |
+| Verification and accounting | User-required checks, scoped completion evidence, known/unknown usage, native windows and cache telemetry | Check quality and semantic completeness remain distinct. Reviewer usage is still not charged to the work |
 
 DD-11 was approved and implemented as D-487; it is no longer an unapproved proposal. Its dated
 [source study](../review/goal-autonomy-2026-10-28/REPORT.md) explains the upstream design inputs and their limits.
@@ -57,6 +57,6 @@ LSP or automatic indexing merely to resemble another product.
 | [Capability ledger](CAPABILITIES.md) and [benchmark ledger](../review/benchmark/README.md) | Historical real-service/coding results with their own models, sources and limits |
 | Current local checks | `make check`, `make pty` and the formal targets; current results belong in ACCEPTANCE and the formal report |
 
-Keep the Rust control plane, authoritative SQLite database, daemon/client boundary, minimal conversation and
-scriptable management. User instruction and intent govern exploration. Existing authorization persists, while
-new authority, replay of unknown effects and unselected policy changes require explicit decisions.
+Keep the Rust control plane, authoritative SQLite database, daemon/client boundary, minimal conversation, and
+scriptable management. User instruction and intent drive exploration. Existing authorization stays in effect,
+while new authority, replaying unknown effects, and unselected policy changes each require an explicit decision.

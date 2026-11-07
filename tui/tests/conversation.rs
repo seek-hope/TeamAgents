@@ -225,6 +225,8 @@ fn activity_groups_name_the_operations_without_claiming_success() {
         (vec!["shell", "shell"], "Ran 2 commands"),
         (vec!["web_search", "web_fetch"], "Searched · 2 tools"),
         (vec!["spawn", "delegate"], "Coordinated · 2 actions"),
+        (vec!["send", "wait"], "Coordinated · 2 actions"),
+        (vec!["verify_work", "wait"], "Coordinated · 2 actions"),
     ] {
         let calls = names
             .iter()

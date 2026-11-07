@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A real-model check that a verified input which changed blocks the goal (A17).
+"""A real-model check that a verified input which changed blocks the work (A17).
 
 `checks.py` (A16) shows a check that can never pass. A17 is the subtler half of the same gate: the check
 *passes*, and then it turns out the thing it verified is not the thing that would be delivered. The offline
@@ -11,13 +11,13 @@ declared input; this probe does it with a real model:
 2. the model is asked to write `out.txt` with the content `original` and to finish;
 3. the runtime must notice that the declared input no longer matches what the check round observed: it records
    the verdict (a `completion_repair` carrying `class: "stale_inputs"`) and states it in the conversation for
-   the repair turn, and the goal ends **BLOCKED** — either parked by the runtime, whose reason then names
+   the repair turn, and the work ends **BLOCKED** — either parked by the runtime, whose reason then names
    `bound:stale_inputs`, or settled by the model's own blocked report. No run reports success either way; which
    of the two endings happens is the model's choice, so the assertion is on what must hold in both (D-187).
 
 The artifact decides both halves: the file really exists and holds one of the two values the scenario writes,
-and the session never claims the goal was done. Which of the two it holds is not an invariant — the model's
-repair turn rewrites its deliverable, so the last writer is the model's when it settles the goal itself and the
+and the session never claims the work was done. Which of the two it holds is not an invariant — the model's
+repair turn rewrites its deliverable, so the last writer is the model's when it settles the work itself and the
 check's when the runtime parks it (the assertion here said "the check's content" until a round-2 run ended with
 the model's, D-204); that the check ran at all is the runtime's own `stale_inputs` record.
 
@@ -90,11 +90,11 @@ def config_text(provider: str) -> str:
 
 def session_facts(state_root: pathlib.Path) -> dict:
     db = sqlite3.connect(f"file:{state_root}/session.sqlite?mode=ro", uri=True)
-    goals = list(db.execute("SELECT id, status, limits_json FROM goals ORDER BY rowid"))
+    work_scopes = list(db.execute("SELECT id, status, limits_json FROM work_scopes ORDER BY rowid"))
     events = [(row[0], json.loads(row[1])) for row in db.execute("SELECT kind, payload_json FROM events ORDER BY sequence")]
     entries = [row[0] for row in db.execute("SELECT message_json FROM context_entries ORDER BY idx")]
     requests = list(db.execute("SELECT COUNT(*) FROM model_requests"))[0][0]
-    return {"goals": goals, "events": events, "entries": entries, "requests": requests}
+    return {"work_scopes": work_scopes, "events": events, "entries": entries, "requests": requests}
 
 
 
@@ -145,19 +145,19 @@ def main() -> int:
     elapsed = round(time.time() - started, 1)
     report = json.loads(run.stdout) if run.stdout.strip().startswith("{") else {}
     print(f"provider={args.provider} exec exit={run.returncode} elapsed={elapsed}s end={report.get('end')} "
-          f"goal={report.get('goal_status')}")
+          f"work={report.get('work_status')}")
     if run.stderr.strip():
         print("stderr:", run.stderr.strip()[:300])
 
     facts = session_facts(state_root)
     kinds = [kind for kind, _ in facts["events"]]
-    print(f"model requests: {facts['requests']} | goals: {facts['goals']}")
-    for kind in ("check_round_registered", "completion_repair", "goal_completed"):
+    print(f"model requests: {facts['requests']} | work_scopes: {facts['work_scopes']}")
+    for kind in ("check_round_registered", "completion_repair", "work_completed"):
         print(f"  {kind}: {kinds.count(kind)}")
 
     # 1. the work happened, and the check really ran. Two writers touch out.txt — the model's deliverable and
     #    the check's own `printf changed` — and which one lands *last* depends on the ending the model chose:
-    #    settling the goal itself means it re-wrote the file on its repair turn (the round-2 run of 2026-09-27
+    #    settling the work itself means it re-wrote the file on its repair turn (the round-2 run of 2026-09-27
     #    ends with the model's content), while a runtime park leaves the check's. Both are honest, so the
     #    assertion is that the file exists holding one of the two values this scenario writes, not which one;
     #    that the check ran is the runtime's own record, read in §3 below (D-197: an assertion may not require
@@ -176,16 +176,16 @@ def main() -> int:
     else:
         print("the conversation carries the model's write of out.txt")
 
-    # 2. no success was reported: the stale input gated the goal
+    # 2. no success was reported: the stale input gated the work
     if run.returncode == 0:
         failures.append("the headless run exited 0 although its verified input had changed")
     if report.get("end") != "failed":
         failures.append(f"a run whose verified input changed must end failed, not {report.get('end')!r}")
-    statuses = {goal[1] for goal in facts["goals"]}
+    statuses = {work[1] for work in facts["work_scopes"]}
     if "SUCCEEDED" in statuses:
-        failures.append(f"a goal was reported SUCCEEDED although its verified input changed: {facts['goals']}")
+        failures.append(f"a work was reported SUCCEEDED although its verified input changed: {facts['work_scopes']}")
     if "BLOCKED" not in statuses:
-        failures.append(f"the goal did not end BLOCKED: {facts['goals']}")
+        failures.append(f"the work did not end BLOCKED: {facts['work_scopes']}")
 
     # 3. the runtime recorded the verdict, and the model was told about it
     repairs = [payload for kind, payload in facts["events"] if kind == "completion_repair"]
@@ -197,32 +197,32 @@ def main() -> int:
         print(f"the runtime recorded the stale input: {verdicts[0].get('reason')!r}")
     # §8/D-187: the verdict is the *runtime's* own — the check itself exited 0 — so the repair turn has to state
     # it; before that entry the model saw only "the required checks must pass" and had to guess (a live run
-    # re-derived the workspace state over eleven requests before settling the goal itself).
+    # re-derived the workspace state over eleven requests before settling the work itself).
     seen = [entry for entry in facts["entries"] if "stale_inputs" in entry]
     if not seen:
         failures.append("the model was never told why its completion was refused: no stale_inputs in the conversation")
     else:
         print("the conversation carries the verdict")
 
-    # 4. the settlement: either the runtime parked the goal — its reason names the stale input — or the model
+    # 4. the settlement: either the runtime parked the work — its reason names the stale input — or the model
     #    reported the divergence itself. Both are honest endings; a success claim is not, and the model chooses
     #    which one happens (the recorded run of 2026-09-26 parked after three rounds; the run of 2026-09-27
     #    settled itself at round two with a blocked report), so the assertion is on what must hold, not on which
     #    path the model took.
-    settled = [payload for kind, payload in facts["events"] if kind == "goal_completed"]
+    settled = [payload for kind, payload in facts["events"] if kind == "work_completed"]
     if not settled or settled[-1].get("status") != "BLOCKED":
-        failures.append(f"the goal did not settle BLOCKED: {settled}")
+        failures.append(f"the work did not settle BLOCKED: {settled}")
     elif "reason" in settled[-1]:
         if "bound:stale_inputs" not in settled[-1]["reason"]:
-            failures.append(f"the runtime parked the goal without naming the stale input: {settled[-1]['reason']!r}")
+            failures.append(f"the runtime parked the work without naming the stale input: {settled[-1]['reason']!r}")
         else:
-            print(f"the runtime parked the goal naming the stale input: {settled[-1]['reason']}")
+            print(f"the runtime parked the work naming the stale input: {settled[-1]['reason']}")
     else:
         outcome = (settled[-1].get("completion") or {}).get("outcome")
         if outcome != "blocked":
-            failures.append(f"the model settled the goal as {outcome!r} although its verified input had changed")
+            failures.append(f"the model settled the work as {outcome!r} although its verified input had changed")
         else:
-            print("the model settled the goal itself with a blocked report (no runtime park to name the input)")
+            print("the model settled the work itself with a blocked report (no runtime park to name the input)")
 
     for failure in failures:
         print("FAIL:", failure)

@@ -15,7 +15,7 @@ verifiable — and it is a promise about honesty rather than about recovery:
 
 Asserts: `runs.log` has exactly **one** line (the command ran once and was not replayed), the worker's
 operation really is `OUTCOME_UNKNOWN` with that receipt class, the delegated task is `BLOCKED` with exactly
-one `task_blocked` event, and nothing claims the goal succeeded. The orphaned command (its process group
+one `task_blocked` event, and nothing claims the work succeeded. The orphaned command (its process group
 outlives the runner, D-41) is stopped explicitly at the end, which is the user's own lever as
 `docs/USER-GUIDE.md` §4 describes.
 
@@ -70,10 +70,10 @@ context_window = 262144
 COMMAND = "sh -c 'echo \"run pid=$$ ppid=$PPID\" >> runs.log; sleep 20'"
 HIRE = (
     "Spawn exactly one worker with the instructions `run the shell command the task gives you, then finish`. Do "
-    "not delegate anything yet and do not settle the goal: report the worker's instance id and end your turn."
+    "not delegate anything yet and do not settle the work: report the worker's instance id and end your turn."
 )
 DELEGATE = (
-    "If no goal is active, create one first (`create_goal`), then delegate exactly one task to that worker with "
+    "If no work is active, create one first (`create_work`), then delegate exactly one task to that worker with "
     f"the text: `Call the shell tool exactly once with the command {COMMAND}` in the shared workspace. Then wait "
     "for the task and report its final status."
 )
@@ -255,11 +255,11 @@ def main() -> int:
     print(f"  task_blocked events: {blocked}")
     if len(blocked) != 1:
         failures.append(f"expected exactly one task_blocked notification, saw {len(blocked)}")
-    # a BLOCKED settlement is legitimate (the task parked, so the goal cannot succeed); success is not
-    settled = read(state_root, "SELECT payload_json FROM events WHERE kind = 'goal_completed'")
+    # a BLOCKED settlement is legitimate (the task parked, so the work cannot succeed); success is not
+    settled = read(state_root, "SELECT payload_json FROM events WHERE kind = 'work_completed'")
     succeeded = [payload for (payload,) in settled if '"SUCCEEDED"' in payload]
     if succeeded:
-        failures.append(f"a goal claimed success out of an unverifiable operation: {succeeded}")
+        failures.append(f"a work claimed success out of an unverifiable operation: {succeeded}")
 
     # 5. the orphaned command is the user's explicit lever, not the runtime's (D-41): stop it here
     for journal in state_root.rglob("jobs/*/journal.json"):

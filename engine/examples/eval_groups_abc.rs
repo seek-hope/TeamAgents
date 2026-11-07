@@ -419,7 +419,7 @@ async fn run_driver_trial(
             max_retries: MAX_RETRIES,
             storage_queue: 256,
             poll: Duration::from_millis(100),
-            goal_limits: json!({}),
+            work_limits: json!({}),
             require_shell_approval: false,
             provider_factory: factory,
         };
@@ -435,7 +435,7 @@ async fn run_driver_trial(
         }
         handle.input(instance, task).await?;
         let outcome =
-            wait_goal(&session_db, session_id, instance, args.timeout_s, &mut events_seen, Some(&handle)).await?;
+            wait_work(&session_db, session_id, instance, args.timeout_s, &mut events_seen, Some(&handle)).await?;
         handle.shutdown().await?;
         outcome
     } else {
@@ -458,12 +458,12 @@ async fn run_driver_trial(
             max_retries: MAX_RETRIES,
             storage_queue: 256,
             poll: Duration::from_millis(100),
-            goal_limits: json!({}),
+            work_limits: json!({}),
             require_shell_approval: false,
         };
         let handle = start(config).await?;
         handle.input(task).await?;
-        let outcome = wait_goal(&session_db, session_id, instance, args.timeout_s, &mut events_seen, None).await?;
+        let outcome = wait_work(&session_db, session_id, instance, args.timeout_s, &mut events_seen, None).await?;
         handle.shutdown().await?;
         outcome
     };
@@ -477,7 +477,7 @@ async fn run_driver_trial(
     }))
 }
 
-/// Terminal goal status, idle reply, or the deadline: the same stopping rule
+/// Terminal work status, idle reply, or the deadline: the same stopping rule
 /// for B and C (§13.1 keeps the two groups comparable).
 ///
 /// **The user's half of the flow (D-256).** A spawned member holds no
@@ -488,7 +488,7 @@ async fn run_driver_trial(
 /// live probe issues exactly this by hand), so the team branch does it here,
 /// within 100 ms of a member appearing, and records how many it granted. The
 /// product's default is untouched; this is the treatment the round-5 arm adds.
-async fn wait_goal(
+async fn wait_work(
     session_db: &Path,
     session_id: &str,
     instance: &str,
@@ -510,8 +510,10 @@ async fn wait_goal(
             let rows = stmt.query_map(rusqlite::params![session_id, instance], |row| row.get::<_, String>(0))?;
             rows.collect::<Result<Vec<_>, _>>()?
         };
-        let goal: Option<(String, String)> = conn
-            .query_row("SELECT status, known_usage_json FROM goals LIMIT 1", [], |row| Ok((row.get(0)?, row.get(1)?)))
+        let work: Option<(String, String)> = conn
+            .query_row("SELECT status, known_usage_json FROM work_scopes LIMIT 1", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
             .ok();
         let attempts: i64 = conn
             .query_row(
@@ -551,8 +553,8 @@ async fn wait_goal(
                     .await?;
             }
         }
-        let usage = goal.as_ref().and_then(|(_, known)| serde_json::from_str::<Usage>(known).ok()).unwrap_or_default();
-        if let Some((status, _)) = &goal {
+        let usage = work.as_ref().and_then(|(_, known)| serde_json::from_str::<Usage>(known).ok()).unwrap_or_default();
+        if let Some((status, _)) = &work {
             if matches!(status.as_str(), "SUCCEEDED" | "FAILED" | "BLOCKED" | "CANCELLED") {
                 return Ok((status.to_ascii_lowercase(), usage, attempts as usize));
             }

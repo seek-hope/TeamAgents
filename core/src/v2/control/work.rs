@@ -96,30 +96,30 @@ pub(super) fn configure(tx: &Connection, session: &str, params: &Json, identity:
 }
 
 fn key(tx: &Connection, instance: &str) -> Result<Option<WorkKey>, String> {
-    let Some(goal) = budget_goal(tx, instance)? else { return Ok(None) };
+    let Some(work) = budget_work(tx, instance)? else { return Ok(None) };
     let (_, epoch, _, _, _) = load_instance(tx, instance)?;
     let owned: Option<String> = tx
-        .query_row("SELECT active_goal_id FROM instances WHERE id=?1", [instance], |r| r.get(0))
+        .query_row("SELECT active_work_id FROM instances WHERE id=?1", [instance], |r| r.get(0))
         .map_err(|e| format!("work owner: {e}"))?;
-    let task: String = if owned.as_deref() == Some(&goal) {
+    let task: String = if owned.as_deref() == Some(&work) {
         String::new()
     } else {
         tx.query_row(
-            "SELECT id FROM tasks WHERE assignee=?1 AND goal_id=?2 AND status IN ('RUNNING','PENDING')
+            "SELECT id FROM tasks WHERE assignee=?1 AND work_id=?2 AND status IN ('RUNNING','PENDING')
             ORDER BY CASE status WHEN 'RUNNING' THEN 0 ELSE 1 END, rowid LIMIT 1",
-            rusqlite::params![instance, goal],
+            rusqlite::params![instance, work],
             |r| r.get(0),
         )
         .optional()
         .map_err(|e| format!("work task: {e}"))?
         .unwrap_or_default()
     };
-    Ok(Some((goal, instance.into(), epoch, task)))
+    Ok(Some((work, instance.into(), epoch, task)))
 }
 
 fn ensure(tx: &Connection, k: &WorkKey) -> Result<(), String> {
     tx.execute(
-        "INSERT OR IGNORE INTO work_states(goal_id, instance_id, epoch, task_id) VALUES (?1,?2,?3,?4)",
+        "INSERT OR IGNORE INTO work_states(work_id, instance_id, epoch, task_id) VALUES (?1,?2,?3,?4)",
         rusqlite::params![k.0, k.1, k.2, k.3],
     )
     .map_err(|e| format!("enroll work: {e}"))?;
@@ -138,8 +138,8 @@ pub(super) fn view(tx: &Connection, instance: &str) -> Result<Json, String> {
         None => {
             let closed: Option<(WorkKey, String)> = tx
                 .query_row(
-                    "SELECT w.goal_id,w.instance_id,w.epoch,w.task_id,COALESCE(t.status,g.status)
-                FROM work_states w JOIN goals g ON g.id=w.goal_id LEFT JOIN tasks t ON t.id=w.task_id
+                    "SELECT w.work_id,w.instance_id,w.epoch,w.task_id,COALESCE(t.status,g.status)
+                FROM work_states w JOIN work_scopes g ON g.id=w.work_id LEFT JOIN tasks t ON t.id=w.task_id
                 WHERE w.instance_id=?1
                     AND ((w.task_id='' AND g.status<>'ACTIVE') OR t.status NOT IN ('PENDING','RUNNING'))
                 ORDER BY w.rowid DESC LIMIT 1",
@@ -161,11 +161,11 @@ pub(super) fn view(tx: &Connection, instance: &str) -> Result<Json, String> {
     };
     tx.query_row("SELECT state, checkpoint_json, pending_reason, empty_turns, revision, reason,
         COALESCE(json_extract(policy_json,'$.inherited_execution'),0)
-        FROM work_states WHERE goal_id=?1 AND instance_id=?2 AND epoch=?3 AND task_id=?4",
+        FROM work_states WHERE work_id=?1 AND instance_id=?2 AND epoch=?3 AND task_id=?4",
         rusqlite::params![k.0,k.1,k.2,k.3], |r| {
             let checkpoint: String = r.get(1)?;
             let state:String=r.get(0)?;
-            Ok(json!({"policy_version":1, "goal_id":k.0, "instance_id":k.1, "epoch":k.2, "task_id":k.3,
+            Ok(json!({"policy_version":1, "work_id":k.0, "instance_id":k.1, "epoch":k.2, "task_id":k.3,
                 "state":closed_state.unwrap_or(&state), "checkpoint":serde_json::from_str::<Json>(&checkpoint).unwrap_or(Json::Null),
                 "pending_reason":r.get::<_,String>(2)?, "repair_turns":r.get::<_,i64>(3)?,
                 "revision":r.get::<_,i64>(4)?, "reason":r.get::<_,String>(5)?, "needs_fresh_evidence":r.get::<_,bool>(6)?, "checkpoint_provenance":"model_claim"}))
@@ -174,7 +174,7 @@ pub(super) fn view(tx: &Connection, instance: &str) -> Result<Json, String> {
 
 pub(super) fn check_prepared(tx: &Connection, instance: &str, prepared: &Json) -> Result<(), String> {
     let current = view(tx, instance)?;
-    for field in ["goal_id", "epoch", "task_id", "admission_id", "revision", "state"] {
+    for field in ["work_id", "epoch", "task_id", "admission_id", "revision", "state"] {
         if current[field] != prepared[field] {
             return Err("stale executor: work changed during request preparation".into());
         }
@@ -191,11 +191,11 @@ pub(super) fn context(tx: &Connection, instance: &str) -> Result<Json, String> {
         .prepare(
             "SELECT c.id, c.message_json FROM work_inputs w JOIN context_entries c
         ON c.instance_id=w.instance_id AND c.epoch=w.epoch AND c.envelope_id=w.envelope_id
-        WHERE w.goal_id=?1 AND w.instance_id=?2 ORDER BY w.rowid DESC LIMIT 16",
+        WHERE w.work_id=?1 AND w.instance_id=?2 ORDER BY w.rowid DESC LIMIT 16",
         )
         .map_err(|e| format!("work input context: {e}"))?;
     let inputs = stmt
-        .query_map(rusqlite::params![result["goal_id"].as_str(), instance], |r| {
+        .query_map(rusqlite::params![result["work_id"].as_str(), instance], |r| {
             let raw: String = r.get(1)?;
             let message: Json = serde_json::from_str(&raw).unwrap_or(Json::Null);
             let text = message["content"].as_str().unwrap_or("");
@@ -208,9 +208,9 @@ pub(super) fn context(tx: &Connection, instance: &str) -> Result<Json, String> {
     result["recent_user_inputs"] = json!(inputs.into_iter().rev().collect::<Vec<_>>());
     result["original_input"] = tx
         .query_row(
-            "SELECT c.id,c.message_json FROM goals g JOIN context_entries c
+            "SELECT c.id,c.message_json FROM work_scopes g JOIN context_entries c
         ON c.envelope_id=g.original_request_ref AND c.instance_id=?2 WHERE g.id=?1 ORDER BY c.rowid LIMIT 1",
-            rusqlite::params![result["goal_id"].as_str(), instance],
+            rusqlite::params![result["work_id"].as_str(), instance],
             |r| {
                 let raw: String = r.get(1)?;
                 let message: Json = serde_json::from_str(&raw).unwrap_or(Json::Null);
@@ -225,10 +225,10 @@ pub(super) fn context(tx: &Connection, instance: &str) -> Result<Json, String> {
     let mut operations=tx.prepare("SELECT o.operation_id,o.status,json_extract(o.intent_json,'$.call_id'),json_extract(o.intent_json,'$.name')
         FROM operations o JOIN decisions d ON d.decision_id=o.decision_id JOIN model_requests r ON r.request_id=d.request_id
         LEFT JOIN work_requests w ON w.request_id=r.request_id
-        WHERE r.instance_id=?1 AND r.goal_id=?2 AND (?3='' OR json_extract(w.context_json,'$.task_id')=?3)
+        WHERE r.instance_id=?1 AND r.work_id=?2 AND (?3='' OR json_extract(w.context_json,'$.task_id')=?3)
         ORDER BY o.rowid DESC LIMIT 17").map_err(|e|format!("work observations: {e}"))?;
     let mut observed = operations
-        .query_map(rusqlite::params![instance, result["goal_id"].as_str(), result["task_id"].as_str()], |r| {
+        .query_map(rusqlite::params![instance, result["work_id"].as_str(), result["task_id"].as_str()], |r| {
             Ok(json!({"operation_id":r.get::<_,String>(0)?,"status":r.get::<_,String>(1)?,
             "call_id":r.get::<_,Option<String>>(2)?,"tool":r.get::<_,Option<String>>(3)?}))
         })
@@ -243,13 +243,13 @@ pub(super) fn context(tx: &Connection, instance: &str) -> Result<Json, String> {
 }
 
 pub(super) fn reset_epoch(tx: &Connection, instance: &str, old: i64, new: i64) -> Result<(), String> {
-    tx.execute("INSERT INTO work_states(goal_id,instance_id,epoch,task_id,state,checkpoint_json,policy_json,pending_reason,
+    tx.execute("INSERT INTO work_states(work_id,instance_id,epoch,task_id,state,checkpoint_json,policy_json,pending_reason,
         empty_turns,revision,reason,fingerprints_json)
-        SELECT w.goal_id,w.instance_id,?3,w.task_id,w.state,w.checkpoint_json,w.policy_json,
+        SELECT w.work_id,w.instance_id,?3,w.task_id,w.state,w.checkpoint_json,w.policy_json,
             CASE WHEN w.state='RUNNING' THEN 'Context reset; inspect saved work and receipts before continuing' ELSE w.pending_reason END,
             w.empty_turns,w.revision+1,w.reason,w.fingerprints_json
-        FROM work_states w LEFT JOIN goals g ON g.id=w.goal_id
-        WHERE w.instance_id=?1 AND w.epoch=?2 AND (g.status='ACTIVE' OR w.goal_id='')",rusqlite::params![instance,old,new])
+        FROM work_states w LEFT JOIN work_scopes g ON g.id=w.work_id
+        WHERE w.instance_id=?1 AND w.epoch=?2 AND (g.status='ACTIVE' OR w.work_id='')",rusqlite::params![instance,old,new])
         .map_err(|e|format!("preserve work across context reset: {e}"))?;
     Ok(())
 }
@@ -257,17 +257,19 @@ pub(super) fn reset_epoch(tx: &Connection, instance: &str, old: i64, new: i64) -
 pub(super) fn admit_input(tx: &Connection, session: &str, instance: &str, envelope: &str) -> Result<(), String> {
     let Some(settings) = policy(tx)? else { return Ok(()) };
     let (_, epoch, lifecycle, _, _) = load_instance(tx, instance)?;
-    if budget_goal(tx, instance)?.is_none() && settings["leader_id"].as_str() == Some(instance) {
-        // A new admitted input gets a new record; it never reopens a terminal goal.
+    if budget_work(tx, instance)?.is_none() && settings["leader_id"].as_str() == Some(instance) {
+        // A new admitted input gets a new record; it never reopens a terminal work.
         let latest: Option<String> = tx
-            .query_row("SELECT status FROM goals WHERE session_id=?1 ORDER BY rowid DESC LIMIT 1", [session], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT status FROM work_scopes WHERE session_id=?1 ORDER BY rowid DESC LIMIT 1",
+                [session],
+                |r| r.get(0),
+            )
             .optional()
-            .map_err(|e| format!("last work goal: {e}"))?;
+            .map_err(|e| format!("last work work: {e}"))?;
         if matches!(latest.as_deref(), Some("BLOCKED" | "CANCELLED")) {
             return Err(
-                "the previous goal is blocked or cancelled; explicitly create a new goal before admitting more work"
+                "the previous work is blocked or cancelled; explicitly create a new work before admitting more work"
                     .into(),
             );
         }
@@ -280,16 +282,16 @@ pub(super) fn admit_input(tx: &Connection, session: &str, instance: &str, envelo
         .map_err(|e| format!("work input policy: {e}"))?;
     let payload: Json = serde_json::from_str(&payload).map_err(|e| format!("work input JSON: {e}"))?;
     if let Some(checks) = payload.get("checks").filter(|v| v.as_array().is_some_and(|a| !a.is_empty())) {
-        require_checks(tx, session, &json!({"goal_id":k.0,"checks":checks}), &Identity::User)?;
+        require_checks(tx, session, &json!({"work_id":k.0,"checks":checks}), &Identity::User)?;
     }
     tx.execute(
-        "INSERT OR IGNORE INTO work_inputs(goal_id,instance_id,epoch,envelope_id)
+        "INSERT OR IGNORE INTO work_inputs(work_id,instance_id,epoch,envelope_id)
             SELECT ?1,?2,?3,?4 WHERE NOT EXISTS(SELECT 1 FROM work_inputs WHERE instance_id=?2 AND envelope_id=?4)",
         rusqlite::params![k.0, instance, epoch, envelope],
     )
     .map_err(|e| format!("work input: {e}"))?;
     tx.execute(
-        "UPDATE goals SET original_request_ref=?1 WHERE id=?2 AND original_request_ref=''",
+        "UPDATE work_scopes SET original_request_ref=?1 WHERE id=?2 AND original_request_ref=''",
         rusqlite::params![envelope, k.0],
     )
     .map_err(|e| format!("work original input: {e}"))?;
@@ -303,7 +305,7 @@ pub(super) fn admit_input(tx: &Connection, session: &str, instance: &str, envelo
         session,
         "work_input_admitted",
         instance,
-        &json!({"goal_id":k.0,"envelope_id":envelope,"policy_version":1}),
+        &json!({"work_id":k.0,"envelope_id":envelope,"policy_version":1}),
     )?;
     Ok(())
 }
@@ -311,7 +313,7 @@ pub(super) fn admit_input(tx: &Connection, session: &str, instance: &str, envelo
 pub(super) fn assigned(tx: &Connection, instance: &str) -> Result<(), String> {
     let Some(k) = key(tx, instance)? else { return Ok(()) };
     let enrolled: bool = tx
-        .query_row("SELECT EXISTS(SELECT 1 FROM work_states WHERE goal_id=?1)", [&k.0], |r| r.get(0))
+        .query_row("SELECT EXISTS(SELECT 1 FROM work_states WHERE work_id=?1)", [&k.0], |r| r.get(0))
         .map_err(|e| format!("parent work enrollment: {e}"))?;
     if enrolled {
         ensure(tx, &k)?;
@@ -322,7 +324,7 @@ pub(super) fn assigned(tx: &Connection, instance: &str) -> Result<(), String> {
 fn reset(tx: &Connection, k: &WorkKey, reason: &str) -> Result<(), String> {
     tx.execute(
         "UPDATE work_states SET state='RUNNING', pending_reason=?5, empty_turns=0, fingerprints_json='[]',
-        reason='', revision=revision+1 WHERE goal_id=?1 AND instance_id=?2 AND epoch=?3 AND task_id=?4",
+        reason='', revision=revision+1 WHERE work_id=?1 AND instance_id=?2 AND epoch=?3 AND task_id=?4",
         rusqlite::params![k.0, k.1, k.2, k.3, reason],
     )
     .map_err(|e| format!("reset work episode: {e}"))?;
@@ -351,12 +353,12 @@ pub(super) fn observation(
             )?;
         }
     } else if matches!(kind, "task_result" | "task_attention") {
-        let matches_goal = correlation
+        let matches_work = correlation
             .and_then(|task| {
-                tx.query_row("SELECT goal_id FROM tasks WHERE id=?1", [task], |r| r.get::<_, String>(0)).ok()
+                tx.query_row("SELECT work_id FROM tasks WHERE id=?1", [task], |r| r.get::<_, String>(0)).ok()
             })
-            .is_some_and(|goal| goal == k.0);
-        if matches_goal {
+            .is_some_and(|work| work == k.0);
+        if matches_work {
             reset(tx, &k, "A task outcome or attention event arrived")?;
         }
     } else if kind == "message" && !k.3.is_empty() && sender != instance {
@@ -378,7 +380,7 @@ pub(super) fn begin(tx: &Connection, instance: &str, request: &str) -> Result<()
     if matches!(state["state"].as_str(), Some("NEEDS_INPUT" | "BLOCKED" | "STOPPED")) {
         return Err("work is waiting for new input or explicit recovery".into());
     }
-    let k = current_key(tx, instance)?.ok_or("work has no live goal or pending user input")?;
+    let k = current_key(tx, instance)?.ok_or("work has no live work or pending user input")?;
     let unaddressed: bool = tx
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM context_entries WHERE instance_id=?1 AND epoch=?2
@@ -399,7 +401,7 @@ pub(super) fn begin(tx: &Connection, instance: &str, request: &str) -> Result<()
     .map_err(|e| format!("freeze request work context: {e}"))?;
     tx.execute(
         "UPDATE work_states SET pending_reason='', state='RUNNING', revision=revision+1
-        WHERE goal_id=?1 AND instance_id=?2 AND epoch=?3 AND task_id=?4",
+        WHERE work_id=?1 AND instance_id=?2 AND epoch=?3 AND task_id=?4",
         rusqlite::params![k.0, k.1, k.2, k.3],
     )
     .map_err(|e| format!("consume work reason: {e}"))?;
@@ -409,7 +411,7 @@ pub(super) fn begin(tx: &Connection, instance: &str, request: &str) -> Result<()
 fn set_state(tx: &Connection, k: &WorkKey, state: &str, reason: &str, pending: &str) -> Result<(), String> {
     tx.execute(
         "UPDATE work_states SET state=?5, reason=?6, pending_reason=?7, revision=revision+1
-        WHERE goal_id=?1 AND instance_id=?2 AND epoch=?3 AND task_id=?4",
+        WHERE work_id=?1 AND instance_id=?2 AND epoch=?3 AND task_id=?4",
         rusqlite::params![k.0, k.1, k.2, k.3, state, reason, pending],
     )
     .map_err(|e| format!("work state: {e}"))?;
@@ -418,7 +420,7 @@ fn set_state(tx: &Connection, k: &WorkKey, state: &str, reason: &str, pending: &
 
 fn repair(tx: &Connection, session: &str, instance: &str, reason: &str) -> Result<(), String> {
     let Some(k) = current_key(tx, instance)? else { return Ok(()) };
-    tx.execute("UPDATE work_states SET empty_turns=empty_turns+1 WHERE goal_id=?1 AND instance_id=?2 AND epoch=?3 AND task_id=?4",
+    tx.execute("UPDATE work_states SET empty_turns=empty_turns+1 WHERE work_id=?1 AND instance_id=?2 AND epoch=?3 AND task_id=?4",
         rusqlite::params![k.0,k.1,k.2,k.3]).map_err(|e|format!("work repair counter: {e}"))?;
     let state = view(tx, instance)?;
     if state.is_null() {
@@ -429,7 +431,7 @@ fn repair(tx: &Connection, session: &str, instance: &str, reason: &str) -> Resul
         set_state(tx, &k, "BLOCKED", &reason, "")?;
         stopped_notice(tx, &k, &reason)?;
         attention(tx, session, instance, &reason)?;
-        event(tx, session, "work_blocked", instance, &json!({"goal_id":k.0,"reason":reason}))?;
+        event(tx, session, "work_blocked", instance, &json!({"work_id":k.0,"reason":reason}))?;
     } else {
         let action=format!("{reason} Continue with an executable action, wait for an actual event, ask a material question with work_checkpoint, or finish with evidence. Repeated prose and plan edits do not count as progress.");
         set_state(tx, &k, "RUNNING", reason, &action)?;
@@ -438,7 +440,7 @@ fn repair(tx: &Connection, session: &str, instance: &str, reason: &str) -> Resul
             session,
             "work_continuation",
             instance,
-            &json!({"goal_id":k.0,"reason":action,"repair_turns":state["repair_turns"]}),
+            &json!({"work_id":k.0,"reason":action,"repair_turns":state["repair_turns"]}),
         )?;
     }
     Ok(())
@@ -527,7 +529,7 @@ pub(super) fn response(
         .map_err(|e| format!("response work scope: {e}"))?
         .and_then(|raw| serde_json::from_str::<Json>(&raw).ok())
         .unwrap_or(Json::Null);
-    if frozen["goal_id"].as_str() != Some(k.0.as_str())
+    if frozen["work_id"].as_str() != Some(k.0.as_str())
         || frozen["epoch"].as_i64() != Some(k.2)
         || frozen["task_id"].as_str() != Some(k.3.as_str())
     {
@@ -547,9 +549,9 @@ pub(super) fn response(
                 tx,
                 instance,
                 k.2,
-                "Work is already active; continue this goal instead of creating another",
+                "Work is already active; continue this work instead of creating another",
             )?;
-            return repair(tx, session, instance, "Keep the existing work goal and budget");
+            return repair(tx, session, instance, "Keep the existing work work and budget");
         }
         if let Some(problem) = checkpoint_problem(value) {
             answer_dangling_calls(tx, instance, k.2, problem)?;
@@ -566,7 +568,7 @@ pub(super) fn response(
             return repair(tx, session, instance, "Checkpoint exceeded its storage bound");
         }
         tx.execute(
-            "UPDATE work_states SET checkpoint_json=?5 WHERE goal_id=?1 AND instance_id=?2 AND epoch=?3 AND task_id=?4",
+            "UPDATE work_states SET checkpoint_json=?5 WHERE work_id=?1 AND instance_id=?2 AND epoch=?3 AND task_id=?4",
             rusqlite::params![k.0, k.1, k.2, k.3, saved.to_string()],
         )
         .map_err(|e| format!("save work checkpoint: {e}"))?;
@@ -600,7 +602,7 @@ pub(super) fn response(
             session,
             "work_checkpoint",
             instance,
-            &json!({"goal_id":k.0,"action":value["action"],"decision_id":decision}),
+            &json!({"work_id":k.0,"action":value["action"],"decision_id":decision}),
         )?;
     } else if params.get("completion").is_some() {
         set_state(tx, &k, "VERIFYING", "Checking the completion claim", "")?;
@@ -631,7 +633,7 @@ pub(super) fn tools_consumed(
     let Some(k) = key(tx, instance)? else { return Ok(()) };
     let source: Option<(Option<String>, i64, String)> = tx
         .query_row(
-            "SELECT r.goal_id,r.epoch,w.context_json FROM decisions d
+            "SELECT r.work_id,r.epoch,w.context_json FROM decisions d
         JOIN model_requests r ON r.request_id=d.request_id JOIN work_requests w ON w.request_id=r.request_id
         WHERE d.decision_id=?1",
             [decision],
@@ -639,14 +641,14 @@ pub(super) fn tools_consumed(
         )
         .optional()
         .map_err(|e| format!("tool work source: {e}"))?;
-    let Some((goal, epoch, frozen)) = source else { return Ok(()) };
+    let Some((work, epoch, frozen)) = source else { return Ok(()) };
     let frozen: Json = serde_json::from_str(&frozen).map_err(|e| format!("tool work source JSON: {e}"))?;
-    if goal.as_deref() != Some(&k.0) || epoch != k.2 || frozen["task_id"].as_str() != Some(&k.3) {
+    if work.as_deref() != Some(&k.0) || epoch != k.2 || frozen["task_id"].as_str() != Some(&k.3) {
         return Ok(());
     }
     let raw: String = tx
         .query_row(
-            "SELECT fingerprints_json FROM work_states WHERE goal_id=?1 AND instance_id=?2 AND epoch=?3 AND task_id=?4",
+            "SELECT fingerprints_json FROM work_states WHERE work_id=?1 AND instance_id=?2 AND epoch=?3 AND task_id=?4",
             rusqlite::params![k.0, k.1, k.2, k.3],
             |r| r.get(0),
         )
@@ -664,7 +666,7 @@ pub(super) fn tools_consumed(
             && fingerprints[n - period..] == fingerprints[n - 3 * period..n - 2 * period]
     });
     tx.execute("UPDATE work_states SET fingerprints_json=?5, empty_turns=CASE WHEN ?6 THEN empty_turns ELSE 0 END,
-        pending_reason='Tool results received', revision=revision+1 WHERE goal_id=?1 AND instance_id=?2 AND epoch=?3 AND task_id=?4",
+        pending_reason='Tool results received', revision=revision+1 WHERE work_id=?1 AND instance_id=?2 AND epoch=?3 AND task_id=?4",
         rusqlite::params![k.0,k.1,k.2,k.3,json!(fingerprints).to_string(),repeated]).map_err(|e|format!("work observation: {e}"))?;
     if repeated {
         repair(tx,session,instance,"Repeated actions returned the same observations; revise the approach or use an explicit event wait for intentional polling")?;
@@ -725,8 +727,8 @@ pub(super) fn unknown_operation(tx: &Connection, decision: &str, operation: &str
     tx.execute(
         "UPDATE work_states SET state=CASE WHEN state='STOPPED' THEN state ELSE 'BLOCKED' END,
         pending_reason='',reason=?2,revision=revision+1
-        WHERE (goal_id,instance_id,epoch,task_id) IN (
-            SELECT r.goal_id,r.instance_id,r.epoch,json_extract(w.context_json,'$.task_id')
+        WHERE (work_id,instance_id,epoch,task_id) IN (
+            SELECT r.work_id,r.instance_id,r.epoch,json_extract(w.context_json,'$.task_id')
             FROM decisions d JOIN model_requests r ON r.request_id=d.request_id
             JOIN work_requests w ON w.request_id=r.request_id WHERE d.decision_id=?1)",
         rusqlite::params![
@@ -761,9 +763,9 @@ pub(super) fn fork(tx: &Connection, keep: &str) -> Result<(), String> {
         return Err("tracked execution has no stop evidence; recover or stop it before forking durable work".into());
     }
     admission::carry_for_fork(tx, keep)?;
-    tx.execute("UPDATE goals SET unknown_usage=unknown_usage+(SELECT COUNT(*) FROM model_requests r WHERE r.goal_id=goals.id AND r.status='PENDING' AND r.selected_attempt_id IS NULL)",[])
+    tx.execute("UPDATE work_scopes SET unknown_usage=unknown_usage+(SELECT COUNT(*) FROM model_requests r WHERE r.work_id=work_scopes.id AND r.status='PENDING' AND r.selected_attempt_id IS NULL)",[])
         .map_err(|e|format!("fork pending usage: {e}"))?;
-    tx.execute("UPDATE work_states SET policy_json=json_set(policy_json,'$.inherited_execution',1) WHERE EXISTS(SELECT 1 FROM operations o WHERE o.goal_id=work_states.goal_id)",[])
+    tx.execute("UPDATE work_states SET policy_json=json_set(policy_json,'$.inherited_execution',1) WHERE EXISTS(SELECT 1 FROM operations o WHERE o.work_id=work_states.work_id)",[])
         .map_err(|e|format!("fork inherited evidence: {e}"))?;
     for table in ["work_states", "work_inputs"] {
         tx.execute(&format!("DELETE FROM {table} WHERE instance_id<>?1"), [keep])
@@ -790,7 +792,7 @@ pub(super) fn wake_attention(tx: &Connection, session: &str, instance: &str) -> 
     let attention: bool = tx
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM envelopes e JOIN tasks t ON t.id=e.correlation_id
-        WHERE e.recipient=?1 AND e.epoch=?2 AND e.state='ACCEPTED' AND t.goal_id=?3
+        WHERE e.recipient=?1 AND e.epoch=?2 AND e.state='ACCEPTED' AND t.work_id=?3
         AND (e.kind='task_attention' OR (e.kind='task_result' AND json_extract(e.payload_json,'$.status')='BLOCKED')))",
             rusqlite::params![instance, epoch, k.0],
             |r| r.get(0),
@@ -867,7 +869,7 @@ fn evidence_problem(tx: &Connection, k: &WorkKey, evidence: &Json) -> Result<Opt
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM operations o JOIN decisions d ON d.decision_id=o.decision_id
         JOIN model_requests r ON r.request_id=d.request_id LEFT JOIN work_requests w ON w.request_id=r.request_id
-        WHERE r.instance_id=?1 AND r.goal_id=?2 AND (?3='' OR json_extract(w.context_json,'$.task_id')=?3))",
+        WHERE r.instance_id=?1 AND r.work_id=?2 AND (?3='' OR json_extract(w.context_json,'$.task_id')=?3))",
             rusqlite::params![k.1, k.0, k.3],
             |r| r.get(0),
         )
@@ -875,7 +877,7 @@ fn evidence_problem(tx: &Connection, k: &WorkKey, evidence: &Json) -> Result<Opt
     let inherited: bool = tx
         .query_row(
             "SELECT COALESCE(json_extract(policy_json,'$.inherited_execution'),0) FROM work_states
-        WHERE goal_id=?1 AND instance_id=?2 AND epoch=?3 AND task_id=?4",
+        WHERE work_id=?1 AND instance_id=?2 AND epoch=?3 AND task_id=?4",
             rusqlite::params![k.0, k.1, k.2, k.3],
             |r| r.get(0),
         )
@@ -886,7 +888,7 @@ fn evidence_problem(tx: &Connection, k: &WorkKey, evidence: &Json) -> Result<Opt
         return Ok(None);
     }
     let mut grounded:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM operations o JOIN decisions d ON d.decision_id=o.decision_id
-        JOIN model_requests r ON r.request_id=d.request_id WHERE r.goal_id=?1 AND r.request_ref='required_check' AND o.status='SUCCEEDED')",
+        JOIN model_requests r ON r.request_id=d.request_id WHERE r.work_id=?1 AND r.request_ref='required_check' AND o.status='SUCCEEDED')",
         [&k.0],|r|r.get(0)).map_err(|e|format!("completion check evidence: {e}"))?;
     let refs = evidence.as_array().map(Vec::as_slice).unwrap_or(&[]);
     if refs.len() > 128 {
@@ -903,12 +905,12 @@ fn evidence_problem(tx: &Connection, k: &WorkKey, evidence: &Json) -> Result<Opt
             continue;
         };
         let valid:bool=if kind=="task" {
-            tx.query_row("SELECT EXISTS(SELECT 1 FROM tasks WHERE id=?1 AND goal_id=?2 AND requester=?3 AND status='SUCCEEDED')",
+            tx.query_row("SELECT EXISTS(SELECT 1 FROM tasks WHERE id=?1 AND work_id=?2 AND requester=?3 AND status='SUCCEEDED')",
                 rusqlite::params![id,k.0,k.1],|r|r.get(0))
         } else {
             tx.query_row("SELECT COALESCE((SELECT o.status='SUCCEEDED' FROM operations o JOIN decisions d ON d.decision_id=o.decision_id
                 JOIN model_requests r ON r.request_id=d.request_id LEFT JOIN work_requests w ON w.request_id=r.request_id
-                WHERE r.instance_id=?1 AND r.goal_id=?2 AND (?3='' OR json_extract(w.context_json,'$.task_id')=?3)
+                WHERE r.instance_id=?1 AND r.work_id=?2 AND (?3='' OR json_extract(w.context_json,'$.task_id')=?3)
                 AND ((?4='operation' AND o.operation_id=?5) OR (?4='tool' AND json_extract(o.intent_json,'$.call_id')=?5))
                 ORDER BY o.rowid DESC LIMIT 1),0)",rusqlite::params![k.1,k.0,k.3,kind,id],|r|r.get(0))
         }.map_err(|e|format!("completion evidence reference: {e}"))?;
@@ -951,7 +953,7 @@ pub(super) fn completion(
             .query_row(
                 "SELECT c.id FROM work_inputs w JOIN context_entries c
             ON c.envelope_id=w.envelope_id AND c.instance_id=w.instance_id AND c.epoch=w.epoch
-            WHERE w.goal_id=?1 AND w.instance_id=?2 ORDER BY w.rowid DESC LIMIT 1",
+            WHERE w.work_id=?1 AND w.instance_id=?2 ORDER BY w.rowid DESC LIMIT 1",
                 rusqlite::params![k.0, instance],
                 |r| r.get(0),
             )
@@ -962,7 +964,7 @@ pub(super) fn completion(
                 .as_array()
                 .is_some_and(|inputs| inputs.iter().any(|input| input["context_ref"].as_str() == Some(latest.as_str())))
         });
-        if frozen["goal_id"] != k.0 || frozen["epoch"] != k.2 || frozen["task_id"] != k.3 || !input_seen {
+        if frozen["work_id"] != k.0 || frozen["epoch"] != k.2 || frozen["task_id"] != k.3 || !input_seen {
             answer_dangling_calls(tx,instance,k.2,"Completion came from an earlier work scope or omitted newer user input; reconcile the current work first")?;
             tx.execute(
                 "UPDATE instances SET phase='READY',revision=revision+1 WHERE id=?1 AND phase='COMPLETION_PENDING'",
@@ -1009,7 +1011,7 @@ pub(super) fn completion(
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM operations o JOIN decisions d ON d.decision_id=o.decision_id
             JOIN model_requests r ON r.request_id=d.request_id LEFT JOIN work_requests w ON w.request_id=r.request_id
-            WHERE o.goal_id=?1 AND o.quiescence_json IS NULL AND (?2='' OR json_extract(w.context_json,'$.task_id')=?2)
+            WHERE o.work_id=?1 AND o.quiescence_json IS NULL AND (?2='' OR json_extract(w.context_json,'$.task_id')=?2)
             AND o.status IN ('PREPARED','DISPATCH_COMMITTED','RUNNING','OUTCOME_UNKNOWN'))",
                 rusqlite::params![k.0, k.3],
                 |r| r.get(0),
@@ -1017,7 +1019,7 @@ pub(super) fn completion(
             .map_err(|e| format!("completion active effects: {e}"))?;
         let open: i64 = if k.3.is_empty() {
             tx.query_row(
-                "SELECT COUNT(*) FROM tasks WHERE goal_id=?1 AND status NOT IN ('SUCCEEDED','FAILED','CANCELLED')",
+                "SELECT COUNT(*) FROM tasks WHERE work_id=?1 AND status NOT IN ('SUCCEEDED','FAILED','CANCELLED')",
                 [&k.0],
                 |r| r.get(0),
             )
@@ -1055,14 +1057,14 @@ pub(super) fn completion(
             tx,
             instance,
             k.2,
-            "Work is blocked; the goal stays active with its existing budget and evidence.",
+            "Work is blocked; the work stays active with its existing budget and evidence.",
         )?;
         tx.execute(
             "UPDATE instances SET phase='READY',revision=revision+1 WHERE id=?1 AND phase='COMPLETION_PENDING'",
             [instance],
         )
         .map_err(|e| format!("blocked work phase: {e}"))?;
-        event(tx, session, "work_blocked", instance, &json!({"goal_id":k.0,"reason":summary}))?;
+        event(tx, session, "work_blocked", instance, &json!({"work_id":k.0,"reason":summary}))?;
         return Ok(true);
     }
     if outcome == "BLOCKED" {

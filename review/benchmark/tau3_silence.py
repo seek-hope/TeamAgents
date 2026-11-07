@@ -3,7 +3,7 @@
 
     python3 review/benchmark/tau3_silence.py RUN_DIR [RUN_DIR ...]
 
-A model can settle a goal by calling the runtime's `finish` tool and writing no prose at all. The product used
+A model can settle a work by calling the runtime's `finish` tool and writing no prose at all. The product used
 to report that as a completed run with an empty reply, so a user read nothing at all — measured on the full
 tau3-bench retail split (2026-10-06): **12 of 114 dialogues** ended that way, and 24 of 487 turns had no text.
 Only two of those dialogues also failed the DB check, so the reward hid a user-visible defect that was ten
@@ -36,7 +36,7 @@ def exec_report(path: pathlib.Path) -> dict | None:
             value, _ = DECODER.raw_decode(raw, index)
         except ValueError:
             continue
-        if isinstance(value, dict) and "end" in value and "goal_status" in value:
+        if isinstance(value, dict) and "end" in value and "work_status" in value:
             found = value
     return found
 

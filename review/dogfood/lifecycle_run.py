@@ -89,9 +89,9 @@ def session(state_root: pathlib.Path) -> dict:
     db = sqlite3.connect(f"file:{state_root}/session.sqlite?mode=ro", uri=True)
     instances = list(db.execute("SELECT id, lifecycle, phase FROM instances"))
     requests = list(db.execute("SELECT request_id, status FROM model_requests"))
-    goals = list(db.execute("SELECT id, status FROM goals"))
+    work_scopes = list(db.execute("SELECT id, status FROM work_scopes"))
     events = [row[0] for row in db.execute("SELECT kind FROM events ORDER BY sequence")]
-    return {"instances": instances, "requests": requests, "goals": goals, "events": events}
+    return {"instances": instances, "requests": requests, "work_scopes": work_scopes, "events": events}
 
 
 def wait_until(predicate, timeout: float, step: float = 0.25) -> bool:
@@ -245,7 +245,7 @@ def main() -> int:
             out, _ = running.communicate(timeout=args.timeout + 60)
             report = json.loads(out) if out.strip().startswith("{") else {}
             print(f"  the run ended: exit={running.returncode} end={report.get('end')} "
-                  f"goal={report.get('goal_status')} reply={(report.get('reply') or '')[:60]!r}")
+                  f"work={report.get('work_status')} reply={(report.get('reply') or '')[:60]!r}")
             if running.returncode != 0:
                 failures.append(f"a resumed run must finish its own turn: exit {running.returncode}")
             if report.get("end") not in ("completed", "reply"):
@@ -256,10 +256,10 @@ def main() -> int:
             facts = session(state_root)
             if "instance_lifecycle" not in facts["events"]:
                 failures.append("the pause was not recorded")
-            if not any(row[1] == "SUCCEEDED" for row in facts["goals"]):
-                failures.append(f"the goal did not settle after the resume: {facts['goals']}")
+            if not any(row[1] == "SUCCEEDED" for row in facts["work_scopes"]):
+                failures.append(f"the work did not settle after the resume: {facts['work_scopes']}")
             else:
-                print("  the goal settled SUCCEEDED after the resume, and the run reported it")
+                print("  the work settled SUCCEEDED after the resume, and the run reported it")
     finally:
         if running is not None and running.poll() is None:
             running.kill()

@@ -159,7 +159,7 @@ fn main() {
         max_retries: retries,
         storage_queue: 256,
         poll: Duration::from_millis(100),
-        goal_limits: json!({}),
+        work_limits: json!({}),
         require_shell_approval: !full_auto,
     };
 
@@ -178,13 +178,13 @@ fn main() {
     std::fs::write(trace_dir.join("report.json"), rendered.to_string()).expect("report.json");
     println!("{rendered}");
     let failed = out.get("end").and_then(|e| e.as_str()) != Some("completed")
-        || out.get("goal_status").and_then(|s| s.as_str()) != Some("SUCCEEDED");
+        || out.get("work_status").and_then(|s| s.as_str()) != Some("SUCCEEDED");
     if failed {
         std::process::exit(1);
     }
 }
 
-/// Drive one task to a terminal state: goal completion (finish tool), an
+/// Drive one task to a terminal state: work completion (finish tool), an
 /// idle assistant reply (no finish), or the overall deadline.
 async fn run(config: DriverConfig<ChatCompletions>, task: &str, session_db: &std::path::Path, timeout_s: u64) -> Json {
     let handle = match start(config).await {
@@ -207,10 +207,10 @@ async fn run(config: DriverConfig<ChatCompletions>, task: &str, session_db: &std
                 if kind != "output" {
                     eprintln!("[event] {kind} {}", event["payload"]);
                 }
-                if kind == "goal_completed" {
+                if kind == "work_completed" {
                     let _ = std::io::stderr().flush();
                     return json!({"end": "completed",
-                                  "goal_status": event["payload"]["status"],
+                                  "work_status": event["payload"]["status"],
                                   "completion": event["payload"]["completion"]});
                 }
             }

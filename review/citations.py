@@ -88,7 +88,7 @@ unless the line records it as archived or its file is the upstream-comparison no
 numbers are the compared platform's own).
 
 This docstring states counts of the current tree as well, and nothing looked at them either (D-208's pattern, one
-file over): **36** markdown files and **143** Rust files carry **1581** citations, **326** relative links, **751** `make` commands and **1026** `§`-section references, all recomputed and compared here.
+file over): **36** markdown files and **143** Rust files carry **1581** citations, **325** relative links, **752** `make` commands and **1023** `§`-section references, all recomputed and compared here.
 """
 
 import pathlib
@@ -134,6 +134,10 @@ EXTERNAL_SECTIONS = {
         "document's",
 }
 # a citation that says the thing is gone is a record of a removal, not a broken reference
+# D-498: dated evidence keeps the old test name; resolve the explicit rename
+# without editing that evidence or pretending that an arbitrary missing test exists.
+RENAMED_ITEMS = {"a_settled_goal_takes_no_new_work": "a_settled_work_takes_no_new_work"}
+
 GONE_MARKERS = ("deleted", "removed", "renamed", "gone", "dropped", "no longer exists", "obsolete", "pre-v2", "legacy",
                 "archived",
                 "does not exist", "do not exist", "doesn't exist", "never existed", "nonexistent",
@@ -210,6 +214,9 @@ def scan(name, lines, items, tests, basenames, paths, modules, numbers):
             chain = match.group(1)
             last = chain.split("::")[-1]
             if last in tests or last in items or last + ".rs" in basenames:
+                continue
+            if last in RENAMED_ITEMS and RENAMED_ITEMS[last] in tests:
+                notes.append(f"{name}:{number}: `{chain}` was renamed to `{RENAMED_ITEMS[last]}`")
                 continue
             (notes if gone else findings).append(f"{name}:{number}: `{chain}` names nothing in the tree")
         for match in TLA_CITE.finditer(line):

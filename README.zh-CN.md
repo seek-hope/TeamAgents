@@ -3,11 +3,11 @@
 [English README](README.md) · [安装](#install) · [快速开始](#quick-start) ·
 [完整架构图集](docs/ARCHITECTURE.md)
 
-TeamAgents 是运行在 Linux 终端里的 coding agent。你只向 Leader 提出目标，由它决定独立完成任务，还是
+TeamAgents 是运行在 Linux 终端里的 coding agent。你只向 Leader 提出工作，由它决定独立完成任务，还是
 创建工作实例并分派部分工作。关闭 TUI 后，daemon 会继续维护会话；每个会话的权威状态都保存在一个
 SQLite 数据库中。
 
-在服从你的指令、满足你的意图的前提下，鼓励模型自由探索、独立判断，充分完善和验证结果。已接纳的目标
+在服从你的指令、满足你的意图的前提下，鼓励模型自由探索、独立判断，充分完善和验证结果。已接纳的工作
 跨模型回合、上下文压缩和重启持续存在；汇报进度不等于结束工作，常规选择也不需要反复请你确认。
 
 - TUI 和 `teamagents exec` 共用 daemon，通过快照与事件位置恢复连接。
@@ -17,22 +17,21 @@ SQLite 数据库中。
 
 ## 五张图理解设计
 
-这五张图说明产品结构和执行机制。[完整架构图集](docs/ARCHITECTURE.md)进一步给出各子系统的编号图、
-持久化键、状态转换条件、协议报文和异常恢复路径。结合图集及其源码链接，可以逐层实现相同的行为。
+下面从五个切面说明产品结构和执行机制。[完整架构图集](docs/ARCHITECTURE.md)进一步提供了各子系统的编号图、持久化键、状态转换条件、协议报文和异常恢复路径。对照图集和源码链接，可以按模块复现相同行为。
 
-### 1. 一个完整目标，按需组成团队
+### 1. 一个完整工作，按需组成团队
 
-**goal** 承载整项已接纳的用户请求、验收要求和共享预算。**task** 是其中一次委派。
+**work** 承载整项已接纳的用户请求、验收要求和共享预算。**task** 是其中一次委派。
 **instance** 是保留私有上下文、可重复使用的工作实例；Leader 是具有管理权限的实例，使用同一套模型执行核心。
-一次模型回合结束或一条进度消息，都不等于 goal 完成。
+一次模型回合结束或一条进度消息，都不等于 work 完成。
 
 ```mermaid
 flowchart TB
     accTitle: 从用户请求到经过验证的结果
-    accDescr: Leader 可以独立工作，也可以在同一持久目标下委派任务。结果必须整合并通过检查，提问、阻塞和修复均有明确路径。
-    user["用户请求<br/>与后续补充"] --> goal["持久 goal<br/>要求与共享预算"]
-    goal --> leader["Leader<br/>规划并行动"]
-    subgraph execution["同一个 goal 下的工作"]
+    accDescr: Leader 可以独立工作，也可以在同一持久工作下委派任务。结果必须整合并通过检查，提问、阻塞和修复均有明确路径。
+    user["用户请求<br/>与后续补充"] --> work["持久 work<br/>要求与共享预算"]
+    work --> leader["Leader<br/>规划并行动"]
+    subgraph execution["同一个 work 下的工作"]
         own["Leader<br/>自己调用工具"]
         members["按需委派给成员"]
         evidence["文件、消息<br/>与执行回执"]
@@ -44,12 +43,12 @@ flowchart TB
     leader -->|"必要问题或阻塞"| attention["需要用户回答 / BLOCKED"]
     evidence --> reconcile["整合最新输入<br/>与剩余工作"]
     reconcile --> checks{"完成条件与<br/>检查通过？"}
-    checks -->|"是"| result["结算 goal<br/>并交付结果"]
+    checks -->|"是"| result["结算 work<br/>并交付结果"]
     checks -->|"有界修复"| leader
     checks -->|"无法继续"| attention
 ```
 
-[goal、task 与 work 状态](docs/ARCHITECTURE.md#3-state-machines) ·
+[work、task 与 work 状态](docs/ARCHITECTURE.md#3-state-machines) ·
 [完成判定与证据](docs/ARCHITECTURE.md#7-budget-and-completion)
 
 ### 2. 客户端、运行时与权威状态
@@ -79,7 +78,7 @@ flowchart TB
 ```
 
 关闭客户端后 daemon 继续运行；已提交执行的 job 可以跨 daemon 重启存活。kernel 构造请求和解释响应，
-控制平面管理权威状态，engine 执行 I/O，TUI 负责展示。当前数据库 schema 为 7，socket 协议为 1，工作策略为 1。
+控制平面管理权威状态，engine 执行 I/O，TUI 负责展示。当前数据库 schema 为 8，socket 协议为 1，工作策略为 1。
 
 [部署与启动](docs/ARCHITECTURE.md#1-deployment-and-ownership) ·
 [数据关系与事务](docs/ARCHITECTURE.md#2-durable-data)
@@ -106,7 +105,7 @@ stateDiagram-v2
 ```
 
 纳入新调度的工作会在进度回复后继续；空回复和重复行为只能进行有界恢复。必要问题等待用户回答，明确的用户
-停止不会被迟到结果或重启撤销。终态工作之后，纯信息回答不建立新 goal；需要行动的新工作通过内部准入建立目标，
+停止不会被迟到结果或重启撤销。终态工作之后，纯信息回答不建立新 work；需要行动的新工作通过内部准入建立工作，
 保留原始输入、策略和费用。升级旧会话不会静默启用新调度或重启旧工作。
 
 [上下文构造与新工作准入](docs/ARCHITECTURE.md#4-model-and-context-loop) ·
@@ -130,9 +129,7 @@ flowchart TB
     claims["提示词、Skill 与工具输出"] -.->|"仅提供信息"| member
 ```
 
-工作实例没有默认 Shell 权限；缺少权限时产生用户可处理的能力请求。撤销父授权会撤销子授权，派发时还会
-重新检查当前授权。任务结果回传不会附赠通用消息通道或其他成员的历史。普通已授权 Shell 和本地 MCP 在
-宿主执行，逻辑权限边界不是 OS 沙箱。自更新仍有单独审批。
+工作实例默认没有 Shell 权限，缺少权限时会向用户发起能力请求。撤销父授权会一并撤销子授权，任务派发前也会重新检查当前授权。回传任务结果不会附带开放通用消息通道，也不会暴露其他成员的历史记录。普通已授权 Shell 和本地 MCP 直接在宿主机上执行，这些逻辑权限边界并不是 OS 沙箱。自更新仍需单独审批。
 
 [委派、消息、等待与审批](docs/ARCHITECTURE.md#5-team-and-authority) ·
 [工具与工作区](docs/ARCHITECTURE.md#9-tools-and-resources)
@@ -188,8 +185,7 @@ sequenceDiagram
 | [安装指南](docs/INSTALL.md) | 下载、源码构建、升级与卸载 |
 | [形式化验证](verification/README.md) | TLA+、Kani、验证命令和未证明范围 |
 
-初次使用请先看[安装指南](docs/INSTALL.md)。公开的 **v0.2.0** 安装包是较早的 Linux x86_64 基线；
-本文描述的是当前源码行为，请通过[源码构建](docs/INSTALL.md#build-and-install-from-source)使用。
+初次使用请先看[安装指南](docs/INSTALL.md)。公开的 v0.2.0 安装包是较早的 Linux x86_64 基线；本文描述的是当前源码行为，请通过[源码构建](docs/INSTALL.md#build-and-install-from-source)安装。
 
 <a id="install"></a>
 
@@ -269,12 +265,12 @@ git diff | teamagents exec -
 `--stream-json` 每行输出一个事件对象，最后输出与 `--json` 相同的报告对象。关闭读取端只会结束
 事件流，不会停止底层任务。
 
-退出码：`0` 表示目标完成或直接回答，`1` 表示失败或未完成，`2` 表示用法或环境错误，`3` 表示操作
+退出码：`0` 表示工作完成或直接回答，`1` 表示失败或未完成，`2` 表示用法或环境错误，`3` 表示操作
 等待批准或必要的用户回答，`124` 表示 `--timeout` 到期。
 
 `--check COMMAND` 在回合结束后运行，遇到第一条失败命令就停止。`--accept ID=COMMAND` 在提交输入前
-把必要检查附加到目标；检查失败时可以进入有界修复，而不只是改变退出码。token、截止时间和单次工具
-时限见[目标限制](docs/USER-GUIDE.md#22-goal-limits-limits)。
+把必要检查附加到工作；检查失败时可以进入有界修复，而不只是改变退出码。token、截止时间和单次工具
+时限见[工作限制](docs/USER-GUIDE.md#22-work-limits-limits)。
 
 在同一会话中管理能力授权：
 
@@ -300,7 +296,7 @@ teamagents authority revoke --grant g-1a2b3c4d
 | `--full-auto` | 兼容参数；新会话默认就会自动执行宿主 Shell |
 
 完整命令列表请运行 `teamagents --help`。主要命令包括 `init`、`doctor`、`daemon`、`exec`、
-`authority`、`approvals`、`instances`、`tasks`、`goals`、`runners`、`artifacts`、`sessions`、
+`authority`、`approvals`、`instances`、`tasks`、`work_scopes`、`runners`、`artifacts`、`sessions`、
 `automations`、`mcp`、`status`、`history`、`surface` 和 `version`。`daemon --stop` 停止所选状态根
 对应的会话；仅关闭 TUI 不会停止会话。
 
@@ -339,11 +335,10 @@ teamagents authority revoke --grant g-1a2b3c4d
 
 ## 现状与限制
 
-- 支持的构建目标是 Linux x86_64。Windows、macOS、分布式工作实例和通用扩展 API 目前不是受支持的
-  产品能力。
+- 支持的构建工作是 Linux x86_64。目前不支持 Windows、macOS、分布式工作实例和通用扩展 API。
 - 宿主 Shell 和本地 MCP 拥有宿主用户的访问权限。升级旧配置时，需要手动删除已停用的沙箱设置；
-  TeamAgents 不会替你删除现有会话、虚拟机或系统软件。
-- TeamAgents 可以用于受控的编码试用，但现有证据尚不能证明它能在一般开发工作中直接替代 Pi。
+  TeamAgents 不会自动删除现有会话、虚拟机或系统软件。
+- TeamAgents 可用于受控的编码试用，但现有证据还不足以说明它能在日常开发中直接替代 Pi。
   对比和后续候选工作见 [PRODUCT-COMPARISON.md](docs/PRODUCT-COMPARISON.md)。
 - `engine/tests/providers_fake.rs` 在本地覆盖四类协议。真实供应商、OAuth 和图片行为取决于所用
   服务与凭据；本地测试不等于真实服务验收。

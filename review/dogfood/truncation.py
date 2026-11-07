@@ -11,7 +11,7 @@ two scenarios with the real binary:
 
 * **truncated before any visible text** — the connection closes after a delta that carries only a tool-call id:
   the attempt is transient, the driver retries inside the turn, the second response completes with a `finish`
-  call, and the goal settles `SUCCEEDED`. The session shows two attempts for one request: `FAILED` with
+  call, and the work settles `SUCCEEDED`. The session shows two attempts for one request: `FAILED` with
   `error_class` `Transient` (no usage — the lost attempt's cost is unknown, §6.3) and `COMPLETE`.
 * **truncated after visible text** — the connection closes after a delta with content: the attempt is
   *permanent* (retrying could duplicate text the user already saw), the run fails with `permanent model
@@ -104,7 +104,7 @@ def session(state_root: pathlib.Path) -> dict:
             if _has_column(db, "attempts", "error_class")
             else list(db.execute("SELECT attempt_id, status, usage_json FROM attempts ORDER BY rowid")),
             "requests": list(db.execute("SELECT request_id, status FROM model_requests")),
-            "goals": list(db.execute("SELECT id, status FROM goals")),
+            "work_scopes": list(db.execute("SELECT id, status FROM work_scopes")),
             "entries": list(db.execute("SELECT kind, message_json FROM context_entries ORDER BY epoch, idx")),
         }
     finally:
@@ -172,8 +172,8 @@ def main() -> int:
         # --- scenario 1: truncated before any visible text → retried inside the turn -------------
         report, facts, seen = scenario("invisible", [TRUNCATED_INVISIBLE, COMPLETE], "Do the work.", root / "invisible")
         print(f"1. invisible truncation: exit={facts['exit']} end={report.get('end')} "
-              f"goal={report.get('goal_status')} requests_seen={len(seen)}")
-        if facts["exit"] != 0 or report.get("goal_status") != "SUCCEEDED":
+              f"work={report.get('work_status')} requests_seen={len(seen)}")
+        if facts["exit"] != 0 or report.get("work_status") != "SUCCEEDED":
             failures.append(f"the retry did not carry the turn: exit={facts['exit']} {report}")
         if len(seen) != 2:
             failures.append(f"the driver sent {len(seen)} requests (one truncated + one retry expected)")

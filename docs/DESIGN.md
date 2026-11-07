@@ -25,11 +25,11 @@ is tabulated in [ACCEPTANCE](ACCEPTANCE.md) under "Requirements (Q1–Q19) and t
 | Q3 | Scope may be re-cut; deliver the kernel and the runtime first | Capabilities added to the first release are listed in Q6, Q12 and Q13 |
 | Q4 | Context, message and tool access are isolated by default; host processes may bypass the logical boundary | Permissions are enforced at runtime; context isolation is never advertised as a security boundary between host processes of the same user |
 | Q5 | The Leader manages instances and connections by default and may delegate part of that authority | Authorized instances may communicate directly; instances never chat privately, collaboration goes through control-plane-granted messages and shared space |
-| Q6 | Ship a minimal user TUI for Leader conversation, progress, approvals, interruption and session history/switch/delete; the developer CLI owns comprehensive management (D-445/D-446) | One conversation, conditional approvals, distinct interrupt/quit and an optional session browser; member, task, goal, session and diagnostic controls remain scriptable |
+| Q6 | Ship a minimal user TUI for Leader conversation, progress, approvals, interruption and session history/switch/delete; the developer CLI owns comprehensive management (D-445/D-446) | One conversation, conditional approvals, distinct interrupt/quit and an optional session browser; member, task, work, session and diagnostic controls remain scriptable |
 | Q7 | Closing the UI keeps work running, and the user can reconnect and intervene | The background runtime is independent of the front-end lifetime |
 | Q8 | The user talks to the Leader by default and may read other instances' history, talk to them directly, pause or cancel | The user has a global view; agents stay isolated from each other by permissions |
 | Q9 | Instances are reused and retained within a session; they can be terminated or reset; sessions are isolated by default | Instances, tasks and turns have separate lifetimes |
-| Q10 | Work continues by default; the user may set a goal budget; permanent failures and repeated failures are handled in a bounded way | No short implicit goal timeout; retries, concurrency and resource use are still bounded |
+| Q10 | Work continues by default; the user may set a work budget; permanent failures and repeated failures are handled in a bounded way | No short implicit work timeout; retries, concurrency and resource use are still bounded |
 | Q11 | Required checks must pass; other claims carry evidence and unverified items; independent review happens on demand | A failed acceptance enters a repair loop; no extra review instance is forced per task |
 | Q12 | The first release ships basic tools, MCP and Skills; no external Codex adaptation | Basic tools mean files, terminal, web search and fetch; the new execution core keeps no external Codex backend |
 | Q13 | Multiple providers, mixed models inside one team; DeepSeek is the main acceptance baseline | DeepSeek V4.1 Flash uses its native 1,000,000 context; other models use theirs |
@@ -37,7 +37,7 @@ is tabulated in [ACCEPTANCE](ACCEPTANCE.md) under "Requirements (Q1–Q19) and t
 | Q15 | Authorized work resumes after a restart; an unknown outcome is verified first and parked with a notification if it stays unknown | Operations that may already have had an effect are never replayed blindly |
 | Q16 | Single-instance behaviour must not regress and collaboration must show a reproducible gain on a pre-defined task set; official scores are a reference | Controlled ablations and complete new runs, never a splice of historical bests |
 | Q17 | Estimate usage cost on a small scale before setting the full multi-round budget | The pilot diagnoses and estimates cost; it never justifies a statistically significant claim |
-| Q18 | No compatibility with old configs or sessions is required, and old data may be cleaned up | The new format and directory layout are designed directly, with no migration duty |
+| Q18 | No compatibility with old configs or sessions is required, and old data may be cleaned up | The new format and directory layout are designed directly; D-498 adds one explicit schema-7 goal-to-work migration to preserve existing session evidence |
 | Q19 | Clean up old sessions, state, caches and configs; keep credentials, raw evaluation records, review evidence and Git history | Cleanup follows an explicit inventory of TeamAgents-owned data (see §14 of the archived plan) |
 
 The user then selected the Rust-native architecture explicitly, replacing the earlier idea of LangGraph owning
@@ -57,9 +57,14 @@ scope. The user may read any instance's history; that grants no equivalent permi
 
 The overall prompt principle (D-487) is to honor user instructions and intent while encouraging free
 exploration, initiative and excellent work within the authorized scope. Models should investigate promising
-approaches, apply their judgment, refine the result and verify it appropriately. Depth serves the user's goal,
+approaches, apply their judgment, refine the result and verify it appropriately. Depth serves the user's work,
 constraints, time and budget. Bounded recovery prevents empty loops; it is not a reason for shallow work or
 premature handoff. Routine choices and previously authorized work need no repeated confirmation.
+
+D-498 removes the separate goal entity. A work scope is the durable user-owned budget/admission/acceptance
+boundary; work states and tasks carry continuous execution, recovery and delegation, while the session owns
+isolation and history. This is a responsibility migration, not a claim that every work scope must succeed:
+failed, blocked and cancelled scopes remain honest terminal outcomes.
 
 | Item | Choice | Reason and boundary |
 |---|---|---|
@@ -106,15 +111,15 @@ and budget machinery.
 
 The communication topology is validated data and may contain directed cycles; it does not determine the
 execution control flow of any instance. There is no single completion barrier across instances, and a retained
-instance occupies no thread or model slot. One instance may take on several goals in sequence. Calls for
-admitted work belong to one goal; D-487 admission requests initially have no goal and retain separate,
-one-time later billing attribution. Cross-goal messages are explicitly correlated, and a later message never
+instance occupies no thread or model slot. One instance may take on several work_scopes in sequence. Calls for
+admitted work belong to one work; D-487 admission requests initially have no work and retain separate,
+one-time later billing attribution. Cross-work messages are explicitly correlated, and a later message never
 reassigns an in-flight request to unrelated work.
 
-The kernel's suggested interface: `prepare_request(ContextView)`, `interpret_response(ModelResponse)` and
+Suggested kernel interface: `prepare_request(ContextView)`, `interpret_response(ModelResponse)` and
 `apply_observation(Observation)`, producing `ModelRequest / ToolIntents / Reply / Wait / CompletionCandidate`.
-These are interface boundaries, not a demand for five traits or five services. Every identity, operation id,
-permission revision and delivery sequence is filled in by the runtime.
+These mark interface boundaries rather than requiring five separate traits or services. The runtime fills in
+every identity, operation id, permission revision and delivery sequence.
 
 | Persisted execution position | Next step | Normal transition |
 |---|---|---|
@@ -122,16 +127,16 @@ permission revision and delivery sequence is filled in by the runtime.
 | `MODEL_PENDING` | issue or verify one model attempt | a complete response enters the context and atomically registers tool intents, a wait or a completion request |
 | `TOOLS_PENDING` | dispatch or collect tool results for the fixed intents | back to `READY` once the required receipts are in |
 | `WAITING` | wait for a task, job, approval, user input or timer | when the condition holds, atomically register a ready intent |
-| `COMPLETION_PENDING` | verify the completion request and the required checks | pass → finish the goal/task, otherwise return to `READY` with a reason or park |
+| `COMPLETION_PENDING` | verify the completion request and the required checks | pass → finish the work/task, otherwise return to `READY` with a reason or park |
 
 `PAUSED / PARKED / TERMINATED` describe instance runnability and no longer duplicate every execution position
 in one state enum. Task results use their own `PENDING / RUNNING / BLOCKED / SUCCEEDED / FAILED / CANCELLED`,
 and operations have their own real execution outcome. An instance may be paused while a task is cancelled and
 an operation already succeeded; one status field never has to cover all of it.
 
-Work only advances with an unfinished goal or newly admitted input. Before a model call, before a tool
-dispatch and after consuming a result are the control-safe boundaries. The driver yields on bounded batches and
-introduces no hidden graph-step or turn-lifetime cap on a user goal. An ordinary chat reply never settles a
+Work advances only when there is an unfinished work or newly admitted input. The control-safe boundaries are
+before a model call, before a tool dispatch, and after consuming a result. The driver yields on bounded batches
+without adding a hidden graph-step or turn-lifetime cap to a user work. An ordinary chat reply never settles a
 task; only a `CompletionCandidate` starts the completion checks.
 
 ## 4. Storage, authoritative state and atomic boundaries
@@ -165,14 +170,14 @@ deduplication constraints may not. Every fact has exactly one authoritative repr
 | Object | Key fields and constraints |
 |---|---|
 | Session | `id, project_root, leader_id, format_id, schema_version, status` |
-| Instance / Execution | `id, profile_revision, workspace_ref, context_epoch, lifecycle, phase, revision, active_goal_id, active_request_id, context_head`; one executor per instance |
-| Goal / Budget | `id, original_request_ref, requirement_revision, status, deadline, limits, known_usage, reservations, unknown_usage`; every child task references the same goal |
-| Durable work | `(goal_id, instance_id, epoch, task_id)` scopes work state, bounded model checkpoint, pinned admission policy and recovery counters; work inputs retain original references; work requests freeze context and separate later billing attribution |
-| Task | `id, goal_id, requester, assignee, dependencies, acceptance_refs, status, result_refs, revision` |
+| Instance / Execution | `id, profile_revision, workspace_ref, context_epoch, lifecycle, phase, revision, active_work_id, active_request_id, context_head`; one executor per instance |
+| Work / Budget | `id, original_request_ref, requirement_revision, status, deadline, limits, known_usage, reservations, unknown_usage`; every child task references the same work |
+| Durable work | `(work_id, instance_id, epoch, task_id)` scopes work state, bounded model checkpoint, pinned admission policy and recovery counters; work inputs retain original references; work requests freeze context and separate later billing attribution |
+| Task | `id, work_id, requester, assignee, dependencies, acceptance_refs, status, result_refs, revision` |
 | CapabilityGrant | `id, issuer, subject, action, resource_scope, parent_grant_id, revision, revoked_at`; a channel only references grants |
 | Envelope / ContextEntry | a message carries `id, sender, recipient, epoch, kind, correlation_id, payload_ref, sequence, state`; context is unique by `(instance, epoch, index)` and application is deduplicated by `(instance, epoch, envelope_id)` |
-| ModelRequest / Attempt | `request_id, instance, epoch, goal_id, request_ref, selected_attempt_id`; an attempt carries `attempt_id, request_id, status, response_ref, usage`; a request selects at most one response |
-| Decision / Operation | `decision_id, request_id`; an operation carries `operation_id, decision_id, tool_index, goal_id, epoch, args_hash, grant_revision, status, receipt_ref`; unique by `(decision_id, tool_index)` |
+| ModelRequest / Attempt | `request_id, instance, epoch, work_id, request_ref, selected_attempt_id`; an attempt carries `attempt_id, request_id, status, response_ref, usage`; a request selects at most one response |
+| Decision / Operation | `decision_id, request_id`; an operation carries `operation_id, decision_id, tool_index, work_id, epoch, args_hash, grant_revision, status, receipt_ref`; unique by `(decision_id, tool_index)` |
 | Approval / Wait | an approval binds a concrete operation, its argument hash, the permission revision and a validity window; a wait binds an instance epoch, ALL/ANY conditions and an optional timer, and both have terminal states |
 | ToolReceipt / Verification | a receipt binds the operation to its environment, output and real outcome; a check binds its declared sources/versions, the checker, the input artifact versions, the observation time and the evidence |
 | CommandReceipt / Event | commands deduplicate by `command_id` and validate the payload hash; events carry a per-session increasing sequence plus permission scope and a payload reference |
@@ -191,7 +196,7 @@ through an edited global profile.
 | Admit a tool terminal state | the unique operation receipt, the event for the instance to consume and the related task facts; the later consumption of the receipt and the context advance commit in the same database |
 | Send a message / delegate | the business change, the message/task, the recipient's ready intent and the sender's action receipt |
 | Register a wait | the wait conditions, the current completion check and any immediate wakeup intent |
-| Complete a goal | the acceptance references, the open-operation check and the goal/task outcome plus external events |
+| Complete a work | the acceptance references, the open-operation check and the work/task outcome plus external events |
 
 That removes the earlier cross-database recovery branch of "the checkpoint advanced but the business database
 did not confirm". A tool result may be recorded before it is consumed by the model, but the consumption itself
@@ -295,16 +300,15 @@ deadlock. Only a closed set with no runnable or externally-fulfillable path is r
 are never cancelled automatically. Registering a wait and checking "has the result already arrived" happen in
 one transaction, so a wakeup is never lost.
 
-The condition kinds stay apart (D-341/D-348): a delegated outcome is a *task result*, so it satisfies a
-`{kind:'task'}` condition and never a `{kind:'message'}` one, and a task the assignee settled `BLOCKED` is not
-a settlement either, so the wait stays pending on it. The runtime never wakes a delegator because an assignee
-has gone idle: an assignee whose turn ends without settling leaves its task open, no fact satisfies the
-condition, and the task is not dead for it. For timer-based follow-up, the delegator sets `timer_seconds`
-and re-checks the task status when it fires. It can cancel work it no longer needs (`cancel_task`, the
-delegator's own lever, D-265), which *does* satisfy a `{kind:'task'}` condition. D-487 adds a separate
-supersession path for enrolled work: scoped task attention, user input or recorded process-stop evidence can
-cancel an obsolete wait and answer its slot
-without satisfying the task condition. Silence alone still does not settle a task or prove a process stopped.
+Condition kinds stay separate (D-341/D-348): a delegated outcome is a *task result*, so it satisfies
+`{kind:'task'}` and never `{kind:'message'}`. If the assignee marks a task `BLOCKED`, that does not settle it
+either, so the wait stays pending. The runtime never wakes a delegator just because an assignee went idle: if
+an assignee's turn ends without settling, the task remains open, nothing satisfies the condition, and the task
+is still live. For timer-based follow-up, the delegator sets `timer_seconds` and re-checks task status when the
+timer fires. It can also cancel work it no longer needs (`cancel_task`, the delegator's own lever, D-265),
+which *does* satisfy `{kind:'task'}`. D-487 adds a separate supersession path for enrolled work: scoped task
+attention, user input or recorded process-stop evidence can cancel an obsolete wait and answer its slot without
+satisfying the task condition. Silence alone still neither settles a task nor proves a process stopped.
 
 ### 5.4 Lifecycle and user intervention
 
@@ -350,7 +354,7 @@ The runner serializes GO/CANCEL for one job. A cancellation before the command s
 persisting CANCELLED_BEFORE_START first and confirming the cancel afterwards; that terminal state permanently
 refuses a late or replayed GO. Once GO crossed the start boundary, cancellation becomes a stop request, and the
 real side effect and the stop confirmation are recorded separately. Recovery reads the latest control state for
-the goal/task/operation, sends CANCEL for a cancelled operation, and never re-sends GO merely because the state
+the work/task/operation, sends CANCEL for a cancelled operation, and never re-sends GO merely because the state
 is DISPATCH_COMMITTED.
 
 The runner stores the job token, PID, start time and system boot identity; while alive it may use Linux process
@@ -384,9 +388,9 @@ design never promises that every external write to a shared workspace is seriali
 | A permanent error such as a missing executor | keep the input, park and deduplicate the notification; resume only on a fix or an explicit retry |
 | A system restart made the original process disappear | verify receipts and external state; a vanished process does not prove that no side effect happened |
 
-Same-database transactions settle internal consistency and cannot pull shell commands, MCP or external APIs
-into one SQLite commit. What is promised is reuse of known results, deduplicated internal application and
-honest parking of unknown outcomes; exactly-once semantics for arbitrary external operations are not promised.
+Same-database transactions guarantee internal consistency, not atomic commits across shell commands, MCP or
+external APIs. The system promises to reuse known results, deduplicate internal application and park unknown
+outcomes honestly; it does not promise exactly-once semantics for arbitrary external operations.
 
 ### 6.4 Pause, cancellation and shutdown
 
@@ -395,13 +399,13 @@ are explicitly cancelled, and the UI distinguishes "pause requested" from "stopp
 Cancellation is persisted first and only then sends a process-group stop request to a controlled job; a call
 that times out or an external request that cannot be cancelled keeps its unconfirmed or unknown state.
 
-The persisted-first rule applies to a healthy store. When a write fails, new dispatch for the affected
-execution freezes while a separately identity-verified control path still tries to stop controlled jobs, and
-the report separates "was the cancellation saved" from "did the process stop". Output limits and control
-resource reservations reduce the risk of running out of storage but cannot guarantee that a cancellation can
-still be saved under arbitrary I/O failures. A restart re-verifies recoverable cancellation markers and runner
-receipts, and when all persistent storage is gone it states plainly that unsaved cancellations cannot be
-guaranteed across a restart instead of reporting a stopped process as a persisted cancellation.
+The persist-first rule assumes a healthy store. If a write fails, new dispatch for the affected execution
+freezes while a separate, identity-verified control path still attempts to stop controlled jobs, and the report
+distinguishes "was the cancellation saved" from "did the process stop". Output limits and control resource
+reservations lower the risk of exhausting storage, but cannot guarantee that a cancellation will persist under
+arbitrary I/O failures. On restart, the system re-verifies recoverable cancellation markers and runner
+receipts. If all persistent storage is lost, it states plainly that unsaved cancellations cannot be guaranteed
+across a restart rather than reporting a stopped process as a persisted cancellation.
 
 A normal daemon shutdown freezes new dispatch, persists pending work and then stops itself; already dispatched
 runners stay verifiable and continue after the target restarts. Stopping an in-flight job requires an explicit
@@ -439,25 +443,25 @@ duration, output reference and the cancel/timeout reason. Setup failures are dis
 Cwd and exports persist per member in the host state namespace. Verification uses the host environment. A tool is available only when the current identity is allowed to execute it, and an
 environment failure is never probed by creating another instance with the same capability.
 
-MCP executes through the same permission, approval, budget, cancellation and receipt entry points; a server's
-idempotence annotation is a hint and never authorizes an automatic replay
+MCP runs through the same permission, approval, budget, cancellation and receipt entry points. A server's
+idempotence annotation is treated as a hint and never authorizes automatic replay
 ([MCP annotation trust boundary](https://modelcontextprotocol.io/specification/2025-06-18/server/tools)).
-MCP tools are composed from model-written code (D-374): the model is offered one `codemode` tool and calls the
-bound tools inside a QuickJS sandbox whose only capabilities they are, so a script's intermediate payloads stay
-out of the model's context and only the script's own output enters it; the sandbox has no filesystem, network or
-timers, a script is bounded by a heap limit, an output budget and a deadline, and a nested call is subject to
-the same `pre_tool` veto a direct call is (D-376).
-Skills register under `~/.agents/skills` and their bodies are searched and read on demand; a skill's
-instructions can never widen execution permissions. A missing web-search credential or an unavailable tool is
-reported as a capability state, and no executable binding is invented.
+MCP tools are composed through model-written code (D-374): the model gets a single `codemode` tool and invokes
+bound tools inside a QuickJS sandbox that has no other capabilities. Intermediate payloads stay out of the
+model's context, and only the script's output enters it. The sandbox has no filesystem, network or timers;
+each script is bounded by a heap limit, an output budget and a deadline; and nested calls go through the same
+`pre_tool` veto as direct calls (D-376).
+Skills live under `~/.agents/skills` and their bodies are searched and read on demand; skill instructions can
+never widen execution permissions. Missing web-search credentials or unavailable tools are reported as
+capability states without inventing executable bindings.
 
 ## 8. Budget, progress and completion checks
 
-The goal budget covers every instance, model attempt, retry, compaction and verification, and delegation never
-duplicates it. Without an explicit budget work continues; every network request still has stall detection and a
-permanent error still parks. Reservation before a request, settlement from real usage and unknown usage are all
-kept, parallel reservations never exceed the known remaining budget, and incomplete provider billing is never
-turned into a false promise that the ceiling can never be exceeded.
+The work budget covers every instance, model attempt, retry, compaction and verification, and delegation never
+duplicates it. Without an explicit budget, work continues, though every network request still runs stall
+detection and permanent errors still park execution. The system tracks pre-request reservations, settlement
+from actual usage and unknown usage; parallel reservations never exceed the known remaining budget, and
+incomplete provider billing is never treated as a guarantee that the ceiling cannot be exceeded.
 
 Concurrency, job count, queue capacity and log capacity are resource configuration. Before publishing a
 default, measure at least the 1/4/16 active-request load points on the reference machine. User control and
@@ -469,15 +473,15 @@ infrastructure failure, and handles them within bounds. For enrolled work (D-487
 allows continuation after progress prose. Two empty/prose/plan recovery continuations are permitted; another
 unproductive response blocks work. Repeated action/observation patterns also block rather than silently spin.
 These are heuristics, not evidence that the task is impossible: identical commands alone do not prove failure.
-New relevant input or observations can reset an episode; compaction, restart and plan edits cannot. The goal,
+New relevant input or observations can reset an episode; compaction, restart and plan edits cannot. The work,
 its budget and the user's explicit stop remain authoritative.
 
-The work projection separates user inputs, model checkpoints and runtime observations. A goal spans the whole
+The work projection separates user inputs, model checkpoints and runtime observations. A work spans the whole
 admitted request across turns and context epochs. Later steering is processed before success; an old
 assignment's response cannot settle or overwrite current work. After terminal work, informational replies need
-no new goal. New actionable work is admitted internally with `work_checkpoint start_work`, or by explicit user
+no new work. New actionable work is admitted internally with `work_checkpoint start_work`, or by explicit user
 acceptance checks. Pending admission keeps its original time and policy; its inference/compaction costs remain
-recorded and transfer once to that work without changing the original request's goal field. No goal is reopened,
+recorded and transfer once to that work without changing the original request's work field. No work is reopened,
 and admission cannot reset an active ceiling or resume a PARKED instance. Material questions use NEEDS_INPUT;
 member attention can supersede a wait while leaving task settlement unchanged.
 
@@ -488,22 +492,20 @@ not an OS boundary, a global lock, or proof about escaped descendants, remote ef
 Schema v7 fences older writers. Forks retain work provenance, admission costs and stops, discard execution
 projections, require fresh evidence and refuse tracked execution lacking stop evidence.
 
-At completion the model states once, clearly, an `outcome + summary + evidence/unverified`; the runtime
-automatically links the existing check receipts instead of demanding a large ledger from the model. An ordinary
-question needs neither an artifact nor a review instance. Required checks defined by the user must pass;
-trusted repository configuration cannot supply checks (D-244). Conditions the model extracts from natural
-language carry their source and never masquerade as a machine-checked contract the user confirmed item by item.
+At completion, the model reports `outcome + summary + evidence/unverified` once; the runtime
+links the existing check receipts automatically instead of making the model assemble a large ledger. An ordinary
+question needs neither an artifact nor a review instance. User-defined required checks must pass;
+trusted repository configuration cannot supply checks (D-244). Conditions extracted from natural
+language keep their source and are never treated as a machine-checked contract confirmed item by item by the user.
 
-Cancelling an implementation subtask never deletes the original goal's requirements. A failed check enters
-repair or BLOCKED, and a summary admitting non-delivery can never land as success. A check binds its declared
-inputs, artifact versions and observation time, related hashes are re-verified before completion, and a
-time-sensitive service is re-probed. Shared directories and external systems have no global lock, so the design
-never claims to detect every undeclared dependency or to offer an atomic snapshot of the world.
+Cancelling an implementation subtask never deletes the original work's requirements. A failed check enters
+repair or BLOCKED, and a summary that admits non-delivery can never settle as success. Each check binds its declared
+inputs, artifact versions and observation time; related hashes are re-verified before completion, and
+time-sensitive services are re-probed. Shared directories and external systems have no global lock, so the design
+does not claim to detect every undeclared dependency or provide an atomic snapshot of the world.
 
 Independent review receives the original request and artifacts on demand and may overturn the implementer's
-assumptions; repeated agreement from the same model is not objective verification. Correctness without an
-executable oracle is labelled with its real evidence strength instead of being blessed by one more model round
-declaring the system proven.
+assumptions; repeated agreement from the same model is not objective verification. When there is no executable oracle, correctness is labelled with its actual evidence strength rather than treated as proven after another model round.
 
 ## 9. Background protocol, interface and observability
 
@@ -519,7 +521,7 @@ above that watermark; an already reclaimed watermark asks for a fresh snapshot. 
 authoritative fact: a slow client may drop previews and re-read, and it never blocks database writes or loses a
 business result.
 
-The first release's methods are organised around sessions/goals, instances, task and permission views,
+The first release's methods are organised around sessions/work_scopes, instances, task and permission views,
 approvals and unknown outcomes, model configuration and trace export. Rust DTOs are the single source of the
 protocol structure and export schemas/samples for client contract tests; the TUI stays a thin client over the
 daemon socket JSON protocol rather than duplicating two large domain models, and whether to extract a shared
@@ -532,7 +534,7 @@ The TUI is a minimal user surface (D-445): one Leader conversation, streaming/hi
 and usage, conditional approvals, model-request interruption, and disconnect/reconnect. Input never switches
 to a worker. Exiting detaches the client; interrupting cancels only an in-flight Leader model request and
 reports the actual receipt. Running tools and delegated work keep their existing lifecycle. The developer
-CLI owns instance/task/goal lifecycle, grants/channels, configuration and diagnostics;
+CLI owns instance/task/work lifecycle, grants/channels, configuration and diagnostics;
 `status` and bounded `history` reads preserve access to the details omitted from the TUI. D-446 adds one optional
 session page for paged history, switching and confirmed deletion, through the engine's session CLI. Only a
 successful target sync replaces the client; only confirmed current-session deletion success exits it. Drafts
@@ -564,10 +566,10 @@ interface only renders previews. Credentials and authentication headers never en
 responses and complete visible content are stored per instance permission and exported in redacted form. A
 truncated UI log never truncates model input, and raw confidential traces are never shared with every instance.
 
-Retention treats active recovery data, ordinary history and evaluation evidence separately. Ordinary history is
-archived or cleaned per user configuration and never copied in full at every step, while live references and
+Retention separates active recovery data, ordinary history and evaluation evidence. Ordinary history is
+archived or cleaned per user configuration rather than copied in full at every step, while live references and
 evaluation evidence are never evicted automatically. Unknown costs, missing stream fragments and unavailable
-provider reasoning fields are all labelled honestly.
+provider reasoning fields are recorded explicitly.
 
 ## 10. Module organisation and dependencies
 
@@ -594,10 +596,10 @@ verification/    # TLA+ specs and the Kani proof crate
 review/eval/     # fixed-task runner and its raw evidence
 ```
 
-This is a responsibility map; files may be merged where the real size allows and no noun is mechanically
-turned into a trait. The `core/src/kernel` interface exposes no database connection, global registry or network
-handle. Storage, protocol and tool implementations follow behaviour contracts and make no promise of
-compatibility with an older state format.
+This section maps module responsibilities; files may be merged where size allows, and nouns are not mechanically
+turned into traits. The `core/src/kernel` interface exposes no database connection, global registry or network
+handle. Storage, protocol and tool implementations follow behaviour contracts and do not promise
+compatibility with older state formats.
 
 The existing foundations stay: serde, rusqlite, UUID, SHA and ratatui. Async HTTP and the Unix process
 interface use a minimal dependency set recorded in the lock files, and two production HTTP stacks are never
@@ -612,7 +614,7 @@ suite is never manufactured by deleting failing cases.
 
 | # | Scenario | Acceptance result |
 |---|---|---|
-| A01 | one Leader completes a goal | every basic tool works, with no forced team or extra review instance |
+| A01 | one Leader completes a work | every basic tool works, with no forced team or extra review instance |
 | A02 | A→B→C→A communication | delivery on a granted channel, executions independent |
 | A03 | limited delegation and parent revocation | scope cannot widen and derived grants expire correctly |
 | A04 | a queued action meets a revocation | re-checked and refused before the linearization point; in-flight actions have explicit cancellation semantics |
@@ -629,7 +631,7 @@ suite is never manufactured by deleting failing cases.
 | A15 | inconsistent environment | verification runs in the real target environment and environment identity is traceable |
 | A16 | a required check fails or a deliverable is missing | no success; feedback into repair or BLOCKED |
 | A17 | artifacts change after a check | declared dependencies are invalidated; the actually verified version and the limits are reported |
-| A18 | multi-instance usage with retries and compaction | one shared goal budget with visible reservations and unknown cost |
+| A18 | multi-instance usage with retries and compaction | one shared work budget with visible reservations and unknown cost |
 | A19 | half a model stream and connection loss | incomplete tool arguments never execute; retries and cost are recorded honestly |
 | A20 | restart after long-context compaction | requirement revisions, acceptance criteria and open items survive, originals stay addressable |
 | A21 | the user adjusts a worker directly | single-writer context, task affiliation preserved, the parties involved notified |
@@ -646,7 +648,7 @@ suite is never manufactured by deleting failing cases.
 | A32 | very large history with multi-instance reads | no full copy per step and measured RSS/disk/latency records |
 | A33 | two daemons and an inherited stale lock | one coordinator only, and tools never inherit the coordinator lock in a way that blocks recovery |
 | A34 | an incompatible schema in a new version | migrate explicitly or refuse; never keep executing on a misinterpreted state |
-| A35 | the evaluation client expires or is killed | the daemon honours the goal deadline and the answer is not extended during grading |
+| A35 | the evaluation client expires or is killed | the daemon honours the work deadline and the answer is not extended during grading |
 | A36 | install, init, doctor, cleanup and reopen | old and new directories are identified correctly, credentials and evidence are kept, new work runs normally |
 
 A19 also covers an old attempt returning after a newer one: only one response produces execution intents.
@@ -688,7 +690,7 @@ These three groups answer single-instance and collaboration questions for this s
 existing baseline requires a comparison run under the same budget with the non-alignable factors recorded;
 scores from different sources are never spliced into a causal conclusion.
 
-The main experiment uses DeepSeek V4.1 Flash at its native 1M with every instance sharing one goal budget. The
+The main experiment uses DeepSeek V4.1 Flash at its native 1M with every instance sharing one work budget. The
 effective model parameters, task digests, image, actual working directory, time limits, resources, network
 policy and sampling are frozen. Actual cost and duration are reported, and identical ceilings are never
 presented as identical spending. Heterogeneous-model performance is reported separately.
@@ -705,11 +707,11 @@ semantic-acceptance and splittable tasks, and then sets the budget from measured
 and duration; a small mean is never treated as the tail bound. The 801-trial figure (89 tasks × 3 groups × 3
 rounds) is an arithmetic example of a complete design, not a size this plan will run without a cost estimate.
 
-The old 59/89 was a mechanical merge with answer exposure and is not a clean baseline. Its original analysis is
-kept in Git history (removed from the tree with the archive cleanup). No hidden test or upstream solution is
-ever handed to the executing agent. Network limits belong to the outer evaluation environment and never change
-the everyday full_auto product semantics. Infrastructure retry rules are fixed in advance, and original
-failures are kept instead of being overwritten by a favourable re-run.
+The earlier 59/89 figure came from a mechanical merge with answer exposure and is not a clean baseline. Its original analysis remains
+in Git history (removed from the working tree during archive cleanup). Hidden tests and upstream solutions are
+never passed to the executing agent. Network limits belong to the outer evaluation environment and do not alter
+everyday full_auto product semantics. Infrastructure retry rules are fixed in advance, and original
+failures are retained rather than overwritten by a favourable re-run.
 
 Background mode especially must convey an evaluation's hard deadline: at expiry it stops new model/tool
 dispatch and cancels in-flight controlled jobs, and a killed client cannot keep working on the answer. Before
@@ -717,17 +719,17 @@ formal grading, task writes are confirmed stopped; under D-41 the services a tas
 requirements ask. Start failures, model errors, timeouts, verifier-environment errors and assertion failures
 are reported separately.
 
-The deadline is persisted on the goal and passed to the runner, which independently enforces the per-command
+The deadline is persisted on the work and passed to the runner, which independently enforces the per-command
 timeout; it never depends only on a surviving CLI or a daemon timer. The outer adapter verifies that the solver
 process stopped; if a runner failure or a process that escaped its group makes that impossible, the run is
 recorded as an infrastructure failure and no valid score is claimed from an environment that might still be
-writing an answer. This rule adds no implicit goal deadline to ordinary tasks.
+writing an answer. This rule adds no implicit work deadline to ordinary tasks.
 
 ### 13.3 No more thresholds without evidence
 
-The unsupported fixed rules are withdrawn: the "-2 percentage points" interval bound and "positive in at least
-two of three rounds" from the earlier design. The −2pp value was about interval precision while the point
-estimate also had to stay non-negative; without variance, sample size or cost evidence it cannot be an
+Two unsupported fixed rules from the earlier design are withdrawn: the "-2 percentage points" interval bound and "positive in at least
+two of three rounds". The −2pp bound addressed interval precision while the point
+estimate also had to stay non-negative; without variance, sample size or cost evidence, it cannot serve as an
 acceptance threshold.
 
 Before a formal experiment, the repeat count, paired analysis and required statistical precision are fixed from

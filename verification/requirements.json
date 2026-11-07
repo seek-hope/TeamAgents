@@ -1294,7 +1294,7 @@
     {
       "id": "A35",
       "status": "partial",
-      "scope": "No request starts past the recorded goal deadline.",
+      "scope": "No request starts past the recorded work deadline.",
       "formal": [
         {
           "module": "V2Control",

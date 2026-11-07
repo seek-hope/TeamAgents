@@ -29,28 +29,28 @@
       "id": "control_completion_succeeded",
       "module": "V2Control",
       "config": "MC.cfg",
-      "predicate": "goal.status = \"SUCCEEDED\"",
-      "purpose": "A completion response reaches this modeled goal outcome."
+      "predicate": "work.status = \"SUCCEEDED\"",
+      "purpose": "A completion response reaches this modeled work outcome."
     },
     {
       "id": "control_completion_failed",
       "module": "V2Control",
       "config": "MC.cfg",
-      "predicate": "goal.status = \"FAILED\"",
-      "purpose": "A completion response reaches this modeled goal outcome."
+      "predicate": "work.status = \"FAILED\"",
+      "purpose": "A completion response reaches this modeled work outcome."
     },
     {
       "id": "control_completion_blocked",
       "module": "V2Control",
       "config": "MC.cfg",
-      "predicate": "goal.status = \"BLOCKED\"",
-      "purpose": "A completion response reaches this modeled goal outcome."
+      "predicate": "work.status = \"BLOCKED\"",
+      "purpose": "A completion response reaches this modeled work outcome."
     },
     {
       "id": "control_equal_reservations",
       "module": "V2Control",
       "config": "MC_control_two.cfg",
-      "predicate": "Cardinality(goal.reserved) = 2 /\\ ReservedTotal = 2",
+      "predicate": "Cardinality(work.reserved) = 2 /\\ ReservedTotal = 2",
       "purpose": "Distinct requests with equal reservation amounts both contribute to the total."
     },
     {
@@ -171,7 +171,7 @@
       "id": "checks_verified_success",
       "module": "V2Checks",
       "config": "MC_checks.cfg",
-      "predicate": "goalStatus = \"SUCCEEDED\" /\\ candidate = \"success\" /\\ required = AllChecks /\\ roundChecks = required /\\ round > 0 /\\ lastVerdict = \"pass\" /\\ ~roundOpen /\\ (\\A k \\in required : result[k] = \"pass\")",
+      "predicate": "workStatus = \"SUCCEEDED\" /\\ candidate = \"success\" /\\ required = AllChecks /\\ roundChecks = required /\\ round > 0 /\\ lastVerdict = \"pass\" /\\ ~roundOpen /\\ (\\A k \\in required : result[k] = \"pass\")",
       "purpose": "A success claim settles after a completed round passes every available check."
     },
     {

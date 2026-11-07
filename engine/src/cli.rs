@@ -626,28 +626,28 @@ pub fn doctor(state_root: Option<PathBuf>, overrides: &[String]) -> i32 {
             check(&mut results, "web tools", false, error);
         }
         // a session with neither ceiling runs until the user stops it, so the
-        // user should see what (if anything) bounds their goals
+        // user should see what (if anything) bounds their work_scopes
         let tokens = catalog.limits.max_total_tokens;
         let minutes = catalog.limits.deadline_minutes;
         optional_check(
             &mut results,
-            "goal limits",
+            "work limits",
             tokens.is_some() || minutes.is_some(),
             match (tokens, minutes) {
                 (Some(tokens), Some(minutes)) => format!("max_total_tokens={tokens}, deadline_minutes={minutes}"),
                 (Some(tokens), None) => format!("max_total_tokens={tokens} (no deadline)"),
                 (None, Some(minutes)) => format!("deadline_minutes={minutes} (no usage ceiling)"),
-                (None, None) => "none: a goal (and the session) runs until you stop it or the budget is reached; [limits] in the user config adds a ceiling".into(),
+                (None, None) => "none: a work (and the session) runs until you stop it or the budget is reached; [limits] in the user config adds a ceiling".into(),
             },
         );
         // a configured check runs unattended at the completion boundary, so the
-        // user should see exactly which commands will gate their goals
+        // user should see exactly which commands will gate their work_scopes
         optional_check(
             &mut results,
             "completion checks",
             !catalog.checks.is_empty(),
             if catalog.checks.is_empty() {
-                "none configured: a goal settles on the model's own report ([[checks]] in the user config adds machine-checked acceptance)".into()
+                "none configured: a work settles on the model's own report ([[checks]] in the user config adds machine-checked acceptance)".into()
             } else {
                 let ids: Vec<&str> = catalog.checks.iter().map(|check| check.id.as_str()).collect();
                 format!("{} configured and run at the completion boundary: {}", catalog.checks.len(), ids.join(", "))
@@ -1084,9 +1084,9 @@ fn daemon_boot(
             max_retries: 2,
             storage_queue: 256,
             poll: Duration::from_millis(100),
-            // the user's acceptance checks gate every goal this session runs
-            goal_limits: {
-                let mut limits = crate::config::goal_limits(&catalog_for_factory)?;
+            // the user's acceptance checks gate every work this session runs
+            work_limits: {
+                let mut limits = crate::config::work_limits(&catalog_for_factory)?;
                 limits["autonomous_work"] = json!(true);
                 limits
             },

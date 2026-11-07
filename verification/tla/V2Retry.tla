@@ -36,7 +36,7 @@
 (* session constant, attempts counted per turn, and the park. It does not      *)
 (* model *which* failures are transient (the classification is               *)
 (* `V2Control`'s and the provider edge's), the backoff between attempts, or    *)
-(* what the turn does after parking (a goal that parks is `V2Control`'s). Only *)
+(* what the turn does after parking (a work that parks is `V2Control`'s). Only *)
 (* the *budget* half of A19 is here; the report's "provider retry details are  *)
 (* outside the model" still holds for the rest. Safety only: whether a park is  *)
 (* ever reached is not a liveness property.                                   *)

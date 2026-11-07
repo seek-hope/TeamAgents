@@ -134,7 +134,7 @@ where
         state_root: state_root.to_string_lossy().into_owned(),
         workspace: config.supervisor.workspace.to_string_lossy().into_owned(),
         permissions: config.supervisor.permissions.clone(),
-        goal_limits: config.supervisor.goal_limits.clone(),
+        work_limits: config.supervisor.work_limits.clone(),
         mcp,
         sessions,
         models,
@@ -254,10 +254,10 @@ struct SessionFacts {
     state_root: String,
     workspace: String,
     permissions: String,
-    /// D-268: the session's `[limits]`/`[[checks]]` (`config::goal_limits`), applied to **every** goal the session
+    /// D-268: the session's `[limits]`/`[[checks]]` (`config::work_limits`), applied to **every** work the session
     /// creates (D-64) — including one a client opens later, which until this existed carried no ceiling and no
     /// required check because only the bootstrap supplied them.
-    goal_limits: Json,
+    work_limits: Json,
     /// D-413: the configured MCP services (and, per checkpoint, their credential state).
     mcp: Vec<McpService>,
     /// D-429: the named sessions under this base, and which one this daemon serves — a client reads them from the
@@ -324,8 +324,8 @@ async fn run_scheduler(supervisor: Arc<SupervisorHandle>, facts: Arc<SessionFact
         let now = teamagents_core::models::now();
         for automation in schedule.due(now) {
             // the previous run must not still be in flight (V2Schedule's `AtMostOneRunPerAutomation`)
-            if let Some(goal) = automation.last_goal.clone() {
-                match supervisor.goal_status(&goal).await {
+            if let Some(work) = automation.last_work.clone() {
+                match supervisor.work_status(&work).await {
                     Ok(Some(status))
                         if !matches!(status.as_str(), "SUCCEEDED" | "FAILED" | "BLOCKED" | "CANCELLED") =>
                     {
@@ -338,23 +338,23 @@ async fn run_scheduler(supervisor: Arc<SupervisorHandle>, facts: Arc<SessionFact
                     }
                 }
             }
-            let goal_id = format!("goal-auto-{}", automation.id);
-            let mut params = json!({"id": goal_id, "instance_id": LEADER});
-            apply_session_goal_limits(&mut params, &facts.goal_limits);
+            let work_id = format!("work-auto-{}", automation.id);
+            let mut params = json!({"id": work_id, "instance_id": LEADER});
+            apply_session_work_limits(&mut params, &facts.work_limits);
             let command = Command {
-                command_id: format!("auto-goal-{}-{}", automation.id, uuid::Uuid::new_v4()),
-                method: "create_goal".into(),
+                command_id: format!("auto-work-{}-{}", automation.id, uuid::Uuid::new_v4()),
+                method: "create_work".into(),
                 params,
             };
             if let Err(error) = supervisor.submit_user(command).await {
-                eprintln!("automations: could not open a goal for {}: {error}", automation.id);
+                eprintln!("automations: could not open a work for {}: {error}", automation.id);
                 continue;
             }
             if let Err(error) = supervisor.input(LEADER, &automation.prompt).await {
                 eprintln!("automations: could not submit the prompt for {}: {error}", automation.id);
                 continue;
             }
-            if let Err(error) = schedule.mark_run(&automation.id, now, &goal_id) {
+            if let Err(error) = schedule.mark_run(&automation.id, now, &work_id) {
                 eprintln!("automations: {error}");
             }
         }
@@ -414,8 +414,8 @@ async fn handle(request: &Json, supervisor: &SupervisorHandle, session_db: &Path
     let method = request.get("method").and_then(|v| v.as_str()).unwrap_or("");
     let params = request.get("params").cloned().unwrap_or(json!({}));
     match method {
-        "checkpoint" | "events" | "history" | "tasks" | "grants" | "approvals" | "goals" | "surfaces" | "previews"
-        | "inputs" => {
+        "checkpoint" | "events" | "history" | "tasks" | "grants" | "approvals" | "work_scopes" | "surfaces"
+        | "previews" | "inputs" => {
             // §9: previews are the supervisor's in-memory streaming text, not a table; every other read comes from
             // the database. Passing the payload keeps previews inside `read_method`'s dispatch, which is what
             // `docs/PROTOCOL.md` is generated from.
@@ -473,8 +473,8 @@ async fn handle(request: &Json, supervisor: &SupervisorHandle, session_db: &Path
                 return reply(false, json!(format!("method {method:?} needs a command_id")));
             }
             let mut params = params;
-            if method == "create_goal" {
-                apply_session_goal_limits(&mut params, &facts.goal_limits);
+            if method == "create_work" {
+                apply_session_work_limits(&mut params, &facts.work_limits);
             }
             let command = Command { command_id: command_id.to_string(), method: method.to_string(), params };
             match supervisor.submit_user(command).await {
@@ -495,7 +495,7 @@ fn read_only<T>(
 }
 
 /// Snapshot query shared by `checkpoint` (same read transaction as the
-/// watermark) — instances with lifecycle/phase plus the single-goal view.
+/// watermark) — instances with lifecycle/phase plus the single-work view.
 fn read_snapshot(conn: &rusqlite::Connection, mcp: &Json, sessions: &Json, models: &Json) -> Result<Json, String> {
     let work = super::diagnostics::read(conn, false)?;
     // `model` rides along (D-69): a team can span providers (`spawn(model = …)`),
@@ -568,26 +568,26 @@ fn read_snapshot(conn: &rusqlite::Connection, mcp: &Json, sessions: &Json, model
     for row in rows {
         instances.push(row.map_err(|e| format!("snapshot row: {e}"))?);
     }
-    // D-431: a goal can settle with the model writing no text at all — it just called `finish` (measured on the
+    // D-431: a work can settle with the model writing no text at all — it just called `finish` (measured on the
     // tau3 retail split: 12 of 114 dialogues ended that way). The user then reads nothing, although the model
     // *did* say what it did, in the completion candidate it settled with. That summary is in the settling event,
-    // so it is read here for the goal this snapshot reports; the event's `scope` is the goal id.
-    let goal: Option<(String, String, String, i64, String, Option<f64>)> = conn
+    // so it is read here for the work this snapshot reports; the event's `scope` is the work id.
+    let work_scope: Option<(String, String, String, i64, String, Option<f64>)> = conn
         .query_row(
-            // D-266: a session can now carry more than one goal (the boot goal plus one the user opened), and
-            // `LIMIT 1` without an order returned an arbitrary row — a client could be shown the settled goal
-            // while an active one existed. The active goal wins; among those (and among settled ones) the newest.
-            "SELECT id, status, known_usage_json, unknown_usage, limits_json, deadline FROM goals
+            // D-266: a session can now carry more than one work (the boot work plus one the user opened), and
+            // `LIMIT 1` without an order returned an arbitrary row — a client could be shown the settled work
+            // while an active one existed. The active work wins; among those (and among settled ones) the newest.
+            "SELECT id, status, known_usage_json, unknown_usage, limits_json, deadline FROM work_scopes
              ORDER BY (status = 'ACTIVE') DESC, rowid DESC LIMIT 1",
             [],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
         )
         .ok();
-    let summary: Option<String> = goal
+    let summary: Option<String> = work_scope
         .as_ref()
         .and_then(|(id, ..)| {
             conn.query_row(
-                "SELECT payload_json FROM events WHERE kind = 'goal_completed' AND scope = ?1
+                "SELECT payload_json FROM events WHERE kind = 'work_completed' AND scope = ?1
                  ORDER BY sequence DESC LIMIT 1",
                 [id],
                 |row| row.get::<_, String>(0),
@@ -597,13 +597,13 @@ fn read_snapshot(conn: &rusqlite::Connection, mcp: &Json, sessions: &Json, model
         .and_then(|payload| serde_json::from_str::<Json>(&payload).ok())
         .and_then(|payload| payload["completion"]["summary"].as_str().map(str::to_string))
         .filter(|text| !text.trim().is_empty());
-    let goal = goal.map(|(_, status, usage, unknown, limits, deadline)| {
+    let work_scope = work_scope.map(|(_, status, usage, unknown, limits, deadline)| {
         json!({"status": status, "known_usage": serde_json::from_str::<Json>(&usage).unwrap_or(Json::Null),
                "summary": summary,
                "unknown_usage": unknown,
                "limits": serde_json::from_str::<Json>(&limits).unwrap_or(Json::Null),
                // the absolute deadline (D-64): a client that shows limits must be able
-               // to say when the goal stops accepting new requests
+               // to say when the work stops accepting new requests
                "deadline": deadline})
     });
     // D-479: bounded identity/state-only delivery view for reconnecting clients; no input bodies copied.
@@ -622,7 +622,7 @@ fn read_snapshot(conn: &rusqlite::Connection, mcp: &Json, sessions: &Json, model
     let work_enabled: bool = conn
         .query_row("SELECT EXISTS(SELECT 1 FROM meta WHERE key='work_policy_v1')", [], |row| row.get(0))
         .map_err(|e| format!("snapshot work policy: {e}"))?;
-    Ok(json!({"instances": instances, "tasks": work.tasks, "goal": goal, "input_delivery": input_delivery,
+    Ok(json!({"instances": instances, "tasks": work.tasks, "work": work_scope, "input_delivery": input_delivery,
         "work_policy_version": if work_enabled { json!(1) } else { Json::Null },
         // D-413: the configured MCP services and their credential state, so a client that cannot read this
         // machine's config (the TUI is one) can still tell a user what the session bound and what to do next.
@@ -652,13 +652,13 @@ fn watermark(conn: &rusqlite::Connection) -> Result<i64, String> {
         .map_err(|e| format!("watermark: {e}"))
 }
 
-/// D-268: a goal a *client* opens is bounded the way the bootstrap bounds its own (D-64: "`[limits]` in the user
-/// config bounds every goal the session creates"). The session's ceiling and deadline fill in only what the
+/// D-268: a work a *client* opens is bounded the way the bootstrap bounds its own (D-64: "`[limits]` in the user
+/// config bounds every work the session creates"). The session's ceiling and deadline fill in only what the
 /// command left out — a client that names its own keeps them — and the session's configured required checks are
 /// **unioned** with the command's, because both are the user's: a client must not be able to drop a check the
 /// user's config requires. `deadline_minutes` is converted here exactly as `driver::bootstrap` converts it, so
-/// the two goal-creating paths cannot disagree.
-fn apply_session_goal_limits(params: &mut Json, session_limits: &Json) {
+/// the two work-creating paths cannot disagree.
+fn apply_session_work_limits(params: &mut Json, session_limits: &Json) {
     let mut limits = params.get("limits").cloned().filter(Json::is_object).unwrap_or_else(|| json!({}));
     if let Some(max) = session_limits.get("max_total_tokens") {
         if limits.get("max_total_tokens").is_none() {
@@ -733,7 +733,7 @@ fn read_method(
             // turn's outcome for its own cannot do that by matching text.
             let mut stmt = conn
                 .prepare(
-                    "SELECT c.epoch, c.idx, c.kind, c.message_json, c.envelope_id, i.workspace_ref, NULLIF(w.goal_id,'')
+                    "SELECT c.epoch, c.idx, c.kind, c.message_json, c.envelope_id, i.workspace_ref, NULLIF(w.work_id,'')
                      FROM context_entries c LEFT JOIN instances i ON i.id = c.instance_id
                      LEFT JOIN work_inputs w ON w.instance_id=c.instance_id AND w.epoch=c.epoch AND w.envelope_id=c.envelope_id
                      WHERE c.instance_id = ?1 ORDER BY c.epoch DESC, c.idx DESC LIMIT ?2",
@@ -743,7 +743,7 @@ fn read_method(
                 .query_map(rusqlite::params![instance, limit], |row| {
                     Ok(json!({"epoch": row.get::<_, i64>(0)?, "idx": row.get::<_, i64>(1)?,
                               "kind": row.get::<_, String>(2)?, "envelope_id": row.get::<_, Option<String>>(4)?,
-                              "workspace": row.get::<_, Option<String>>(5)?, "work_goal_id": row.get::<_, Option<String>>(6)?,
+                              "workspace": row.get::<_, Option<String>>(5)?, "work_work_id": row.get::<_, Option<String>>(6)?,
                               "message": serde_json::from_str::<Json>(&row.get::<_, String>(3)?).unwrap_or(Json::Null)}))
                 })
                 .map_err(|e| format!("history query: {e}"))?;
@@ -759,7 +759,7 @@ fn read_method(
             let limit = params.get("limit").and_then(|v| v.as_i64()).unwrap_or(200);
             let mut stmt = conn
                 .prepare(
-                    "SELECT request_id, instance_id, epoch, goal_id, kind, status, offered_tools, surface_authorized
+                    "SELECT request_id, instance_id, epoch, work_id, kind, status, offered_tools, surface_authorized
                      FROM model_requests
                      WHERE (?1 IS NULL OR instance_id = ?1)
                      ORDER BY rowid DESC LIMIT ?2",
@@ -772,7 +772,7 @@ fn read_method(
                         "request_id": row.get::<_, String>(0)?,
                         "instance_id": row.get::<_, String>(1)?,
                         "epoch": row.get::<_, i64>(2)?,
-                        "goal_id": row.get::<_, Option<String>>(3)?,
+                        "work_id": row.get::<_, Option<String>>(3)?,
                         "kind": row.get::<_, String>(4)?,
                         "status": row.get::<_, String>(5)?,
                         "offered_tools": offered
@@ -871,30 +871,30 @@ fn read_method(
             }
             Ok(json!({"approvals": approvals}))
         }
-        // D-267: every goal a session carries, with the instance each is attached to. The checkpoint reports
-        // *one* goal (the active one, D-266) because every client needs a single "the goal"; a user opening the
-        // next goal needs the list — which one is active, which have settled, and what limits each carries —
+        // D-267: every work a session carries, with the instance each is attached to. The checkpoint reports
+        // *one* work (the active one, D-266) because every client needs a single "the work"; a user opening the
+        // next work needs the list — which one is active, which have settled, and what limits each carries —
         // and nothing else in the protocol exposed it.
-        "goals" => {
+        "work_scopes" => {
             let mut stmt = conn
                 .prepare(
                     "SELECT g.id, g.status, g.deadline, g.limits_json, g.known_usage_json, g.unknown_usage,
-                            (SELECT GROUP_CONCAT(i.id, ',') FROM instances i WHERE i.active_goal_id = g.id),
+                            (SELECT GROUP_CONCAT(i.id, ',') FROM instances i WHERE i.active_work_id = g.id),
                             (SELECT e.payload_json FROM events e
-                              WHERE e.kind = 'goal_completed' AND e.scope = g.id
+                              WHERE e.kind = 'work_completed' AND e.scope = g.id
                               ORDER BY e.sequence DESC LIMIT 1)
-                     FROM goals g
-                     -- the goal the session is *working on* is the one an instance is attached to (D-266: a
-                     -- user-opened goal attaches to the leader); then the active ones, newest first
-                     ORDER BY EXISTS(SELECT 1 FROM instances i WHERE i.active_goal_id = g.id) DESC,
+                     FROM work_scopes g
+                     -- the work the session is *working on* is the one an instance is attached to (D-266: a
+                     -- user-opened work attaches to the leader); then the active ones, newest first
+                     ORDER BY EXISTS(SELECT 1 FROM instances i WHERE i.active_work_id = g.id) DESC,
                               (g.status = 'ACTIVE') DESC, g.rowid DESC",
                 )
-                .map_err(|e| format!("goals prepare: {e}"))?;
+                .map_err(|e| format!("work_scopes prepare: {e}"))?;
             let rows = stmt
                 .query_map([], |row| {
                     let attached: Option<String> = row.get(6)?;
-                    // D-431: each goal's own completion summary, so a client can report what the model said when
-                    // it settled *that* goal — the checkpoint reports one goal, a session can carry several (D-266).
+                    // D-431: each work's own completion summary, so a client can report what the model said when
+                    // it settled *that* work — the checkpoint reports one work, a session can carry several (D-266).
                     let completed: Option<String> = row.get(7)?;
                     let summary = completed
                         .and_then(|payload| serde_json::from_str::<Json>(&payload).ok())
@@ -911,9 +911,10 @@ fn read_method(
                         "attached_instances": attached.map(|list| list.split(',').map(str::to_string).collect::<Vec<_>>()).unwrap_or_default(),
                     }))
                 })
-                .map_err(|e| format!("goals query: {e}"))?;
-            let goals: Vec<Json> = rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("goals rows: {e}"))?;
-            Ok(json!({"goals": goals}))
+                .map_err(|e| format!("work_scopes query: {e}"))?;
+            let work_scopes: Vec<Json> =
+                rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("work_scopes rows: {e}"))?;
+            Ok(json!({"work_scopes": work_scopes}))
         }
         // The grant view is what the user's authority surface reads and the
         // only thing a revoke can name (D-61): the id, who issued it and where
@@ -974,7 +975,7 @@ pub const LEADER_INSTRUCTIONS: &str = super::work::LEADER;
 
 // Exact legacy product text: replace at assembly for enrolled work, preserving archived profiles/requests.
 pub(crate) const LEGACY_LEADER_INSTRUCTIONS: &str =
-    "You are the Leader of a team of agents. Understand the user's goal, decide
+    "You are the Leader of a team of agents. Understand the user's work, decide
 whether to work alone or build a team. Work directly on what you can finish in one pass: writing independent
 pieces is cheap for a single instance, and delegating them costs at least as much as it saves (D-262's
 measurements). Delegate parts that each need their own run-and-fix loop — set it up, run it, see what broke,
@@ -984,8 +985,8 @@ ids you delegated, with a short timer, instead of polling: a member's outcome ar
 chat message, and an assignee that ends its turn without settling will never wake you — that part is then yours,
 so re-delegate it as a new task or do it yourself. Check the finished work with one gate rather than re-running
 every part's command in turn. Report completion with the finish tool. Keep task descriptions specific, include
-acceptance criteria, and never bypass runtime permissions. Work is anchored to an active goal, and a settled goal
-cannot be reopened: when it is settled, report that further work needs a new goal from the user (the
+acceptance criteria, and never bypass runtime permissions. Work is anchored to an active work, and a settled work
+cannot be reopened: when it is settled, report that further work needs a new work from the user (the
 runtime opens none by itself) instead of retrying a delegation that has nowhere to be charged.";
 
 #[cfg(test)]

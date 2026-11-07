@@ -79,7 +79,7 @@ or a decision — and the rest stays a reading, stated as such.
 
 **The model set re-run 2026-09-27, at `db90bf52`** (all 26 in one pass, 941.5 s): **24 green, 2 red**, and the
 two reds have different dispositions. `stale_check.py` (165.0 s) failed on its assertion that `out.txt` holds
-what the *check* wrote: the goal ended BLOCKED with the model's own report (D-187's path), two check rounds each
+what the *check* wrote: the work ended BLOCKED with the model's own report (D-187's path), two check rounds each
 recorded `class: "stale_inputs"`, no success was claimed, and the file held the model's `original` — because the
 model re-wrote its deliverable on the repair turn, so the last writer was the model and not the check. The
 ending was honest and the verdict reached the model, so the *probe* was the defect: it required an order the
@@ -95,7 +95,7 @@ service) and the other 22 are green.
 **The model set re-run 2026-09-27, at `f521fd4f`** (all 26 in one pass): **24 green, 2 red, and both reds were
 findings rather than flakes.** `stale_check.py` failed on its two assertions about the stale-input verdict, and
 the state it kept showed the runtime doing its job — two `completion_repair` events carrying `class:
-"stale_inputs"`, no success claim, the goal BLOCKED — while the *model* was never told why its completion had
+"stale_inputs"`, no success claim, the work BLOCKED — while the *model* was never told why its completion had
 been refused: the §8 gap D-187 fixed. `authority.py` reproduced the recorded D-143 shape instead of passing:
 turn 1 closed in neither attempt (`exit 124` after 600.4 s and 600.5 s), the probe's own premise — a worker
 that answers without settling its task leaves the leader's wait pending, which is the ACCEPTANCE-recorded gap —
@@ -107,11 +107,11 @@ below, where nothing ran beside it.
 **The check family re-run after D-187's fix, same day** (`probes.py --set models --only checks.py --only
 stale_check.py --only two_gates.py --only exec_check.py --only authority.py`, 810 s): **all five green** —
 checks 15.4 s, stale_check 12.3 s (reporting "the runtime recorded the stale input", "the conversation carries
-the verdict", "the runtime parked the goal naming the stale input: required checks failed (bound:stale_inputs)
+the verdict", "the runtime parked the work naming the stale input: required checks failed (bound:stale_inputs)
 after 3 round(s)"), two_gates 13.2 s, exec_check 6.8 s and `authority.py` 762.4 s. Authority's own flakiness is
 visible in the pair: the same probe failed after two 600 s turns in the pass above and closed in 762 s here —
 D-143's shape, and the reason its budget is the largest in the set. Two live runs of `stale_check.py` also
-settled the goal two *different* ways (the model parked the goal after three rounds in the post-fix run; the
+settled the work two *different* ways (the model parked the work after three rounds in the post-fix run; the
 pre-fix run's model settled it itself with an honest blocked report), which is why the probe now asserts what
 must hold in both instead of the park reason alone (D-187).
 
@@ -171,7 +171,7 @@ exit code 0; the revocation in revision 11; 13 model requests, both tasks `SUCCE
 Two things it guards against, because both were observed while developing it:
 
 - **A model that answers with prose and never calls `finish` while its task stays open is re-asked by the
-  runtime** (unbounded without a goal budget) — the first version of this probe asked a worker *without* the
+  runtime** (unbounded without a work budget) — the first version of this probe asked a worker *without* the
   shell grant to run a shell command, which is unachievable, so the model answered `BLOCKED.` as prose and the
   runtime asked again: **169 model requests / 1,226,717 prompt tokens in ~15 minutes** with no progress. The
   prompt now asks what the worker can do (it can answer that, and does), and the probe measures the request
@@ -207,15 +207,15 @@ python3 review/dogfood/providers.py --state-dir /tmp/ta-providers
 It needs `DEEPSEEK_API_KEY` and `KIMI_API_KEY`, then asserts the facts the acceptance row claims: the session
 really spanned two models (each member's resolved model is recorded, D-69), the delegation exchanged a task
 assignment and a task start, `answer.txt` holds exactly the line the task asked for, and the worker settled its
-task (`task_completed`). Measured (2026-09-25): 7 model requests, 14.0 s, goal `SUCCEEDED`, `i-leader` on
+task (`task_completed`). Measured (2026-09-25): 7 model requests, 14.0 s, work `SUCCEEDED`, `i-leader` on
 `deepseek-flash`, `worker1` on `k3-256k`, `task t1 SUCCEEDED`; re-measured 2026-09-26: 8 requests / 15.7 s and
 8 requests / 22.6 s, both green with `task_completed` present.
 
 **A missing `task_completed` is neither read as a regression nor accepted silently** (D-129): the worker is a
 real model and sometimes answers with *prose* ("Confirmed: answer.txt written…") instead of calling `finish`.
 Then the task stays `RUNNING` (D-65's ceiling: the runtime does not re-ask a model that stopped settling), the
-Leader reads the artifact itself, and the goal still settles `SUCCEEDED` with that task open, because
-`complete_goal` checks open **operations**, not open **tasks** — the recorded known gap in `docs/ACCEPTANCE.md`.
+Leader reads the artifact itself, and the work still settles `SUCCEEDED` with that task open, because
+`complete_work` checks open **operations**, not open **tasks** — the recorded known gap in `docs/ACCEPTANCE.md`.
 
 ## `protocols.py`: every wire protocol, accepted against a real service
 
@@ -223,7 +223,7 @@ DESIGN §7 keeps four protocol families apart (Chat Completions, DeepSeek extens
 requires that each is "accepted with a real service separately". The tree had contract samples for all four
 (`engine/tests/providers_fake.rs` drives a fake HTTP server through each adapter) and live runs on two wires —
 nothing said which family had a live acceptance and which had only a fake. This probe is the live half for every
-family, one small goal each (write a file, `--check` verifies it) in its own state root:
+family, one small work each (write a file, `--check` verifies it) in its own state root:
 
 ```bash
 python3 review/dogfood/protocols.py                    # every family whose credential is set
@@ -245,7 +245,7 @@ Measured (2026-09-26, all four, no `--strict` needed): `anthropic` `k3-256k` via
 (2 / 9.2 s, `responses_output`) — and both declared windows match the tree's recorded values (`1048576`,
 `262144`). A family whose credential is missing is printed as `NOT ACCEPTED LIVE` with its contract tests, so a
 gap is stated rather than skipped.
-The probe accepts that one shape only (artifact exact **and** goal `SUCCEEDED` **and** the task still open) and
+The probe accepts that one shape only (artifact exact **and** work `SUCCEEDED` **and** the task still open) and
 prints it as the gap; every other shape where the event is missing still fails the run.
 `python3 review/dogfood/providers.py --self-check` checks that rule with no model, no network and no
 credentials.
@@ -253,7 +253,7 @@ credentials.
 ## `runtime_note.py`: the runtime's own closing note rides the next turn
 
 `runtime_note.py` runs two turns against one state root: the first ends with
-`finish(status = success)` (the goal settles `SUCCEEDED` and the runtime's closing note joins the
+`finish(status = success)` (the work settles `SUCCEEDED` and the runtime's closing note joins the
 conversation), the second is an ordinary prompt whose request therefore carries that note.
 
 ```bash
@@ -270,7 +270,7 @@ turn 1 1.6 s / turn 2 0.9 s, kimi 8.9 s / 11.8 s, both sessions' note at `i-lead
 
 ## `queued_input.py`: a queued input is answered by its own turn
 
-`queued_input.py` runs two sessions turns against one state root: the first settles its goal in its first
+`queued_input.py` runs two sessions turns against one state root: the first settles its work in its first
 response (no tool round in between), and the second is submitted *while* that request is in flight, so its
 input is queued at the boundary (D-63). The probe waits for the first turn to be in flight instead of sleeping
 through it, and reports whether the second run really was queued:
@@ -281,11 +281,11 @@ python3 review/dogfood/queued_input.py --provider kimi    # over `responses`
 ```
 
 It needs `DEEPSEEK_API_KEY` (and `KIMI_API_KEY` for kimi) and asserts what D-72 claims: the first run reports
-its own settlement, and the queued run reports `end=reply` with *its own* word and `goal_status: null` — not
+its own settlement, and the queued run reports `end=reply` with *its own* word and `work_status: null` — not
 the settlement the first run left behind. Measured (2026-09-25): deepseek 2.8 s
-(run 1 `completed`/`SUCCEEDED`; run 2 `reply`/`BANANA`/`goal: null`), kimi 40.4 s with the same shape.
-Against the pre-fix build the same harness reports `end=completed / goal=SUCCEEDED / reply=null` for the queued
-run: the prompt was never answered, and the run claimed the earlier turn's goal as its own.
+(run 1 `completed`/`SUCCEEDED`; run 2 `reply`/`BANANA`/`work: null`), kimi 40.4 s with the same shape.
+Against the pre-fix build the same harness reports `end=completed / work=SUCCEEDED / reply=null` for the queued
+run: the prompt was never answered, and the run claimed the earlier turn's work as its own.
 
 ## `mcp.py`: a configured MCP service is really bound
 
@@ -319,7 +319,7 @@ It needs `DEEPSEEK_API_KEY` (and `KIMI_API_KEY` for kimi) and asserts: the membe
 worktree and **not** in the shared project (the wrong-tree class D-57 found); terminating it with uncommitted
 work keeps the checkout and reports why in `daemon.log`; and after the probe commits and merges the branch, the
 running session retires the checkout by itself, record included. Measured (2026-09-25): deepseek 16.4 s, kimi
-41.8 s, both goals `SUCCEEDED`, one refusal line per reason after the D-76 fix.
+41.8 s, both work_scopes `SUCCEEDED`, one refusal line per reason after the D-76 fix.
 
 ## `skills.py`: the configured Skills registry reaches the model
 
@@ -338,7 +338,7 @@ session uses (`2 skill(s) under 1 configured root(s)`), the model calls `skill {
 carries the **body** (with the run's token), the instructions are followed (the file exists with the token),
 and then — in a second turn — the keyword search finds the second skill by its description and the model
 follows that one too. Measured 2026-09-26: deepseek 6.3 s (turn 1) with the action sequence
-`read canary → search frobnication → read inbox-triage`, kimi 63.9 s with the same sequence; both goals
+`read canary → search frobnication → read inbox-triage`, kimi 63.9 s with the same sequence; both work_scopes
 `SUCCEEDED`, and in the deepseek run the model verified its own work with a shell `cat` (the skill's third
 step).
 
@@ -374,7 +374,7 @@ flight), kills the daemon (the client exits 2, which is expected), lets the *run
 A12 — finish the job, and resumes the session. It asserts the core claim with a model in the loop: the
 command ran **exactly once** across the crash (`runs.log` holds one line, so the receipt was consumed, not
 replayed), the file exists, and the resumed session settles coherently instead of timing out. Measured
-(2026-09-26): deepseek and kimi both `end=completed`, goal `SUCCEEDED`, `input_queued=true` (the resume waited
+(2026-09-26): deepseek and kimi both `end=completed`, work `SUCCEEDED`, `input_queued=true` (the resume waited
 behind the recovered turn), one line in `runs.log`.
 
 ## `shutdown.py`: a graceful stop with a command in flight
@@ -393,7 +393,7 @@ It asserts what the design promises (measured 2026-09-26, D-152): the stop is bo
 nothing** — the operation keeps `DISPATCH_COMMITTED`; the runner survives and finishes the command alone; the
 next daemon settles that operation `SUCCEEDED` **from the runner's journal** with its receipt; the command ran
 exactly once; and the session stays usable, with the input that arrives after the recovery already settled the
-goal reporting its own outcome (`end=unsettled`) rather than the earlier settlement. It ends with 0 daemons and
+work reporting its own outcome (`end=unsettled`) rather than the earlier settlement. It ends with 0 daemons and
 0 runners.
 
 ## `checks.py`: the completion gate with a real model
@@ -413,20 +413,20 @@ python3 review/dogfood/checks.py --state-dir /tmp/ta-checks --timeout 420
 
 It needs `DEEPSEEK_API_KEY` (or `KIMI_API_KEY` with `--provider kimi`). The assertions are the acceptance
 row's claims: the work really happened (the file exists with the asked content), no success was reported
-(`exec` exits 1, `end=failed`, the goal ends `BLOCKED`), the settlement is a `goal_completed` event, and the
+(`exec` exits 1, `end=failed`, the work ends `BLOCKED`), the settlement is a `work_completed` event, and the
 repair ledger names the failing check (`check_id: impossible`, `class: exit`) while the model sees its output
 in the conversation.
 
 Measured (2026-09-26): on **deepseek** 10 model requests / 16.2 s, on **kimi** 9 requests / 36.9 s — both exit
-1, goal `BLOCKED`, 3 check rounds and 2 repair rounds, the settlement `blocked_by: runtime`, the artifact
+1, work `BLOCKED`, 3 check rounds and 2 repair rounds, the settlement `blocked_by: runtime`, the artifact
 exact, and 0 job runners left (A12). The probe prints which of the two honest routes settled the block, because
-they are not the same evidence: the runtime blocks a goal whose checks exhaust their repair rounds, while a
+they are not the same evidence: the runtime blocks a work whose checks exhaust their repair rounds, while a
 model that reads a gate no workspace state can satisfy may concede on its own first (with an editorializing
 comment in the config, the deepseek run did; with the neutral wording the probe now writes, both providers kept
 claiming success and the runtime decided — the config is model-readable, D-146). Two defects came out of this
 harness: the first deepseek run failed with `chat API 400: The reasoning_content in the thinking mode must be
 passed back to the API` (D-70: the repair turn after a failed check died on the wire), and the first kimi run
-reported `exit 0 / end=reply / goal=None` although the goal was `BLOCKED` (D-71: the runtime's own block note
+reported `exit 0 / end=reply / work=None` although the work was `BLOCKED` (D-71: the runtime's own block note
 was stored in the member's voice and read back as the reply). Its first version (2026-09-25, 11/9.7 s and
 8/37.8 s) measured the same gate on a check the model could have satisfied.
 
@@ -512,7 +512,7 @@ The probe also documents the level the lever lives at: `tasks cancel` is delegat
 CLI test and this probe cover different halves of A13 (D-88).
 
 
-## `stale_check.py`: a verified input that changed blocks the goal
+## `stale_check.py`: a verified input that changed blocks the work
 
 A16 (`checks.py`) is a check that can never pass; A17 is the subtler half — the check *passes*, and then the
 thing it verified is not what would be delivered. `stale_check.py` makes that deterministic: the check's own
@@ -526,8 +526,8 @@ python3 review/dogfood/stale_check.py --provider kimi  # over `responses`
 The `[[checks]]` entry is `id = "bound"`, `command = "printf changed > out.txt"`, `inputs = ["out.txt"]`, and
 the model is asked to write `out.txt` with `original` and finish. The artifact decides both halves: the file
 ends up holding *the check's* content (so the check really ran and the gate really saw a different value),
-the model's write is in the conversation, and no goal is ever reported `SUCCEEDED` — the run ends `failed`
-with the goal `BLOCKED` and the reason `required checks failed (bound:stale_inputs) after 3 round(s)`.
+the model's write is in the conversation, and no work is ever reported `SUCCEEDED` — the run ends `failed`
+with the work `BLOCKED` and the reason `required checks failed (bound:stale_inputs) after 3 round(s)`.
 Measured 2026-09-26: deepseek exit 1 / 19.7 s / 3 rounds / 12 requests; kimi exit 1 / 56.6 s / 3 rounds /
 9 requests (D-90).
 
@@ -613,25 +613,25 @@ python3 review/dogfood/tui_panels.py
 
 No model or credential: a worker is created through the protocol, then CLI pause/resume, task
 cancellation and termination are checked against persisted state. Termination without --yes must fail
-and preserve the worker; confirmation must retire it. Status/history/goals/authority reads remain
+and preserve the worker; confirmation must retire it. Status/history/work_scopes/authority reads remain
 available. Retired navigation keys must not open a panel. The earlier D-95 panel measurements remain
 historical evidence in the decision log.
 
 
 
-## `deadline.py`: the goal deadline, end to end
+## `deadline.py`: the work deadline, end to end
 
-A35's formal coverage says the daemon refuses past the goal deadline; this probe shows what a user meets, and
+A35's formal coverage says the daemon refuses past the work deadline; this probe shows what a user meets, and
 it is the probe that caught a gap in D-97's own fix:
 
 ```bash
 python3 review/dogfood/deadline.py     # ~70 s: one minute of waiting is the point
 ```
 
-`[limits] deadline_minutes = 1`, one short turn creates the goal with its absolute deadline (printed from the
+`[limits] deadline_minutes = 1`, one short turn creates the work with its absolute deadline (printed from the
 session), the probe waits until it has passed, and the next run exits **1 in 0.1 s** with
-`failure: "goal goal-s-main deadline passed before request … could start"`. The session is the witness: exactly
-one model request (the refused turn never reached a model), a `goal_deadline_refused` event, the leader
+`failure: "work work-s-main deadline passed before request … could start"`. The session is the witness: exactly
+one model request (the refused turn never reached a model), a `work_deadline_refused` event, the leader
 `PARKED` with the same reason — and the `--check` the probe attaches never runs (no marker file,
 `verification: []`, `verification_path: null`), which the first run of this probe found still happening.
 
@@ -650,7 +650,7 @@ python3 review/dogfood/lifecycle_run.py --lever pause       # pause + resume: th
 `end=failed` and `failure: "instance i-leader is terminated; this run cannot finish (termination is final —
 start a fresh state root for new work)"` (before D-98 it waited out its deadline and said `timeout`). `pause`
 is a boundary: the run keeps following its turn, and after `instances resume` the *same* run finishes —
-measured `exit 0 / end=completed / goal SUCCEEDED` with the file on disk. `--lever reset` speaks the
+measured `exit 0 / end=completed / work SUCCEEDED` with the file on disk. `--lever reset` speaks the
 protocol's `reset_instance` (no CLI verb) and the run ends 0.2 s later with `failure` naming the epoch move
 (`epoch 0 → 1`) — the case D-100 fixed, where the client used to wait out its deadline. Measured 2026-09-26,
 three runs per lever (D-98/D-100).
@@ -673,7 +673,7 @@ The older D-99 panel-based receipt remains historical; the reconnect protocol is
 
 ## `two_gates.py`: the runtime's gate and the client's gate in one run
 
-The product has two acceptance mechanisms — `[[checks]]` gate the *goal* (§8/A16), `exec --check` decides the
+The product has two acceptance mechanisms — `[[checks]]` gate the *work* (§8/A16), `exec --check` decides the
 *exit code* of a finished turn (D-49) — and nothing had driven them together:
 
 ```bash
@@ -682,8 +682,8 @@ python3 review/dogfood/two_gates.py
 
 Two scenarios on their own fresh state roots: a runtime check that cannot pass in any workspace state (`exit
 1` — the file test this scenario first used was satisfiable, and a model satisfied it by writing the file the
-check named, D-146) plus a passing client check gives goal `BLOCKED` (the repair ledger names the check) with
-exit `1` and the client's verdict `ok: true`; a passing runtime check plus a failing client check gives goal
+check named, D-146) plus a passing client check gives work `BLOCKED` (the repair ledger names the check) with
+exit `1` and the client's verdict `ok: true`; a passing runtime check plus a failing client check gives work
 `SUCCEEDED` with exit `1`. Which is the division of labour stated in one sentence in `docs/USER-GUIDE.md` §1:
 neither gate replaces the other. Measured 2026-09-26, 16.0 s and 5.2 s (D-101, D-146).
 
@@ -777,7 +777,7 @@ python3 review/dogfood/unknown_outcome.py --provider kimi --state-dir /tmp/ta-un
    child produced effects);
 4. asserts: `runs.log` holds **one** line (the command ran once and was never replayed), the worker's operation
    is `OUTCOME_UNKNOWN` with receipt class `outcome_unknown`, the delegated task is `BLOCKED` with exactly one
-   `task_blocked` notification, and no goal claims success. The orphaned command (its process group outlives the
+   `task_blocked` notification, and no work claims success. The orphaned command (its process group outlives the
    runner, D-41) is then stopped by pid, which is the user's own lever (`docs/USER-GUIDE.md` §4).
 
 Measured (2026-09-26, DeepSeek Flash, native window): two consecutive runs green, each ~10 s. Writing it took
@@ -803,7 +803,7 @@ call**, park the leader with the runtime's own arithmetic, and report that throu
 waiting out its deadline (D-97). The probe runs one `exec` (with a `--check` attached, to catch the case where a
 turn that never started still verifies something) and asserts on the session database: zero `model_requests`
 rows, a `budget_refused` event carrying `known 0 + reserved 0 + est 2228 > max 1000`, the leader `PARKED` with
-that sentence, the goal carrying the ceiling, exit **1** with the same words in the report's `failure`, and no
+that sentence, the work carrying the ceiling, exit **1** with the same words in the report's `failure`, and no
 acceptance command run (D-96).
 
 Unlike its siblings this probe needs **no credentials and no network**: the refusal precedes the provider, so a
@@ -825,7 +825,7 @@ Two scenarios, both through the real binary:
 
 1. **truncated before any visible text** — the connection closes after a delta that carries only a tool-call id.
    The attempt is transient, the driver retries inside the turn, the second response completes with a `finish`
-   call, and the goal settles `SUCCEEDED`. The probe asserts: exit 0, goal `SUCCEEDED`, exactly **two** requests
+   call, and the work settles `SUCCEEDED`. The probe asserts: exit 0, work `SUCCEEDED`, exactly **two** requests
    seen by the server, and the session's attempts table holding `FAILED` with **no usage** and `error_class`
    `Transient` next to the priced `COMPLETE` one; the truncated attempt's call id never reaches the conversation.
 2. **truncated after visible text** — the connection closes after a delta with content. The attempt is

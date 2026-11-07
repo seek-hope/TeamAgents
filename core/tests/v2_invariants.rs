@@ -12,8 +12,8 @@
 //! Coverage (the parenthesised names are the properties in the TLA+ specs):
 //! `TypeOK`, settled tasks are final (`SettledIsFinal`), the narrow return path is revoked when a task settles
 //! (`ReturnPathOnlyWhileOpen`), dependencies point at earlier tasks (`DependenciesPointBackwards`),
-//! a dead assignee holds no open task (`NoOpenTaskOnDeadAssignee`), no instance points at a settled goal
-//! (`NoStaleActiveGoal`, V-G1), closing a request releases its reservation (`ReservationReleased`),
+//! a dead assignee holds no open task (`NoOpenTaskOnDeadAssignee`), no instance points at a settled work
+//! (`NoStaleActiveWork`, V-G1), closing a request releases its reservation (`ReservationReleased`),
 //! one active request per instance (`OneActiveRequest`), a selected attempt is complete (`SelectionIsComplete`),
 //! a resolved wait answers its tool_call (`ResolvedWaitIsAnswered`, V-W1), no effect before approval
 //! (`NoEffectBeforeApproval`), LIVE artifacts have bytes (`LiveIsPersisted`).
@@ -25,8 +25,8 @@ use teamagents_core::v2::control::{Command, Control, Identity};
 
 const LIFECYCLES: &[&str] = &["ACTIVE", "PAUSED", "PARKED", "TERMINATED"];
 const PHASES: &[&str] = &["READY", "MODEL_PENDING", "TOOLS_PENDING", "WAITING", "COMPLETION_PENDING"];
-const GOAL_STATUSES: &[&str] = &["ACTIVE", "SUCCEEDED", "FAILED", "BLOCKED"];
-const TERMINAL_GOAL: &[&str] = &["SUCCEEDED", "FAILED", "BLOCKED"];
+const WORK_STATUSES: &[&str] = &["ACTIVE", "SUCCEEDED", "FAILED", "BLOCKED"];
+const TERMINAL_WORK: &[&str] = &["SUCCEEDED", "FAILED", "BLOCKED"];
 const TASK_STATUSES: &[&str] = &["PENDING", "RUNNING", "BLOCKED", "SUCCEEDED", "FAILED", "CANCELLED"];
 const OPEN_TASKS: &[&str] = &["PENDING", "RUNNING", "BLOCKED"];
 const SETTLED_TASKS: &[&str] = &["SUCCEEDED", "FAILED", "CANCELLED"];
@@ -55,7 +55,7 @@ fn contains(set: &[&str], value: &str) -> bool {
 #[derive(Default, Clone, Copy)]
 struct Coverage {
     resolved_wait: bool,
-    settled_goal: bool,
+    settled_work: bool,
     settled_task: bool,
     settled_operation: bool,
     reset_epoch: bool,
@@ -70,7 +70,7 @@ struct Coverage {
 impl Coverage {
     fn merge(&mut self, other: Coverage) {
         self.resolved_wait |= other.resolved_wait;
-        self.settled_goal |= other.settled_goal;
+        self.settled_work |= other.settled_work;
         self.settled_task |= other.settled_task;
         self.settled_operation |= other.settled_operation;
         self.reset_epoch |= other.reset_epoch;
@@ -266,13 +266,13 @@ impl Harness {
     }
 
     fn instances(&self) -> Vec<Vec<String>> {
-        self.rows("SELECT id, lifecycle, phase, COALESCE(active_goal_id,''), COALESCE(active_request_id,''), context_epoch FROM instances ORDER BY id", &[])
+        self.rows("SELECT id, lifecycle, phase, COALESCE(active_work_id,''), COALESCE(active_request_id,''), context_epoch FROM instances ORDER BY id", &[])
     }
-    fn goals(&self) -> Vec<Vec<String>> {
-        self.rows("SELECT id, status, reservations_json FROM goals ORDER BY id", &[])
+    fn work_scopes(&self) -> Vec<Vec<String>> {
+        self.rows("SELECT id, status, reservations_json FROM work_scopes ORDER BY id", &[])
     }
     fn tasks(&self) -> Vec<Vec<String>> {
-        self.rows("SELECT id, goal_id, assignee, requester, status, dependencies_json FROM tasks ORDER BY rowid", &[])
+        self.rows("SELECT id, work_id, assignee, requester, status, dependencies_json FROM tasks ORDER BY rowid", &[])
     }
     fn waits(&self) -> Vec<Vec<String>> {
         self.rows("SELECT id, instance_id, status, epoch FROM waits ORDER BY id", &[])
@@ -295,7 +295,7 @@ impl Harness {
         let exists = |sql: &str| !self.rows(sql, &[]).is_empty();
         Coverage {
             resolved_wait: exists("SELECT id FROM waits WHERE status IN ('SATISFIED', 'CANCELLED')"),
-            settled_goal: exists("SELECT id FROM goals WHERE status IN ('SUCCEEDED', 'FAILED', 'BLOCKED')"),
+            settled_work: exists("SELECT id FROM work_scopes WHERE status IN ('SUCCEEDED', 'FAILED', 'BLOCKED')"),
             settled_task: exists("SELECT id FROM tasks WHERE status IN ('SUCCEEDED', 'FAILED', 'CANCELLED')"),
             settled_operation: exists(
                 "SELECT operation_id FROM operations
@@ -315,7 +315,7 @@ impl Harness {
     fn violations(&mut self) -> Vec<String> {
         let mut reports: Vec<String> = Vec::new();
         let instances = self.instances();
-        let goals = self.goals();
+        let work_scopes = self.work_scopes();
         let tasks = self.tasks();
         let waits = self.waits();
         let requests = self.requests();
@@ -330,9 +330,9 @@ impl Harness {
                 reports.push(format!("TypeOK: instance {} phase {}", row[0], row[2]));
             }
         }
-        for row in &goals {
-            if !contains(GOAL_STATUSES, &row[1]) {
-                reports.push(format!("TypeOK: goal {} status {}", row[0], row[1]));
+        for row in &work_scopes {
+            if !contains(WORK_STATUSES, &row[1]) {
+                reports.push(format!("TypeOK: work {} status {}", row[0], row[1]));
             }
         }
         for row in &tasks {
@@ -383,20 +383,21 @@ impl Harness {
             }
         }
 
-        // NoStaleActiveGoal (V-G1)
-        let goal_status: HashMap<&str, &str> = goals.iter().map(|row| (row[0].as_str(), row[1].as_str())).collect();
+        // NoStaleActiveWork (V-G1)
+        let work_status: HashMap<&str, &str> =
+            work_scopes.iter().map(|row| (row[0].as_str(), row[1].as_str())).collect();
         for row in &instances {
             let pointer = &row[3];
             if pointer.is_empty() {
                 continue;
             }
-            match goal_status.get(pointer.as_str()) {
+            match work_status.get(pointer.as_str()) {
                 Some(status) if *status == "ACTIVE" => {}
                 Some(status) => {
-                    reports.push(format!("NoStaleActiveGoal: instance {} points at goal {pointer} ({status})", row[0]))
+                    reports.push(format!("NoStaleActiveWork: instance {} points at work {pointer} ({status})", row[0]))
                 }
                 None => {
-                    reports.push(format!("NoStaleActiveGoal: instance {} points at unknown goal {pointer}", row[0]))
+                    reports.push(format!("NoStaleActiveWork: instance {} points at unknown work {pointer}", row[0]))
                 }
             }
         }
@@ -404,13 +405,13 @@ impl Harness {
         // ReservationReleased: closing a request releases its reservation
         let open_requests: HashSet<&str> =
             requests.iter().filter(|row| row[2] == "PENDING").map(|row| row[0].as_str()).collect();
-        for row in &goals {
+        for row in &work_scopes {
             let reservations: Json = serde_json::from_str(&row[2]).unwrap_or(json!({}));
             if let Some(map) = reservations.as_object() {
                 for key in map.keys() {
                     if !open_requests.contains(key.as_str()) {
                         reports
-                            .push(format!("ReservationReleased: goal {} still reserves closed request {key}", row[0]));
+                            .push(format!("ReservationReleased: work {} still reserves closed request {key}", row[0]));
                     }
                 }
             }
@@ -733,7 +734,7 @@ const STEPS: usize = 38;
 /// Build command kind `kind` for the current state; returns None when its preconditions do not hold (the step is skipped).
 fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
     let instances = harness.instances();
-    let goals = harness.goals();
+    let work_scopes = harness.work_scopes();
     let tasks = harness.tasks();
     let waits = harness.waits();
     let requests = harness.requests();
@@ -741,10 +742,11 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
     let approvals = harness.rows("SELECT id, operation_id, status FROM approvals ORDER BY id", &[]);
     let artifacts = harness.rows("SELECT id, completeness, storage_ref FROM artifacts ORDER BY id", &[]);
     let ids: Vec<String> = instances.iter().map(|row| row[0].clone()).collect();
-    let goal_ids: Vec<String> = goals.iter().map(|row| row[0].clone()).collect();
-    let active_goals: Vec<String> = goals.iter().filter(|row| row[1] == "ACTIVE").map(|row| row[0].clone()).collect();
-    let settled_goals: Vec<String> =
-        goals.iter().filter(|row| TERMINAL_GOAL.contains(&row[1].as_str())).map(|row| row[0].clone()).collect();
+    let work_ids: Vec<String> = work_scopes.iter().map(|row| row[0].clone()).collect();
+    let active_work_scopes: Vec<String> =
+        work_scopes.iter().filter(|row| row[1] == "ACTIVE").map(|row| row[0].clone()).collect();
+    let settled_work_scopes: Vec<String> =
+        work_scopes.iter().filter(|row| TERMINAL_WORK.contains(&row[1].as_str())).map(|row| row[0].clone()).collect();
     let open_tasks: Vec<Vec<String>> =
         tasks.iter().filter(|row| OPEN_TASKS.contains(&row[4].as_str())).cloned().collect();
     let pending_tasks: Vec<Vec<String>> = tasks.iter().filter(|row| row[4] == "PENDING").cloned().collect();
@@ -799,18 +801,18 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity: Identity::User,
             })
         }
-        // 1: create a goal and attach it to an instance
+        // 1: create a work and attach it to an instance
         1 => {
-            if goal_ids.len() >= 2 || ids.is_empty() {
+            if work_ids.len() >= 2 || ids.is_empty() {
                 return None;
             }
             let instance = harness.pick(&ids)?.clone();
-            let id = format!("g{}", goal_ids.len() + 1);
+            let id = format!("g{}", work_ids.len() + 1);
             Some(Step {
-                label: format!("create_goal({id} -> {instance})"),
+                label: format!("create_work({id} -> {instance})"),
                 command: Command {
                     command_id: String::new(),
-                    method: "create_goal".into(),
+                    method: "create_work".into(),
                     params: json!({"id": id, "instance_id": instance, "limits": {"max_total_tokens": 100_000}}),
                 },
                 identity: Identity::User,
@@ -928,52 +930,52 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity: Identity::System,
             })
         }
-        // 8: settle the goal
+        // 8: settle the work
         8 => {
-            let goal = harness.pick(&active_goals)?.clone();
+            let work = harness.pick(&active_work_scopes)?.clone();
             let ready = harness.instances().into_iter().find(|row| row[2] == "COMPLETION_PENDING")?;
             Some(Step {
-                label: format!("complete_goal({goal})"),
+                label: format!("complete_work({work})"),
                 command: Command {
                     command_id: String::new(),
-                    method: "complete_goal".into(),
-                    params: json!({"goal_id": goal, "instance_id": row_or(&ready)}),
+                    method: "complete_work".into(),
+                    params: json!({"work_id": work, "instance_id": row_or(&ready)}),
                 },
                 identity: Identity::System,
             })
         }
-        // 9: the system blocks the goal
+        // 9: the system blocks the work
         9 => {
-            let goal = harness.pick(&active_goals)?.clone();
+            let work = harness.pick(&active_work_scopes)?.clone();
             let instance = harness.pick(&ids)?.clone();
             Some(Step {
-                label: format!("block_goal({goal})"),
+                label: format!("block_work({work})"),
                 command: Command {
                     command_id: String::new(),
-                    method: "block_goal".into(),
-                    params: json!({"goal_id": goal, "instance_id": instance, "reason": "checks exhausted"}),
+                    method: "block_work".into(),
+                    params: json!({"work_id": work, "instance_id": instance, "reason": "checks exhausted"}),
                 },
                 identity: Identity::System,
             })
         }
-        // 10: delegate a task (with a legal goal)
+        // 10: delegate a task (with a legal work)
         10 => {
             if ids.is_empty() || tasks.len() >= 3 {
                 return None;
             }
             let instance = harness.pick(&ids)?.clone();
-            let goal = if active_goals.is_empty() {
-                harness.pick(&goal_ids)?.clone()
+            let work = if active_work_scopes.is_empty() {
+                harness.pick(&work_ids)?.clone()
             } else {
-                harness.pick(&active_goals)?.clone()
+                harness.pick(&active_work_scopes)?.clone()
             };
             let task_id = format!("t{}", tasks.len() + 1);
             Some(Step {
-                label: format!("delegate_task({task_id} -> {instance}, goal {goal})"),
+                label: format!("delegate_task({task_id} -> {instance}, work {work})"),
                 command: Command {
                     command_id: String::new(),
                     method: "delegate_task".into(),
-                    params: json!({"task_id": task_id, "assignee": instance, "goal_id": goal, "description": "work"}),
+                    params: json!({"task_id": task_id, "assignee": instance, "work_id": work, "description": "work"}),
                 },
                 identity: Identity::User,
             })
@@ -1400,16 +1402,16 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity: Identity::System,
             })
         }
-        // 26: counterexample probe - delegating into a settled goal (the spec requires a refusal)
+        // 26: counterexample probe - delegating into a settled work (the spec requires a refusal)
         26 => {
-            let goal = settled_goals.first()?.clone();
+            let work = settled_work_scopes.first()?.clone();
             let instance = ids.first()?.clone();
             Some(Step {
-                label: format!("!delegate_to_settled_goal({goal})"),
+                label: format!("!delegate_to_settled_work({work})"),
                 command: Command {
                     command_id: String::new(),
                     method: "delegate_task".into(),
-                    params: json!({"task_id": "tsettled", "assignee": instance, "goal_id": goal,
+                    params: json!({"task_id": "tsettled", "assignee": instance, "work_id": work,
                                    "description": "should be refused"}),
                 },
                 identity: Identity::User,
@@ -1508,7 +1510,7 @@ fn spec_invariants_hold_over_random_walks() {
     // the walk must really reach these states, otherwise "everything passed" above is vacuous
     for (name, seen) in [
         ("a wait resolved (SATISFIED/CANCELLED)", reached.resolved_wait),
-        ("a settled goal", reached.settled_goal),
+        ("a settled work", reached.settled_work),
         ("a settled task", reached.settled_task),
         ("a terminal operation", reached.settled_operation),
         ("an epoch reset", reached.reset_epoch),
@@ -1534,7 +1536,7 @@ fn the_invariant_checker_detects_broken_states() {
     let mut harness = Harness::new("broken-status");
     let step = make_step(&mut harness, 0).expect("create instance");
     let _ = harness.run_step(step);
-    let step = make_step(&mut harness, 1).expect("create goal");
+    let step = make_step(&mut harness, 1).expect("create work");
     let _ = harness.run_step(step);
     let step = make_step(&mut harness, 10).expect("delegate task");
     let _ = harness.run_step(step);
@@ -1551,7 +1553,7 @@ fn the_invariant_checker_detects_broken_states() {
     let mut harness = Harness::new("broken-terminal");
     let step = make_step(&mut harness, 0).expect("create instance");
     let _ = harness.run_step(step);
-    let step = make_step(&mut harness, 1).expect("create goal");
+    let step = make_step(&mut harness, 1).expect("create work");
     let _ = harness.run_step(step);
     let step = make_step(&mut harness, 10).expect("delegate task");
     let _ = harness.run_step(step);
@@ -1615,16 +1617,16 @@ fn the_invariant_checker_detects_broken_states() {
         "coverage pointing at a non-summary must be reported: {reported:?}"
     );
 
-    // 3) an instance pointing at a settled goal (V-G1)
-    let mut harness = Harness::new("broken-goal");
+    // 3) an instance pointing at a settled work (V-G1)
+    let mut harness = Harness::new("broken-work");
     let step = make_step(&mut harness, 0).expect("create instance");
     let _ = harness.run_step(step);
-    let step = make_step(&mut harness, 1).expect("create goal");
+    let step = make_step(&mut harness, 1).expect("create work");
     let _ = harness.run_step(step);
-    harness.ctl.connection().execute("UPDATE goals SET status = 'SUCCEEDED'", []).unwrap();
+    harness.ctl.connection().execute("UPDATE work_scopes SET status = 'SUCCEEDED'", []).unwrap();
     let reported = harness.violations();
     assert!(
-        reported.iter().any(|line| line.contains("NoStaleActiveGoal")),
+        reported.iter().any(|line| line.contains("NoStaleActiveWork")),
         "the stale pointer must be reported: {reported:?}"
     );
 }

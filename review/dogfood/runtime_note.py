@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """A real-model check that a settlement's own words ride the *next* turn (D-71).
 
-When a goal settles, the runtime appends its closing note to the member's context
-(`runtime: goal … closed as SUCCEEDED`). It is the runtime's own word, stored under the
+When a work settles, the runtime appends its closing note to the member's context
+(`runtime: work … closed as SUCCEEDED`). It is the runtime's own word, stored under the
 `runtime` kind in the user's voice, and it stays in the conversation — so the next turn
 in that session sends a transcript that carries it. Both wires must accept that.
 
 The probe therefore runs two turns against one state root:
 
-1. a turn the model ends with `finish(status = success)` — the goal settles `SUCCEEDED`
+1. a turn the model ends with `finish(status = success)` — the work settles `SUCCEEDED`
    and the runtime's note joins the context;
 2. a plain turn in the same session, whose request carries that note.
 
@@ -91,8 +91,8 @@ def check(provider: str, root: pathlib.Path, timeout: int, failures: list[str]) 
 
     run, report, elapsed = exec_turn(state_root, workspace, env, SETTLE, timeout)
     print(f"provider={provider} turn 1: exit={run.returncode} elapsed={elapsed}s "
-          f"end={report.get('end')} goal={report.get('goal_status')}")
-    if report.get("goal_status") != "SUCCEEDED":
+          f"end={report.get('end')} work={report.get('work_status')}")
+    if report.get("work_status") != "SUCCEEDED":
         failures.append(f"{provider}: turn 1 did not settle SUCCEEDED "
                         f"({run.returncode}, {report.get('end')}, {report.get('failure')!r})")
         return

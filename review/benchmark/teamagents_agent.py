@@ -54,10 +54,10 @@ REASONING_EFFORT = os.environ.get("TEAMAGENTS_REASONING_EFFORT", "high")
 # `view_image` tool and lets a picture reach the wire. Off by default: the declaration is a claim about the
 # model, not a guess the harness may make.
 IMAGES = os.environ.get("TEAMAGENTS_IMAGES") == "1"
-# D-393/D-395: `TEAMAGENTS_INDEPENDENT_VERIFICATION=1` makes every goal this session creates settle only on
+# D-393/D-395: `TEAMAGENTS_INDEPENDENT_VERIFICATION=1` makes every work this session creates settle only on
 # a check round **another instance** registered, which is what the two-instance P2 measurement exercises.
 INDEPENDENT_VERIFICATION = os.environ.get("TEAMAGENTS_INDEPENDENT_VERIFICATION") == "1"
-# D-410: `TEAMAGENTS_DEADLINE_MINUTES` gives every goal a deadline (the config's `[limits] deadline_minutes`),
+# D-410: `TEAMAGENTS_DEADLINE_MINUTES` gives every work a deadline (the config's `[limits] deadline_minutes`),
 # which is what makes the runtime's wrap-up note reach the model before the wall.
 DEADLINE_MINUTES = os.environ.get("TEAMAGENTS_DEADLINE_MINUTES", "")
 # D-415: `TEAMAGENTS_MAX_TOOL_SECONDS` sets `limits.max_tool_seconds` — the ceiling on what one model
@@ -75,7 +75,7 @@ OVERRIDES = [f"limits.{key}={value}" for key, value in (
     ("tool_output_chars", TOOL_OUTPUT_CHARS),
     ("context_keep_chars", CONTEXT_KEEP_CHARS),
 ) if value]
-# D-385 `--accept` checks for the A/B (see `run`); empty keeps every trial a bare goal.
+# D-385 `--accept` checks for the A/B (see `run`); empty keeps every trial a bare work.
 ACCEPT = json.loads(os.environ.get("TEAMAGENTS_ACCEPT", "[]"))
 
 # The experiment's config, frozen like the repo's eval config: native 1M window (D-36), no ceiling.
@@ -169,7 +169,7 @@ class TeamAgentsAgent(BaseInstalledAgent):
                 "exec",
                 "--json",
                 f"--timeout {TURN_TIMEOUT_SEC}",
-                # `TEAMAGENTS_ACCEPT` = JSON `[{"id": …, "command": …}]`: the goal-level acceptance of D-385,
+                # `TEAMAGENTS_ACCEPT` = JSON `[{"id": …, "command": …}]`: the work-level acceptance of D-385,
                 # always derived from the task's own *instruction* (never from its hidden tests), so an A/B
                 # measures what a user who knows their acceptance criterion gets from the feature.
                 *[f"--accept {shlex.quote(check['id'] + '=' + check['command'])}" for check in ACCEPT],

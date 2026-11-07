@@ -153,19 +153,19 @@ pub struct ApprovalInfo {
 }
 
 #[derive(Clone, Debug)]
-pub struct GoalInfo {
+pub struct WorkInfo {
     pub status: String,
     pub known_total: i64,
     pub unknown: bool,
     pub limit_total: Option<i64>,
-    /// The goal's absolute deadline in epoch seconds (`[limits] deadline_minutes`,
+    /// The work's absolute deadline in epoch seconds (`[limits] deadline_minutes`,
     /// D-64): shown as the time left, so a configured ceiling is visible.
     pub deadline: Option<f64>,
-    /// What the model said it did when it settled the goal (D-431). A model can settle a goal by calling
+    /// What the model said it did when it settled the work (D-431). A model can settle a work by calling
     /// `finish` without writing a single word of prose (measured on the tau3 retail split: 12 of 114 dialogues
     /// ended that way, and a user read an empty reply), and the summary it recorded with that call is the only
     /// account of the work there is. The status line shows it, so a TUI user is not left with a bare
-    /// `goal SUCCEEDED`.
+    /// `work SUCCEEDED`.
     pub summary: Option<String>,
 }
 
@@ -238,7 +238,7 @@ pub struct V2App {
     pub graphics: crate::graphics::Graphics,
     pub pictures: Vec<crate::graphics::Placement>,
     pub expanded_tools: bool,
-    pub goal: Option<GoalInfo>,
+    pub work: Option<WorkInfo>,
     pub approvals: Vec<ApprovalInfo>,
     pub approval_sel: usize,
     pub focus: Focus,
@@ -281,7 +281,7 @@ impl V2App {
             graphics: crate::graphics::Graphics::default(),
             pictures: vec![],
             expanded_tools: false,
-            goal: None,
+            work: None,
             approvals: vec![],
             approval_sel: 0,
             focus: Focus::Composer,
@@ -420,12 +420,12 @@ impl V2App {
             .filter(|row| row["diagnosis"].is_object())
             .map(|row| (row["id"].as_str().unwrap_or("?").to_string(), row["diagnosis"].clone()))
             .collect();
-        self.goal = snapshot.get("goal").and_then(|g| {
+        self.work = snapshot.get("work").and_then(|g| {
             if g.is_null() {
                 return None;
             }
             let known = &g["known_usage"];
-            Some(GoalInfo {
+            Some(WorkInfo {
                 status: g["status"].as_str().unwrap_or("").to_string(),
                 known_total: known["total"].as_i64().unwrap_or(0),
                 unknown: g["unknown_usage"].as_i64().unwrap_or(0) != 0,
@@ -534,22 +534,22 @@ impl V2App {
                 {
                     refresh.checkpoint = true;
                 }
-                "goal_completed" => {
+                "work_completed" => {
                     refresh.history = true;
                     refresh.checkpoint = true;
                     // a runtime block announces itself twice (settlement + block
-                    // reason); the `goal_blocked` note below carries the reason,
+                    // reason); the `work_blocked` note below carries the reason,
                     // so this one stays quiet for it (D-71)
                     if payload["blocked_by"].as_str() != Some("runtime") {
-                        self.note(format!("goal finished: {}", payload["status"].as_str().unwrap_or("?")));
+                        self.note(format!("work finished: {}", payload["status"].as_str().unwrap_or("?")));
                     }
                 }
-                "goal_blocked" => {
+                "work_blocked" => {
                     refresh.checkpoint = true;
-                    self.note(format!("goal parked (BLOCKED): {}", payload["reason"].as_str().unwrap_or("")));
+                    self.note(format!("work parked (BLOCKED): {}", payload["reason"].as_str().unwrap_or("")));
                 }
                 "check_round_registered" => {
-                    // name the checks: a user waiting on a goal must see which
+                    // name the checks: a user waiting on a work must see which
                     // contracts are being verified, not just how many
                     let ids: Vec<String> = payload["checks"]
                         .as_array()
@@ -1306,7 +1306,7 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
             other => other,
         };
         let usage = self
-            .goal
+            .work
             .as_ref()
             .map(|g| {
                 let limit = g.limit_total.map(|n| format!("/{n}")).unwrap_or_default();
@@ -1314,7 +1314,7 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
             })
             .unwrap_or_default();
         let deadline = self
-            .goal
+            .work
             .as_ref()
             .and_then(|g| g.deadline)
             .map(|deadline| {
@@ -1336,7 +1336,7 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
     }
 
     /// Concise state for the header and the Grok-style activity row. Detailed diagnostics stay
-    /// in `status_line`; ordinary busy/ready states do not repeat the goal usage shown in the header.
+    /// in `status_line`; ordinary busy/ready states do not repeat the work usage shown in the header.
     pub fn activity_line(&self) -> String {
         let status = self.status_line();
         if !self.approvals.is_empty() {

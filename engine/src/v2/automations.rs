@@ -1,10 +1,10 @@
-//! Automations (D-367): user-defined schedules that start a goal on their own.
+//! Automations (D-367): user-defined schedules that start a work on their own.
 //!
 //! An automation is a prompt plus a period, created by the user and stored beside the session's state
 //! (`<state root>/automations.json`). The daemon owns the ticking: at each tick it asks which automations are
-//! *due* — enabled and past their `next_at` — and for each one whose previous goal has settled, it opens a goal
+//! *due* — enabled and past their `next_at` — and for each one whose previous work has settled, it opens a work
 //! attached to the Leader and submits the prompt as an ordinary input. The schedule is configuration, not
-//! session execution state, so it stays a file; the goals it starts are ordinary goals with the session's own
+//! session execution state, so it stays a file; the work_scopes it starts are ordinary work_scopes with the session's own
 //! limits, and nothing here can widen the authority a session already has.
 //!
 //! Three rules are the point of the module, and `V2Schedule.tla` states them: an automation never has two runs
@@ -29,8 +29,8 @@ pub struct Automation {
     /// Unix seconds at which the next run is due.
     pub next_at: f64,
     pub last_run: Option<f64>,
-    /// The goal the last run opened, so the next tick can tell whether it is still running.
-    pub last_goal: Option<String>,
+    /// The work the last run opened, so the next tick can tell whether it is still running.
+    pub last_work: Option<String>,
 }
 
 pub struct Automations {
@@ -79,7 +79,7 @@ impl Automations {
                 enabled: raw["enabled"].as_bool().unwrap_or(true),
                 next_at: raw["next_at"].as_f64().unwrap_or(0.0),
                 last_run: raw["last_run"].as_f64(),
-                last_goal: raw["last_goal"].as_str().map(str::to_string),
+                last_work: raw["last_work"].as_str().map(str::to_string),
             });
         }
         Ok(Automations { home: home.to_path_buf(), items })
@@ -99,7 +99,7 @@ impl Automations {
                 "enabled": item.enabled,
                 "next_at": item.next_at,
                 "last_run": item.last_run,
-                "last_goal": item.last_goal,
+                "last_work": item.last_work,
             })).collect::<Vec<_>>(),
         });
         let tmp = self.home.join(format!("{FILE}.tmp"));
@@ -143,7 +143,7 @@ impl Automations {
             enabled: true,
             next_at: now + every_secs as f64,
             last_run: None,
-            last_goal: None,
+            last_work: None,
         };
         self.items.push(entry.clone());
         self.save()?;
@@ -180,13 +180,13 @@ impl Automations {
     }
 
     /// Record that a run started: advance `next_at` by one period from *now* (coalescing any missed slots into
-    /// this single run) and remember the goal, so the next tick can tell whether it is still running.
-    pub fn mark_run(&mut self, id: &str, now: f64, goal_id: &str) -> Result<(), String> {
+    /// this single run) and remember the work, so the next tick can tell whether it is still running.
+    pub fn mark_run(&mut self, id: &str, now: f64, work_id: &str) -> Result<(), String> {
         let Some(index) = self.items.iter().position(|item| item.id == id) else {
             return Err(format!("no automation {id:?} to record a run for"));
         };
         self.items[index].last_run = Some(now);
-        self.items[index].last_goal = Some(goal_id.to_string());
+        self.items[index].last_work = Some(work_id.to_string());
         self.items[index].next_at = now + self.items[index].every_secs as f64;
         self.save()
     }
@@ -204,7 +204,7 @@ impl Automations {
                     "enabled": item.enabled,
                     "next_at": item.next_at,
                     "last_run": item.last_run,
-                    "last_goal": item.last_goal,
+                    "last_work": item.last_work,
                 })
             })
             .collect()
@@ -274,10 +274,10 @@ mod tests {
         let entry = schedule.add("", "ping", 60, 0.0).unwrap();
         // the process was down for an hour: only one run is owed, and the next slot is one period from now
         assert_eq!(schedule.due(3600.0).len(), 1);
-        schedule.mark_run(&entry.id, 3600.0, "goal-auto-1").unwrap();
+        schedule.mark_run(&entry.id, 3600.0, "work-auto-1").unwrap();
         assert_eq!(schedule.find(&entry.id).unwrap().next_at, 3660.0);
         assert!(schedule.due(3600.0).is_empty(), "the same slot never runs twice");
-        assert_eq!(schedule.find(&entry.id).unwrap().last_goal.as_deref(), Some("goal-auto-1"));
+        assert_eq!(schedule.find(&entry.id).unwrap().last_work.as_deref(), Some("work-auto-1"));
     }
 
     #[test]

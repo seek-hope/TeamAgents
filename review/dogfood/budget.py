@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""The goal budget, end to end, without spending anything (A18).
+"""The work budget, end to end, without spending anything (A18).
 
-A18 has an in-process test for the ceiling (`control::a_worker_shares_the_budget_of_the_goal_its_queue_serves`)
-and the product-path tests that the config reaches the goal (`cli::configured_limits_reach_the_goal_and_really_
+A18 has an in-process test for the ceiling (`control::a_worker_shares_the_budget_of_the_work_its_queue_serves`)
+and the product-path tests that the config reaches the work (`cli::configured_limits_reach_the_work_and_really_
 bound_the_session`, `cli::a_tiny_configured_ceiling_parks_the_session_instead_of_running_it`). What neither
 shows is the *live* shape a user meets: a session whose ceiling is below one request must refuse **before any
 model call** — no money spent, no request row — park the leader with the runtime's own reason, and report that
@@ -53,11 +53,11 @@ max_total_tokens = {max_tokens}
 
 def session(state_root: pathlib.Path) -> dict:
     db = sqlite3.connect(f"file:{state_root}/session.sqlite?mode=ro", uri=True)
-    goals = list(db.execute("SELECT id, status, known_usage_json, unknown_usage, limits_json FROM goals"))
+    work_scopes = list(db.execute("SELECT id, status, known_usage_json, unknown_usage, limits_json FROM work_scopes"))
     requests = list(db.execute("SELECT request_id, status FROM model_requests"))
     instances = list(db.execute("SELECT id, lifecycle, phase FROM instances"))
     events = [(row[0], row[1]) for row in db.execute("SELECT kind, payload_json FROM events ORDER BY sequence")]
-    return {"goals": goals, "requests": requests, "instances": instances, "events": events}
+    return {"work_scopes": work_scopes, "requests": requests, "instances": instances, "events": events}
 
 
 def main() -> int:
@@ -95,7 +95,7 @@ def main() -> int:
     report = json.loads(run.stdout) if run.stdout.strip().startswith("{") else {}
     print(f"  the run: exit={run.returncode} end={report.get('end')} failure={report.get('failure')!r} ({elapsed}s)")
     if run.returncode != 1:
-        failures.append(f"a goal whose ceiling is below one request must end the run with 1, got {run.returncode}")
+        failures.append(f"a work whose ceiling is below one request must end the run with 1, got {run.returncode}")
     if report.get("end") != "failed":
         failures.append(f"the refusal is this run's outcome, not {report.get('end')!r}")
     failure = report.get("failure") or ""
@@ -130,11 +130,11 @@ def main() -> int:
         failures.append(f"the leader is not parked with the budget reason: {parked} {reason!r}")
     else:
         print(f"  the leader is {parked[0][1]} with reason {reason!r}")
-    goals = facts["goals"]
-    if not goals:
-        failures.append("no goal was created for the refused turn")
+    work_scopes = facts["work_scopes"]
+    if not work_scopes:
+        failures.append("no work was created for the refused turn")
     else:
-        print(f"  the goal carries the ceiling: {goals[0][4]}")
+        print(f"  the work carries the ceiling: {work_scopes[0][4]}")
 
     leak_guard.stop_daemons(state_root)
     for failure in failures:

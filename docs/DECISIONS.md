@@ -11,14 +11,15 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Topic | Current rule | Origin |
 |---|---|---|
 | Skills | user-level registration root `~/.agents/skills`; read on demand with `skill search/read`, and skill instructions never widen execution permissions | D-23, D-34 |
-| Usage visibility | turn and goal usage/budget are visible in the TUI and in events | D-24 |
+| Usage visibility | turn and work usage/budget are visible in the TUI and in events | D-24 |
 | MCP | both transports, stdio and streamable HTTP; calls go through the shared permission, approval, budget, cancellation and receipt entry points | D-25 |
 | Web tools | `web_search` uses bound DeepSeek and/or Exa providers with `auto`/`both`/single-source selection, RRF deduplication, retries and a five-minute cache; new `init` configs bind both search providers plus DeepSeek fetch. Dual-source auto may charge both providers | D-482, D-484 (supersedes D-456 for search) |
 | CodeGraph | optional stdio MCP service (`codegraph serve --mcp`) queried through codemode; existing indexes only unless the user explicitly initializes one; shared daemon by default, no automatic install/init | D-483 |
 | Release publication | v0.2.0 is the first public release (Linux x86_64, musl static), rebuilt with D-476 and replaced again with the current hardened source under D-493; future tags still need explicit user authorization and `TEAMAGENTS_RELEASE_APPROVED=true` | D-457, D-475, D-477, D-493 |
 | Context compaction | triggered by real window usage; the summary keeps the original request and acceptance criteria, and the full text stays retrievable | D-28 |
 | Task priority | complex coding and long-horizon stability come first | D-35 |
-| Work and initiative | honor user instructions and intent; explore freely and pursue excellent, thoroughly verified results within the authorized scope. Durable goals span turns, compaction and restart; bounded recovery prevents empty loops | D-487 |
+| Work and initiative | honor user instructions and intent; explore freely and pursue excellent, thoroughly verified results within the authorized scope. Durable work_scopes span turns, compaction and restart; bounded recovery prevents empty loops | D-487 |
+| Work vocabulary and migration | there is no separate goal entity: work scopes own budget, deadline, admission and acceptance; work states/tasks own continuation and attribution. Schema 8 migrates the old goal records and events explicitly | D-498 |
 | Dependency and input hygiene | all three crate graphs run cargo-deny in CI; unknown sources and vulnerability/unsound/yanked advisories fail. OAuth/MCP/update inputs have explicit bounds and credential writes are locked and atomic | D-492 |
 | Native context | real-model evaluation always uses the model's native window and records the value and its source | D-36 |
 | Install and first config | source builds or the published v0.2.0 archive; init writes a minimal config and never overwrites an existing file; local archives require matching checksums | D-37, D-457, D-475; docs/INSTALL.md |
@@ -27,7 +28,7 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Repository instructions | explicit `instruction_files` come first; a trusted repository's `AGENTS.md` files are discovered from its boundary down to the cwd, outermost first (D-467) | D-246, D-467 |
 | Multi-edit and read parallelism | the default schema's `edit_file` accepts `edits` (disjoint, revision-checked, atomic batch; `edit_files` is an unadvertised alias); a batch of independent read-only calls runs its tool work concurrently while dispatch, veto and receipts stay ordered (D-469) | D-469 |
 | Session controls and web domains | user-only model/effort switch at a READY/WAITING boundary, an explicit `after = "turn"` follow-up queue, and `web` grants with `domain:` scopes; cancelling a task does not stop its command (D-470) | D-470 |
-| Acceptance checks | `exec --check` and goal `[[checks]]` run on the host through the same shell implementation | D-471, D-480 |
+| Acceptance checks | `exec --check` and work `[[checks]]` run on the host through the same shell implementation | D-471, D-480 |
 | PTY verification | `make pty` runs a terminal-profile matrix in isolated ptys (xterm-256color, screen-256color, tmux-256color, xterm-kitty, Kitty under tmux) with auto graphics-mode assertions, plus forced blocks/kitty protocol bounds | D-472 |
 | TUI keys | Shift+Enter inserts a newline; ready/draft footers show Ctrl+S sessions instead of newline. Ctrl+Q quits, Ctrl+P opens pending inputs, Ctrl+M opens the Leader's model/effort menu (`/quit`, `/model`); the profile applies at the next turn | D-473, D-491 |
 | TUI presentation | Grok Build's single-conversation layout with Codex CLI colors: terminal-default prose, dim chrome, blue accents, ANSI semantic colors and inverse selection; elevated prompts, grouped tools and conditional activity remain; no split terminal | D-489, D-490 (supersedes D-481 colors) |
@@ -39,6 +40,49 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Prompt cache | cache hit/miss/write are provider-reported and visible; the L1 frontier is fixed between compactions; Anthropic gets explicit breakpoints and OpenAI a stable key; DeepSeek stays automatic | D-459 |
 | Command idempotency | a replay with the same `command_id` returns the stored receipt for control-plane state, and the authoritative check runs under the write lock (D-463); result bodies are shared by content digest and zstd-compressed (D-464), while the receipt **rows** remain one per command | D-463, D-464 |
 | Model actions and code windows | a deciding read shares the write's transaction, or the guard is a predicate on the write itself; `verification/REPORT.md` §6 lists the protocol transitions and the three engine windows that span two transactions with their predicates | D-465 |
+
+## D-499 Remove stale mirrors and duplicate maintenance guidance (2026-11-07)
+
+The user requested a code/document maintainability cleanup. This is a repository-local, behavior-preserving
+change, not another protocol or schema migration.
+
+- `core/src/v2/models.rs` now contains only schema identity and request-kind constants. Ten unused mirror
+  types (`Lifecycle`, `Phase`, `Instance`, `WorkStatus`, `TaskStatus`, `Task`, `Grant`, `OperationStatus`,
+  `Operation`, `ArtifactState`) were removed. They had no construction, import or type-annotation use anywhere
+  in the three crates, and several status vocabularies disagreed with current persistence. Explicit SQL/JSON
+  projections remain the single runtime representation; schema 8, stored rows, events and all protocol shapes
+  are unchanged. Schema-7-to-8 migration code and its fixtures are not dead code and remain in place.
+- The handoff now links earlier baselines instead of repeating their obsolete pending/current claims. The
+  development guide names the actual isolated TLC temporary locations and distinguishes retained replay logs
+  from disposable state stores. Historical counts remain in dated sections, explicitly marked as history.
+- No current requirement, permission, execution, recovery, acceptance or formal-verification rule changes.
+  Dated review evidence and frozen evaluation data are not cleanup targets. No installed binary, user daemon,
+  public release or canonical-allocation setting changes.
+
+## D-498 Remove the goal entity and migrate its responsibilities to work (2026-11-06)
+
+The user explicitly approved complete removal of the `goal` concept, with migration to `work`/`session`
+rather than a superficial rename. The former goal is now a **work scope**: it retains the user-owned budget,
+absolute deadline, required checks, admission boundary, usage accounting, acceptance evidence and terminal
+status. Work states and tasks retain continuous execution, recovery, delegation and result attribution. The
+session remains the lifetime and isolation boundary. This changes no permission, cancellation, unknown-outcome,
+settlement-evidence or fairness rule.
+
+- Public persistence and protocol vocabulary uses `work_scopes`, `work_id`, `active_work_id` and
+  `billed_work_id`; commands are `create_work`/`cancel_work`, events are `work_created`/`work_updated`/
+  `work_completed`/`work_cancelled`, and the CLI surface is `teamagents work_scopes`. The old command and JSON
+  names are not reintroduced as hidden aliases.
+- `V2_SCHEMA_VERSION` is 8. Opening a v7 database copies `goals` into `work_scopes`, maps every legacy goal
+  reference in instances, work states, work requests, work inputs, tasks, model requests and operations, and
+  translates historical event kinds and inline JSON keys. Every table carrying a legacy goal column is rebuilt, so
+  migrated databases and exports retain no retired columns; the legacy goals table is dropped only after the
+  copy. Stored user content and frozen evaluation evidence are not rewritten by the database migration.
+- Old work is not silently enrolled into the newer continuation policy. Terminal statuses and their meanings
+  remain `ACTIVE`, `SUCCEEDED`, `FAILED`, `BLOCKED` and `CANCELLED`; cancellation still does not prove that a
+  process stopped, and a terminal work scope is not necessarily a successful one.
+- The formal model and witness/configuration names follow the same work vocabulary. Canonical allocation
+  remains disabled: this migration is not the outstanding source-bound bidirectional fair-trace proof and does
+  not authorize a runtime installation, daemon replacement or public release.
 
 ## D-496 Formal search cost without reducing coverage (2026-11-03)
 
@@ -219,7 +263,7 @@ presentation only. `@PATH` plus Tab reuses `input_paths`; accepting a candidate 
 stages the attachment, while explicit message submission remains the only byte-capture/send boundary.
 
 This is a TUI adaptation, not a new agent runtime. The daemon protocol, Leader-only submission, grants,
-approvals, model/goal/task states, attachment confinement, queue revisions, renderer workers and recovery
+approvals, model/work/task states, attachment confinement, queue revisions, renderer workers and recovery
 semantics are unchanged. No resident sidebar, split terminal, ACP integration or marketplace is added.
 
 Validation: core 174 / engine 437 / TUI 102 passed `make check`; the full terminal/forced-graphics matrix
@@ -237,7 +281,7 @@ recovery, clients, extension points and a build order. Each detailed view links 
 
 The atlas describes source baseline `028f2383` and distinguishes implementation limits from the design
 baseline and verification claims. In particular it does not invent bounded event pages, sender-grant
-revalidation during inbox drain, edits to DEFERRED inputs, repeated automation goal admission, or an
+revalidation during inbox drain, edits to DEFERRED inputs, repeated automation work admission, or an
 automatic collector path for ABANDONED artifacts. Runtime behavior is unchanged. Current DESIGN wording is
 aligned with already implemented D-487 admission, daemon scope and wait supersession. Historical evidence
 retains its original scope. The protocol catalogue now recognizes module-qualified dispatch handlers and
@@ -252,7 +296,7 @@ not new real-model evidence or a renewed independent audit.
 ## D-487 Persistent work context and bounded autonomous continuation (2026-10-28)
 
 **Authorization.** After reviewing the seven-repository source study and the expanded DD-11 proposal, the
-user approved implementation. Goals carry sustained user work across model turns, context renewal and restart.
+user approved implementation. Works carry sustained user work across model turns, context renewal and restart.
 Clear communication and material clarification before execution are the principal behavior rules; routine
 technical decisions and previously granted scope do not require repeated confirmation.
 
@@ -270,18 +314,18 @@ work, including acceptance metadata needed after a pause; closed work releases t
 A request freezes its work context; preparation and settlement reject changed
 assignment/input scope. Old responses cannot replace a new assignment's checkpoint or recovery allowance.
 
-A goal carries the whole admitted user work across turns, context renewal and restart. A progress reply does
+A work carries the whole admitted user work across turns, context renewal and restart. A progress reply does
 not finish it. Up to two empty/prose/plan recovery continuations are allowed before work becomes BLOCKED;
 repeated action/observation patterns are also bounded. These are operational heuristics, not proof of semantic
 failure. New scoped input or observations can reopen an episode; restart and compaction cannot replenish it.
 Member attention and recorded process stops supersede waits without pretending a task succeeded. Questions,
 blocking and user stops are explicit states; attention does not override a stop or answer a user question.
 
-After a terminal goal, information-only replies create no goal. A new actionable request uses the internal
-`work_checkpoint start_work` action, or user-supplied acceptance checks, to admit one new goal. Classification,
+After a terminal work, information-only replies create no work. A new actionable request uses the internal
+`work_checkpoint start_work` action, or user-supplied acceptance checks, to admit one new work. Classification,
 clarification and compaction retain a pinned policy and original input time. Known and unknown admission usage
 transfers once to the new work without rewriting the original requests; an information answer's cost does not
-move to unrelated work. Existing goals, deadlines, exhausted budgets and PARKED states cannot be reset this way.
+move to unrelated work. Existing work_scopes, deadlines, exhausted budgets and PARKED states cannot be reset this way.
 
 Success requires current input/assignment scope, reconciled remaining items and tasks, appropriate scoped
 execution evidence, and the existing required checks. A green command alone is not semantic completion. A
@@ -303,8 +347,8 @@ release is included.
 ## D-486 Preserve completion answers and render real Shell envelopes (2026-10-28)
 
 **Authorization.** The user reported rough, confusing model/Shell presentation after testing D-485 and asked
-how goals constrain the model. This entry fixes presentation defects within the confirmed conversation scope;
-goal lifecycle changes remain a proposal in PRODUCT-COMPARISON.
+how work_scopes constrain the model. This entry fixes presentation defects within the confirmed conversation scope;
+work lifecycle changes remain a proposal in PRODUCT-COMPARISON.
 
 The checkpoint's completion summary was collapsed to one line and silently cut at 110 characters. It now
 retains the full Markdown answer and uses the shared reply/media renderer. Compact finish calls show the
@@ -321,7 +365,7 @@ and stored-history views retain argument fields. The runner still merges stdout 
 invent separate streams.
 
 Regression checks use the actual envelope shape, multiline commands, long output, errors, narrow columns and a
-completion answer beyond the former 110-character limit. No goal, budget, permission or daemon behavior changes.
+completion answer beyond the former 110-character limit. No work, budget, permission or daemon behavior changes.
 
 ## D-485 Conversation UX and shared editing (2026-10-28)
 
@@ -705,13 +749,13 @@ forced modes; the `xterm-kitty` and `xterm-kitty`+`TMUX` profiles are covered by
 ## D-471 Acceptance checks follow the session's shell mode (2026-10-22)
 
 **Why.** The audit found the headless `exec --check` path still ran checks through `shell_run_stateful`, which
-hardcodes a bubblewrap sandbox, so `sandbox = none` was ignored there. The goal's `[[checks]]` already followed the
+hardcodes a bubblewrap sandbox, so `sandbox = none` was ignored there. The work's `[[checks]]` already followed the
 session mode through the driver's `execute_shell`.
 
 **What.** `run_checks` takes the `ShellMode`; `exec` derives it from `[permissions] sandbox`
 (`sandbox_from_config`, default `none`) through the new `ShellMode::from_sandbox`, and runs each check with
 `shell_run_in_mode`. With `sandbox = none` the check runs on the host; a configured backend keeps the fail-closed
-`IsolationUnavailable` refusal. Goal `[[checks]]` and `verify_goal` continue to use the session mode through the
+`IsolationUnavailable` refusal. Work `[[checks]]` and `verify_work` continue to use the session mode through the
 driver's `execute_shell`.
 
 **Boundaries.** Checks are the user's own commands, not model output. The check mode is the config's mode (the
@@ -738,7 +782,7 @@ means no allowlist (the historical behavior). (4) The `idle_unsettled` and settl
 cancelling a task releases the delegator but does not stop the command; `instances terminate --id ID --yes` stops
 its process group.
 
-**Boundaries.** The switch is user-only and boundary-only (no mid-turn swap); a follow-up is input, not a new goal;
+**Boundaries.** The switch is user-only and boundary-only (no mid-turn swap); a follow-up is input, not a new work;
 domain matching is exact or `*.suffix`, not a URL-path policy; the diagnosis is advice, not an automatic action.
 
 **Acceptance.** core tests `a_user_can_switch_model_and_effort_at_a_boundary` and
@@ -931,7 +975,7 @@ model's atomic step rather than adding a new model action.
 **Why.** The user asked whether formal-verification coverage is comprehensive. A read-only audit found the
 material broad (37 modules, 45 exhaustive configurations, 138 controls) but with three defects: a control only
 had to produce *some* violation, 125 checked claims had never been the target of a refutation, and the ledger
-understated coverage it had (A31/A33). The user then asked for a goal that closes it.
+understated coverage it had (A31/A33). The user then asked for a work that closes it.
 
 **Gate.** (1) Every counterexample configuration carries exactly one `\* expects: <Claim>` marker;
 `make verify-model-counterexamples` fails unless TLC's reported violation (or, for a temporal property, the
@@ -988,7 +1032,7 @@ require the same session selector and the printed instance/task ids; they are ne
 
 **Adjacent fix (exec stream).** Repeated full-gate runs exposed a pre-existing settle race in
 `teamagents exec --stream-json`: the checkpoint and event read of one pass could straddle a settlement
-committed before the `history` read, so the run broke with the input streamed but not `goal_completed`, and
+committed before the `history` read, so the run broke with the input streamed but not `work_completed`, and
 the report's usage missed that `attempt_recorded` (0 requests for a turn that ran). The loop now takes one
 further immediate pass after a terminal outcome before reporting. Lines stay a prefix of the event log, usage
 is complete, and the second pass cannot loop because the settle is already known. The existing streaming test
@@ -1047,7 +1091,7 @@ Anthropic `cache_control` on system/tools/last message, and `cacheRead`/`cacheWr
 **Decision.** (1) `Usage` keeps `cache_hit`, `cache_miss` and `cache_write`; the adapters parse DeepSeek
 `prompt_cache_hit_tokens`/`prompt_cache_miss_tokens`, OpenAI `prompt_tokens_details.cached_tokens`, and
 Anthropic `cache_read_input_tokens`/`cache_creation_input_tokens`. They persist in the attempt, response
-artifact, goal usage and `attempt_recorded`; `exec` reports the split and `cache_hit_rate`. Zero hit and zero
+artifact, work usage and `attempt_recorded`; `exec` reports the split and `cache_hit_rate`. Zero hit and zero
 miss mean the provider did not report a split, not a measured miss. (2) The L1 mask frontier is **frozen**
 after the first request that needs it and reset only when L2 compaction commits (or when a summary fails and the
 request would otherwise outgrow the window). Tools that arrive after the frontier stay visible until compaction,
@@ -1103,7 +1147,7 @@ system-only decision, the one-operation allow, the denial cancellation and the u
 `engine::v2::reviewer::tests` cover strict parsing, hard denials and the no-tools request;
 `v2_driver::auto_review_allows_one_operation_without_a_user_decision` drives a real scripted provider through
 an approval and a real shell. `cargo test --offline` is green for the core suite; the engine target compiles
-with `-D warnings`. The reviewer's own token usage is not charged to the goal in this first version; the audit
+with `-D warnings`. The reviewer's own token usage is not charged to the work in this first version; the audit
 event records the decision, not a billing row.
 
 ## D-457 Release freeze: no publication until user authorization (2026-10-18)
@@ -1190,7 +1234,7 @@ want the leader to create children simply leaves the parent non-delegable and us
 The existing D-60 tool-surface rule remains: an instance is offered `shell` only when it holds a covering live
 grant; `WAITING_CAPABILITY` instances are offered no shell until approval.
 
-**Evidence (2026-10-18).** The core capability test covers user-only delegable issuance, an attenuated task-scoped child, settlement revocation, parent cascade, pending -> approve, pending -> deny, non-user self-approval refusal, instance termination and stale dispatch. The TUI test shows a `WAITING_CAPABILITY` member. `make verify-model-all` (including `MC_capabilities.cfg`, `MC_grants` and `MC_authority`) and `make verify-model-counterexamples` pass; V2Grants/V2Authority carry the delegable/task fields and invariants, and the focused V2Capabilities.tla model checks the new transitions. The final make-check/hygiene/git-diff evidence is recorded in the goal completion report.
+**Evidence (2026-10-18).** The core capability test covers user-only delegable issuance, an attenuated task-scoped child, settlement revocation, parent cascade, pending -> approve, pending -> deny, non-user self-approval refusal, instance termination and stale dispatch. The TUI test shows a `WAITING_CAPABILITY` member. `make verify-model-all` (including `MC_capabilities.cfg`, `MC_grants` and `MC_authority`) and `make verify-model-counterexamples` pass; V2Grants/V2Authority carry the delegable/task fields and invariants, and the focused V2Capabilities.tla model checks the new transitions. The final make-check/hygiene/git-diff evidence is recorded in the work completion report.
 
 ## D-453 Governed self-update transactions (2026-10-17)
 
@@ -1198,7 +1242,7 @@ grant; `WAITING_CAPABILITY` instances are offered no shell until approval.
 
 **Boundaries.** The model can request the update, but it cannot approve it, choose an arbitrary URL, edit the update policy or forge the gate command; the user's one approval is bound to the concrete operation. The updater is a detached process outside the model's sandbox: the daemon never overwrites its own binary in place. A failed health check restores the previous version, and a crash leaves a journal state the next run can inspect rather than a half-switched install.
 
-**Evidence.** The implementation is in `engine/src/update.rs` with its CLI dispatch in `engine/src/main.rs`, configuration in `core/src/models.rs` and `engine/src/config.rs`, and the request/approval path in `engine/src/v2/driver.rs`; the focused tests are in `engine/src/update.rs` and `engine/tests/update.rs` (layout migration, journal chain/corruption, checksum/version/path safety, crash points, switch/rollback, health check and a live-daemon stop/switch/start/follow-up). The complete `make check` result is recorded in the goal completion report.
+**Evidence.** The implementation is in `engine/src/update.rs` with its CLI dispatch in `engine/src/main.rs`, configuration in `core/src/models.rs` and `engine/src/config.rs`, and the request/approval path in `engine/src/v2/driver.rs`; the focused tests are in `engine/src/update.rs` and `engine/tests/update.rs` (layout migration, journal chain/corruption, checksum/version/path safety, crash points, switch/rollback, health check and a live-daemon stop/switch/start/follow-up). The complete `make check` result is recorded in the work completion report.
 
 **Why the transaction shape.** A half-switched install is worse than no update: the daemon may be running from one tree while the launcher selects another. The journal makes the chosen version, the staging result and the switch decision one ordered record, so a crash has a single interpretation. The model stays a requester and the detached updater owns every write outside the sandbox.
 
@@ -1501,7 +1545,7 @@ When the Leader is absent or the client is disconnected, sending keeps the unsen
 line; full stored messages remain available through the CLI. The empty 24-row layout reserves five rows
 for status, composer and footer, down from six; there is no permanent team sidebar at any width.
 
-**Developer contract.** Existing instance/task/goal controls, authority, approvals, sessions, automations,
+**Developer contract.** Existing instance/task/work controls, authority, approvals, sessions, automations,
 MCP, runners, artifacts, daemon lifecycle, configuration, doctor and headless execution stay in the CLI.
 Direct member input moves to instances send --id ID --prompt TEXT, returning an input receipt
 (accepted or queued), not a completion verdict. A fresh envelope identifies each invocation.
@@ -1546,8 +1590,8 @@ runtime design. No paid model run is needed for these client changes.
 with optional team panels, responsive sidebars, and Kitty on a dark background. This supersedes D-47's bright
 panel borders and low-contrast labels. The dark surfaces and blue accent remain; secondary text is brighter,
 borders are quiet, and user/assistant/command/error entries have breathing room. The header puts connection
-and pending approvals before the active member; goal usage has its own line so a long session id cannot hide it.
-The complete report and settlement summary remain available through `/status` and `/goals`.
+and pending approvals before the active member; work usage has its own line so a long session id cannot hide it.
+The complete report and settlement summary remain available through `/status` and `/work_scopes`.
 
 **Layout and ownership.** Chat starts full-width. The existing Ctrl+N cycle and slash commands open the same
 panels; at 120 columns and 12 rows or larger they occupy a 48-column sidebar, retaining the conversation and
@@ -1603,7 +1647,7 @@ Kitty session. Terminal-native selection (Shift-drag in Kitty) remains the copy 
 
 ## D-443 The documentation map, and the dead-code allowlists that must justify themselves (2026-10-06)
 
-**Why.** This entry comes out of the tidy-up goal ("keep only the documentation a user and a developer need to
+**Why.** This entry comes out of the tidy-up work ("keep only the documentation a user and a developer need to
 understand the project, and clean dead code"). The documents were already held to a web of audits — citations,
 the decision log's shape, the requirement trace, the four generated references — but nothing said which document
 is for a *user*, which for a *developer* and which is the evidence trail, nor which document introduces each of
@@ -1648,11 +1692,11 @@ audit now reads 540 public items, zero uncalled, fourteen known and allowed, eac
 
 **The produced-but-unread events, and the write-less `payload_ref`.** Fifteen event kinds have no reader in this
 tree: `artifact_abandoned`, `artifact_collected`, `artifact_owners_released`, `artifacts_gc_claimed`,
-`goal_cancelled`, `goal_checks_required`, `goal_created`, `history_pruned`, `inbox_drained`,
+`work_cancelled`, `work_checks_required`, `work_created`, `history_pruned`, `inbox_drained`,
 `instance_interrupted`, `instance_terminated`, `operation_cancel_requested`, `operation_cancelled`,
 `operation_unauthorized` and `request_cancelled`. They are not dead: each is emitted by production code at a
 state transition the durable record must carry (a staging artifact's abandonment, a GC claim and its collection,
-D-436's hold release, a goal's creation and cancellation, the check requirement, a retention sweep, an inbox
+D-436's hold release, a work's creation and cancellation, the check requirement, a retention sweep, an inbox
 drain, an interrupt, a termination, the request and effect halves of a command cancel, and a refused operation),
 and `review/event_catalogue.py` holds the emitted set and `docs/EVENTS.md` in step (D-125). Their reader is the
 session database itself — the user, a diagnosis, or a consumer outside this tree — so dropping one would remove a
@@ -1662,9 +1706,9 @@ the only INSERT that sets it is a test in `core/src/v2/control.rs`, which is wha
 to wire the retrieval half. It stays, with that reason recorded here: wiring it would hold artifact bytes past
 the window for a pointer nothing follows.
 
-**A harness finding, recorded because it bit this goal.** `review/citations.py` reads *untracked* files (`git
-ls-files --cached --others --exclude-standard`), and the durable-goal harness keeps its state under `.pi/`
-inside the repository. That state carries this goal's own check list, so the audit's `make` count jumped from 756
+**A harness finding, recorded because it bit this work.** `review/citations.py` reads *untracked* files (`git
+ls-files --cached --others --exclude-standard`), and the durable-work harness keeps its state under `.pi/`
+inside the repository. That state carries this work's own check list, so the audit's `make` count jumped from 756
 to 766 and its `§` count from 1086 to 1087 with nothing in the tree changed. `.gitignore` now carries `/.pi/`
 beside `/review/tmp/`: agent state is not repository content, and an audit that reads scratch is an audit whose
 numbers depend on who ran last.
@@ -1677,7 +1721,7 @@ Kani harnesses proved.
 **Ceilings.** The map checks shape, never judgement: it can say a document declares a reader and one home, not
 that the reader is right or that the document is worth its lines; it reads Markdown links only, so a route found
 through the GitHub UI is invisible to it; and its declarations are HTML comments, invisible in the rendered page.
-Two things this goal deliberately did not do, left as open items rather than decided here: shrinking
+Two things this work deliberately did not do, left as open items rather than decided here: shrinking
 `docs/DECISIONS.md` by archiving superseded entries would require teaching `review/decision_citations.py` an
 archive index and de-recording the citations that point into it, and wiring `payload_ref` is the D-438 question
 above.
@@ -2064,42 +2108,42 @@ and `docs/PRODUCT-COMPARISON.md` §2 item 9 say the new rules; `review/config_ke
 extension path its own comment documents) gained `trusted_projects`, so a document may name it without the audit
 calling it an error; `doctor`'s row and the daemon's log line now name the trust *source*.
 
-## D-433 The TUI can list the session's goals and close one (2026-10-06)
+## D-433 The TUI can list the session's work_scopes and close one (2026-10-06)
 
-**Why, and where it came from.** The tau3-bench harness opens one goal per user turn and never settles them, which
-is how the D-431 investigation found a session with six goals, five of them ACTIVE. That is the harness's shape,
-but it is a shape the product permits and the TUI could not undo: `g` on an instance opens a goal (`create_goal`,
-D-269), the checkpoint reports one goal (D-266), and **nothing in the TUI closed one** — the CLI's `goals cancel`
-(D-267) was the only way, outside the surface a user is looking at. A session that accumulates ACTIVE goals is
-also what makes the status line's goal one of several, which is the wart D-266 recorded.
+**Why, and where it came from.** The tau3-bench harness opens one work per user turn and never settles them, which
+is how the D-431 investigation found a session with six work_scopes, five of them ACTIVE. That is the harness's shape,
+but it is a shape the product permits and the TUI could not undo: `g` on an instance opens a work (`create_work`,
+D-269), the checkpoint reports one work (D-266), and **nothing in the TUI closed one** — the CLI's `work_scopes cancel`
+(D-267) was the only way, outside the surface a user is looking at. A session that accumulates ACTIVE work_scopes is
+also what makes the status line's work one of several, which is the wart D-266 recorded.
 
-**What was added.** `/goals` reads the session's goal list (`goals`, on demand — the same choice D-429 made for the
-registry and D-413 for the MCP rows, since the checkpoint carries one goal) and prints each row: status, usage
+**What was added.** `/work_scopes` reads the session's work list (`work_scopes`, on demand — the same choice D-429 made for the
+registry and D-413 for the MCP rows, since the checkpoint carries one work) and prints each row: status, usage
 against its ceiling, the instances attached to it, and the summary the model settled it with (D-431's field, so a
-silent settlement is readable here too). `/goals cancel <id>` produces a `CancelGoal` effect the loop turns into
-`cancel_goal` with a command id derived from the goal, so a retry after a lost reply dedups at the control plane.
+silent settlement is readable here too). `/work_scopes cancel <id>` produces a `CancelWork` effect the loop turns into
+`cancel_work` with a command id derived from the work, so a retry after a lost reply dedups at the control plane.
 A verb that is not `cancel`, and `cancel` without an id, only say so; an id the session does not carry is answered
 by the control plane's own refusal rather than a local guess.
 
-**Found on the way: `cancel_goal` had no test.** `engine/tests/v2_daemon.rs` had none for that command at all, so
-the new `cancel_goal_closes_a_goal_and_the_list_says_which` is also its first: create a goal, cancel it (with a
-replayed command id returning the stored receipt), read the row back as `CANCELLED`, and check that a goal the
+**Found on the way: `cancel_work` had no test.** `engine/tests/v2_daemon.rs` had none for that command at all, so
+the new `cancel_work_closes_a_work_and_the_list_says_which` is also its first: create a work, cancel it (with a
+replayed command id returning the stored receipt), read the row back as `CANCELLED`, and check that a work the
 session does not carry is refused rather than invented.
 
 **Two defects the real-terminal smoke found, and neither was visible in the unit tests.** The pty smoke
 (`make pty`) drives the actual TUI in a pty against a fake daemon, and the new step failed twice: first because
-command output was invisible — `/mcp` (D-413), `/sessions` (D-429) and `/goals` printed into `ChatKind::System`
+command output was invisible — `/mcp` (D-413), `/sessions` (D-429) and `/work_scopes` printed into `ChatKind::System`
 entries, and `apply_checkpoint`'s "a fresh checkpoint supersedes earlier UI-level notes" wipes those within one
 poll, so **three decisions' surfaces printed reports nobody could read**; the fix is an explicit
 `ChatKind::Command` that a refresh spares (a command's answer is not chatter) with the renderer styling it apart.
-Second because the handler unwrapped `reply["result"]["goals"]` while `DaemonClient::call` already returns the
+Second because the handler unwrapped `reply["result"]["work_scopes"]` while `DaemonClient::call` already returns the
 reply's `result` (its own `checkpoint` helper reads `result["snapshot"]`), so the report was always "this session
-carries no goals". Both are recorded because the unit tests were green through both: only driving the real
+carries no work_scopes". Both are recorded because the unit tests were green through both: only driving the real
 keyboard in a real terminal in front of a real socket saw them.
 
-**Evidence.** `v2app_tests::goals_lists_them_and_cancel_is_an_effect` (the report's rows, the summary line, the (Historical test removed by D-445; source remains in commit `2f4851d9`.)
-empty list, and the four `/goals` forms) and the daemon test above. No formal material: every transition here
-already exists in the control plane (`create_goal`/`cancel_goal`, D-267) and this change adds a client-side read
+**Evidence.** `v2app_tests::work_scopes_lists_them_and_cancel_is_an_effect` (the report's rows, the summary line, the (Historical test removed by D-445; source remains in commit `2f4851d9`.)
+empty list, and the four `/work_scopes` forms) and the daemon test above. No formal material: every transition here
+already exists in the control plane (`create_work`/`cancel_work`, D-267) and this change adds a client-side read
 and an effect, so there is no new state for a model to certify — the same reason D-429 and D-431 recorded none.
 
 ## D-432 The tau3 adapter stops the daemons it starts (2026-10-06)
@@ -2147,35 +2191,35 @@ turn carries no reply at all and reports **12 of 114 (10.5 %)**, with **24 of 48
 dialogues also failed the DB check, so a reward-shaped measurement sees a defect that affects one dialogue in ten
 as a two-dialogue scoring difference.
 
-**What happens.** The model settles the goal by calling the runtime's `finish` tool and writes no prose at all.
+**What happens.** The model settles the work by calling the runtime's `finish` tool and writes no prose at all.
 `interpret_response` sees no text and no tool calls (`KernelOutput::Reply("")`), the settlement is committed, and
-`exec` reports `end: completed`, `goal_status: SUCCEEDED`, `reply: null` — a user reads nothing, although the
+`exec` reports `end: completed`, `work_status: SUCCEEDED`, `reply: null` — a user reads nothing, although the
 model *did* say what it did, in the completion candidate it settled with. The branch order in plain mode hid even
-that: `goal_status` and `reply` were alternatives, so a settled run printed the status *instead of* the reply.
+that: `work_status` and `reply` were alternatives, so a settled run printed the status *instead of* the reply.
 
-**The fix, in three places, all using the model's own words.** The daemon's checkpoint carries the reported goal's
-completion `summary`, read from the `goal_completed` event whose scope is that goal (`read_snapshot`); `exec`
-falls back to it when the run has no model text and the goal settled, and reports **`reply_source`** — `model`,
+**The fix, in three places, all using the model's own words.** The daemon's checkpoint carries the reported work's
+completion `summary`, read from the `work_completed` event whose scope is that work (`read_snapshot`); `exec`
+falls back to it when the run has no model text and the work settled, and reports **`reply_source`** — `model`,
 `summary`, or `""` — so a consumer can tell the model's words from the runtime's fallback; the TUI's status line
-shows the summary beside the settled goal. Plain mode prints the status and then the reply, saying in words which
+shows the summary beside the settled work. Plain mode prints the status and then the reply, saying in words which
 of the two it is when it is the summary.
 
 **Why a fallback rather than another round.** The alternative was to refuse the silent `finish` and ask the model
 for a sentence, which costs a model round on one turn in ten and changes what the model may do; the summary is
 already the model's own account of the work, recorded in the same call that settled it, so reporting it adds
 nothing and invents nothing. An empty or whitespace-only model reply is treated as no reply (it is not `model`
-text, and it does not hide a summary either), and a goal that never settled has no summary to fall back to.
+text, and it does not hide a summary either), and a work that never settled has no summary to fall back to.
 
-**The first version of the fallback was inert, and the re-run is what showed it.** It read the *checkpoint's* goal
-— and a session can carry several goals (D-266). In the tau3 harness's shape (one goal opened per user turn,
-left ACTIVE, beside the boot goal that settles) the checkpoint reports the newest ACTIVE goal, whose summary is
+**The first version of the fallback was inert, and the re-run is what showed it.** It read the *checkpoint's* work
+— and a session can carry several work_scopes (D-266). In the tau3 harness's shape (one work opened per user turn,
+left ACTIVE, beside the boot work that settles) the checkpoint reports the newest ACTIVE work, whose summary is
 necessarily empty: the same 114 dialogues re-ran with the fix in place and `tau3_silence.py` reported **12 of 114
-again**, while the two silences that *did* have a summary available in the checkpoint's goal were reported
-(`reply_source: summary`). The fix now reads the summary of the goal **this run settled**, by the id its own
-closing entry names (the D-275 rule), off the `goals` read — which carries each goal's own summary — and the
+again**, while the two silences that *did* have a summary available in the checkpoint's work were reported
+(`reply_source: summary`). The fix now reads the summary of the work **this run settled**, by the id its own
+closing entry names (the D-275 rule), off the `work_scopes` read — which carries each work's own summary — and the
 targeted re-run of the **11 tasks that were silent before** reports **0 silent dialogues and 0 empty turns of 43**
 (2 of the 11 final turns settled silently and now report the model's summary; the rest answered in text this
-time). The daemon test grew the multi-goal shape that would have caught the first version, and the goal row's
+time). The daemon test grew the multi-work shape that would have caught the first version, and the work row's
 shape guard in `engine/tests/cli.rs` names the new field.
 
 **What the two full runs say about the benchmark itself.** The same 114 dialogues, one with a treatment that
@@ -2184,17 +2228,17 @@ provably could not change the outcome (the inert fallback), scored **96/114 = 84
 identical at 12. That is what a 2-point difference at n=114 means here, measured rather than assumed, and it is
 the same lesson D-418 drew at n=9 with its own control arm.
 
-**Evidence.** `exec::tests::a_silent_settlement_reports_that_goals_summary_and_names_it` (the fallback, the goal
-lookup by id, and five boundaries), `v2_daemon::the_checkpoint_carries_the_completion_summary_of_the_goal_it_reports`
-(null before the settlement, the summary after, both over the real socket, plus the multi-goal shape: the settled
-goal's row keeps its summary while the checkpoint moves to the new ACTIVE goal),
-`v2app_tests::a_settled_goal_shows_the_models_own_completion_summary` (collapsed onto the status line, absent for
-an active goal and for a whitespace summary), and the two real runs above, read with
+**Evidence.** `exec::tests::a_silent_settlement_reports_that_work_scopes_summary_and_names_it` (the fallback, the work
+lookup by id, and five boundaries), `v2_daemon::the_checkpoint_carries_the_completion_summary_of_the_work_it_reports`
+(null before the settlement, the summary after, both over the real socket, plus the multi-work shape: the settled
+work's row keeps its summary while the checkpoint moves to the new ACTIVE work),
+`v2app_tests::a_settled_work_shows_the_models_own_completion_summary` (collapsed onto the status line, absent for
+an active work and for a whitespace summary), and the two real runs above, read with
 `review/benchmark/tau3_silence.py`.
 
 **The pattern is the dialogue shape, not the product's reporting.** The same question asked of every
 Terminal-Bench trial still on disk (`review/benchmark/tb_silence.py`, a proxy over the collected state: did the settled
-goal's run leave assistant text, and did it carry a summary) sees **0 of 40 settled trials** with no text and none
+work's run leave assistant text, and did it carry a summary) sees **0 of 40 settled trials** with no text and none
 with an empty summary, while tau3-bench's dialogues produced it in 10.5 %. Those 40 trials are six tasks repeated
 rather than a random sample, so this is an observation and not a rate for Terminal-Bench; what it does say is that
 the shape that produces silence is a *conversation* — the user says "yes, go ahead", the model does the work and
@@ -2202,7 +2246,7 @@ settles with `finish`, and nobody asked it for a sentence — where a one-shot i
 because the task itself asks for one.
 
 **No formal material, and why.** Nothing here adds or changes a protocol transition: the checkpoint's and the
-`goals` read's summary are projections of an event that already exists, and the reply fallback is a read-only
+`work_scopes` read's summary are projections of an event that already exists, and the reply fallback is a read-only
 client rule over data the runtime already committed. There is no new state to reach, so there is nothing for a
 model to certify — the same reason D-429 recorded none.
 
@@ -2222,9 +2266,9 @@ failed under `make check` while a tau3-bench run was using the host, and passed 
 D-407's own bound ("20 s was enough on an idle machine and not under `make check`") recurring under a heavier
 load, which is worth knowing rather than fixing: the test waits for a *scheduling* outcome, so any bound is a
 guess about the machine. (the fallback and its four
-boundaries), `v2_daemon::the_checkpoint_carries_the_completion_summary_of_the_goal_it_reports` (null before the
-settlement, the summary after, over the real socket), `v2app_tests::a_settled_goal_shows_the_models_own_completion_summary`
-(collapsed onto the status line, absent for an active goal and for a whitespace summary), and the re-run of the
+boundaries), `v2_daemon::the_checkpoint_carries_the_completion_summary_of_the_work_it_reports` (null before the
+settlement, the summary after, over the real socket), `v2app_tests::a_settled_work_shows_the_models_own_completion_summary`
+(collapsed onto the status line, absent for an active work and for a whitespace summary), and the re-run of the
 **same 114 dialogues** with `review/benchmark/tau3_silence.py` reading the result — the two numbers belong in the
 same place, so they are recorded in the follow-up commit.
 
@@ -2246,7 +2290,7 @@ same place, so they are recorded in the follow-up commit.
 from the file-based path, so the CLI path had to be shown to be the same configuration rather than a second, weaker
 one: `config::a_config_override_and_the_same_file_value_load_to_the_same_catalog` loads a config with
 `[limits] tool_output_chars = 8000 …` and an empty one with the equivalent `-c` overrides and asserts the two
-`GoalLimits` are equal.
+`WorkLimits` are equal.
 
 **Two defects the change's own smoke test found, both in the harness.** `exec -c …` is refused — the overrides are
 **global** flags and must precede the verb — so the first run exited 2 with the product's own usage error; and the
@@ -2347,7 +2391,7 @@ seeing the bill.
 ```
 
 and plain mode prints one line (`tokens: 3391 prompt + 135 completion over 1 request(s)`). The numbers are the
-provider's own reported usage, summed **for this run** — not the goal's settled total, which may cover other runs —
+provider's own reported usage, summed **for this run** — not the work's settled total, which may cover other runs —
 from the `attempt_recorded` events the client already reads. Two things make it honest rather than decorative: an
 attempt the provider never priced increments `unpriced_attempts` (a run whose cost is partly unknown says so
 instead of reading as free), and `requests` counts every attempt, so the line cannot quietly under-report.
@@ -2525,13 +2569,13 @@ then ran a **verification through a different API** (`sentence_transformers` dir
 and that script **wrote its own line back to `/app/result.txt`** — the wrong one — which the agent then reported as
 done. The failure is therefore not "it could not compute the answer": it is that a **self-check mutated the
 deliverable** and the agent did not notice. The product already owns the rule that a check must not rewrite what it
-checks — A17 classifies exactly that as `stale_inputs` and blocks the goal — but it applies to **user-configured
+checks — A17 classifies exactly that as `stale_inputs` and blocks the work — but it applies to **user-configured
 `[[checks]]`**, and this was the agent's own ad-hoc check, so nothing applied.
 
 **What this does and does not justify.** It does not justify a product change on its own: one run, one task, and
 the behaviour ("a verification step overwrote the artifact") was inferred from the deliverable's content and the
 commands, not from a controlled experiment. It does justify two things: the task moves to the excluded bucket, and
-a product question is now on the table with a plausible mechanism — *an artifact a goal declares should not be
+a product question is now on the table with a plausible mechanism — *an artifact a work declares should not be
 rewritten by a step that only claims to verify it* — which is the same shape as A17 but for checks the agent
 writes itself. That is pre-registered here as the next experiment candidate, not implemented.
 
@@ -2562,7 +2606,7 @@ product can do).
 | `matplotlib__matplotlib-25479` | 505 s | 113 | 11 | yes (4) | no (finished on `git diff`) |
 | `matplotlib__matplotlib-26208` | 1 017 s | 171 | 13 | yes (24) | yes |
 
-Every one ended `completed` with the goal SUCCEEDED, none was cut off (the bound was 1 200 s), and every one ran
+Every one ended `completed` with the work SUCCEEDED, none was cut off (the bound was 1 200 s), and every one ran
 the repository's own tests — including three that ran a test as their **last** command. So they verified as far as
 this environment allows.
 
@@ -2629,7 +2673,7 @@ leader plus members talking to a user — so a zero here is a different fact fro
   something that never happened.
 * the **policy goes in the product's own channel**: τ³-bench's `domain_policy` text is written as
   `instruction_files`, which every member's system text receives (D-102/D-246).
-* each user turn is one `teamagents exec` in a **persistent session** (a new goal per turn, because a settled goal
+* each user turn is one `teamagents exec` in a **persistent session** (a new work per turn, because a settled work
   cannot be reopened), so the model sees the whole dialogue.
 * the reward is τ³-bench's own **DB check** (`EvaluationType.ENV`). Its experimental `NLAssertionsEvaluator` is
   excluded on purpose: it calls a hard-coded OpenAI model, which is neither deterministic nor reachable here — this
@@ -2733,7 +2777,7 @@ both possible; the decision records whichever arrives.
 `FAIL_TO_PASS` and `PASS_TO_PASS` for each (requests-1142's is a single test, `test_no_content_length`; requests-1766
 and pytest-10081 carry dozens of PASS_TO_PASS). The summary: 14 submitted, 14 completed, 13 resolved, 1
 `ambiguous_failure` (`pylint-dev__pylint-4604` — the harness could not decide, which is not a clean fail), 0 empty
-patches, 0 infra failures, 0 errors. Every run ended `completed` with the goal SUCCEEDED; patches were 13–229
+patches, 0 infra failures, 0 errors. Every run ended `completed` with the work SUCCEEDED; patches were 13–229
 lines; **median wall clock 1.6 minutes** per instance (max 4.0).
 
 **The probe errors were ruled out before believing that.** The verdicts are the official harness's, with the test
@@ -2860,10 +2904,10 @@ this product is: the domain tools become an **MCP stdio server** (its own `Tool`
 `reply` becoming the assistant message — which also exercises the MCP bindings the other two benchmarks barely
 touch. Recorded in `review/benchmark/README.md`; not started, and the choice was made before any τ³ result.
 
-## D-418 The criterion arrives before the work: the goal's required checks are briefed at the turn's start (2026-10-04)
+## D-418 The criterion arrives before the work: the work's required checks are briefed at the turn's start (2026-10-04)
 
-**The gap.** A goal's `required_checks` were read in exactly two places: the gate at the **completion boundary**
-(`repair_completion`) and `verify_goal`, which the model has to think of calling. Three measurements say arriving
+**The gap.** A work's `required_checks` were read in exactly two places: the gate at the **completion boundary**
+(`repair_completion`) and `verify_work`, which the model has to think of calling. Three measurements say arriving
 then is arriving late — the gate cannot stop a turn that never claims to be done (D-400), it is inert where the
 model never calls `finish` (D-403), and where it did fire the model spent its bounded repair rounds and ended
 BLOCKED (D-386: two of three `query-optimize` runs). The criterion was knowable from the first second — the user
@@ -2871,33 +2915,33 @@ wrote it in their config — and the runtime kept it to itself until the end. D-
 the other side ("the signal must reach the model where it can act on it"), which is why the fix is the mirror of
 its wrap-up note: *inform at the start* instead of *warn at the end*.
 
-**What was added.** A control command `goal_checks_briefing` (system identity only) and
+**What was added.** A control command `work_checks_briefing` (system identity only) and
 `driver::brief_checks`, called at the start of a step next to `warn_before_deadline`:
 
-* the command composes the text **from the goal's own stored `limits_json`**, never from the caller — the same
+* the command composes the text **from the work's own stored `limits_json`**, never from the caller — the same
   rule `deadline_warning` follows;
-* it sends nothing for a goal that is not ACTIVE or that requires no checks (there is no criterion to state), and
-  the entry id `goal-checks-briefing-<goal>` means a restarted driver appends **at most one** note;
+* it sends nothing for a work that is not ACTIVE or that requires no checks (there is no criterion to state), and
+  the entry id `work-checks-briefing-<work>` means a restarted driver appends **at most one** note;
 * the driver reads the checks from the snapshot's own join (no storage call per step — D-410's defect, not
   repeated) and submits the command best-effort, so a full queue cannot fail a turn;
-* the note names each `id` and its command and says what to do: run them as you work, or with `verify_goal`, and
+* the note names each `id` and its command and says what to do: run them as you work, or with `verify_work`, and
   do not report done until they pass.
 
 **Formal.** `V2Checks.tla` — the module that already owns the contract and the gate — gained the `Brief` step with
-`BriefingIsOnce` (state) and `BriefingIsForAGoalWithChecks` (temporal), verified by `tla/MC_checks_briefing.cfg`
-and refuted by `tla/MC_checks_brief_without.cfg` (which briefs a goal that requires nothing). `make
+`BriefingIsOnce` (state) and `BriefingIsForAWorkWithChecks` (temporal), verified by `tla/MC_checks_briefing.cfg`
+and refuted by `tla/MC_checks_brief_without.cfg` (which briefs a work that requires nothing). `make
 verify-model-all` 36/36, `make verify-model-counterexamples` 102/102.
 
-**Evidence.** `control::the_check_briefing_names_the_required_checks_once_and_only_for_a_live_goal` (the text is
-the runtime's own composition, a model identity is refused, one note per goal, and the three `sent: false` reasons)
-and `v2_driver::a_goal_with_required_checks_is_told_them_before_the_first_request` (a real driver: the event fires,
+**Evidence.** `control::the_check_briefing_names_the_required_checks_once_and_only_for_a_live_work` (the text is
+the runtime's own composition, a model identity is refused, one note per work, and the three `sent: false` reasons)
+and `v2_driver::a_work_with_required_checks_is_told_them_before_the_first_request` (a real driver: the event fires,
 the note is the model-visible context, exactly one entry exists, and it names the command).
 
 **The measurement, run (2026-10-05), and it came back negative — with a bug attached.** Both arms carried the
 same instruction-derived acceptance check (`exec --accept`); the control is the binary built from the commit
-before this one and verified to lack `goal_checks_briefing`, the treatment the current binary, verified to have it.
-The isolation is airtight: the briefing fired in **all nine** treatment trials (one `goal_checks_briefed` event and
-one `goal-checks-briefing-*` note each) and in **none** of the nine control trials.
+before this one and verified to lack `work_checks_briefing`, the treatment the current binary, verified to have it.
+The isolation is airtight: the briefing fired in **all nine** treatment trials (one `work_checks_briefed` event and
+one `work-checks-briefing-*` note each) and in **none** of the nine control trials.
 
 | task | control | briefing |
 |---|---|---|
@@ -2955,11 +2999,11 @@ measured effect with the *gate* wording is negative, and the run that measured i
 the unit tests could not.
 
 **The rewording, and the A/B that is running against it.** The note now states the criterion as **information**:
-that N acceptance commands will be run when the goal ends, that the goal settles only if they pass, that they are
+that N acceptance commands will be run when the work ends, that the work settles only if they pass, that they are
 the user's own criteria to plan around, that the **runtime** runs them (the model need not), and that work which
 cannot satisfy one should say so with `finish` and report what is missing rather than continuing. The model is no
 longer made responsible for a gate it may be unable to pass. The same A/B ran against the same control (the
-binary from before D-418, verified to lack `goal_checks_briefing`), with the same receipts — the note fired in
+binary from before D-418, verified to lack `work_checks_briefing`), with the same receipts — the note fired in
 **all nine** treatment trials and in **none** of the nine control ones — and the verdict is that **this sample
 cannot separate the briefing from the noise, in either wording**:
 
@@ -2974,15 +3018,15 @@ trials per arm cannot resolve this, and the honest conclusion is a null one: **t
 to hurt**, and D-418's original hope (that arriving early would fix the "claimed done without checking" gap the
 three benchmarks point at) is not supported.
 
-**What that leaves.** The briefing stays as it is — information the model may use, one note per goal, cheap, and
+**What that leaves.** The briefing stays as it is — information the model may use, one note per work, cheap, and
 not shown to hurt — but it is not evidence-based as an improvement, and nothing about it addresses a model that can
 read the criterion and still not satisfy it. The gap the benchmarks actually show is *verification*, and the
 mechanisms that could close it are in the boundary (which already runs the checks, and already feeds the verdict
 back to the model) rather than in what the model is told. The durable outcome of this line of work is the
 conversation-shape bug the run found and the fix with its test, not the briefing.
 
-**What the A/B was pre-registered as.** The claim: *a goal whose required check is
-stated at turn start converges (settles SUCCEEDED) more often than the same goal where the criterion arrives only
+**What the A/B was pre-registered as.** The claim: *a work whose required check is
+stated at turn start converges (settles SUCCEEDED) more often than the same work where the criterion arrives only
 at the completion boundary* — the same three tasks and both arms D-400 used, differing only in whether the
 briefing is written (`TEAMAGENTS_BRIEF_CHECKS=0` as the control). The falsifier is the inverse reading: the
 briefing changes nothing or lowers the rate (a model told about a check it cannot satisfy may burn its turn
@@ -3020,7 +3064,7 @@ things follow, and the second is the one that matters:
 which build their own `Tokens` values.
 
 **Ceiling.** The same hazard applies to any other `f64` this product writes into JSON — the note store's
-`created`/timestamps are in SQLite `REAL` (not JSON) and the goal's `deadline` likewise, so the credential file was
+`created`/timestamps are in SQLite `REAL` (not JSON) and the work's `deadline` likewise, so the credential file was
 the only JSON `f64` a reader compares for equality; a future JSON-serialised timestamp should be an integer from
 the start.
 
@@ -3078,7 +3122,7 @@ the model** (the `shell` tool's default is 120 s; the model asked for 300), whic
 runtime's only lever there rather than a shorter default that would bite every short call too. D-414 pre-registered
 the experiment; this entry is the change and its measurement.
 
-**What was added.** `[limits] max_tool_seconds` (`GoalLimits::max_tool_seconds`, config-validated: a zero or more
+**What was added.** `[limits] max_tool_seconds` (`WorkLimits::max_tool_seconds`, config-validated: a zero or more
 than an hour is refused with the reason). One helper, `tools::bounded_timeout(asked, ceiling)`, is the whole rule,
 and every shell dispatch in the tree goes through it: the v2 driver's job path (`execute_shell`, which carries the
 caller's `TimeoutSource` — the model's number is clamped, a user's `[[checks]] timeout` is not, because that is the
@@ -3195,7 +3239,7 @@ one thing about these services that changes while a session runs.
 
 **The reload lever, named and bounded.** A credential stored mid-session takes effect when the instance's driver
 is rebuilt: `instances pause --id X` then `resume --id X` (or `resume` alone when a `required` service parked the
-instance with the runtime's reason). The conversation and the goal survive — a pause stops the driver, and the
+instance with the runtime's reason). The conversation and the work survive — a pause stops the driver, and the
 context is durable. This is stated in the user guide, in `/mcp`'s own text and in D-412's row, rather than left for
 a user to discover; a *per-service* reconnect (Pi's `mcp reconnect`) would need a new control command and a
 toolkit-swap at a turn boundary, and this decision does not take it: the parity item was the in-session surface,
@@ -3310,7 +3354,7 @@ checked (a test name, a `.tla` claim listed by a configuration, a decision entry
 went stale would disagree with a ledger a reader can reach in one step. A future change that makes the map itself
 wrong should update the map in the same commit, as this one did for the benchmark reading.
 
-## D-410 The runtime tells a goal when its deadline is close — and that signal only exists at a step boundary (2026-10-04)
+## D-410 The runtime tells a work when its deadline is close — and that signal only exists at a step boundary (2026-10-04)
 
 A deadline used to be invisible until it *refused* a request. Three measurements said that was the wrong moment:
 D-397 found ten of one run's 33 deadline trials had already produced a passing result and were still working, D-400
@@ -3318,10 +3362,10 @@ showed the acceptance gate only acts after the model claims to be done, and D-40
 task whose agent never claims. The missing signal is "time is nearly up".
 
 **What was added.** A driver-internal control command `deadline_warning` (system identity) appends **one** note to the
-goal's conversation — `runtime: about N seconds remain before goal <id>'s deadline. Settle it now — call finish with
-what you have …` — with the entry id `goal-deadline-warning-<goal>`, so a restarted driver appends it at most once.
+work's conversation — `runtime: about N seconds remain before work <id>'s deadline. Settle it now — call finish with
+what you have …` — with the entry id `work-deadline-warning-<work>`, so a restarted driver appends it at most once.
 The remaining time is computed by the runtime, never taken from the caller, and the command refuses (sending
-nothing) for a goal that is not ACTIVE, has no deadline, or whose deadline has passed: a note the runtime cannot
+nothing) for a work that is not ACTIVE, has no deadline, or whose deadline has passed: a note the runtime cannot
 stand behind is worse than none. The driver calls it at the start of every step when 120 s or less remain. Nothing
 about the deadline itself changed — the same absolute time is still enforced by `begin_request`.
 
@@ -3331,12 +3375,12 @@ second call per step filled it under load: `warn_before_deadline` returned `stor
 `?` turned that into a **failed step**, and `a_tiny_configured_ceiling_parks_the_session_instead_of_running_it`
 (running the real binary: a 4-token ceiling must park the leader for *budget*) began parking it for a driver error
 instead — reproduced with and without the change under `git stash`. The deadline is now a column of the snapshot
-query the step already makes (`LEFT JOIN goals`), so the hook costs no storage traffic, and the queued note is
+query the step already makes (`LEFT JOIN work_scopes`), so the hook costs no storage traffic, and the queued note is
 best-effort: a courtesy that cannot be sent must not fail the turn that is racing the clock.
 
 **Tests.** `control::the_deadline_warning_is_sent_once_and_only_before_a_live_deadline` (a model identity is refused;
-one note per goal; no deadline / passed deadline / settled goal each answer `sent: false` with the reason; the note is
-in the conversation) and `v2_driver::a_goal_close_to_its_deadline_is_told_once_to_wrap_up` (a live driver with a
+one note per work; no deadline / passed deadline / settled work each answer `sent: false` with the reason; the note is
+in the conversation) and `v2_driver::a_work_close_to_its_deadline_is_told_once_to_wrap_up` (a live driver with a
 30-second deadline: the event fires, the note is the model-visible context, and exactly one such entry exists).
 
 **Measured, three ways, and the third is the honest one.**
@@ -3345,7 +3389,7 @@ in the conversation) and `v2_driver::a_goal_close_to_its_deadline_is_told_once_t
 |---|---|---|
 | 12 timeout-prone tasks, `deadline_minutes = 15`, against a bare arm | bare **0/12**, deadline **5/12** | **no** — 0 warnings in an instrumented check: 15 min lands *after* the client's 890 s cut, so the deadline was never reached inside the turn |
 | the same 12 tasks at `deadline_minutes = 13` | bare **0/12**, deadline **1/12** | partly: 2 runs settled, 10 were still cut |
-| three of those tasks, instrumented, at 13 min | 2 goals **SUCCEEDED**, 1 settled honestly as **FAILED**; **one warning each, ~110 s before the deadline** | yes |
+| three of those tasks, instrumented, at 13 min | 2 work_scopes **SUCCEEDED**, 1 settled honestly as **FAILED**; **one warning each, ~110 s before the deadline** | yes |
 
 So the 5/12 in the first row is **not** evidence for this feature (no note ever reached a model) — it is the deadline
 ending runs a few seconds early plus run-to-run variation — and the third row is what the feature does when it can
@@ -3359,7 +3403,7 @@ when both the warning and the deadline passed. This is the same wall the other t
 model comes up for air.
 
 **The upgrade path, recorded not taken.** Bound a single tool call's wall clock (or interrupt one as the deadline
-nears, which trades work for a decision point), so a goal near its deadline returns to the model more often. That is
+nears, which trades work for a decision point), so a work near its deadline returns to the model more often. That is
 a change to how commands run, not to when they are judged, and it is the only lever in this family that does not
 depend on the model's cadence.
 
@@ -3494,7 +3538,7 @@ re-derivable and the store's value is different).
 ## D-405 Durable memory: one append-only note store at the state root, and a `memory` tool (2026-10-04)
 
 **The gap.** Everything an agent learns dies with the session that learned it. The context belongs to an instance
-epoch, the goal's settlement ends the work, and a session's database is its own file — so a second session under the
+epoch, the work's settlement ends the work, and a session's database is its own file — so a second session under the
 same state root starts from nothing, and the only cross-session surfaces were the user's own files and the skills
 registry. That is the last capability dimension the roadmap had not touched.
 
@@ -3647,7 +3691,7 @@ thing, and a test pins its words — the first attempt rewrote both and that tes
 
 ```
 unknown tool "bash". This instance is offered: cancel_task, delegate, finish, read_history, send, shell, spawn,
-verify_goal, wait.
+verify_work, wait.
 ```
 
 and, when the name is within two edits of a real one, a `Did you mean "shell"?`. The list is what makes recovery
@@ -3714,7 +3758,7 @@ collected. It says nothing about criteria that *are* observable, which is the ca
 
 D-397 found 10 of the N = 3 run's 33 deadline trials had **already passed**, and read them as "the agent finished
 and kept working". Item 1 of the plan was therefore to test the lever the runtime owns: an instruction-derived
-acceptance check (`--accept`) that should let the goal settle the moment the work is done. Five tasks, three
+acceptance check (`--accept`) that should let the work settle the moment the work is done. Five tasks, three
 attempts, both arms, the check taken from each instruction's own named deliverable.
 
 | task | check | bare | with the check |
@@ -3733,7 +3777,7 @@ never claims to be done never reaches that boundary, so **no acceptance criterio
 decides *whether a claim may settle*, not *whether the agent should stop making claims*.
 
 **And a wrong check is worse than none.** `winning-avg-corewars`'s check named a file at a path the agent did not
-use, so it never passed: the goal could not settle, the repair loop ran, and a task that was **3/3 in 966 s** became
+use, so it never passed: the work could not settle, the repair loop ran, and a task that was **3/3 in 966 s** became
 **1/3 in 3649 s** — it spent the whole 3600-second budget repairing against a criterion that could not be met. The
 one place the check helped is the one where it matched the instruction's deliverable exactly
 (`make-mips-interpreter`, 959 s → 631 s at the same 3/3), which is the general condition: a settlement lever only
@@ -3780,7 +3824,7 @@ itself delegates in about one attempt of six. Reading the two paths side by side
 
 - the **producer's** round is `step_completion_checks` → `register_check_runs` (system identity) → the runtime
   dispatches the user's checks → `check_verdict` decides from the receipts;
-- the **verifier's** round is the `verify_goal` tool → `register_verification` (system identity) → the *same*
+- the **verifier's** round is the `verify_work` tool → `register_verification` (system identity) → the *same*
   dispatch of the *same* commands → the *same* `check_verdict`.
 
 The commands, the authority and the verdict computation are identical. A producer cannot forge the outcome: the
@@ -3859,9 +3903,9 @@ two ACTIVE. Not one of the six settled on its producer's own round — the rule 
 cooperation.
 
 **Liveness: the model's, and unreliable.** Across the six attempts the leader **spawned a verifier and called
-`verify_goal` exactly once** (in the first run; never in the second). The other attempts retried their own round
+`verify_work` exactly once** (in the first run; never in the second). The other attempts retried their own round
 (the collected databases show `i-leader` rounds 1..3 and no second instance). The repair reason the driver feeds it
-names the tool and the goal — so the information is there, and the model still usually does not act on it. A goal
+names the tool and the work — so the information is there, and the model still usually does not act on it. A work
 that requires independent verification therefore blocks (or runs out the clock) rather than settling, which is the
 safe failure but not a working loop.
 
@@ -3874,7 +3918,7 @@ runnable *within* the budget it is given, which a 1.26M-row corpus does not make
 decision today, and this measurement says that is not reliable enough to be the only path — a `delegate`-shaped
 nudge in the rep repair note is what exists; a stronger design (the runtime *asks* a specific idle instance, or
 `exec` names the verifier) is a decision for the user. (2) `capability_gap` now authorizes a check round through
-the **goal owner's** shell grant rather than the triggering instance's — which preserved
+the **work owner's** shell grant rather than the triggering instance's — which preserved
 `check_dispatch_refused_parks_without_burning_repair_rounds` unchanged while letting a verifier ride the owner's
 authority; the first attempt (no grant needed at all) silently reversed that rule and the existing test caught it.
 
@@ -3899,8 +3943,8 @@ directly: PATH is the standard one and `/usr/local/bin/python3` does not exist; 
 container.
 
 **What that corrects.** D-386's `--accept` arm reported that "two runs attached the check, failed it, spent the
-bounded repair rounds and settled the goal BLOCKED with the failing check named", and read that as the gate
-catching a wrong solution. The gate *did* fire and the goal *did* block — a check that fails blocks the goal, which
+bounded repair rounds and settled the work BLOCKED with the failing check named", and read that as the gate
+catching a wrong solution. The gate *did* fire and the work *did* block — a check that fails blocks the work, which
 is the mechanism working — but the failure was `command not found`, not a semantic mismatch. The interpretation is
 void: the arm never measured whether the check encodes the task's real criterion. The measured outcomes of that A/B
 (2/9 bare against 1/9 with the gate) still stand as *what happened*; the explanation attached to them does not.
@@ -3953,42 +3997,42 @@ unit test had missed: the tool was never advertised, and the result envelope did
 read (D-392). In both cases the artifact and its check shared an assumption, and nothing in the design said whose
 evidence a settlement rests on.
 
-**The rule.** A goal may declare `limits.independent_verification = true` (the user's or the project bootstrap's
-statement alone, like the checks themselves). With it set and the goal carrying required checks, the goal settles
-only on a round **another instance registered** — a *round* being the thing that can be attributed, since a goal
+**The rule.** A work may declare `limits.independent_verification = true` (the user's or the project bootstrap's
+statement alone, like the checks themselves). With it set and the work carrying required checks, the work settles
+only on a round **another instance registered** — a *round* being the thing that can be attributed, since a work
 with no required checks has nothing an independent pass could run and is exempt. The producer's own passing round
 is not enough, and saying so is what the runtime does:
 
 - the driver's check path turns "the checks passed, but this instance produced the claim" into a synthetic failure
   (`class: not_independent`) naming the tool that resolves it, so it rides the existing bounded repair and parks
   BLOCKED if the producer never obtains a verifier — never a false pass, never a hang;
-- `complete_goal` reads the same question off the record (`model_requests.instance_id <> claimant`), so the
+- `complete_work` reads the same question off the record (`model_requests.instance_id <> claimant`), so the
   backstop does not depend on the driver's own verdict;
-- the limit is refused from a model identity and refused when it is not a boolean, at `create_goal`.
+- the limit is refused from a model identity and refused when it is not a boolean, at `create_work`.
 
-**How a verifier acts.** `verify_goal` is a tool an instance holding `delegate` may call (a verifier is given work
+**How a verifier acts.** `verify_work` is a tool an instance holding `delegate` may call (a verifier is given work
 by someone else, so the same grant covers it — running the *user's* pre-authorized checks is not a new capability).
-It fetches the named goal's checks, registers a round through the new `register_verification` command — the same
+It fetches the named work's checks, registers a round through the new `register_verification` command — the same
 machinery as `register_check_runs` minus the completion-boundary requirement, because this is a member acting
-mid-turn on a goal it does not own — runs the check operations, and answers the model with the verdict. The round
+mid-turn on a work it does not own — runs the check operations, and answers the model with the verdict. The round
 carries the verifier's instance id, which is what the settlement rule reads. Running the checks is not a new
-authority: they are the commands the user attached to the goal, and the provenance is what changes.
+authority: they are the commands the user attached to the work, and the provenance is what changes.
 
 **Formal.** `verification/tla/V2Checks.tla` gained `registrar` (who registered the current round), an action
-`RegisterVerifierRound`, and `IndependenceIsNotSelfVerified`: a settlement on a round for a goal that requires
+`RegisterVerifierRound`, and `IndependenceIsNotSelfVerified`: a settlement on a round for a work that requires
 independent verification implies the registrar is not the producer. `MC_checks_independent.cfg` verifies it and
 `MC_checks_self_verified.cfg` is the **refuted** control that accepts the producer's own round — the model caught a
-real semantic hole while being written, because the first version of the invariant also fired for a goal with no
+real semantic hole while being written, because the first version of the invariant also fired for a work with no
 checks at all, which is not a state the rule may trap (the code was fixed to match: the backstop now applies only
-when the goal really carries checks).
+when the work really carries checks).
 
 **Tests.** `control::independent_verification_refuses_the_producers_own_round_and_accepts_another_instances` drives
 the whole rule at the control plane: the flag is refused from a model identity and mis-typed, the producer's own
-completed round leaves `complete_goal` refusing with "requires independent verification", and the same call
+completed round leaves `complete_work` refusing with "requires independent verification", and the same call
 succeeds once a *second* instance has registered a round. And
-`v2_daemon::an_independent_goal_does_not_settle_on_its_producers_own_passing_round` drives it **through the real
+`v2_daemon::an_independent_work_does_not_settle_on_its_producers_own_passing_round` drives it **through the real
 driver in a live session**: with the checks *passing* (`true`) and three successful claims — the driver's whole
-repair budget — the goal parks BLOCKED, and the `completion_repair` event's reason names `verify_goal`, which only
+repair budget — the work parks BLOCKED, and the `completion_repair` event's reason names `verify_work`, which only
 the driver's own rule produces (the control plane's backstop answers differently). That is what makes the rule a
 live behaviour rather than a record check.
 
@@ -3996,7 +4040,7 @@ live behaviour rather than a record check.
 runtime enforces whose evidence counts, it does not pick the verifier. The round's *greenness* is read from the
 verifier's own receipts, and a verifier that runs the wrong commands is exactly as wrong as a producer would be;
 what the rule removes is the case where both are the same actor. A full member-to-member run (leader
-spawns a verifier, delegates the check, the verifier's `verify_goal` call registers the round, the goal settles) is
+spawns a verifier, delegates the check, the verifier's `verify_work` call registers the round, the work settles) is
 still not scripted end to end: the round's *registration* is covered by the control test and the tool's *routing*
 by the collaboration dispatch, but one test that walks the whole two-instance path would close it.
 
@@ -4230,7 +4274,7 @@ it without a separate decision.
 
 **Formal.** None.
 
-## D-386 The goal-level acceptance A/B: the gate works, the pass rate does not move (2026-10-02)
+## D-386 The work-level acceptance A/B: the gate works, the pass rate does not move (2026-10-02)
 
 D-385's feature was measured, not assumed. Same tasks, same model, same budget (890 s, `low`, official route,
 pristine tasks, concurrency 3), checks derived **only from each task's instruction** (never from its hidden tests),
@@ -4248,8 +4292,8 @@ not installed in it), so the BLOCKED outcomes it reports came from `command not 
 caught semantic mismatch. The numbers below stand as what happened; the interpretation does not.
 
 **The mechanism did exactly what it says.** In the `query-optimize` arm two runs attached the check, failed it,
-spent the bounded repair rounds and settled the goal BLOCKED with the failing check named (`end: failed`,
-`goal_status: BLOCKED`) instead of reporting a wrong solution as finished. The third passed. So the ingress, the
+spent the bounded repair rounds and settled the work BLOCKED with the failing check named (`end: failed`,
+`work_status: BLOCKED`) instead of reporting a wrong solution as finished. The third passed. So the ingress, the
 repair loop and the settlement are observable in a real container, not only in tests.
 
 **It did not raise the score, and the honest reading is a negative one.** On the one task whose instruction carries
@@ -4268,46 +4312,46 @@ D-381 already showed is not a matter of wall clock.
 **Ceiling.** 9 trials per arm on three tasks, one model, one budget; the effect on a user whose check *is* the
 criterion is not measured here.
 
-## D-385 The headless entry point can gate a goal on the user's checks, not only report them (2026-10-02)
+## D-385 The headless entry point can gate a work on the user's checks, not only report them (2026-10-02)
 
-**The gap the failure analysis found (D-383).** The runtime already has the strong half: a goal's
+**The gap the failure analysis found (D-383).** The runtime already has the strong half: a work's
 `limits.required_checks` are run at the completion boundary, a failure buys a bounded repair round, and an
-exhausted budget parks the goal BLOCKED (`step_completion_checks`; fed by the user config's `[[checks]]` and by
-`goals open --check ID=COMMAND`). But the entry point a CI job or a benchmark actually runs — `teamagents exec`
+exhausted budget parks the work BLOCKED (`step_completion_checks`; fed by the user config's `[[checks]]` and by
+`work_scopes open --check ID=COMMAND`). But the entry point a CI job or a benchmark actually runs — `teamagents exec`
 — could only express the *weak* half: `--check COMMAND` runs after the turn in the client's workspace and
 colours the exit code. A failing check was reported to nobody and the turn had already stopped, which is exactly
 the "deliverable well-formed, semantics wrong, nobody checked" shape the failing trials show.
 
-**What was added.** `exec --accept ID=COMMAND` (repeatable). The client attaches the checks to the ACTIVE goal
+**What was added.** `exec --accept ID=COMMAND` (repeatable). The client attaches the checks to the ACTIVE work
 attached to the leader **before** submitting the input, through a new user-gated control command
-`require_checks {goal_id, checks}`:
+`require_checks {work_id, checks}`:
 
-- identity: user or project bootstrap only, the same rule `create_goal` uses for `required_checks` — a model can
+- identity: user or project bootstrap only, the same rule `create_work` uses for `required_checks` — a model can
   never install its own acceptance test (the design comment: "conditions a model distills from natural language
   carry provenance and can never masquerade as user-confirmed required checks").
-- checks are **unioned by id** with whatever the goal already carries (D-268's rule: a client may add a check,
+- checks are **unioned by id** with whatever the work already carries (D-268's rule: a client may add a check,
   never drop one); a second definition of an id is refused, and so is a malformed shape.
-- the goal must be ACTIVE and must not have registered a check round. A round decides from its own stored
-  receipts, so a check added after registration would never run — allowing it would silently accept the goal on
-  a smaller contract. Changing a contract after that point is `goals cancel` plus a new goal.
-- the attach is an event (`goal_checks_required`), so who required what, and when, is auditable.
+- the work must be ACTIVE and must not have registered a check round. A round decides from its own stored
+  receipts, so a check added after registration would never run — allowing it would silently accept the work on
+  a smaller contract. Changing a contract after that point is `work_scopes cancel` plus a new work.
+- the attach is an event (`work_checks_required`), so who required what, and when, is auditable.
 
 **Formal.** `verification/tla/V2Checks.tla` now models the ingress: `required` and `roundChecks` are variables,
 `RequireCheck` grows the contract only while `candidate = "none"`, and the new claim
-`EveryRequiredCheckWasVerified` says a SUCCEEDED goal's *required* set is exactly what the round it closed on ran
+`EveryRequiredCheckWasVerified` says a SUCCEEDED work's *required* set is exactly what the round it closed on ran
 and passed (with `ChecksOnlyJoinBeforeAClaim` as the rule that makes it hold). The negative control
 `MC_checks_late_require.cfg` lets a check join after the claim and is **refuted** — which is why the refusal
 exists. `make verify-model-all` 29/29 verified, `verify-model-counterexamples` 91/91 refuted, `verify-kani` 3/3.
 
 **Tests.** `control::require_checks_attaches_the_users_acceptance_before_the_round_then_freezes_it` (the
-identity gate, malformed shapes, the union, the id-collision refusal, the round refusal, the terminal-goal
-refusal, the audit event) and `v2_daemon::exec_accept_makes_a_failing_check_repair_the_turn_then_block_the_goal`
-/ `exec_accept_lets_a_passing_check_settle_the_goal` (the real socket: three claims, three failed rounds and a
-BLOCKED goal with a non-zero exit; a passing check settling SUCCEEDED with exit 0).
+identity gate, malformed shapes, the union, the id-collision refusal, the round refusal, the terminal-work
+refusal, the audit event) and `v2_daemon::exec_accept_makes_a_failing_check_repair_the_turn_then_block_the_work`
+/ `exec_accept_lets_a_passing_check_settle_the_work` (the real socket: three claims, three failed rounds and a
+BLOCKED work with a non-zero exit; a passing check settling SUCCEEDED with exit 0).
 
 **Ceiling.** `require_checks` is refused once a round is registered (the upgrade path is a checks revision
 recorded on the round, which `EveryRequiredCheckWasVerified` is already shaped to verify). `--check` keeps its
-client-side contract unchanged; `--accept` is the goal-level one.
+client-side contract unchanged; `--accept` is the work-level one.
 
 ## D-384 `leak_guard` counts only this user's processes, and never crashes on a signal it may not send (2026-10-02)
 
@@ -4334,13 +4378,13 @@ consistent: **the deliverable exists, is well-formed, and is semantically wrong*
 one statement and does not touch the database, but its rows differ from the golden query (`query-optimize`); the
 CLI, weights and prediction files all exist, but the predicted digit is wrong (`pytorch-model-cli`). In each
 case the agent could have checked its own claim cheaply with what was in the container, and did not: the turn has
-no "prove it before you say done" step, `exec` reports `verification: []`, and the goal carries no criteria.
+no "prove it before you say done" step, `exec` reports `verification: []`, and the work carries no criteria.
 That is a product capability gap. Two failure modes are separated: `gcode-to-text` runs out of time and still
 fails at a 12-hour budget (D-381), while one `adaptive-rejection-sampler` trial commits 31 events in 16 minutes
 where its siblings commit 161 and 429 — an early stall, not a thinking turn.
 
 Three improvement proposals, each with a falsifiable claim, a measurement on this same harness and a formal plan
-(acceptance checks that gate goal completion; an independent verifier teammate; a stall detector), are recorded
+(acceptance checks that gate work completion; an independent verifier teammate; a stall detector), are recorded
 in that document. **Nothing is implemented**: these change product behaviour, and per the repository's rule they
 wait for the user's decision.
 
@@ -4437,9 +4481,9 @@ defaults to the **official** `deepseek-flash` route (also the route the card's n
 `TEAMAGENTS_MODEL`, `TEAMAGENTS_BASE_URL`, `TEAMAGENTS_API_KEY_ENV` and `TEAMAGENTS_REASONING_EFFORT` as knobs;
 `patch_phases.py` allows both hosts so a task tree serves either route.
 
-**What the product lever is, stated but not taken.** The measured ceiling is the turn model: one goal, bounded by
-wall clock. Options are to let an `exec` turn keep running on a settled goal with the time left (the session
-already supports a following goal, D-267/D-268) or to give long tasks several shorter turns. Both change
+**What the product lever is, stated but not taken.** The measured ceiling is the turn model: one work, bounded by
+wall clock. Options are to let an `exec` turn keep running on a settled work with the time left (the session
+already supports a following work, D-267/D-268) or to give long tasks several shorter turns. Both change
 product behaviour rather than the harness, so they are recorded as the next design question, not implemented
 here.
 
@@ -4845,7 +4889,7 @@ order and stops at `--limit` (default 20). It searches conversation entries only
 it never injects a hit into a model's context — using a hit is still the user's or the Leader's ordinary
 action, which keeps §5.1's "may observe is not must inject" boundary intact.
 
-## D-367 Automations: user-defined schedules that start a goal on their own (2026-09-30)
+## D-367 Automations: user-defined schedules that start a work on their own (2026-09-30)
 
 **The gap.** Codex has no unattended runs, Pi keeps them in a separate project, and Hermes ships a cron
 scheduler; this product ran only when asked. The user's mandate for this batch is to close that gap.
@@ -4861,14 +4905,14 @@ not fire a stale schedule immediately.
 
 **The scheduler.** The daemon owns the ticking (`daemon.rs::run_scheduler`, one tokio task for the session's
 lifetime, independent of clients). At each tick it asks which automations are due — enabled and past `next_at` —
-and for each one whose previous run's goal has **settled** (`SupervisorHandle::goal_status`), it opens a goal
+and for each one whose previous run's work has **settled** (`SupervisorHandle::work_status`), it opens a work
 attached to the Leader with the session's own `[limits]`/`[[checks]]` and submits the prompt as an ordinary
 input. A tunable tick (`TEAMAGENTS_AUTOMATION_TICK_MS`, for tests) makes this measurable. Nothing here widens
-the session's authority: the prompt is ordinary user input, the goal carries the ceilings every other goal
+the session's authority: the prompt is ordinary user input, the work carries the ceilings every other work
 carries, and the scheduler never issues a grant.
 
 **Rules that matter.** A slot is never run twice (`mark_run` advances `next_at` and persists in one atomic
-write), two runs of one automation never overlap (the last goal's status gates the next start), a paused
+write), two runs of one automation never overlap (the last work's status gates the next start), a paused
 automation never runs (`due` requires `enabled`), and a run starts only when due. A slot missed while the
 process was down is **coalesced**, not backfilled: the next run happens now and the following one a period
 later.
@@ -4879,21 +4923,21 @@ negative control per rule (`MC_schedule_duplicate.cfg`, `MC_schedule_overlap.cfg
 `MC_schedule_disabled.cfg`, `MC_schedule_early.cfg`), each refuted. Measured 2026-09-30: `make verify-model-all`
 27/27, `make verify-model-counterexamples` 86/86, `make verify-kani` 3/3, the positive schedule configuration
 exhaustive in seconds (304,069 states generated / 71,064 distinct). The model abstracts the period into "the
-slot advances by one"; the coalescing and the goal a run opens are the code's, pinned by the tests below.
+slot advances by one"; the coalescing and the work a run opens are the code's, pinned by the tests below.
 Writing the first draft hit the `x' = a \/ b` precedence trap the `V2Prompt` entry records — the monitor
 assignments needed parentheses around the whole right-hand side, and three controls reported
 "Successor state is not completely specified" until they had them.
 
 **Evidence.** `automations.rs`'s three unit tests (a round trip with disabled never due and enabling re-arming;
-a missed backlog coalescing to one run with the overlap check seeing an open goal as running; a malformed file
-refused) and `cli::a_due_automation_opens_one_goal_and_does_not_overlap_itself` (a real daemon with a 100 ms
+a missed backlog coalescing to one run with the overlap check seeing an open work as running; a malformed file
+refused) and `cli::a_due_automation_opens_one_work_and_does_not_overlap_itself` (a real daemon with a 100 ms
 tick: the due automation fires once, `next_at` advances, and several more ticks leave exactly one
-`goal-auto-a1` row while the goal stays open).
+`work-auto-a1` row while the work stays open).
 
 **Ceilings.** The schedule is a fixed interval, not a cron expression; an automation always addresses the
 Leader and always runs in the session's workspace with the session's ceilings (no per-automation budget); a
-leader parked by a permanent failure leaves the automation's goal open, so the next run waits (visible in
-`automations list` as an unadvanced `last_goal`) rather than piling up; and there is no external delivery — a
+leader parked by a permanent failure leaves the automation's work open, so the next run waits (visible in
+`automations list` as an unadvanced `last_work`) rather than piling up; and there is no external delivery — a
 run's result is read in the session like any other.
 
 ## D-366 The TUI shows the model's live output: a transient, non-authoritative preview (2026-09-30)
@@ -4944,7 +4988,7 @@ session's `artifacts/` directory beside the database (immutable blobs, so the fo
 **The reset.** The copy is normalized by one control-plane transaction, `fork_reset`
 (`core/src/v2/control.rs`), which requires the user identity and keeps exactly one instance — the conversation's
 owner, `i-leader`. It drops every envelope, approval, task, wait, operation, decision, attempt and model request
-and every grant to a removed subject, deletes the other instances, clears each goal's reservations, rewrites
+and every grant to a removed subject, deletes the other instances, clears each work's reservations, rewrites
 each artifact's `storage_ref` from the source root to the fork's root, and leaves the kept instance
 `ACTIVE`/`READY` with its context epoch (so the conversation stays visible) and a bumped revision (so a stale
 dispatch from the source can never execute here). The copy's event log starts at that reset, because the
@@ -4956,7 +5000,7 @@ step, and the property that matters is a **post-state predicate** — the reset 
 own invariants admit (`OneActiveRequest`, `TerminalOpStable`, no pending approval, no open operation). The
 surface inventory maps it to `V2Control.tla`, and the executable correspondence test drives exactly the
 conditions that make those invariants non-vacuous: after the reset the leader is `ACTIVE`/`READY` with no
-`active_request_id`, every execution table is empty, the conversation count is unchanged and the goal is still
+`active_request_id`, every execution table is empty, the conversation count is unchanged and the work is still
 `ACTIVE` with no reservation. A first draft stated a separate "fork invariant" in a TLA module; it was dropped
 for the D-219 reason — the post-state predicate is fully checked by the test, and a model that restates
 `DELETE` would have been a claim nothing could refute.
@@ -5041,7 +5085,7 @@ and the result in the same shape `pause`/`resume` do.
 
 **What it is not.** It does **not** stop a running tool: a shell command keeps going, because stopping the
 process group is the `set_lifecycle` TERMINATED lever (D-88), and this command deliberately leaves open
-operations alone. It never settles a goal or a task. When the provider's answer lands just before the interrupt,
+operations alone. It never settles a work or a task. When the provider's answer lands just before the interrupt,
 the command reports `interrupted: false` (the request already closed) instead of claiming a cancellation that
 did not happen. The TUI key (`i` in the instances panel) is wired too: it sends the same command, and the
 footer hint advertises it beside `p`/`r`/`t`.
@@ -5056,7 +5100,7 @@ unproven list (item 4) so a reader does not have to guess where it lives.
 
 **Evidence.** `core/src/v2/control.rs`'s
 `interrupt_instance_cancels_the_running_request_and_leaves_the_instance_ready` (the identity refusal, the
-cancellation, the `READY` reset, the late-attempt refusal, `ACTIVE` goal unchanged, `TERMINATED` refusal);
+cancellation, the `READY` reset, the late-attempt refusal, `ACTIVE` work unchanged, `TERMINATED` refusal);
 `engine/tests/v2_supervisor.rs`'s `interrupting_a_turn_cancels_it_and_the_queued_input_takes_over` (a scripted
 provider held open honours the cancel token; the queued instruction runs its own turn; the cancelled turn's
 answer never enters the context); and the existing intervention-CLI test in `engine/tests/v2_daemon.rs` now also
@@ -5069,7 +5113,7 @@ asserts the idle-instance answer. `make check` and the formal targets are re-run
 in CI, and add a gate that forces a new protocol surface to be classified. The self-update runs against the
 provider the user gave (`https://llmapi.paratera.com/v1`, chat-completions, model `DeepSeek-V4.1-Flash`) in an
 isolated profile under `~/.config/teamagents-selfupdate`, whose `[[checks]]` make `make check` *and*
-`make verify-model-all && make verify-model-counterexamples` completion contracts, so no self-update goal settles
+`make verify-model-all && make verify-model-counterexamples` completion contracts, so no self-update work settles
 while a formal gate is red. Baseline measured before the batch: `make check` green (core 118 / engine 292 / tui
 36), `make verify-model-all` 24/24, `make verify-model-counterexamples` 77/77, `make verify-kani` 3/3.
 
@@ -5204,7 +5248,7 @@ D-182's own entry, which A36's row does not cite. The sentence now says exactly 
 | the operator's positive control (line 8 to the default alone) | the named test **FAILED** at `tests/install.rs:156`; line restored byte-identically (`d0160eff…`) |
 | the operator's negative control (`--bin-dir` parsed and ignored) | the same test **passed** (0.03 s) — the flag is not what it drives |
 | `python3 review/test_counts.py` | `core 118 / engine 292 / tui 36` (nothing added or removed) |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 | `make pty` | ok |
 
 **The audit's yield.** **Twenty-seven findings from twenty-six audit cards** — eleven coverage holes, fifteen claim
@@ -5285,16 +5329,16 @@ about releases or the install path can name it without re-deriving the list.
 The product's entry is D-357. This entry is the operator's verification and the phase's measured numbers.
 
 **What the operator verified.** (1) The row now says what the record says: A35 names the park *and* the lever —
-`teamagents goals cancel --id` settling the goal `CANCELLED` and the deadline-parked leader running again — with
-both tests in the cell (`control::cancel_goal_closes_a_spent_goal_and_releases_the_instance_it_parked` and the
-real-binary round trip `cli::goals_cancel_closes_a_spent_goal_and_the_parked_leader_works_again`) and D-357's
-pointer beside them. (2) The operator re-ran the card's own control: `cancel_goal`'s release wrote the lifecycle
+`teamagents work_scopes cancel --id` settling the work `CANCELLED` and the deadline-parked leader running again — with
+both tests in the cell (`control::cancel_work_closes_a_spent_work_and_releases_the_instance_it_parked` and the
+real-binary round trip `cli::work_scopes_cancel_closes_a_spent_work_and_the_parked_leader_works_again`) and D-357's
+pointer beside them. (2) The operator re-ran the card's own control: `cancel_work`'s release wrote the lifecycle
 back as `'PARKED'` (`core/src/v2/control.rs`, the file's sha256 `2288a3bb005ebf58…` before and after), and the
 named test **FAILED** with `assertion left == right failed; left: "PARKED"`, `right: "ACTIVE"` at
 `src/v2/control.rs:7173` — the entry says 7174, which is the line the operator's own patch landed on, not a
 different claim — and the line restored byte-identically (sha256 `2288a3bb…`, `git diff` empty) puts both cancel
 tests back to **ok**. (3) The lever has also been exercised on a live session, not only in tests:
-`teamagents goals cancel --id goal-task38` answered `cancelled goal goal-task38; released i-leader` and the leader
+`teamagents work_scopes cancel --id work-task38` answered `cancelled work work-task38; released i-leader` and the leader
 returned to `ACTIVE/READY`, which D-350 records as the lever's first real use.
 
 **Evidence** (2026-09-29; the tree is `77b62618` plus this card's uncommitted diff).
@@ -5304,9 +5348,9 @@ returned to `ACTIVE/READY`, which D-350 records as the lever's first real use.
 | the A35 cell, read | the park, the lever and both tests, with D-357's pointer |
 | the operator's re-run of the control (the release writes `'PARKED'`) | the named test **FAILED**: `left: "PARKED"`, `right: "ACTIVE"` |
 | restoring the control byte-identically | sha256 `2288a3bb005ebf58…`, `git diff` empty; **both** cancel tests **ok** |
-| the lever's live use (same day, D-350) | `cancelled goal goal-task38; released i-leader` |
+| the lever's live use (same day, D-350) | `cancelled work work-task38; released i-leader` |
 | `python3 review/test_counts.py` | `core 118 / engine 292 / tui 36` (nothing added or removed) |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 | `make pty` | ok |
 
 **The audit's yield.** **Twenty-six findings from twenty-five audit cards** — eleven coverage holes, fourteen
@@ -5323,33 +5367,33 @@ not re-run and the deadline's formal half was read rather than re-run, as D-357 
 
 ## D-357 A35's deadline row ended at the parked leader and never named the lever that releases it (2026-09-29)
 
-**The row, and why this one.** A35 ("Goal deadline") claims the whole deadline story: the gate refuses a
+**The row, and why this one.** A35 ("Work deadline") claims the whole deadline story: the gate refuses a
 request past the deadline, the refusal is reachable by the user (D-64's `deadline_minutes`), the formals carry
 `V2Control::NoRequestAfterDeadline` with its refuted control (`MC_control_deadline.cfg`), and the live probe
 (`review/dogfood/deadline.py`, re-measured after D-153) shows the refusal and its consequences — "the leader
-`PARKED` with 'goal goal-s-main deadline passed'". The card's own pointer decided it: a row citing a probe that
+`PARKED` with 'work work-s-main deadline passed'". The card's own pointer decided it: a row citing a probe that
 now has a *record* should prefer the record, and this row's last sentence is precisely where the record changed.
-D-344 (`teamagents goals cancel --id`) added the user's lever that releases exactly the instance a spent goal's
+D-344 (`teamagents work_scopes cancel --id`) added the user's lever that releases exactly the instance a spent work's
 refusal parked; A35 predates it, so the matrix's deadline row read as though the park were the end.
 
 **What the evidence asserts, and what the row left out.** Everything A35 cites is real and was already checked:
-`control::goal_deadline_refuses_new_requests_and_dispatches` drives the gate, `v2_driver::goal_deadline_parks_the_instance`
-drives the park, the probe's numbers stand (the refusal exits 1 in 0.0 s with `goal goal-s-main deadline passed
-before request … could start`, exactly one model request, `goal_deadline_refused` recorded, the leader `PARKED`).
+`control::work_deadline_refuses_new_requests_and_dispatches` drives the gate, `v2_driver::work_deadline_parks_the_instance`
+drives the park, the probe's numbers stand (the refusal exits 1 in 0.0 s with `work work-s-main deadline passed
+before request … could start`, exactly one model request, `work_deadline_refused` recorded, the leader `PARKED`).
 What no row said — before this entry — is that the parked leader has a way back, and the tests that pin it were
-cited nowhere in this row: `control::cancel_goal_closes_a_spent_goal_and_releases_the_instance_it_parked` (its
-sibling `cancel_goal_refuses_running_work_a_settled_goal_and_an_unknown_id` holds the refusals) and the real-binary
-round trip `cli::goals_cancel_closes_a_spent_goal_and_the_parked_leader_works_again`, both from D-344.
+cited nowhere in this row: `control::cancel_work_closes_a_spent_work_and_releases_the_instance_it_parked` (its
+sibling `cancel_work_refuses_running_work_a_settled_work_and_an_unknown_id` holds the refusals) and the real-binary
+round trip `cli::work_scopes_cancel_closes_a_spent_work_and_the_parked_leader_works_again`, both from D-344.
 
 **The change (the claim and the citations, not the code).** A35's row now ends where the record does: the park,
-**and** the lever that releases it — `teamagents goals cancel --id` settles the goal `CANCELLED` and the
+**and** the lever that releases it — `teamagents work_scopes cancel --id` settles the work `CANCELLED` and the
 deadline-parked leader runs again — with the two product tests named and the probe's measured numbers untouched.
 
-**Pre-fix control.** In `core/src/v2/control.rs`, `cancel_goal`'s release was neutered by writing the lifecycle
+**Pre-fix control.** In `core/src/v2/control.rs`, `cancel_work`'s release was neutered by writing the lifecycle
 back as `'PARKED'` instead of `'ACTIVE'` in
 `UPDATE instances SET lifecycle = … WHERE id = ?1 AND lifecycle = 'PARKED'`. The named test then **FAILED**:
 `panicked at src/v2/control.rs:7174: assertion left == right failed, left: "PARKED", right: "ACTIVE"` — the
-instance the goal's refusal parked stayed parked, i.e. the lever did not release it, which is the evidence that
+instance the work's refusal parked stayed parked, i.e. the lever did not release it, which is the evidence that
 the test carries the claim this row now cites. The line was restored **byte-identically**: the file's sha256
 prefix is `2288a3bb005ebf58` before and after, and `git diff --stat core/src/v2/control.rs` is empty.
 
@@ -5376,7 +5420,7 @@ citation pointed at the no-wake rule, exactly as D-355 says. (2) The wake tests 
 the card's own control — `wake_satisfied_at`'s satisfaction forced off in `core/src/v2/control.rs`, the file's
 sha256 `2288a3bb005ebf58…` before and after — and
 `v2_supervisor::a_waiting_leader_wakes_when_the_peers_message_is_applied` **FAILED** with
-`panicked at tests/v2_supervisor.rs:186: event goal_completed did not arrive within 20000ms` (21.27 s), which is
+`panicked at tests/v2_supervisor.rs:186: event work_completed did not arrive within 20000ms` (21.27 s), which is
 the ring's last hop never closing; the line restored byte-identically (`git diff` empty) puts the test back to
 **ok** (0.10 s). (3) The row's live half (`review/dogfood/team_ring.py`, 23.5 s and 14.2 s) is the dated evidence
 it was and was not re-run.
@@ -5393,11 +5437,11 @@ rounder one.
 | Command | Result |
 |---|---|
 | reading `core/src/v2/control.rs`'s ring test | the no-wake sentence is in it; delivery is what it pins |
-| the operator's re-run of the card's control (the wake forced off) | the named test **FAILED**: `event goal_completed did not arrive within 20000ms` (21.27 s) |
+| the operator's re-run of the card's control (the wake forced off) | the named test **FAILED**: `event work_completed did not arrive within 20000ms` (21.27 s) |
 | restoring the control byte-identically | sha256 `2288a3bb005ebf58…`, `git diff` empty; the test **ok** (0.10 s) |
 | a repository-wide search over every `*.md` at the tree it received | the supervisor-side name: no file; the control-plane sibling: D-255's entry — the correction |
 | `python3 review/test_counts.py` | `core 118 / engine 292 / tui 36` (no test added or removed) |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 | `make pty` | ok |
 
 **The audit's yield.** **Twenty-five findings from twenty-four audit cards** — eleven coverage holes, thirteen
@@ -5428,7 +5472,7 @@ comment, "receiving never wakes a turn (§5.3)" — which is the opposite of the
 hop that a real ring *does* need — a **parked** leader woken by the peer's message, with the message applied in
 the same transaction — is driven at the level the ring runs at by
 `v2_supervisor::a_waiting_leader_wakes_when_the_peers_message_is_applied` (a real daemon and driver: the peer
-exists, the leader parks on `{kind:'message', from:'i-peer'}`, the peer sends, `goal_completed` arrives
+exists, the leader parks on `{kind:'message', from:'i-peer'}`, the peer sends, `work_completed` arrives
 `SUCCEEDED` only once the message is applied), with the control-plane sibling
 `control::pending_wait_wakes_in_the_same_transaction_as_the_fact`. **Neither was named by any *row*** (D-324's orphan sweep, re-run for this card: 407 test names, the same
 orphan set as when the sweep was calibrated): the supervisor-side test was named by nothing at all, while
@@ -5442,7 +5486,7 @@ see which test carries which half of the ring. No product or test code changed.
 
 **Pre-fix control.** In `core/src/v2/control.rs`, `wake_satisfied_at`'s satisfaction was forced off
 (`let (satisfied, _) = (false, evaluate_wait(...)?.1);`) — the sweep that turns a pending wait `SATISFIED` when a
-fact lands. The named test then **FAILED** with `panicked at tests/v2_supervisor.rs:186: event goal_completed did
+fact lands. The named test then **FAILED** with `panicked at tests/v2_supervisor.rs:186: event work_completed did
 not arrive within 20000ms` — the leader stayed parked, i.e. the ring's last hop never closed — which is the
 evidence that the test really carries the claim. The line was restored **byte-identically**: the file's sha256
 prefix is `2288a3bb005ebf58` before and after, and `git diff --stat core/src/v2/control.rs` is empty.
@@ -5495,7 +5539,7 @@ record. The verdict does not move — that batch has no readable pair either —
 | `runs/2026-09-29-r8-formal/run-header.json` | phase `formal`, started 2026-09-30T01:03:19+0800, the 2048 manifest — the batch the entry's narration had left out |
 | the batch's own real tokens | solo 445,053 / team 867,200 (`results.jsonl`) |
 | `python3 review/test_counts.py` | `core 118 / engine 292 / tui 36` (no product test changed) |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 | `make pty` | ok |
 
 **The phase's measured numbers (this commit).** **555,366,619 tokens over 1,506 model requests**, the suites
@@ -5505,7 +5549,7 @@ not confirmed with its mechanism-attempt recorded — the cap is not a handicap 
 trial each) and it did not reproduce the batching story the round was built to remove.
 
 **Next card**: the acceptance matrix's claims audit resumes — twenty-one rows audited, fifteen remaining — with
-the phase's newest evidence available to it (the per-request surface record, the goal-cancel lever, the daemon
+the phase's newest evidence available to it (the per-request surface record, the work-cancel lever, the daemon
 startup sweep).
 
 **Ceiling**: the operator re-derived the readings, the treatment and the timing, and corrected the narration; it
@@ -5613,11 +5657,11 @@ cannot drift.
 | the operator's control (the claim limit set to 0) | the test **FAILED**: `left: Some("LIVE")`, `right: None`; line restored byte-identically (`33654863…`), test **ok** again |
 | a daemon started from this tree's binary | starts clean: no `skipped: … already has a coordinator` line (the previous iteration printed it every start) |
 | `python3 review/test_counts.py` | `core 118 / engine 292 / tui 36` |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 | `make pty` | ok |
 
 **The phase's measured numbers (this commit).** **521,635,657 tokens over 1,430 model requests**, the suites
-above, three operator resumes; four implementation cards have landed from D-341's table (the goal-cancel lever
+above, three operator resumes; four implementation cards have landed from D-341's table (the work-cancel lever
 D-344, the wait contract D-348, the per-request surface record D-350, this cadence D-351). One card in this
 stretch was lost to the environment rather than to the product: the daemon it ran under had been started without
 `TEAMAGENTS_RUNNER_BIN`, every `shell` call failed, and the card settled `BLOCKED` saying so (D-351's own note).
@@ -5697,9 +5741,9 @@ composition stays, the hook now goes through the writer.
 
 ## D-350 The per-request surface record: what a member was offered is in the record now (2026-09-29)
 
-**This entry is the operator's.** The card that built this hit its goal's 24M token ceiling with the code finished
-and its entry unwritten (measured: the goal's own refusal, `known 24004929 + est 339516 > max 24000000`, `exec` rc
-1, the instance parked, the goal left `ACTIVE`); the operator finished the mechanical tail the card could not run
+**This entry is the operator's.** The card that built this hit its work's 24M token ceiling with the code finished
+and its entry unwritten (measured: the work's own refusal, `known 24004929 + est 339516 > max 24000000`, `exec` rc
+1, the instance parked, the work left `ACTIVE`); the operator finished the mechanical tail the card could not run
 and wrote this entry, so what follows separates what the card delivered from what the operator verified and what
 stays unpinned.
 
@@ -5734,11 +5778,11 @@ regenerations the audits demanded in turn (`review/event_catalogue.py --write`, 
 --write`), the citation counts, and the number the card got wrong: its comments and D-143's sentence called this
 entry D-349 — the wait card's verification entry — so five code references and that sentence now say D-350.
 
-**The dead goal, and the lever this session built.** `teamagents goals cancel --id goal-task38` answered
-`cancelled goal goal-task38; released i-leader` and the leader went back to `ACTIVE/READY`: the first live use of
-D-344's lever, on the exact shape the D-267/D-280 gap described. Two other spent goals (`goal-task11`,
-`goal-s-main`, both past their deadline with no running work) were closed the same way. The operator then raised
-the session's own per-goal ceiling from **24M/180 min to 120M/360 min** (the operator's config, outside the
+**The dead work, and the lever this session built.** `teamagents work_scopes cancel --id work-task38` answered
+`cancelled work work-task38; released i-leader` and the leader went back to `ACTIVE/READY`: the first live use of
+D-344's lever, on the exact shape the D-267/D-280 gap described. Two other spent work_scopes (`work-task11`,
+`work-s-main`, both past their deadline with no running work) were closed the same way. The operator then raised
+the session's own per-work ceiling from **24M/180 min to 120M/360 min** (the operator's config, outside the
 repository), because this card's class — store stamp, driver, daemon, docs, formal material — no longer fits in
 24M.
 
@@ -5755,7 +5799,7 @@ repository), because this card's class — store stamp, driver, daemon, docs, fo
 | `make pty` | ok |
 
 **The phase's measured numbers (this commit).** **497,902,813 tokens over 1,367 model requests**, the suites
-above, three operator resumes; three implementation cards have landed from D-341's table (the goal-cancel lever
+above, three operator resumes; three implementation cards have landed from D-341's table (the work-cancel lever
 D-344, the wait contract D-348, this record D-350).
 
 **Next card**: D-191's daemon-startup artifact sweep, then Q16's pre-registered experiment.
@@ -5795,12 +5839,12 @@ reached 102) is a strengthening of the rule that the script states its own count
 | the three named tests | **3 passed** (0.02 s) |
 | reading DESIGN §5.3 | the three rules and the delegator's own lever, in one paragraph |
 | `python3 review/test_counts.py` | `core 118 / engine 289 / tui 36` |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 | `make pty` | ok |
 
 **The phase's measured numbers (this commit).** **473,897,884 tokens over 1,295 model requests**, the suites at
 `core 118 / engine 289 / tui 36`, three operator resumes; the audit's yield stands at twenty-four findings from
-twenty-three audit cards, and two implementation cards have landed from D-341's table (the goal-cancel lever,
+twenty-three audit cards, and two implementation cards have landed from D-341's table (the work-cancel lever,
 D-344, and this wait contract, D-348).
 
 **Next card**: D-143's per-request offered-surface record — the store's format stamp moves with it — and then
@@ -5958,17 +6002,17 @@ newest tag is a v2 tag (`review/release_artifact.py` reads exactly that).
 The product's entry is D-344. This entry is the operator's verification and the phase's measured numbers.
 
 **What the operator verified.** (1) The behavior, by running it: the two control-plane tests
-(`cancel_goal_closes_a_spent_goal_and_releases_the_instance_it_parked` and its refusal sibling) and the CLI round
+(`cancel_work_closes_a_spent_work_and_releases_the_instance_it_parked` and its refusal sibling) and the CLI round
 trip against the real binary and a real daemon all pass. (2) The operator's own control, applied to the tree it
 received: the release UPDATE's guard (`WHERE id = ?1 AND lifecycle = 'PARKED'` in `core/src/v2/control.rs`, the
 file's sha256 before the edit `a0e48d2e…`) changed so it can never match; the named test **FAILED** with
-`assertion left == right failed; left: Array []`, `right: Array [String("i1")]` — the goal still closes and the
+`assertion left == right failed; left: Array []`, `right: Array [String("i1")]` — the work still closes and the
 *release* is the half the test pins, which is the half the decision asked for — and restoring the line
 byte-identically (sha256 `a0e48d2e…`) puts both tests back to **ok**. (3) The formal half, re-measured from the
 operator's side: `MC.cfg` reports `No error has been found` and the new `MC_control_cancel.cfg` reports `Error:
-Action property CancelledGoalReleasesParkedInstances is violated.`, so the control is not vacuous.
+Action property CancelledWorkReleasesParkedInstances is violated.`, so the control is not vacuous.
 
-**The one claim the operator corrected.** D-344's ceiling still said the goal surface would "stay the user's
+**The one claim the operator corrected.** D-344's ceiling still said the work surface would "stay the user's
 word", which would send a reader to a question that D-341 has already decided. The sentence now states what D-341
 decided — this lever and nothing more (no re-attach, no rename, no budget change) — and the implementation it
 describes is unchanged.
@@ -5981,9 +6025,9 @@ describes is unchanged.
 | the CLI round trip, run by the operator | **ok** (0.06 s, real binary and daemon) |
 | the operator's control (the release guard can never match) | the named test **FAILED**: `left: Array []`, `right: Array [String("i1")]` |
 | restoring the control byte-identically | sha256 `a0e48d2e…`; the line clean against the card's diff; both tests **ok** again |
-| `MC.cfg` and `MC_control_cancel.cfg` under TLC | `No error has been found` / `CancelledGoalReleasesParkedInstances is violated.` |
+| `MC.cfg` and `MC_control_cancel.cfg` under TLC | `No error has been found` / `CancelledWorkReleasesParkedInstances is violated.` |
 | `python3 review/test_counts.py` | `the ledger's counts match the suites: core 117 / engine 289 / tui 36` |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 | `make pty` | ok |
 
 **The audit's yield, and what this card was.** Twenty-four findings from twenty-three audit cards; this card was
@@ -5997,43 +6041,43 @@ re-run by the card on this tree and the operator's own control re-run above. The
 heading is pinned to the commit that carries this round once it lands, which is the operator's step.
 
 **Ceiling**: no live run of the shape exists (the CLI test is offline); the runtime still never closes a spent
-goal by itself and a goal cannot be re-attached, both of which D-341 decided against for now. The operator
+work by itself and a work cannot be re-attached, both of which D-341 decided against for now. The operator
 verified the release half and the control; the full three-target sweeps above are the card's recorded runs, with
 the new control and the positive configuration re-run by the operator.
 
-## D-344 The lever A18's gap asked for: `goals cancel --id` closes a spent goal and releases what its refusal parked (2026-09-29)
+## D-344 The lever A18's gap asked for: `work_scopes cancel --id` closes a spent work and releases what its refusal parked (2026-09-29)
 
-**The decision and the shape.** D-341 (the operator's) chose: a goal whose ceiling or deadline is spent can be
+**The decision and the shape.** D-341 (the operator's) chose: a work whose ceiling or deadline is spent can be
 closed by the user, and the instance its refusal parked can run again. One lever, one dead end — no general
-goal-editing surface: the control plane gains `cancel_goal { goal_id }`, **user-only**, and the CLI gains
-`teamagents goals cancel --id ID`.
+work-editing surface: the control plane gains `cancel_work { work_id }`, **user-only**, and the CLI gains
+`teamagents work_scopes cancel --id ID`.
 
-**The rule.** `cancel_goal` requires the goal to exist in the session and to be `ACTIVE`, and refuses while it
-still carries running work — the same open operations `complete_goal` refuses on (`PREPARED` /
+**The rule.** `cancel_work` requires the work to exist in the session and to be `ACTIVE`, and refuses while it
+still carries running work — the same open operations `complete_work` refuses on (`PREPARED` /
 `DISPATCH_COMMITTED` / `RUNNING`) plus un-closed model requests (`PENDING` / `RUNNING`); a request the gate
-*refused* never registered, which is why a spent goal is cancellable at all. It then writes `CANCELLED` — the
+*refused* never registered, which is why a spent work is cancellable at all. It then writes `CANCELLED` — the
 lifecycle's own fourth terminal state, the one that reports the *user's* decision rather than a runtime
-conclusion (`V2Control`'s `SettleGoal` already carried it; nothing in the code could write it) — detaches the
-goal from its instances, and **releases the instances attached to that goal that are `PARKED`**: lifecycle
+conclusion (`V2Control`'s `SettleWork` already carried it; nothing in the code could write it) — detaches the
+work from its instances, and **releases the instances attached to that work that are `PARKED`**: lifecycle
 `ACTIVE`, phase `READY`, `active_request_id` cleared, revision bumped, with the existing `instance_lifecycle`
-event naming the cause (`goal X cancelled by the user`), and one `goal_cancelled` event carrying the released
+event naming the cause (`work X cancelled by the user`), and one `work_cancelled` event carrying the released
 list. It stays with the user exactly as `set_lifecycle` does: the system may park, never resume. No re-attach,
-no rename, no budget change; a second `goals cancel --id G` replays the stored receipt (the command id is
-derived from the goal, the rule `goals open` already follows), and a goal another path settled is refused.
+no rename, no budget change; a second `work_scopes cancel --id G` replays the stored receipt (the command id is
+derived from the work, the rule `work_scopes open` already follows), and a work another path settled is refused.
 
 **What it prints, and what it answers with a reason.** On success:
-`cancelled goal g-spent; released i-leader` (`--json` carries `status`, `released`, `detached`). Refusals, each
-with a reason and exit 1: `goal ghost is not in this session`; `goal g-closed is SUCCEEDED, not ACTIVE: a
-settled goal cannot be cancelled`; `goal g-busy still carries running work (1 open request(s), 0 open
-operation(s)); finish or abandon that work before cancelling`; `cancel_goal stays with the user` (the system).
+`cancelled work g-spent; released i-leader` (`--json` carries `status`, `released`, `detached`). Refusals, each
+with a reason and exit 1: `work ghost is not in this session`; `work g-closed is SUCCEEDED, not ACTIVE: a
+settled work cannot be cancelled`; `work g-busy still carries running work (1 open request(s), 0 open
+operation(s)); finish or abandon that work before cancelling`; `cancel_work stays with the user` (the system).
 A missing `--id` is usage, exit 2.
 
-**Tests.** Control plane: `control::cancel_goal_closes_a_spent_goal_and_releases_the_instance_it_parked` (a
-parked attached instance comes back `ACTIVE`, detached, and the goal reads `CANCELLED`) and
-`control::cancel_goal_refuses_running_work_a_settled_goal_and_an_unknown_id`. CLI round trip against a real
-daemon and the real binary: `cli::goals_cancel_closes_a_spent_goal_and_the_parked_leader_works_again` — opens
-the goal on the boot leader, parks it, cancels, asserts the record, the leader's `ACTIVE` lifecycle, that a new
-goal attaches, and every refusal above. Suites re-measured by `review/test_counts.py`: **core 117 / engine 289
+**Tests.** Control plane: `control::cancel_work_closes_a_spent_work_and_releases_the_instance_it_parked` (a
+parked attached instance comes back `ACTIVE`, detached, and the work reads `CANCELLED`) and
+`control::cancel_work_refuses_running_work_a_settled_work_and_an_unknown_id`. CLI round trip against a real
+daemon and the real binary: `cli::work_scopes_cancel_closes_a_spent_work_and_the_parked_leader_works_again` — opens
+the work on the boot leader, parks it, cancels, asserts the record, the leader's `ACTIVE` lifecycle, that a new
+work attaches, and every refusal above. Suites re-measured by `review/test_counts.py`: **core 117 / engine 289
 / tui 36** (was 115/288/36).
 
 **Section 0 (the formal obligations), all re-run 2026-09-29 on this tree.**
@@ -6041,31 +6085,31 @@ goal attaches, and every refusal above. Suites re-measured by `review/test_count
 | Target | Result |
 |---|---|
 | `make verify-model-all` | **rc 0**, 24/24 configurations `No error has been found` (`MC.cfg` now also checks the new property) |
-| `make verify-model-counterexamples` | **rc 0**, **74** controls refuted (was 73) — the new `MC_control_cancel.cfg` (`ReleaseOnCancel = FALSE`) is refuted on `Error: Action property CancelledGoalReleasesParkedInstances is violated.` |
+| `make verify-model-counterexamples` | **rc 0**, **74** controls refuted (was 73) — the new `MC_control_cancel.cfg` (`ReleaseOnCancel = FALSE`) is refuted on `Error: Action property CancelledWorkReleasesParkedInstances is violated.` |
 | `make verify-kani` | **rc 0**, `Complete - 3 successfully verified harnesses, 0 failures, 3 total` |
 
-`V2Control.tla` gains the counterfactual constant `ReleaseOnCancel`, the user's action `CancelGoal` (an `ACTIVE`
-goal with no running work → `CANCELLED`, and the instances its refusal parked released) and the property
-`CancelledGoalReleasesParkedInstances`; `SettleGoal` loses `CANCELLED` from its choice set, because the runtime
+`V2Control.tla` gains the counterfactual constant `ReleaseOnCancel`, the user's action `CancelWork` (an `ACTIVE`
+work with no running work → `CANCELLED`, and the instances its refusal parked released) and the property
+`CancelledWorkReleasesParkedInstances`; `SettleWork` loses `CANCELLED` from its choice set, because the runtime
 settles what it concluded and only the user's cancel writes that status — which is what the code does. The
-model's one-goal-per-session means the release is stated over every instance, while the code releases the
-instances that goal's refusal parked; the entry records the difference. `verification/REPORT.md` now states 74
+model's one-work-per-session means the release is stated over every instance, while the code releases the
+instances that work's refusal parked; the entry records the difference. `verification/REPORT.md` now states 74
 controls and this round's re-run; `verification/README.md` names the property and the configuration;
 `review/verification_catalogue.py`'s count is 99 configurations. The report's re-run heading still names
 `4550a0e5`, at or after the newest *committed* change to the verification material — pinning it to this round is
 the operator's step.
 
-**Documents recomputed from the code.** `docs/PROTOCOL.md` regenerated (43 commands; `cancel_goal | goal_id |
-yes`), `docs/EVENTS.md` regenerated (48 kinds; `goal_cancelled`, listed with no reader in this tree yet, as
-`goal_created` is), the A18 known-gaps bullet now records the delivered lever instead of asking for the user's
+**Documents recomputed from the code.** `docs/PROTOCOL.md` regenerated (43 commands; `cancel_work | work_id |
+yes`), `docs/EVENTS.md` regenerated (48 kinds; `work_cancelled`, listed with no reader in this tree yet, as
+`work_created` is), the A18 known-gaps bullet now records the delivered lever instead of asking for the user's
 word, `docs/USER-GUIDE.md` documents the verb and its refusal, and the CLI synopsis carries
-`goals cancel --id ID`. Measured numbers: citations **966** / 81 relative links / **629** `make` commands /
+`work_scopes cancel --id ID`. Measured numbers: citations **966** / 81 relative links / **629** `make` commands /
 **1003** `§` refs, 0 unexplained (`review/citations.py`, docstring updated) — 954/615 before this entry's own
 text was counted, and it moves them, so these are the values the last run of the audit reports; decisions 303
 with this entry; configurations 99 / controls 74 / modules 21 (`review/verification_catalogue.py`); suites as
 above.
 
-**Uncommitted, for the operator.** My change: `core/src/v2/control.rs`, `engine/src/{main.rs,v2/goals.rs}`,
+**Uncommitted, for the operator.** My change: `core/src/v2/control.rs`, `engine/src/{main.rs,v2/work_scopes.rs}`,
 `engine/tests/cli.rs`, `Makefile`, `docs/{ACCEPTANCE,PROTOCOL,EVENTS,USER-GUIDE}.md`,
 `review/{citations.py,README.md,verification_catalogue.py}`, `verification/{README.md,REPORT.md,tla/V2Control.tla,tla/MC*.cfg}`
 (10 configurations gained `ReleaseOnCancel = TRUE`, one is new), `AGENTS.md`, `.github/release-notes.md`. The
@@ -6073,10 +6117,10 @@ tree also carries the operator's own uncommitted release edits (`README.md`, `RE
 `docs/INSTALL.md`, `review/install_check.py`, D-343) — untouched by this card.
 
 **Ceiling.** What remains unproven or the user's: no *live* run of the shape exists yet (the CLI test drives the
-real binary and daemon, offline); whether the runtime should also close a spent goal by itself, and whether a
-goal may be re-attached, are D-341's decisions: neither is in this lever, and the goal surface stays what that
+real binary and daemon, offline); whether the runtime should also close a spent work by itself, and whether a
+work may be re-attached, are D-341's decisions: neither is in this lever, and the work surface stays what that
 entry decided. The release list is computed from
-the record at cancel time, so an instance the goal's own refusal never parked is never re-armed — it says so
+the record at cancel time, so an instance the work's own refusal never parked is never re-armed — it says so
 instead by staying parked.
 
 ## D-343 The v0.2.0 release is cut from this tree, and the caveats the documents carried come out with it (2026-09-29)
@@ -6113,12 +6157,12 @@ help offers none of those verbs and names the entry points the documented surfac
 | `python3 review/release_artifact.py` before the document work | four failures, one per statement, each naming the document and where it lived |
 | `python3 review/release_artifact.py` after | the four statements are gone and the audit passes with the tag present |
 | `python3 review/install_check.py`'s expectation | inverted (a probe needing the network and the published assets; it is not part of `make check`) |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 | `make pty` | ok |
 
 **The phase's measured numbers (this commit).** **Thirty-five deliveries**, **no self-refine card was spent on
 this**: the release was the operator's decision work (D-341/D-342/D-343), and the audit loop's next card
-implements the goal-close lever. Totals are in the operator's verification entry that follows.
+implements the work-close lever. Totals are in the operator's verification entry that follows.
 
 **Ceiling.** The release asset itself is the workflow's own output, not this tree's rehearsal: if its run fails,
 the tag exists and publishes nothing, and the failure is the next entry's subject. `review/install_check.py`
@@ -6160,7 +6204,7 @@ implementation exists.
 | Item(s) | Decision | What implements it |
 |---|---|---|
 | D-203, the release | **publish v0.2.0** from this tree: the version bump and the rehearsal are done, so the remaining act is the tag; the caveat statements in both READMEs and `docs/INSTALL.md` then come out | the operator pushes the tag after `make release-rehearsal` on the frozen commit (rehearsal green on `c635dba3`), then a card updates the documents and recomputes `review/release_artifact.py`'s fact — **the push itself waits for the user's explicit go-ahead, D-342** |
-| D-267/D-280, a goal with no close lever | **add one**: a goal whose ceiling or deadline is spent can be closed, and the instance it parked can run again | a card: the control-plane verb, `teamagents goals cancel --id`, the protocol and events pages, and the goal-lifecycle rules of `V2Control` with their controls |
+| D-267/D-280, a work with no close lever | **add one**: a work whose ceiling or deadline is spent can be closed, and the instance it parked can run again | a card: the control-plane verb, `teamagents work_scopes cancel --id`, the protocol and events pages, and the work-lifecycle rules of `V2Control` with their controls |
 | D-240, `max_retries` | **wire it** — measured before dispatching a card: **already delivered by D-247**, and re-measured here (`review/dogfood/max_retries.py`: asked-none one request, asked-three four attempts, omitted three, the default 2) | none |
 | D-102, `instruction_files` | **implement it** — measured before dispatching a card: **already delivered by D-246** (the user config's files are merged into the prompt at build time, the project file is not read until trust, and `doctor` reports the count) | none |
 | D-191, the artifact cadence | **no timer**: the boot sweep plus the on-demand `artifacts gc` verb is the policy, and the daemon sweeps once at startup too | a small card |
@@ -6174,11 +6218,11 @@ implementation exists.
 **Correction (2026-09-29, the same day).** Dispatching the first three rows showed two of them were already
 delivered by later entries that the flagged ones predate — `max_retries` by D-247 and `instruction_files` by
 D-246, both re-measured — and that `archived_days` has nothing to delete in a one-session-per-state-root
-build. Those three rows now say so, and the first card this entry produced was the goal-cancel lever
+build. Those three rows now say so, and the first card this entry produced was the work-cancel lever
 (D-344), which was genuinely open.
 
 **Ceiling.** This entry decides; it implements nothing. Each "what implements it" row is a card the operator will
-dispatch through the same loop — one bounded task, the goal's own required check, and the operator's verification
+dispatch through the same loop — one bounded task, the work's own required check, and the operator's verification
 and commit — and the loop's audit of the acceptance matrix resumes between them. The two items whose cards touch
 `verification/tla` carry the section-0 obligations when they land.
 
@@ -6209,7 +6253,7 @@ wrong; the entry now says exactly what the greps return.
 | grep for `MC_grants` across `docs/ACCEPTANCE.md` at `15a0130f` | 0 hits — the finding stands |
 | grep for the two property names in the matrix at `15a0130f` | `OfferedToolsAreAuthorized` in A02's row; `StaleSurfaceCatchesUp` in A03's (D-337) — the correction |
 | `python3 review/citations.py` | **946 citations / 81 relative links / 612 `make` commands / 1003 `§`-references, 0 unexplained** — the frozen tree's counts, this entry's own text and D-341's included |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 | `make pty` | ok |
 
 **The audit's yield.** Twenty-three cards have produced twenty-four findings: ten coverage holes, thirteen claim
@@ -6262,7 +6306,7 @@ verification file changed: the claim was true in aggregate and uncheckable in de
 | TLC on `MC_authority_trustsurface.cfg` / `MC_authority_stalesurface.cfg` (recorded in D-337, same day) | `AuthorizedEffectsOnly is violated.` / `StaleSurfaceCatchesUp` — the second named by no row |
 | `grep` for `MC_grants` across the matrix, and for `too wide`/`wider`/`OverWide` across the cfgs and both modules | no row names any `MC_grants*` control; no rule or control models a too-wide-but-not-stale surface |
 | `python3 review/citations.py` after the row edit, after D-340's and after D-341's | 946 citations / 81 links / 612 `make` / 1003 `§`, 0 unexplained (937/603/1002 before the operator's entries); the docstring moved 925→945 citations and 603→607 `make` across them |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 
 **Ceiling.** A claim-precision fix, with a measured correction of my own first reading: the "stale or too-wide"
 prose is accurate, so the defect is the missing names, not the adjectives. I reverted no line, so there is no
@@ -6300,7 +6344,7 @@ side, with the positive config as its own control.
 | reading the cfgs | the trustsurface cfg's own comment names §6.1/A04 as the rule whose mistake it models |
 | reading `verification/tla/V2Authority.tla` | the three properties the row names are defined there |
 | `python3 review/citations.py` | **925 citations / 81 relative links / 603 `make` commands / 1002 `§`-references, 0 unexplained** — the frozen tree's counts, this entry's own text included |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 | `make pty` | ok |
 
 **The audit's yield.** Twenty-two cards have produced twenty-three findings: ten coverage holes, twelve claim
@@ -6354,7 +6398,7 @@ verification file changed: the aggregate claim was true (three controls are refu
 | TLC on `MC_authority_badview.cfg` and `MC_authority_stalesurface.cfg` | both refuted (`Error: Temporal properties were violated.`); the property each must break is stated in its own cfg comment (`EveryLiveGrantBecomesRevocable`, `StaleSurfaceCatchesUp`) |
 | the positive config `MC_authority.cfg` | lists the properties the module proves, including `CascadeTakesTheSubtree`; the temporal `CascadeOnlyTakesTheSubtree` and `EveryLiveGrantBecomesRevocable` are the two the row's prose describes |
 | `python3 review/citations.py`, after the row edit, after this entry and after D-338's | **925 citations / 81 links / 603 `make` / 1002 `§`, 0 unexplained** (908/598/998 after the row edit alone, 916/600/1000 before the operator's entry); `review/citations.py`'s docstring and `review/README.md`'s make-citation count were updated to the measured numbers, which each gate run after the edits required (D-223/D-234) |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 
 **Ceiling.** A claim-precision fix. I reverted no line, so there is no byte-identical restore to report here: the
 control is the refutation measurement itself (the `trustsurface` run prints a property name the old sentence
@@ -6394,7 +6438,7 @@ states the measured value; this entry is the re-measurement.
 | the operator's control (the resume's watermark → 0) | the named test **FAILED**: `left: Number(0)`, `right: Number(3)` at `src/daemon_client.rs:315` |
 | restoring the control byte-identically | sha256 `2502235f…`; `git diff` clean; the test **ok** again |
 | `python3 review/citations.py` | 905 citations / 81 relative links / 598 `make` commands / 997 `§`-references, 0 unexplained |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 | `make pty` | ok |
 
 **The audit's yield.** Twenty-one cards have produced twenty-two findings: ten coverage holes, eleven claim holes
@@ -6415,7 +6459,7 @@ operator verified the one name this row now claims, not the whole survey.
 
 **What the row claims and what its citations cover.** A28 ("Disconnect, slow client, reconnect") claims the
 client's half: it says it is disconnected and a new daemon brings it back. It cites
-`v2_daemon::handshake_checkpoint_command_and_goal_completion` and `reconnect_backfills_events_after_the_watermark`
+`v2_daemon::handshake_checkpoint_command_and_work_completion` and `reconnect_backfills_events_after_the_watermark`
 (the *daemon* backfills after a watermark), the live probe `tui_reconnect.py`, and — for the client's own
 reconnect — the *file* `tui/tests/reconnect.rs`.
 
@@ -6443,7 +6487,7 @@ D-324's dated 155-name measurement is left as it stands, as a record of that mom
 | counter-control: `tui/src/daemon_client.rs`'s resume changed from `json!({"since": self.watermark})` to `json!({"since": 0})` | `cargo test --offline --lib lost_connection` **FAILED**: `daemon_client::tests::lost_connection_marks_disconnected_and_reconnect_resumes` panicked at `src/daemon_client.rs:315`, `left: Number(0)`, `right: Number(3)`; the line was restored byte-identically (`diff` clean) |
 | the same test after the restore | passes |
 | `python3 review/citations.py` after the row edit | 905 citations / 81 links / 598 `make` / 997 `§`, 0 unexplained; the docstring updated 900→904 (the entry first said 901 — the operator's re-measurement, D-336) |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 
 **Ceiling.** No behaviour change and no defect: the client resumes from its watermark, and now a row says which
 test proves it. A28's other halves — the live probe's dated numbers, the latency measurements (D-85) and the
@@ -6476,7 +6520,7 @@ reason* is gone, which is precisely the half the citation has to bear; the line 
 | the operator's control (the reason's name field dropped) | the named test **FAILED** (0.16 s): park intact, reason unnamed |
 | restoring the control byte-identically | sha256 `7d2187ce…`; `git diff` clean; the test **ok** again (0.17 s) |
 | `python3 review/citations.py` | 900 citations, 81 relative links, 597 `make` commands, 997 `§`-references, 0 unexplained (the docstring was moved with the row) |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 | `make pty` | ok |
 
 **The audit's yield.** Twenty cards have produced twenty-one findings: nine coverage holes, eleven claim holes and
@@ -6524,7 +6568,7 @@ citation was.
 | counter-control: `engine/src/bound.rs`'s reason changed from `format!("required tool service {name:?} is unavailable: {e}")` to a form without `{name:?}` | `cargo test --offline --manifest-path engine/Cargo.toml --test cli the_instances_list_says_why_an_instance_is_parked -- --exact` **FAILED**: `the row says why: session s-main: 1 instance(s) / i-leader PARKED / READY — a required tool service is unavailable: MCP workspace initialization failed: MCP server exited`; the line was restored byte-identically (`diff` clean) |
 | the same test after the restore, and the whole suite | pass |
 | `python3 review/citations.py` after the row edit | 900 citations / 81 links / 596 `make` / 997 `§`, 0 unexplained; the docstring updated to match (899→900) |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 
 **Ceiling.** No behaviour change and no defect: the park and the named reason are implemented and now have a named
 offline test. I did not re-run the live probe; its dated numbers stand as recorded. A07's turn-storm halves
@@ -6558,7 +6602,7 @@ gained is precision (the ordering, the code anchor, the property its control rep
 | the operator's control (that `persist()` removed) | the cited test **FAILED**: `left: "READY"`, `right: "START_ACCEPTED"` (0.02 s) |
 | restoring the control byte-identically | sha256 `c36a4dca…`; `git diff` clean; the test **ok** again (0.03 s) |
 | `python3 review/citations.py` | recomputed after this entry too: 899 citations, 81 relative links, 596 `make` commands, 997 `§`-references, 0 unexplained |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 | `make pty` | ok |
 
 **The audit's yield.** Nineteen cards have produced twenty findings: eight coverage holes, eleven claim holes and
@@ -6608,7 +6652,7 @@ product or test code changed.
 | the code reading | the `go` branch persists `START_ACCEPTED` before `start_command`; `start_command`'s spawn-then-record order is *inside* that accept, so the model's counterfactual state is unreachable |
 | counter-control: the accept's `persist()` removed from the `go` branch | the cited test **FAILED**: `assertion left == right failed`, `left: "READY"`, `right: "START_ACCEPTED"` — exactly the modelled counterfactual state (a READY journal with the effect real); the line was restored byte-identically (`diff` clean) |
 | `cargo test --offline --manifest-path engine/Cargo.toml --test jobs_runner runner_crash_after_accept_recovers_as_outcome_unknown -- --exact` after the restore | **ok** (0.04 s) |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 
 **Ceiling.** No defect: the ordering the model proves is implemented and pinned by a test. What the row gained is
 precision — the control's rule and the code anchor — not a behaviour change. A11's other halves (the daemon-crash
@@ -6626,7 +6670,7 @@ and `"store":false` — and no delegation appears in the path. (2) The operator'
 it received: the `task` wait condition's Satisfied arm in `core/src/v2/control.rs` (the block that reads the
 task's status) changed to Pending, the file's sha256 before the edit `0bfe2784…`; the glob's test passed (0.05 s
 — it has no delegation to break) and `spawned_worker_settles_and_the_leader_completes` **FAILED** after 21.26 s
-(`event goal_completed did not arrive within 20000ms`); the line was restored byte-identically (sha256
+(`event work_completed did not arrive within 20000ms`); the line was restored byte-identically (sha256
 `0bfe2784…`, `git diff` clean on that file) and the glob's test is green again (0.05 s).
 
 **The one correction the re-measurement forced.** D-329 and the A27 row said the body has 0 hits for
@@ -6644,7 +6688,7 @@ holds, and both texts now say exactly what the grep returns instead of a rounder
 | restoring the control byte-identically | sha256 `0bfe2784…`; `git diff` clean; the glob's test **ok** again (0.05 s) |
 | `python3 review/citations.py` | 891 citations, 0 unexplained (recomputed after the rewording) |
 | `python3 review/decision_citations.py` | refused this entry's own forward reference while it was unwritten — a citation with no heading fails the gate |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 | `make pty` | ok |
 
 **The audit's yield.** Eighteen cards have produced nineteen findings: eight coverage holes, ten claim holes and
@@ -6691,7 +6735,7 @@ changed.
 | the reading measurement | the only test the glob matches contains no `delegate` and no `task` — it asserts routing only |
 | counter-control: the `task` wait condition's `Satisfied` arm → `Pending` (cooperation broken, routing untouched) | the **glob's** routing test **passed** (0.06 s — it has no delegation to break), while `v2_supervisor::spawned_worker_settles_and_the_leader_completes` **FAILED** (panicked in its wait after 21.25 s) — the measurement behind the reworded claim |
 | the control line restored byte-identically (`diff` clean) | **ok**; the routing test passes again (0.06 s) |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 
 **Ceiling.** The fakes' contrast (the two wires, each carrying its own model) is real and now stated; the
 *cooperation* across protocols is proven by the dated live harness (`providers.py`: 2026-09-25 and the two
@@ -6718,7 +6762,7 @@ code changed.
 per-call unique, `format!("{envelope_id}-again-{sequence}")`) and the new test fails with `called
 Result::unwrap_err() on an Ok value: {"envelope_id": "e1", "applied": false, …}` — the replay no longer hits the
 key — and restoring the file byte-identically (sha256 `0bfe2784…`, `git status` clean of it) puts it back to `ok`.
-`env -u DEEPSEEK_API_KEY make check` `rc=0` (25 green targets) and `make pty` ok, and the goal settled only after
+`env -u DEEPSEEK_API_KEY make check` `rc=0` (25 green targets) and `make pty` ok, and the work settled only after
 its own required check passed — the twenty-sixth of twenty-eight machine-gated deliveries.
 
 **The audit's yield.** Seventeen cards have produced **eighteen findings**: eight coverage, nine claims and one
@@ -6762,7 +6806,7 @@ break the inbox. A06's row now cites it as the code side of the restart half. **
 | pre-fix control: the `submit_input` INSERT's row id made per-call unique — `envelope_id,` → `format!("{envelope_id}-again-{sequence}"),` (the persisted dedup key defeated) | **both** tests **FAILED**: each `called Result::unwrap_err() on an Ok value: {"envelope_id": "e1", "applied": false, "instance_revision": 0}` — the replay no longer hit the persisted key; the line was restored byte-identically (`diff` clean) |
 | a first control attempt with a *deterministic* suffix **passed**, because the same suffixed id still collided — the control needs a per-call value, and that is what I then used | recorded as the measurement that made the control correct |
 | `python3 review/test_counts.py --write` | `core: 114 -> 115` (the new test) |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 
 **Ceiling.** The restart here is a *second connection over the same database* — the level the control plane owns;
 a *process* restart adds nothing to this rule (the state is in the file) but is not driven by this test. The
@@ -6787,7 +6831,7 @@ also pins that the user cannot register rounds directly). The row now cites all 
 `register_check_runs` identity guard (`if !matches!(identity, Identity::System)` → `if false`) and the cited test
 fails with `assertion failed: ctl.submit(cmd("cr-u", "register_check_runs", …` — the user's registration
 succeeded — and the file is restored byte-identically (sha256 `60ee66e2…`, `git status` clean of it).
-`env -u DEEPSEEK_API_KEY make check` `rc=0` (25 green targets) and `make pty` ok, and the goal settled only after
+`env -u DEEPSEEK_API_KEY make check` `rc=0` (25 green targets) and `make pty` ok, and the work settled only after
 its own required check passed — the twenty-fifth of twenty-seven machine-gated deliveries.
 
 **The phase passes a round number.** **One thousand model requests** and **386,579,790 tokens** have produced
@@ -6805,7 +6849,7 @@ rounds and three resumes. Four of the twenty-seven defects came from the operato
 whose citations are globs or whose titles name two things, since that is where both orphan cards came from.
 
 **Ceiling**: the three tests pin the rule for those three write paths; other multi-row writes (a wait's
-registration, a goal's close) may be pinned by their own tests without being cited here, and the row does not
+registration, a work's close) may be pinned by their own tests without being cited here, and the row does not
 claim to enumerate them. The remaining twenty-two rows are still prose-first.
 
 ## D-325 A30's "DB write boundaries" half had three tests that no document named (2026-09-29)
@@ -6836,7 +6880,7 @@ the row's title and its evidence agree on both halves. No product or test code c
 | the orphan measurement: greps for the three test names across `docs/`, `review/` and `verification/` | **no mention** of any of them before this row edit |
 | pre-fix control: the `register_check_runs` identity guard dropped — `if !matches!(identity, Identity::System)` → `if false` | the *cited* test **FAILED**: `assertion failed: ctl.submit(cmd("cr-u", "register_check_runs", …` — with the guard gone the user's registration succeeded; the line was restored byte-identically (`diff` clean, `core/src/v2/control.rs` unchanged) |
 | `cargo test --offline --manifest-path core/Cargo.toml --lib register_check_runs_commits_the_round_atomically` after the restore | **ok** (0.01 s) |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 
 **Ceiling.** The three tests assert the *committed* state — their atomicity is structural in the SQL transaction,
 with no fault injected, so a *rollback* under a failed later step is not driven for these three (the nearest
@@ -6861,7 +6905,7 @@ breaker") so the next turn goes straight to the model. The row now cites
 file (`git grep -l`). The operator's own control disables the breaker (`>= 3` → `>= 30` in `over_threshold`) and
 the *cited* test fails with `left: 4`, `right: 3` on the `compression_failed` count — the fourth turn attempted a
 fourth summary — and restoring the file byte-identically (sha256 `8347ff76…`, `git status` clean of it) puts it
-back to `ok`. `env -u DEEPSEEK_API_KEY make check` `rc=0` (25 green targets) and `make pty` ok, and the goal
+back to `ok`. `env -u DEEPSEEK_API_KEY make check` `rc=0` (25 green targets) and `make pty` ok, and the work
 settled only after its own required check passed — the twenty-fourth of twenty-six machine-gated deliveries.
 
 **A calibration the operator will use.** The entry also measured that **155** test names are named by no document
@@ -6912,7 +6956,7 @@ test. No product or test code changed, and `engine/src/v2/driver.rs` is unchange
 | the orphan measurement: a grep for `failed_summaries_fall_back_uncompressed_and_break_after_three` across `docs/`, `review/` and `verification/` | **no mention** before this row edit |
 | pre-fix control: the breaker disabled — `if self.compact_failures >= 3` → `>= 30` in `over_threshold` | the *cited* test **FAILED**: `left: 4`, `right: 3` on the `compression_failed` count (the fourth turn attempted a fourth summary); the line was restored byte-identically (`diff` clean) |
 | `cargo test --offline --manifest-path engine/Cargo.toml --test v2_driver failed_summaries_fall_back_uncompressed_and_break_after_three -- --exact` after the restore | **ok** (0.16 s) |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 
 **Ceiling.** The L2 *threshold* itself (over 90% of the native window minus the output reserve; an unknown window
 never triggers) is exercised only from the *triggering* side by these tests — a test asserting that a context
@@ -6927,7 +6971,7 @@ The product's entry is D-321. This entry is the operator's verification and the 
 
 **What the audit found, and a new class.** A16's row is §8's required checks, and its evidence covered the *repair*
 arm (a failed check sends the work back, bounded, then blocks). The **other** arm is that a check which *cannot
-run* — a refused dispatch, or a runner that never started — is **not model-repairable**: the goal parks at once
+run* — a refused dispatch, or a runner that never started — is **not model-repairable**: the work parks at once
 with the classes named and **no repair round is spent**. That arm was driven by a test that already existed —
 `v2_driver::check_dispatch_refused_parks_without_burning_repair_rounds` — but **no row, decision or document named
 it**. So this row's hole is the mirror image of the others: not a claim without evidence, but **evidence without a
@@ -6937,7 +6981,7 @@ claim**, and the row now cites it.
 returns only its own file (`engine/tests/v2_driver.rs`) — no document named it — and the test's body asserts
 exactly what the row now says (the park reason carries `dispatch_refused`, and `no_event(completion_repair)`, i.e.
 no repair round is spent); the operator also ran it (`ok` in 0.04 s on this tree). `env -u DEEPSEEK_API_KEY make
-check` `rc=0` (25 green targets) and `make pty` ok, and the goal settled only after its own required check passed
+check` `rc=0` (25 green targets) and `make pty` ok, and the work settled only after its own required check passed
 — the twenty-third of twenty-five machine-gated deliveries.
 
 **The audit's yield.** Fourteen cards have produced **fifteen findings**: seven coverage, seven claims and one
@@ -6961,10 +7005,10 @@ the row says so rather than implying they are. The remaining twenty-four rows ar
 
 **The row, and what its evidence asserts.** A16 ("A required check fails") is the matrix's checks-gate row. Its
 evidence drives the *repairable* path end to end (`required_checks_failure_repairs_then_passes`,
-`required_checks_exhausted_parks_the_goal_blocked`, `configured_checks_gate_the_goal_through_the_config_edge` and
+`required_checks_exhausted_parks_the_work_blocked`, `configured_checks_gate_the_work_through_the_config_edge` and
 the live `checks.py` on both protocols), the *headless* half
-(`v2_daemon::a_runtime_blocked_goal_is_not_reported_as_a_reply`, whose five facts I re-read: exit 1,
-`goal_status: BLOCKED`, `reply: null`, the settlement event's `blocked_by: runtime`, the tail entry of kind
+(`v2_daemon::a_runtime_blocked_work_is_not_reported_as_a_reply`, whose five facts I re-read: exit 1,
+`work_status: BLOCKED`, `reply: null`, the settlement event's `blocked_by: runtime`, the tail entry of kind
 `runtime`) and the two-gates half (`two_gates.py`). All of that checks out — the claim is proven.
 
 **The hole beside it.** The same gate has a second arm, and its test was **orphaned**: §8's *bounded handling* —
@@ -6984,9 +7028,9 @@ row a reader trusts. No product or test code changed.
 | Command | Result |
 |---|---|
 | the orphan measurement: a grep for `check_dispatch_refused_parks_without_burning_repair_rounds` across `docs/`, `review/` and `verification/` | **no mention** before this row edit |
-| pre-fix control: the driver's infra matcher dropped — `let infra = failures.iter().any(...)` → `let infra = false;` | the *cited* test **FAILED** (panicked in the wait helper after 20 s: with no short-circuit the goal entered repair rounds instead of parking, so no `goal_blocked` arrived); the line was restored byte-identically (`diff` clean) and `engine/src/v2/driver.rs` is unchanged against `HEAD` |
+| pre-fix control: the driver's infra matcher dropped — `let infra = failures.iter().any(...)` → `let infra = false;` | the *cited* test **FAILED** (panicked in the wait helper after 20 s: with no short-circuit the work entered repair rounds instead of parking, so no `work_blocked` arrived); the line was restored byte-identically (`diff` clean) and `engine/src/v2/driver.rs` is unchanged against `HEAD` |
 | `cargo test --offline --manifest-path engine/Cargo.toml --test v2_driver check_dispatch_refused_parks_without_burning_repair_rounds -- --exact` after the restore | **ok** (0.05 s) |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 
 **Ceiling.** The matcher accepts two classes (`dispatch_refused`, `spawn`); only the first is tested. Making a
 check's *runner* fail to spawn needs the process-wide `TEAMAGENTS_RUNNER_BIN` override, which every sibling test
@@ -7011,7 +7055,7 @@ design settles the question, so nothing went back to the user's queue.
 **Verified.** The operator reproduced the failing control — the anonymous arm made unsatisfiable
 (`(applied, true)` → `(0, true)`) — which fails the new test with `woken: []` against `["w-d-x"]`, and restored the
 file byte-identically (sha256 `60ee66e2…` as it stands now). `env -u DEEPSEEK_API_KEY make check` `rc=0` (25 green
-targets) and `make pty` ok, and the goal settled only after its own required check passed — the twenty-second of
+targets) and `make pty` ok, and the work settled only after its own required check passed — the twenty-second of
 twenty-four machine-gated deliveries.
 
 **A control that taught something, and a hash that describes a moment.** The product's *first* control — flipping
@@ -7075,7 +7119,7 @@ never named (`i3`), woken in the transaction that drains it. A23's row now cites
 | pre-fix control: the `None` arm made unsatisfiable — `(applied, true)` → `(0, true)` | **FAILED**: `woken: []` (left) vs `["w-d-x"]` (right); the line was restored byte-identically (`diff` clean, `sha256sum` `3f8c6b29…`) |
 | the *first* control I tried: the `None` arm's `kind = 'message'` flipped to `kind = 'task_result'` | **passed**, and that is itself a measurement: the drain re-checks a `message` condition only when a *message* arrives, so part (a)'s task result satisfied the flipped query without touching my assertions — the wake is driven by the arriving fact's kind, and `condition_state`'s filter is a second line of defence. I discarded that control and used the unsatisfiable-arm one |
 | `python3 review/test_counts.py --write` | `core: 113 -> 114` (the new test) |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 
 **Ceiling.** The test drives the anonymous condition through the control plane (registration, the fact-kind
 gate and the drain); it does not re-drive the *live* ring (dated 2026-09-26, unchanged) and it does not add a
@@ -7090,17 +7134,17 @@ The product's entry is D-317. This entry is the operator's verification and the 
 **What the card was, and what it found.** It was the first candidate of the previous row's own ceiling: `finish`
 offers `status: success|blocked|failed`, the outcome contract's three arms, and the string `"status": "failed"`
 appeared in **no test**. The delivery closes the arm twice over: at the daemon level, a model reporting `failed`
-closes the goal `FAILED` and the headless run ends `End::Failed` with exit code 1 and `goal_status: "FAILED"` —
-not a success, not a reply, not a timeout; and at the driver level the goal closes `FAILED` while the configured
+closes the work `FAILED` and the headless run ends `End::Failed` with exit code 1 and `work_status: "FAILED"` —
+not a success, not a reply, not a timeout; and at the driver level the work closes `FAILED` while the configured
 required checks **never run** (the check that would `touch ran` leaves no witness), which is the same shape as
 the `blocked` arm beside it: only a claimed *success* is verified.
 
-**Verified.** The operator's own control is the classification itself: making `complete_goal`'s fall-through arm
+**Verified.** The operator's own control is the classification itself: making `complete_work`'s fall-through arm
 map a candidate's `failed` outcome to `SUCCEEDED` fails **both** new tests — the daemon one with
-`left: Completed`, `right: Failed` and `goal_status: "SUCCEEDED"` in the report (the faked success the contract
+`left: Completed`, `right: Failed` and `work_status: "SUCCEEDED"` in the report (the faked success the contract
 forbids), and the driver one by timing out while waiting for a `FAILED` close — and restoring the file
 byte-identically (sha256 `3ac6e946…`, unchanged) puts both back to `ok`. `env -u DEEPSEEK_API_KEY make check`
-`rc=0` (25 green targets) and `make pty` ok, and the goal settled only after its own required check passed — the
+`rc=0` (25 green targets) and `make pty` ok, and the work settled only after its own required check passed — the
 twenty-first of twenty-three machine-gated deliveries.
 
 **The audit's yield.** Twelve cards (eleven rows plus the numbers sweep) have produced **thirteen findings**: six
@@ -7116,10 +7160,10 @@ delivery semantics — and then the remaining rows. The operator keeps verifying
 control, the gate and the `make pty` smoke.
 
 **Ceiling**: the new tests pin the failing arm through two surfaces and the "checks never run" rule; the *report*
-mapping for other terminal combinations (a blocked goal with a failed check, say) is covered by the neighbouring
+mapping for other terminal combinations (a blocked work with a failed check, say) is covered by the neighbouring
 tests, and nothing here re-checks them. The remaining twenty-five rows are still prose-first.
 
-## D-317 The outcome contract's third arm: a model that reports `failed` now ends a goal end to end (2026-09-29)
+## D-317 The outcome contract's third arm: a model that reports `failed` now ends a work end to end (2026-09-29)
 
 **The candidate, and what I rejected.** D-316's ceiling offered two. I took **(a) `finish`'s `status: failed`**:
 it is the *outcome contract*'s third arm — a run either settles, fails, or is unfinished — and the arm the
@@ -7131,17 +7175,17 @@ hold **0** `{"kind": "message"}` conditions without a `from`, from the D-315 tri
 fixed, because its rows are A22/A23 (already audited) and its claim lives in the tool schema, not in a row.
 
 **What the evidence actually asserted.** The `failed` *parse* is covered — `core/src/kernel/mod.rs`'s test feeds
-`{"status":"failed"}` and asserts `Outcome::Failed` — and the report maps a goal closed `FAILED` to a failed run
-(`v2::exec::tests::exit_codes_follow_the_documented_contract` uses a FAILED goal). The **`blocked`** arm has
-*two* end-to-end tests: `v2_daemon::a_blocked_goal_is_not_reported_as_a_success` (not exit 0) and
+`{"status":"failed"}` and asserts `Outcome::Failed` — and the report maps a work closed `FAILED` to a failed run
+(`v2::exec::tests::exit_codes_follow_the_documented_contract` uses a FAILED work). The **`blocked`** arm has
+*two* end-to-end tests: `v2_daemon::a_blocked_work_is_not_reported_as_a_success` (not exit 0) and
 `v2_driver::blocked_candidate_never_runs_the_checks` (§8: the checks never run). The **`failed`** arm had none:
-`"status": "failed"` appeared in **no** test, so nothing drove a model closing its goal `failed`.
+`"status": "failed"` appeared in **no** test, so nothing drove a model closing its work `failed`.
 
 **The change (coverage, not behaviour).** Two tests, each mirroring its `blocked` sibling:
-`v2_daemon::a_failed_goal_is_not_reported_as_a_success` (a scripted `finish` with `status: failed` →
-`end=failed`, `goal_status=FAILED`, exit 1, not a reply, not a timeout) and
-`v2_driver::a_failed_candidate_closes_the_goal_failed_and_never_runs_the_checks` (the goal closes `FAILED`, the
-`goal_completed` payload's `completion.outcome` is `failed`, no `check_round_registered`, and a check whose
+`v2_daemon::a_failed_work_is_not_reported_as_a_success` (a scripted `finish` with `status: failed` →
+`end=failed`, `work_status=FAILED`, exit 1, not a reply, not a timeout) and
+`v2_driver::a_failed_candidate_closes_the_work_failed_and_never_runs_the_checks` (the work closes `FAILED`, the
+`work_completed` payload's `completion.outcome` is `failed`, no `check_round_registered`, and a check whose
 command would leave a witness never ran — §8: only a claimed `success` is verified). The matrix's exit-code
 contract row cites both now. **No product code changed**: the §8 gate and the status mapping were already
 correct, and the two controls below show what breaking them does.
@@ -7150,14 +7194,14 @@ correct, and the two controls below show what breaking them does.
 
 | Command | Result |
 |---|---|
-| `cargo test --offline --manifest-path engine/Cargo.toml --test v2_daemon a_failed_goal_is_not_reported_as_a_success -- --exact` | **ok** (0.32 s) |
-| `cargo test --offline --manifest-path engine/Cargo.toml --test v2_driver a_failed_candidate_closes_the_goal_failed_and_never_runs_the_checks -- --exact` | **ok** (0.05 s) |
+| `cargo test --offline --manifest-path engine/Cargo.toml --test v2_daemon a_failed_work_is_not_reported_as_a_success -- --exact` | **ok** (0.32 s) |
+| `cargo test --offline --manifest-path engine/Cargo.toml --test v2_driver a_failed_candidate_closes_the_work_failed_and_never_runs_the_checks -- --exact` | **ok** (0.05 s) |
 | the suites | `v2_daemon` **32/32**, `v2_driver` **39/39** |
 | control (a): the driver's §8 gate narrowed — `if outcome == "success"` → `if outcome != "blocked"` (a failed candidate runs its checks) | **FAILED**: `assertion failed: no_event(&handle, "check_round_registered")`; the line was restored byte-identically (`diff` clean) and `engine/src/v2/driver.rs` is unchanged against `HEAD` |
-| control (b): `complete_goal`'s mapping changed — `_ => "FAILED"` → `_ => "SUCCEEDED"` (a faked success) | **FAILED**: the report printed `"end":"completed"`, `"goal_status":"SUCCEEDED"`, `left: Completed`, `right: Failed`; the line was restored byte-identically |
+| control (b): `complete_work`'s mapping changed — `_ => "FAILED"` → `_ => "SUCCEEDED"` (a faked success) | **FAILED**: the report printed `"end":"completed"`, `"work_status":"SUCCEEDED"`, `left: Completed`, `right: Failed`; the line was restored byte-identically |
 | `python3 review/test_counts.py --write` | `engine: 286 -> 288` (the two new tests) |
 | **the knock-on, caught by D-313's own audit**: A14's row stated the counts it had *measured* ("…step printed core 113 / engine 286 / tui 36"), which went stale the moment these two tests landed | `review/test_counts.py` **FAILED** on it (`…the clause before it does not phrase it as history`); A14 now says "…step **then** printed …" — a dated measurement phrased as history — and the audit is green again |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 
 **Ceiling.** The two tests cover the model's `failed` arm end to end: the close, the exit code and §8's
 check-gating. Still open and recorded: the wait tool's **`from`-less `message` condition** (0 tests; its rows
@@ -7170,7 +7214,7 @@ current-sounding.
 
 The product's entry is D-315. This entry is the operator's verification and the phase's measured numbers.
 
-**What the audit found this time.** A01 is "a single Leader completes a goal (and **the team it builds runs**)".
+**What the audit found this time.** A01 is "a single Leader completes a work (and **the team it builds runs**)".
 Its central claim turned out to be driven (a `cli` test covers the doctor note the row also makes), but two things
 about the evidence were not: the "team runs" half was cited from a **real-model** delegation run whose raw evidence
 sits in `review/tmp/dogfood/` — an **ignored** directory, so nothing a reader or CI can reproduce — and the run's
@@ -7180,11 +7224,11 @@ number (16.3 s) carried **no date**. The row now cites
 
 **Verified.** The operator read the cited test's body — the leader `spawn`s a worker, `delegate`s `t-answer`,
 `wait`s on the task and `finish`es, while the worker's own `finish` settles the delegated task, and the test
-asserts `goal_completed: SUCCEEDED` plus the task's status — and ran it: `ok` in 0.06 s on this tree. The operator
+asserts `work_completed: SUCCEEDED` plus the task's status — and ran it: `ok` in 0.06 s on this tree. The operator
 also confirmed `.gitignore:12` ignores `/review/tmp/`, which is precisely why an offline citation was needed. The
 product's own control checks the committed row (`HEAD`) for both additions and finds both absent
 (`cites an offline team test? False`, `a date next to the delegation number? False`). `env -u
-DEEPSEEK_API_KEY make check` `rc=0` (25 green targets) and `make pty` ok, and the goal settled only after its own
+DEEPSEEK_API_KEY make check` `rc=0` (25 green targets) and `make pty` ok, and the work settled only after its own
 required check passed — the twentieth of twenty-two machine-gated deliveries.
 
 **The audit's yield, eleven rows and one sweep: twelve findings.** Coverage: A33, A19, A15, A22, A23. Claims:
@@ -7199,7 +7243,7 @@ rounds and three resumes. Four of the twenty-two defects came from the operator'
 last thirteen deliveries all came from the claims audit and its sweep.
 
 **Next card**: the row's own ceiling names the next candidates — `finish`'s `status: failed` (no test drives a
-model closing a goal FAILED end to end; the string appears in no test) and the `wait` tool's `message` condition
+model closing a work FAILED end to end; the string appears in no test) and the `wait` tool's `message` condition
 kind — so the audit continues with a candidate the audit itself handed over.
 
 **Ceiling**: the row now cites a scripted shape for the team half, which proves the *machinery* runs; the
@@ -7208,9 +7252,9 @@ twenty-five rows are still prose-first.
 
 ## D-315 A01's "team it builds runs" half had no offline citation, and its delegation number no date (2026-09-29)
 
-**The row.** A01 ("A single Leader completes a goal (and the team it builds runs)") is the matrix's most
+**The row.** A01 ("A single Leader completes a work (and the team it builds runs)") is the matrix's most
 leaned-on row — every scenario below it rests on it — and it had not been audited. What its evidence *actually*
-asserts: `v2_driver::end_to_end_shell_then_finish` drives one instance to a scripted completion (goal
+asserts: `v2_driver::end_to_end_shell_then_finish` drives one instance to a scripted completion (work
 `SUCCEEDED`, the marker written, phase `READY`, usage billed, `response_imported` and `operation_completed` in
 the log) offline; the headless entry tests cover the CLI path; the web half is dated (2026-09-26) and carries a
 committed guard test; "three real DeepSeek tasks (2026-09-23)" is dated. Two gaps did not survive the reading:
@@ -7224,7 +7268,7 @@ committed guard test; "three real DeepSeek tasks (2026-09-23)" is dated. Two gap
 **The change (the claim and its citations, not the code).** The row now dates the run and names the decision that
 recorded it — "measured 2026-09-25, D-59; raw evidence under `review/tmp/dogfood/`" — and cites the offline
 supervisor test. I read that test before citing it: the leader spawns `i-worker`, delegates `t-answer`, waits on
-the task and finishes; the worker's own turn settles the task (`finish_call("4")`); the goal closes `SUCCEEDED`
+the task and finishes; the worker's own turn settles the task (`finish_call("4")`); the work closes `SUCCEEDED`
 and the `tasks` row is `SUCCEEDED`. D-59's entry records exactly A01's run (three instances, both delegated tasks
 `SUCCEEDED`, both `[[checks]]` commands passing, the whole flow in 16.3 s, `review/tmp/dogfood/`). **No product or
 test code changed.**
@@ -7236,12 +7280,12 @@ test code changed.**
 | the pre-fix control: the committed row (`HEAD`'s `docs/ACCEPTANCE.md`) checked for the two things the fix adds | **both absent**: `cites an offline team test? False`; `a date next to the delegation number? False` — the row's delegation item read "a real delegation run: 3 instances, … 16.3 s (`review/tmp/dogfood/`)" |
 | the same check on the fixed row | **both present**: `cites the offline team test? True`, `a date next to the number? True`; the working file is byte-identical to the saved fixed copy (`diff` clean) |
 | `python3 review/requirement_trace.py` / `review/markdown_tables.py` | 36 matrix rows, 137 tables, all consistent after the edit |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 
 **Leads recorded, not fixed (no A-row claims them).** Sweeping the tool-schema surfaces for this row found two
 *variants* that no test drives and no A-row claims: `finish`'s `status: failed` (the kernel parses it and the
-report maps a goal closed FAILED to a failed run — unit-tested with a FAILED goal status — but no test drives a
-model closing a goal FAILED end to end; `"status": "failed"` appears in no test) and the `wait` tool's `message`
+report maps a work closed FAILED to a failed run — unit-tested with a FAILED work status — but no test drives a
+model closing a work FAILED end to end; `"status": "failed"` appears in no test) and the `wait` tool's `message`
 condition **without** `from` (the "any sender when omitted" form its own description advertises: the tests
 contain **0** `{"kind": "message"}` conditions without a `from`, and `condition_state`'s branch for it is
 unexercised). Both belong to the wait surface's rows (A22/A23, already audited) or to no row at all, so I
@@ -7277,7 +7321,7 @@ pair cannot launder the current one, and a date does not excuse a stale triple.
 `core 999 / engine 286 / tui 36` makes the audit fail with the new rule's message (naming the file, the line and
 the missing history phrasing, D-313) beside the older D-221 statement check, and restoring the file
 byte-identically makes the audit pass again. `env -u DEEPSEEK_API_KEY make check` `rc=0` (25 green targets,
-`review/test_counts.py` inside it) and `make pty` ok, and the goal settled only after its own required check
+`review/test_counts.py` inside it) and `make pty` ok, and the work settled only after its own required check
 passed — the nineteenth of twenty-one machine-gated deliveries.
 
 **The audit's yield.** Ten rows audited plus this sweep: eleven cards, eleven findings — five coverage holes
@@ -7338,7 +7382,7 @@ the current one.
 | `make pty` | **rc=0**, 41 s, `pty v2 smoke: ok` — the ledger's claim, measured |
 | `python3 review/test_counts.py` | **rc=0** on the tree, including A14's past-tense historical pair |
 | control: A14's *current* triple corrupted to `core 999 / engine 286 / tui 36` (no past-tense marker) | **FAIL**: `docs/ACCEPTANCE.md:62 states core 999 / engine 286 / tui 36, the suites have core 113 / engine 286 / tui 36, and the clause before it does not phrase it as history "were … when …" (D-313)`; the file was restored byte-identically (`diff` clean) and the audit passes again |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 
 **Ceiling.** The new check is a *heuristic*, and its limit is stated in the script: it fires on the exact
 `core N / engine N / tui N` shape in three documents, so a row in another document, or a differently shaped
@@ -7360,7 +7404,7 @@ acceptance row is prose no audit can contradict. The delivery runs the target an
 **Verified.** The operator ran the cited target itself: `make check-nobwrap` is `rc=0` in **2 m 05 s** on this (Historical reference; removed in D-480.)
 machine, and its own `test_counts` step printed `the ledger's counts match the suites: core 113 / engine 286 /
 tui 36` — the row's claim reproduced independently, not transcribed. `env -u DEEPSEEK_API_KEY make check` `rc=0`
-(25 green targets) and `make pty` ok, and the goal settled only after its own required check passed — the
+(25 green targets) and `make pty` ok, and the work settled only after its own required check passed — the
 eighteenth of twenty machine-gated deliveries.
 
 **The audit's yield, ten rows in: ten holes.** Five coverage (A33, A19, A15, A22, A23), four claims (A18, A13,
@@ -7413,14 +7457,14 @@ counts stay a dated measurement rather than a second silent source of truth.**
 | `make check-nobwrap` — the row's own evidence | **rc=0**, 1 m 23 s; its ledger step printed `core 113 / engine 286 / tui 36`  (Historical reference; removed in D-480.) |
 | `make check-broken-sandbox` — the row's D-114 evidence | **rc=0**, 1 m 23 s  (Historical reference; removed in D-480.) |
 | the command whose output contradicts the old wording: `python3 review/test_counts.py` | `the ledger's counts match the suites: core 113 / engine 286 / tui 36` — against the row's `100 / 220 / 33` |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 
 **Ceiling.** The counts will move again as tests are added; the row now dates them and points at the
 recomputation, so the next drift is visible rather than silent, but no audit *fails* when it happens — turning
 that into a checked number would mean teaching `review/test_counts.py` to read every row, which is the user's
 call about the audit's scope, not this card's. A lead found while triaging, for the next row: the `finish`
-tool's `status: failed` value is parsed by the kernel and a goal closed FAILED is reported as a failed run (its
-report half has a unit test with a FAILED goal), but no test drives a model closing a goal FAILED end to end
+tool's `status: failed` value is parsed by the kernel and a work closed FAILED is reported as a failed run (its
+report half has a unit test with a FAILED work), but no test drives a model closing a work FAILED end to end
 and no A-row claims it — `"status": "failed"` appears in no test. `make pty`, the probes and the
 model-requiring halves were not run.
 
@@ -7440,7 +7484,7 @@ claim, and the branch a result arriving early depends on. The delivery is inside
 branch never satisfied fails the second — each with `left: "PENDING"`, `right: "SATISFIED"`. Restoring the file
 byte-identically (sha256 `3ac6e946…`, the hash the entry quotes after its own `make fmt` touched only its new
 tests) puts both back to `ok`. `env -u DEEPSEEK_API_KEY make check` `rc=0` (25 green targets) and `make pty` ok,
-and the goal settled only after its own required check passed — the seventeenth of nineteen machine-gated
+and the work settled only after its own required check passed — the seventeenth of nineteen machine-gated
 deliveries.
 
 **The audit's yield, nine rows in: nine holes.** A33, A18, A13, A19, A15, A25, A31, A22 and A23 — five coverage
@@ -7492,7 +7536,7 @@ and the measured gap. **No product code changed.**
 | pre-fix control (b): the operation branch's `Some(status) if is_terminal_op(status)` made never satisfied | **FAILED**: `a terminal operation satisfies at registration`, `left: "PENDING"`, `right: "SATISFIED"` |
 | both lines restored byte-identically (`diff` clean, `sha256sum` `8208c8bd…` at the restore; rustfmt reformatted the two new tests afterwards and changed nothing else, so the file now hashes `3ac6e946…`) | **ok** |
 | `cargo test --offline --manifest-path core/Cargo.toml --lib` | **ok** — 104/104 |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 | `python3 review/test_counts.py --write` | `core: 111 -> 113` (the two new tests) |
 
 **Ceiling.** The two kinds are now driven at *registration*; their *sweep* paths (an envelope applied after the
@@ -7519,7 +7563,7 @@ because the code already matched it, so no section-0 obligation follows.
 `mode == "ALL" && any` makes the first test fail with `woken: ["w-d-x"]` where `[]` is required; (b) the blocked
 clause as ANY's `dead == conditions.len()` for ALL makes the second fail with `left: 0`, `right: 1` — the ALL wait
 with one dead branch was not reported. Restoring the file byte-identically (sha256 `6a9a195e…`, unchanged) puts
-both back to `ok`. `env -u DEEPSEEK_API_KEY make check` `rc=0` (25 green targets) and `make pty` ok, and the goal
+both back to `ok`. `env -u DEEPSEEK_API_KEY make check` `rc=0` (25 green targets) and `make pty` ok, and the work
 settled only after its own required check passed — the sixteenth of eighteen machine-gated deliveries.
 
 **The audit's yield, eight rows in: eight holes.** A33, A18, A13, A19, A15, A25, A31 and A22 — four coverage
@@ -7574,7 +7618,7 @@ A22's row now cites both and says the two it already cited are all-ANY. **No pro
 | pre-fix control (b): the blocked clause reverted to ANY's `dead == conditions.len()` for ALL | **FAILED**: `[]`, `left: 0`, `right: 1` — the ALL wait with one dead branch was not reported |
 | both lines restored byte-identically (`diff` clean, `sha256sum` `6a9a195e…`) | **ok** |
 | `cargo test --offline --manifest-path core/Cargo.toml --lib` | **ok** — 102/102 |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 | `python3 review/test_counts.py --write` | `core: 109 -> 111` (the two new tests) |
 
 **Ceiling.** The two mode rules are now driven at the code level and are modelled by `V2Wait` (unchanged, so no
@@ -7601,7 +7645,7 @@ the simulated fault and a real error clear it) and the reply reports that.
 `jobs_runner::a_write_fault_is_never_reported_as_a_saved_receipt` then fails its *real*-failure half with
 `{"…","cancel_saved":false},"receipt_saved":true` — the faked success the design forbids, reproduced on a job
 directory made unwritable — and restoring the file byte-identically (sha256 `c36a4dca…`, unchanged) puts it back
-to `ok`. `env -u DEEPSEEK_API_KEY make check` `rc=0` (25 green targets) and `make pty` ok, and the goal settled
+to `ok`. `env -u DEEPSEEK_API_KEY make check` `rc=0` (25 green targets) and `make pty` ok, and the work settled
 only after its own required check passed — the fifteenth of seventeen machine-gated deliveries.
 
 **The audit's yield, seven rows in: seven holes, and now one product bug.** A33, A18, A13, A19, A15, A25 and
@@ -7671,7 +7715,7 @@ faked-success finding.
 | the same test with the reply reverted to `!self.fail_writes` (the defect, one line) | **FAILED**: `a real failure must not be reported as a save: {…"receipt_saved":true}`, `left: Bool(true)`, `right: Bool(false)`; restored byte-identically (`sha256sum` `c36a4dca…`) |
 | `cargo test --offline --manifest-path engine/Cargo.toml --test jobs_runner` | **ok** — 17/17 |
 | the four `V2DiskFull` controls re-run (`MC_diskfull_keep_driving/fake_success/park_silently/clear_anyway.cfg`) | each still refutes its property — `NoStepRunsWhileLatched`, **`NoFakedSuccess`**, `LossIsReported`, `LatchClearsOnlyWhenWritable is violated` — so the fixed behaviour is the model's own rule, not a new decision |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 | `python3 review/test_counts.py --write` | `engine: 285 -> 286` (the new test) |
 
 **Ceiling.** The store-level fault injection stays a page-cap trick (no mount privileges are assumed), and the
@@ -7699,7 +7743,7 @@ daemon test to decide by an eight-character prefix and assert the report names t
 exact match makes **both** fail — the unit test at its unique-prefix case, and the daemon test with
 `assertion left == right failed: no approval id starts with "ap-d-req"; teamagents approvals shows the ids` — and
 restoring the file byte-identically (sha256 `597ec9dd…`, unchanged) puts both back to `ok`.
-`env -u DEEPSEEK_API_KEY make check` `rc=0` (25 green targets) and `make pty` ok, and the goal settled only after
+`env -u DEEPSEEK_API_KEY make check` `rc=0` (25 green targets) and `make pty` ok, and the work settled only after
 its own required check passed — the fourteenth of sixteen machine-gated deliveries.
 
 **The audit's yield, six rows in: six holes.** A33, A18, A13, A19, A15 and now A25 — three of them were correct
@@ -7725,7 +7769,7 @@ approval / cancellation / unknown outcome"): it is probe- and shape-driven (the 
 against a real daemon, `V2Approval` with its four refuted controls) and load-bearing — the approval surface is
 where a user authorises an effect. Reading it, I checked its sub-claims against their evidence: the TUI probe
 drives **both** decisions (`approval.py --decision approve|deny`, keys `a`/`d`); the approvals CLI test asserts
-the list, a typo refusal, the decision and the goal's completion; the sandbox/host modes, the network switch, the
+the list, a typo refusal, the decision and the work's completion; the sandbox/host modes, the network switch, the
 two timeouts, the service binding, the HTTP transport and the model's four controls each name their evidence. The
 claim that did not hold up was "**prefix decision**": the test decided with the *full* id (which is trivially a
 prefix), so the rule the surface actually rests on had never been driven.
@@ -7754,7 +7798,7 @@ including the ambiguity refusal naming both ids. A25's row now says both. **The 
 | `cargo test --offline --manifest-path engine/Cargo.toml --test v2_daemon the_approvals_cli_lists_and_decides_a_parked_operation -- --exact` | **ok** (0.24 s) — the decision goes in by `ap-d-req` and the report names the full id |
 | pre-fix control: the prefix rule in `resolve_prefix` reverted — `id.starts_with(wanted)` → `id == wanted` (an exact match, the defect both tests exist for) | **FAILED twice**: the unit test at its unique-prefix case, and the daemon test with `assertion left == right failed: no approval id starts with "ap-d-req"; \`teamagents approvals\` shows the ids` — the CLI refused the prefix |
 | the line restored byte-identically (`diff` clean, `sha256sum` `597ec9dd…`) | **ok** — the only change `exec.rs` ships is the unit test in its `mod tests` |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 | `python3 review/test_counts.py --write` | `engine: 284 -> 285` (the new unit test; the daemon test kept its count) |
 
 **Ceiling.** The ambiguity branch is unit-tested rather than end-to-end (two pending approvals in one session
@@ -7781,7 +7825,7 @@ refused for `start_ticks + 1` and refused for another boot id, both with "identi
 **Verified.** The operator dropped the identity guard in `engine/src/jobs/mod.rs` (the same control the product
 used) and the new test fails at `jobs_runner.rs:552` on "a recycled pid must be refused"; restoring the file
 byte-identically (sha256 `2b093aae…`, unchanged) puts it back to `ok`. `env -u DEEPSEEK_API_KEY make check`
-`rc=0` (25 green targets) and `make pty` ok, and the goal settled only after its own required check passed — the
+`rc=0` (25 green targets) and `make pty` ok, and the work settled only after its own required check passed — the
 thirteenth of fifteen machine-gated deliveries.
 
 **The audit's yield, five rows in: five holes.** A33 (a signal claimed, never driven), A18 (a published sentence
@@ -7806,7 +7850,7 @@ are still prose-first.
 ## D-301 A15's "verifies" half was claimed and never driven; the identity guard now has a test (2026-09-29)
 
 **Triage.** D-300 left the row-by-row mandate, so I took the next unaudited row. Before choosing A15 I read and
-rejected: A01 ("a single Leader completes a goal (and the team it builds runs)" — the headless path and the
+rejected: A01 ("a single Leader completes a work (and the team it builds runs)" — the headless path and the
 delegation runs are cited with their dates and raw evidence, and the web half names its probe); A02/A03/A04 (the
 ring, the grants and the queued-then-revoked timing each cite a named unit test *and* say explicitly when the
 timing stays with the tests); A07/A08/A09/A10/A11 (each names the test or probe that drives its shape, including
@@ -7837,7 +7881,7 @@ is empty after the work.
 | pre-fix control: the identity guard in `engine/src/jobs/mod.rs`'s `signal_group` dropped (`if journal.boot_id != boot_id()? \|\| journal.start_ticks != Some(start_ticks(pid)?) {` replaced with `if false {`) | **FAILED**: `a recycled pid must be refused: ()` — `expect_err` received `Ok(())`, i.e. the signal-0 probe reached the group of a *different* process |
 | the line restored byte-identically (`diff` clean, `sha256sum` `2b093aae…`) | **ok** — and `engine/src/jobs/` is unchanged against `HEAD`, so no code change ships |
 | `cargo test --offline --manifest-path engine/Cargo.toml --test jobs_runner` | **ok** — 16/16 |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 | `python3 review/test_counts.py --write` | `engine: 283 -> 284` (the new test) |
 
 **Ceiling.** The test drives the guard with signal 0, so it proves the *refusal* and the acceptance of a matching
@@ -7864,7 +7908,7 @@ classes measured `Transient` before it existed — so this is coverage, not a fi
 in `engine/src/providers/chat_completions.rs` makes the new test fail with `left: Permanent`,
 `right: Transient` on the refused connect — the defect the row's claim forbids — and restoring the file
 byte-identically (sha256 `e1fc46ec…`, unchanged from before the control) puts it back to `ok`.
-`env -u DEEPSEEK_API_KEY make check` `rc=0` (25 green targets) and `make pty` ok, and the goal settled only after
+`env -u DEEPSEEK_API_KEY make check` `rc=0` (25 green targets) and `make pty` ok, and the work settled only after
 its own required check passed — the twelfth of fourteen machine-gated deliveries.
 
 **The audit's yield, four rows in.** A33 (two signals claimed, one driven), A18 (a published sentence the gate
@@ -7921,7 +7965,7 @@ changed** — `git status engine/src/providers/` is empty after the work.
 | `cargo test --offline --manifest-path engine/Cargo.toml --test providers_fake` | **ok** — 30/30 |
 | pre-fix control: the send classification narrowed in `engine/src/providers/chat_completions.rs` — `if e.is_timeout() \|\| e.is_connect() \|\| e.is_request() {` reverted to `if e.is_timeout() {` | **FAILED**: `left: Permanent`, `right: Transient`, `ProviderError { class: Permanent, message: "chat API: error sending request …" }` — a lost connection parked instead of retrying |
 | the line restored byte-identically (`diff` clean, `sha256sum` `e1fc46ec…`) | **ok** — and the file is unchanged against `HEAD`, so no code change ships |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 | `python3 review/test_counts.py --write` | `engine: 282 -> 283` (the new test) |
 
 **Ceiling.** The test drives the send path's transport errors (a refused connect, a peer that drops before any
@@ -7950,7 +7994,7 @@ dropped) makes the new test fail with `left: "CANCEL_REQUESTED"`, `right: "SUCCE
 design line forbids — and restoring the file byte-identically puts the test back to `ok`. The restored file's
 sha256 is `f31f53388cad…`, the same value the product's entry quotes, so the operator's restore and the
 product's are the same bytes. `env -u DEEPSEEK_API_KEY make check` `rc=0` (25 green targets) and `make pty` ok,
-and the goal settled only after its own required check passed — the eleventh of thirteen machine-gated
+and the work settled only after its own required check passed — the eleventh of thirteen machine-gated
 deliveries.
 
 **The audit's yield so far is the story.** Three of the matrix's thirty-six rows have been audited (A33's two
@@ -7973,7 +8017,7 @@ other thirty-three rows are still prose-first.
 
 ## D-297 A13's timeout half was uncited and its completion race untested; the design's line now has a test (2026-09-29)
 
-**Triage.** The only open item in `docs/ACCEPTANCE.md`'s Known gaps is the goal close/cancel lever, which is
+**Triage.** The only open item in `docs/ACCEPTANCE.md`'s Known gaps is the work close/cancel lever, which is
 protocol surface the user owns, and `docs/PRODUCT-COMPARISON.md` §2's list is reserved the same way; D-296 left
 this mandate card. So I continued D-288's claims audit. Before A13 I checked and rejected: A06 ("a message
 applied across a restart" — the restart half *is* covered by evidence the row cites: the formal
@@ -8005,7 +8049,7 @@ and the two deadline tests, so each noun of its claim has the evidence it names.
 | `cargo test --offline --manifest-path engine/Cargo.toml --test jobs_runner` | **ok** — 15/15, the new test beside the two deadline tests the row now cites |
 | pre-fix control: the cancel arm's terminal no-op removed in `engine/src/jobs/runner.rs` — the guard `} else if self.child.is_some() {` replaced by `} else if self.journal.state != "READY" {` and its `signal_group` call dropped, so a settled cancel marks `CANCEL_REQUESTED` | **FAILED**: `assertion left == right failed: a settled command's cancel must not overwrite its outcome`, `left: "CANCEL_REQUESTED"`, `right: "SUCCEEDED"` — the defect the design line forbids, caught by the new test |
 | the same two lines restored byte-identically (`diff` clean, `sha256sum` `f31f5338…`) | **ok** — and the file is unchanged against `HEAD`, so no code change ships |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 | `python3 review/test_counts.py --write` | `engine: 281 -> 282` (the new test) |
 
 **Ceiling.** The test pins the settled journal's outcome, exit code and start count; it does not exercise the
@@ -8046,7 +8090,7 @@ holding); `make verify-kani` **3/3**; `env -u DEEPSEEK_API_KEY make check` `rc=0
 
 **A correction of the operator's own record.** D-294 states the phase's totals as "132.4M tokens over 601 model
 requests". Those were **not measured**: the measured values at that commit are **127.94M tokens / 588 requests**
-(the two sessions' goal usage summed, minus the goal that had not started). The number is corrected in D-294, and
+(the two sessions' work usage summed, minus the work that had not started). The number is corrected in D-294, and
 the method is written here because it is the operator's turn to have made the mistake this phase keeps fixing — a
 claim the record does not back. Every operator entry from here states measured numbers and says how they were
 taken.
@@ -8055,7 +8099,7 @@ taken.
 requests**, ten settled by the runtime's own required check (D-275 and D-277 were operator-verified because
 their runs ended on a ceiling and on the repair 400), and an operator cost of thirteen verification rounds and
 three resumes. Three of the twelve defects were found by the operator's supervision rather than by a card (the
-multi-goal hang, the TLC metadir lie, and the acceptance row that claimed two signals), which is what periodic
+multi-work hang, the TLC metadir lie, and the acceptance row that claimed two signals), which is what periodic
 supervision is for. The suites report `core 109 / engine 281 / tui 36`.
 
 **Next card.** A mandate card again, because the phase has twice produced its best work when it chose: triage the
@@ -8110,7 +8154,7 @@ heading when `tla/` or `kani/` changes, and neither did.
 | `make verify-model-counterexamples` | **rc=0** — 73/73 refuted, 0 "did not run" (51 s) |
 | `make verify-kani` | **rc=0** — `Complete - 3 successfully verified harnesses, 0 failures, 3 total` (1 s, cached) |
 | tree check afterwards | no `verification/tla/states/`, `review/tmp/tla/` empty |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 
 No acceptance row cites the paging proof or `args_hash` (the mapping is `verification/README.md`'s property
 table), so no A-row evidence changed.
@@ -8154,7 +8198,7 @@ itself. `env -u DEEPSEEK_API_KEY make check` `rc=0` (25 green targets; the catal
 **The phase's numbers.** Eleven deliveries, **127.94M tokens over 588 model requests**, ten settled by the
 runtime's own required check, and an operator cost of twelve verification-and-commit rounds and three resumes.
 Two of the eleven defects were found by the operator's supervision rather than by a card (this one and the
-multi-goal hang), which is what "periodic supervision" is for.
+multi-work hang), which is what "periodic supervision" is for.
 
 **Next card: the remaining formal gap, the pure functions.** `verification/REPORT.md`'s unproven list says the
 functions beyond the paging arithmetic — `prepare_request`'s view, `interpret_response`'s classification and
@@ -8211,7 +8255,7 @@ unchanged. The configuration and control **lists** were not touched.
 | honesty branch, forced deterministically (`make verify-model-counterexamples TLA_METADIR=/dev/null`) | **rc≠0** with `MC_authority_badview.cfg did not run: TLC exited 1 without a verdict (a start failure, not a vacuous property)` — not "may be vacuous", not "refuted"; `make verify-model TLA_METADIR=/dev/null` says `MC.cfg did not run …` |
 | pre-fix control: `HEAD`'s Makefile + seeded `states/<timestamp>` directories | **rc≠0** and the lie: `MC_authority_badview.cfg verified instead of refuting: the property it should break may be vacuous`, tail `util.Assert.check … FileUtil.makeMetaDir`; the fixed Makefile was then restored byte-identically (`sha256sum` `a87becc2…`) |
 | `git status` / tree check after the runs | `review/tmp/tla/` empty, no `verification/tla/states/`, no tracked file added by a run |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 
 **Ceiling.** The harness still decides from TLC's *output*, so a TLC that dies mid-run **after** printing a
 violation line would be counted as refuted (the `-metadir` change removes the known start failure; D-122's rule
@@ -8313,7 +8357,7 @@ stale); it says twenty-one now.
 | `make verify-model-counterexamples` | **rc=0**, all **73** controls refuted, each naming its claim — the three new ones above |
 | `make verify-kani` | **rc=0**, `Complete - 3 successfully verified harnesses, 0 failures, 3 total` |
 | `python3 review/verification_catalogue.py` | 98 configurations and 21 modules, all named, described and mapped |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 
 The three targets took 1 m 49 s together here (59 s + 49 s + 1 s), faster than the D-266 entry's ≈12 min; the
 counts, not the clock, are what describe the material. One operational note for the next run: a TLC process
@@ -8331,7 +8375,7 @@ and the heading says so. `make pty` and the probe sets were not run.
 ## D-290 Task 10 is verified: A33 claimed two signals, only one was ever driven (2026-09-28)
 
 The product's entry is D-289. This entry is the operator's verification and the phase's numbers, and it turns the
-next card back to formal verification, which the user's revised goal makes mandatory for any design that can
+next card back to formal verification, which the user's revised work makes mandatory for any design that can
 carry it.
 
 **What the audit found.** The A33 row says the stop a user can perform reaches the designed shutdown because
@@ -8345,15 +8389,15 @@ shared helper and each signal is now a test of its own (`…_on_sigterm`, `…_o
 `a_daemon_stops_gracefully_on_sigint` **fail** with `left: None, right: Some(0)` — killed by the default action
 instead of the designed shutdown, exactly what the new test's doc comment predicts; restored byte-identically
 (`diff -q`), both signal tests pass. `env -u DEEPSEEK_API_KEY make check` `rc=0` (25 green targets) and `make pty`
-ok. `goal-task10` settled `SUCCEEDED` only after its own required check round 1 ran and passed — the **seventh of
+ok. `work-task10` settled `SUCCEEDED` only after its own required check round 1 ran and passed — the **seventh of
 nine** deliveries whose settlement was machine-gated (D-273, D-279, D-281, D-283, D-285, D-287, D-289), against
 D-275 and D-277.
 
-**The phase's numbers.** Nine deliveries, **90.02M tokens over 492 model requests**, seven goals settled by the
+**The phase's numbers.** Nine deliveries, **90.02M tokens over 492 model requests**, seven work_scopes settled by the
 runtime's own gate, and an operator cost of ten verification-and-commit rounds and three resumes. The suites
 report `core 109 / engine 281 / tui 36`.
 
-**Next card: a formal-verification gap, because the user's revised goal makes it mandatory.** The candidate the
+**Next card: a formal-verification gap, because the user's revised work makes it mandatory.** The candidate the
 operator has measured in `verification/REPORT.md`'s unproven list (§5) is *concurrency*: "`Control::submit` is
 serialized on a single connection (a single writer) and the model does not cover interleavings across
 connections; the daemon's concurrent read and write connections appear only in A28's structural statement that a
@@ -8400,7 +8444,7 @@ why.
 | `cargo test --offline --manifest-path engine/Cargo.toml --test cli a_daemon_stops_gracefully` | **ok** — 2 tests, SIGTERM and SIGINT, each asserting the same contract |
 | pre-fix control: `engine/src/cli.rs` with the Ctrl-C arm of the shutdown `select!` deleted (one line; saved first and restored byte-identically, `sha256sum` `54a7ec5f…`) | **FAILED**: `a_daemon_stops_gracefully_on_sigint` — `left: None, right: Some(0)`, `ExitStatus(unix_wait_status(2))` (SIGINT killed the daemon by default action and left the socket); the SIGTERM test still passed, which is the over-claim in one run |
 | `python3 review/test_counts.py --write` | `engine: 280 -> 281` (the new test) |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 
 **Ceiling**: the audit covered one row. What I checked and rejected before taking it: every cited test name in
 A01-A36 (module-qualified) resolves to a real test in the file its prefix implies (a script check); every cited
@@ -8415,11 +8459,11 @@ claim about two signals whose evidence drove one. `make pty`, the probe sets and
 The product's entry is D-287 (the usage-ceiling sentence claimed unknown usage is charged; the gate never did).
 This entry is the operator's verification, and it is the phase's first delivery whose subject was *prose*.
 
-**What was wrong, and which side was wrong.** `core/src/models.rs`'s `GoalLimits.max_total_tokens` doc — which
+**What was wrong, and which side was wrong.** `core/src/models.rs`'s `WorkLimits.max_total_tokens` doc — which
 `review/config_reference.py` publishes verbatim into `docs/CONFIG.md`, and which `docs/USER-GUIDE.md` echoed in
 its config comment — said the ceiling counts "provider-reported **and unknown usage**". The gate counts
 `known.total + reserved + est` (`control.rs`'s budget admission), and `verification/tla/V2Control.tla`'s
-`BudgetFits(e) == goal.known + ReservedTotal + e <= TokenLimit` says the same; DESIGN §8's own words are that
+`BudgetFits(e) == work.known + ReservedTotal + e <= TokenLimit` says the same; DESIGN §8's own words are that
 "settlement from real usage and unknown usage are all *kept*" and that incomplete provider billing "is never
 turned into a false promise that the ceiling can never be exceeded". So the **sentence** was the outlier, not the
 gate, and the fix is the design-mandated direction: correct the claim in all three places and pin the arithmetic
@@ -8431,11 +8475,11 @@ rather than trading it away.
 **Verified.** The operator's control: with the gate's `projected` changed to charge as if unknown usage counted,
 `unknown_usage_does_not_charge_the_ceiling` **fails** at `control.rs:6489` on the `budget_refused` assertion;
 restored byte-identically (`diff -q`), it passes. `env -u DEEPSEEK_API_KEY make check` `rc=0` (25 green targets)
-and `make pty` ok, both the operator's. `goal-task9` settled `SUCCEEDED` only after its own required check round
+and `make pty` ok, both the operator's. `work-task9` settled `SUCCEEDED` only after its own required check round
 1 ran and passed — the **sixth of eight** deliveries whose settlement was machine-gated (D-273, D-279, D-281,
 D-283, D-285, D-287), against D-275 and D-277, which ended on a ceiling and on the repair 400.
 
-**The phase's numbers.** Eight deliveries, **68.43M tokens over 424 model requests**, six goals settled by the
+**The phase's numbers.** Eight deliveries, **68.43M tokens over 424 model requests**, six work_scopes settled by the
 runtime's own gate, and an operator cost of nine verification-and-commit rounds and three resumes. The suites
 report `core 109 / engine 280 / tui 36`.
 
@@ -8468,10 +8512,10 @@ and the gate's own comment says "unknown usage stays a visible counter". The cla
 counter to a token projection would even add a count to a token sum.
 
 **The change.** The sentence now says what the gate does — provider-reported usage, live reservations and each
-request's estimate charge the ceiling, and usage a provider never reported stays the goal's `unknown_usage`
+request's estimate charge the ceiling, and usage a provider never reported stays the work's `unknown_usage`
 counter instead of charging it (D-287 named in the doc comment). `docs/CONFIG.md` is regenerated from that field
 and `docs/USER-GUIDE.md`'s comment no longer implies otherwise. The missing check is
-`control::unknown_usage_does_not_charge_the_ceiling`: a goal with `max_total_tokens = 1000` loses one attempt to
+`control::unknown_usage_does_not_charge_the_ceiling`: a work with `max_total_tokens = 1000` loses one attempt to
 unknown usage (counter 1, settled usage 0) and then admits a request whose estimate is exactly the ceiling —
 which holds only while the unknown attempt is not charged.
 
@@ -8480,10 +8524,10 @@ which holds only while the unknown attempt is not charged.
 | Command | Result |
 |---|---|
 | `cargo test --offline --manifest-path core/Cargo.toml --lib unknown_usage_does_not_charge_the_ceiling` | **ok** — the request is admitted (`MODEL_PENDING`) with the counter at 1 and settled usage at 0 |
-| pre-fix control: `reserve_budget` made to charge the unknown counter the way the old prose described it (the goal's `unknown_usage` added to the projection; two lines, saved first and restored byte-identically, then rustfmt reformatted the new test and changed nothing else; `sha256sum` now `df8e5bd6…`) | **FAILED**: `budget_refused: true`, reason `goal g1 budget exceeded: known 0 + reserved 0 + est 1000 > max 1000` — the comment's version of the gate refuses the request |
+| pre-fix control: `reserve_budget` made to charge the unknown counter the way the old prose described it (the work's `unknown_usage` added to the projection; two lines, saved first and restored byte-identically, then rustfmt reformatted the new test and changed nothing else; `sha256sum` now `df8e5bd6…`) | **FAILED**: `budget_refused: true`, reason `work g1 budget exceeded: known 0 + reserved 0 + est 1000 > max 1000` — the comment's version of the gate refuses the request |
 | `python3 review/config_reference.py --write` | `docs/CONFIG.md`'s `max_total_tokens` row carries the corrected sentence |
 | `python3 review/test_counts.py --write` | `core: 108 -> 109` (the new test) |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 
 **Ceiling**: the audit checked one sentence; the *other* places a ceiling is described (the TUI status line, the
 `exec` report, `docs/DESIGN.md` §8) were read and already agree with the gate. The test pins the arithmetic at
@@ -8491,73 +8535,73 @@ the exact boundary (`est == max`) with one unknown attempt; it does not enumerat
 that, and it does not assert that overshoot *happens* (only that the ceiling does not preclude it). `make pty`,
 the probe sets and the formal gates were not run.
 
-## D-286 Task 8 is verified: the reporting half of the exhausted-goal gap, and the lever stays the user's (2026-09-28)
+## D-286 Task 8 is verified: the reporting half of the exhausted-work gap, and the lever stays the user's (2026-09-28)
 
-The product's entry is D-285 (`goals list` says when a goal cannot accept work, and why). This entry is the
+The product's entry is D-285 (`work_scopes list` says when a work cannot accept work, and why). This entry is the
 operator's verification and the phase's numbers.
 
-**What the delivery is, and what it deliberately is not.** The plain `goals list` line now carries each goal's
-budget (`used/max`) and, for an `ACTIVE` goal the *record* proves the runtime would refuse, the reason: A18's
+**What the delivery is, and what it deliberately is not.** The plain `work_scopes list` line now carries each work's
+budget (`used/max`) and, for an `ACTIVE` work the *record* proves the runtime would refuse, the reason: A18's
 ceiling (`known_usage.total >= limits.max_total_tokens`) and A35's deadline (`now > deadline`). Everything it
-shows is computed client-side from fields the `goals` read already carries — no new read, no new field in the
+shows is computed client-side from fields the `work_scopes` read already carries — no new read, no new field in the
 JSON report, no new verb — and the reasoning is careful where it could have been sloppy: `unknown_usage` is
 deliberately not an input because the budget gate itself leaves it out of the sum, and a *partly* used ceiling is
 not called a refusal because whether the next request fits depends on an estimate the client does not have (the
 operator's card said the same: guessing there would be the same dishonesty the fix removes). The **lever** — a
-way for the user to close a dead goal — is not in this change and stays in `docs/ACCEPTANCE.md`'s Known gaps,
+way for the user to close a dead work — is not in this change and stays in `docs/ACCEPTANCE.md`'s Known gaps,
 where it belongs.
 
-**Verified.** The operator's control: with `engine/src/v2/goals.rs` reverted to `HEAD`, the new test fails at
+**Verified.** The operator's control: with `engine/src/v2/work_scopes.rs` reverted to `HEAD`, the new test fails at
 `engine/tests/cli.rs:2491` (the line does not carry `cannot accept new work: ceiling reached (0/0)`), and after
 the file is restored byte-identically (`diff -q`) it passes. `env -u DEEPSEEK_API_KEY make check` `rc=0` (25
-green targets) and `make pty` ok, both the operator's. `goal-task8` settled `SUCCEEDED` only after its own
+green targets) and `make pty` ok, both the operator's. `work-task8` settled `SUCCEEDED` only after its own
 required check round 1 ran and passed: the **fifth of seven** deliveries whose settlement was machine-gated
 (D-273, D-279, D-281, D-283, D-285), against D-275 and D-277 which the operator verified because their runs ended
 on a ceiling and on the repair 400.
 
 **The phase's numbers.** Seven deliveries committed, **58.76M tokens over 389 model requests** across two
-sessions, five goals settled by the runtime's own gate, and an operator cost of eight verification-and-commit
+sessions, five work_scopes settled by the runtime's own gate, and an operator cost of eight verification-and-commit
 rounds and three resumes. The suites report `core 108 / engine 280 / tui 36`.
 
 **Next card: an audit of the documents' *claims*.** Every defect this phase has fixed came from a claim the code
-did not back (a gate that needed a credential, a settlement read from the wrong goal, a lever that lied the
-second time, a view that could be invalid, a check count that echoed the question, a goal presented as in
+did not back (a gate that needed a credential, a settlement read from the wrong work, a lever that lied the
+second time, a view that could be invalid, a check count that echoed the question, a work presented as in
 force). The card is therefore: pick assertions in the acceptance ledger, the user guide and the design that
 nothing checks — the ones only prose carries — and find one that is false or overstated against the tree; then
 make the *claim* or the *missing check* right, with evidence. If the honest resolution would be a behaviour
 change the design does not already mandate, stop and report it instead, because that is the user's.
 
-**Ceiling**: the new line's inputs are the read's own fields, so it is as honest as the read — a goal that cannot
-accept work for a reason *not* in those fields (a park the goal itself cannot see, an instance-side refusal)
-still reads as `ACTIVE` with a budget, which is all the client can prove. Nothing here closes a goal, and the
-three dead goals in the operator's session are still `ACTIVE` in the record.
+**Ceiling**: the new line's inputs are the read's own fields, so it is as honest as the read — a work that cannot
+accept work for a reason *not* in those fields (a park the work itself cannot see, an instance-side refusal)
+still reads as `ACTIVE` with a budget, which is all the client can prove. Nothing here closes a work, and the
+three dead work_scopes in the operator's session are still `ACTIVE` in the record.
 
-## D-285 `goals list` says when a goal cannot accept work, and why (2026-09-28)
+## D-285 `work_scopes list` says when a work cannot accept work, and why (2026-09-28)
 
-This is the second candidate D-284 left in the queue: the reporting half of the budget-exhausted-goal gap in
-`docs/ACCEPTANCE.md`. Three goals in the operator's own session are `ACTIVE` in the record and dead in fact —
-`goal-s-main` at 1,926,270 of a 2,000,000 ceiling, `goal-task3` at 5,994,688 of 6,000,000 and `goal-task4` at
+This is the second candidate D-284 left in the queue: the reporting half of the budget-exhausted-work gap in
+`docs/ACCEPTANCE.md`. Three work_scopes in the operator's own session are `ACTIVE` in the record and dead in fact —
+`work-s-main` at 1,926,270 of a 2,000,000 ceiling, `work-task3` at 5,994,688 of 6,000,000 and `work-task4` at
 9,648,008 of 12,000,000 — and A18's gate refuses their requests and parks the instance with the ceiling as the
-reason, while `goals list` printed the same `ACTIVE` it prints for a goal that is taking work.
+reason, while `work_scopes list` printed the same `ACTIVE` it prints for a work that is taking work.
 
-**What decides it (the record's own inputs).** The `goals` read already serves everything needed: `limits`
+**What decides it (the record's own inputs).** The `work_scopes` read already serves everything needed: `limits`
 (`max_total_tokens`, `deadline`), `known_usage` and `unknown_usage`. The two conditions are the runtime's own
 gates, recomputed from those fields and nothing else:
 
 - A18's ceiling: `known_usage.total >= limits.max_total_tokens` — with no room for even a one-token request, and
   every real request's estimate is positive, `reserve_budget` refuses it (`known + reserved + est > max`).
-- A35's deadline: `now > deadline`, which is the gate's own `goal_deadline_passed`.
+- A35's deadline: `now > deadline`, which is the gate's own `work_deadline_passed`.
 
 `unknown_usage` is deliberately *not* an input: the budget gate leaves it out of the sum (it is a visible
 counter, not a charge), so counting it would overstate the ceiling. A partly-used ceiling is deliberately *not*
 a refusal: whether the next request fits depends on an estimate the client does not have, and guessing one would
-be the same dishonesty this entry fixes. So `goal-s-main` — 73,730 tokens of headroom but a deadline long past —
-is marked for the deadline and still shows its budget, and `goal-task4` — 2.35M of headroom and a live deadline —
+be the same dishonesty this entry fixes. So `work-s-main` — 73,730 tokens of headroom but a deadline long past —
+is marked for the deadline and still shows its budget, and `work-task4` — 2.35M of headroom and a live deadline —
 is **not** marked, because on that record it can still accept work.
 
-**The change (client-side rendering only).** `engine/src/v2/goals.rs`'s plain `goals list` line now appends the
-goal's budget (`tokens: used/max`, when a ceiling is set) and, for an `ACTIVE` goal the record shows a refusal
-for, `cannot accept new work: deadline passed` or `ceiling reached (used/max)`. A settled goal carries no marker:
+**The change (client-side rendering only).** `engine/src/v2/work_scopes.rs`'s plain `work_scopes list` line now appends the
+work's budget (`tokens: used/max`, when a ceiling is set) and, for an `ACTIVE` work the record shows a refusal
+for, `cannot accept new work: deadline passed` or `ceiling reached (used/max)`. A settled work carries no marker:
 it is not presented as in force and already says what it is. The JSON report and both reads are untouched — no
 new field name, no new read method, no flag and no lever; the marker is what a client renders.
 
@@ -8565,49 +8609,49 @@ new field name, no new read method, no flag and no lever; the marker is what a c
 
 | Command | Result |
 |---|---|
-| `cargo test --offline --manifest-path engine/Cargo.toml --lib goals::` | **ok** — the unit test runs the operator's own numbers: `goal-s-main` → `deadline passed` + `1926270/2000000`; a 10/10 ceiling → `ceiling reached (10/10)`; `goal-task5` (room, live deadline) → nothing; a settled goal → nothing |
-| `cargo test --offline --manifest-path engine/Cargo.toml --test cli a_goal_that_cannot_accept_work_is_not_presented_as_in_force -- --exact` | **ok** — real daemon, real binary, no model: a `max_total_tokens: 0` goal says `ceiling reached (0/0)`, a goal with a past `deadline` says `deadline passed`, a goal with room is unmarked and shows `tokens: 0/1000000`, and every JSON row still carries exactly the read's seven field names |
-| pre-fix control: `engine/src/v2/goals.rs` exactly as at `HEAD` (saved first, restored byte-identically — `diff` clean — then one later edit corrected this entry's own number in a doc comment; `sha256sum` now `211c1701…`) | **FAILED**: the four lines printed `goal-exhausted  ACTIVE  …  checks: 0` and `goal-expired  ACTIVE  …  deadline: 1790600607` — the operator's exact shape, with nothing saying either is refused |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `cargo test --offline --manifest-path engine/Cargo.toml --lib work_scopes::` | **ok** — the unit test runs the operator's own numbers: `work-s-main` → `deadline passed` + `1926270/2000000`; a 10/10 ceiling → `ceiling reached (10/10)`; `work-task5` (room, live deadline) → nothing; a settled work → nothing |
+| `cargo test --offline --manifest-path engine/Cargo.toml --test cli a_work_that_cannot_accept_work_is_not_presented_as_in_force -- --exact` | **ok** — real daemon, real binary, no model: a `max_total_tokens: 0` work says `ceiling reached (0/0)`, a work with a past `deadline` says `deadline passed`, a work with room is unmarked and shows `tokens: 0/1000000`, and every JSON row still carries exactly the read's seven field names |
+| pre-fix control: `engine/src/v2/work_scopes.rs` exactly as at `HEAD` (saved first, restored byte-identically — `diff` clean — then one later edit corrected this entry's own number in a doc comment; `sha256sum` now `211c1701…`) | **FAILED**: the four lines printed `work-exhausted  ACTIVE  …  checks: 0` and `work-expired  ACTIVE  …  deadline: 1790600607` — the operator's exact shape, with nothing saying either is refused |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 | `python3 review/test_counts.py --write` | `engine: 278 -> 280` (the unit test and the integration test) |
-| `python3 review/config_reference.py --write` | `docs/CONFIG.md`'s `max_total_tokens` row counts 4 files instead of 3 — `engine/src/v2/goals.rs` now matches the audit's name search for that key (it reads the goal's own limits) |
+| `python3 review/config_reference.py --write` | `docs/CONFIG.md`'s `max_total_tokens` row counts 4 files instead of 3 — `engine/src/v2/work_scopes.rs` now matches the audit's name search for that key (it reads the work's own limits) |
 
-**Ceiling**: a client still cannot say "this goal will refuse your *next* request" for a partly-used ceiling —
+**Ceiling**: a client still cannot say "this work will refuse your *next* request" for a partly-used ceiling —
 the estimate is not in the read, and adding it would be a read change the user owns; it shows the budget
-instead. The lever half of the gap (closing or cancelling an unusable goal) stays in the queue for the user. The
+instead. The lever half of the gap (closing or cancelling an unusable work) stays in the queue for the user. The
 marker is plain-text only, because the card holds the JSON report's field names to the read's shape. `make pty`,
 the probe sets and the formal gates were not run.
 
 ## D-284 Task 7 is verified, and it is the first task the product chose for itself (2026-09-28)
 
-The product's entry is D-283 (`goals open` reports the checks the goal got). This entry is the operator's
+The product's entry is D-283 (`work_scopes open` reports the checks the work got). This entry is the operator's
 verification and the phase's numbers.
 
 **The card was a mandate, not a task**: for the first time the turn was "triage the repository's own backlog and
 do the highest-value decision-free item", with two measured candidates named as a floor. The product took the
-first (`goals open` reporting) rather than the second (a budget-exhausted goal presented as the one in force),
+first (`work_scopes open` reporting) rather than the second (a budget-exhausted work presented as the one in force),
 and its triage is in the summary — so the phase now has one data point for its own *choice*, not only for its
 execution. The delivery is four lines of client code, one extended test, and the entry: the smallest change of
 the six so far, and the first one that needed no forensics at all.
 
-**Verified.** The operator's control: with `engine/src/v2/goals.rs` reverted to `HEAD`, the extended test fails
-at `engine/tests/cli.rs:2328` — `assertion left == right failed: the report carries the goal's own checks:
-{… "checks":1 …}` while the goal holds the session's check beside the one the client asked for — and after the
+**Verified.** The operator's control: with `engine/src/v2/work_scopes.rs` reverted to `HEAD`, the extended test fails
+at `engine/tests/cli.rs:2328` — `assertion left == right failed: the report carries the work's own checks:
+{… "checks":1 …}` while the work holds the session's check beside the one the client asked for — and after the
 file is restored byte-identically (`diff -q`) the test passes. `env -u DEEPSEEK_API_KEY make check` `rc=0` (25
-green targets) and `make pty` ok, both the operator's. And `goal-task7` settled `SUCCEEDED` only after its own
+green targets) and `make pty` ok, both the operator's. And `work-task7` settled `SUCCEEDED` only after its own
 required check round 1 ran and passed: the **fourth** of six deliveries whose settlement was machine-gated
 (D-273, D-279, D-281, D-283), against D-275 and D-277 which the operator verified because their runs ended on a
 ceiling and on the repair 400.
 
 **The phase's numbers.** Six deliveries committed, **48.83M tokens over 349 model requests** across two sessions,
-four goals settled by the runtime's own gate, and an operator cost of seven verification-and-commit rounds and
+four work_scopes settled by the runtime's own gate, and an operator cost of seven verification-and-commit rounds and
 three resumes. The pattern worth keeping: a task that *finds* its defect costs 6–12M tokens, one that is handed
 a fully measured defect costs 4–8M, and this one — handed a *candidate list* and asked to choose — cost 8.1M and
 produced the smallest, cleanest change so far. The suites stay at `core 108 / engine 278 / tui 36` (the test was
 extended, not added).
 
 **Next cards**, in the operator's order: the second candidate on task 7's list (the reporting half of a
-budget-exhausted goal — `docs/ACCEPTANCE.md`'s Known gaps carries the measurements, and the lever half is the
+budget-exhausted work — `docs/ACCEPTANCE.md`'s Known gaps carries the measurements, and the lever half is the
 user's); then, if the product's triage names nothing better, a *self-audit* card — run the repository's own
 audits and the acceptance ledger against the tree and fix the first real divergence found, which is the shape
 that has produced every defect so far.
@@ -8616,47 +8660,47 @@ that has produced every defect so far.
 ended on a ceiling and on a transport-level defect, both of which can recur. Nothing here says the loop's *own*
 triage will keep choosing well: one data point, on a card that still named two candidates.
 
-## D-283 `goals open` reports the checks the goal got, not the ones the client asked for (2026-09-28)
+## D-283 `work_scopes open` reports the checks the work got, not the ones the client asked for (2026-09-28)
 
 **Triage.** The queue holds two measured, decision-free candidates (D-280/D-282): this line, and the reporting
-half of a budget-exhausted goal that still reads as the goal in force. Everything else is reserved or delivered:
+half of a budget-exhausted work that still reads as the work in force. Everything else is reserved or delivered:
 `docs/PRODUCT-COMPARISON.md` §2's list (sessions beyond one state root, interrupt-and-redirect, sandbox backends,
 automations, memory, MCP management, config overrides) is each a question for the user or low value, and
 `docs/ACCEPTANCE.md`'s Known gaps carry three delivered bullets plus the release tag, which only the user can
 cut. The budget-exhausted *lever* is explicitly new protocol surface and is in the queue for the user; its
-reporting half is decision-free but wider (it asks what "in force" means across `goals list`, the `exec`
-attribution and the TUI). So the smallest correctly-bounded item is the `goals open` line, which D-282 already
+reporting half is decision-free but wider (it asks what "in force" means across `work_scopes list`, the `exec`
+attribution and the TUI). So the smallest correctly-bounded item is the `work_scopes open` line, which D-282 already
 named as the next card: it is a client-side honesty defect of exactly the class this repository's audits exist
 for. I took it.
 
-**The defect.** `engine/src/v2/goals.rs`'s `Open` report carried `"checks": required_checks.len()` — the number of
-`--check` flags *this client* sent. But the daemon unions the session's configured `[[checks]]` into every goal a
-client opens (`apply_session_goal_limits` in `engine/src/v2/daemon.rs`, D-268; the same rule bounds the client's
-ceiling and deadline). A goal opened with no `--check` in a session with one configured check really carries
-that check, and the client printed `opened goal … (0 required check(s))` — the operator watched `goals list`
+**The defect.** `engine/src/v2/work_scopes.rs`'s `Open` report carried `"checks": required_checks.len()` — the number of
+`--check` flags *this client* sent. But the daemon unions the session's configured `[[checks]]` into every work a
+client opens (`apply_session_work_limits` in `engine/src/v2/daemon.rs`, D-268; the same rule bounds the client's
+ceiling and deadline). A work opened with no `--check` in a session with one configured check really carries
+that check, and the client printed `opened work … (0 required check(s))` — the operator watched `work_scopes list`
 report the check the CLI had just announced as absent.
 
-**The fix.** After the `create_goal` receipt, read the goal back through the existing `goals` read (D-267, the
-same read `goals list` uses) and report `limits.required_checks` from that row: an absent key means the goal
-carries none, and a read that cannot name the goal is an error rather than a guess, so the number printed is
+**The fix.** After the `create_work` receipt, read the work back through the existing `work_scopes` read (D-267, the
+same read `work_scopes list` uses) and report `limits.required_checks` from that row: an absent key means the work
+carries none, and a read that cannot name the work is an error rather than a guess, so the number printed is
 always one the record carries. Nothing else moved — no flag, no new read method, no new protocol or persisted
-surface, and the printed line keeps its shape. The repo re-run of `goals open --id X` replays the deterministic
-`goal-open-X` command id, so even the error path is recoverable.
+surface, and the printed line keeps its shape. The repo re-run of `work_scopes open --id X` replays the deterministic
+`work-open-X` command id, so even the error path is recoverable.
 
 **Evidence** (2026-09-28, this tree: `e7e443da` plus this uncommitted diff).
 
 | Command | Result |
 |---|---|
-| `cargo test --offline --manifest-path engine/Cargo.toml --test cli the_goal_surface_lists_and_opens_goals_through_the_daemon -- --exact` | **ok** — against a real daemon and a config carrying one `[[checks]]`, the JSON report says `checks: 2` (one asked-for plus the session's unioned `session-tests`), and a later open with no `--check` prints `opened goal goal-third (1 required check(s))` |
-| pre-fix control: `engine/src/v2/goals.rs` exactly as at `HEAD` (saved first, restored byte-identically, `sha256sum` `08249bfe…`) | **FAILED** at the new assertion: the report carried `"checks":1` for a goal that got 2 — the same false claim, now on the record |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `cargo test --offline --manifest-path engine/Cargo.toml --test cli the_work_surface_lists_and_opens_work_scopes_through_the_daemon -- --exact` | **ok** — against a real daemon and a config carrying one `[[checks]]`, the JSON report says `checks: 2` (one asked-for plus the session's unioned `session-tests`), and a later open with no `--check` prints `opened work work-third (1 required check(s))` |
+| pre-fix control: `engine/src/v2/work_scopes.rs` exactly as at `HEAD` (saved first, restored byte-identically, `sha256sum` `08249bfe…`) | **FAILED** at the new assertion: the report carried `"checks":1` for a work that got 2 — the same false claim, now on the record |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 | `python3 review/test_counts.py` | unchanged: no test function added (the assertions extend the existing integration test) |
 
 **Ceiling**: the fix makes the *count* true; the daemon also fills in the session's ceiling and
-`deadline_minutes` when the client leaves them out, and the `goals open` line still does not echo them — that is
+`deadline_minutes` when the client leaves them out, and the `work_scopes open` line still does not echo them — that is
 a gap, not a false claim (nothing is printed about them), and echoing them would change the line's shape. The
 read-back adds one local round trip on the same connection; if it fails, the command exits 1 with a message that
-says the goal *did* open — which a user can act on because the command id is deterministic. `make pty`, the
+says the work *did* open — which a user can act on because the command id is deterministic. `make pty`, the
 probe sets and the formal gates were not run.
 
 ## D-282 Task 6 is verified: the gate is deterministic again, and one of the two fixes is a product fix (2026-09-28)
@@ -8683,7 +8727,7 @@ is the operator's verification and the phase's current numbers.
   **fails** at `hooks.rs:324`; restored byte-identically (`diff -q`), the three `hooks::` tests pass.
 * *My own load loop for the supervisor fix*: 20 runs beside six `yes` threads, **0 failed** (the product's own
   loop measured 3/25 pre-fix and 0/30 post-fix, which is the control this fix cannot have in one machine state).
-* *The gate, and again by the runtime*: `goal-task6` settled `SUCCEEDED` only after its required check round 1
+* *The gate, and again by the runtime*: `work-task6` settled `SUCCEEDED` only after its required check round 1
   ran and passed, and the operator's `env -u DEEPSEEK_API_KEY make check` is `rc=0` (25 green targets) with
   `make pty` ok. This is the **third** of five deliveries whose settlement was machine-gated (D-273, D-279,
   D-281); D-275 and D-277 needed the operator's verification because their runs ended on ceilings or on the
@@ -8691,15 +8735,15 @@ is the operator's verification and the phase's current numbers.
 
 **The ceiling, learned twice more.** Task 6 finished at 11,794,108 of its 12,000,000 tokens — just inside — while
 tasks 3 and 4 hit theirs, and the tasks that *find* a defect spend most of their budget on forensics and repeated
-gate runs rather than on the change. The phase's per-goal ceiling is therefore raised to 24,000,000 tokens (same
+gate runs rather than on the change. The phase's per-work ceiling is therefore raised to 24,000,000 tokens (same
 150-minute deadline), which is the operating number the cards assume from here.
 
-**The phase so far.** Five deliveries committed (D-273 hermetic gate, D-275 multi-goal settlement, D-277 lifecycle
+**The phase so far.** Five deliveries committed (D-273 hermetic gate, D-275 multi-work settlement, D-277 lifecycle
 command ids, D-279 request-view pairing, D-281 the two flakes), **40.73M tokens over 311 model requests**, three
-goals settled by the runtime's own gate, two settled by the operator because their runs ended on ceilings, and an
+work_scopes settled by the runtime's own gate, two settled by the operator because their runs ended on ceilings, and an
 operator cost of six verification-and-commit rounds plus three resumes. The suites now report
-`core 108 / engine 278 / tui 36`. The next cards stay as D-280 listed them: the `goals open` line that reports
-`(0 required check(s))` for a goal the daemon gave a check to, and the reporting half of a budget-exhausted goal
+`core 108 / engine 278 / tui 36`. The next cards stay as D-280 listed them: the `work_scopes open` line that reports
+`(0 required check(s))` for a work the daemon gave a check to, and the reporting half of a budget-exhausted work
 that is presented as the one in force.
 
 **Ceiling**: "deterministic again" is a claim about the *shapes* fixed here (a count that can grow; a spawn that
@@ -8713,7 +8757,7 @@ This is the card D-278's Defect B named. `make check` is the required check, so 
 settlement; both failures were measured first and both mechanisms are now pinned by tests.
 
 **Flake 1 — the supervisor test read a request count that can still grow.** Reproduced under load (six
-`yes` threads): `engine/tests/v2_supervisor.rs::a_user_opened_goal_lets_a_later_delegation_charge_somewhere`
+`yes` threads): `engine/tests/v2_supervisor.rs::a_user_opened_work_lets_a_later_delegation_charge_somewhere`
 failed **3/25** runs, always `left: Some(2)`, `right: Some(1)`. The old loop broke as soon as the worker had
 made **one** request and the `t-late` row existed, then read the per-instance provider count once for its
 `assert_eq!(worker_requests, Some(1))`. An instrumented run shows the read is the race: at break the worker was
@@ -8722,7 +8766,7 @@ already at `Some(2)`, and the event log shows `task_completed {task_id: "t-late"
 continues with one more request, so the count is 1 or 2 by timing. That is real product behaviour (a turn
 continues after its task settles), not a duplicate dispatch, so the count was the wrong thing to assert.
 **Fixed**: the test now waits for the runtime's `task_completed` event for `t-late` and asserts the settled
-facts — the event's `status`/`assignee` and the task row `goal_id`/`status`/`assignee` — and no longer keeps a
+facts — the event's `status`/`assignee` and the task row `work_id`/`status`/`assignee` — and no longer keeps a
 provider log at all (`factory` replaces `factory_with_log`). Post-fix: **0/30** under the same load.
 
 **Flake 2 — a freshly written hook script is transiently `ETXTBSY`.** The mechanism: `execve` refuses a file
@@ -8743,16 +8787,16 @@ a hook that is merely being replaced must not be dropped with only a stderr line
 
 | Command | Result |
 |---|---|
-| pre-fix loop: `cargo test --test v2_supervisor a_user_opened_goal_lets_a_later_delegation_charge_somewhere` × 25 beside six `yes` threads | **3 failed** with `left: Some(2)` / `right: Some(1)` |
+| pre-fix loop: `cargo test --test v2_supervisor a_user_opened_work_lets_a_later_delegation_charge_somewhere` × 25 beside six `yes` threads | **3 failed** with `left: Some(2)` / `right: Some(1)` |
 | post-fix: the same loop × 30 under the same load | **0 failed** |
 | standalone mechanism probe (`/tmp/etxtbsy-exp`, 50 000 write+exec iterations, eight forking threads) | **6169** `ETXTBSY` (os error 26), first at iteration 10; with the retry logic, 0 dropped execs |
 | pre-fix control: the new hooks test against `HEAD`'s `engine/src/hooks.rs` (its inline `.spawn()` restored, test kept; fixed file saved and restored byte-identically, `sha256sum` `b5bf8def…`) | **FAILED**: `the retried hook ran: ""` — the one spawn was refused and the event dropped |
 | `cargo test --lib hooks::` × 12 under load | **0 failed** (all three hooks tests green each run) |
 | `cargo test --lib` (whole engine lib) × 4 under load | **0 failed**, no `Text file busy` |
-| `cargo test --test v2_supervisor a_user_opened_goal_lets_a_later_delegation_charge_somewhere -- --exact` post-fix | **ok** in 0.11 s |
+| `cargo test --test v2_supervisor a_user_opened_work_lets_a_later_delegation_charge_somewhere -- --exact` post-fix | **ok** in 0.11 s |
 | `python3 review/event_catalogue.py --write` | `docs/EVENTS.md`'s `task_completed` row gains this test as a reader (it now waits on that event) |
 | `python3 review/config_reference.py --write` | `docs/CONFIG.md`'s `kind` row counts 15 files instead of 14 — `engine/src/hooks.rs` now matches the audit's name search for `kind` (the error kind it checks) |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition |
 | `python3 review/test_counts.py --write` | `engine: 277 -> 278` (the new retry test); `core` unchanged at 108 |
 
 **Ceiling**: the retry is bounded at 250 ms — a writer held longer still drops the hook, exactly as before and
@@ -8786,28 +8830,28 @@ verification — the strongest the phase has produced — and the phase's own nu
   selected:true`, `response_imported intents:1`, the tool operation `SUCCEEDED` and the *next* request `PENDING` —
   the same bytes of session state that could not be sent now are, and the turn continues. This is the check the
   synthetic tests cannot make, and it is why the operator keeps a broken session instead of only a description.
-* *The gate, and this time by the runtime.* `goal-task5` settled `SUCCEEDED` only after the runtime's own required
+* *The gate, and this time by the runtime.* `work-task5` settled `SUCCEEDED` only after the runtime's own required
   check round 1 (`make check`) ran and passed at the completion boundary — the **first** of the phase's four
   deliveries whose settlement was machine-gated rather than operator-verified. The operator also ran
   `env -u DEEPSEEK_API_KEY make check` (`rc=0`, 25 green targets) and `make pty` (ok) on the tree as left.
 
 **What a reader must not mistake.** The `exec` client's own report for that run says `end: "failed"`,
 `instance_lifecycle: "PARKED"`, `failure: "permanent model error: model stream: error decoding response body"` —
-because the *client's* run ended on a gateway transport hiccup half an hour before the goal settled, and a park
-ends the client's run while the goal's own attempt continues after a resume. That is D-72's rule doing its job
-(the report is about *its* turn, not about the goal), but it is worth writing down: the same numbers read as
-"the goal failed" if the distinction is not known. The hiccup itself is not a defect — a mid-stream decode error
+because the *client's* run ended on a gateway transport hiccup half an hour before the work settled, and a park
+ends the client's run while the work's own attempt continues after a resume. That is D-72's rule doing its job
+(the report is about *its* turn, not about the work), but it is worth writing down: the same numbers read as
+"the work failed" if the distinction is not known. The hiccup itself is not a defect — a mid-stream decode error
 after text has been emitted is a permanent attempt failure by design — it is the phase's **operating cost**:
 two such parks in the phase's ~2.5 hours of agent time, each cleared by one `instances resume` and nothing else.
 
 **The phase's numbers so far.** Four deliveries committed (D-273, D-275, D-277, D-279), two more defects named
 and measured (D-278's A, now fixed, and B), **28.94M tokens over 243 model requests** across two sessions, four
-goals settled or still active, one goal parked, and an operator cost of four verification-and-commit rounds plus
+work_scopes settled or still active, one work parked, and an operator cost of four verification-and-commit rounds plus
 three resumes. The next cards, in the order the operator would take them: **B, the flaky `make check`** (the
 older session's own investigation already saw the mechanism at the assertion — the worker made *two* requests
 where the test expects one, `assert_eq!(worker_requests, Some(1))` — so the card can hand that over); the
-`goals open` line that reports `(0 required check(s))` for a goal the daemon gave the session's check; and the
-budget-exhausted goals that stay `ACTIVE` for ever with no lever to close them (a reporting half that is
+`work_scopes open` line that reports `(0 required check(s))` for a work the daemon gave the session's check; and the
+budget-exhausted work_scopes that stay `ACTIVE` for ever with no lever to close them (a reporting half that is
 decision-free, and a cancel lever that would be new surface and therefore the user's call).
 
 **Ceiling**: this entry verifies *this* fix, not the phase's reliability — one of four deliveries settled by the
@@ -8819,7 +8863,7 @@ collision shape that broke a real DeepSeek request is gone.
 
 This is the card D-278's Defect A named: the completion/repair boundary built a request a strict service
 refuses — `chat API 400: Messages with role 'tool' must be a response to a preceding message with 'tool_calls'`
-— the repair turn died and the instance parked, so the goal could never settle. The card left the shape in the
+— the repair turn died and the instance parked, so the work could never settle. The card left the shape in the
 session kept at `/tmp/ta-self/root-repo`, and this entry is that shape, the fix, and the controls.
 
 **The shape (read from the DB, deterministically).** Every `context_entries` row of `i-leader` in epoch 0 is
@@ -8827,8 +8871,8 @@ well-formed on its own: a `tool` row always follows the assistant row that calle
 *kernel's request view* (`core/src/kernel/instance.rs`, `pair_tool_results`, reached from `prepare_request`),
 which paired each assistant message with its answers by **id membership in the whole conversation**. The runtime
 names its synthetic required-check call `check-<round>-<position>` (`core/src/v2/control.rs`,
-`register_check_runs`), and the round counter is *per goal*, so two goals in one instance both produce
-`check-1-0`: entries 151/152 carry goal-task2's round 1, entries 343/344 carry goal-task4's round 1. Pairing by
+`register_check_runs`), and the round counter is *per work*, so two work_scopes in one instance both produce
+`check-1-0`: entries 151/152 carry work-task2's round 1, entries 343/344 carry work-task4's round 1. Pairing by
 membership let the *first* assistant (`check-1-0` at 151) claim **both** answers — the second round's tool
 result was pulled up next to the first round's — and the second assistant was answered by the runtime's own
 synthesized `[no tool result follows: …]` note. The view then carried two `tool` messages for one call, and the
@@ -8840,7 +8884,7 @@ rebuilt the identical view (`req-b2d1746b…`, the same `est_prompt_tokens`) and
 answer per call, each next to the call it answers. Nothing else moved: the masking/compaction design, the wire
 protocol, the persisted schema and the control plane's own call-id naming are untouched; only the view's pairing
 changed. A repeated id is legal on the wire when each occurrence's answer stays its own, which the session
-itself shows — goal-task2's `check-1-0` sat in the conversation for hours of turns before a later answer was
+itself shows — work-task2's `check-1-0` sat in the conversation for hours of turns before a later answer was
 paired to the wrong call.
 
 **Evidence** (2026-09-28, this tree: `8a7b3263` plus this uncommitted diff).
@@ -8849,15 +8893,15 @@ paired to the wrong call.
 |---|---|
 | `cargo test --offline --manifest-path core/Cargo.toml --lib a_reused_call_id_keeps_each_answer_with_its_own_call` | **ok** — a deterministic, no-model view test: two `check-1-0` rounds in one conversation each keep their own answer |
 | pre-fix control: the same test with `core/src/kernel/instance.rs` exactly as at `HEAD` (saved first, restored byte-identically — `sha256sum` equal) | **FAILED**, left `[system, user, assistant, tool, tool, user, user, assistant, tool]` / right `[system, user, assistant, tool, user, user, assistant, tool]`: two answers on the first call, a synthesized answer on the second |
-| `cargo test --offline --manifest-path engine/Cargo.toml --test v2_driver a_reused_check_call_id_keeps_every_request_wire_valid` | **ok** — a scripted provider drives two goals in one instance (the second attached with `create_goal`), then one more turn; every request view the runtime sent is asserted wire-valid |
+| `cargo test --offline --manifest-path engine/Cargo.toml --test v2_driver a_reused_check_call_id_keeps_every_request_wire_valid` | **ok** — a scripted provider drives two work_scopes in one instance (the second attached with `create_work`), then one more turn; every request view the runtime sent is asserted wire-valid |
 | the same engine test pre-fix (same restored `instance.rs`) | **FAILED**: `a tool message answered an unknown call: "check-1-0" in []` — the operator's 400, on the runtime's own request view, not only on the stored transcript |
 | the operator's conversation replayed through the fixed pairing (345 visible entries, `i-leader` epoch 0) | valid view: 176 `tool` answers, each assistant's consecutive answer group exactly its own call ids |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in this session's condition (no credential exported) |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in this session's condition (no credential exported) |
 | `python3 review/test_counts.py --write` | `core: 107 -> 108`, `engine: 276 -> 277` (the two new tests) |
 | `python3 review/citations.py` | the counts it states were moved by this entry and re-stated from its own run |
 
 **Ceiling**: the fix keeps every request wire-valid; it does not stop the runtime from *reusing* a check call id
-across goals, which the card explicitly left alone (the persisted shape stays). A duplicate id whose first
+across work_scopes, which the card explicitly left alone (the persisted shape stays). A duplicate id whose first
 occurrence were genuinely unanswered would still let that occurrence claim a later call's answer —
 misattributed, but wire-valid — and no such shape exists in the session or in the tests. The live session was
 not re-run; the reproduction is the two tests plus the replay of its own `context_entries`. `make pty`, the
@@ -8890,7 +8934,7 @@ masking/readback route that replaces old outputs. It is the next card, and it ma
 runtime tells a real model its turn is unfinished and then cannot send the message that says so.
 
 **Defect B — `make check` is not deterministic under load.** In one day of gate runs three results came out of
-the same tree: `v2_supervisor::a_user_opened_goal_lets_a_later_delegation_charge_somewhere` **FAILED** inside the
+the same tree: `v2_supervisor::a_user_opened_work_lets_a_later_delegation_charge_somewhere` **FAILED** inside the
 runtime's own required check (`left: Some(2), right: Some(1)`, "the worker runs the second instruction's task"),
 `hooks::tests::hooks_receive_the_event_name_and_json_on_stdin` **FAILED** inside the product's own gate run with
 `cannot start …/hook.sh: Text file busy (os error 26)`, and the whole gate then went green three times
@@ -8901,7 +8945,7 @@ kind of test this repository otherwise insists on. It is a *phase-critical* defe
 check, so a flake refuses an honest settlement — which is exactly what happened to task 4 — and a red gate that
 is sometimes wrong is worse than no gate for a loop that is supposed to trust it.
 
-**The phase's own state, recorded.** Task 4's goal (`goal-task4`, 12M ceiling) is still `ACTIVE` at 9.65M with
+**The phase's own state, recorded.** Task 4's work (`work-task4`, 12M ceiling) is still `ACTIVE` at 9.65M with
 the instance parked on the permanent model error above; the delivery was therefore verified by the operator and
 not by the runtime's own check, exactly as D-276 recorded for task 3 — the second time that has happened, so the
 operator's verification is now the phase's normal path when a run ends on a defect it found rather than on its
@@ -8936,9 +8980,9 @@ different effect and its recorded reply stays true.
 still true (see above). `tasks cancel` (`cancel-{task}`): `cancel_task` on a task that is already terminal answers
 `{"already_terminal": true, …}`, and task ids are never reused (nothing in this tree deletes a task — there is no
 `DELETE FROM tasks` anywhere), so a fixed id and a fresh one are equivalent; a fresh id would only have changed the
-answer's shape. `goals open` (`goal-open-{id}`): the goal id *is* the subject, opening a *new* goal already
-carries a new id, and re-opening the same id is refused by design — a settled goal cannot be reopened (D-268/D-270)
-— so a fresh command id would turn the repeat into `create_goal`'s `INSERT INTO goals` unique-constraint error
+answer's shape. `work_scopes open` (`work-open-{id}`): the work id *is* the subject, opening a *new* work already
+carries a new id, and re-opening the same id is refused by design — a settled work cannot be reopened (D-268/D-270)
+— so a fresh command id would turn the repeat into `create_work`'s `INSERT INTO work_scopes` unique-constraint error
 instead of any better answer. `approvals`: the TUI's `decide-{approval_id}-{decision}` is single-shot by design (a
 decision is consumed), and no CLI lever in this file sends one. The only shape that was a lie is the pair that can
 really be asked twice, and that is what changed.
@@ -8950,7 +8994,7 @@ really be asked twice, and that is what changed.
 | `cargo test --offline --manifest-path engine/Cargo.toml --test v2_daemon a_second_resume_is_a_new_operation_not_the_first_ones_recorded_reply` | **ok**, 1 passed in 0.08 s, five consecutive runs: the real binary is driven against a real daemon twice per lever (setup transition by the test's own fresh id, then the lever, twice) and the *effect* is asserted — both the second `resume` and the second `pause` really change the lifecycle |
 | pre-fix control: the same test with `engine/src/v2/intervene.rs` exactly as at `HEAD` (saved first, restored byte-identically — `diff -q` reports identical) | **FAILED**: `left: "PAUSED", right: "ACTIVE"` with the printed sentence `i-leader: ACTIVE / READY` — the first resume's recorded reply printed as a fresh success, with no effect, which is the operator's measurement reproduced in 0.02 s. The line that decides it is the id expression itself (pre-fix `&format!("lifecycle-{resolved}-{lifecycle}")`, `intervene.rs:121`) |
 | `cargo test --offline --manifest-path engine/Cargo.toml --lib` / `--test v2_daemon` | **ok**, 85 and 31 passed |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in the condition this session runs in (no credential exported) |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in the condition this session runs in (no credential exported) |
 | `make language-check` | rc=0 |
 | `python3 review/test_counts.py --write` | `engine: 275 -> 276` in `docs/ACCEPTANCE.md`, `AGENTS.md` and `.github/release-notes.md` (the new test) |
 
@@ -8976,23 +9020,23 @@ still the pre-change one.
 
 ## D-276 Task 3's delivery is verified by the operator, and two lessons the phase's own runs taught (2026-09-28)
 
-The self-refine session's second work item was the multi-goal hang D-274 recorded; the product's own entry is
+The self-refine session's second work item was the multi-work hang D-274 recorded; the product's own entry is
 D-275, and this entry is the operator's record of what it delivered, how it was verified, and what the phase
 learned.
 
-**What it delivered.** `exec` now confirms a settlement against the goal its own closing entry names
-(`Attribution::closing_goal` reads `goal-close-<goal_id>`/`goal-block-<goal_id>`) and looks that goal's status up
-in the session's `goals` list (`status_of_goal`), instead of asking the checkpoint for "the" goal. A real
-socket-level regression test in `engine/tests/v2_daemon.rs` builds the shape (an older `ACTIVE` goal beside the
-run's own, the run's goal settling) and asserts the report, the exit code and that the run returns inside its
+**What it delivered.** `exec` now confirms a settlement against the work its own closing entry names
+(`Attribution::closing_work` reads `work-close-<work_id>`/`work-block-<work_id>`) and looks that work's status up
+in the session's `work_scopes` list (`status_of_work`), instead of asking the checkpoint for "the" work. A real
+socket-level regression test in `engine/tests/v2_daemon.rs` builds the shape (an older `ACTIVE` work beside the
+run's own, the run's work settling) and asserts the report, the exit code and that the run returns inside its
 deadline.
 
 **How it was verified, and why the operator had to do it.** The run never settled: it hit its 6,000,000-token
-ceiling *after* the work was in the tree (`budget_refused`, the instance `PARKED`), so the goal's own required
+ceiling *after* the work was in the tree (`budget_refused`, the instance `PARKED`), so the work's own required
 check never ran and no settlement gated the delivery. The operator therefore ran, on the tree as left:
 `env -u DEEPSEEK_API_KEY make check` (the condition CI and this session run in), the pre-fix control — the new
 test against `HEAD`'s `engine/src/v2/exec.rs`, which **fails** `left: Timeout, right: Completed` in 10.15 s with
-`end: "timeout"` and `goal_status: null` in the report, and passes in 0.32 s after the file is restored
+`end: "timeout"` and `work_status: null` in the report, and passes in 0.32 s after the file is restored
 byte-identically (`diff -q`) — and `make pty`. All three are green now.
 
 **Lesson 1: the decision entry is part of the gate.** The product's evidence table claims
@@ -9007,13 +9051,13 @@ edit**; a green gate measured before the last edit is not a green gate.
 **Lesson 2: the ceiling is a per-task budget, and 6M is still too small.** Three tasks ran: task 1 (free-form
 triage) exhausted 2M *before* producing work and parked with the budget reason; task 2 (the bounded fix) finished
 inside 4.34M; task 3 exhausted 6M *after* the work. The cost driver is the growing context re-sent every request,
-not the size of the change. The phase's per-goal ceiling is therefore raised to 12,000,000 tokens and 180 minutes,
+not the size of the change. The phase's per-work ceiling is therefore raised to 12,000,000 tokens and 180 minutes,
 and every card ends with the instruction to settle as soon as the gate is green instead of adding further
 verification the card did not ask for.
 
-**Next candidate work, measured this turn.** `teamagents goals open --id ID --attach X` prints
-`opened goal … (0 required check(s))` while the goal it just opened carries the session's configured check (the
-daemon unions it in, D-268) — the client reports what it asked for, not what the goal got. Small, decision-free,
+**Next candidate work, measured this turn.** `teamagents work_scopes open --id ID --attach X` prints
+`opened work … (0 required check(s))` while the work it just opened carries the session's configured check (the
+daemon unions it in, D-268) — the client reports what it asked for, not what the work got. Small, decision-free,
 and evidence-shaped; it is the next card if the product's own triage does not name something better.
 
 **Ceiling**: one entry cannot show that the loop's *verification* habits improve — the two lessons above are
@@ -9021,44 +9065,44 @@ process fixes for the cards the operator writes, and both cost a task each to le
 verified as described, but by the operator, not by the runtime's own required check; nothing here says the loop
 can be left to settle its own work without the gate.
 
-## D-275 `exec` confirms a settlement against the goal its own closing entry names, not the session's single goal (2026-09-28)
+## D-275 `exec` confirms a settlement against the work its own closing entry names, not the session's single work (2026-09-28)
 
-D-274 recorded the hang this fixes. A headless run whose goal settles did not recognise its own settlement in a
-session that carries more than one goal, and waited out its own `--timeout`: measured in the self-refine session,
-`goal-task2` settled `SUCCEEDED` (the `goal_completed` event, `detached: 1`) and the client printed no report and
+D-274 recorded the hang this fixes. A headless run whose work settles did not recognise its own settlement in a
+session that carries more than one work, and waited out its own `--timeout`: measured in the self-refine session,
+`work-task2` settled `SUCCEEDED` (the `work_completed` event, `detached: 1`) and the client printed no report and
 wrote no `verification.json` for the fourteen minutes until the operator stopped the session, which then exited
-on the lost socket. The client's confirmation read asked the *checkpoint* for "the" goal's status
-(`snapshot["snapshot"]["goal"]["status"]` → `goal_now`) and handed it to `Attribution::read`, whose rule is
+on the lost socket. The client's confirmation read asked the *checkpoint* for "the" work's status
+(`snapshot["snapshot"]["work"]["status"]` → `work_now`) and handed it to `Attribution::read`, whose rule is
 "settled unless that status is `ACTIVE`, because the settlement commits its event and the status in one
-transaction, so `ACTIVE` means the checkpoint has not caught up". The checkpoint's single goal is the *session's*
-active goal — D-266's ordering, the active goal wins and then the newest — which with one goal is the run's goal
-and with several can be another goal entirely: here the older, still-`ACTIVE`, detached `goal-s-main`. So a
-settlement that was committed *and* in the run's own history (the closing entry `goal-close-goal-task2`, after the
-run's own input) was read as `Pending` on every pass, for ever. A session can carry several goals since
-D-267/D-268, and the unit test beside the function pinned the one-goal reading — which is why this is a product
+transaction, so `ACTIVE` means the checkpoint has not caught up". The checkpoint's single work is the *session's*
+active work — D-266's ordering, the active work wins and then the newest — which with one work is the run's work
+and with several can be another work entirely: here the older, still-`ACTIVE`, detached `work-s-main`. So a
+settlement that was committed *and* in the run's own history (the closing entry `work-close-work-task2`, after the
+run's own input) was read as `Pending` on every pass, for ever. A session can carry several work_scopes since
+D-267/D-268, and the unit test beside the function pinned the one-work reading — which is why this is a product
 defect and not a test's.
 
-**Fixed in the client**, which is where this decision belongs: `Attribution` gained `closing_goal(entry)` — the
-runtime builds a settlement's envelope as `goal-close-<goal_id>` / `goal-block-<goal_id>`
-(`control.rs::complete_goal`/`block_goal`), so the closing entry *names* its goal — and `read` now takes the
-session's goal list (`goals` read method) instead of the checkpoint's single status: the settlement is confirmed
-against the status of the goal its own entry names (`status_of_goal`), read off the same list the D-270 advisory
-already reads. A status that still reads `ACTIVE` is still "decide on the next pass", and a goal the list does not
+**Fixed in the client**, which is where this decision belongs: `Attribution` gained `closing_work(entry)` — the
+runtime builds a settlement's envelope as `work-close-<work_id>` / `work-block-<work_id>`
+(`control.rs::complete_work`/`block_work`), so the closing entry *names* its work — and `read` now takes the
+session's work list (`work_scopes` read method) instead of the checkpoint's single status: the settlement is confirmed
+against the status of the work its own entry names (`status_of_work`), read off the same list the D-270 advisory
+already reads. A status that still reads `ACTIVE` is still "decide on the next pass", and a work the list does not
 carry is not guessed either. D-71/D-72's rule is untouched: the closing entry must still be the first turn-ending
 entry after *this run's* input, and a settlement or reply recorded before that input landed is still somebody
 else's. The polling loop fetches the list only on the passes where the instance is `READY` — the same passes that
-already read the history — and the now-unused single-goal read is deleted. No protocol, no persisted schema, no
-checkpoint semantics and no runtime change: the checkpoint still reports the session's active goal (D-266), and
-"this run's goal" is now the goal the settlement itself names.
+already read the history — and the now-unused single-work read is deleted. No protocol, no persisted schema, no
+checkpoint semantics and no runtime change: the checkpoint still reports the session's active work (D-266), and
+"this run's work" is now the work the settlement itself names.
 
 **Evidence** (2026-09-28, this tree: `3bb6b6a1` plus this uncommitted diff).
 
 | Command | Result |
 |---|---|
-| `cargo test --offline --manifest-path engine/Cargo.toml --test v2_daemon a_settlement_is_read_against_the_runs_own_goal_not_the_sessions_active_one` | **ok**, 1 passed in 0.32 s: the run reports `end=completed`, `goal_status=SUCCEEDED`, exit 0, inside its 10 s deadline, while the session still carries the older `ACTIVE` goal `goal-s-test` |
+| `cargo test --offline --manifest-path engine/Cargo.toml --test v2_daemon a_settlement_is_read_against_the_runs_own_work_not_the_sessions_active_one` | **ok**, 1 passed in 0.32 s: the run reports `end=completed`, `work_status=SUCCEEDED`, exit 0, inside its 10 s deadline, while the session still carries the older `ACTIVE` work `work-s-test` |
 | pre-fix control: the same test with `engine/src/v2/exec.rs` exactly as at `HEAD` (saved first, restored byte-identically — `diff -q` reports identical) | **FAILED** after 10.17 s with `left: Timeout, right: Completed`: the run waited out its own deadline about a settlement that was committed and in its own history — D-274's fourteen-minute hang, deterministic and in ten seconds |
-| `cargo test --offline --manifest-path engine/Cargo.toml --lib an_outcome_before_the_runs_own_input_is_not_its_outcome` | **ok**: the D-72 pins (a settlement before the input is not mine; the first ending after it is) plus the new ones (an older `ACTIVE` goal beside the run's own; a `goal-block-*` note read the same way; a status that is `ACTIVE` or missing from the list stays `Pending`) |
-| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this goal's required check, in the condition this session runs in (no credential exported): fmt-check, clippy `-D warnings` on all targets, the three crates' suites and the hygiene catalogue |
+| `cargo test --offline --manifest-path engine/Cargo.toml --lib an_outcome_before_the_runs_own_input_is_not_its_outcome` | **ok**: the D-72 pins (a settlement before the input is not mine; the first ending after it is) plus the new ones (an older `ACTIVE` work beside the run's own; a `work-block-*` note read the same way; a status that is `ACTIVE` or missing from the list stays `Pending`) |
+| `env -u DEEPSEEK_API_KEY make check` | **rc=0** — this work's required check, in the condition this session runs in (no credential exported): fmt-check, clippy `-D warnings` on all targets, the three crates' suites and the hygiene catalogue |
 | `make language-check` | rc=0 |
 
 The suites' count moved with the new test, so the numbers `review/test_counts.py` recomputes were updated with it:
@@ -9066,18 +9110,18 @@ The suites' count moved with the new test, so the numbers `review/test_counts.py
 `.github/release-notes.md` (core 107 / engine 275 / tui 36). The ledger's "checked on 2026-09-27" full-pass date
 is deliberately *not* moved: this turn did not re-run `make pty`, the probe sets or the formal gates.
 
-**Ceiling**: the confirmation is only as good as the `goals` list carrying the goal the closing entry names — a
-goal that were ever absent from it (nothing in this tree deletes a goal: there is no `DELETE FROM goals` anywhere)
+**Ceiling**: the confirmation is only as good as the `work_scopes` list carrying the work the closing entry names — a
+work that were ever absent from it (nothing in this tree deletes a work: there is no `DELETE FROM work_scopes` anywhere)
 would keep the run at `Pending`, i.e. the conservative reading is also a possible hang, just not this one. The
-status still comes from the goal's own row rather than from the settlement event's payload, so the report's
-`goal_status` is the row's status, as it was before. A settled pass now makes two socket reads (`history` and
-`goals`) where it made one plus a checkpoint field; the extra round trip's cost is not measured. What is proven is
-the client's own decision on a two-goal session driven through a real socket, the runtime untouched; the operator's
+status still comes from the work's own row rather than from the settlement event's payload, so the report's
+`work_status` is the row's status, as it was before. A settled pass now makes two socket reads (`history` and
+`work_scopes`) where it made one plus a checkpoint field; the extra round trip's cost is not measured. What is proven is
+the client's own decision on a two-work session driven through a real socket, the runtime untouched; the operator's
 live session is history, not a re-run, and `make check` proves the gate, not the product's behaviour against a real
 model. D-274's ceiling stands where it touches this: the phase still owns the commits and the gate re-runs, and
 nothing here claims the loop can pick its own work without a bounded card.
 
-## D-274 The self-refine phase runs, and its first delivered task exposed a multi-goal hang (2026-09-28)
+## D-274 The self-refine phase runs, and its first delivered task exposed a multi-work hang (2026-09-28)
 
 D-272 judged the product ready to carry its own productization work and validated the provider entry; this entry
 records the phase actually running, its first delivery, and the defect that running it exposed — which is the
@@ -9086,7 +9130,7 @@ next task.
 **How the phase runs (the operator's parameters, outside the repository).** One operator config
 (`$XDG_CONFIG_HOME/teamagents/config.toml`, outside the tree, credential by environment only), one daemon
 started with `--full-auto` on this repository as its workspace and a state root under `/tmp`, `make check` as a
-`[[checks]]` entry so **every goal the session opens is machine-gated** (the goal cannot settle while that
+`[[checks]]` entry so **every work the session opens is machine-gated** (the work cannot settle while that
 fails), and `[limits]` as a per-task budget (raised from 2,000,000 to 6,000,000 tokens and 90 to 120 minutes
 after the first task, see below). A `git bundle` of the whole history was taken before the first task, so any
 damage to the worktree is recoverable independent of the agent's own commits. The operator supervises by
@@ -9097,7 +9141,7 @@ shows `shell=yes` and the tool list the leader was offered) and the `exec --stre
 lesson.** The product independently found the defect D-273 fixes (the gate was not hermetic; it reproduced the
 failure, read the mechanism out of the code and reached the state-root/provider ordering), but it spent the
 whole ceiling on triage before making a single edit: the run ended `end=failed` with the instance **PARKED** —
-`goal goal-s-main budget exceeded: known 1926270 + reserved 0 + est 94724 > max 2000000` — exit 1, the refusal
+`work work-s-main budget exceeded: known 1926270 + reserved 0 + est 94724 > max 2000000` — exit 1, the refusal
 reported as the refusal (A18/D-97) instead of a timeout, and the worktree untouched (`git status` clean). So the
 ceiling is a *per-task* budget in practice, 2M tokens is too small for a task that lets the model read this
 repository's documents itself, and a task card has to bound the reading (task 2's text carried the operator's
@@ -9108,27 +9152,27 @@ writes its own scratch config), kept every assertion, and settled `SUCCEEDED` on
 required check (`make check`, run at the completion boundary in this shell, which carries no credential) passed
 round 1 — the settlement is therefore gated by the gate, not by the model's claim. The operator verified
 independently: `env -u DEEPSEEK_API_KEY make check` (the condition CI runs) and `make check` with the credential
-exported, both green, and `make pty` green; the goal's usage was 4,344,763 of 6,000,000 tokens.
+exported, both green, and `make pty` green; the work's usage was 4,344,763 of 6,000,000 tokens.
 
 **The phase's first real run exposed a new defect, and it is the next task.** In a session that carries more
-than one goal, `exec` does not recognize its own settlement and waits out its own `--timeout`. Measured here:
-after `goal-task2` settled `SUCCEEDED` (the `goal_completed` event, `detached: 1`, written at 18:19:21) the
+than one work, `exec` does not recognize its own settlement and waits out its own `--timeout`. Measured here:
+after `work-task2` settled `SUCCEEDED` (the `work_completed` event, `detached: 1`, written at 18:19:21) the
 client wrote **no** `verification.json`, printed no report and its event stream had no further line for ten
 minutes (18:19:21 → 18:29:10, still running) until the operator stopped the session. The cause is in `exec`'s
-own confirmation read, not in the settlement: `engine/src/v2/exec.rs` asks the *checkpoint* for "the" goal's
-status (`snapshot["goal"]["status"]`) and this session's checkpoint reports the older, still-`ACTIVE`, detached
-`goal-s-main` — D-266's ordering, where the session's active goal wins over the newest — so the settlement word
+own confirmation read, not in the settlement: `engine/src/v2/exec.rs` asks the *checkpoint* for "the" work's
+status (`snapshot["work"]["status"]`) and this session's checkpoint reports the older, still-`ACTIVE`, detached
+`work-s-main` — D-266's ordering, where the session's active work wins over the newest — so the settlement word
 that *is* in the run's history is read as "not committed yet" (`Attribution::Pending`) and the run never ends.
-The session's own state says the work finished (`goal-task2` `SUCCEEDED`, the leader `READY` and detached), which
-is exactly what a headless caller is supposed to be told. Reachable only since a session can carry several goals
+The session's own state says the work finished (`work-task2` `SUCCEEDED`, the leader `READY` and detached), which
+is exactly what a headless caller is supposed to be told. Reachable only since a session can carry several work_scopes
 (D-267/D-268) — the shape this phase's own use creates — and the unit test in `exec.rs` pins the current
-reading as correct for the one-goal shape it was written in. It is a product defect, not a test's; assigning it
+reading as correct for the one-work shape it was written in. It is a product defect, not a test's; assigning it
 is the next task.
 
 **Ceiling**: one delivered task and one defect is a thin record for a phase. The operator still owns the commits,
-the gate re-runs and every answer in the decision queue; the hang's fix may have to decide what "this run's goal"
-means when a session carries several (the instance's attachment, the goal id the settlement names, or the
-`goals` read D-267 added), which is a design choice inside `exec`, and nothing here claims the loop can pick its
+the gate re-runs and every answer in the decision queue; the hang's fix may have to decide what "this run's work"
+means when a session carries several (the instance's attachment, the work id the settlement names, or the
+`work_scopes` read D-267 added), which is a design choice inside `exec`, and nothing here claims the loop can pick its
 own work without a bounded card yet.
 
 ## D-273 The uncreatable-state-root test writes its own config, so the gate no longer needs the operator's credential (2026-09-28)
@@ -9187,7 +9231,7 @@ re-run is owed: `core/src/kernel/types.rs`, `verification/tla` and `verification
 
 ## D-272 The product is judged ready for the self-refine phase, and its provider wiring is validated (2026-09-28)
 
-The user extended the goal: once the product can carry it, **TeamAgents itself** must continue the
+The user extended the work: once the product can carry it, **TeamAgents itself** must continue the
 productization/engineering work, driven through its own CLI with a private gateway entry for
 `DeepSeek-V4.1-Flash` (chat-completions wire, thinking mode at high effort), the operator supervising
 periodically and helping only where the product is stuck.
@@ -9210,7 +9254,7 @@ thinking-mode wire, whose assistant tool calls must echo `reasoning_content`, D-
 `generation_options = { reasoning_effort = "high" }` — the options map is merged verbatim into the
 chat-completions body (`providers::chat_completions`), and the key is read from the environment only, because
 the repository's rule is that credentials are read from the environment or the machine's own stores and are
-never written into the repository, prompts, events or logs. `[limits]` bounds every goal the session creates
+never written into the repository, prompts, events or logs. `[limits]` bounds every work the session creates
 (D-64/D-268), so a phase task carries a ceiling and a deadline by construction, and the leader is granted
 `shell@workspace` by the operator the way round 5's harness granted it (D-256) — the bootstrap's default
 authority is `manage`/`delegate`/`message` only (D-61).
@@ -9221,9 +9265,9 @@ authority is `manage`/`delegate`/`message` only (D-61).
 (`stream: true` + `stream_options.include_usage`) returns `reasoning_content` deltas, a usage chunk and
 `[DONE]`. Then the product ran a real turn through its own CLI on that entry:
 `teamagents exec --json --timeout 180 --cwd <scratch> --check true "…"` printed
-`end=completed`, `goal_status=SUCCEEDED`, `verification=[{command:"true", ok:true}]` and exited 0 in 4.2 s —
-one model request, goal usage 2958 prompt + 272 completion = 3230 tokens — and `doctor` resolved the profile
-and the session's limits (`deepseek/DeepSeek-V4.1-Flash`; `goal limits max_total_tokens=200000,
+`end=completed`, `work_status=SUCCEEDED`, `verification=[{command:"true", ok:true}]` and exited 0 in 4.2 s —
+one model request, work usage 2958 prompt + 272 completion = 3230 tokens — and `doctor` resolved the profile
+and the session's limits (`deepseek/DeepSeek-V4.1-Flash`; `work limits max_total_tokens=200000,
 deadline_minutes=20`).
 
 **Open before the first task, stated rather than hidden.** The model's **native context window** is not
@@ -9239,7 +9283,7 @@ against the repository yet, so nothing here claims the loop produces acceptable 
 bounded task (a ceiling, a deadline, a `--check` gate and an operator review of the diff) is what tests that,
 and the operator still owns the commits, the gates and every answer to the decision queue above.
 
-## D-271 The repair-round test waits for the goal's terminal state (2026-09-28)
+## D-271 The repair-round test waits for the work's terminal state (2026-09-28)
 
 At HEAD, `make check` was **not** green. `engine/tests/v2_driver.rs::a_repair_round_names_the_failed_check_and_its_reason`
 failed deterministically, standalone and inside the full gate, with `shutdown: "driver shutdown with a job in
@@ -9250,99 +9294,99 @@ round 2's required check. `driver::await_job` refuses a shutdown that lands on a
 that stops a process group is not this one, D-88), so the shutdown failed on the very job the test never waited
 for. The product's own record was correct throughout, which the events show: round 1's check rewrites its declared
 input (`class: stale_inputs`, the verdict under test), round 2's check rewrites it to the bytes it already holds,
-so the second round passes and the goal settles `SUCCEEDED` — not the block the test's inline comment predicted
+so the second round passes and the work settles `SUCCEEDED` — not the block the test's inline comment predicted
 ("the second would exhaust the budget and block").
 
-**Decided: the test waits for the goal's terminal state before shutting down** — the shape its sibling
-`required_checks_exhausted_parks_the_goal_blocked` already uses — and asserts the settlement it observes
+**Decided: the test waits for the work's terminal state before shutting down** — the shape its sibling
+`required_checks_exhausted_parks_the_work_blocked` already uses — and asserts the settlement it observes
 (`SUCCEEDED`); the misleading inline comment is corrected to what the events say. No product code moved.
 
 **Evidence.** Three consecutive runs pass (`test result: ok`, 0.17–0.25 s), and the whole engine suite is green
 (`cargo test --offline --manifest-path engine/Cargo.toml`: 85 lib + the integration targets). The failure and the
-round-2 outcome were established with a temporary `DIAG` dump of the event log and the snapshot (goal `SUCCEEDED`,
+round-2 outcome were established with a temporary `DIAG` dump of the event log and the snapshot (work `SUCCEEDED`,
 both `check_round_registered` rounds present, `completion_repair` only for round 1), which is not committed; the
 one-line cause is visible in the same dump without any product-side probe.
 
-Ceiling: the wait asserts the goal's *terminal state*, not that the driver is idle — idleness is what the shutdown
+Ceiling: the wait asserts the work's *terminal state*, not that the driver is idle — idleness is what the shutdown
 actually needs. A future change that leaves a different job in flight after the settlement would resurface as the
 same refusal; the fix removes the race the test hit, it does not make "no job in flight" checkable. The ledger's
 headline numbers are re-derived by `review/test_counts.py`, which the same gate runs.
 
-## D-270 `exec` says up front when nothing can be charged to a goal (2026-09-28)
+## D-270 `exec` says up front when nothing can be charged to a work (2026-09-28)
 
-D-266/D-267/D-269 gave the user a lever to open the next goal, which made the *round trip* between two goals
-work — and left a way to read the product wrong. A settled goal detaches its instance (`complete_goal`,
-`block_goal`, both in `core/src/v2/control.rs`), and the runtime deliberately opens no goal for a later input
+D-266/D-267/D-269 gave the user a lever to open the next work, which made the *round trip* between two work_scopes
+work — and left a way to read the product wrong. A settled work detaches its instance (`complete_work`,
+`block_work`, both in `core/src/v2/control.rs`), and the runtime deliberately opens no work for a later input
 (the remaining half of the known gap in `docs/ACCEPTANCE.md`). So the next `exec` still runs a turn: the leader
-works, tries to `delegate`, and the control plane refuses it — `delegate_task.goal_id required: requester has no
-active goal`. That sentence lands **inside the model's answer**, where the user reads it as the model failing at
+works, tries to `delegate`, and the control plane refuses it — `delegate_task.work_id required: requester has no
+active work`. That sentence lands **inside the model's answer**, where the user reads it as the model failing at
 its job rather than as a state the user can fix in one command.
 
-**Decided: the headless client names the state before it spends anything.** `exec` reads the `goals` list and
-prints one advisory on stderr when no ACTIVE goal is *attached* to the leader — the delegation's own predicate,
+**Decided: the headless client names the state before it spends anything.** `exec` reads the `work_scopes` list and
+prints one advisory on stderr when no ACTIVE work is *attached* to the leader — the delegation's own predicate,
 read off the same list D-267 built for the picker. `--json`'s report is untouched (the advisory is stderr, the
 same shape as the parked-leader line already there), the runtime is unchanged, and the message names the lever
-(`teamagents goals open --id ID --attach <leader>`, or `g` in the TUI panel).
+(`teamagents work_scopes open --id ID --attach <leader>`, or `g` in the TUI panel).
 
-The predicate is deliberately *not* "the checkpoint's goal is settled": the checkpoint carries one goal object
-and answers the *session's* active goal, which can be a goal no instance points at — the exact shape this
-decision's test builds (the boot goal stays `ACTIVE` with nobody attached after the second goal settles). The
+The predicate is deliberately *not* "the checkpoint's work is settled": the checkpoint carries one work object
+and answers the *session's* active work, which can be a work no instance points at — the exact shape this
+decision's test builds (the boot work stays `ACTIVE` with nobody attached after the second work settles). The
 first draft keyed on that status and did not fire; the review that caught it is why the list is the source. A
-session with no goals at all is the bootstrap's own instant (`daemon::serve` starts the supervisor before it
+session with no work_scopes at all is the bootstrap's own instant (`daemon::serve` starts the supervisor before it
 binds the socket, so a client never sees it) and stays silent.
 
 **Evidence.** `engine/src/v2/exec.rs::tests::the_unchargeable_advisory_follows_the_leaders_own_attachment` pins
 the predicate on crafted lists (empty, active-and-attached, settled, active-but-unattached, another instance's
-attachment, and an active goal attached to the leader wherever it sorts), and
-`engine/tests/cli.rs::the_goal_surface_lists_and_opens_goals_through_the_daemon` drives it through the real
-binary and a real daemon: it opens and attaches a second goal, settles it, confirms the record shows it
-terminal and detached, and then asserts `exec`'s stderr names the state, the `goals open` lever and the
+attachment, and an active work attached to the leader wherever it sorts), and
+`engine/tests/cli.rs::the_work_surface_lists_and_opens_work_scopes_through_the_daemon` drives it through the real
+binary and a real daemon: it opens and attaches a second work, settles it, confirms the record shows it
+terminal and detached, and then asserts `exec`'s stderr names the state, the `work_scopes open` lever and the
 `--attach i-leader` argument — before the unreachable provider is ever contacted.
 
-Ceiling: the advisory covers the state the design's own gap names (no chargeable goal). It does *not* cover a
-leader attached to an ACTIVE goal whose deadline has passed: that path refuses the request with a reason `exec`
+Ceiling: the advisory covers the state the design's own gap names (no chargeable work). It does *not* cover a
+leader attached to an ACTIVE work whose deadline has passed: that path refuses the request with a reason `exec`
 already reports (`run_fate`, A35), so it is not silent; and the advisory is only printed by the headless client
-— the TUI shows the same state through its goal region without this sentence.
+— the TUI shows the same state through its work region without this sentence.
 
-## D-269 The TUI gets the goal lever too: `g` in the instances panel (2026-09-28)
+## D-269 The TUI gets the work lever too: `g` in the instances panel (2026-09-28)
 
-D-267 put the user's goal lever behind a CLI flag, and the design names the TUI as the surface a user *is inside*
+D-267 put the user's work lever behind a CLI flag, and the design names the TUI as the surface a user *is inside*
 (§5.4; the keys audit's own framing). D-268 then removed the only reason the panel could not have it: the
-*daemon* applies the session's `[limits]`/`[[checks]]` to a goal a client opens, so a surface that knows nothing
-about configuration can still open a correctly bounded goal.
+*daemon* applies the session's `[limits]`/`[[checks]]` to a work a client opens, so a surface that knows nothing
+about configuration can still open a correctly bounded work.
 
-**Decided: the instances panel opens the next goal.** `g` (in `View::Instances`, beside `p`/`r`/`t`) yields a
-new effect `V2Effect::OpenGoal { attach }` carrying the selected instance; the main loop turns it into a
-`create_goal` command with a readable id (`goal-<instance>-<8 hex>`) and lets the daemon bound it. No
-confirmation: opening a goal is not destructive — the one thing it *does* move is the instance's goal pointer
-(D-266), which is what makes a later delegation charge to the new goal, and that is the point of the lever. The
+**Decided: the instances panel opens the next work.** `g` (in `View::Instances`, beside `p`/`r`/`t`) yields a
+new effect `V2Effect::OpenWork { attach }` carrying the selected instance; the main loop turns it into a
+`create_work` command with a readable id (`work-<instance>-<8 hex>`) and lets the daemon bound it. No
+confirmation: opening a work is not destructive — the one thing it *does* move is the instance's work pointer
+(D-266), which is what makes a later delegation charge to the new work, and that is the point of the lever. The
 hint line advertises the key, which is what `review/tui_keys.py` holds the handlers to.
 
-**Evidence.** `tui/tests/v2app_tests.rs::instances_panel_opens_the_next_goal_attached_to_the_selection`: the panel
-is entered, `g` yields `OpenGoal` for the first row and, after moving the selection, for the second; the hint
-line carries "g open the next goal". The effect-to-command half is the same shape as the lifecycle and
+**Evidence.** `tui/tests/v2app_tests.rs::instances_panel_opens_the_next_work_attached_to_the_selection`: the panel
+is entered, `g` yields `OpenWork` for the first row and, after moving the selection, for the second; the hint
+line carries "g open the next work". The effect-to-command half is the same shape as the lifecycle and
 cancel-task interventions (`tui/src/main.rs`), which the panel probes drive against a real daemon
 (`review/dogfood/tui_panels.py`). `python3 review/tui_keys.py`: 16 advertised and 18 documented keys, none
 unexplained.
 
 Ceiling: the TUI's own key test is app-level (it proves the effect, not the round trip through a daemon — that
-shape is covered for the neighbouring interventions by the panel probe, and the `create_goal` command itself by
-`engine/tests/cli.rs`'s goal-surface test); the id is generated by the client, so two clients opening a goal in
+shape is covered for the neighbouring interventions by the panel probe, and the `create_work` command itself by
+`engine/tests/cli.rs`'s work-surface test); the id is generated by the client, so two clients opening a work in
 the same instant would collide on the random suffix rather than being refused; and the panel sends no
-description for the goal, which the protocol does not require (`original_request_ref` stays empty).
+description for the work, which the protocol does not require (`original_request_ref` stays empty).
 
-## D-268 A goal a client opens is bounded the way the bootstrap bounds its own (2026-09-28)
+## D-268 A work a client opens is bounded the way the bootstrap bounds its own (2026-09-28)
 
-D-267 gave the user a lever to open the next goal, and in doing so **broke D-64**: "`[limits]` in the user config
-bounds **every** goal the session creates" — the ceiling, the configured required checks and the deadline were
-supplied by `driver::bootstrap` alone, so a goal opened through `teamagents goals open` carried **none of them**.
+D-267 gave the user a lever to open the next work, and in doing so **broke D-64**: "`[limits]` in the user config
+bounds **every** work the session creates" — the ceiling, the configured required checks and the deadline were
+supplied by `driver::bootstrap` alone, so a work opened through `teamagents work_scopes open` carried **none of them**.
 The check that would have caught it is the one thing a client cannot supply: the *session's* config.
 
-**Decided: the session applies its own limits, not the client.** The daemon holds `config::goal_limits` (the same
-value the bootstrap derives) and now applies it to any `create_goal` that arrives through its socket:
+**Decided: the session applies its own limits, not the client.** The daemon holds `config::work_limits` (the same
+value the bootstrap derives) and now applies it to any `create_work` that arrives through its socket:
 
 * the session's `max_total_tokens` and its `deadline_minutes` (converted to the absolute timestamp the core takes,
-  exactly as `driver::bootstrap` converts it, so the two goal-creating paths cannot disagree) fill in only what
+  exactly as `driver::bootstrap` converts it, so the two work-creating paths cannot disagree) fill in only what
   the command left out — a user who names their own keeps it, and the daemon serves **user** commands only, so
   "the client" *is* the user;
 * the session's configured `[[checks]]` are **unioned** with the command's rather than replaced, because a
@@ -9350,9 +9394,9 @@ value the bootstrap derives) and now applies it to any `create_goal` that arrive
 * the bootstrap path is untouched: it already sends its limits, so merging the session's own value under them is
   a no-op (the same ids dedup), and it also bypasses this handler (it submits in-process).
 
-**Evidence.** `engine/tests/cli.rs::the_goal_surface_lists_and_opens_goals_through_the_daemon` now runs a daemon
+**Evidence.** `engine/tests/cli.rs::the_work_surface_lists_and_opens_work_scopes_through_the_daemon` now runs a daemon
 whose config carries `[limits] max_total_tokens = 400000`, `deadline_minutes = 15` and a `[[checks]]` entry, and
-asserts that the goal opened through the CLI carries the ceiling, **both** checks (the config's and the one the
+asserts that the work opened through the CLI carries the ceiling, **both** checks (the config's and the one the
 CLI named) and an absolute deadline.
 
 Ceiling: the merge is by key and by check id — a client that sends a *different* ceiling replaces the session's,
@@ -9360,81 +9404,81 @@ which is right for the user but means the daemon is not an enforcement point for
 socket (the socket is the session's identity, §6.1, and this product's clients are the user's own); the deadline
 is only applied when the command carries none, so a client that computes its own deadline wins.
 
-## D-267 `teamagents goals`: the user can open the next goal, so a session is not one-goal-only (2026-09-28)
+## D-267 `teamagents work_scopes`: the user can open the next work, so a session is not one-work-only (2026-09-28)
 
-D-266 fixed the bug *under* the gap ("a settled goal has no product surface to open a new one") but left the
-surface itself unwritten: `create_goal` is an ordinary user command the daemon forwards, and no product path sent
-it, so a session's work was still bounded to whatever goal the bootstrap had opened. **Decided: the CLI lever,
+D-266 fixed the bug *under* the gap ("a settled work has no product surface to open a new one") but left the
+surface itself unwritten: `create_work` is an ordinary user command the daemon forwards, and no product path sent
+it, so a session's work was still bounded to whatever work the bootstrap had opened. **Decided: the CLI lever,
 plus the read it needs** — the same shape as the authority surface (D-61) and the cancel tool (D-265): surface
 for a capability the design already gives the **user**.
 
-* **`teamagents goals [list]`** prints every goal a session carries — id, status, deadline, the limits it was
+* **`teamagents work_scopes [list]`** prints every work a session carries — id, status, deadline, the limits it was
   opened with, settled and unknown usage, and **which instances are attached to it** — with `--json` for scripts.
-* **`teamagents goals open --id ID [--attach INSTANCE] [--check ID=COMMAND]… [--deadline MINUTES]`** opens the
-  next goal. Attaching is what makes a later delegation charge to it (D-266); `--check` carries the user's own
-  required checks (§8: `create_goal` refuses `limits.required_checks` from anyone but the user or the project
+* **`teamagents work_scopes open --id ID [--attach INSTANCE] [--check ID=COMMAND]… [--deadline MINUTES]`** opens the
+  next work. Attaching is what makes a later delegation charge to it (D-266); `--check` carries the user's own
+  required checks (§8: `create_work` refuses `limits.required_checks` from anyone but the user or the project
   bootstrap, so this is the surface where that promise becomes usable); `--deadline` is measured from now (§8).
-* **A new `goals` read** carries the list: the checkpoint reports *one* goal object (the active one, D-266)
-  because every client needs "the goal" — a picker needs all of them. Its order is **attached first**, then
-  active, then newest, because the goal a session is *working on* is the one an instance points at: opening and
-  attaching a second goal moves that pointer, so the boot goal keeps its row and loses the attachment.
+* **A new `work_scopes` read** carries the list: the checkpoint reports *one* work object (the active one, D-266)
+  because every client needs "the work" — a picker needs all of them. Its order is **attached first**, then
+  active, then newest, because the work a session is *working on* is the one an instance points at: opening and
+  attaching a second work moves that pointer, so the boot work keeps its row and loses the attachment.
 
-**Evidence.** `engine/tests/cli.rs::the_goal_surface_lists_and_opens_goals_through_the_daemon` drives the real
-binary against a real daemon: no session is a usage error that names the fix; the boot goal is listed as
-`ACTIVE` and attached to the leader; `goals open` with a malformed `--check` and without `--id` are usage errors;
-opening `goal-second` attached to `i-leader` with `--check later-tests=true` exits 0; and the next list shows two
-goals with the *attached* one first, carrying the user's check, while the boot goal keeps its row and no longer
-holds the pointer. The write itself is the control plane's existing `create_goal` (authorized, validated and
+**Evidence.** `engine/tests/cli.rs::the_work_surface_lists_and_opens_work_scopes_through_the_daemon` drives the real
+binary against a real daemon: no session is a usage error that names the fix; the boot work is listed as
+`ACTIVE` and attached to the leader; `work_scopes open` with a malformed `--check` and without `--id` are usage errors;
+opening `work-second` attached to `i-leader` with `--check later-tests=true` exits 0; and the next list shows two
+work_scopes with the *attached* one first, carrying the user's check, while the boot work keeps its row and no longer
+holds the pointer. The write itself is the control plane's existing `create_work` (authorized, validated and
 evented like any other user command) — this is a client, not a new authority.
 
-**What that closes, and what it does not.** The known gap's *user* half is closed: after a goal settles, a user
+**What that closes, and what it does not.** The known gap's *user* half is closed: after a work settles, a user
 can open and attach the next one and keep working in the same session. The *design* question the gap names —
-whether the **Leader** may open goals itself, which would let a model start budget-bearing work — stays the
-user's call and is untouched here. The runtime still opens no goal on its own, exactly as the design says.
+whether the **Leader** may open work_scopes itself, which would let a model start budget-bearing work — stays the
+user's call and is untouched here. The runtime still opens no work on its own, exactly as the design says.
 
-Ceiling: verified through a real daemon with a stub provider, not with a model in the loop; `goals list` reports
+Ceiling: verified through a real daemon with a stub provider, not with a model in the loop; `work_scopes list` reports
 what the database holds (it does not summarize usage against limits); and the ordering rule is asserted only in
-the two-goal shape the test builds — a session with several attached goals would list them all, but "which one is
+the two-work shape the test builds — a session with several attached work_scopes would list them all, but "which one is
 live" is a property of the instances, not of the list.
 
-## D-266 A session is no longer one-goal-only for the user: delegation charges the *active* goal (2026-09-28)
+## D-266 A session is no longer one-work-only for the user: delegation charges the *active* work (2026-09-28)
 
-The known gap said "a settled goal has no product surface to open a new one", and reading it as *missing product
-surface for a designed capability* (D-265's lesson) turned up a **bug** underneath: the driver hard-coded the goal
-id in its collaboration arms — `goal_id: format!("goal-{}", session_id)` — instead of charging the delegating
-instance's **active** goal, which is what the `delegate` tool description promises and what §5.3 says. Measured
-by writing the test for the capability: after the *user* created a goal and attached it to the leader, the next
-instruction's delegation was refused with **`goal goal-s-test is not active; create a new goal (create_goal)
-before delegating`** — the *boot* goal's id, from the driver's own constant — while the task table stayed empty.
-So a goal the user opened could never be charged, however it was attached.
+The known gap said "a settled work has no product surface to open a new one", and reading it as *missing product
+surface for a designed capability* (D-265's lesson) turned up a **bug** underneath: the driver hard-coded the work
+id in its collaboration arms — `work_id: format!("work-{}", session_id)` — instead of charging the delegating
+instance's **active** work, which is what the `delegate` tool description promises and what §5.3 says. Measured
+by writing the test for the capability: after the *user* created a work and attached it to the leader, the next
+instruction's delegation was refused with **`work work-s-test is not active; create a new work (create_work)
+before delegating`** — the *boot* work's id, from the driver's own constant — while the task table stayed empty.
+So a work the user opened could never be charged, however it was attached.
 
-**Fixed: the arms omit `goal_id` and the control plane resolves the requester's active goal** (its own rule, with
-its own message when there is none). `spawn`'s task registration is the same one line. **And the checkpoint's goal
-read had to follow**: it was `SELECT … FROM goals LIMIT 1`, which with two goals returns an arbitrary row, so a
-client could be shown the settled goal while an active one existed — it now prefers the active goal and, among
+**Fixed: the arms omit `work_id` and the control plane resolves the requester's active work** (its own rule, with
+its own message when there is none). `spawn`'s task registration is the same one line. **And the checkpoint's work
+read had to follow**: it was `SELECT … FROM work_scopes LIMIT 1`, which with two work_scopes returns an arbitrary row, so a
+client could be shown the settled work while an active one existed — it now prefers the active work and, among
 equals, the newest.
 
 **Both texts that told a model to do the impossible are corrected.** `LEADER_INSTRUCTIONS` said "when the current
-goal is settled, create a new goal before delegating further work" and the `delegate` description said "create a
-new goal first when the previous one is settled" — but no model-facing tool opens a goal (`create_goal` is a
-user/project command; the check-predefinement rule in it is user-only by design). They now say that a settled goal
-cannot be reopened and that the next goal comes from the user (`teamagents goals open`, once the CLI below
+work is settled, create a new work before delegating further work" and the `delegate` description said "create a
+new work first when the previous one is settled" — but no model-facing tool opens a work (`create_work` is a
+user/project command; the check-predefinement rule in it is user-only by design). They now say that a settled work
+cannot be reopened and that the next work comes from the user (`teamagents work_scopes open`, once the CLI below
 exists), instead of instructing a retry that can only fail.
 
-**Evidence.** `engine/tests/v2_supervisor.rs::a_user_opened_goal_lets_a_later_delegation_charge_somewhere`: the
-user opens a goal with a required check, attaches it to the leader, and the next instruction's delegation is
-charged to **that** goal (asserted on the task's `goal_id`), the worker runs, the goal stays `ACTIVE` and carries
+**Evidence.** `engine/tests/v2_supervisor.rs::a_user_opened_work_lets_a_later_delegation_charge_somewhere`: the
+user opens a work with a required check, attaches it to the leader, and the next instruction's delegation is
+charged to **that** work (asserted on the task's `work_id`), the worker runs, the work stays `ACTIVE` and carries
 the user's check. The whole engine suite is green on the change.
 
-**What remains, named rather than half-done.** The *CLI* lever `teamagents goals [list|open]` is not written yet:
-the protocol path works (the daemon forwards `create_goal` as an ordinary user command), but a user cannot reach
-it from the product, and `goals list` needs **its own read** — the checkpoint carries a single goal object, which
+**What remains, named rather than half-done.** The *CLI* lever `teamagents work_scopes [list|open]` is not written yet:
+the protocol path works (the daemon forwards `create_work` as an ordinary user command), but a user cannot reach
+it from the product, and `work_scopes list` needs **its own read** — the checkpoint carries a single work object, which
 is now explicitly the active one but is not a list. That is the next step, and with it the known gap's "no
-product surface" half closes for the *user*; whether the *Leader* may open goals itself (which would let a model
+product surface" half closes for the *user*; whether the *Leader* may open work_scopes itself (which would let a model
 start budget-bearing work) stays the design question ACCEPTANCE records, and this entry does not decide it.
 
 Ceiling: the flow is verified by scripted sessions, not by a real model; the checkpoint's new ordering is
-exercised only through the single-goal sessions the existing daemon tests build, so the multi-goal *client* path
+exercised only through the single-work sessions the existing daemon tests build, so the multi-work *client* path
 is enabled and unverified; and the CLI's absence means the capability is reachable only by a protocol client
 today.
 
@@ -9457,7 +9501,7 @@ has abandoned its part — after which the part is the delegator's to re-delegat
 
 **Evidence.** `engine/tests/v2_supervisor.rs::the_delegator_cancels_its_own_abandoned_task_and_its_wait_resolves`
 drives it through a scripted leader: spawn + delegate, then `cancel_task` on that id, then a wait on the same
-task — which the cancellation satisfies, so the goal completes with the task `CANCELLED`, the assignee holding a
+task — which the cancellation satisfies, so the work completes with the task `CANCELLED`, the assignee holding a
 `task_cancelled` envelope, and the tool present on the leader's offered surface. **The bypass mutation was
 measured**: dropping `task_id` from the command payload makes that test fail (`FAILED … 1 failed`). The prose is
 pinned by `kernel::the_cancel_description_states_who_may_close_and_what_it_releases`, the tool catalogue
@@ -10183,7 +10227,7 @@ and a settled job's child is gone.
 `docs/PRODUCT-COMPARISON.md` §2 listed streaming as the third item in decision order — Codex's `codex exec
 --json` streams typed items and Hermes streams tool output — and called it "additive surface, no design change",
 asking for the user's word only because it changes what a headless run writes. **Decided: implement it**, since
-the goal delegates implementation decisions and this adds no protocol surface: `exec` was already the session's
+the work delegates implementation decisions and this adds no protocol surface: `exec` was already the session's
 event consumer (that is how it learns its own outcome), so the mode is a *second rendering* of a read the
 daemon already serves.
 
@@ -10232,7 +10276,7 @@ read or close, not for ones that stall.
 D-150 made SIGTERM reach the designed shutdown, and `docs/ACCEPTANCE.md` recorded what was left: with the
 detached daemon being the one users actually have (`teamagents`/`exec` start it), stopping a session meant
 *finding* the pid (`ps -eo pid,args | grep "[t]eamagents daemon"`). **Decided: add the lever** — the product may
-decide its own surface (the goal's mandate), and the gap named the shape it had to have: a `daemon --stop` "would
+decide its own surface (the work's mandate), and the gap named the shape it had to have: a `daemon --stop` "would
 have to answer the identity question a pid file raises on its own (a stale pid that now belongs to an unrelated
 process)".
 
@@ -10444,7 +10488,7 @@ four "not read" wordings are its blacklist.
 **Wiring it exposed three latent defects, each fixed here.**
 
 * The merge path **dropped `[limits]`**: it carried models, tools, skills, instruction files, hooks, checks and
-  retention, and never `limits` — so wiring would have lost every goal ceiling and deadline the user set. The
+  retention, and never `limits` — so wiring would have lost every work ceiling and deadline the user set. The
   test `the_two_loaders_agree_on_a_user_only_config` is the rule that keeps the two loaders equal (its control:
   removing the `limits` carry fails it with `Some(1000)/Some(5)` against `None/None`).
 * D-232's *deliberate difference* — the merge path refused a configured path that resolves nowhere — would have
@@ -11315,46 +11359,46 @@ defects; and `pruned`'s control models reclaiming, which this version deliberate
 
 Eight of the fifteen modules already carried counterfactual constants and negative controls (V2Control six,
 V2Inbox five, V2Retention four, V2Jobs four, V2DiskFull four, V2Authority three, V2Coordinator three, V2Store
-one); six carried none, and `V2Task.tla` — the module behind delegation, settlement and the `budget_goal` rule —
+one); six carried none, and `V2Task.tla` — the module behind delegation, settlement and the `budget_work` rule —
 was one of the six, even though the fix ledger *rests on a refutation of it*, and that refutation had been
 **renamed away**.
 `review/fix-notes-verification-2026-09-24.md` records finding V-G1 as "the expected-counterexample configuration
 `MC_task_contract.cfg`, renamed since to `MC_task.cfg`": the pre-fix shape became the positive configuration, so
-after the fix nothing refuted `RegisteredWorkNeedsAnActiveGoal` — the property the finding *is about* — and the
+after the fix nothing refuted `RegisteredWorkNeedsAnActiveWork` — the property the finding *is about* — and the
 ledger's own words, "re-runnable before the fix", stopped being true for it. Two of the eleven were weaker
 still: with `Tasks = {"t1"}` and `ds \subseteq Tasks, t \notin ds`, a prerequisite can only be the empty set, so
 `DependenciesPointBackwards` and `NoSelfDependency` held for want of anything to check.
 
 **Fixed as four counterfactual constants**, one per plausible mistake, each named so TRUE *is* the mistake (the
-V2Jobs/V2Control shape): `DelegateToSettledGoal`, `BillSettledGoal`, `AllowUnorderedDependency` and
+V2Jobs/V2Control shape): `DelegateToSettledWork`, `BillSettledWork`, `AllowUnorderedDependency` and
 `LeaveTasksOnTerminate`. Four controls set exactly one TRUE, each refuting one named claim, measured 2026-09-27
 at 1–2 s apiece and with no TLC warning:
 
 | Control | What it forgets | Invariant TLC reports |
 |---|---|---|
-| `MC_task_delegates_to_settled.cfg` | the ACTIVE-goal gate on delegation (V-G1's shape, restored) | `RegisteredWorkNeedsAnActiveGoal` |
-| `MC_task_bills_settled.cfg` | the ACTIVE gate on the `budget_goal` fallback | `RequestsResolveToActiveGoals` |
+| `MC_task_delegates_to_settled.cfg` | the ACTIVE-work gate on delegation (V-G1's shape, restored) | `RegisteredWorkNeedsAnActiveWork` |
+| `MC_task_bills_settled.cfg` | the ACTIVE gate on the `budget_work` fallback | `RequestsResolveToActiveWorks` |
 | `MC_task_unordered_dependency.cfg` | both dependency conditions (a prerequisite that exists and is not the task itself) | `DependenciesPointBackwards` (and, in that state, `NoSelfDependency`) |
 | `MC_task_terminate_leaves_tasks.cfg` | the termination cascade over the instance's open tasks | `NoOpenTaskOnDeadAssignee` |
 
-**And the vacuity**: `MC_task_two.cfg` is the same rules with two task slots at one instance and one goal —
+**And the vacuity**: `MC_task_two.cfg` is the same rules with two task slots at one instance and one work —
 612,802 states / 56,074 distinct in 8 s — which is what puts a real prerequisite in the graph rather than the
-empty one. `MC_task.cfg` keeps its two-instance two-goal coverage and is unchanged by this entry: 5,721,401
+empty one. `MC_task.cfg` keeps its two-instance two-work coverage and is unchanged by this entry: 5,721,401
 states / 606,904 distinct, byte-identical to the number the report already carried, which is the check that
-rewriting the `budget_goal` pick was behaviour-preserving for a single task.
+rewriting the `budget_work` pick was behaviour-preserving for a single task.
 
 **The frontier the README named is now measured, and the answer is not symmetry.** The README and the report both
 said a second task "needs symmetry or a stronger abstraction". Symmetry was tried with a sound group — the
-block-preserving permutations of `Tasks \cup Instances \cup Goals`, which TLC accepts only when those constants
+block-preserving permutations of `Tasks \cup Instances \cup Works`, which TLC accepts only when those constants
 are *model values* (a string-valued constant is refused: `Symmetry function must have model values as domain and
 range`; the group was added to a *copy* of the module, since no committed configuration carries one) — and it cut
-the distinct count by only about 1.6×: 2 tasks / 2 instances / 2 goals reached 33.6M generated / 7.9M distinct
+the distinct count by only about 1.6×: 2 tasks / 2 instances / 2 work_scopes reached 33.6M generated / 7.9M distinct
 after five minutes with the queue still growing without it, and 31.5M / 5.0M after five minutes with it. Most
 states are not in general position under the group, so the group's size is not the factor a reader might expect.
-Two instances with two tasks (one goal) and two goals with two tasks (one instance) each ran past five minutes as
+Two instances with two tasks (one work) and two work_scopes with two tasks (one instance) each ran past five minutes as
 well. That configuration therefore stays a *search* target
 (`make verify-model-sim SIM_CONFIG=MC_task.cfg`: 20,000 behaviors, 7,663,011 states, no invariant violated) and
-the upgrade it needs is a stronger abstraction. In the same pass the `budget_goal` pick became exact — the
+the upgrade it needs is a stronger abstraction. In the same pass the `budget_work` pick became exact — the
 *oldest* open task by delegation order, which is what the code's rowid order gives, instead of "some open task"
 — which is both more faithful and what keeps the model symmetric under permuting `Tasks`, because the choice is
 then a function of the state rather than of TLC's internal ordering.
@@ -11369,7 +11413,7 @@ modules have them.
 
 Ceiling: a control is a configuration of the same module with one counterfactual constant TRUE, not an
 independently written buggy spec, so it shows a claim is *falsifiable* — not that the mistake it names ever
-shipped (for V-G1 it did, and the fix ledger is that evidence); the 2 tasks / 2 instances / 2 goals product stays
+shipped (for V-G1 it did, and the fix ledger is that evidence); the 2 tasks / 2 instances / 2 work_scopes product stays
 unproven (searched, never exhausted); six modules still carry no control at all (V2Artifact, V2Wait, V2Compress,
 V2Daemon, V2Checks, V2Grants), so their claims are enumerated exhaustively but no configuration is shown to
 refute them — the same gap this entry closed for V2Task; and the model is still not the code (REPORT.md §5).
@@ -11805,13 +11849,13 @@ The model set was re-run on `db90bf52` (all 26 probes in one pass, 941.5 s): **2
 recorded D-143 gap — `authority.py`, where the worker is offered `shell=yes` after the grant and never runs the
 command (`task=none` after 16 requests, the turn's own deadline ending the probe, which the probe's message states
 itself). The other was a *probe* defect. `stale_check.py` failed on §1's assertion that `out.txt` holds what the
-check wrote (`printf changed > out.txt`): the goal had ended BLOCKED with the model's own report, two check rounds
+check wrote (`printf changed > out.txt`): the work had ended BLOCKED with the model's own report, two check rounds
 had each recorded `class: "stale_inputs"`, no success was claimed, and the file held the model's `original` — the
 model re-wrote its deliverable on the repair turn, so the last writer was the model and not the check. That is an
-*order* the probe's claim ("a check that rewrites its own declared input cannot let the goal settle", A17) never
+*order* the probe's claim ("a check that rewrites its own declared input cannot let the work settle", A17) never
 required. D-187 had already learned this for the ending, where the probe now asserts both honest endings instead
 of the park reason alone; §1 was the same lesson one assertion over, and it made the probe flip on which ending
-the model chose — green in the post-D-187 five-probe run, where the runtime parked the goal, and red here, where
+the model chose — green in the post-D-187 five-probe run, where the runtime parked the work, and red here, where
 the model settled it itself.
 
 **Fixed**: §1 asserts that the file exists and holds one of the two values the scenario writes (`original` from
@@ -12079,7 +12123,7 @@ could be skipped in silence.
 
 **Changed**: `.PHONY` declares all twenty targets (the six `verify-*` ones joined it) and `make help` names every
 one of them, with a line each for the verification family (`verify-tools`, `verify-model`, `verify-model-all`,
-`verify-model-counterexamples`, `verify-model-wide`, `verify-kani`) — so the default goal now tells a contributor
+`verify-model-counterexamples`, `verify-model-wide`, `verify-kani`) — so the default work now tells a contributor
 that the formal layer exists and how to run it.
 
 **Guarded** (`review/build_references.py`, in `make hygiene`): for a surface whose name contains `Makefile`,
@@ -12092,7 +12136,7 @@ did not name — the multi-line form is joined now, and the docstring records it
 **Measured** (2026-09-27): the audit reports "38 script reference(s) across 3 surface(s): every one exists and is
 tracked" and "the Makefile's 20 `.PHONY` target(s) and its help text name each other". Controls, each on a copy:
 dropping `hygiene` from `.PHONY` fails with "`make help` names `hygiene`, which is not a `.PHONY` target";
-dropping its help line fails with "`hygiene` is a target `.PHONY` declares and `make help` (the default goal)
+dropping its help line fails with "`hygiene` is a target `.PHONY` declares and `make help` (the default work)
 does not name"; deleting `.PHONY` fails with "declares no `.PHONY` targets"; adding a `make deploy` help line
 fails with "names `deploy`, which is not a `.PHONY` target".
 
@@ -12382,10 +12426,10 @@ The 26-probe model pass (its record is in `review/dogfood/README.md`) came back 
 worth more than the green ones: `stale_check.py` (A17) failed with "the block reason does not name the stale
 input: `['']`" and "the stale-input verdict never appeared in the conversation". The state the probe kept
 answered both. The runtime had done its job — `completion_repair` recorded `check bound`, `class
-stale_inputs`, `reason "declared input out.txt changed since the check ran"` twice, no goal reported success,
-and the goal ended BLOCKED — but the *model* had never been told any of it. Its transcript is the whole story:
+stale_inputs`, `reason "declared input out.txt changed since the check ran"` twice, no work reported success,
+and the work ended BLOCKED — but the *model* had never been told any of it. Its transcript is the whole story:
 a synthetic check round (the check runs `printf changed > out.txt` and exits 0), the answer "[finish received:
-required checks round 2 must pass before the goal can settle]", and then eleven requests in which the model
+required checks round 2 must pass before the work can settle]", and then eleven requests in which the model
 re-read the file, re-wrote it, re-verified it and finally reported the divergence itself.
 
 **The gap.** §8 says "the model is given the real remaining time and error summaries so it can change course",
@@ -12397,7 +12441,7 @@ says why the completion was refused. That verdict was written to the event log a
 
 **Changed.** `repair_completion` (`core/src/v2/control.rs`) now states the verdict in the same transaction that
 flips the completion boundary back to READY, as a **note**: `[completion refused: round 1; repair these before
-goal … can settle]` followed by one line per failure, `check bound — declared input out.txt changed since the
+work … can settle]` followed by one line per failure, `check bound — declared input out.txt changed since the
 check ran [stale_inputs]`. The kind matters twice. A note is the established channel for "the runtime tells the
 model what was wrong" (D-56) and rides as user-role text without being a user turn; `EntryKind::Runtime` would
 have been wrong — its own doc calls it the runtime's *closing* word, the idle rule treats that tail as
@@ -12406,16 +12450,16 @@ asking again, which `v2_driver::the_check_repair_path_keeps_the_transcript_wire_
 settle.
 
 **The probe was also wrong**, in a smaller way: `stale_check.py` asserted the *park* path's reason string
-(`bound:stale_inputs` in the final `goal_completed`) and searched the conversation for the verdict. The other
-live run of the same day settled the goal itself — a different path with the same correct outcome — so the
+(`bound:stale_inputs` in the final `work_completed`) and searched the conversation for the verdict. The other
+live run of the same day settled the work itself — a different path with the same correct outcome — so the
 probe now asserts what must hold either way (the runtime records `class: "stale_inputs"`, the verdict is in the
-conversation, no goal is SUCCEEDED, the goal is BLOCKED) and requires the reason to name the stale input only
+conversation, no work is SUCCEEDED, the work is BLOCKED) and requires the reason to name the stale input only
 when the runtime did the parking.
 
 **Measured** (2026-09-27): the new `v2_driver::a_repair_round_names_the_failed_check_and_its_reason` passes, the
 wire-validity test passes again, and the whole `v2_driver` suite is 36/36. The probe, re-run live on deepseek at
 the fixed build: exit 1 / 16.7 s / 12 requests, "the runtime recorded the stale input: 'declared input out.txt
-changed since the check ran'", "the conversation carries the verdict", "the runtime parked the goal naming the
+changed since the check ran'", "the conversation carries the verdict", "the runtime parked the work naming the
 stale input: required checks failed (bound:stale_inputs) after 3 round(s)" — the first live run in which the
 model was told.
 
@@ -12533,7 +12577,7 @@ verified against the version the lock file actually links rather than the crate'
 comparison existed, as one line inside the probe envelope
 (`ensure(rusqlite::version_number() >= 3_051_003, …)` in `engine/examples/probe/suite.rs`), and nothing else in
 the tree read it: not `make check`'s 376 tests, not `doctor`, which already reports the store's `journal_mode`
-and `synchronous` but not the library those depend on. That envelope is a target no `make` goal runs — only
+and `synchronous` but not the library those depend on. That envelope is a target no `make` work runs — only
 `docs/DEVELOPMENT.md` names the command that drives it — so a dependency change below the fix would have been
 caught only by whoever happened to run it by hand.
 
@@ -12915,7 +12959,7 @@ D-165 with a decision entry as its only record.
 
 **Changed** (`review/protocol_catalogue.py`, `docs/PROTOCOL.md`): the generator produces one more table from the
 same file — **every field the protocol carries in one JSON object**, labelled by the function or read arm that
-builds it (`serve_client`'s greeting, `handle`'s replies, `read_snapshot`'s instance rows and `goal`,
+builds it (`serve_client`'s greeting, `handle`'s replies, `read_snapshot`'s instance rows and `work`,
 `read_events`' rows, and each read arm's rows and envelope). It is built from the `json!({ … })` literals at any
 depth in `engine/src/v2/daemon.rs`, so the 19 literals are 19 rows and any field added, removed or renamed in a
 protocol object fails `make hygiene` until the document is regenerated. The hand-written prose above it now
@@ -13380,7 +13424,7 @@ missing credentials).
 
 `make check` went red in `make test` with a message that is the whole point of D-147's guard: "leaked scratch
 directory /tmp/ta-checks-799 (kept: the directory is the evidence)". The directory came from
-`cli::the_daemon_carries_configured_checks_into_the_goal`, which creates `ta-checks-<pid>`, starts a daemon
+`cli::the_daemon_carries_configured_checks_into_the_work`, which creates `ta-checks-<pid>`, starts a daemon
 against a state root inside it, and ended with `let _ = std::fs::remove_dir_all(&root)` — while the `Daemon`
 guard that owns that daemon was still alive, because it only drops at the end of the scope. What survived was
 `root/instances/i-leader/{artifacts,jobs}`: the daemon **recreated what it uses** after the removal had run.
@@ -13531,8 +13575,8 @@ reach. The harness's own documents said "the twenty-four that take a model" whil
 number was both wrong and the reason nobody noticed: a reader comparing a count with a directory has to count
 by hand, and nothing checked the file list at all.
 
-**Changed**: `deadline.py` is in `MODELS` (it needs `DEEPSEEK_API_KEY`: one short turn creates the goal, the
-probe waits out the goal's one-minute deadline, and the second turn must be refused). `probes.py --self-check`
+**Changed**: `deadline.py` is in `MODELS` (it needs `DEEPSEEK_API_KEY`: one short turn creates the work, the
+probe waits out the work's one-minute deadline, and the second turn must be refused). `probes.py --self-check`
 now requires **every** `*.py` in the directory to be in exactly one set, or named in `NOT_PROBES` with a
 reason (the set is empty today: every module here is a probe), and reports the reverse too (a listed name with
 no file). `make hygiene` runs that self-check, so the class cannot come back silently in a `make check` — the
@@ -13541,9 +13585,9 @@ a missing one. The documents' counts became count-free phrasing, and `--list` pr
 probe's reason.
 
 **Measured** (2026-09-26, the probe's first run *through the harness*): `deadline.py` passes on the current
-tree — the first turn exits 0 in 1.0 s with the goal's deadline 59 s ahead, the second exits **1 in 0.0 s**
-with `failure: "goal goal-s-main deadline passed before request … could start"`, the session holds exactly one
-model request, records `goal_deadline_refused`, and parks the leader with the same words. Controls, each
+tree — the first turn exits 0 in 1.0 s with the work's deadline 59 s ahead, the second exits **1 in 0.0 s**
+with `failure: "work work-s-main deadline passed before request … could start"`, the session holds exactly one
+model request, records `work_deadline_refused`, and parks the leader with the same words. Controls, each
 reverted byte-identically: dropping `deadline.py` from its set fails "deadline.py is in neither set: nothing
 runs it"; creating a new probe file nobody added fails the same way for that file.
 
@@ -13557,14 +13601,14 @@ Five verbs print one JSON object instead of text — `exec`, `authority`, `appro
 those objects are what a CI job, a wrapper script or the evaluation harness parses. Four sibling surfaces had a
 catalogue audit each (`protocol_catalogue.py`, `event_catalogue.py`, `tool_catalogue.py`,
 `config_reference.py`); this one had none, and half of it was undocumented: `docs/USER-GUIDE.md` §1.1 named
-four of `exec`'s **sixteen** fields (`end`, `goal_status`, `reply`, `verification`/`watermark` — the rest,
+four of `exec`'s **sixteen** fields (`end`, `work_status`, `reply`, `verification`/`watermark` — the rest,
 including `failure`, `input_queued`, `permissions` and `verification_path`, were referenced in passing or not
 at all). A rename would have broken callers while every test in the tree stayed green — the shape
 D-133/D-130 punished twice.
 
 **Added**: `docs/USER-GUIDE.md` §1.2 is the catalogue — one table, `every report` plus a row per verb and its
-added fields, with the notes a field name cannot carry (what `end`'s words are, that `goal_status`/`reply` are
-the goal's and the member's and never an earlier turn's, that `verification[]` is the check ledger). And
+added fields, with the notes a field name cannot carry (what `end`'s words are, that `work_status`/`reply` are
+the work's and the member's and never an earlier turn's, that `verification[]` is the check ledger). And
 `review/exec_report.py` holds the two sides together, in `make hygiene`: it reads the field names out of the
 source — every `json!({ … })` literal in the four report modules that carries `session_id`, which is exactly
 what distinguishes a *printed report* from a protocol request (`{"protocol_version", "request_id", …}`), an
@@ -13683,9 +13727,9 @@ network), and now re-runnable as `python3 review/dogfood/shutdown.py` (in `make 
 * the **runner survives** and finishes the command on its own, writing its journal (A12);
 * the next daemon over that state root **settles the operation `SUCCEEDED` from the runner's journal**, with
   its receipt (`"ok": true`) — A11's "reconnect when verifiable", never a guess and never a replay;
-* the command ran **exactly once** (`runs.log` holds one line) and the session stays usable: the goal ends
+* the command ran **exactly once** (`runs.log` holds one line) and the session stays usable: the work ends
   `SUCCEEDED` with the user's continuation, and the input that arrives *after* the recovery already settled the
-  goal reports its own outcome (`end=unsettled`, exit 1) instead of claiming the earlier settlement — D-72's
+  work reports its own outcome (`end=unsettled`, exit 1) instead of claiming the earlier settlement — D-72's
   rule, observed rather than assumed.
 
 So the sentence holds, and one detail of it is now precise: "persists pending work" here means the operation
@@ -13715,7 +13759,7 @@ family and the Anthropic family had **contract samples only**, and a reader of A
 DeepSeek+Kimi team probe. This is D-133/D-130's shape again — the code for a promise exists and is tested, so
 prose about it reads like evidence for the promise.
 
-**Added**: `review/dogfood/protocols.py`, one small goal per family (write a file, `--check` verifies it) in its
+**Added**: `review/dogfood/protocols.py`, one small work per family (write a file, `--check` verifies it) in its
 own state root, with three properties worth naming. It takes each family's native context window **from the
 service's own model list** and writes that value into the config it runs with — value and source in D-36's
 sense, and the only window source that cannot go stale silently, since a vendor change shows up as a refusal
@@ -13865,7 +13909,7 @@ control ("a daemon is not a runner": `runner_pids(root)` stays empty while `daem
 `make probe-offline` 7/7 green with "daemons of this run left: 0; new scratch none"; and the two probes whose
 kill is *in flight* rather than cleanup were re-run against a real model — `crash.py` printed "killed the
 daemon (gone); the client exited 2" and still measured the A08/A11/A12 claims (one line in `runs.log`, the
-resumed run `end=completed` / goal `SUCCEEDED` / `input_queued=True`), and `unknown_outcome.py` still measured
+resumed run `end=completed` / work `SUCCEEDED` / `input_queued=True`), and `unknown_outcome.py` still measured
 A09's (runner stopped by pid, cold recovery marked the operation `OUTCOME_UNKNOWN`, one call of the command,
 the task `BLOCKED`). A `grep -rn pkill` over the probes, this module and `tui/scripts` returns the docstring
 that explains the rule and nothing that calls it.
@@ -13925,10 +13969,10 @@ module's pid-based stop in the same session.
 
 `review/dogfood/checks.py` (A16's live half) and `two_gates.py`'s first scenario both configured their
 never-passing gate as a workspace-relative file test — `test -f never-written`, run with the session workspace
-as its cwd. On 2026-09-26 that scenario did not block at all: `exec` exited **0** with `goal_status:
+as its cwd. On 2026-09-26 that scenario did not block at all: `exec` exited **0** with `work_status:
 SUCCEEDED`. The session's own ledger shows the product behaving exactly as designed and the *premise* being
 false: `check_round_registered` round 1 → `completion_repair` (`runtime-gate: command exited 1`) → round 2 →
-`goal_completed SUCCEEDED`, with the completion summary saying "I created the workspace file `never-written` so
+`work_completed SUCCEEDED`, with the completion summary saying "I created the workspace file `never-written` so
 the declared check passes". The file holds one line: "created so the declared runtime-gate check (`test -f
 never-written`) can pass". Nothing was bypassed — the check ran, failed, and the model then made it pass, which
 is what a *satisfiable* acceptance criterion looks like. The gate was never broken; the probe's word "never"
@@ -13946,18 +13990,18 @@ deciding not to report success, so the wording now says only that the entry is t
 not observing.
 
 **Measured** (2026-09-26, native windows per D-36): `checks.py` on **deepseek** 10 model requests / 16.2 s and
-on **kimi** 9 / 36.9 s — `end=failed`, exit 1, goal **BLOCKED**, **3 check rounds**, 2 repairs, settlement
+on **kimi** 9 / 36.9 s — `end=failed`, exit 1, work **BLOCKED**, **3 check rounds**, 2 repairs, settlement
 `blocked_by: runtime`, the ledger naming `check_id: impossible` / `class: exit`, `hello.txt` exact in both, and
-0 job runners left (A12); `two_gates.py` scenario 1 exit 1 / goal `BLOCKED` / client verdict `ok: true` in
-16.0 s and scenario 2 goal `SUCCEEDED` / exit 1 in 5.2 s. The comment is not cosmetic: with the editorializing
-wording the deepseek run conceded after **one** repair (goal `BLOCKED`, `exec` 1, the candidate's own blocked
+0 job runners left (A12); `two_gates.py` scenario 1 exit 1 / work `BLOCKED` / client verdict `ok: true` in
+16.0 s and scenario 2 work `SUCCEEDED` / exit 1 in 5.2 s. The comment is not cosmetic: with the editorializing
+wording the deepseek run conceded after **one** repair (work `BLOCKED`, `exec` 1, the candidate's own blocked
 finish) instead of exhausting the rounds; with the neutral wording both providers kept claiming success and the
-runtime blocked the goal itself. The probe now *prints* which of the two settled it
+runtime blocked the work itself. The probe now *prints* which of the two settled it
 (`checks.py`'s "settled by ..."), because both are honest routes to the same promise and only one of them is
 the runtime's decision.
 
 **Kept as evidence**: the failed run's session — the model's summary and the `never-written` file — quoted
-verbatim, with the four ledger events and the goal row, in `review/tmp/d146-two-gates-satisfiable/` (its
+verbatim, with the four ledger events and the work row, in `review/tmp/d146-two-gates-satisfiable/` (its
 `README.md`). The harness's own copy of that session lived under a pid-named root and was deleted by a later
 clean run (D-156); the durable copy above is what the record rests on, which is why it was made. The model's own `evidence` list records the reasoning — it checked that the file satisfied the
 check — and its `unverified` list says "Whether the runtime executes the check with cwd = the workspace; I
@@ -13967,7 +14011,7 @@ Ceiling: a check the model *can* satisfy is not a product defect — `[[checks]]
 criteria, and whether a criterion can be gamed is the user's choice of criterion (Q11); what is not allowed is
 a probe claiming "impossible" without a command that is. And a gate no workspace state can satisfy is
 conceded by a model often enough that the runtime's own block is worth driving deliberately: the exhaustion
-path stays pinned by `v2_driver::required_checks_exhausted_parks_the_goal_blocked` as well as by the probe.
+path stays pinned by `v2_driver::required_checks_exhausted_parks_the_work_blocked` as well as by the probe.
 
 ## D-145 The pre-registered analysis no longer matches the tree, and nothing said so (2026-09-26)
 
@@ -14343,12 +14387,12 @@ credential-free control is what surfaced it — a probe that only ever ran with 
 that branch.
 
 **`deadline.py` — A35's live evidence — mis-reported a model choice as product failure.** A run whose first
-turn *settled* the goal (the model called `finish` instead of only replying, the intermittency D-129 records
+turn *settled* the work (the model called `finish` instead of only replying, the intermittency D-129 records
 for the A27 probe) printed seven FAILs: the deadline was not refused, a model was reached, the `--check` ran.
-All of that is *correct* behaviour for a closed goal — the deadline gate refuses a request for a goal that is
+All of that is *correct* behaviour for a closed work — the deadline gate refuses a request for a work that is
 still running — so the scenario had simply never started. The probe now asserts that premise, sets it up again
 once, and otherwise prints `SETUP:` with the reason and exits 1. Measured: the re-run passes on attempt 1
-(`exit=0`, refusal in 0.3 s, one model request, `goal_deadline_refused`, leader PARKED with the reason), and a
+(`exit=0`, refusal in 0.3 s, one model request, `work_deadline_refused`, leader PARKED with the reason), and a
 control that makes the premise unsatisfiable exercises the retry and prints SETUP.
 
 Ceiling: the runner covers the credential-free subset only — the model probes still run one at a time — and it
@@ -14657,7 +14701,7 @@ What the new buckets found *already known* is now allowlisted instead of looking
 printed by `--list-known`:
 
 - `doc_only` (historical; removed by D-492) — `driver::cancel_turn` (D-78 kept it as D-63's parked substrate; the driver's own doc was its
-  only other mention), and `Goal` / `Artifact`, the goals/artifacts row shapes of DESIGN §4.1 that the code
+  only other mention), and `Work` / `Artifact`, the work_scopes/artifacts row shapes of DESIGN §4.1 that the code
   reads through SQL, which is the reason the four siblings in `KNOWN_UNCALLED` already carry.
 - `test_only` — `run_reference` (the eval group-A reference loop its tests drive), `inject` and
   `with_stream_stall` and `with_control` (each documented as a test hook where it is defined),
@@ -14684,30 +14728,30 @@ human records why it stays.
 
 `review/dogfood/providers.py` asserted `task_delegated` + `task_started` + `task_completed` for every run. But
 the worker in that probe is a real Kimi model, and a model sometimes ends its turn with prose instead of calling
-`finish`. Then the task never settles and a leader that verifies the artifact itself can still settle the goal
+`finish`. Then the task never settles and a leader that verifies the artifact itself can still settle the work
 `SUCCEEDED` with that task open — the recorded known gap ("A model that stops settling its task leaves a visible
-wait", `docs/ACCEPTANCE.md`, `complete_goal` checks open **operations**, not open **tasks**). So the probe went
+wait", `docs/ACCEPTANCE.md`, `complete_work` checks open **operations**, not open **tasks**). So the probe went
 red on a documented product limitation, and a red probe that reports nothing about what the build did wrong is
 worse than no probe.
 
 The rule is now explicit and *narrower*, not weaker. `classify_task_result` returns one of `completed` /
 `known_gap` / `unexpected`: `task_completed` is the expected event; a missing one is accepted **only** for the
-recorded shape (artifact exact **and** goal `SUCCEEDED` **and** the task still `PENDING`/`RUNNING`) and printed
+recorded shape (artifact exact **and** work `SUCCEEDED` **and** the task still `PENDING`/`RUNNING`) and printed
 as the gap, citing the clause; every other missing-event shape is still a failure. The blanket assertion was
 replaced by one that also rejects a settled task with no completion event, or the gap shape behind a `BLOCKED`
-goal — cases the old single `in`-test could not separate.
+work — cases the old single `in`-test could not separate.
 
 Evidence. The rule is checked without a model, a network or credentials: `providers.py --self-check` classifies
 six shapes, and a mutated classifier (returning `completed` unconditionally) makes it fail, so the check can
 itself fail (D-122's lesson). The classifier replayed over the two real sessions the earlier red runs left on
 disk — `/tmp/ta-providers-d128/root` and `/tmp/ta-providers/root`, both `task write_answer_txt RUNNING`,
-`goal-s-main SUCCEEDED`, artifact exact, no `task_completed` — now returns `known_gap`, which is what those runs
-actually were. Two fresh real-model runs are green: DeepSeek Flash leader + `k3-256k` worker, goal `SUCCEEDED`,
+`work-s-main SUCCEEDED`, artifact exact, no `task_completed` — now returns `known_gap`, which is what those runs
+actually were. Two fresh real-model runs are green: DeepSeek Flash leader + `k3-256k` worker, work `SUCCEEDED`,
 artifact exact, `task_completed` present, 8 requests / 15.7 s and 8 requests / 22.6 s (2026-09-26).
 
-Ceiling: the classifier reads only the events, the task rows, the artifact and the goal's status, so it cannot
+Ceiling: the classifier reads only the events, the task rows, the artifact and the work's status, so it cannot
 tell a prose answer from any other cause of a missing `task_completed` beyond that shape. Whether the runtime
-should *refuse* a settlement while the goal's delegated tasks are open remains a design question about team
+should *refuse* a settlement while the work's delegated tasks are open remains a design question about team
 semantics and stays with the user (`docs/ACCEPTANCE.md`).
 
 ## D-128 The config reference is generated, and the audit got stricter (2026-09-26)
@@ -14725,7 +14769,7 @@ Writing it exposed a flaw in the audit that shares this extraction (`review/conf
 fields — three of its nine "readers" were other structs' declarations. Both scripts now count a *use*
 (`.key` or `["key"]`). Two keys lose every reader under the stricter form, and both are honest: `retention` is
 parsed and reported as not applied (D-75's known gap), and `deadline_minutes` is applied **by the loader** —
-`config.rs` turns it into each goal's absolute deadline, which the audit's plumbing exclusion cannot see. Both are
+`config.rs` turns it into each work's absolute deadline, which the audit's plumbing exclusion cannot see. Both are
 in the known list with those reasons, so `config_keys.py` still reports 0 unserved and 6 known.
 
 `make hygiene` runs the reference's check mode: a new key, a renamed key, a retyped one, a changed doc comment or
@@ -14811,16 +14855,16 @@ runs the check mode, so the document cannot drift from the code in either direct
 * a changed payload key (the table would no longer match the generator), or
 * a hand edit inside the generated block,
 
-each fail the gate. Controls (all three run): renaming `goal_created` in the code reports
-`goal_created_probe: emitted by core/src/v2/control.rs:1351 but not in docs/EVENTS.md` **and**
-`goal_created: documented but no event(…) call site exists`; deleting that row from the document reports the
+each fail the gate. Controls (all three run): renaming `work_created` in the code reports
+`work_created_probe: emitted by core/src/v2/control.rs:1351 but not in docs/EVENTS.md` **and**
+`work_created: documented but no event(…) call site exists`; deleting that row from the document reports the
 first of those; renaming a payload key reports the table drift.
 
 The last column is a text search over the *consumers* — `tui/`, `engine/src`, the test suites and the probes
 under `review/` — so the document also says who reads what. Prose is deliberately not a reader: this entry
 names nine kinds, and counting a document that merely writes about a kind would flip the column whenever the
 log is discussed (the first run of the generator did exactly that against an earlier version of this entry). **9 of the 45 kinds have no reader in this tree** (`artifact_abandoned`,
-`artifacts_gc_claimed`, `goal_created`, `inbox_drained`, `instance_terminated`, `operation_cancel_requested`,
+`artifacts_gc_claimed`, `work_created`, `inbox_drained`, `instance_terminated`, `operation_cancel_requested`,
 `operation_cancelled`, `operation_unauthorized`, `request_cancelled`) and are marked *observability only*. That is
 an honest column value, not a defect: the log is a supported way to observe them, and the ones a probe or a test
 does assert on are now named in one place.
@@ -14866,7 +14910,7 @@ real binary:
 
 * **truncated before any visible text** (a delta carrying only a tool-call id, then the connection closes): the
   attempt is transient, the driver retries inside the turn, the second response completes with a `finish` call,
-  and the run is exit 0 with the goal `SUCCEEDED`. Measured: the server saw exactly **two** requests, and the
+  and the run is exit 0 with the work `SUCCEEDED`. Measured: the server saw exactly **two** requests, and the
   session's attempts table holds `FAILED` with **no usage** and class `Transient` next to the priced `COMPLETE`
   attempt; the truncated attempt's call id never reaches the conversation.
 * **truncated after visible text**: the attempt is *permanent* (a retry could duplicate text the user already
@@ -14979,9 +15023,9 @@ It is now a probe, `python3 review/dogfood/budget.py`, and its most useful prope
   including one with no API key and no route out. (Its sibling `deadline.py` cannot make that promise: it needs a
   real first turn.)
 * it asserts the *whole* shape in one 1-second run: `exec` exits **1** with `end=failed` and a `failure` naming
-  the ceiling (`goal goal-s-main budget exceeded: known 0 + reserved 0 + est 2228 > max 1000`), the session
+  the ceiling (`work work-s-main budget exceeded: known 0 + reserved 0 + est 2228 > max 1000`), the session
   holds **zero** `model_requests` rows (nothing was spent), a `budget_refused` event carries the same arithmetic
-  (`known`/`reserved`/`est`/`max`), the leader is `PARKED` with that sentence, the goal carries
+  (`known`/`reserved`/`est`/`max`), the leader is `PARKED` with that sentence, the work carries
   `max_total_tokens`, and the attached `--check` never ran (D-96: a turn that never started verifies nothing).
 
 Measured 2026-09-26: three runs green (two at `max_total_tokens = 1000`, one at `500`, which correctly reports
@@ -15006,7 +15050,7 @@ rather than about recovery, so it gets its own probe, `python3 review/dogfood/un
    because a runner restarted over a non-terminal state cannot know whether the old child produced effects;
 4. the artifacts decide: `runs.log` holds exactly **one** line (the command ran once, never replayed), the
    worker's operation is `OUTCOME_UNKNOWN` with receipt class `outcome_unknown`, the task is `BLOCKED` with
-   exactly one `task_blocked` notification, and no goal claims success. The orphaned command (its process group
+   exactly one `task_blocked` notification, and no work claims success. The orphaned command (its process group
    outlives the runner, D-41) is stopped by pid at the end — the user's own lever, as the guide says.
 
 Measured 2026-09-26 (DeepSeek Flash, native window): two consecutive runs green, ~10 s each.
@@ -15072,14 +15116,14 @@ With `Step::Transient` / `Step::TransientAfter` (the latter carries the provider
 pin the shape:
 
 * `a_transient_model_failure_is_retried_inside_the_turn`: attempt 1 fails transiently, attempt 2 completes, the
-  goal settles `SUCCEEDED`, the events carry `FAILED` then `COMPLETE`, the `attempts` table has two rows — the
-  failed one with **no** usage, the complete one priced — and the goal's `known_usage` counts only the complete
+  work settles `SUCCEEDED`, the events carry `FAILED` then `COMPLETE`, the `attempts` table has two rows — the
+  failed one with **no** usage, the complete one priced — and the work's `known_usage` counts only the complete
   attempt while `unknown_usage` stays 0. (D-123 later made the *class* of that failed row assertable: the driver had always sent
   `error_class` and the control plane had never stored it.) That is §6.3's "double billing is possible, and the runtime does not
   pretend to know what the lost attempt cost", asserted instead of described.
 * `transient_retries_exhausted_parks_with_the_reason`: three transient failures (the budget is `max_retries = 2`),
   then the turn ends with the documented sentence — `transient retries exhausted: boom three`, the *last* failure
-  — the instance parks once, no goal settles, and no reply is fabricated.
+  — the instance parks once, no work settles, and no reply is fabricated.
 
 The third test was written to *measure* the wait and found a defect instead:
 `a_shutdown_does_not_wait_out_a_retry_backoff`. The wait selected on a `Cancel` token nobody can fire while it
@@ -15263,7 +15307,7 @@ and one test simply failed.
 All four now assert the half that *is* observable without a sandbox, which is the fail-closed half the product
 promises: the check is reported `ok: false` with `exit_code: -1`, its `error` names the isolation
 (`IsolationUnavailable`), no command output appears (it never ran), the list stops at the first refusal, and the
-run is an honest failure (exit 1) rather than a pass over an unchecked goal. Where bubblewrap exists the
+run is an honest failure (exit 1) rather than a pass over an unchecked work. Where bubblewrap exists the
 positive half is asserted as before, including A14's control (the same command really runs and leaves its
 trace). Nothing skips any more; no test lost an assertion.
 
@@ -15313,7 +15357,7 @@ Evidence (all commands re-runnable):
     #   "no runner answers for a settled job (a live one would reply to `status`)"
     #   suite A/B, counting `jobs-runner` processes by the state in their journal:
     #     before: 25 (v2_driver suite) — after: 0, with the single OUTCOME_UNKNOWN one still there
-    # live, real model: python3 review/dogfood/checks.py --provider deepseek (a goal blocked by an impossible
+    # live, real model: python3 review/dogfood/checks.py --provider deepseek (a work blocked by an impossible
     #   configured check after three rounds) ends with 0 jobs-runner processes and 0 daemons
 
 Re-verified against the real product path after the change, not only in-process: `review/dogfood/job_identity.py` (A15/A10: journal identity re-derived from `/proc` while a command ran, duplicate GO kept `starts` at 1, a guessed token refused) and `review/dogfood/cancel.py` (A13: the effect stopped 1.5 s after the lever, receipt class `cancelled`, **0 runners and 0 daemons** left at the end) both pass with the retirement in place, and `review/dogfood/checks.py --provider deepseek` ends with 0 runners.
@@ -15485,7 +15529,7 @@ Both are host mode, so no bwrap: CI runs them too.
 Pre-fix controls, both refuting: hardcoding `startup_timeout_s` to its 60 s default in `load_service` makes the
 first test fail at `a handshake the server cannot answer inside the bound must fail boot` — the boot *succeeded*
 after 30 s (30.3 s), which is exactly the state the test exists to prevent; hardcoding `tool_timeout_s` to 120 s
-makes the second fail with `event goal_completed did not arrive within 15000ms`, because the call waited the
+makes the second fail with `event work_completed did not arrive within 15000ms`, because the call waited the
 sleep out instead of reporting.
 
     cargo test --offline --manifest-path engine/Cargo.toml --test v2_mcp startup_timeout_s_bounds_a_silent_handshake
@@ -15782,24 +15826,24 @@ generalises by construction rather than by a second live run.
 
 ## D-101 The two acceptance mechanisms in one run, and which one decides what (2026-09-26)
 
-The product has two acceptance mechanisms — `[[checks]]` from the user config, which gate the **goal** at the
+The product has two acceptance mechanisms — `[[checks]]` from the user config, which gate the **work** at the
 completion boundary (§8/A16), and `exec --check`, the **client's** own command, which decides the **exit
 code** of a finished turn (D-49) — and nothing documented or drove what happens when both are configured at
 once. `review/dogfood/two_gates.py` does, with two scenarios that separate the roles:
 
-| Scenario | Goal | Exit code | Client verdicts |
+| Scenario | Work | Exit code | Client verdicts |
 |---|---|---|---|
 | the runtime check can never pass; the client's check passes | `BLOCKED` (2 repair rounds reported, the ledger names `runtime-gate`) | `1` | `test -f hello.txt` → `ok: true` |
 | the runtime check passes; the client's check fails | `SUCCEEDED` | `1` | `test -f missing.txt` → `ok: false`, exit `1` |
 
 So the division of labour is exactly as designed and now measured from both sides: the runtime's gate decides
-whether the goal may be reported done, the client's commands decide the exit code — and neither replaces the
-other (a passing client check does not rescue a blocked goal; a settled goal does not rescue a failing client
+whether the work may be reported done, the client's commands decide the exit code — and neither replaces the
+other (a passing client check does not rescue a blocked work; a settled work does not rescue a failing client
 check). Measured 2026-09-26, ~13 s and ~5 s per scenario, each on its own fresh state root (runtime checks
-belong to the goal).
+belong to the work).
 
 One event-level detail this pinned, because it is what an integration would parse: in the first scenario the
-goal ended `BLOCKED` **because the model itself reported `blocked`** after the repair turn showed it the
+work ended `BLOCKED` **because the model itself reported `blocked`** after the repair turn showed it the
 failing check (its completion summary says the deliverable exists but the gate cannot pass), not because the
 repair budget ran out — the runtime accepts either honest route. The check's name therefore lives in the check
 ledger (`completion_repair.failures[].check_id`), which is where the probe reads it, and not necessarily in
@@ -15810,7 +15854,7 @@ a check that cannot pass), `stale_check.py` (A17, a verified input that changed)
 client's `--check` in three scenarios).
 
 Scenario 1's runtime check is now `exit 1` (D-146): the `test -f never-written` configured here was not
-impossible after all — the model can write that file — and a later run did, settling the goal `SUCCEEDED`.
+impossible after all — the model can write that file — and a later run did, settling the work `SUCCEEDED`.
 
 Ceiling: two scenarios; the repair-round budget (`max_check_rounds`), per-check `timeout`/`network` options and
 the interaction with `[[checks]]` *inputs* stay with the offline tests. `docs/USER-GUIDE.md` now states the
@@ -15824,11 +15868,11 @@ A run waiting on a turn in the old epoch therefore has nothing that will ever an
 waited out its deadline and reported `end: "timeout"`, measured with a real model:
 
     reset reply:  {'epoch': 1, 'closed': {'requests_closed': 1, …}}
-    exec report:  {'end': 'timeout', 'goal_status': None, 'failure': None}       (40 s deadline)
+    exec report:  {'end': 'timeout', 'work_status': None, 'failure': None}       (40 s deadline)
 
 Rather than add a fourth branch, the client now has **one** place that decides this: `run_fate(event,
 instance) -> Option<String>` maps the events that end a run while its turn can never finish — a refused
-request (budget ceiling, goal deadline), a retired instance, a reset — to the runtime's own words, and the
+request (budget ceiling, work deadline), a retired instance, a reset — to the runtime's own words, and the
 loop has a single call site. The next such fact is one arm in that match instead of a new branch, which is
 what the last three defects all would have been.
 
@@ -15917,7 +15961,7 @@ still land and close the turn, so a run must keep following its own turn. The sh
 
 - `terminate` ends the run at once with the truth;
 - `pause` does **not**: the run keeps waiting, and a resumed instance continues the work — measured live,
-  pause mid-run → resume five seconds later → the *same* run ends `exit 0 / end=completed / goal
+  pause mid-run → resume five seconds later → the *same* run ends `exit 0 / end=completed / work
   SUCCEEDED`, with the file the turn was asked for on disk (`review/dogfood/lifecycle_run.py --lever pause`);
 - if the caller's deadline wins instead, the report says **what the instance was doing** rather than the
   wrong "still running": the report now carries `instance_lifecycle`, and the one-line verdict distinguishes
@@ -15937,8 +15981,8 @@ still ends as `timeout` — truthfully the caller stopped waiting — and the me
 ## D-97 A refused request is not a slow one: `exec` waited out its deadline (2026-09-26)
 
 The runtime refuses a request *before it begins* in two cases, both as committed outcomes with an auditable
-event: the goal's budget ceiling cannot pay for it (`budget_refused`, A18) and the goal's deadline has passed
-(`goal_deadline_refused`, A35). The headless client knew only about `request_failed`, so a run whose request
+event: the work's budget ceiling cannot pay for it (`budget_refused`, A18) and the work's deadline has passed
+(`work_deadline_refused`, A35). The headless client knew only about `request_failed`, so a run whose request
 was refused waited for its own deadline and then reported `end: "timeout"` — the exit code that means "the
 instance is still running" — while the session had already parked the leader with the real reason.
 
@@ -15947,7 +15991,7 @@ estimate, so no model is ever called):
 
 | | before | after |
 |---|---|---|
-| report | `end: "timeout"`, `failure: null` | `end: "failed"`, `failure: "goal goal-s-main budget exceeded: known 0 + reserved 0 + est 2235 > max 1000"` |
+| report | `end: "timeout"`, `failure: null` | `end: "failed"`, `failure: "work work-s-main budget exceeded: known 0 + reserved 0 + est 2235 > max 1000"` |
 | exit code | `124` | `1` |
 | wall clock | 60 s (the caller's deadline) | 1 s |
 
@@ -16032,7 +16076,7 @@ Measured 2026-09-26 (three runs, ~9 s each, no credential needed):
 | `t`, `y` | the instance is `TERMINATED` and the panel shows `TERMINATED` |
 
 The probe also drives the *tasks* view, with a task it delegates itself as the user (`delegate_task` accepts
-`Identity::User` when the goal is named): `Ctrl+N` opens the view with the new row selected (`▶ t-panel`),
+`Identity::User` when the work is named): `Ctrl+N` opens the view with the new row selected (`▶ t-panel`),
 the row is `RUNNING` (the assignee picked it up), `c` cancels it in `teamagents tasks --json` **and** the
 panel repaints `t-panel · CANCELLED`. `Esc` returns to the conversation and `Ctrl+N` re-enters the instances
 view, where the selection starts on the conversation target again — the probe moves it back to the worker
@@ -16054,12 +16098,12 @@ several members would need the same key sequence per row.
 
 ## D-94 A gate flake with a precise cause: a receipt read once after a fixed sleep (2026-09-26)
 
-`make check` failed once in `v2_supervisor::a_settled_goal_leaves_a_later_delegation_without_an_active_goal`
-— the test that pins the known gap "a settled goal leaves no surface to open a new one". The panic said
+`make check` failed once in `v2_supervisor::a_settled_work_leaves_a_later_delegation_without_an_active_work`
+— the test that pins the known gap "a settled work leaves no surface to open a new one". The panic said
 exactly where:
 
     panicked at tests/v2_supervisor.rs:943:
-    no delegation refusal in the receipts: ["…[finish accepted: goal goal-s-test closed as SUCCEEDED]"]
+    no delegation refusal in the receipts: ["…[finish accepted: work work-s-test closed as SUCCEEDED]"]
 
 The fixture drove the second instruction, waited for the leader's second *model answer* to appear, then slept
 a fixed 300 ms and read the conversation once. The receipt for the delegation the model attempted lands after
@@ -16069,7 +16113,7 @@ failure in three or four attempts, always at the same line.
 
 The fix is the same class as D-83's: wait for the *condition* instead of for a duration. The test now polls
 its own read of the leader's tool results (every 50 ms, 20 s bound — the same bound its other waits use) until
-the refusal is there, and only then asserts the goal set and the refusal's wording. After the change: six
+the refusal is there, and only then asserts the work set and the refusal's wording. After the change: six
 consecutive full-binary runs under the same sixteen-way load, all green, and `make check` green twice.
 
 Ceiling: the flake was load-dependent and is now rare rather than impossible — a 20 s bound is still a
@@ -16087,13 +16131,13 @@ a real model (`--full-auto`, so the checks run on the host):
 
 | Scenario | Result (2026-09-26, DeepSeek Flash) |
 |---|---|
-| a passing check after a turn that really wrote `hello.txt` | exit 0, `end=completed`, goal `SUCCEEDED`, ledger `ok: true / exit_code: 0` |
+| a passing check after a turn that really wrote `hello.txt` | exit 0, `end=completed`, work `SUCCEEDED`, ledger `ok: true / exit_code: 0` |
 | a failing check, with a second check after it | exit 1, and the ledger holds **one** row — the list stopped at the first failure — while `hello.txt` from the first turn is still there |
 | a command that prints `(exit 0)` and exits 7 | exit 1, ledger `exit_code: 7 / ok: false`, and the command's own text stays in `output` |
 | a second session **without** `--full-auto`, where the turn parks on an approval | exit 3, `verification: []`, `verification_path: null`, and the ledger the earlier passing run in that same session wrote is **untouched** (an approval stop verifies nothing, §8) |
 
 Two things this pins down that the unit tests could not: the checks run *after* a turn that is itself a plain
-reply (scenarios 2 and 3 report `end=reply`, because the goal settled in scenario 1), and the artifact — the
+reply (scenarios 2 and 3 report `end=reply`, because the work settled in scenario 1), and the artifact — the
 file the first turn wrote — survives, which is what makes "the checks gate the exit code, not the work" a
 statement about the product rather than about the checker.
 
@@ -16130,8 +16174,8 @@ Measured 2026-09-26 (DeepSeek Flash, native window, `--full-auto`):
 
 | Mode | Result |
 |---|---|
-| `veto` (exit 2) | the hook was consulted 4 times, once about `shell`; `kept.txt` holds `kept` (the *file* tool was allowed), `vetoed.txt` never exists, and the model's conversation carries `{"error":"denied by pre_tool hook: probe rule: shell commands are not allowed in this project"}` — the reason reached it verbatim. The model then verified the state and finished **`blocked`** of its own accord (step 2 impossible): exit 1, goal `BLOCKED` |
-| `broken` (exit 1) | the same hook exiting 1 **allowed** the call: `vetoed.txt` holds `veto-me`, no denial appears anywhere, exit 0, goal `SUCCEEDED` |
+| `veto` (exit 2) | the hook was consulted 4 times, once about `shell`; `kept.txt` holds `kept` (the *file* tool was allowed), `vetoed.txt` never exists, and the model's conversation carries `{"error":"denied by pre_tool hook: probe rule: shell commands are not allowed in this project"}` — the reason reached it verbatim. The model then verified the state and finished **`blocked`** of its own accord (step 2 impossible): exit 1, work `BLOCKED` |
+| `broken` (exit 1) | the same hook exiting 1 **allowed** the call: `vetoed.txt` holds `veto-me`, no denial appears anywhere, exit 0, work `SUCCEEDED` |
 
 The `notify` stream in those runs carried 8–11 events per turn — 4–6 `tool_call` (with `tool`, `arguments` and
 `ok`, **including `ok: false` for the denied call**) and 4–5 `run_completed` — every payload valid JSON with
@@ -16202,20 +16246,20 @@ which is also the shape the offline test uses.
 
 Measured 2026-09-26 (native windows, `--full-auto`):
 
-| Provider | `exec` | wall clock | check rounds | model requests | goal | reason |
+| Provider | `exec` | wall clock | check rounds | model requests | work | reason |
 |---|---|---|---|---|---|---|
 | `deepseek` | exit 1, `end=failed` | 19.7 s | 3 | 12 | `BLOCKED` | `required checks failed (bound:stale_inputs) after 3 round(s)` |
 | `kimi` | exit 1, `end=failed` | 56.6 s | 3 | 9 | `BLOCKED` | same |
 
 Both runs also show the two halves the probe insists on: the model really did the work (its write of `out.txt`
 is in the conversation) and the check really ran (the file ends up holding *the check's* content, which is how
-the probe knows the gate saw a different value from the one it observed), while no goal was ever reported
+the probe knows the gate saw a different value from the one it observed), while no work was ever reported
 `SUCCEEDED` and the verdict reached the model as a tool result — it got two bounded repair rounds before the
-goal was blocked with the failing id.
+work was blocked with the failing id.
 
 Evidence: `python3 review/dogfood/stale_check.py` and `--provider kimi` (2026-09-26), plus the offline layers
 it does not repeat — `v2_driver::check_inputs_must_still_hold_at_completion` (the same shape with a scripted
-provider), `config::user_checks_become_goal_limits` and `v2_driver::configured_checks_gate_the_goal_through_the_config_edge`.
+provider), `config::user_checks_become_work_limits` and `v2_driver::configured_checks_gate_the_work_through_the_config_edge`.
 
 Ceiling: the probe makes the input change *inside* the check, which is deterministic but narrower than "some
 other process changed a build artifact between the check and completion" — that path is the same code
@@ -16579,7 +16623,7 @@ D-79's side note recorded one flake ("command receipt: database is locked") wher
 `Control` connection while the driver it had started was writing. A scan for the same shape — direct
 `control.submit(...)` calls in tests that also run a driver or daemon — found the pattern at two more sites in
 `engine/tests/v2_supervisor.rs` (`create_instance` while the supervisor runs in
-`a_settled_goal_leaves_a_later_delegation_without_an_active_goal`, and `cancel_task` in
+`a_settled_work_leaves_a_later_delegation_without_an_active_work`, and `cancel_task` in
 `a_prose_reply_leaves_one_turn_and_the_delegator_resolves_the_task`). Both now call
 `SupervisorHandle::submit_user`, i.e. the same path the daemon and `teamagents tasks cancel` use, which removes
 the second writer *and* tests the product's own client path instead of a side door. The rest of the flagged
@@ -16719,7 +16763,7 @@ in the wrong tree), and what does the user actually do with a worktree's branch?
 
 **The harness** `review/dogfood/workspace.py` builds a real git repository, has the model spawn a
 `git_worktree` worker and delegate a file write to it, and then walks the lifecycle. Measured 2026-09-25:
-deepseek 16.4 s / kimi 41.8 s, both `goal_status: SUCCEEDED`, the member's record showing
+deepseek 16.4 s / kimi 41.8 s, both `work_status: SUCCEEDED`, the member's record showing
 `policy: git_worktree`, and:
 
 - the file the member wrote is **in its worktree and not in the shared project** (`git worktree list` names
@@ -16889,10 +16933,10 @@ step earlier, and this time in the *primary* outcome:
 
 ```
 $ teamagents exec "second question"      # submitted 1 s into the first run's slow turn
-exit=0 end=completed goal=SUCCEEDED reply=null input_queued=true
+exit=0 end=completed work=SUCCEEDED reply=null input_queued=true
 ```
 
-The prompt was queued (D-63 reported that honestly), the *first* run's turn then settled the goal, and `exec`
+The prompt was queued (D-63 reported that honestly), the *first* run's turn then settled the work, and `exec`
 reported **that settlement as its own outcome**: exit 0, "completed", no answer to the question it was given.
 The same shape applies to a plain reply: while the queued input waited, the earlier turn's reply was the
 newest assistant entry, and a poll that landed in the boundary between that reply and the drain reported it
@@ -16905,7 +16949,7 @@ history view now names it (`envelope_id`, D-72 also fixes the page's order to (e
 the conversation actually has across a reset). From one history snapshot the client takes its own position and
 then reads the **first** turn-ending entry after it — the member's text (no pending tool calls) or the
 runtime's closing word: that is its answer, and a later turn's entries are not. A settlement is recognised by
-the runtime's own note (`goal-close-*`, `goal-block-*`), whose position after this run's entry is exactly the
+the runtime's own note (`work-close-*`, `work-block-*`), whose position after this run's entry is exactly the
 fact "it happened after my input landed" because the note is appended in the settlement's transaction.
 
 **What the rule is allowed to assume, and why it is verified.** A queued input is applied at a READY boundary
@@ -16916,11 +16960,11 @@ inbox holds something (`~inst[i].queue`, whose counterfactual `MC_control_midtur
 adds the property that names the consequence: **`SettlementFollowsATurnAfterTheLanding`** — at settlement time
 a request must have begun since the instance's last input landing. It is refuted by the same
 pre-D-63 counterfactual in its own control (`MC_control_landing.cfg`, `AllowMidTurnInput = TRUE`), whose
-counterexample walks `BeginRequest → MidTurnInput → RecordAttempt → ImportResponse → SettleGoal` and shows the
+counterexample walks `BeginRequest → MidTurnInput → RecordAttempt → ImportResponse → SettleWork` and shows the
 settlement of a turn that never saw the input — precisely the outcome a waiting client would have attributed
-to it. The model also gained the abstraction it was missing for this: `SettleGoal` now requires
+to it. The model also gained the abstraction it was missing for this: `SettleWork` now requires
 `tail = "assistant"`, i.e. a settlement is about the model's own completion, which is what both code paths do
-(`complete_goal` reads a decision's candidate; a runtime block follows the check round of one).
+(`complete_work` reads a decision's candidate; a runtime block follows the check round of one).
 
 **An input that will never land says so.** A queued envelope whose epoch closes before the boundary reaches it
 is sealed as `SUPERSEDED` (§5.3/A24) — a reset sealed the one in this audit's probe. The runtime names what it
@@ -16933,7 +16977,7 @@ input a timeout.
 
 - `v2_daemon::a_queued_input_is_not_answered_by_the_previous_turns_settlement` — a real socket, a slow
   settling turn, the second input queued behind it: the run reports `end: reply` with **its own** answer,
-  `goal_status: null`, `input_queued: true`, exit 0, while the session's goal really is `SUCCEEDED`. With the
+  `work_status: null`, `input_queued: true`, exit 0, while the session's work really is `SUCCEEDED`. With the
   pre-fix decision restored the same test fails (`left: Completed, right: Reply`).
 - `v2_daemon::a_queued_input_is_not_answered_by_the_previous_turns_reply` — the positional half of the rule.
 - `v2_daemon::a_queued_input_a_reset_sealed_is_reported_undelivered` — a reset while the input waits: exit 1
@@ -16942,9 +16986,9 @@ input a timeout.
   over the shapes a conversation can have (unlanded input, earlier settlement, tool traffic, a later turn,
   the run's own settlement, a closed turn, a bare tool call).
 - Real models, both protocols: `python3 review/dogfood/queued_input.py [--provider kimi]` — run 1 settles its
-  own goal, run 2 is queued inside it and reports `end=reply` with its own word (`BANANA`) and
-  `goal_status: null` (deepseek 2.8 s, kimi 40.4 s). Against the pre-fix build the same harness fails with
-  `end=completed / goal=SUCCEEDED / reply=null` for the queued run.
+  own work, run 2 is queued inside it and reports `end=reply` with its own word (`BANANA`) and
+  `work_status: null` (deepseek 2.8 s, kimi 40.4 s). Against the pre-fix build the same harness fails with
+  `end=completed / work=SUCCEEDED / reply=null` for the queued run.
 - Formally: `SettlementFollowsATurnAfterTheLanding`, listed in `MC.cfg` and `MC_control_two.cfg`
   (`make verify-model-all` green: MC.cfg 84,877 states, MC_control_two 958,777), and refuted by
   `MC_control_landing.cfg` in `make verify-model-counterexamples` (now 9 controls, each refuted).
@@ -16958,36 +17002,36 @@ request and a pending approval are reported even when they belong to the turn th
 they are why this run cannot deliver anything — the report carries the reason and the exit code is non-zero
 (1/3), so nothing is claimed as this input's own outcome.
 
-## D-71 A runtime-blocked goal is not a reply: the runtime's own word is never the member's (2026-09-25)
+## D-71 A runtime-blocked work is not a reply: the runtime's own word is never the member's (2026-09-25)
 
-A16's harness says a required check that can never pass must end the run **failed with the goal BLOCKED**.
+A16's harness says a required check that can never pass must end the run **failed with the work BLOCKED**.
 Against DeepSeek that is what happened (D-70). Against the second catalog entry, Kimi over the `responses`
 protocol, the same scenario ended
 
 ```
-provider=kimi exec exit=0 end=reply goal=None | goal BLOCKED | check rounds 3 | repairs 2
+provider=kimi exec exit=0 end=reply work=None | work BLOCKED | check rounds 3 | repairs 2
 ```
 
-— the goal *had* been blocked, and the headless run reported a **success with no goal status**: a false
+— the work *had* been blocked, and the headless run reported a **success with no work status**: a false
 success in the exact place the gate exists to prevent one. Two defects compounded:
 
-1. **The block was not a settlement.** `complete_goal` announces its outcome with a `goal_completed` event;
-   `block_goal` wrote the goal status and emitted only `goal_blocked`. A client that follows a goal's ending
-   through the event log — the headless run, the TUI — never learned that the goal ended, so `exec` fell
+1. **The block was not a settlement.** `complete_work` announces its outcome with a `work_completed` event;
+   `block_work` wrote the work status and emitted only `work_blocked`. A client that follows a work's ending
+   through the event log — the headless run, the TUI — never learned that the work ended, so `exec` fell
    through to "the last entry is the reply".
 2. **The runtime's own closing note was stored as the member's.** All three runtime notes
-   (`runtime: goal … blocked: …`, `runtime: turn closed`, `runtime: goal … closed as …`) were context
+   (`runtime: work … blocked: …`, `runtime: turn closed`, `runtime: work … closed as …`) were context
    entries of kind **`assistant`** with an assistant-role message. The client's last resort — read the last
    assistant entry as the model's answer — therefore returned the runtime's *own* sentence
-   (`runtime: goal goal-s-main blocked: required checks failed (impossible:exit) after 3 round(s)`) as the
+   (`runtime: work work-s-main blocked: required checks failed (impossible:exit) after 3 round(s)`) as the
    reply, and `exit 0`. The note was written that way on purpose (a note that looks like model text keeps
    the driver idle), which is exactly why the confusion was invisible: the code had one word for two
    speakers.
 
 **The fix, in three places, each with the reason it is the right level:**
 
-- `block_goal` emits the same `goal_completed` event as `complete_goal`, with `status: "BLOCKED"` and
-  `blocked_by: "runtime"` (the distinct `goal_blocked` event stays: it carries the check names and reason,
+- `block_work` emits the same `work_completed` event as `complete_work`, with `status: "BLOCKED"` and
+  `blocked_by: "runtime"` (the distinct `work_blocked` event stays: it carries the check names and reason,
   and keeps "who decided" auditable). A settlement is a fact of the event log, not only of a snapshot a
   polling client happens to read at the right moment.
 - The runtime's closing notes get their **own entry kind** (`EntryKind::Runtime`, `kind = 'runtime'`) in the
@@ -16998,37 +17042,37 @@ success in the exact place the gate exists to prevent one. Two defects compounde
   answered, which is what the assistant-shaped note was for: a runtime that re-opened a turn against its own
   settlement would be inventing work out of its own ending (formally: `RuntimeTailIsWork`).
 - `exec` reports what actually happened. A turn the runtime closed with **no settlement this run can claim**
-  (the goal settled in an earlier run, or the `finish` had nothing left to settle) is the new terminal
+  (the work settled in an earlier run, or the `finish` had nothing left to settle) is the new terminal
   `end: "unsettled"`, exit 1 — not a `reply` whose text the member never said, and not a timeout that would
   mislabel a finished turn. The loop reads the checkpoint **before** the events for this: a settlement
   commits its event and the phase change in one transaction, so that order cannot see an idle instance whose
   settlement is still unread.
 
 **Sessions written before the fix are migrated, not left behind.** Schema 2 → 3 rewrites exactly the three
-runtime envelopes (`goal-close-*`, `goal-block-*`, `turn-close-*`; a model entry carries its decision id
+runtime envelopes (`work-close-*`, `work-block-*`, `turn-close-*`; a model entry carries its decision id
 there, never one of these) from `assistant` to `runtime` with `role: "user"`. The migration walks any older
 store up step by step in one transaction (a `1`-stamped store still reaches the current version), which the
 previous one-step rule did not allow. Probe on a real pre-fix root (`/tmp/ta-providers-run`, written by the
 previous build): before `schema_version = 2`, `i-leader:0:13 kind=assistant {"role":"assistant", …}`; after
 one daemon boot on the new build, `schema_version = 3`,
-`i-leader:0:13 kind=runtime {"role":"user","content":"runtime: goal goal-s-main closed as SUCCEEDED"}`.
+`i-leader:0:13 kind=runtime {"role":"user","content":"runtime: work work-s-main closed as SUCCEEDED"}`.
 
 **Evidence** (all re-runnable):
 
-- `v2_daemon::a_runtime_blocked_goal_is_not_reported_as_a_reply` — the whole scenario through a real socket
-  (a check that always fails, three repair rounds): `end: failed`, `goal_status: BLOCKED`, `reply: null`,
-  exit 1, the `goal_completed` event present with `blocked_by: runtime`, and the instance's tail entry of
+- `v2_daemon::a_runtime_blocked_work_is_not_reported_as_a_reply` — the whole scenario through a real socket
+  (a check that always fails, three repair rounds): `end: failed`, `work_status: BLOCKED`, `reply: null`,
+  exit 1, the `work_completed` event present with `blocked_by: runtime`, and the instance's tail entry of
   kind `runtime`.
 - `v2_daemon::a_turn_closed_by_the_runtime_without_a_settlement_is_not_a_reply` — the second run on a settled
-  goal: `end: "unsettled"`, exit 1, returned at once instead of waiting out its 30 s deadline.
-- `v2_driver::required_checks_exhausted_parks_the_goal_blocked` (updated: the block *is* a `goal_completed`
+  work: `end: "unsettled"`, exit 1, returned at once instead of waiting out its 30 s deadline.
+- `v2_driver::required_checks_exhausted_parks_the_work_blocked` (updated: the block *is* a `work_completed`
   settlement now), `core::v2::control::closing_a_turn_answers_its_finish_call` (the close marker is a
   `runtime` entry in the user's voice), `v2::store::migrate_rewrites_the_runtimes_closing_notes`,
   `tui::the_runtimes_closing_note_is_not_the_members_message`.
 - Real models, same harness, both protocols: `python3 review/dogfood/checks.py --provider deepseek`
-  (exit 1, `end=failed`, goal BLOCKED, 11 requests, 9.7 s) and `--provider kimi` (exit 1, `end=failed`, goal
-  BLOCKED, 8 requests, 37.8 s) — where the Kimi run had reported `exit 0 / end=reply / goal=None` before.
-- `python3 review/dogfood/providers.py` (A27, two providers) still completes: exit 0, goal SUCCEEDED, the
+  (exit 1, `end=failed`, work BLOCKED, 11 requests, 9.7 s) and `--provider kimi` (exit 1, `end=failed`, work
+  BLOCKED, 8 requests, 37.8 s) — where the Kimi run had reported `exit 0 / end=reply / work=None` before.
+- `python3 review/dogfood/providers.py` (A27, two providers) still completes: exit 0, work SUCCEEDED, the
   delegated task SUCCEEDED, both members on their own model, 8 requests, 23.1 s.
 - `python3 review/dogfood/runtime_note.py --providers deepseek,kimi` — the note is not only *stored* under
   its own kind, the transcript still works: two turns in one state root, the first settling `SUCCEEDED` and
@@ -17037,7 +17081,7 @@ one daemon boot on the new build, `schema_version = 3`,
   This is the check the shape needed: `materialize` sends `entry.message` verbatim, so the change had to be
   safe on the DeepSeek thinking wire and on Kimi's `responses` wire, and it is.
 - Formally: `NoTurnWithoutWork` now says *no turn while the tail is committed* (the model's text or the
-  runtime's closing note), `SettleGoal` leaves `tail = "runtime"`, and the new negative control
+  runtime's closing note), `SettleWork` leaves `tail = "runtime"`, and the new negative control
   `MC_control_runtimeTail.cfg` (`RuntimeTailIsWork = TRUE`) is **refuted** by that invariant with
   `tail = "runtime"` and `phase = "MODEL_PENDING"` in the counterexample state. `make verify-model-all`
   (10 configurations), `make verify-model-counterexamples` (8 controls, each refuted) and
@@ -17048,7 +17092,7 @@ old ones, but a client that keys on text rather than kinds would still be readin
 harness also showed the D-65 ceiling from the other side, unchanged by this decision and worth knowing: when
 the *worker* answers with prose instead of calling `finish`, the delegated task stays RUNNING, and a leader
 that verifies the artifact itself (as it did here — it read the worker's response and the file) can settle
-the goal SUCCEEDED with that task still open, because `complete_goal` checks open **operations**, not open
+the work SUCCEEDED with that task still open, because `complete_work` checks open **operations**, not open
 **tasks** — which is what §4.2's completion transaction names, with the delegator's own `wait` as the
 mechanism that should hold a leader until its delegated work resolves. Whether the runtime should refuse such
 a settlement anyway is a design question about team semantics for the user, not a defect this entry fixes.
@@ -17057,7 +17101,7 @@ a settlement anyway is a design question about team semantics for the user, not 
 
 Closing A16's last gap — a *real-model* run whose required check fails — found a defect that no deterministic
 test could: the check round's own conversation entry is a **runtime-authored assistant message with tool
-calls** (`register_check_runs` appends `"runtime required-check round N for goal …"` plus the shell calls,
+calls** (`register_check_runs` appends `"runtime required-check round N for work …"` plus the shell calls,
 because the check outputs must answer a tool call to be wire-valid), and DeepSeek's thinking mode requires
 such a message to carry `reasoning_content`. It did not, so the *next* request — the repair turn that the
 completion gate opens after a check fails — was rejected outright:
@@ -17066,7 +17110,7 @@ completion gate opens after a check fails — was rejected outright:
 chat API 400: The `reasoning_content` in the thinking mode must be passed back to the API.
 ```
 
-In other words: on the default provider, **any goal whose required check failed died on the wire instead of
+In other words: on the default provider, **any work whose required check failed died on the wire instead of
 being repaired or blocked** — the gate was unverifiable in exactly the case it exists for. A16's row had
 recorded an earlier wire error there (D-54 fixed the unanswered `finish`); this was the second half.
 
@@ -17088,7 +17132,7 @@ fields stay per-protocol, as the existing `responses_output`/`anthropic_blocks` 
 **Verification**: `providers_fake::the_thinking_wire_sends_an_empty_reasoning_field_for_assistant_tool_calls` (renamed by D-425, which empties the field on these messages instead of echoing the text) (the filler
 appears only when the flag is on, and a recorded reasoning is untouched), and the real-model harness
 `review/dogfood/checks.py` that found the defect now completes: 8 model requests, 12.7 s, `end=failed`,
-goal **BLOCKED**, the artifact written, the repair ledger naming `check_id: impossible` / `class: exit`, and
+work **BLOCKED**, the artifact written, the repair ledger naming `check_id: impossible` / `class: exit`, and
 the model itself reporting that it would not bypass the gate.
 
 Ceiling: the *protocol* decides the echo (`deepseek`), not the model name; a non-thinking DeepSeek model on
@@ -17122,7 +17166,7 @@ stores) and `tui::frame_shows_the_panels_and_panel_hit_testing` (the panel rende
 **The re-runnable A27 harness** is `review/dogfood/providers.py`: one session, the Leader on DeepSeek Flash
 (native 1M window, D-36) and a worker spawned with `model = "worker_kimi"` (the user's Kimi entry, 262,144
 tokens), delegating a file write and waiting for it. Measured (2026-09-25, isolated state root): 7 model
-requests, 14.0 s, `end=completed`, goal `SUCCEEDED`, members `i-leader` on `deepseek-flash` and `worker1` on
+requests, 14.0 s, `end=completed`, work `SUCCEEDED`, members `i-leader` on `deepseek-flash` and `worker1` on
 `k3-256k`, `task t1 SUCCEEDED`, and `answer.txt` exactly as asked. A27's row now cites this script instead of
 an out-of-tree probe.
 
@@ -17149,7 +17193,7 @@ client-side refusal instead of a guess about something else.
 Evidence: `v2_daemon::the_intervention_cli_cancels_a_task_and_pauses_and_resumes_an_instance` drives the real
 binary against a real daemon through the whole D-65 flow — the worker's prose leaves the task `RUNNING` and
 the leader `WAITING`, `tasks` lists it, `instances pause`/`resume` move the lifecycle, `terminate` is refused
-without `--yes`, `tasks cancel` cancels it, and the delegator wakes and settles the goal `SUCCEEDED`. That
+without `--yes`, `tasks cancel` cancels it, and the delegator wakes and settles the work `SUCCEEDED`. That
 test is also the correspondence for a wait fact D-65 depends on: a `CANCELLED` task *satisfies* a delegator's
 task wait (the code's task condition accepts `SUCCEEDED|FAILED|CANCELLED`; a `BLOCKED` task does not).
 
@@ -17180,10 +17224,10 @@ being approved; a deny prints that the operation fails closed.
 Real-model evidence (one shell, clean `HOME`, the shipped config, DeepSeek Flash): `exec` parked on
 `printf hi > shellproof.txt; echo "exit=$?"; …` → `teamagents approvals` listed
 `ap-d-req-4caeb0c6-…:0  shell  printf hi > shellproof.txt; …` → `approvals approve --id ap-d-req-4caeb0c6`
-→ the session dispatched the approved call, the **goal reached `SUCCEEDED`**, `shellproof.txt` contained
+→ the session dispatched the approved call, the **work reached `SUCCEEDED`**, `shellproof.txt` contained
 `hi`, and the list was empty afterwards. Deterministic evidence:
 `v2_daemon::the_approvals_cli_lists_and_decides_a_parked_operation` drives the real binary against a real
-daemon socket (listing, prefix decision, a typo refused as a client error, the goal completing after the
+daemon socket (listing, prefix decision, a typo refused as a client error, the work completing after the
 decision).
 
 Ceiling: the decision is still one *visible* call at a time — there is no "approve everything like this" rule
@@ -17227,12 +17271,12 @@ The probe's runaway had a root that is not a policy question after all. The driv
 "the last entry is the model's own text **and** no open tasks" — so an instance that still owed a task was
 asked again after every reply. A model that answers with prose instead of settling the task (the probe's
 worker said `BLOCKED.`) was therefore asked forever: **169 model requests / 1,226,717 prompt tokens / 181
-context entries in ~15 minutes**, no progress, bounded only by a goal budget that the session did not have
+context entries in ~15 minutes**, no progress, bounded only by a work budget that the session did not have
 (D-64 now lets the user configure one, which is a ceiling, not a fix).
 
 Two things say this was a defect rather than a design choice:
 
-- §3 states that a **plain reply settles no task and no goal** — a turn without tool calls is the model
+- §3 states that a **plain reply settles no task and no work** — a turn without tool calls is the model
   saying it is done for now. Re-opening a turn against that is the runtime inventing work.
 - `V2Control`'s `NoTurnWithoutWork` — *the already-verified model property* — forbids exactly the state the
   clause produced: `MODEL_PENDING`/`TOOLS_PENDING` while the last word is the model's own. The code
@@ -17255,7 +17299,7 @@ closed set with no runnable path (the assignee is still runnable — the user ca
 
 Evidence: `v2_supervisor::a_prose_reply_leaves_one_turn_and_the_delegator_resolves_the_task` walks the whole
 flow — the worker runs **one** turn and stays `READY`, the task stays `RUNNING`, the leader is `WAITING`, the
-user cancels the task, the leader wakes and the goal settles `SUCCEEDED`. With the pre-fix clause restored the
+user cancels the task, the leader wakes and the work settles `SUCCEEDED`. With the pre-fix clause restored the
 same test fails (`left: Some(4), right: Some(1)`: four requests in 1.5 s). Formally,
 `MC_control_reask.cfg` (switch `ReaskAfterReply`) is refuted by `NoTurnWithoutWork` and is part of
 `make verify-model-counterexamples`; `make verify-model-all` stays green (7 configurations + the two
@@ -17263,17 +17307,17 @@ two-instance ones).
 
 Ceiling: a session whose model stops settling tasks now *waits* where it used to spin — the delegator's wait
 is visible but not self-resolving, so a user who never looks will see a parked turn (and, with `[limits]`
-configured, a parked goal). That is the deliberate trade: a visible wait costs nothing, and the alternative
+configured, a parked work). That is the deliberate trade: a visible wait costs nothing, and the alternative
 is an unbounded spend. Whether the *runtime* should also offer a bounded "no progress" path (cancel or park
 the task after N unsettled turns) remains the user's decision; it is not implemented.
 
-## D-64 The user can bound a goal's cost and time (2026-09-25)
+## D-64 The user can bound a work's cost and time (2026-09-25)
 
 The same audit that produced D-61 and D-63 found the third "designed but unreachable" surface: §8/A18/A35
-give a goal a usage ceiling (`limits.max_total_tokens`) and an absolute `deadline`, the control plane really
+give a work a usage ceiling (`limits.max_total_tokens`) and an absolute `deadline`, the control plane really
 enforces both (`begin_request` refuses past either and the driver parks the instance with the reason), the
 properties are verified (`ReservationsAdmitted`, `AdmissionGate`, `NoRequestAfterDeadline`) — and **no user
-surface could set them**. `create_goal`'s limits come from the user config, which carried only `[[checks]]`,
+surface could set them**. `create_work`'s limits come from the user config, which carried only `[[checks]]`,
 so by default a session ran until the user stopped it. The authority probe's runaway (169 model requests /
 1,226,717 prompt tokens, ACCEPTANCE's known gaps) is what made that concrete.
 
@@ -17281,30 +17325,30 @@ so by default a session ran until the user stopped it. The authority probe's run
 
 ```toml
 [limits]
-max_total_tokens = 2000000   # optional: usage ceiling for every goal this session creates
-deadline_minutes = 45        # optional: wall-clock ceiling, counted from goal creation
+max_total_tokens = 2000000   # optional: usage ceiling for every work this session creates
+deadline_minutes = 45        # optional: wall-clock ceiling, counted from work creation
 ```
 
-- `max_total_tokens` travels inside `create_goal limits` verbatim, because the core enforces it from there
+- `max_total_tokens` travels inside `create_work limits` verbatim, because the core enforces it from there
   (A18). `deadline_minutes` cannot: the core takes an *absolute* timestamp, so `driver::bootstrap` converts
-  the duration when it creates the goal and never stores the key on the goal — what is stored is exactly what
+  the duration when it creates the work and never stores the key on the work — what is stored is exactly what
   the runtime enforces.
 - A zero for either is a config error at load time (it would mean "no request ever"), reported by `doctor`
   and every entry point; like `[[checks]]` this section is **user config only**, never project config.
-- `doctor` reports both (`goal limits`), including the honest case "none: a goal (and the session) runs until
+- `doctor` reports both (`work limits`), including the honest case "none: a work (and the session) runs until
   you stop it or the budget is reached".
 
-**Verification.** `config::tests::user_limits_bound_every_goal` (the shape, `{}` when unset, zero refused,
-unknown keys rejected), `cli::configured_limits_reach_the_goal_and_really_bound_the_session` (the real daemon:
-the goal carries the ceiling, its deadline is ~15 minutes out, the duration key is *not* stored, doctor
+**Verification.** `config::tests::user_limits_bound_every_work` (the shape, `{}` when unset, zero refused,
+unknown keys rejected), `cli::configured_limits_reach_the_work_and_really_bound_the_session` (the real daemon:
+the work carries the ceiling, its deadline is ~15 minutes out, the duration key is *not* stored, doctor
 reports all three cases) and
 `cli::a_tiny_configured_ceiling_parks_the_session_instead_of_running_it` (a 4-token ceiling parks the leader
-with `goal … budget exceeded: known 0 + reserved 0 + est 2228 > max 4`). The budget gate itself was already
+with `work … budget exceeded: known 0 + reserved 0 + est 2228 > max 4`). The budget gate itself was already
 formal (`V2Control`'s `BudgetFits`/`ReservationsAdmitted`/`AdmissionGate`, A18).
 
 **New formal work**: the deadline was *not* modelled before — `begin_request`'s deadline gate (A35) had only
-code tests. `V2Control` now carries `goal.deadlinePassed` (an environment action moves the clock past the
-deadline; the fact is monotone), `BeginRequest` requires `~goal.deadlinePassed`, and
+code tests. `V2Control` now carries `work.deadlinePassed` (an environment action moves the clock past the
+deadline; the fact is monotone), `BeginRequest` requires `~work.deadlinePassed`, and
 `NoRequestAfterDeadline` states the gate. `MC_control_deadline.cfg` is the counterfactual (a runtime that
 ignores the deadline, switch `IgnoreDeadline`) and `make verify-model-counterexamples` requires TLC to refute
 the property there — it does (`Action property NoRequestAfterDeadline is violated`). The refusal's *park*
@@ -17313,7 +17357,7 @@ shares the classified path `FailRequest` already models.
 Evidence: the tests above, `make verify-model-all` (green, `MC.cfg` 6 s / `MC_control_two.cfg` 46 s with the
 new invariant and property) and `make verify-model-counterexamples` (six controls, all refuted).
 
-Ceiling: the ceilings are per goal and fixed when the session creates it; amending a *running* session's
+Ceiling: the ceilings are per work and fixed when the session creates it; amending a *running* session's
 limits is still not offered (it is new protocol surface, and the TUI shows the same limits it booted with).
 
 ## D-63 An input that arrives during a turn enters at the next boundary (2026-09-25)
@@ -17568,7 +17612,7 @@ Evidence: `providers::tests::a_catalog_entry_resolves_by_key_or_by_model_name`;
 `cli::an_unbootable_instance_parks_itself_and_the_session_survives` (an instance created with an unknown model,
 given work, parks itself with the reason while the leader stays `ACTIVE`); and a real-model delegation run — three instances, both
 delegated tasks `SUCCEEDED`, both `[[checks]]` commands passing in the runtime's check round, the whole flow
-`instance_spawned → task_delegated → task_started → wait_satisfied → check_round_registered → goal_completed`
+`instance_spawned → task_delegated → task_started → wait_satisfied → check_round_registered → work_completed`
 in **16.3 seconds** where the same prompt had stalled for 900 (recorded under `review/tmp/dogfood/`).
 
 ## D-58 The session authorizes its Leader, so the team feature exists (2026-09-25)
@@ -17591,7 +17635,7 @@ Why it stayed invisible: the repo's own acceptance evidence came from tests and 
 both of which issue these grants by hand before exercising collaboration (`v2_driver`'s spawn tests do it in
 their setup). The fixtures therefore passed while the product could not start a single worker.
 
-`bootstrap` (the user's session bootstrap, which already creates the instance and the goal) now also issues
+`bootstrap` (the user's session bootstrap, which already creates the instance and the work) now also issues
 `manage`, `delegate` and `message` over the session for the leader instance — the authority Q5 and D-42 give the
 Leader by default. The grants are issued with fixed command ids and *outside* the "instance already exists"
 guard, so the call is idempotent (the command-replay path returns the stored receipt) and a session created by
@@ -17697,23 +17741,23 @@ cannot express, because they emulate neither a strict wire endpoint nor a model 
   sent to the repair turn contained an assistant message whose call had no tool answer following it. DeepSeek
   answered `HTTP 400 … An assistant message with 'tool_calls' must be followed by tool messages responding to
   each 'tool_call_id'` and the run died as a permanent model error. `register_check_runs` now answers the
-  dangling call (with `[finish received: required checks round N must pass before the goal can settle]`)
+  dangling call (with `[finish received: required checks round N must pass before the work can settle]`)
   before it appends the synthetic check entry, so the transcript stays valid on both the repair and the
   blocked path.
 - **A `finish` without a usable status produced a false failure.** The kernel mapped a missing or unknown
-  `status` to `failed`, the goal closed as `FAILED` although the work was done, and the required checks never
+  `status` to `failed`, the work closed as `FAILED` although the work was done, and the required checks never
   ran (they only run for a claimed success). The kernel now refuses such a call: it produces no completion,
   reports the problem, and hands the call to the runtime as an ordinary intent, which answers it with
   `finish refused: status is required and must be one of success, blocked, failed …` and continues the same
   turn — the uniform "invalid call → error receipt → model retries" path. A stated outcome (`success`,
-  `blocked`, `failed`) is unchanged, and the goal can no longer be settled by a call that states nothing.
+  `blocked`, `failed`) is unchanged, and the work can no longer be settled by a call that states nothing.
 
 The structural rule both fixes protect is now asserted where the scripted providers cannot fake it:
 `v2_driver::assert_wire_valid` walks the real transcript and requires every assistant `tool_calls` entry to be
 answered before the next assistant message (this is what strict endpoints check), and
 `a_finish_without_a_status_is_corrected_in_the_same_turn` requires the correction, the continued turn and the
 required check. Both tests fail against the pre-fix code (`assert_wire_valid` reported
-`an assistant message followed unanswered tool_calls: ["finish-…"]`; the status test reported the goal as
+`an assistant message followed unanswered tool_calls: ["finish-…"]`; the status test reported the work as
 `FAILED`), which is how they were checked.
 
 Evidence: `core::kernel::tests::a_finish_without_a_usable_status_is_not_a_completion`,
@@ -17793,7 +17837,7 @@ A filesystem that cannot lock at all (any error other than `WouldBlock`) still f
 that is a hard error rather than a busy lock.
 
 While chasing it, a second, unrelated flake surfaced once in a five-run loop: `budget_exhaustion_parks_the_instance`
-and `goal_deadline_parks_the_instance` read the lifecycle once, immediately after the refusal event. The park is
+and `work_deadline_parks_the_instance` read the lifecycle once, immediately after the refusal event. The park is
 a separate committed step from the refusal, so under load the snapshot could still show `ACTIVE`. Both tests now
 wait for the lifecycle they assert on (`wait_lifecycle`, alongside the existing `wait_phase`), which is what they
 meant in the first place; the product behaviour was correct.
@@ -17808,35 +17852,35 @@ lifecycle-race failure).
 ## D-50 User-defined completion checks become reachable (2026-09-25)
 
 The design requires that "required checks defined by the user or project must pass" (§8, Q11) and the runtime
-implements the whole path — `create_goal limits.required_checks` → the driver registers the check operations
-at the completion boundary → a failing check enters repair and finally blocks the goal (A16/A17). What was
-missing was any way for a *user* to define them: the goal limits were hardcoded to `{}` in `cli::daemon`, so
+implements the whole path — `create_work limits.required_checks` → the driver registers the check operations
+at the completion boundary → a failing check enters repair and finally blocks the work (A16/A17). What was
+missing was any way for a *user* to define them: the work limits were hardcoded to `{}` in `cli::daemon`, so
 in practice every real session settled on the model's own report. D-49 recorded that as the ceiling; this item
 closes it with the smallest surface that fits the existing conventions.
 
 - **`[[checks]]` in the user config** (`id`, `command`, optional `timeout`, `network`, `inputs`) is now the
-  user's acceptance contract. `config::goal_limits` turns it into the goal limits the daemon boots with, and
-  the *same* core validator that guards `create_goal` runs at config load — so the config edge and the control
+  user's acceptance contract. `config::work_limits` turns it into the work limits the daemon boots with, and
+  the *same* core validator that guards `create_work` runs at config load — so the config edge and the control
   plane cannot disagree, and a broken entry (empty command, `timeout = 0`, an escaping input) fails `doctor`
-  and every entry point instead of a goal silently never settling.
+  and every entry point instead of a work silently never settling.
 - **User config only**: `checks` joins `hooks` and `retention` in the list of sections a project file may not
   define. A check runs unattended at the completion boundary without an approval prompt, so letting a cloned
   repository install one would be remote code execution by config. (Wiring the project config into the daemon
   at all is a separate, still-open question; today only the loader knows about it.)
 - `doctor` reports how many checks will gate the session and which ids they are, and `[[checks]]` is
   documented in `examples/config.minimal.toml`, `examples/config.toml` and the user guide (§2.1).
-- The TUI names the checks of a round and the ids that failed (`v2app::apply_events`), so a goal being
+- The TUI names the checks of a round and the ids that failed (`v2app::apply_events`), so a work being
   repaired or parked explains itself while the check receipts show up in the conversation as tool results.
 - The headless client's `--check` (D-49) keeps its v1 semantics and is documented as the *weaker*, client-side
-  acceptance command: it decides `exec`'s exit code after the turn, while a runtime check prevents the goal
+  acceptance command: it decides `exec`'s exit code after the turn, while a runtime check prevents the work
   from settling at all.
 
-Evidence: `config::tests::user_checks_become_goal_limits` (the exact JSON shape; no `null` field may reach
-`create_goal`) and `a_broken_check_is_rejected_when_the_config_loads`; the user-only rule in
+Evidence: `config::tests::user_checks_become_work_limits` (the exact JSON shape; no `null` field may reach
+`create_work`) and `a_broken_check_is_rejected_when_the_config_loads`; the user-only rule in
 `config::tests::user_hooks_and_retention_survive_loading_and_project_ones_are_ignored`;
-`v2_driver::configured_checks_gate_the_goal_through_the_config_edge` drives config text → goal limits →
-a failing check → repair → `SUCCEEDED`; `cli::the_daemon_carries_configured_checks_into_the_goal` proves the
-running daemon stores them on the goal and that `doctor` reports them;
+`v2_driver::configured_checks_gate_the_work_through_the_config_edge` drives config text → work limits →
+a failing check → repair → `SUCCEEDED`; `cli::the_daemon_carries_configured_checks_into_the_work` proves the
+running daemon stores them on the work and that `doctor` reports them;
 `tui::events_drive_refreshes_and_notes` checks that a round names its checks and a repair names the failing one.
 
 ## D-49 The headless `exec` contract is real again (2026-09-25)
@@ -17846,7 +17890,7 @@ partly not implemented. `teamagents exec "prompt"` (the plain form in both READM
 error because the argument parser demanded `--json`; `exec -` accepted stdin according to the README but
 submitted the literal string `-`; `--check COMMAND` was parsed and then silently dropped. Three further
 defects came out of the same review: a settlement recorded by an **earlier** run was replayed as the current
-run's outcome (the client started at watermark 0), a goal that settled `FAILED`/`BLOCKED` still exited `0`,
+run's outcome (the client started at watermark 0), a work that settled `FAILED`/`BLOCKED` still exited `0`,
 and a leader parked by a permanent failure or a click-through approval let `exec` wait for its whole
 deadline.
 
@@ -17854,7 +17898,7 @@ The restored contract is the v1/D-32 one, which is what both READMEs already pro
 
 - **Prompt**: the positional argument, or everything on stdin when it is `-`; an empty prompt is a usage
   error. Both READMEs document the marker.
-- **Exit codes**: `0` settled (goal `SUCCEEDED`, or a direct reply), `1` failed or unfinished (including a
+- **Exit codes**: `0` settled (work `SUCCEEDED`, or a direct reply), `1` failed or unfinished (including a
   failed `--check`), `3` an approval is pending (a headless run has nobody to answer it, so it reports
   immediately instead of burning the deadline), `124` the deadline passed, `2` usage or infrastructure.
 - **`--check COMMAND`** (repeatable): the user's own acceptance command, run after the turn ends, in order,
@@ -17862,7 +17906,7 @@ The restored contract is the v1/D-32 one, which is what both READMEs already pro
   fail. The verdicts are printed, written to `<state root>/verification.json` and carried in the `--json`
   report. The client reads each command's status from a random marker the wrapper prints, so a command that
   prints its own `(exit 0)` cannot fake a pass. It never runs when the run stopped for an approval.
-- **Own outcome only**: the client drains the event log before submitting (a stored `goal_completed` is
+- **Own outcome only**: the client drains the event log before submitting (a stored `work_completed` is
   history, not this run's result), reports a permanently failed leader request as the run's failure at once,
   and refuses to submit to a leader whose lifecycle is not `ACTIVE` (parked/paused) instead of queueing work
   nobody drains.
@@ -17870,10 +17914,10 @@ The restored contract is the v1/D-32 one, which is what both READMEs already pro
   caller reports its own words (and that path) in under a second instead of waiting the full 30-second
   socket window.
 
-**Left open at the time**: `--check` is a *client-side* acceptance command, so it does not become the goal's
+**Left open at the time**: `--check` is a *client-side* acceptance command, so it does not become the work's
 runtime `required_checks` (`limits.required_checks`, executed by the driver at the completion boundary,
 D-42/§8), and no user surface predefined those. D-50 closes that gap with `[[checks]]` in the user config and
-keeps the two clearly distinguished; amending the goal limits of an *already running* session is still not
+keeps the two clearly distinguished; amending the work limits of an *already running* session is still not
 offered (it would be new protocol surface, and it has no user request behind it).
 
 Evidence: `v2::exec::tests::exit_codes_follow_the_documented_contract`,
@@ -17882,7 +17926,7 @@ Evidence: `v2::exec::tests::exit_codes_follow_the_documented_contract`,
 `exec_refuses_a_missing_or_empty_prompt`; and against a real socket with a scripted leader:
 `v2_daemon::headless_runs_report_their_own_outcome_not_an_earlier_settlement`,
 `headless_runs_verify_the_acceptance_commands_and_gate_the_exit_code`,
-`a_failing_acceptance_command_fails_the_run`, `a_blocked_goal_is_not_reported_as_a_success`,
+`a_failing_acceptance_command_fails_the_run`, `a_blocked_work_is_not_reported_as_a_success`,
 `a_failed_turn_ends_the_headless_run_instead_of_timing_out`,
 `a_parked_approval_ends_the_headless_run_at_once`; and through the real binary:
 `cli::exec_takes_the_prompt_from_stdin_and_runs_the_acceptance_check`.
@@ -18014,17 +18058,17 @@ specs and were confirmed with code probes; each has a regression test. The fix l
   a tool response, so a strict wire endpoint rejects the next request. Fix: `answer_closed_waits` extends the
   answer to both paths (same reason text as the drain, deduplication key stays the wait id). Spec side:
   `ResolvedWaitIsAnswered`; regression `wait_call_answered_outside_the_drain_path`.
-- **V-G1: a settled goal still accepted new work.** Delegation, opening operations and continued billing all
-  ignored the goal status, so new turns kept billing a settled goal. Fix: `budget_goal` accepts only ACTIVE
-  goals (both the instance pointer and the oldest open task path), `complete_goal`/`block_goal` detach the
-  instance pointer on settlement (`detach_goal`, with `detached` in the response and events), and
-  `delegate_task` requires an ACTIVE goal and tells the caller to create one first. Spec side:
-  `NoStaleActiveGoal`, `RegisteredWorkNeedsAnActiveGoal`, `RequestsResolveToActiveGoals`; regression
-  `a_settled_goal_takes_no_new_work`.
+- **V-G1: a settled work still accepted new work.** Delegation, opening operations and continued billing all
+  ignored the work status, so new turns kept billing a settled work. Fix: `budget_work` accepts only ACTIVE
+  work_scopes (both the instance pointer and the oldest open task path), `complete_work`/`block_work` detach the
+  instance pointer on settlement (`detach_work`, with `detached` in the response and events), and
+  `delegate_task` requires an ACTIVE work and tells the caller to create one first. Spec side:
+  `NoStaleActiveWork`, `RegisteredWorkNeedsAnActiveWork`, `RequestsResolveToActiveWorks`; regression
+  `a_settled_work_takes_no_new_work`.
 - **Deliberate semantic boundary**: the linearization point for "new work" is the request, not the operation.
-  A request admitted while the goal was ACTIVE may still open operations and bill that goal after settlement —
-  that is honest accounting, not new work. `complete_goal` checks open operations but not tasks, so a goal can
-  settle while its own tasks are still open and those tasks' later requests have no billing goal; tightening
+  A request admitted while the work was ACTIVE may still open operations and bill that work after settlement —
+  that is honest accounting, not new work. `complete_work` checks open operations but not tasks, so a work can
+  settle while its own tasks are still open and those tasks' later requests have no billing work; tightening
   that would need a committed "completion refused" result for the driver and is out of scope here.
 - **V-P1: stale execution pointer after termination.** The spec-to-code correspondence test
   (`core/tests/v2_invariants.rs`) found, during a random walk, an instance whose phase stayed
@@ -18079,7 +18123,7 @@ confirms the system direction and scope.
   to an instance and pause or cancel it. Those user permissions are not automatically granted to the Leader or
   other agents. Instances are reused within a session, can be terminated or reset, and are isolated across
   sessions by default.
-- Work continues by default with an optional goal-level budget, and permanent failures or repeated failures
+- Work continues by default with an optional work-level budget, and permanent failures or repeated failures
   are handled in a bounded way. A restart resumes authorized work; when an external outcome is unknown it is
   verified first, and if it still cannot be confirmed the affected tasks park and notify instead of being
   replayed blindly.

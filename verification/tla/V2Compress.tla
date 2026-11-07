@@ -5,7 +5,7 @@
 (* closes in the same transaction. Failure leaves the context untouched.     *)
 (*                                                                          *)
 (* Code anchors: core/src/v2/control.rs — begin_compression (lifecycle gate   *)
-(* plus the shared goal deadline/budget gate, same as a turn request: that     *)
+(* plus the shared work deadline/budget gate, same as a turn request: that     *)
 (* gate itself is verified in V2Control.tla), compress_context (append summary *)
 (* → mark covered → close request → release reservation, ONE transaction),     *)
 (* fail_compression (close + release, context untouched), close_epoch_execution*)

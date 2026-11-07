@@ -41,8 +41,8 @@ pub struct SupervisorConfig<P, F> {
     pub max_retries: usize,
     pub storage_queue: usize,
     pub poll: Duration,
-    /// Goal limits (e.g. max_total_tokens) recorded at bootstrap.
-    pub goal_limits: Json,
+    /// Work limits (e.g. max_total_tokens) recorded at bootstrap.
+    pub work_limits: Json,
     pub require_shell_approval: bool,
     /// One provider per instance driver, built from its stored profile.
     pub provider_factory: F,
@@ -184,18 +184,18 @@ impl SupervisorHandle {
         &self.session_id
     }
 
-    /// The status of one goal, or `None` when no such goal exists (D-367: the automation scheduler uses it to
+    /// The status of one work, or `None` when no such work exists (D-367: the automation scheduler uses it to
     /// tell whether an automation's previous run is still in flight).
-    pub async fn goal_status(&self, goal_id: &str) -> Result<Option<String>, String> {
-        let goal = goal_id.to_string();
+    pub async fn work_status(&self, work_id: &str) -> Result<Option<String>, String> {
+        let work = work_id.to_string();
         self.storage
             .call(move |control| -> Result<Option<String>, String> {
                 use rusqlite::OptionalExtension;
                 control
                     .connection()
-                    .query_row("SELECT status FROM goals WHERE id = ?1", [&goal], |row| row.get(0))
+                    .query_row("SELECT status FROM work_scopes WHERE id = ?1", [&work], |row| row.get(0))
                     .optional()
-                    .map_err(|e| format!("goal status {goal}: {e}"))
+                    .map_err(|e| format!("work status {work}: {e}"))
             })
             .await?
     }
@@ -243,12 +243,12 @@ impl SupervisorHandle {
                 for row in rows {
                     instances.push(row.map_err(|e| format!("snapshot row: {e}"))?);
                 }
-                let goal: Option<(String, String, i64)> = conn
-                    .query_row("SELECT status, known_usage_json, unknown_usage FROM goals LIMIT 1", [], |row| {
+                let work: Option<(String, String, i64)> = conn
+                    .query_row("SELECT status, known_usage_json, unknown_usage FROM work_scopes LIMIT 1", [], |row| {
                         Ok((row.get(0)?, row.get(1)?, row.get(2)?))
                     })
                     .ok();
-                Ok::<_, String>(json!({"instances": instances, "goal": goal.map(|(status, usage, unknown)|
+                Ok::<_, String>(json!({"instances": instances, "work": work.map(|(status, usage, unknown)|
                     json!({"status": status, "known_usage": serde_json::from_str::<Json>(&usage).unwrap_or(Json::Null),
                            "unknown_usage": unknown}))}))
             })
@@ -358,7 +358,7 @@ where
         &storage,
         &config.leader_id,
         &config.workspace.to_string_lossy(),
-        &config.goal_limits,
+        &config.work_limits,
         &leader_profile,
         crate::v2::driver::RetentionBoot {
             history_days: config.catalog.retention.history_days,
@@ -527,7 +527,7 @@ where
                                 .unwrap_or(self.config.max_retries),
                             storage_queue: self.config.storage_queue,
                             poll: self.config.poll,
-                            goal_limits: self.config.goal_limits.clone(),
+                            work_limits: self.config.work_limits.clone(),
                             require_shell_approval: self.config.require_shell_approval,
                         };
                         let (shared, task) = match spawn_driver(driver_config, &self.storage) {

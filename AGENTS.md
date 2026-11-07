@@ -53,7 +53,7 @@ make verify-kani                         # Kani proofs (paging arithmetic)
 python3 review/eval/r2-p6/run.py --phase pilot --out <new date directory>  # real-model A/B/C comparison (needs credentials)
 ```
 
-- Local source baseline (2026-11-03, D-494 `0027ffe2`): `make check` is green — core 174 / engine 459 / tui 104;
+- Local source baseline (2026-11-07, D-499 worktree): `make check` is green — core 175 / engine 459 / tui 104;
   `make pty` passes. Formal results and their abstraction limits are in `verification/REPORT.md`.
   This does not renew D-452's independent audit or historical real-service results.
   Raw evaluation JSONL lives in `review/eval/r2-p6/runs/`, per-item evidence in `docs/ACCEPTANCE.md`.
@@ -67,7 +67,10 @@ python3 review/eval/r2-p6/run.py --phase pilot --out <new date directory>  # rea
   D-492 adds dependency-advisory CI, bounded OAuth/MCP/update inputs and locked atomic credential writes.
   D-494 hardens provider/runner boundaries, preserves supervision under storage backpressure, reduces idle
   history reads and viewport allocations, and audits formal coverage with explicit remaining proof limits.
-  Automatic reminders and other unselected candidates remain unapproved.
+  D-498 removes the separate goal entity; work scopes own budget/admission/acceptance, work states/tasks own
+  continuation, and schema 8 explicitly migrates legacy records. D-499 removes unused persistence mirror
+  types and duplicate maintenance guidance without changing runtime semantics. Automatic reminders and other
+  unselected candidates remain unapproved.
 - Skipped checks and the current baseline are collected in `docs/ACCEPTANCE.md`. A green Cargo run is not a
   real-service acceptance result.
 - Real-model evaluation always uses the model's native context window and records the value and its source;
@@ -118,7 +121,7 @@ This describes the current code.
   stop evidence before shared-workspace takeover. D-487's observer checks the recorded local process group
   without signalling it or rewriting an unknown receipt. Historical probe: `review/dogfood/cancel.py` (D-88).
 - **A task can park in `BLOCKED`** when required checks are exhausted, a member fails or work is cancelled;
-  a blocked task prevents the goal from completing. Use `teamagents tasks cancel --id` to cancel
+  a blocked task prevents the work from completing. Use `teamagents tasks cancel --id` to cancel
   it (without a live turn it goes straight to `CANCELLED`);
   re-dispatch blocked work as a new task.
 - **Enrolled work continues after progress prose** under D-487's bounded recovery policy. Empty replies,
@@ -135,7 +138,7 @@ This describes the current code.
   the turn up to `max_retries` as long as no visible text was emitted; once text went out (or the protocol
   itself failed) the attempt fails immediately and the reason lands in the receipt
   (`transient retries exhausted` / `permanent model error` / `context overflow`).
-- **Goal deadline and budget**: a goal may carry a `deadline` and a usage ceiling; past the deadline no new
+- **Work deadline and budget**: a work may carry a `deadline` and a usage ceiling; past the deadline no new
   request starts, and usage is settled honestly.
 - **"Write early" for heavy tasks**: a turn is bounded by budget and wall clock, so a read-many/write-report
   task should drop artifacts on disk along the way instead of ending with uncommitted conclusions.

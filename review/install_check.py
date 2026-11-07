@@ -167,7 +167,7 @@ def main() -> int:
         # D-435 re-added `sessions prune` as the retention verb, so it belongs to the expected surface,
         # not to the list of verbs the earlier artifact offered and the current one does not.
         stale = [entry for entry in ("validate", "--plain", "--team SPEC") if entry in help_text]
-        missing = [entry for entry in ("exec", "goals", "instances", "sessions prune") if entry not in help_text]
+        missing = [entry for entry in ("exec", "work_scopes", "instances", "sessions prune") if entry not in help_text]
         if stale:
             failures.append(
                 f"the published v{version} still offers {stale}, verbs the documented surface removed - "

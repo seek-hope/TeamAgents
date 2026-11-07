@@ -54,7 +54,7 @@ import re
 import sys
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
-CONFIG_STRUCTS = ("UserConfig", "ModelProfile", "ToolBinding", "Retention", "Hooks", "GoalLimits", "CheckSpec")
+CONFIG_STRUCTS = ("UserConfig", "ModelProfile", "ToolBinding", "Retention", "Hooks", "WorkLimits", "CheckSpec")
 # declaration, parsing/merging/validation, the doctor surface and the argv parser: none of them *use* a key
 PLUMBING = {"core/src/models.rs", "engine/src/config.rs", "engine/src/cli.rs", "engine/src/main.rs"}
 
@@ -74,7 +74,7 @@ KNOWN_UNSERVED = {
     "codex_profile": "D-75: refused at load — an external Codex profile is not part of this release",
     "archived_days": "applied by `sessions prune` (D-435), which reads it from the catalog in `main.rs` — the \
                       argv/pruning surface, which this audit counts as plumbing",
-    "deadline_minutes": "applied by the loader: config.rs turns it into each goal's absolute deadline",
+    "deadline_minutes": "applied by the loader: config.rs turns it into each work's absolute deadline",
 }
 
 # (D-240) A field the name-based search *over*-counts: every use it finds outside the plumbing is a same-named

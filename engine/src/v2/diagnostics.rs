@@ -106,7 +106,7 @@ fn read_sql(conn: &Connection, include_settled: bool) -> rusqlite::Result<View> 
                 }, false, "Inspect waits and tasks. BLOCKED and idle assignees do not satisfy task waits. Cancel a task only if its result is no longer needed; no automatic wakeup is added.")
             }
             ("ACTIVE", "READY") if work["state"] == "NEEDS_INPUT" && !incoming => diagnosis("needs_input", "Needs your decision.", true,
-                "Answer the recorded question; the existing goal, decisions and budget are preserved."),
+                "Answer the recorded question; the existing work, decisions and budget are preserved."),
             ("ACTIVE", "READY") if work["state"] == "BLOCKED" && !incoming => diagnosis("work_blocked", "Work is blocked after a concrete blocker or bounded recovery.", true,
                 "Inspect the saved reason and evidence. Supply missing information or explicitly resume after resolving the cause."),
             ("ACTIVE", "READY") if work["state"] == "STOPPED" && !incoming => diagnosis("stopped", "Work stopped by user intervention or an enforced limit.", true,
@@ -141,7 +141,7 @@ fn read_sql(conn: &Connection, include_settled: bool) -> rusqlite::Result<View> 
         activities.insert(id, activity);
     }
     let mut stmt = conn.prepare(
-        "SELECT id, goal_id, assignee, status FROM tasks
+        "SELECT id, work_id, assignee, status FROM tasks
          WHERE ?1 OR status NOT IN ('SUCCEEDED', 'FAILED', 'CANCELLED') ORDER BY rowid",
     )?;
     let tasks = stmt.query_map([include_settled], |row| {
@@ -167,7 +167,7 @@ fn read_sql(conn: &Connection, include_settled: bool) -> rusqlite::Result<View> 
             ).optional()?.flatten();
             diagnostic["reason"] = json!(reason);
         }
-        Ok(json!({"id": id, "goal_id": row.get::<_, String>(1)?, "assignee": assignee,
+        Ok(json!({"id": id, "work_id": row.get::<_, String>(1)?, "assignee": assignee,
             "status": status, "diagnosis": diagnostic, "assignee_activity": activity}))
     })?.collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(View { activities, tasks })

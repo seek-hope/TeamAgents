@@ -5,7 +5,7 @@ Two runs share one session root. The first asks the model for work that takes a
 turn the second run can arrive inside (a shell command that sleeps, then `finish`
 with status success), so the second input is queued at the boundary instead of
 being stored behind that turn's reply (D-63). The second run must report *its own*
-answer — and must not report the goal the first run settled on its way out, which
+answer — and must not report the work the first run settled on its way out, which
 is what a client that reads "the session settled" as "my prompt settled" does.
 
     python3 review/dogfood/queued_input.py                    # DeepSeek
@@ -55,7 +55,7 @@ context_window = 262144
 """,
 }
 
-# The first turn settles the goal in its *first* response (no tool round in
+# The first turn settles the work in its *first* response (no tool round in
 # between), so the queued input can only land after that settlement — which is the
 # attribution this probe is about. The model's own latency is the window the second
 # run arrives in; the probe checks that it really arrived inside the turn.
@@ -147,21 +147,21 @@ def main() -> int:
     second_report = json.loads(second.stdout) if second.stdout.strip().startswith("{") else {}
     print(f"provider={args.provider} elapsed={elapsed}s")
     print(f"  run 1 (slow):   exit={first.returncode} end={first_report.get('end')} "
-          f"goal={first_report.get('goal_status')}")
+          f"work={first_report.get('work_status')}")
     print(f"  run 2 (queued): exit={second.returncode} end={second_report.get('end')} "
-          f"goal={second_report.get('goal_status')} reply={second_report.get('reply')!r} "
+          f"work={second_report.get('work_status')} reply={second_report.get('reply')!r} "
           f"input_queued={second_report.get('input_queued')}")
     if first_err.strip().startswith("exec:"):
         print("  run 1 stderr:", first_err.strip()[:200])
     if second.stderr.strip().startswith("exec:"):
         print("  run 2 stderr:", second.stderr.strip()[:200])
 
-    # 1. the first run's own outcome: the goal it settled
+    # 1. the first run's own outcome: the work it settled
     if not phase.startswith(("MODEL_PENDING", "TOOLS_PENDING", "COMPLETION_PENDING")):
         failures.append(f"run 1 was never inside a turn, so nothing was queued behind it ({phase})")
-    if first_report.get("goal_status") != "SUCCEEDED":
-        failures.append(f"run 1 did not settle its own goal: {first_report.get('end')} "
-                        f"{first_report.get('goal_status')!r} {first_report.get('failure')!r}")
+    if first_report.get("work_status") != "SUCCEEDED":
+        failures.append(f"run 1 did not settle its own work: {first_report.get('end')} "
+                        f"{first_report.get('work_status')!r} {first_report.get('failure')!r}")
     # 2. the second input really was queued behind that turn (otherwise this run
     #    proves nothing about attribution — the prompt would have been its own turn)
     if second_report.get("input_queued") is not True:
@@ -170,15 +170,15 @@ def main() -> int:
     if second_report.get("end") != "reply" or "BANANA" not in (second_report.get("reply") or ""):
         failures.append(f"run 2 did not report its own reply: {second_report.get('end')} "
                         f"{second_report.get('reply')!r} {second_report.get('failure')!r}")
-    if second_report.get("goal_status") is not None:
+    if second_report.get("work_status") is not None:
         failures.append(f"run 2 attributed the earlier turn's settlement to itself: "
-                        f"{second_report.get('goal_status')!r}")
+                        f"{second_report.get('work_status')!r}")
     if second.returncode != 0:
         failures.append(f"run 2 exited {second.returncode} for a plain reply of its own")
 
     db = sqlite3.connect(state_root / "session.sqlite")
-    goal, = db.execute("SELECT status FROM goals")
-    print(f"  the session's goal: {goal[0]}")
+    work, = db.execute("SELECT status FROM work_scopes")
+    print(f"  the session's work: {work[0]}")
     for failure in failures:
         print("FAIL:", failure)
     return 1 if failures else 0

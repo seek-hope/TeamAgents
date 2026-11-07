@@ -45,10 +45,10 @@ fn autonomy_retention_preserves_pending_acceptance_until_work_closes() {
     ctl.submit(cmd("resume", "set_lifecycle", json!({"instance_id":"i1","lifecycle":"ACTIVE"})), Identity::User)
         .unwrap();
     let state = work_state(ctl.connection(), "i1").unwrap();
-    let goal = state["goal_id"].as_str().expect("the saved acceptance must activate work");
-    assert_ne!(goal, "g1");
+    let work = state["work_id"].as_str().expect("the saved acceptance must activate work");
+    assert_ne!(work, "g1");
     let limits: String =
-        ctl.connection().query_row("SELECT limits_json FROM goals WHERE id=?1", [goal], |r| r.get(0)).unwrap();
+        ctl.connection().query_row("SELECT limits_json FROM work_scopes WHERE id=?1", [work], |r| r.get(0)).unwrap();
     let limits: Json = serde_json::from_str(&limits).unwrap();
     assert_eq!(limits["required_checks"][0]["command"], "test -f artifact.txt");
     assert_eq!(work_context(ctl.connection(), "i1").unwrap()["recent_user_inputs"].as_array().unwrap().len(), 2);
@@ -58,7 +58,7 @@ fn autonomy_retention_preserves_pending_acceptance_until_work_closes() {
         .query_row("SELECT EXISTS(SELECT 1 FROM envelopes WHERE id='checked-input')", [], |r| r.get(0))
         .unwrap();
     assert!(retained, "active work also owns its assigned input");
-    ctl.submit(cmd("cancel", "cancel_goal", json!({"goal_id":goal})), Identity::User).unwrap();
+    ctl.submit(cmd("cancel", "cancel_work", json!({"work_id":work})), Identity::User).unwrap();
     ctl.submit(cmd("sweep-closed", "prune_history", sweep), Identity::User).unwrap();
     let retained: bool = ctl
         .connection()
@@ -94,10 +94,10 @@ fn autonomy_admission_keeps_unknown_usage_and_the_original_deadline() {
     let params = json!({"request_id":"r-next","decision_id":"d-next","entry":{"role":"assistant","content":""},"intents":[],"checkpoint":{"action":"start_work","objective":"Implement the next change"}});
     ctl.submit(cmd("admit-next", "import_response", params.clone()), Identity::System).unwrap();
     ctl.submit(cmd("admit-next", "import_response", params), Identity::System).unwrap();
-    let goal = budget_goal(ctl.connection(), "i1").unwrap().unwrap();
+    let work = budget_work(ctl.connection(), "i1").unwrap().unwrap();
     let (raw, unknown): (String, i64) = ctl
         .connection()
-        .query_row("SELECT known_usage_json,unknown_usage FROM goals WHERE id=?1", [&goal], |r| {
+        .query_row("SELECT known_usage_json,unknown_usage FROM work_scopes WHERE id=?1", [&work], |r| {
             Ok((r.get(0)?, r.get(1)?))
         })
         .unwrap();
@@ -105,7 +105,7 @@ fn autonomy_admission_keeps_unknown_usage_and_the_original_deadline() {
     assert_eq!(unknown, 1);
     let original: Option<String> = ctl
         .connection()
-        .query_row("SELECT goal_id FROM model_requests WHERE request_id='r-next'", [], |r| r.get(0))
+        .query_row("SELECT work_id FROM model_requests WHERE request_id='r-next'", [], |r| r.get(0))
         .unwrap();
     assert!(original.is_none());
     drop(ctl);
@@ -149,7 +149,7 @@ fn autonomy_admission_keeps_unknown_usage_and_the_original_deadline() {
     assert_eq!(result["budget_refused"], true);
     assert!(result["reason"].as_str().unwrap().contains("deadline"));
     assert_eq!(load_instance(ctl.connection(), "i1").unwrap().2, "PARKED");
-    assert!(budget_goal(ctl.connection(), "i1").unwrap().is_none());
+    assert!(budget_work(ctl.connection(), "i1").unwrap().is_none());
     drop(ctl);
     cleanup(&path);
 }
@@ -375,14 +375,14 @@ fn autonomy_retired_check_options_are_rejected_before_input_admission() {
             .unwrap_err();
         assert!(error.contains("network is retired"), "{error}");
     }
-    let goals: i64 = ctl.connection().query_row("SELECT COUNT(*) FROM goals", [], |r| r.get(0)).unwrap();
-    assert_eq!(goals, 1);
+    let work_scopes: i64 = ctl.connection().query_row("SELECT COUNT(*) FROM work_scopes", [], |r| r.get(0)).unwrap();
+    assert_eq!(work_scopes, 1);
     drop(ctl);
     cleanup(&path);
 }
 
 #[test]
-fn autonomy_queued_steering_is_applied_before_the_existing_goal_settles() {
+fn autonomy_queued_steering_is_applied_before_the_existing_work_settles() {
     let (mut ctl, path) = autonomous_control("work-steering-finish");
     let revision: i64 =
         ctl.connection().query_row("SELECT revision FROM instances WHERE id='i1'", [], |r| r.get(0)).unwrap();
@@ -407,13 +407,13 @@ fn autonomy_queued_steering_is_applied_before_the_existing_goal_settles() {
     )
     .unwrap();
     let deferred = ctl
-        .submit(cmd("settle-too-soon", "complete_goal", json!({"instance_id":"i1","goal_id":"g1"})), Identity::System)
+        .submit(cmd("settle-too-soon", "complete_work", json!({"instance_id":"i1","work_id":"g1"})), Identity::System)
         .unwrap();
     assert_eq!(deferred["completion_deferred"], true);
     assert_eq!(deferred["status"], "ACTIVE");
     ctl.submit(cmd("apply-steering", "drain_inbox", json!({"instance_id":"i1"})), Identity::Instance("i1".into()))
         .unwrap();
-    assert_eq!(work_state(ctl.connection(), "i1").unwrap()["goal_id"], "g1");
+    assert_eq!(work_state(ctl.connection(), "i1").unwrap()["work_id"], "g1");
     work_turn(
         &mut ctl,
         "final-compatible",
@@ -421,11 +421,11 @@ fn autonomy_queued_steering_is_applied_before_the_existing_goal_settles() {
         json!({"completion":{"outcome":"success","summary":"Completed with the public API preserved"}}),
     );
     let settled = ctl
-        .submit(cmd("settle-current", "complete_goal", json!({"instance_id":"i1","goal_id":"g1"})), Identity::System)
+        .submit(cmd("settle-current", "complete_work", json!({"instance_id":"i1","work_id":"g1"})), Identity::System)
         .unwrap();
     assert_eq!(settled["status"], "SUCCEEDED");
-    let goals: i64 = ctl.connection().query_row("SELECT COUNT(*) FROM goals", [], |r| r.get(0)).unwrap();
-    assert_eq!(goals, 1);
+    let work_scopes: i64 = ctl.connection().query_row("SELECT COUNT(*) FROM work_scopes", [], |r| r.get(0)).unwrap();
+    assert_eq!(work_scopes, 1);
     drop(ctl);
     cleanup(&path);
 }
@@ -505,7 +505,7 @@ fn autonomy_cancelled_execution_blocks_shared_takeover_until_observed_stopped() 
         Identity::User,
     )
     .unwrap();
-    ctl.submit(cmd("isolated-goal", "create_goal", json!({"id":"g3","instance_id":"i3"})), Identity::User).unwrap();
+    ctl.submit(cmd("isolated-work", "create_work", json!({"id":"g3","instance_id":"i3"})), Identity::User).unwrap();
     ctl.submit(
         cmd(
             "isolated-input",
@@ -698,12 +698,12 @@ fn autonomy_operational_completion_requires_scoped_recorded_evidence() {
         );
         let result = ctl
             .submit(
-                cmd(&format!("close-{tag}"), "complete_goal", json!({"instance_id":"i1","goal_id":"g1"})),
+                cmd(&format!("close-{tag}"), "complete_work", json!({"instance_id":"i1","work_id":"g1"})),
                 Identity::System,
             )
             .unwrap();
         assert_eq!(result["completion_deferred"], true);
-        assert_eq!(goal_status_of(&ctl, "g1"), "ACTIVE");
+        assert_eq!(work_status_of(&ctl, "g1"), "ACTIVE");
     }
     work_turn(
         &mut ctl,
@@ -711,9 +711,9 @@ fn autonomy_operational_completion_requires_scoped_recorded_evidence() {
         "i1",
         json!({"completion":{"outcome":"success","summary":"Verified result","evidence":["tool:call_0"]}}),
     );
-    ctl.submit(cmd("close-grounded", "complete_goal", json!({"instance_id":"i1","goal_id":"g1"})), Identity::System)
+    ctl.submit(cmd("close-grounded", "complete_work", json!({"instance_id":"i1","work_id":"g1"})), Identity::System)
         .unwrap();
-    assert_eq!(goal_status_of(&ctl, "g1"), "SUCCEEDED");
+    assert_eq!(work_status_of(&ctl, "g1"), "SUCCEEDED");
     drop(ctl);
     cleanup(&path);
 }
@@ -797,7 +797,7 @@ fn autonomy_unknown_member_effect_cannot_fall_back_to_unbudgeted_work() {
     .unwrap();
     assert_eq!(load_task(ctl.connection(), "s1", "task-1").unwrap().3, "BLOCKED");
     assert_eq!(work_state(ctl.connection(), "i2").unwrap()["state"], "BLOCKED");
-    assert!(budget_goal(ctl.connection(), "i2").unwrap().is_none());
+    assert!(budget_work(ctl.connection(), "i2").unwrap().is_none());
     let revision: i64 =
         ctl.connection().query_row("SELECT revision FROM instances WHERE id='i2'", [], |r| r.get(0)).unwrap();
     let error = ctl
@@ -883,13 +883,13 @@ fn completed_autonomous_control(tag: &str) -> (Control, std::path::PathBuf) {
         "i1",
         json!({"completion":{"outcome":"success","summary":"Initial work completed"}}),
     );
-    ctl.submit(cmd("initial-close", "complete_goal", json!({"instance_id":"i1","goal_id":"g1"})), Identity::System)
+    ctl.submit(cmd("initial-close", "complete_work", json!({"instance_id":"i1","work_id":"g1"})), Identity::System)
         .unwrap();
     (ctl, path)
 }
 
 #[test]
-fn autonomy_informational_followup_creates_no_goal_and_new_work_bills_admission() {
+fn autonomy_informational_followup_creates_no_work_and_new_work_bills_admission() {
     let (mut ctl, path) = completed_autonomous_control("work-admission");
     ctl.submit(
         cmd(
@@ -907,8 +907,8 @@ fn autonomy_informational_followup_creates_no_goal_and_new_work_bills_admission(
         "i1",
         json!({"entry":{"role":"assistant","content":"The initial work is complete."}}),
     );
-    let count: i64 = ctl.connection().query_row("SELECT COUNT(*) FROM goals", [], |r| r.get(0)).unwrap();
-    assert_eq!(count, 1, "an informational follow-up cannot create a work goal");
+    let count: i64 = ctl.connection().query_row("SELECT COUNT(*) FROM work_scopes", [], |r| r.get(0)).unwrap();
+    assert_eq!(count, 1, "an informational follow-up cannot create a work work");
     let next = cmd(
         "new-input",
         "submit_input",
@@ -923,25 +923,27 @@ fn autonomy_informational_followup_creates_no_goal_and_new_work_bills_admission(
         json!({"checkpoint":{"action":"start_work","objective":"Implement the next task"}}),
     );
     let work = work_state(ctl.connection(), "i1").unwrap();
-    let goal = work["goal_id"].as_str().unwrap();
-    assert_ne!(goal, "g1");
-    let count: i64 = ctl.connection().query_row("SELECT COUNT(*) FROM goals", [], |r| r.get(0)).unwrap();
+    let work = work["work_id"].as_str().unwrap();
+    assert_ne!(work, "g1");
+    let count: i64 = ctl.connection().query_row("SELECT COUNT(*) FROM work_scopes", [], |r| r.get(0)).unwrap();
     assert_eq!(count, 2);
-    let usage: String =
-        ctl.connection().query_row("SELECT known_usage_json FROM goals WHERE id=?1", [goal], |r| r.get(0)).unwrap();
+    let usage: String = ctl
+        .connection()
+        .query_row("SELECT known_usage_json FROM work_scopes WHERE id=?1", [work], |r| r.get(0))
+        .unwrap();
     assert_eq!(
         serde_json::from_str::<Json>(&usage).unwrap()["total"],
         15,
         "the admission request is charged once to the new work"
     );
-    assert_eq!(request_goal(ctl.connection(), "r-admit").unwrap().as_deref(), Some(goal));
+    assert_eq!(request_work(ctl.connection(), "r-admit").unwrap().as_deref(), Some(work));
     let original: Option<String> = ctl
         .connection()
-        .query_row("SELECT goal_id FROM model_requests WHERE request_id='r-admit'", [], |r| r.get(0))
+        .query_row("SELECT work_id FROM model_requests WHERE request_id='r-admit'", [], |r| r.get(0))
         .unwrap();
     assert!(original.is_none(), "billing attribution does not rewrite the frozen request's original scope");
     assert!(
-        request_goal(ctl.connection(), "r-status-answer").unwrap().is_none(),
+        request_work(ctl.connection(), "r-status-answer").unwrap().is_none(),
         "the informational reply is not charged to unrelated new work"
     );
     drop(ctl);
@@ -987,8 +989,8 @@ fn autonomy_admission_cannot_execute_tools_or_reset_its_budget() {
         .query_row("SELECT COUNT(*) FROM model_requests WHERE request_id='over-budget'", [], |r| r.get(0))
         .unwrap();
     assert_eq!(requests, 0);
-    let goals: i64 = ctl.connection().query_row("SELECT COUNT(*) FROM goals", [], |r| r.get(0)).unwrap();
-    assert_eq!(goals, 1);
+    let work_scopes: i64 = ctl.connection().query_row("SELECT COUNT(*) FROM work_scopes", [], |r| r.get(0)).unwrap();
+    assert_eq!(work_scopes, 1);
     drop(ctl);
     cleanup(&path);
 }
@@ -1002,7 +1004,7 @@ fn autonomous_control(tag: &str) -> (Control, std::path::PathBuf) {
     )
     .unwrap();
     ctl.submit(
-        cmd("g1", "create_goal", json!({"id":"g1","instance_id":"i1","limits":{"max_total_tokens":10000}})),
+        cmd("g1", "create_work", json!({"id":"g1","instance_id":"i1","limits":{"max_total_tokens":10000}})),
         Identity::User,
     )
     .unwrap();
@@ -1063,7 +1065,7 @@ fn autonomy_prose_recovery_is_bounded_persistent_and_single_consumption() {
 }
 
 #[test]
-fn autonomy_question_and_answer_keep_decisions_goal_and_usage() {
+fn autonomy_question_and_answer_keep_decisions_work_and_usage() {
     let (mut ctl, path) = autonomous_control("work-question");
     work_turn(
         &mut ctl,
@@ -1074,7 +1076,7 @@ fn autonomy_question_and_answer_keep_decisions_goal_and_usage() {
     );
     assert_eq!(work_state(ctl.connection(), "i1").unwrap()["state"], "NEEDS_INPUT");
     let before: String =
-        ctl.connection().query_row("SELECT known_usage_json FROM goals WHERE id='g1'", [], |r| r.get(0)).unwrap();
+        ctl.connection().query_row("SELECT known_usage_json FROM work_scopes WHERE id='g1'", [], |r| r.get(0)).unwrap();
     drop(ctl);
     let mut ctl = Control::open(&path, "s1", false).unwrap();
     let answer = cmd(
@@ -1086,13 +1088,13 @@ fn autonomy_question_and_answer_keep_decisions_goal_and_usage() {
     assert_eq!(ctl.submit(answer, Identity::User).unwrap(), first);
     let state = work_context(ctl.connection(), "i1").unwrap();
     assert_eq!(state["state"], "RUNNING");
-    assert_eq!(state["goal_id"], "g1");
+    assert_eq!(state["work_id"], "g1");
     assert_eq!(state["checkpoint"]["decisions"][0], "The public API must stay compatible: user-1");
     assert_eq!(state["checkpoint_provenance"], "model_claim");
     assert_eq!(state["recent_user_inputs"].as_array().unwrap().len(), 2);
     assert_eq!(state["recent_user_inputs"][1]["provenance"], "user_input");
     let after: String =
-        ctl.connection().query_row("SELECT known_usage_json FROM goals WHERE id='g1'", [], |r| r.get(0)).unwrap();
+        ctl.connection().query_row("SELECT known_usage_json FROM work_scopes WHERE id='g1'", [], |r| r.get(0)).unwrap();
     assert_eq!(before, after);
     drop(ctl);
     cleanup(&path);
@@ -1107,7 +1109,7 @@ fn autonomy_new_input_creates_one_successor_only_after_admission() {
         "i1",
         json!({"completion":{"outcome":"success","summary":"Done","evidence":[],"unverified":[]}}),
     );
-    ctl.submit(cmd("close", "complete_goal", json!({"instance_id":"i1","goal_id":"g1"})), Identity::System).unwrap();
+    ctl.submit(cmd("close", "complete_work", json!({"instance_id":"i1","work_id":"g1"})), Identity::System).unwrap();
     let input = cmd(
         "next",
         "submit_input",
@@ -1116,13 +1118,13 @@ fn autonomy_new_input_creates_one_successor_only_after_admission() {
     ctl.submit(input.clone(), Identity::User).unwrap();
     ctl.submit(input, Identity::User).unwrap();
     let next = work_state(ctl.connection(), "i1").unwrap();
-    assert_ne!(next["goal_id"], "g1");
-    assert_eq!(goal_status_of(&ctl, "g1"), "SUCCEEDED");
+    assert_ne!(next["work_id"], "g1");
+    assert_eq!(work_status_of(&ctl, "g1"), "SUCCEEDED");
     let (count, limits): (i64, String) = ctl
         .connection()
         .query_row(
-            "SELECT (SELECT COUNT(*) FROM goals),limits_json FROM goals WHERE id=?1",
-            [next["goal_id"].as_str().unwrap()],
+            "SELECT (SELECT COUNT(*) FROM work_scopes),limits_json FROM work_scopes WHERE id=?1",
+            [next["work_id"].as_str().unwrap()],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .unwrap();
@@ -1153,10 +1155,10 @@ fn autonomy_remaining_items_refuse_completion_and_allow_evidence_reconciliation(
     .unwrap();
     work_turn(&mut ctl, "early", "i1", json!({"completion":{"outcome":"success","summary":"Done"}}));
     let refused = ctl
-        .submit(cmd("close-early", "complete_goal", json!({"instance_id":"i1","goal_id":"g1"})), Identity::System)
+        .submit(cmd("close-early", "complete_work", json!({"instance_id":"i1","work_id":"g1"})), Identity::System)
         .unwrap();
     assert_eq!(refused["completion_deferred"], true);
-    assert_eq!(goal_status_of(&ctl, "g1"), "ACTIVE");
+    assert_eq!(work_status_of(&ctl, "g1"), "ACTIVE");
     work_turn(
         &mut ctl,
         "reconcile",
@@ -1169,15 +1171,15 @@ fn autonomy_remaining_items_refuse_completion_and_allow_evidence_reconciliation(
         "i1",
         json!({"completion":{"outcome":"success","summary":"Confirmed current stable compatibility"}}),
     );
-    ctl.submit(cmd("close-done", "complete_goal", json!({"instance_id":"i1","goal_id":"g1"})), Identity::System)
+    ctl.submit(cmd("close-done", "complete_work", json!({"instance_id":"i1","work_id":"g1"})), Identity::System)
         .unwrap();
-    assert_eq!(goal_status_of(&ctl, "g1"), "SUCCEEDED");
+    assert_eq!(work_status_of(&ctl, "g1"), "SUCCEEDED");
     drop(ctl);
     cleanup(&path);
 }
 
 #[test]
-fn autonomy_blocked_finish_preserves_goal_and_explicit_stop_needs_input() {
+fn autonomy_blocked_finish_preserves_work_and_explicit_stop_needs_input() {
     let (mut ctl, path) = autonomous_control("work-block");
     work_turn(
         &mut ctl,
@@ -1185,9 +1187,9 @@ fn autonomy_blocked_finish_preserves_goal_and_explicit_stop_needs_input() {
         "i1",
         json!({"completion":{"outcome":"blocked","summary":"Missing required fixture"}}),
     );
-    ctl.submit(cmd("report-block", "complete_goal", json!({"instance_id":"i1","goal_id":"g1"})), Identity::System)
+    ctl.submit(cmd("report-block", "complete_work", json!({"instance_id":"i1","work_id":"g1"})), Identity::System)
         .unwrap();
-    assert_eq!(goal_status_of(&ctl, "g1"), "ACTIVE");
+    assert_eq!(work_status_of(&ctl, "g1"), "ACTIVE");
     assert_eq!(work_state(ctl.connection(), "i1").unwrap()["state"], "BLOCKED");
     ctl.submit(
         cmd("fix", "submit_input", json!({"instance_id":"i1","envelope_id":"fix","text":"Fixture is now available."})),
@@ -1211,7 +1213,7 @@ fn autonomy_blocked_finish_preserves_goal_and_explicit_stop_needs_input() {
     )
     .unwrap();
     assert_eq!(lifecycle_of(&ctl, "i1"), "PARKED", "input must not implicitly resume parked work");
-    assert_eq!(work_state(ctl.connection(), "i1").unwrap()["goal_id"], "g1");
+    assert_eq!(work_state(ctl.connection(), "i1").unwrap()["work_id"], "g1");
     drop(ctl);
     cleanup(&path);
 }

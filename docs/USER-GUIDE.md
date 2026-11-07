@@ -120,7 +120,7 @@ teamagents                           # open the TUI (starts this session's daemo
   that input to continue. The read never skips or changes it. A cancelled headless input ends with an explicit
   undelivered failure.
   These actions do not interrupt models or stop running tools/delegations. Ordinary queued input enters
-  at the next safe request boundary; there is no separate queue that waits for the entire goal to finish.
+  at the next safe request boundary; there is no separate queue that waits for the entire work to finish.
   D-479 adds an acknowledgement in the conversation: accepted/queued, waiting for the current turn to end,
   received into the Leader's context, cancelled or superseded. Received does not mean the task finished.
   These receipt rows survive checkpoint/history refresh and reconnect within the same TUI process; a new
@@ -146,7 +146,7 @@ teamagents                           # open the TUI (starts this session's daemo
   local and point to `teamagents --help`; they are never sent to the model.
 - **Developer CLI**: all management is also available through scriptable commands, using `--state-root PATH` or
   `--session ID` to select the session. `status --json` reads the running session's checkpoint, model,
-  goal usage/limits/deadline, bound MCP state and known sessions without starting a daemon. The watermark
+  work usage/limits/deadline, bound MCP state and known sessions without starting a daemon. The watermark
   describes the database snapshot; MCP credentials and the session registry are external reads.
   `history [--id INSTANCE] [--limit N] [--json]` reads the newest N stored entries in chronological order
   (default Leader, N=400, range 1..1000); instance ids accept unambiguous prefixes. Messages within that
@@ -157,7 +157,7 @@ teamagents                           # open the TUI (starts this session's daemo
 | Submit work and check results | `exec --json`, `exec --stream-json`, `--check`, `--accept` |
 | Inspect progress and conversations | `status`, `history`, `surface` |
 | Inspect/control team members | `instances`: send, pause, resume, interrupt, terminate, merge |
-| Inspect/control tasks and goals | `tasks`: list, cancel; `goals`: list, open, cancel |
+| Inspect/control tasks and work_scopes | `tasks`: list, cancel; `work_scopes`: list, open, cancel |
 | Inspect/control permissions and approvals | `authority`: list, grant, revoke, requests, approve, deny; `approvals`: list, approve, deny |
 | Sessions and recurring work | `sessions`: list, open, history, export, new, fork, rename, restore, search, archive, delete, prune; `automations` |
 | MCP, configuration and diagnostics | `mcp`: list, add, remove, login, logout; `init`, `doctor`, `-c key=value` |
@@ -169,7 +169,7 @@ teamagents                           # open the TUI (starts this session's daemo
   preserves committed state; committed runners can finish independently. The next `teamagents` or `exec`
   starts a fresh daemon over the same database.
 - **Headless use**: `teamagents exec [--json] [--timeout SEC] [--check CMD] [--accept ID=CMD] "prompt"` goes through the same
-  daemon and reports the goal's terminal state, the assistant reply or a timeout; the prompt may come from
+  daemon and reports the work's terminal state, the assistant reply or a timeout; the prompt may come from
   stdin (`-`). The full contract is in §1.1.
 - **Authority** (D-61): `teamagents authority` lists the session's instances and grants, `teamagents authority
   grant --subject ID --action shell --scope workspace` hands one out and `teamagents authority revoke --grant
@@ -195,20 +195,20 @@ teamagents                           # open the TUI (starts this session's daemo
 
 `exec` is a thin client of the same daemon the TUI uses; it submits one input to the leader and reports what
 happened. Diagnostics go to stderr, the outcome to stdout (`--json` prints one JSON object with `end`,
-`goal_status`/`reply`, `verification` and the event `watermark`).
+`work_status`/`reply`, `verification` and the event `watermark`).
 
 | Exit code | Meaning |
 |---|---|
-| `0` | settled: the goal completed as `SUCCEEDED`, or the leader answered directly |
-| `1` | not delivered: the goal settled otherwise, the turn failed permanently, the runtime **refused the request before it began** (a goal budget ceiling, a passed goal deadline — it says so in `failure`), the leader was **terminated while the run was in flight** (it says so in `failure` too), the instance was **reset** while the run was in flight (the epoch move is named), a `--check` command failed, or the run ended `unsettled` (the turn closed with nothing settled — the runtime's own closing word, never a reply) or `undelivered` (the input waited for a boundary and a context reset sealed it before it landed) |
+| `0` | settled: the work completed as `SUCCEEDED`, or the leader answered directly |
+| `1` | not delivered: the work settled otherwise, the turn failed permanently, the runtime **refused the request before it began** (a work budget ceiling, a passed work deadline — it says so in `failure`), the leader was **terminated while the run was in flight** (it says so in `failure` too), the instance was **reset** while the run was in flight (the epoch move is named), a `--check` command failed, or the run ended `unsettled` (the turn closed with nothing settled — the runtime's own closing word, never a reply) or `undelivered` (the input waited for a boundary and a context reset sealed it before it landed) |
 | `3` | a material question needs your answer (`end: needs_input`), or an approval is pending; answer in the same session or decide the named approval with `teamagents approvals` (§4) |
 | `124` | the `--timeout` deadline passed with the instance still running (a refusal is not a timeout: it ends the run at once with `1`) |
 | `2` | usage or infrastructure: no daemon, no model profile, a leader that is parked or paused |
 
-- **Continuing work**: an admitted goal spans progress updates, model turns, compaction and restart. The
+- **Continuing work**: an admitted work spans progress updates, model turns, compaction and restart. The
   Leader can explore and refine the result within your instructions, authority and budget. Routine choices
   need no repeated confirmation. Answer material questions in the same session; an informational follow-up
-  after completion creates no goal, while new actionable work is admitted internally. Goal identifiers are
+  after completion creates no work, while new actionable work is admitted internally. Work identifiers are
   not part of the ordinary conversation. `exec` waits through progress prose and reports explicit questions
   as `needs_input`, blocking as `unsettled`, and verified settlement as completion.
 - **Prompt**: the positional argument, or everything piped into stdin when it is `-`. An empty prompt is a
@@ -224,16 +224,16 @@ happened. Diagnostics go to stderr, the outcome to stdout (`--json` prints one J
   `verification` field. Checks do not run while work needs input or remains unsettled, after an approval stop,
   a refused request, an undelivered input or the caller's timeout. No new ledger is written in those cases.
   A failed model request can still run the requested client checks when this input was applied.
-- **Client checks and goal checks have different jobs**: `[[checks]]` and `--accept` decide whether a goal
+- **Client checks and work checks have different jobs**: `[[checks]]` and `--accept` decide whether a work
   may settle successfully; `--check` decides the exit code of a finished `exec`. A run can therefore have a
-  successful goal but fail its client check, or a blocked goal even though its client check passed.
+  successful work but fail its client check, or a blocked work even though its client check passed.
 - **`--accept ID=COMMAND`** (repeatable): bind a required check to this input's work. It is attached to the
-  active goal, or atomically carried into a newly admitted goal after earlier work completed. The runtime runs
+  active work, or atomically carried into a newly admitted work after earlier work completed. The runtime runs
   it at the completion boundary; failure triggers bounded repair and can ultimately
-  settle the goal as `BLOCKED`. Use it when completion depends on the check, for example
+  settle the work as `BLOCKED`. Use it when completion depends on the check, for example
   `exec --accept tests="pytest -q" "Fix the failing tests"`. Only a user can attach checks. IDs are merged
-  with the goal's existing checks, and the contract cannot change after a check round has started; cancel that
-  goal and open another to replace it.
+  with the work's existing checks, and the contract cannot change after a check round has started; cancel that
+  work and open another to replace it.
 - **Durable memory**: the `memory` tool lets a member `remember` a short note and any later session under
   the same base directory `recall` it (the state root itself for the default session; a named session's base is
   the directory holding `sessions.json`, so every named session under it shares the store). The file is
@@ -289,7 +289,7 @@ row, which `instances` prints when a member is not running (D-165).
 | `status` | `schema_version`, `session_id`, `state_root`, `permissions`, `session_workspace`, `watermark`, `snapshot` |
 | `history` | `schema_version`, `session_id`, `state_root`, `instance_id`, `limit`, `entries` |
 | `instances send` | `session_id`, `state_root`, `instance_id`, `envelope_id`, `result` |
-| `exec` | `permissions`, `session_workspace`, `instance_id`, `instance_lifecycle`, `end`, `goal_status`, `reply`, `reply_source`, `failure`, `approval`, `input_queued`, `workspace`, `verification`, `verification_path`, `acceptance`, `acceptance_goal`, `watermark`, `usage` |
+| `exec` | `permissions`, `session_workspace`, `instance_id`, `instance_lifecycle`, `end`, `work_status`, `reply`, `reply_source`, `failure`, `approval`, `input_queued`, `workspace`, `verification`, `verification_path`, `acceptance`, `acceptance_work`, `watermark`, `usage` |
 | `authority list` | `revision`, `instances`, `grants`, `capability_requests` |
 | `authority grant` | `grant_id`, `revision`, `subject`, `action`, `resource_scope`, `parent_grant_id`, `delegable` |
 | `authority revoke` | `grant_id`, `grant`, `revoked`, `revision` |
@@ -308,32 +308,32 @@ row, which `instances` prints when a member is not running (D-165).
 What the field names do not carry:
 
 - `end` is the run's own word for how its turn ended — the `End` values behind §1.1's exit-code table;
-  `goal_status` and `reply` are the goal's settlement and the member's answer, and a run reports only what its
+  `work_status` and `reply` are the work's settlement and the member's answer, and a run reports only what its
   own input produced (D-72); `failure` is the runtime's reason when it refused or failed the turn.
-- `artifacts` rows are the state root's catalog (not a daemon view): `id`, `kind`, `size`, `completeness` (`STAGING`, `LIVE`, `DELETING`, `ABANDONED`), `owner_ref` (the fact that owns it, or `null` for an artifact nothing references — the collector's only candidate), `storage_ref` and `bytes_present` (whether those bytes are really on disk). `collected` names what a sweep removed, `freed_bytes` is the sum of their sizes, and `failed` holds the ones whose file deletion failed — their rows stay `DELETING` and the next run retries.
-- `runners` rows are the verb's own census of the state root's job directories (not a daemon view): `job_id`, `instance` (the owning member, `null` when a driver's state root *is* the session root), `state` (the journal's own word: `READY`, `RUNNING`, `SUCCEEDED`, `CANCELLED`, `OUTCOME_UNKNOWN`, …), `terminal`, `runner` (`live`, `gone` or `unreachable`), `child_pid`, `service` (how many processes are still in the group the command created, or `null` when the journal cannot anchor it — a job from another boot, or one that never started), `finished_ms`, `exit_code`, and `outcome` — what `stop` did: `retired`, `service stopped: N process(es)`, `no runner`, `no service left`, or `refused: …` with the reason (a runner whose command is running refuses; so does a service stop on a job that is not settled), `null` when listing.
+- `artifacts` rows are the state root's catalog (not a daemon view): `id`, `kind`, `size`, `completeness` (`STAGING`, `LIVE`, `DELETING`, `ABANDONED`), `owner_ref` (the fact that owns it, or `null` for an unreferenced artifact — the collector's only candidate), `storage_ref` and `bytes_present` (whether those bytes are on disk). `collected` names what a sweep removed, `freed_bytes` is the sum of their sizes, and `failed` holds the ones whose file deletion failed — their rows stay `DELETING` and the next run retries.
+- `runners` rows are the verb's own census of the state root's job directories (not a daemon view): `job_id`, `instance` (the owning member, `null` when a driver's state root *is* the session root), `state` (the journal's own word: `READY`, `RUNNING`, `SUCCEEDED`, `CANCELLED`, `OUTCOME_UNKNOWN`, …), `terminal`, `runner` (`live`, `gone` or `unreachable`), `child_pid`, `service` (how many processes remain in the group the command created, or `null` when the journal cannot anchor it — a job from another boot, or one that never started), `finished_ms`, `exit_code`, and `outcome` — what `stop` did: `retired`, `service stopped: N process(es)`, `no runner`, `no service left`, or `refused: …` with the reason (a runner whose command is running refuses; so does a service stop on an unsettled job), `null` when listing.
 - `verification` is the list of `--check` verdicts, each carrying the command, its ok flag, its exit code and
   its output; `verification_path` is the ledger written next to the session database (`null` when no check ran).
-- `acceptance` is what the run attached to the goal with `--accept` (each entry an `id` and a `command`), and
-  `acceptance_goal` names the goal it went to (`null` when no `--accept` was given).
+- `acceptance` is what the run attached to the work with `--accept` (each entry an `id` and a `command`), and
+  `acceptance_work` names the work it went to (`null` when no `--accept` was given).
 - `reply_source` says where `reply` came from (D-431): `model` for the member's own last text, `summary` when
-  the model settled the goal **without writing anything** and the reply is the completion summary it recorded
-  with its `finish` call, and `""` when there is no reply to report. It exists so a consumer that shows a reply
-  to a user can tell the model's words from the runtime's fallback — plain mode says the same thing in words
-  ("the model settled the goal without writing anything; its own summary of the work:").
-- `usage` is what *this run* cost, as the provider reported it: `prompt_tokens`, `completion_tokens`,
+  the model settled the work without writing anything and the reply is the completion summary recorded
+  with its `finish` call, and `""` when there is no reply to report. This lets a consumer distinguish
+  the model's words from the runtime's fallback — plain mode says the same thing in text
+  ("the model settled the work without writing anything; its own summary of the work:").
+- `usage` is what this run cost, as reported by the provider: `prompt_tokens`, `completion_tokens`,
   `total_tokens`, `cache_hit_tokens`, `cache_miss_tokens`, `cache_write_tokens`, `cache_hit_rate`, `requests`,
-  and `unpriced_attempts` (attempts the provider never priced, which are **not** counted as free). A zero
-  hit/miss pair means the provider did not report a split; it is not a measured miss. Plain mode prints the
-  same numbers as one `tokens: …` line, including the cache percentage when the provider reported one. They are
-  the numbers the `[limits]` cost keys act on: `tool_output_chars` and `context_keep_chars` (§2.2) change what a
+  and `unpriced_attempts` (attempts the provider never priced, which are not counted as free). A zero
+  hit/miss pair means the provider did not report a split, not a measured miss. Plain mode prints the
+  same numbers on one `tokens: …` line, including the cache percentage when reported. The `[limits]`
+  cost keys act on these numbers: `tool_output_chars` and `context_keep_chars` (§2.2) control what a
   request carries.
-- `watermark` is the event cursor the report was built at, which is what a client resumes from after a
+- `watermark` is the event cursor the report was built at, which a client resumes from after a
   reconnect (A28).
-- `result` is the daemon's own reply to a command, and `instance`/`task`/`approval`/`grant` is the affected row
-  as the daemon reported it.
+- `result` is the daemon's reply to a command, and `instance`/`task`/`approval`/`grant` is the affected row
+  as reported by the daemon.
 
-A key this build does not serve is **refused at load with a pointer** (`unknown key … docs/CONFIG.md lists every key this build serves`) rather than ignored, so a typo fails loudly instead of silently leaving its setting at the default (D-161).
+Any key this build does not serve is refused at load with a pointer (`unknown key … docs/CONFIG.md lists every key this build serves`) rather than ignored, so a typo fails loudly instead of silently falling back to the default (D-161).
 
 ## 2. Configuration
 
@@ -357,15 +357,15 @@ trusted_projects = ["/home/you/work/that-repo"]   # exactly these repositories
 trust_project = true                              # any repository
 ```
 
-A `trusted_projects` entry is matched against the repository's **canonical** path, so a symlinked checkout and
-its target are the same decision, `/repo` does not trust `/repo/sub` or `/repo-two`, and an entry that resolves
-nowhere trusts nothing. With the opt-in the repository's model profiles, tool bindings, `skills_paths` and
-`instruction_files` merge in, and your own definitions of the same name win; `[permissions]` (trust and operation-review keys), `[hooks]`, `[[checks]]`, `[retention]`, `[limits]` and `[update]` can only come from your config, so a
-cloned repository cannot define hooks, checks or retention policy, raise a ceiling you set or grant itself
-trust. Trusted tool bindings can start host programs; inspect a repository before granting it trust. `doctor`'s `project config` row says what the merge did **and which source
-trusted it** (`trusted via trusted_projects:/path`), with a `[WARN]` and one reason per refused entry when
-nothing landed; the daemon writes the same line into `<state root>/daemon.log`. The rest of this section
-describes your own config.
+A `trusted_projects` entry is matched against the repository's canonical path, so a symlinked checkout and
+its target resolve to the same decision, `/repo` does not trust `/repo/sub` or `/repo-two`, and an entry that resolves
+nowhere trusts nothing. Once opted in, the repository's model profiles, tool bindings, `skills_paths`, and
+`instruction_files` merge in, with your own definitions taking precedence on name collisions. `[permissions]` (trust and operation-review keys), `[hooks]`, `[[checks]]`, `[retention]`, `[limits]`, and `[update]` can only come from your user config, so a
+cloned repository cannot define hooks, checks, or retention policy, raise a ceiling you set, or grant itself
+trust. Trusted tool bindings can start host programs; inspect a repository before trusting it. `doctor`'s `project config` row shows what the merge did and which source
+trusted it (`trusted via trusted_projects:/path`), emitting a `[WARN]` with a reason per refused entry when
+nothing applied; the daemon writes the same line to `<state root>/daemon.log`. The rest of this section
+covers your user config.
 
 ```toml
 [models.leader_main]
@@ -399,7 +399,7 @@ api_key_env = "DEEPSEEK_API_KEY"
   state root (stamp, WAL, read/write) and the paths under it (a directory where `session.sqlite` or
   `daemon.sock` belongs — D-228), the daemon socket path's length (Linux's 108-byte `sun_path` limit,
   which a deep state root can cross — D-227), host execution and that the programs named
-  in `[hooks]` are executable; it also lists the `[[checks]]` that will gate every goal. An `sessions/` layout
+  in `[hooks]` are executable; it also lists the `[[checks]]` that will gate every work. An `sessions/` layout
   from an earlier release is reported explicitly and is never migrated. If a daemon is already running, doctor
   reads its actual workspace/execution and configuration-change status without starting a new session.
 - `teamagents doctor environment --cwd DIR [--json]` discovers Rust/Cargo, Node/npm, Python/pip and Git
@@ -454,8 +454,8 @@ cases.
 
 ### 2.1 Acceptance checks (`[[checks]]`)
 
-These are the machine contracts a goal must satisfy before it can be reported as done (§8, Q11). They come
-**only from your own config** — never from a cloned project, because a check is a command that later runs
+These are the machine contracts a work must satisfy before it can be reported as done (§8, Q11). They come
+only from your user config — never from a cloned project, because a check is a command that runs
 without an approval prompt:
 
 ```toml
@@ -466,39 +466,39 @@ inputs = ["src", "Cargo.toml"]   # optional: hashes bind the result to these inp
 timeout = 900                    # optional seconds (default: the shell tool's own)
 ```
 
-- The runtime runs them through the host shell at the completion boundary (D-471, D-480), so a goal cannot
-  settle while a check fails. A failure returns the work for repair (bounded rounds) and then blocks the goal with the
+- The runtime runs them through the host shell at the completion boundary (D-471, D-480), so a work cannot
+  settle while a check fails. A failure returns the work for repair (bounded rounds) and then blocks the work with the
   failing ids; the check's output lands in the conversation as a tool result.
 - `inputs` are workspace-relative paths without `..` escapes. Their hashes are taken when the check runs and
   re-verified before completion, so a check that passed against files that then changed does not count — and a
-  check whose own command rewrites its declared input blocks the goal (`bound:stale_inputs`) instead of
+  check whose own command rewrites its declared input blocks the work (`bound:stale_inputs`) instead of
   passing. Both halves are measured live (`python3 review/dogfood/stale_check.py`, D-90).
 - Checks are not asked through `pre_tool` (you already pre-authorized exactly these commands) and they skip
   the approval gate for the same reason.
 - The TUI reports each round by name (`completion check round 1 started: tests, docs`), the failure
   (`completion check round 1 failed: tests (exit), entering a repair turn`) and the final block reason, so a
-  goal that is being repaired or parked explains itself instead of looking stuck.
+  work that is being repaired or parked explains itself instead of looking stuck.
 - A broken entry (empty `command`, `timeout = 0`, an escaping `input`) is refused when the config loads, so
-  `doctor` and every entry point report it instead of a goal silently never settling.
+  `doctor` and every entry point report it instead of a work silently never settling.
 
-### 2.2 Goal limits (`[limits]`)
+### 2.2 Work limits (`[limits]`)
 
-Every goal this session creates can be bounded in cost and in time (D-64):
+Every work this session creates can be bounded in cost and in time (D-64):
 
 ```toml
 [limits]
 max_total_tokens = 2000000   # optional: usage ceiling (provider-reported usage + each request's estimate)
-deadline_minutes = 45        # optional: creation for initial goals; first pending input for later admission
+deadline_minutes = 45        # optional: creation for initial work_scopes; first pending input for later admission
 max_tool_seconds = 60        # optional: the most one *model* tool call may run (a ceiling on what it asks for)
 tool_output_chars = 8000     # optional: the most characters of one tool output the model is shown (default 24000)
 context_keep_chars = 64000   # optional: how much tool output the request keeps before masking older ones
 ```
 
-- `max_total_tokens` is the goal's own ceiling: a new request is refused when the settled usage plus the live
+- `max_total_tokens` is the work's own ceiling: a new request is refused when the settled usage plus the live
   reservations plus the request's estimate would pass it (§8/A18), and the instance parks with the budget as
   the reason instead of overspending. Usage is settled honestly, so a provider that reports later than it
   bills can still overshoot the ceiling afterwards — that is the design's choice, not a bug.
-- `deadline_minutes` is turned into the goal's absolute deadline when the session creates it; past that
+- `deadline_minutes` is turned into the work's absolute deadline when the session creates it; past that
   moment no new request starts and the instance parks with the deadline as the reason (A35).
 - `max_tool_seconds` bounds **one call**, not the session: the model names a timeout for a shell command and
   this caps it, so a single command cannot swallow a turn's window (measured: three calls of 300 s inside one
@@ -512,17 +512,17 @@ context_keep_chars = 64000   # optional: how much tool output the request keeps 
   first mask frontier; D-459 then holds that frontier fixed until compaction so the provider can keep hitting the
   same prefix. New tool outputs therefore stay on the wire until compaction, which is the hard bound; lower the
   value when you pay per prompt token.
-- With none of them configured a goal — and therefore the session — runs until you stop it, which is why `doctor`
-  says so out loud (`goal limits: none: …`). A zero is a config error at load time.
+- With none of them configured a work — and therefore the session — runs until you stop it, which is why `doctor`
+  says so out loud (`work limits: none: …`). A zero is a config error at load time.
 - These limits come only from **your** config: like `[[checks]]`, a cloned project cannot set them. They are fixed when
-  the goal is created; changing them means starting a new session (or a new state root).
-- The TUI's status line shows what is in force (`goal ACTIVE · usage 12000/2000000 · ends in 30m`), so a
+  the work is created; changing them means starting a new session (or a new state root).
+- The TUI's status line shows what is in force (`work ACTIVE · usage 12000/2000000 · ends in 30m`), so a
   configured ceiling is visible and not just enforced.
 
 ### 2.3 Hooks (`[hooks]`)
 
-Hooks are **your own programs** (their paths come only from the user config; a model cannot choose them) and
-run on the host with your permissions:
+Hooks are host programs defined in your user config (a model cannot choose them) and
+run with your user permissions:
 
 ```toml
 [hooks]
@@ -588,22 +588,22 @@ pre_tool = ["/home/you/bin/policy.sh"]            # policy hook before tool call
   coordinator; this can supersede a wait without declaring the task successful. BLOCKED does not satisfy a
   task-result wait; cancellation does. Legacy unenrolled sessions retain the older idle-after-prose behavior;
   create a fresh session to use the enrolled scheduler.
-- `instances`, `tasks`, `authority`, `goals` and `approvals` remain explicit recovery/management controls (§4.2).
-  Exhausted goals refuse new work; closing or replacing one is a user decision. Historical terminal goals
+- `instances`, `tasks`, `authority`, `work_scopes` and `approvals` remain explicit recovery/management controls (§4.2).
+  Exhausted work_scopes refuse new work; closing or replacing one is a user decision. Historical terminal work_scopes
   never reopen. Normal new work after successful completion is admitted internally with the configured
-  limits/checks. `goals open --attach` is available for deliberate management and legacy sessions, rather
+  limits/checks. `work_scopes open --attach` is available for deliberate management and legacy sessions, rather
   than a mandatory step after every request.
-- Goal and task completion goes through the runtime's completion gate: `finish` only accepts honest
+- Work and task completion goes through the runtime's completion gate: `finish` only accepts honest
   outcomes, and the required checks you define must really pass.
-- **Required checks** come from `[[checks]]` in your config (§2.1) and are carried on the goal itself
-  (`create_goal limits.required_checks`, which only the user or the project bootstrap may predefine). The
+- **Required checks** come from `[[checks]]` in your config (§2.1) and are carried on the work itself
+  (`create_work limits.required_checks`, which only the user or the project bootstrap may predefine). The
   runtime runs them through the host shell at the completion boundary (D-471, D-480): a failure sends the
   work into a bounded
-  repair loop and then blocks the goal with the failing ids. Their output appears in the conversation like any
+  repair loop and then blocks the work with the failing ids. Their output appears in the conversation like any
   other tool result, so the reason is visible instead of reported as an unexplained "done".
 - The headless client's `--check` (§1.1) is a *different* thing: it is your own acceptance command, executed
   by the client after the turn ends, and it only decides that `exec` exits non-zero. A runtime check (above)
-  is the stronger contract, because the goal itself cannot settle until it passes.
+  is the stronger contract, because the work itself cannot settle until it passes.
 
 ### 3.1 Authority: who may do what (`teamagents authority`, D-61)
 
@@ -658,23 +658,22 @@ rather than a second, independent authority).
 
 What the surface refuses and why:
 
-- **an action outside the table** (`--action shel`) — a typo would create a row nothing reads;
-- **a pair no check asks about** (`shell@instance:i-worker-1`): it would be dispatched never, offered never and
-  refused never, so the surface says what `shell` *is* asked over instead of writing a grant that looks like
-  power and does nothing;
-- **a subject that does not exist** is only a *warning*: instance ids are chosen by the spawner, so granting
-  ahead of a spawn is legitimate — and a typo is caught the same way, by the note on stderr.
+- **an action outside the table** (`--action shel`) — rejected so a typo cannot create an unread row;
+- **a pair no check consults** (`shell@instance:i-worker-1`): because it would never be offered, dispatched, or
+  refused, the CLI tells you which scopes `shell` actually accepts instead of recording a no-op grant;
+- **a non-existent subject** produces only a *warning*: instance ids are chosen by the spawner, so granting
+  before a spawn is valid, while stderr still alerts you to potential typos.
 
 Revocation is final and takes the derived subtree with it. Because every dispatch re-checks the live grants at
 its own linearization point (§6.1), a revocation also stops an operation that was authorized when it was
 queued, and it is never rewritten into a silent success: the model sees the refusal, and the tool leaves its
 surface at its next request.
 
-Exit codes are `0` done, `1` the session refused the command (for example a `--parent` it does not know) and
-`2` usage or no session to talk to; `--json` prints the raw report. `authority` is a client of the running
-session — it never opens the database — so start the session first (`teamagents`, or any `exec` run) and use
-`--state-root PATH` to point at another one. The CLI lists subject, action, scope
-and the short grant id; task delegation relationships are available through `teamagents tasks`.
+Exit codes are `0` on success, `1` when the session refuses the command (for example, an unknown `--parent`), and
+`2` on usage errors or when no session is available; `--json` prints the raw report. `authority` talks to the running
+session as a client and never opens the database directly, so start the session first (`teamagents`, or any `exec` run) and use
+`--state-root PATH` to target a different state root. The CLI lists subject, action, scope,
+and the short grant id; task delegation relationships are shown by `teamagents tasks`.
 
 ## 4. Permissions and execution
 
@@ -706,7 +705,7 @@ decisions.
 
 ### 4.1 Approving a call from the CLI (D-67)
 
-A pending operation approval is bound to one concrete operation — the hash of the exact command or arguments is part of it, so a modified call needs a new decision
+A pending operation approval is bound to one concrete operation. Because it includes the hash of the exact command or arguments, a modified call needs a new decision
 (§6.2).
 
 ```bash
@@ -715,15 +714,15 @@ teamagents approvals approve --id ap-d-req-4caeb0c6    # once: the parked turn c
 teamagents approvals deny --id ap-d-req-4caeb0c6       # fails closed; the model is told you denied it
 ```
 
-In the TUI the same decision is one key: a pending approval appears in the approvals box (the status
-line and the footer count it), **`Ctrl+A`** focuses that box, `↑`/`↓` pick an entry, **`a`** approves and
-**`d`** denies, `Esc` returns to the composer. Ordinary Shell calls create no approval; this surface remains
+In the TUI, the same decision takes one key: a pending approval appears in the approvals box (counted in the status
+line and footer), `Ctrl+A` focuses that box, `↑`/`↓` selects an entry, `a` approves,
+`d` denies, and `Esc` returns to the composer. Ordinary Shell calls create no approvals; this UI remains
 available for self-update and historical pending operations.
 
-An id must name a *pending* approval (a typo is refused before anything is decided), the full id or an
-unambiguous prefix is enough, and `--json` prints the raw report. Exit codes match `teamagents authority`:
-`0` done, `1` the session refused it, `2` usage or no session. This is also what makes `teamagents exec` usable
-in a script: a run that exits `3` is not a failure, it is a question — answer it and the session continues.
+An id must name a pending approval (typos are refused before anything is decided). Either the full id or an
+unambiguous prefix works, and `--json` prints the raw report. Exit codes match `teamagents authority`:
+`0` done, `1` refused by the session, `2` usage error or no session. This also makes `teamagents exec` usable
+in scripts: an exit code of `3` is a prompt rather than a failure — answer it and the session continues.
 
 ### 4.2 Pausing, resuming and cancelling from the CLI (D-68)
 
@@ -754,22 +753,22 @@ teamagents sessions delete --id refactor --yes  # remove its directory and histo
 teamagents sessions prune --dry-run      # what `[retention] archived_days` would remove, and why the rest stays
 teamagents sessions prune --yes          # do it (needs the window from the config, or `--days N`)
 teamagents automations add --every 60 --prompt "summarize the changelog"   # a schedule the daemon runs (D-367)
-teamagents automations                  # id, state, next run, last goal
+teamagents automations                  # id, state, next run, last work
 teamagents automations pause|resume --id ID    # stop it, or re-arm it one period out
 teamagents automations remove --id ID --yes    # delete it
-teamagents tasks                        # id, status, assignee, goal
+teamagents tasks                        # id, status, assignee, work
 teamagents tasks cancel --id t-prose    # releases a delegator waiting on a task that can only wait
-teamagents goals                        # the goals this session carries, and what is attached to them
-teamagents goals open --id g2 --attach i-leader --check 'tests=python3 -m pytest -q'
-                                        # explicit management or legacy recovery: attach a new goal,
+teamagents work_scopes                        # the work_scopes this session carries, and what is attached to them
+teamagents work_scopes open --id work2 --attach i-leader --check 'tests=python3 -m pytest -q'
+                                        # explicit management or legacy recovery: attach a new work,
                                         # with your own required checks (§8) and an optional --deadline
                                         # the session's [limits]/[[checks]] bound it too (D-64/D-268)
 teamagents surface [--id i-leader]      # what each model request was offered: the tool names it carried and
                                         # whether the surface check authorized them (D-349, the record D-143
                                         # asked for) — a fact in the session, not a log line to infer from
-teamagents goals cancel --id g-spent    # close a goal nothing can spend (its ceiling or deadline is gone):
+teamagents work_scopes cancel --id work-spent    # close a work nothing can spend (its ceiling or deadline is gone):
                                         # it settles CANCELLED and the instance its refusal parked runs again
-                                        # (D-341/D-344); a goal still carrying running work is refused
+                                        # (D-341/D-344); a work still carrying running work is refused
 ```
 
 - **`tasks cancel` is the lever for a stuck delegation**: if a member's model ends its turn without settling
@@ -784,7 +783,7 @@ teamagents goals cancel --id g-spent    # close a goal nothing can spend (its ce
   instance is still running.
 - **Interrupting one turn (D-363)**: `instances interrupt --id` cancels the instance's running *model request*
   and leaves it `READY`, so an instruction that was queued behind that turn enters at the boundary and gets a
-  turn of its own — the interrupt-and-redirect D-63 left open. It settles nothing (the goal and any task stay
+  turn of its own — the interrupt-and-redirect D-63 left open. It settles nothing (the work and any task stay
   as they were) and it does **not** stop a running tool: a shell command keeps going, and the process-group
   lever for that stays `instances terminate --id … --yes`. Interrupting an instance with no model request in
   flight is reported honestly (`no model request was in flight`), never as a cancellation that did not happen.
@@ -805,7 +804,7 @@ teamagents goals cancel --id g-spent    # close a goal nothing can spend (its ce
   row an `id`, `name`, `path`, `live`, `archived`, `database_bytes`), and `sessions new --json` prints
   `state_root`, `id`, `name`, `path`; these two run before a session is attached, so they carry no `session_id`.
   `sessions fork --id ID [--name NAME]` snapshots the session's database (`VACUUM INTO`, read-only on the source),
-  copies its artifacts and resets the copy's execution state in one transaction: the conversation and the goals
+  copies its artifacts and resets the copy's execution state in one transaction: the conversation and the work_scopes
   survive, every request/operation/approval/wait/task/envelope and every grant to a removed subject is dropped,
   and the leader is left `ACTIVE`/`READY`. A live source is refused, so the snapshot never races a writer.
   `sessions rename` gives a named session a new display name and `sessions restore` brings an archived one back
@@ -813,8 +812,8 @@ teamagents goals cancel --id g-spent    # close a goal nothing can spend (its ce
   session under the base — default, named and archived — read-only, returning matching conversation lines; a
   database it cannot read is reported by name, never skipped in silence.
 - **Automations (D-367)**: `teamagents automations add --every 60 --prompt "…"` stores a schedule the daemon
-  runs on its own — each due run opens a goal attached to the Leader and submits the prompt, carrying the
-  session's own `[limits]`/`[[checks]]`. `automations` lists id, state, next run and last goal; `pause`/`resume`
+  runs on its own — each due run opens a work attached to the Leader and submits the prompt, carrying the
+  session's own `[limits]`/`[[checks]]`. `automations` lists id, state, next run and last work; `pause`/`resume`
   stop or re-arm one (resuming re-arms one period out); `remove --id ID --yes` deletes it. A run never overlaps
   the previous one, and a slot missed while the session was down is coalesced into a single run, not backfilled.
 - **Pausing takes effect at a safe boundary**: `PAUSED / TOOLS_PENDING` means an in-flight call must finish;
@@ -889,11 +888,11 @@ teamagents goals cancel --id g-spent    # close a goal nothing can spend (its ce
   (`signed in` / `expired (will refresh)` / `not signed in`) before the tools it offers, and
   `teamagents mcp logout --name sentry` deletes the stored credential.
   `teamagents status --json` reports this running session's bound services without loading another
-  copy. Use `teamagents goals` for goals and `teamagents sessions` for the registry; reconnect with
+  copy. Use `teamagents work_scopes` for work_scopes and `teamagents sessions` for the registry; reconnect with
   `teamagents --session ID`. A service is
   bound when its instance's driver boots, so a credential stored while a session runs is picked up by
   **pausing and resuming that instance** (`instances pause --id X` then `resume --id X`, or just `resume` when a
-  `required` service parked it) — the driver, and with it the toolkit, is rebuilt; the conversation and the goal
+  `required` service parked it) — the driver, and with it the toolkit, is rebuilt; the conversation and the work
   are untouched. A `required` service with no credential parks its instance instead, with the runtime's own
   reason, which is the other path to the same lever.
 - **Bind an MCP service in config** with `[tools.<name>] kind = "mcp"`. It can come from user config or a
@@ -962,7 +961,7 @@ file verification, and graph results never replace tests.
   affected instance with the failure recorded.
 - Compaction uses actual context-window usage. Summaries retain the request, revisions, acceptance criteria
   and open questions; full text remains available through `read_history`. Compaction calls count against the
-  goal budget.
+  work budget.
 - `history_days` is applied at daemon boot and `archived_days` by `teamagents sessions prune`. Defaults keep
   history and archived sessions. Explicit retention and deletion can remove data, so preserve what you need
   before changing them. Incompatible database formats are rejected rather than silently adopted.

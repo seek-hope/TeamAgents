@@ -13,7 +13,7 @@ impl Fixture {
         conn.execute_batch(
             "INSERT INTO instances (id, session_id, profile_revision, lifecycle, phase, profile_json)
              VALUES ('worker', 's', 0, 'ACTIVE', 'READY', '{}');
-             INSERT INTO tasks (id, goal_id, session_id, requester, assignee, dependencies_json,
+             INSERT INTO tasks (id, work_id, session_id, requester, assignee, dependencies_json,
                  acceptance_refs_json, status, result_refs_json)
              VALUES ('task', 'g', 's', 'user', 'worker', '[]', '[]', 'RUNNING', '[]');
              INSERT INTO context_entries (instance_id, epoch, idx, id, kind, message_json, created)

@@ -157,7 +157,7 @@ def main() -> int:
     elapsed = round(time.time() - started, 1)
     report = json.loads(run.stdout) if run.stdout.strip().startswith("{") else {}
     print(f"provider={args.provider} exec exit={run.returncode} elapsed={elapsed}s end={report.get('end')} "
-          f"goal={report.get('goal_status')} reply={report.get('reply')!r}")
+          f"work={report.get('work_status')} reply={report.get('reply')!r}")
     if run.stderr.strip().startswith("exec:"):
         print("stderr:", run.stderr.strip()[:300])
 
@@ -176,7 +176,7 @@ def main() -> int:
     if (report.get("reply") or "").strip() and token not in report.get("reply", ""):
         failures.append(f"the run answered {report.get('reply')!r} instead of the tool's output ({token})")
 
-    # 2. the run succeeded: the model either answered in prose or settled the goal
+    # 2. the run succeeded: the model either answered in prose or settled the work
     if report.get("end") not in {"reply", "completed"}:
         failures.append(f"the run ended {report.get('end')!r} instead of finishing the tool call "
                         f"({report.get('failure')!r})")

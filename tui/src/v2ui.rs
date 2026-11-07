@@ -230,7 +230,7 @@ fn compact_tokens(value: i64) -> String {
     format!("{text}{suffix}")
 }
 
-/// Grok Build's quiet workspace header, with TeamAgents' authoritative goal usage on the right.
+/// Grok Build's quiet workspace header, with TeamAgents' authoritative work usage on the right.
 fn render_status(frame: &mut Frame, app: &V2App, area: Rect) {
     let status = app.activity_line();
     let status_style = if app.disconnected {
@@ -243,9 +243,9 @@ fn render_status(frame: &mut Frame, app: &V2App, area: Rect) {
         Style::default().fg(NOTICE)
     };
     let width = area.width as usize;
-    let usage = app.goal.as_ref().map(|goal| {
-        let limit = goal.limit_total.map(|n| format!("/{}", compact_tokens(n))).unwrap_or_default();
-        format!("{}{limit} tokens{}", compact_tokens(goal.known_total), if goal.unknown { " + ?" } else { "" })
+    let usage = app.work.as_ref().map(|work| {
+        let limit = work.limit_total.map(|n| format!("/{}", compact_tokens(n))).unwrap_or_default();
+        format!("{}{limit} tokens{}", compact_tokens(work.known_total), if work.unknown { " + ?" } else { "" })
     });
     let right = fit(usage.as_deref().unwrap_or(""), width.saturating_div(3));
     let right_width = if right.is_empty() { 0 } else { unicode_width::UnicodeWidthStr::width(right.as_str()) + 2 };
@@ -394,11 +394,11 @@ fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
             lines.extend(crate::markdown::plain(&format!("Workspace  {workspace}"), width, secondary()));
         }
     }
-    if let Some(goal) = &app.goal {
-        if goal.status != "ACTIVE" {
-            if let Some(summary) = &goal.summary {
+    if let Some(work) = &app.work {
+        if work.status != "ACTIVE" {
+            if let Some(summary) = &work.summary {
                 lines.push(Line::default());
-                lines.extend(crate::markdown::plain(&format!("Result · {}", goal.status), width, secondary()));
+                lines.extend(crate::markdown::plain(&format!("Result · {}", work.status), width, secondary()));
                 let origin = crate::graphics::Origin {
                     session: app.session_root.clone().into(),
                     workspace: workspace.as_deref().unwrap_or_default().into(),

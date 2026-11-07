@@ -2,7 +2,7 @@
 
 This is the implementation map behind the [README](../README.md). Follow the diagrams in order to rebuild
 the system's boundaries, durable data, execution rules and recovery behavior. The control/data reference is
-source `028f2383` (D-487); D-489 updates the TUI presentation in view 23 at `d0828d7f`. Database schema **7**, socket
+source `028f2383` (D-487); D-489 updates the TUI presentation in view 23 at `d0828d7f`. Database schema **8**, socket
 protocol **1**, and work policy **1** remain separate versions. [DESIGN.md](DESIGN.md) holds requirements; [DECISIONS.md](DECISIONS.md) resolves later choices;
 [ACCEPTANCE.md](ACCEPTANCE.md) records evidence rather than assuming that a diagram proves correctness.
 
@@ -15,7 +15,7 @@ normal runtime paths; administrative overrides and exceptional paths are describ
 |---|---|
 | [1. Deployment and ownership](#1-deployment-and-ownership) | Process boundaries, crate boundaries, authority and bootstrap |
 | [2. Durable data](#2-durable-data) | Keys, relationships, provenance and atomic commits |
-| [3. State machines](#3-state-machines) | Separate lifecycles for instances, work, goals, tasks and input |
+| [3. State machines](#3-state-machines) | Separate lifecycles for instances, work, work_scopes, tasks and input |
 | [4. Model and context loop](#4-model-and-context-loop) | Request freezing, response selection, compaction and admission |
 | [5. Team and authority](#5-team-and-authority) | Delegation, grants, messages, waits and approvals |
 | [6. Effects and recovery](#6-effects-and-recovery) | Dispatch, runner handshake, crashes and workspace takeover |
@@ -159,15 +159,15 @@ fields shown are the keys and guards needed to understand the design, not every 
 ```mermaid
 erDiagram
     accTitle: Work and assignment data
-    accDescr: Goals contain tasks, instances execute assignments, and work records preserve a goal-instance-epoch-task scope. Pending admission has no goal yet.
-    goals ||..o{ tasks : contains
+    accDescr: Works contain tasks, instances execute assignments, and work records preserve a work-instance-epoch-task scope. Pending admission has no work yet.
+    work_scopes ||..o{ tasks : contains
     instances ||..o{ tasks : receives
     instances ||..o{ work_states : retains
-    goals |o..o{ work_states : scopes
+    work_scopes |o..o{ work_states : scopes
     tasks |o..o{ work_states : scopes
     instances ||..o{ work_inputs : owns
-    goals |o..o{ work_inputs : admits
-    goals {
+    work_scopes |o..o{ work_inputs : admits
+    work_scopes {
         text id PK
         text original_request_ref
         int requirement_revision
@@ -184,14 +184,14 @@ erDiagram
         int revision
         text lifecycle
         text phase
-        text active_goal_id
+        text active_work_id
         text active_request_id
         text workspace_ref
         json profile_json
     }
     tasks {
         text id PK
-        text goal_id
+        text work_id
         text requester
         text assignee
         json dependencies_json
@@ -201,7 +201,7 @@ erDiagram
         int revision
     }
     work_states {
-        text goal_id PK
+        text work_id PK
         text instance_id PK
         int epoch PK
         text task_id PK
@@ -217,17 +217,17 @@ erDiagram
         text instance_id PK
         int epoch PK
         text envelope_id PK
-        text goal_id
+        text work_id
         text state
     }
 ```
 
-`work_states` uses `(goal_id, instance_id, epoch, task_id)` as its composite key. An empty `task_id` represents
-root work; admission uses an empty goal key before there is a goal. These sentinels are not fabricated goal or
+`work_states` uses `(work_id, instance_id, epoch, task_id)` as its composite key. An empty `task_id` represents
+root work; admission uses an empty work key before there is a work. These sentinels are not fabricated work or
 task rows. `work_inputs` states are `PENDING`, `ASSIGNED`, `ANSWERED` and `SUPERSEDED`. Pending inputs and inputs
-assigned to an active goal retain their envelopes, including acceptance metadata, through history pruning.
+assigned to an active work retain their envelopes, including acceptance metadata, through history pruning.
 
-A goal can involve several instances; an instance can serve successive goals and queued tasks. One instance
+A work can involve several instances; an instance can serve successive work_scopes and queued tasks. One instance
 still has only one current execution position. Message topology can contain cycles; task dependency graphs
 must remain acyclic. Session metadata, including work policy, lives in `meta`, not a separate sessions table
 inside this database.
@@ -269,7 +269,7 @@ erDiagram
         text request_id PK
         text instance_id
         int epoch
-        text goal_id
+        text work_id
         text kind
         text request_ref
         text selected_attempt_id
@@ -280,7 +280,7 @@ erDiagram
     work_requests {
         text request_id PK
         json context_json
-        text billed_goal_id
+        text billed_work_id
         int unknown_usage
     }
     attempts {
@@ -301,7 +301,7 @@ erDiagram
         text decision_id
         int tool_index
         int epoch
-        text goal_id
+        text work_id
         text args_hash
         int grant_revision
         text status
@@ -315,8 +315,8 @@ erDiagram
 Three constraints prevent duplicate application: unique `(instance_id, epoch, envelope_id)` for non-null
 envelope ids; unique `decisions.request_id`; unique `(decision_id, tool_index)` for operations. A request may
 have many billed attempts but selects at most one response. Its immutable request artifact and frozen work
-projection are different records. Admission leaves `model_requests.goal_id` NULL and later records billing in
-`work_requests.billed_goal_id`; it does not rewrite the original request.
+projection are different records. Admission leaves `model_requests.work_id` NULL and later records billing in
+`work_requests.billed_work_id`; it does not rewrite the original request.
 
 Required checks reuse synthetic requests, decisions and Shell operations. Their receipts remain execution
 facts, not a separate unchecked table of model assertions. Input revisions, attachments, authority and
@@ -385,7 +385,7 @@ Atomic groups to reproduce:
 | Consume tool results | Receipt references in context, answer slots, phase and work continuation reason |
 | Delegate or message | Task/message, grants or requests, delivery/ready facts and action receipt |
 | Register or resolve wait | Conditions, current satisfaction check, answered slots and ready transition |
-| Settle work | Current-scope guards, checks/evidence, goal/task outcome, grant cleanup and events |
+| Settle work | Current-scope guards, checks/evidence, work/task outcome, grant cleanup and events |
 
 Source: [Control::submit_inner and dispatch](../core/src/v2/control.rs).
 
@@ -396,8 +396,8 @@ Source: [Control::submit_inner and dispatch](../core/src/v2/control.rs).
 ```mermaid
 flowchart TB
     accTitle: Independent state dimensions
-    accDescr: A goal, task, instance lifecycle, execution phase, durable work record and operation answer different questions and must not collapse into a single running or done flag.
-    snapshot["One observed session"] --> goal["Goal status - did the whole work settle?"]
+    accDescr: A work, task, instance lifecycle, execution phase, durable work record and operation answer different questions and must not collapse into a single running or done flag.
+    snapshot["One observed session"] --> work["Work status - did the whole work settle?"]
     snapshot --> task["Task status - did this assignment settle?"]
     snapshot --> life["Lifecycle - may this instance run?"]
     snapshot --> phase["Phase - where is execution persisted?"]
@@ -405,12 +405,12 @@ flowchart TB
     snapshot --> operation["Operation outcome - what effect is known?"]
     task -.->|"can be CANCELLED while"| live["Shell process still runs"]
     life -.->|"can be ACTIVE while"| idle["No model request is runnable"]
-    work -.->|"can be BLOCKED while"| active["Goal remains ACTIVE"]
+    work -.->|"can be BLOCKED while"| active["Work remains ACTIVE"]
 ```
 
-Never infer a process stop from a task status, a successful goal from a work checkpoint, or a pending task
+Never infer a process stop from a task status, a successful work from a work checkpoint, or a pending task
 result from the fact that an assignee is idle. Work `COMPLETE` also includes unsuccessful settlement; inspect
-the goal/task outcome.
+the work/task outcome.
 
 ### 08. Instance lifecycle and execution phase
 
@@ -454,15 +454,15 @@ stateDiagram-v2
     COMPLETION_PENDING --> READY: Settle or provide repair<br/>feedback
 ```
 
-READY alone does not cause a call: lifecycle, work/input, scope and budget must all permit one.
+READY alone does not trigger a call: lifecycle, work/input, scope and budget must all permit one.
 Required-check operations reuse the tool execution path while the persisted phase stays COMPLETION_PENDING;
 their receipts do not automatically start another model turn. Failures, interruption and epoch closure
-normalize or park execution through control commands, rather than
-jumping back into an old model/tool call. The phase diagram is the normal loop, not a substitute for the
-[recovery decision tree](#18-recover-from-facts).
+normalize or park execution through control commands rather than
+jumping back into an old model/tool call. The phase diagram shows the normal loop; see the
+[recovery decision tree](#18-recover-from-facts) for recovery paths.
 
-Sources: [lifecycle and phase types](../core/src/v2/models.rs),
-[set_lifecycle / reset_instance](../core/src/v2/control.rs), [driver](../engine/src/v2/driver.rs).
+Sources: [lifecycle, phase and reset persistence](../core/src/v2/control.rs),
+[driver](../engine/src/v2/driver.rs).
 
 ### 09. Durable work and bounded continuation
 
@@ -496,36 +496,36 @@ flowchart TB
 
 These paths also require a runnable lifecycle and the current assignment. Terminal historical work is not
 reopened. Stopping during verification or blocking uses the same STOPPED rule. A model `blocked` report for
-Leader work can preserve an ACTIVE goal with its existing budget; exhausting required-check rounds can instead
-block the goal. These are different mechanisms.
+Leader work can preserve an ACTIVE work with its existing budget; exhausting required-check rounds can instead
+block the work. These are different mechanisms.
 
 `work_checkpoint` must be the only tool call in its response. Its actions are `start_work`, `continue`,
-`ask_user` and `blocked`; they require an objective, next step, question or reason respectively. Checkpoints
-are bounded **model claims**: merged payload at most 32 KiB and list fields at most 128 strings. They do not
+`ask_user` and `blocked`, requiring an objective, next step, question or reason respectively. Checkpoints
+are bounded model claims: the merged payload is at most 32 KiB and list fields hold at most 128 strings. They do not
 mint authority, certify files or replace receipts. Two unproductive recovery continuations are allowed; the
 third unproductive response blocks. The last six action/observation fingerprints also bound repeated
-one-step or two-step patterns. Restart, compaction and plan edits do not replenish these counters; relevant
+one-step or two-step patterns. Restart, compaction and plan edits do not reset these counters, though relevant
 new inputs or observations can start a new episode.
 
 Sources: [work state and completion guards](../core/src/v2/control/work.rs),
 [shared behavior and harness](../engine/src/v2/work.rs).
 
-### 10. Goal, task and input lifetimes
+### 10. Work, task and input lifetimes
 
 ```mermaid
 stateDiagram-v2
-    accTitle: Goal outcomes
-    accDescr: A goal remains active over many turns and instances. Success requires completion guards; failed, blocked and cancelled goals keep their history and are not automatically reopened.
+    accTitle: Work outcomes
+    accDescr: A work remains active over many turns and instances. Success requires completion guards; failed, blocked and cancelled work_scopes keep their history and are not automatically reopened.
     [*] --> ACTIVE: Admit whole work
     ACTIVE --> ACTIVE: Turns, delegation,<br/>compaction and restart
     ACTIVE --> SUCCEEDED: Current claim and all gates<br/>pass
     ACTIVE --> FAILED: Failed completion
-    ACTIVE --> BLOCKED: Required-check policy<br/>blocks goal
+    ACTIVE --> BLOCKED: Required-check policy<br/>blocks work
     ACTIVE --> CANCELLED: Explicit cancellation
     note right of ACTIVE
         A material question or blocked
         work record can leave this
-        goal ACTIVE without scheduling.
+        work ACTIVE without scheduling.
     end note
 ```
 
@@ -574,7 +574,7 @@ PARKED instance.
 Attachments are immutable workspace-confined snapshots created by the engine, not client-supplied artifact
 identities. A newly queued input invalidates a completion claim that did not incorporate it.
 
-Sources: [goal/task/input commands](../core/src/v2/control.rs),
+Sources: [work/task/input commands](../core/src/v2/control.rs),
 [input snapshots](../engine/src/v2/attachments.rs), [input persistence](../core/src/v2/attachments.rs).
 
 ## 4. Model and context loop
@@ -607,7 +607,7 @@ sequenceDiagram
     Note over Control: Select one response, settle<br/>usage, append context,<br/>register decision and next<br/>execution position
 ```
 
-Preparation compares goal, instance epoch, task, admission id, work revision and state at the commit boundary.
+Preparation compares work, instance epoch, task, admission id, work revision and state at the commit boundary.
 A changed assignment/input causes re-preparation. Frozen scope is checked again when a response or completion
 is consumed. One request's late alternative response may be archived and billed, but cannot create a second
 set of tool intents. Partial streams never dispatch tools.
@@ -625,7 +625,7 @@ Sources: [driver request/response steps](../engine/src/v2/driver.rs),
 ```mermaid
 flowchart TB
     accTitle: Context views and durable memory
-    accDescr: Immutable history and scoped work records produce a bounded request view. Masking and compaction preserve references and never create authority or reset the goal budget.
+    accDescr: Immutable history and scoped work records produce a bounded request view. Masking and compaction preserve references and never create authority or reset the work budget.
     history[("Private context entries and artifacts")] --> normalize["Normalize tool-call/result pairs"]
     instructions["Behavior + role + enrolled harness"] --> request["Native-window request"]
     normalize --> mask["L1 view masking and readback references"]
@@ -660,7 +660,7 @@ Sources: [request materialization](../core/src/kernel/instance.rs),
 ```mermaid
 sequenceDiagram
     accTitle: Internal admission and cost transfer
-    accDescr: Later input is classified under a pinned policy. Information can be answered without a goal, actionable work creates a successor and transfers its own known and unknown admission usage exactly once.
+    accDescr: Later input is classified under a pinned policy. Information can be answered without a work, actionable work creates a successor and transfers its own known and unknown admission usage exactly once.
     participant User
     participant Control
     participant Driver
@@ -668,11 +668,11 @@ sequenceDiagram
     User->>Control: Submit later input
     Note over Control: Persist original input, pin<br/>policy and first-input time
     Driver->>Control: Reserve admission budget<br/>and freeze context
-    Driver->>Model: Classification or<br/>clarification request,<br/>goal_id NULL
+    Driver->>Model: Classification or<br/>clarification request,<br/>work_id NULL
     Model-->>Driver: Response
     Driver->>Control: Record attempt and<br/>admission usage
     alt Answerable from available information
-        Driver->>Control: Close answered admission,<br/>create no goal
+        Driver->>Control: Close answered admission,<br/>create no work
         Control-->>User: Direct answer
     else Material question
         Driver->>Control: ask_user, NEEDS_INPUT
@@ -681,15 +681,15 @@ sequenceDiagram
     else Actionable work
         Driver->>Control: Sole work_checkpoint<br/>start_work
         Note over Control: Create successor, preserve<br/>input time and policy,<br/>transfer admission usage<br/>once, assign original<br/>inputs
-        Control-->>Driver: Active goal and durable<br/>work
+        Control-->>Driver: Active work and durable<br/>work
     end
 ```
 
 Explicit user acceptance checks can admit work without the model classification step. An information-shaped
 question that needs investigation or tools is actionable work. Ordinary tools and waits cannot run before
-admission. An active goal's `start_work` cannot create a fresh allowance. A previous blocked/cancelled goal
-requires explicit recovery/new-goal action. An unrelated later goal does not inherit the costs of an already
-answered informational exchange. The original request's NULL goal remains unchanged; billing uses the separate
+admission. An active work's `start_work` cannot create a fresh allowance. A previous blocked/cancelled work
+requires explicit recovery/new-work action. An unrelated later work does not inherit the costs of an already
+answered informational exchange. The original request's NULL work remains unchanged; billing uses the separate
 association shown in [view 05](#05-from-input-to-external-operation).
 
 Sources: [admission](../core/src/v2/control/work/admission.rs),
@@ -838,9 +838,9 @@ sequenceDiagram
 
 Duplicate GO never starts a second command. CANCEL before start persists `CANCELLED_BEFORE_START` and rejects
 late GO. Once the start boundary is crossed, cancellation requests a process-group stop and preserves the
-real effect/outcome. A crash after accepted GO but before a PID record is **unknown**, not evidence of no start.
-The runner writes its journal, not the session database. cwd/exports are preserved per member from verified
-receipts. Successful commands may leave services running; exiting the TUI does not clean those services up.
+real effect and outcome. A crash after an accepted GO but before a PID record is treated as unknown, not as evidence that the command never started.
+The runner writes to its own journal rather than the session database. cwd and exports are preserved per member from verified
+receipts. Successful commands may leave background services running; exiting the TUI does not clean them up.
 
 ```mermaid
 stateDiagram-v2
@@ -892,7 +892,7 @@ flowchart TB
 The effect branch applies to tools. A model request without a complete response follows the bounded model
 retry/recovery policy and records possible unknown usage. A persisted user command whose reply was lost uses
 the same `command_id`. A result already in SQLite but not consumed only needs context advancement. Late results
-remain attributed to their original operation/goal and cannot enter a new epoch or assignment.
+remain attributed to their original operation/work and cannot enter a new epoch or assignment.
 
 | User/runtime action | Immediate meaning | What it does not establish |
 |---|---|---|
@@ -941,23 +941,23 @@ Sources: [takeover guard](../core/src/v2/control/work/takeover.rs),
 
 ## 7. Budget and completion
 
-### 20. Shared goal accounting
+### 20. Shared work accounting
 
 ```mermaid
 flowchart TB
-    accTitle: Goal budget and admission accounting
+    accTitle: Work budget and admission accounting
     accDescr: All attached instances share known usage and reservations. Admission pins its own policy and transfers its recorded costs once. Unknown usage remains explicit rather than being guessed as zero.
     members["Leader and members"] --> prepare["Estimate next request occupancy"]
     prepare --> gate{"Deadline and available budget?"}
     gate -->|"no"| park["Refuse new request; require recovery"]
-    gate -->|"yes"| reserve["Reserve within shared goal"]
+    gate -->|"yes"| reserve["Reserve within shared work"]
     reserve --> attempt["Model attempt or compression"]
     attempt --> known["Settle provider-reported usage"]
     attempt --> unknown["Record unknown usage separately"]
     known --> release["Release reservation exactly once"]
     unknown --> release
     admission["Pending admission: pinned policy and time"] --> carry["Known and unknown admission costs"]
-    carry -->|"transfer once on admission"| ledger[("Shared goal usage ledger")]
+    carry -->|"transfer once on admission"| ledger[("Shared work usage ledger")]
     reserve --> ledger
     known --> ledger
     unknown --> ledger
@@ -967,7 +967,7 @@ flowchart TB
 
 The ceiling is a known-token accounting constraint, not a guaranteed currency bill when provider usage is
 missing. Actual usage can exceed an estimate; preserve that fact. Retry and compression attempts count.
-The initial goal's deadline starts at creation; later admission retains the first pending input's time when
+The initial work's deadline starts at creation; later admission retains the first pending input's time when
 it creates a successor. Neither delegation nor creating the successor buys extra time or resets an active
 ceiling. Reservations and controls are persisted separately from the semaphore that limits concurrent model
 requests. Control requests and result handling do not wait for a model slot. Optional reviewer accounting
@@ -993,7 +993,7 @@ flowchart TB
     checks --> pass{"Checks and evidence valid?"}
     pass -->|"no, repairable"| repair
     pass -->|"no, exhausted or infrastructure failure"| block["BLOCKED with reason"]
-    pass -->|"yes"| settle["Atomic goal/task settlement and events"]
+    pass -->|"yes"| settle["Atomic work/task settlement and events"]
     repair --> claim
 ```
 
@@ -1004,13 +1004,13 @@ model-extracted criteria remain model claims. A check records the actual environ
 declared dependencies are rechecked, while undeclared world changes cannot be globally locked or inferred.
 
 Failed checks yield repair feedback within the configured round bound, or BLOCKED. Leader work explicitly
-reported blocked may retain its ACTIVE goal, as [view 09](#09-durable-work-and-bounded-continuation) explains.
+reported blocked may retain its ACTIVE work, as [view 09](#09-durable-work-and-bounded-continuation) explains.
 Task cancellation does not remove the original requirements. Independent review is optional/on demand; another
 model agreeing is not an executable oracle.
 
 `exec --accept` adds required checks before input admission. `exec --check` is a separate client check after a
 finished turn; it can also inspect an actually failed model run, but does not start for NEEDS_INPUT or autonomous
-Unsettled work. A client check cannot retroactively change the server's recorded goal outcome.
+Unsettled work. A client check cannot retroactively change the server's recorded work outcome.
 
 Sources: [completion scope/evidence](../core/src/v2/control/work.rs),
 [required-check rounds](../engine/src/v2/driver.rs), [headless outcomes](../engine/src/v2/exec.rs).
@@ -1100,9 +1100,9 @@ target sync, and drafts remain scoped to their roots. Saved history and streamin
 preview truncation does not truncate stored text or model input.
 
 Display parsing has bounded input/output, queue, cache and deadlines; generation changes discard stale work.
-The helper closes inherited descriptors and uses a syscall allowlist before parsing. This isolation belongs
-to **display parsing**, while ordinary Shell/local MCP still execute on the host. Kitty placements are local
-client resources, cleared independently of daemon/session lifetime.
+The helper closes inherited descriptors and applies a syscall allowlist before parsing. This isolation applies only
+to display parsing, while ordinary Shell and local MCP still execute on the host. Kitty placements are local
+client resources, cleared independently of daemon or session lifetime.
 
 Sources: [app](../tui/src/v2app.rs), [geometry](../tui/src/v2ui.rs),
 [transcript](../tui/src/transcript.rs), [display workers](../tui/src/graphics.rs).
@@ -1172,8 +1172,8 @@ flowchart TB
 ```
 
 Sharing a directory shares files, not private conversations. A worktree prevents overlapping directory writes
-but does not merge results automatically or grant more capabilities. Integration must be explicit. Workspace
-cleanup is not a rollback engine, and termination does not substitute for evidence that external processes
+but does not merge results automatically or grant extra capabilities; integration must be explicit. Workspace
+cleanup is not a rollback engine, and termination is not evidence that external processes
 have stopped. [View 19](#19-workspace-takeover-after-cancellation) covers the dispatch-time conflict guard.
 
 Source: [workspace policies](../engine/src/workspace.rs),
@@ -1184,32 +1184,32 @@ Source: [workspace policies](../engine/src/workspace.rs),
 ```mermaid
 flowchart TB
     accTitle: Configured automation dispatch
-    accDescr: A persisted schedule is checked on daemon ticks. Eligible entries request goal creation and submit input through the usual control plane, then record the next slot; these are separate commits.
+    accDescr: A persisted schedule is checked on daemon ticks. Eligible entries request work creation and submit input through the usual control plane, then record the next slot; these are separate commits.
     user["User configures a schedule"] --> file[("automations.json, version 1")]
     file --> tick["Daemon tick: enabled and due entries"]
-    tick --> running{"Previous recorded goal still active?"}
+    tick --> running{"Previous recorded work still active?"}
     running -->|"yes"| later["Leave entry for a later tick"]
-    running -->|"no"| goal["Attempt create_goal with session limits"]
-    goal -->|"accepted"| input["Submit prompt to the Leader"]
-    goal -->|"refused"| error["Report error; leave slot pending"]
-    input -->|"accepted"| mark["Record last_goal and next_at"]
+    running -->|"no"| work["Attempt create_work with session limits"]
+    work -->|"accepted"| input["Submit prompt to the Leader"]
+    work -->|"refused"| error["Report error; leave slot pending"]
+    input -->|"accepted"| mark["Record last_work and next_at"]
     input -->|"refused"| error
     mark --> file
 ```
 
-The sidecar stores `id`, `name`, `prompt`, `every_secs`, `enabled`, `next_at`, `last_run` and `last_goal`.
+The sidecar stores `id`, `name`, `prompt`, `every_secs`, `enabled`, `next_at`, `last_run` and `last_work`.
 A successful recorded firing advances from the current time, coalescing missed slots; enabling an entry arms
-it one period ahead. Schedule publication uses a temporary file, fsync and rename. Schedule state, goal
+it one period ahead. Schedule publication uses a temporary file, fsync and rename. Schedule state, work
 creation and input submission are **not one atomic transaction**.
 
-The current tick requests the fixed ID `goal-auto-<automation-id>`, while `create_goal` inserts a unique goal
-and does not reopen an existing one. Consequently, this source path does not provide a fresh goal for a second
-firing after the first goal exists. The diagram exposes the refused-creation path; it must not be interpreted
+The current tick requests the fixed ID `work-auto-<automation-id>`, while `create_work` inserts a unique work
+and does not reopen an existing one. Consequently, this source path does not provide a fresh work for a second
+firing after the first work exists. The diagram exposes the refused-creation path; it must not be interpreted
 as proof of reliable recurring admission. Explicit schedules are also separate from D-487 continuation and
 from unselected automatic-reminder proposals.
 
 Source: [schedule sidecar](../engine/src/v2/automations.rs),
-[daemon scheduler](../engine/src/v2/daemon.rs), [goal insertion](../core/src/v2/control.rs).
+[daemon scheduler](../engine/src/v2/daemon.rs), [work insertion](../core/src/v2/control.rs).
 
 ### 27. Managed self-update has its own journal
 
@@ -1254,12 +1254,12 @@ stateDiagram-v2
     DELETING --> Gone: Delete bytes and collect<br/>metadata
 ```
 
-Never commit a reference to bytes that were not durably published. An orphan is recoverable; a dangling
-reference is not acceptable. A STAGING artifact cannot be collected merely for being old or temporarily
-unreferenced. Verify the owning request/job. Unimported job outputs, active recovery data and protected
+Never commit a reference to bytes that have not been durably published. An orphan is recoverable; a dangling
+reference is not acceptable. A STAGING artifact cannot be collected just for being old or temporarily
+unreferenced—verify the owning request or job first. Unimported job outputs, active recovery data and protected
 input attachments remain roots. A DELETING claim prevents new references from racing physical removal.
 The current collector claims eligible LIVE objects and retries DELETING objects; this diagram does not add
-an automatic ABANDONED-to-DELETING path that the current collector lacks. Hashes check identity and integrity;
+an automatic ABANDONED-to-DELETING path that the collector lacks. Hashes verify identity and integrity;
 they do not grant cross-instance read access.
 
 Sources: [artifact staging and recovery](../engine/src/v2/artifacts.rs),
@@ -1284,14 +1284,15 @@ flowchart TB
     retention --> prune["Prune only eligible history / archived sessions"]
 ```
 
-Schema 6-to-7 migration adds work records and stop-observation fields without enrolling old goals. Older
-writers refuse the upgraded schema. Replacing a binary does not roll a database back. Explicit
+Schema 6-to-7 migration adds work records and stop-observation fields without enrolling old work_scopes.
+Schema 7-to-8 then removes the legacy goal tables/columns, preserving their scope, ownership, budget and event
+values as work records. Older writers refuse the upgraded schema. Replacing a binary does not roll a database back. Explicit
 `store::open_read_only` and export avoid migration. Some inspection paths use a normal schema-verifying open;
 a read method name alone does not establish filesystem-level read-only behavior. Fork retains pending policy/time, known and unknown admission costs,
 checkpoint claims and explicit stops, but never clones a running process or a reusable execution proof.
 
 History pruning, archived-session pruning and artifact GC are separate policies. Pending admission inputs and
-inputs owned by ACTIVE goals keep the envelopes carrying their acceptance checks. Closed work or terminated
+inputs owned by ACTIVE work_scopes keep the envelopes carrying their acceptance checks. Closed work or terminated
 instances release those protections to ordinary retention. User-authorized session deletion is a distinct
 operation; it must not delete sibling sessions, credentials or unrelated workspace data.
 
@@ -1330,14 +1331,14 @@ The identifiers below are illustrative; production identities are assigned by th
 
 | Step | Durable facts | Next actor and invariant |
 |---|---|---|
-| User asks to repair a parser | Envelope `e1` applies once to Leader epoch 0; admitted goal `g1` owns the request | Leader request `r1` freezes the input and work scope |
+| User asks to repair a parser | Envelope `e1` applies once to Leader epoch 0; admitted work `g1` owns the request | Leader request `r1` freezes the input and work scope |
 | Leader spawns a worker | Task `t1` references `g1`; return grant refers only to `t1`; workspace recorded | Worker runs only after required capabilities are available |
 | Worker edits and tests | Decision `d1` owns operation `o1` at tool index 0; authorization is committed | Runner accepts GO once and publishes the actual receipt |
 | Daemon crashes after tests exit | Runner receipt exists; SQLite may not yet contain it | New coordinator verifies/imports it, never reruns the test on a guess |
 | Worker completes | Current-scope evidence settles `t1`; task grants are consumed; result is delivered | Leader's task wait resolves; a message wait would not |
 | User adds a requirement | New envelope `e2` remains attributable to the same active work | Old completion cannot settle `g1` before incorporating `e2` |
 | Leader finishes | No open tasks/effects/remaining items; required checks and dependencies valid | `g1` becomes SUCCEEDED; work COMPLETE does not independently certify it |
-| User asks a follow-up | Admission retains input time, policy and costs | Direct information has no new goal; actionable work admits a successor |
+| User asks a follow-up | Admission retains input time, policy and costs | Direct information has no new work; actionable work admits a successor |
 
 ### Acceptance map
 
@@ -1356,7 +1357,7 @@ Run `make check`; use `make pty` for terminal behavior. Formal commands and abst
 in [verification/README.md](../verification/README.md). Finite models do not prove Rust/SQLite refinement,
 semantic task completeness, all OS effects or liveness. Local scripted providers do not establish real-model
 success or collaboration gains. [DESIGN.md](DESIGN.md) describes separate A/B/C evaluation: shared kernel and
-protocol, persistent single-instance runtime, then collaboration on demand under a shared goal budget.
+protocol, persistent single-instance runtime, then collaboration on demand under a shared work budget.
 
 For maintenance, update the diagram beside any changed contract, verify its source link and render it in both
 light and dark themes. Keep diagrams in standard Mermaid flowchart, sequence, state and ER syntax so the source

@@ -182,7 +182,7 @@ fn the_thinking_wire_sends_an_empty_reasoning_field_for_assistant_tool_calls() {
     // has one: only the first needs the filler, and the second keeps its own
     let mut request = request();
     request.messages = vec![
-        json!({"role": "assistant", "content": "runtime required-check round 1 for goal g",
+        json!({"role": "assistant", "content": "runtime required-check round 1 for work g",
                "tool_calls": [{"id": "check-1-0", "type": "function", "function": {"name": "shell", "arguments": "{}"}}]}),
         json!({"role": "assistant", "content": "thinking out loud", "reasoning_content": "real reasoning",
                "tool_calls": [{"id": "c2", "type": "function", "function": {"name": "shell", "arguments": "{}"}}]}),

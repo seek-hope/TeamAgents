@@ -151,7 +151,7 @@ async fn main() -> Fallible<()> {
         max_retries: 2,
         storage_queue: 256,
         poll: Duration::from_millis(100),
-        goal_limits: json!({}),
+        work_limits: json!({}),
         require_shell_approval: permissions == "approved_scope",
         provider_factory: factory,
     };
@@ -232,8 +232,8 @@ async fn run_acceptance(handle: &SupervisorHandle, run: Run<'_>) -> Fallible<()>
     };
     // the acceptance waits on *facts*, not on one instance's phase: both
     // directions delivered, the worker's approved shell effect in place, and
-    // the leader's goal closed
-    let goal_status = loop {
+    // the leader's work closed
+    let work_status = loop {
         // user-side approval of every pending shell request (§6.2): this is
         // the real approved_scope path, not a fake gateway. The pending list
         // comes from the daemon's own read surface (a separate read-only
@@ -251,14 +251,14 @@ async fn run_acceptance(handle: &SupervisorHandle, run: Run<'_>) -> Fallible<()>
         }
         let events = handle.events(0).await?;
         let snapshot = handle.snapshot().await?;
-        let closed = snapshot["goal"]["status"]
+        let closed = snapshot["work"]["status"]
             .as_str()
             .is_some_and(|status| matches!(status, "SUCCEEDED" | "FAILED" | "BLOCKED" | "CANCELLED"));
         let facts_hold = delivered(&events, "i-leader", "i-worker")
             && delivered(&events, "i-worker", "i-leader")
             && (!require_file || file.exists());
         if closed && facts_hold {
-            break snapshot["goal"]["status"].as_str().unwrap_or("UNKNOWN").to_string();
+            break snapshot["work"]["status"].as_str().unwrap_or("UNKNOWN").to_string();
         }
         if started.elapsed() > Duration::from_secs(timeout_s) {
             break "TIMEOUT".to_string();
@@ -279,7 +279,7 @@ async fn run_acceptance(handle: &SupervisorHandle, run: Run<'_>) -> Fallible<()>
     }
     let file_text = std::fs::read_to_string(&file).unwrap_or_default();
     let report = json!({
-        "goal_status": goal_status,
+        "work_status": work_status,
         "elapsed_s": started.elapsed().as_secs(),
         "codeword_delivered": events.iter().any(|event| event.to_string().contains(CODEWORD)),
         "leader_to_worker": delivered(&events, "i-leader", "i-worker"),
@@ -294,8 +294,8 @@ async fn run_acceptance(handle: &SupervisorHandle, run: Run<'_>) -> Fallible<()>
     });
     std::fs::write(evidence.join("report.json"), serde_json::to_vec_pretty(&report)?)?;
     println!("{}", serde_json::to_string_pretty(&report)?);
-    if report["goal_status"] != json!("SUCCEEDED") {
-        return Err(format!("leader goal ended as {goal_status}").into());
+    if report["work_status"] != json!("SUCCEEDED") {
+        return Err(format!("leader work ended as {work_status}").into());
     }
     if report["leader_to_worker"] != json!(true) || report["worker_to_leader"] != json!(true) {
         return Err("the two providers did not exchange a message in both directions".into());

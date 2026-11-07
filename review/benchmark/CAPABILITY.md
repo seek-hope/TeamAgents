@@ -54,7 +54,7 @@ container:
 
 The turn produces artifacts and stops. `teamagents exec --json` reports `"verification": []` and
 `"verification_path": null`: the product has a place for acceptance evidence and the harness supplies none, and
-the goal carries no criteria for the leader to satisfy. So "done" means "the model said so", not "the claim was
+the work carries no criteria for the leader to satisfy. So "done" means "the model said so", not "the claim was
 checked". This is a **product capability gap**, not a harness gap, and it is the highest-value thing to fix.
 
 The timeouts split into two kinds, and only one is about time:
@@ -73,17 +73,17 @@ adds an auditable "who attested" and cannot recover an unobservable criterion, D
 stall became D-410's wrap-up note instead, whose measured bound is the step boundary. Each proposal keeps its
 original claim, measurement and formal obligation so the record of what was proposed stays readable.
 
-### P1 — Goal-level acceptance checks that must pass before "done"
+### P1 — Work-level acceptance checks that must pass before "done"
 
-The goal carries acceptance criteria (commands, or a shell predicate); the driver runs them before settling the
-goal; a failure feeds the failure text back to the worker and the turn continues, bounded by the same budget.
+The work carries acceptance criteria (commands, or a shell predicate); the driver runs them before settling the
+work; a failure feeds the failure text back to the worker and the turn continues, bounded by the same budget.
 
 - **Claim.** On tasks whose success is mechanically checkable, a turn with acceptance criteria converts
   completed-but-wrong into pass at a measurable rate, and does not lower the rate on tasks it cannot check.
 - **Measurement.** The 20-task sample, N = 3, with and without `--accept`; report per-task flips. Predicted
   first flips: `query-optimize` (compare the two queries), `pytorch-model-cli` (run the CLI).
-- **Formal.** `V2Goal`/`V2Retention` extension: a goal cannot reach `COMPLETED` unless every declared check is
-  green, and a check failure never settles the goal. TLA+ model with a negative control that allows settling on
+- **Formal.** `V2Work`/`V2Retention` extension: a work cannot reach `COMPLETED` unless every declared check is
+  green, and a check failure never settles the work. TLA+ model with a negative control that allows settling on
   red (refuted), plus a Kani harness for the "criteria parsed but empty" edge.
 
 ### P2 — A verifier teammate, not self-review
@@ -96,7 +96,7 @@ same context that produced the artifact does not grade it.
 - **Measurement.** Same sample; count tasks where the verifier rejects an artifact that the producer declared
   done, and the flip rate when the rejection is fed back.
 - **Formal.** The existing audience/visibility model already carries reviewer scoping; the new obligation is
-  "no goal completes while a verifier that was asked has not reported" — a `V2Goal` invariant with a
+  "no work completes while a verifier that was asked has not reported" — a `V2Work` invariant with a
   control that completes on a pending verifier.
 
 ### P3 — Detect a stalled turn and retry instead of burning the window
@@ -114,7 +114,7 @@ is stalled. Detect it, abort the provider stream, and retry the request once bef
 
 P1 was investigated and turned out to be **already implemented** — `limits.required_checks`, the driver's repair
 round and the BLOCKED settlement (A16/§8, `V2Checks.tla`) — with one thing missing: the headless entry point a CI
-job or a benchmark runs could not attach checks to a goal (its `--check` runs *after* the turn). D-385 added that
+job or a benchmark runs could not attach checks to a work (its `--check` runs *after* the turn). D-385 added that
 ingress (`exec --accept ID=COMMAND`, control command `require_checks`). The A/B below measures what it buys.
 
 Same tasks, same model, same budget (890 s, `low`, official route, pristine tasks, concurrency 3), checks derived
@@ -128,7 +128,7 @@ Same tasks, same model, same budget (890 s, `low`, official route, pristine task
 | **total** | **2/9** | **1/9** | |
 
 **The mechanism is observable and correct; the pass rate is flat.** In the `query-optimize` arm the gate fired — two of the three runs attached the check, failed it, spent the
-bounded repair rounds and settled the goal **BLOCKED** (`end: failed`, `goal_status: BLOCKED`, the failing check
+bounded repair rounds and settled the work **BLOCKED** (`end: failed`, `work_status: BLOCKED`, the failing check
 named) — but **D-395 shows the failure was `python3: command not found`, not a caught mismatch**: that image ships
 no `python3`, so the check never ran its assertion. The gate's behaviour is real; the claim that it was checking the
 right thing is not. It just did not *converge*: the model could not repair the query inside the

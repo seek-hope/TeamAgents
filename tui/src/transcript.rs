@@ -290,7 +290,7 @@ fn activity_heading(entries: &[ChatEntry]) -> String {
         format!("Explored · {count} tools")
     } else if all(&["web_search", "web_fetch"]) {
         format!("Searched · {count} tools")
-    } else if all(&["spawn", "delegate", "send_message", "cancel_task", "verify_task", "wait"]) {
+    } else if all(&["spawn", "delegate", "send", "cancel_task", "verify_work", "wait"]) {
         format!("Coordinated · {count} actions")
     } else {
         format!("Worked · {count} tools")

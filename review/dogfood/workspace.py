@@ -131,13 +131,13 @@ def main() -> int:
     elapsed = round(time.time() - started, 1)
     report = json.loads(run.stdout) if run.stdout.strip().startswith("{") else {}
     print(f"provider={args.provider} exec exit={run.returncode} elapsed={elapsed}s end={report.get('end')} "
-          f"goal={report.get('goal_status')}")
+          f"work={report.get('work_status')}")
     if run.stderr.strip().startswith("exec:"):
         print("stderr:", run.stderr.strip()[:300])
 
-    # 1. the goal settled and a worktree member exists
-    if report.get("goal_status") != "SUCCEEDED":
-        failures.append(f"the delegation did not settle: {report.get('end')} {report.get('goal_status')!r} "
+    # 1. the work settled and a worktree member exists
+    if report.get("work_status") != "SUCCEEDED":
+        failures.append(f"the delegation did not settle: {report.get('end')} {report.get('work_status')!r} "
                         f"{report.get('failure')!r}")
     members = []
     for member in sorted((state_root / "instances").glob("*")) if (state_root / "instances").is_dir() else []:

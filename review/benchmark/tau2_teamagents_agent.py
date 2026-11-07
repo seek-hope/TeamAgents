@@ -17,7 +17,7 @@ The wiring, and why it is this way:
 * the **policy goes in the prompt**: τ³-bench's `domain_policy` text is written as the product's
   `instruction_files`, which every member's system text receives (D-102/D-246) — the agent is told the rules in
   the product's own channel, not through a harness-specific prompt.
-* each user turn is a **new goal** in the same session (`goals open` before `exec`), because a settled goal cannot
+* each user turn is a **new work** in the same session (`work_scopes open` before `exec`), because a settled work cannot
   be reopened; the conversation context is the session's, so the model sees the whole dialogue.
 * nothing here judges the result: the reward is τ³-bench's own evaluation of the database.
 
@@ -195,9 +195,9 @@ class TeamAgentsAgent:
 
     def _turn(self, user_message: str) -> str:
         state_root = str(self.work / "state" / "teamagents" / "v2")
-        # every turn is its own goal: a settled goal cannot be reopened, and the session keeps the conversation
+        # every turn is its own work: a settled work cannot be reopened, and the session keeps the conversation
         self._run(["init"])
-        self._run(["goals", "open", "--id", f"turn-{self.turns}", "--state-root", state_root])
+        self._run(["work_scopes", "open", "--id", f"turn-{self.turns}", "--state-root", state_root])
         report = self._run(
             ["exec", "--json", "--full-auto", "--timeout", str(self.timeout), "--state-root", state_root, "--", user_message]
         )

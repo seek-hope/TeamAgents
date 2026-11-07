@@ -1,5 +1,5 @@
-//! Admission is scoped to pending user inputs; informational replies create no goal.
-//! The empty goal key denotes input whose work intent has not yet been decided.
+//! Admission is scoped to pending user inputs; informational replies create no work.
+//! The empty work key denotes input whose work intent has not yet been decided.
 
 use super::*;
 
@@ -21,11 +21,11 @@ pub(super) fn queue(
     let k = (String::new(), instance.into(), epoch, String::new());
     ensure(tx, &k)?;
     if !existing {
-        tx.execute("UPDATE work_states SET checkpoint_json='{}',policy_json=?3 WHERE goal_id='' AND instance_id=?1 AND epoch=?2",
+        tx.execute("UPDATE work_states SET checkpoint_json='{}',policy_json=?3 WHERE work_id='' AND instance_id=?1 AND epoch=?2",
             rusqlite::params![instance,epoch,settings.to_string()]).map_err(|e|format!("pin admission policy: {e}"))?;
     }
     tx.execute(
-        "INSERT OR IGNORE INTO work_inputs(goal_id,instance_id,epoch,envelope_id,state) VALUES ('',?1,?2,?3,'PENDING')",
+        "INSERT OR IGNORE INTO work_inputs(work_id,instance_id,epoch,envelope_id,state) VALUES ('',?1,?2,?3,'PENDING')",
         rusqlite::params![instance, epoch, envelope],
     )
     .map_err(|e| format!("queue work admission: {e}"))?;
@@ -84,24 +84,24 @@ pub(super) fn view(tx: &Connection, instance: &str) -> Result<Json, String> {
     let Some(first) = inputs.first() else { return Ok(Json::Null) };
     let epoch = load_instance(tx, instance)?.1;
     let mut previous=tx.prepare("SELECT g.id,g.status,g.original_request_ref,g.known_usage_json,g.unknown_usage
-        FROM goals g WHERE EXISTS(SELECT 1 FROM work_states w WHERE w.goal_id=g.id AND w.instance_id=?1 AND w.task_id='')
+        FROM work_scopes g WHERE EXISTS(SELECT 1 FROM work_states w WHERE w.work_id=g.id AND w.instance_id=?1 AND w.task_id='')
         ORDER BY g.rowid DESC LIMIT 4").map_err(|e|format!("previous work status: {e}"))?;
     let previous=previous.query_map([instance],|r|{
         let usage:String=r.get(3)?;
-        Ok(json!({"goal_id":r.get::<_,String>(0)?,"status":r.get::<_,String>(1)?,"original_request_ref":r.get::<_,String>(2)?,
+        Ok(json!({"work_id":r.get::<_,String>(0)?,"status":r.get::<_,String>(1)?,"original_request_ref":r.get::<_,String>(2)?,
             "known_usage":serde_json::from_str::<Json>(&usage).unwrap_or(Json::Null),"unknown_usage":r.get::<_,i64>(4)?,"provenance":"runtime"}))
     }).map_err(|e|format!("previous work status query: {e}"))?.collect::<Result<Vec<_>,_>>().map_err(|e|format!("previous work status rows: {e}"))?;
     tx.query_row("SELECT state,checkpoint_json,pending_reason,empty_turns,revision,reason,policy_json
-        FROM work_states WHERE goal_id='' AND instance_id=?1 AND epoch=?2 AND task_id=''",
+        FROM work_states WHERE work_id='' AND instance_id=?1 AND epoch=?2 AND task_id=''",
         rusqlite::params![instance,epoch],|r|{
             let checkpoint:String=r.get(1)?;
             let policy:String=r.get(6)?;
             let policy:Json=serde_json::from_str(&policy).unwrap_or(Json::Null);
-            Ok(json!({"policy_version":1,"admission":true,"admission_id":first["envelope_id"],"goal_id":null,
+            Ok(json!({"policy_version":1,"admission":true,"admission_id":first["envelope_id"],"work_id":null,
                 "instance_id":instance,"epoch":epoch,"task_id":"","state":r.get::<_,String>(0)?,
                 "checkpoint":serde_json::from_str::<Json>(&checkpoint).unwrap_or(json!({})),"checkpoint_provenance":"model_claim",
                 "pending_reason":r.get::<_,String>(2)?,"repair_turns":r.get::<_,i64>(3)?,"revision":r.get::<_,i64>(4)?,
-                "reason":r.get::<_,String>(5)?,"limits":policy["limits"],"previous_goals":previous,
+                "reason":r.get::<_,String>(5)?,"limits":policy["limits"],"previous_work_scopes":previous,
                 "carried_usage":policy["admission_carry"]["known_usage"],"carried_unknown_usage":policy["admission_carry"]["unknown_usage"],"original_input":first,
                 "recent_user_inputs":inputs.iter().skip(inputs.len().saturating_sub(16)).collect::<Vec<_>>() }))
         }).optional().map(|value|value.unwrap_or(Json::Null)).map_err(|e|format!("admission view: {e}"))
@@ -182,7 +182,7 @@ pub(super) fn carry_for_fork(tx: &Connection, instance: &str) -> Result<(), Stri
         [state["admission_id"].as_str()],|r|r.get(0)).map_err(|e|format!("fork unknown admission usage: {e}"))?;
     let raw: String = tx
         .query_row(
-            "SELECT policy_json FROM work_states WHERE goal_id='' AND instance_id=?1 AND epoch=?2",
+            "SELECT policy_json FROM work_states WHERE work_id='' AND instance_id=?1 AND epoch=?2",
             rusqlite::params![instance, state["epoch"].as_i64()],
             |r| r.get(0),
         )
@@ -190,7 +190,7 @@ pub(super) fn carry_for_fork(tx: &Connection, instance: &str) -> Result<(), Stri
     let mut policy: Json = serde_json::from_str(&raw).map_err(|e| format!("fork admission policy JSON: {e}"))?;
     policy["admission_carry"] = json!({"known_usage":usage,"unknown_usage":unknown+state["carried_unknown_usage"].as_i64().unwrap_or(0),"provenance":"fork_snapshot"});
     tx.execute(
-        "UPDATE work_states SET policy_json=?3 WHERE goal_id='' AND instance_id=?1 AND epoch=?2",
+        "UPDATE work_states SET policy_json=?3 WHERE work_id='' AND instance_id=?1 AND epoch=?2",
         rusqlite::params![instance, state["epoch"].as_i64(), policy.to_string()],
     )
     .map_err(|e| format!("carry fork admission: {e}"))?;
@@ -220,20 +220,20 @@ fn activate(
     let inputs = inputs(tx, instance)?;
     let first = inputs.first().ok_or("new work requires pending user input")?;
     let epoch = load_instance(tx, instance)?.1;
-    let goal = format!(
-        "goal-input-{}",
+    let work = format!(
+        "work-input-{}",
         crate::kernel::args_hash(&json!([session, instance, first["epoch"], first["envelope_id"]]))
     );
     let mut limits = state["limits"].clone();
     let minutes =
         limits.as_object_mut().and_then(|limits| limits.remove("deadline_minutes")).and_then(|value| value.as_u64());
     let mut params =
-        json!({"id":goal,"instance_id":instance,"original_request_ref":first["envelope_id"],"limits":limits});
+        json!({"id":work,"instance_id":instance,"original_request_ref":first["envelope_id"],"limits":limits});
     if let Some(minutes) = minutes {
         params["deadline"] = json!(first["created"].as_f64().unwrap_or(0.0) + minutes as f64 * 60.0);
     }
-    create_goal(tx, session, &params, &Identity::System)?;
-    let k = (goal.clone(), instance.into(), epoch, String::new());
+    create_work(tx, session, &params, &Identity::System)?;
+    let k = (work.clone(), instance.into(), epoch, String::new());
     ensure(tx, &k)?;
     let mut saved = state["checkpoint"].clone();
     for (key, value) in checkpoint.as_object().ok_or("work admission checkpoint must be an object")? {
@@ -245,14 +245,14 @@ fn activate(
         return Err("merged admission checkpoint exceeds 32 KiB".into());
     }
     tx.execute(
-        "UPDATE work_states SET checkpoint_json=?3 WHERE goal_id=?1 AND instance_id=?2 AND epoch=?4",
-        rusqlite::params![goal, instance, saved.to_string(), epoch],
+        "UPDATE work_states SET checkpoint_json=?3 WHERE work_id=?1 AND instance_id=?2 AND epoch=?4",
+        rusqlite::params![work, instance, saved.to_string(), epoch],
     )
     .map_err(|e| format!("admit work checkpoint: {e}"))?;
     let mut stmt = tx
         .prepare(
             "SELECT w.request_id,w.unknown_usage FROM work_requests w
-        WHERE json_extract(w.context_json,'$.admission_id')=?1 AND w.billed_goal_id IS NULL",
+        WHERE json_extract(w.context_json,'$.admission_id')=?1 AND w.billed_work_id IS NULL",
         )
         .map_err(|e| format!("admission billing: {e}"))?;
     let requests = stmt
@@ -260,12 +260,12 @@ fn activate(
         .map_err(|e| format!("admission billing query: {e}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("admission billing collect: {e}"))?;
-    settle_usage(tx, &goal, &state["carried_usage"])?;
+    settle_usage(tx, &work, &state["carried_usage"])?;
     tx.execute(
-        "UPDATE goals SET unknown_usage=unknown_usage+?2 WHERE id=?1",
-        rusqlite::params![goal, state["carried_unknown_usage"].as_i64().unwrap_or(0)],
+        "UPDATE work_scopes SET unknown_usage=unknown_usage+?2 WHERE id=?1",
+        rusqlite::params![work, state["carried_unknown_usage"].as_i64().unwrap_or(0)],
     )
-    .map_err(|e| format!("carry admission usage into goal: {e}"))?;
+    .map_err(|e| format!("carry admission usage into work: {e}"))?;
     for (request, unknown) in &requests {
         let mut attempts = tx
             .prepare("SELECT usage_json FROM attempts WHERE request_id=?1 AND status='COMPLETE'")
@@ -276,17 +276,20 @@ fn activate(
         for usage in usages {
             let usage: Json = serde_json::from_str(&usage.map_err(|e| format!("admission attempt row: {e}"))?)
                 .map_err(|e| format!("admission usage JSON: {e}"))?;
-            settle_usage(tx, &goal, &usage)?;
+            settle_usage(tx, &work, &usage)?;
         }
-        tx.execute("UPDATE work_requests SET billed_goal_id=?2 WHERE request_id=?1", rusqlite::params![request, goal])
+        tx.execute("UPDATE work_requests SET billed_work_id=?2 WHERE request_id=?1", rusqlite::params![request, work])
             .map_err(|e| format!("assign admission billing: {e}"))?;
-        tx.execute("UPDATE goals SET unknown_usage=unknown_usage+?2 WHERE id=?1", rusqlite::params![goal, unknown])
-            .map_err(|e| format!("assign unknown admission usage: {e}"))?;
+        tx.execute(
+            "UPDATE work_scopes SET unknown_usage=unknown_usage+?2 WHERE id=?1",
+            rusqlite::params![work, unknown],
+        )
+        .map_err(|e| format!("assign unknown admission usage: {e}"))?;
     }
     for input in &inputs {
         tx.execute(
-            "UPDATE work_inputs SET goal_id=?2,state='ASSIGNED' WHERE instance_id=?1 AND envelope_id=?3",
-            rusqlite::params![instance, goal, input["envelope_id"].as_str()],
+            "UPDATE work_inputs SET work_id=?2,state='ASSIGNED' WHERE instance_id=?1 AND envelope_id=?3",
+            rusqlite::params![instance, work, input["envelope_id"].as_str()],
         )
         .map_err(|e| format!("assign work input: {e}"))?;
         super::admit_input(tx, session, instance, input["envelope_id"].as_str().ok_or("admission input id missing")?)?;
@@ -297,7 +300,7 @@ fn activate(
         session,
         "work_started",
         instance,
-        &json!({"goal_id":goal,"input_ref":first["envelope_id"],"billed_requests":requests.len(),"intent_provenance":provenance}),
+        &json!({"work_id":work,"input_ref":first["envelope_id"],"billed_requests":requests.len(),"intent_provenance":provenance}),
     )?;
     Ok(())
 }
@@ -312,7 +315,7 @@ pub(super) fn response(
 ) -> Result<(), String> {
     let state = view(tx, instance)?;
     let epoch = load_instance(tx, instance)?.1;
-    if state.is_null() || state["admission_id"] != frozen["admission_id"] || budget_goal(tx, instance)?.is_some() {
+    if state.is_null() || state["admission_id"] != frozen["admission_id"] || budget_work(tx, instance)?.is_some() {
         if !state.is_null() && state["admission_id"] == frozen["admission_id"] {
             tx.execute(
                 "UPDATE work_inputs SET state='SUPERSEDED' WHERE instance_id=?1 AND state='PENDING'",
@@ -323,7 +326,7 @@ pub(super) fn response(
                 tx,
                 &(String::new(), instance.into(), epoch, String::new()),
                 "STOPPED",
-                "A user-selected goal superseded this admission",
+                "A user-selected work superseded this admission",
                 "",
             )?;
         }
@@ -381,7 +384,7 @@ pub(super) fn response(
                     return Err("merged admission checkpoint exceeds 32 KiB".into());
                 }
                 tx.execute(
-                    "UPDATE work_states SET checkpoint_json=?3 WHERE goal_id='' AND instance_id=?1 AND epoch=?2",
+                    "UPDATE work_states SET checkpoint_json=?3 WHERE work_id='' AND instance_id=?1 AND epoch=?2",
                     rusqlite::params![instance, epoch, saved.to_string()],
                 )
                 .map_err(|e| format!("admission clarification: {e}"))?;
@@ -396,7 +399,7 @@ pub(super) fn response(
                     tx,
                     instance,
                     epoch,
-                    "Admission checkpoint recorded; no new work goal has been created",
+                    "Admission checkpoint recorded; no new work work has been created",
                 )?;
                 append_context(
                     tx,
@@ -432,9 +435,9 @@ pub(super) fn response(
                 instance,
                 epoch,
                 if succeeded {
-                    "Informational answer recorded without creating a new work goal"
+                    "Informational answer recorded without creating a new work work"
                 } else {
-                    "Input remains blocked; no new work goal has been created"
+                    "Input remains blocked; no new work work has been created"
                 },
             )?;
             append_context(

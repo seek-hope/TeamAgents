@@ -53,7 +53,7 @@ here only as the reason the phases are explicit. The table below is the run whos
 
 Remaining divergences from the DeepSeek card's protocol, recorded rather than hidden: `reasoning_effort` is
 `high` where the card uses maximum effort; the product has no `max_steps = 500` counterpart, so a turn is bounded
-by `TEAMAGENTS_TURN_TIMEOUT_SEC` (840 s here, under harbor's 900 s agent timeout) and by the goal's budget.
+by `TEAMAGENTS_TURN_TIMEOUT_SEC` (840 s here, under harbor's 900 s agent timeout) and by the work's budget.
 
 ## The image path on the task that motivated it (D-392/D-394)
 
@@ -223,10 +223,10 @@ the agent command.
 ## `deadline_wrapup_ab.py` — does a wrap-up note convert cuts into settlements? (D-410)
 
 Two arms over the 12 tasks that hit their deadline in the N=3 full-set run (D-389), one attempt each: `bare` (no
-goal deadline, so the client's own bound cuts the turn) and `deadline` (`TEAMAGENTS_DEADLINE_MINUTES` inside that
+work deadline, so the client's own bound cuts the turn) and `deadline` (`TEAMAGENTS_DEADLINE_MINUTES` inside that
 bound, so the runtime warns when ~120 s remain — the note the product now writes, D-410). It reads the mechanism's
-own receipt out of the state each attempt committed (`goal_deadline_warning` events and the
-`goal-deadline-warning-<goal>` conversation entries), and it refuses to attribute anything to the note when no
+own receipt out of the state each attempt committed (`work_deadline_warning` events and the
+`work-deadline-warning-<work>` conversation entries), and it refuses to attribute anything to the note when no
 receipt was collected:
 
 ```bash
@@ -366,7 +366,7 @@ sample had been slightly optimistic and the first-10 airline sample much more so
 for; the retail number was reproduced at 98/114 in a second run the same day, and that second run's treatment was
 one that provably could not change the outcome, so the difference (84.2 % vs 86.0 %) is this benchmark's noise at
 n = 114 rather than an effect. The full-split airline run also showed what D-431 fixed: **18 of its 50 dialogues
-(36 %) settled a goal with the model writing no prose at all**, and every one of them now reports the summary the
+(36 %) settled a work with the model writing no prose at all**, and every one of them now reports the summary the
 model recorded with its own `finish` call (`reply_source: summary`, 32 of 50 reporting the model's text). An earlier version
 of this line said "8 of 10": that was the corrected harness on a smaller sample. **The first-ever run of this
 pipeline said 0 of 10 and was a harness artefact** — see below. The first run reported 0/10 and this file said so
@@ -431,7 +431,7 @@ python3 review/benchmark/tb_silence.py /tmp/ta-harbor
 ```
 
 The Terminal-Bench adapter does not keep per-turn `exec` reports, so this asks the product's own collected state
-instead: for every settled goal in every `session.sqlite` under the given job directories, was there any
+instead: for every settled work in every `session.sqlite` under the given job directories, was there any
 **assistant text**, and did the settlement carry a **summary**? Measured 2026-10-06 over every trial still on
 disk: **0 of 40 settled trials** without text and none without a summary, against 10.5 % of tau3-bench's retail
 dialogues. Those 40 are six tasks repeated rather than a random sample, so this is an observation about the
@@ -449,7 +449,7 @@ python3 review/benchmark/tau3_silence.py /var/tmp/tau3-full-retail
 ```
 
 The τ³ reward is a database comparison, so a dialogue can pass while the *user* read nothing: a model can settle
-a goal by calling the runtime's `finish` and writing no prose at all. This script reads the adapter's own
+a work by calling the runtime's `finish` and writing no prose at all. This script reads the adapter's own
 per-turn `exec` reports (`turn-N.json` — the `reply` field is what the user read, `reply_source` says where the
 words came from) and counts both the turns with no text and the dialogues whose **final** turn has none. On the
 full retail split before D-431: 24 of 487 turns and **12 of 114 dialogues (10.5 %)**, of which only two also

@@ -35,8 +35,8 @@ provider = "deepseek"
 api_key_env = "DEEPSEEK_API_KEY"
 
 # Acceptance checks (optional): machine contracts the runtime runs at the
-# completion boundary, in the host shell, before a goal may be reported as
-# done. A failing check sends the work back for repair and then blocks the goal
+# completion boundary, in the host shell, before a work may be reported as
+# done. A failing check sends the work back for repair and then blocks the work
 # instead of letting a summary claim success. They can only come from this user
 # config, never from a cloned project.
 # [[checks]]
@@ -45,8 +45,8 @@ api_key_env = "DEEPSEEK_API_KEY"
 # inputs = ["src", "Cargo.toml"]   # optional: hashes bind the result to these inputs
 # timeout = 600                    # optional seconds (default: the shell tool's)
 
-# Usage and wall-clock ceilings for every goal this session creates (optional;
-# without them a goal runs until you stop it). Both are yours alone: a cloned
+# Usage and wall-clock ceilings for every work this session creates (optional;
+# without them a work runs until you stop it). Both are yours alone: a cloned
 # project cannot set them. doctor reports what is in force.
 # [limits]
 # max_total_tokens = 2000000   # refuse a new request past this usage (A18)

@@ -5,7 +5,8 @@ it: the TUI, `teamagents exec`, the CLI verbs (`instances`, `tasks`, `approvals`
 under `review/dogfood/`. DESIGN.md calls it "one JSON-lines protocol (`/v1`)" and states its guarantees
 (handshake, `command_id` dedup, the event watermark); this document lists what it actually carries, generated from
 the two dispatchers in the code. The [visual architecture](ARCHITECTURE.md) relates these methods to state,
-transactions and recovery. Database schema 7, socket protocol 1 and work policy 1 are separate versions.
+transactions and recovery. Database schema 8, socket protocol 1 and work policy 1 are separate versions. Schema 8
+removes the goal vocabulary and migrates existing scope, ownership and event records to work.
 
 **Framing.** One JSON object per line, UTF-8, no other framing. The daemon speaks first: a greeting carrying
 `server`, `protocol_version` (currently `1`), `session_id`, `state_root`, `permissions` and `workspace` — a client
@@ -85,10 +86,10 @@ reasons. `work_checkpoint` is a sole model control action, not a permission gran
 are runtime-only and separate from immutable operation outcomes. Schema v7 prevents older writers from
 ignoring these states; the socket protocol version remains 1.
 
-**Commands** sent through the socket execute as `Identity::User` in one control transaction. Internal callers
-may use other trusted identities, and some listed methods are runtime-only. `Identity passed` records whether
-the dispatcher passes that identity argument to the handler; it does not itself establish an authorization
-policy. Follow the handler and control wrapper for scope, revision, grant and budget checks.
+**Commands** sent over the socket execute as `Identity::User` in a single control transaction. Internal callers
+may use other trusted identities, and some listed methods are runtime-only. `Identity passed` indicates whether
+the dispatcher passes that identity argument to the handler; it does not establish an authorization
+policy on its own. See the handler and control wrapper for scope, revision, grant, and budget checks.
 
 <!-- generated: begin -->
 
@@ -99,20 +100,20 @@ policy. Follow the handler and control wrapper for scope, revision, grant and bu
 | `previews` | — | `previews` | `engine/src/v2/daemon.rs:701` |
 | `checkpoint` | — | `snapshot`, `watermark` | `engine/src/v2/daemon.rs:707` |
 | `events` | `since` | `events`, `resync_required`, `watermark` | `engine/src/v2/daemon.rs:714` |
-| `history` | `instance_id`, `limit` | `entries`, `envelope_id`, `epoch`, `idx`, `instance_id`, `kind`, `message`, `work_goal_id`, `workspace` | `engine/src/v2/daemon.rs:723` |
-| `surfaces` | `instance_id`, `limit` | `epoch`, `goal_id`, `instance_id`, `kind`, `offered_tools`, `request_id`, `status`, `surface_authorized`, `surfaces` | `engine/src/v2/daemon.rs:757` |
+| `history` | `instance_id`, `limit` | `entries`, `envelope_id`, `epoch`, `idx`, `instance_id`, `kind`, `message`, `work_work_id`, `workspace` | `engine/src/v2/daemon.rs:723` |
+| `surfaces` | `instance_id`, `limit` | `epoch`, `instance_id`, `kind`, `offered_tools`, `request_id`, `status`, `surface_authorized`, `surfaces`, `work_id` | `engine/src/v2/daemon.rs:757` |
 | `inputs` | — | `envelope_id`, `epoch`, `inputs`, `instance_id`, `next_after`, `payload`, `revision`, `sequence` | `engine/src/v2/daemon.rs:789` |
 | `tasks` | — | `tasks` | `engine/src/v2/daemon.rs:840` |
 | `approvals` | — | `approvals`, `id`, `operation_id`, `preview`, `tool` | `engine/src/v2/daemon.rs:849` |
-| `goals` | — | `attached_instances`, `deadline`, `goals`, `id`, `known_usage`, `limits`, `status`, `summary`, `unknown_usage` | `engine/src/v2/daemon.rs:878` |
-| `grants` | — | `action`, `capability_requests`, `delegable`, `grants`, `id`, `issuer`, `parent_grant_id`, `requester`, `resource_scope`, `revision`, `revoked`, `status`, `subject`, `task_id` | `engine/src/v2/daemon.rs:924` |
+| `work_scopes` | — | `attached_instances`, `deadline`, `id`, `known_usage`, `limits`, `status`, `summary`, `unknown_usage`, `work_scopes` | `engine/src/v2/daemon.rs:878` |
+| `grants` | — | `action`, `capability_requests`, `delegable`, `grants`, `id`, `issuer`, `parent_grant_id`, `requester`, `resource_scope`, `revision`, `revoked`, `status`, `subject`, `task_id` | `engine/src/v2/daemon.rs:925` |
 
 ### Commands (executed by the control plane)
 
 | Method | Parameters the handler reads | Identity passed | Handled at |
 |---|---|---|---|
 | `create_instance` | `id`, `profile`, `workspace_ref` | yes | `core/src/v2/control.rs:262` |
-| `spawn_instance` | `acceptance_refs`, `capabilities`, `goal_id`, `instance_id`, `instructions`, `profile`, `task`, `task_id`, `workspace_ref` | yes | `core/src/v2/control.rs:263` |
+| `spawn_instance` | `acceptance_refs`, `capabilities`, `instance_id`, `instructions`, `profile`, `task`, `task_id`, `work_id`, `workspace_ref` | yes | `core/src/v2/control.rs:263` |
 | `issue_grant` | `action`, `delegable`, `parent_grant_id`, `resource_scope`, `subject`, `task_id` | yes | `core/src/v2/control.rs:264` |
 | `revoke_grant` | `grant_id` | yes | `core/src/v2/control.rs:265` |
 | `capability_requests` | — | no | `core/src/v2/control.rs:266` |
@@ -121,12 +122,12 @@ policy. Follow the handler and control wrapper for scope, revision, grant and bu
 | `reauthorize_operation` | `operation_id` | no | `core/src/v2/control.rs:269` |
 | `reset_instance` | `instance_id`, `reason` | yes | `core/src/v2/control.rs:270` |
 | `configure_work` | `leader_id`, `limits` | yes | `core/src/v2/control.rs:271` |
-| `create_goal` | `deadline`, `id`, `instance_id`, `limits`, `original_request_ref` | yes | `core/src/v2/control.rs:272` |
-| `require_checks` | `checks`, `goal_id` | yes | `core/src/v2/control.rs:273` |
+| `create_work` | `deadline`, `id`, `instance_id`, `limits`, `original_request_ref` | yes | `core/src/v2/control.rs:272` |
+| `require_checks` | `checks`, `work_id` | yes | `core/src/v2/control.rs:273` |
 | `send_message` | `correlation_id`, `max_inbox`, `recipient`, `text` | yes | `core/src/v2/control.rs:274` |
 | `drain_inbox` | `instance_id` | yes | `core/src/v2/control.rs:275` |
 | `set_instance_profile` | `effort`, `instance_id`, `model` | yes | `core/src/v2/control.rs:276` |
-| `delegate_task` | `acceptance_refs`, `assignee`, `dependencies`, `description`, `goal_id`, `task_id` | yes | `core/src/v2/control.rs:277` |
+| `delegate_task` | `acceptance_refs`, `assignee`, `dependencies`, `description`, `task_id`, `work_id` | yes | `core/src/v2/control.rs:277` |
 | `start_task` | `task_id` | yes | `core/src/v2/control.rs:278` |
 | `complete_task` | `result_refs`, `status`, `summary`, `task_id` | yes | `core/src/v2/control.rs:279` |
 | `cancel_task` | `reason`, `task_id` | yes | `core/src/v2/control.rs:280` |
@@ -152,14 +153,14 @@ policy. Follow the handler and control wrapper for scope, revision, grant and bu
 | `fail_request` | `park`, `reason`, `request_id` | no | `core/src/v2/control.rs:300` |
 | `cancel_request` | `reason`, `request_id` | no | `core/src/v2/control.rs:301` |
 | `interrupt_instance` | `instance_id`, `reason` | yes | `core/src/v2/control.rs:302` |
-| `complete_goal` | `goal_id`, `instance_id` | no | `core/src/v2/control.rs:303` |
+| `complete_work` | `instance_id`, `work_id` | no | `core/src/v2/control.rs:303` |
 | `register_check_runs` | — | yes | `core/src/v2/control.rs:304` |
 | `register_verification` | — | yes | `core/src/v2/control.rs:305` |
-| `repair_completion` | `failures`, `goal_id`, `instance_id`, `round` | yes | `core/src/v2/control.rs:306` |
-| `block_goal` | `goal_id`, `instance_id`, `reason` | yes | `core/src/v2/control.rs:307` |
-| `deadline_warning` | `goal_id`, `instance_id` | yes | `core/src/v2/control.rs:308` |
-| `goal_checks_briefing` | `goal_id`, `instance_id` | yes | `core/src/v2/control.rs:309` |
-| `cancel_goal` | `goal_id` | yes | `core/src/v2/control.rs:310` |
+| `repair_completion` | `failures`, `instance_id`, `round`, `work_id` | yes | `core/src/v2/control.rs:306` |
+| `block_work` | `instance_id`, `reason`, `work_id` | yes | `core/src/v2/control.rs:307` |
+| `deadline_warning` | `instance_id`, `work_id` | yes | `core/src/v2/control.rs:308` |
+| `work_checks_briefing` | `instance_id`, `work_id` | yes | `core/src/v2/control.rs:309` |
+| `cancel_work` | `work_id` | yes | `core/src/v2/control.rs:310` |
 | `close_completion` | `instance_id` | no | `core/src/v2/control.rs:311` |
 | `artifact_abandon` | `id` | no | `core/src/v2/control.rs:312` |
 | `set_lifecycle` | `instance_id`, `lifecycle`, `reason` | yes | `core/src/v2/control.rs:313` |
@@ -193,31 +194,31 @@ work projections, are outside this scan; consult their linked source contracts a
 | `read_snapshot` | `id`, `lifecycle`, `phase`, `model`, `reason`, `effort`, `can_run_shell`, `diagnosis` |
 | `read_snapshot` | `status`, `known_usage`, `summary`, `unknown_usage`, `limits`, `deadline` |
 | `read_snapshot` | `id`, `state` |
-| `read_snapshot` | `instances`, `tasks`, `goal`, `input_delivery`, `work_policy_version`, `mcp`, `sessions`, `models` |
+| `read_snapshot` | `instances`, `tasks`, `work`, `input_delivery`, `work_policy_version`, `mcp`, `sessions`, `models` |
 | `read_events` | `sequence`, `kind`, `scope`, `payload` |
-| `apply_session_goal_limits` | — |
+| `apply_session_work_limits` | — |
 | `previews` arm | `previews` |
 | `checkpoint` arm | `snapshot`, `watermark` |
 | `events` arm | `events`, `watermark`, `resync_required` |
-| `history` arm | `epoch`, `idx`, `kind`, `envelope_id`, `workspace`, `work_goal_id`, `message` |
+| `history` arm | `epoch`, `idx`, `kind`, `envelope_id`, `workspace`, `work_work_id`, `message` |
 | `history` arm | `instance_id`, `entries` |
-| `surfaces` arm | `request_id`, `instance_id`, `epoch`, `goal_id`, `kind`, `status`, `offered_tools`, `surface_authorized` |
+| `surfaces` arm | `request_id`, `instance_id`, `epoch`, `work_id`, `kind`, `status`, `offered_tools`, `surface_authorized` |
 | `surfaces` arm | `surfaces` |
 | `inputs` arm | `envelope_id`, `sequence`, `epoch`, `payload`, `revision` |
 | `inputs` arm | `instance_id`, `inputs`, `next_after` |
 | `tasks` arm | `tasks` |
 | `approvals` arm | `id`, `operation_id`, `tool`, `preview` |
 | `approvals` arm | `approvals` |
-| `goals` arm | `id`, `summary`, `status`, `deadline`, `limits`, `known_usage`, `unknown_usage`, `attached_instances` |
-| `goals` arm | — |
-| `goals` arm | — |
-| `goals` arm | `goals` |
+| `work_scopes` arm | `id`, `summary`, `status`, `deadline`, `limits`, `known_usage`, `unknown_usage`, `attached_instances` |
+| `work_scopes` arm | — |
+| `work_scopes` arm | — |
+| `work_scopes` arm | `work_scopes` |
 | `grants` arm | `id`, `issuer`, `subject`, `action`, `resource_scope`, `parent_grant_id`, `delegable`, `task_id`, `revoked` |
 | `grants` arm | `id`, `requester`, `subject`, `action`, `resource_scope`, `task_id`, `parent_grant_id`, `status` |
 | `grants` arm | `grants`, `capability_requests`, `revision` |
 | diagnostics: `diagnosis` | `code`, `summary`, `attention`, `next_steps`, `reason`, `waits`, `operations` |
 | diagnostics: `read_sql` | `id`, `mode`, `conditions`, `timer_at` |
 | diagnostics: `read_sql` | `id`, `status`, `cancel_requested` |
-| diagnostics: `read_sql` | `id`, `goal_id`, `assignee`, `status`, `diagnosis`, `assignee_activity` |
+| diagnostics: `read_sql` | `id`, `work_id`, `assignee`, `status`, `diagnosis`, `assignee_activity` |
 
 <!-- generated: end -->

@@ -100,7 +100,7 @@ async fn runner_spawn_failure_fails_the_op_and_the_driver_survives() {
         max_retries: 1,
         storage_queue: 64,
         poll: Duration::from_millis(15),
-        goal_limits: json!({}),
+        work_limits: json!({}),
         require_shell_approval: false,
     })
     .await
@@ -108,8 +108,8 @@ async fn runner_spawn_failure_fails_the_op_and_the_driver_survives() {
     handle.input("run something").await.expect("input");
 
     // the shell op fails honestly (spawn), then the scripted finish closes
-    // the goal — the driver never died on the spawn error
-    let completed = wait_event(&handle, "goal_completed", 30_000).await;
+    // the work — the driver never died on the spawn error
+    let completed = wait_event(&handle, "work_completed", 30_000).await;
     assert_eq!(completed["payload"]["status"], json!("SUCCEEDED"), "{completed}");
     let events = handle.events(0).await.expect("events");
     events

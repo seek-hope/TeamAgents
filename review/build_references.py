@@ -14,7 +14,7 @@ It reads the surfaces that *execute* scripts — the `Makefile` and `.github/wor
 git. `--surface PATH` replaces the list, which is how the control is run (a surface copy naming a file that
 exists but is untracked must produce exactly one finding).
 
-**D-196 added the Makefile's own two lists.** The default goal is `help`, so a bare `make` prints it: it is the
+**D-196 added the Makefile's own two lists.** The default work is `help`, so a bare `make` prints it: it is the
 first thing a contributor reads, and it had drifted — twenty targets, nine named, with the whole `verify-*`
 family missing and six of those targets absent from `.PHONY` as well (they are recipes, not files, so a file
 named `verify-kani` would have made `make verify-kani` say "up to date"). Every `.PHONY` target except `help`
@@ -108,7 +108,7 @@ def check_makefile_help(name: str, text: str, findings: list) -> int:
     for target in declared:
         if target != "help" and target not in printed:
             findings.append(f"{name}: `{target}` is a target `.PHONY` declares and `make help` (the default "
-                            "goal) does not name — a contributor reading it cannot see the target")
+                            "work) does not name — a contributor reading it cannot see the target")
     for target in sorted(printed - set(declared)):
         findings.append(f"{name}: `make help` names `{target}`, which is not a `.PHONY` target (a file of that "
                         "name would shadow it)")

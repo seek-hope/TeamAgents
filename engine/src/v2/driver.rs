@@ -142,12 +142,12 @@ mod shell_recovery_tests {
     }
 }
 
-/// Default bound on required-check repair rounds before the goal parks
+/// Default bound on required-check repair rounds before the work parks
 /// BLOCKED (§8 requires bounded repair, not a specific number — this is a
-/// policy knob, overridable per goal via limits.max_check_rounds).
+/// policy knob, overridable per work via limits.max_check_rounds).
 const DEFAULT_MAX_CHECK_ROUNDS: i64 = 3;
 
-/// D-410: how close to its deadline a goal gets before the runtime tells the model, in seconds. Absolute rather
+/// D-410: how close to its deadline a work gets before the runtime tells the model, in seconds. Absolute rather
 /// than a fraction: the runtime knows the deadline, not the budget it was set from (`exec --timeout` is the
 /// client's own bound), and a claim it cannot compute is worse than a fixed one it can.
 const DEADLINE_WARNING_SECS: f64 = 120.0;
@@ -250,8 +250,8 @@ pub struct DriverConfig<P> {
     pub max_retries: usize,
     pub storage_queue: usize,
     pub poll: Duration,
-    /// Goal limits (e.g. max_total_tokens) recorded at bootstrap.
-    pub goal_limits: Json,
+    /// Work limits (e.g. max_total_tokens) recorded at bootstrap.
+    pub work_limits: Json,
     /// ponytail: sessions run with a fixed permission snapshot (revision 0);
     /// live permission changes bump the revision and re-authorize at dispatch.
     pub require_shell_approval: bool,
@@ -264,13 +264,13 @@ struct Snapshot {
     revision: i64,
     epoch: i64,
     active_request: Option<String>,
-    active_goal: Option<String>,
-    /// The active goal's absolute deadline, if it has one. Read here rather than in its own storage call: the
+    active_work: Option<String>,
+    /// The active work's absolute deadline, if it has one. Read here rather than in its own storage call: the
     /// worker's queue is bounded, and a second call per step is what turned a warning into a failed turn (D-410).
-    goal_deadline: Option<f64>,
-    /// D-418: the active goal's `required_checks` (the user's own acceptance commands), for the same reason — the
+    work_deadline: Option<f64>,
+    /// D-418: the active work's `required_checks` (the user's own acceptance commands), for the same reason — the
     /// model is told the criterion when its turn opens, and that must not cost a storage call per step.
-    goal_checks: Vec<Json>,
+    work_checks: Vec<Json>,
 }
 
 pub(crate) struct Shared {
@@ -300,7 +300,7 @@ pub struct DriverHandle {
     shared: Arc<Shared>,
     session_id: String,
     instance_id: String,
-    goal_id: String,
+    work_id: String,
     task: tokio::task::JoinHandle<Result<(), String>>,
     _lock: std::fs::File,
 }
@@ -383,9 +383,9 @@ impl DriverHandle {
             .await
     }
 
-    /// Instance + goal snapshot for status views (read from the same worker).
+    /// Instance + work snapshot for status views (read from the same worker).
     pub async fn snapshot(&self) -> Result<Json, String> {
-        let (instance, goal) = (self.instance_id.clone(), self.goal_id.clone());
+        let (instance, work) = (self.instance_id.clone(), self.work_id.clone());
         self.storage
             .call(move |control| {
                 let conn = control.connection();
@@ -396,10 +396,10 @@ impl DriverHandle {
                         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                     )
                     .ok();
-                let goal: Option<(String, String, String, i64)> = conn
+                let work: Option<(String, String, String, i64)> = conn
                     .query_row(
-                        "SELECT status, known_usage_json, reservations_json, unknown_usage FROM goals WHERE id = ?1",
-                        [&goal],
+                        "SELECT status, known_usage_json, reservations_json, unknown_usage FROM work_scopes WHERE id = ?1",
+                        [&work],
                         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                     )
                     .ok();
@@ -409,7 +409,7 @@ impl DriverHandle {
                 Ok::<_, String>(json!({
                     "instance": instance.map(|(lifecycle, phase, revision, request)|
                         json!({"lifecycle": lifecycle, "phase": phase, "revision": revision, "active_request": request})),
-                    "goal": goal.map(|(status, usage, reservations, unknown)|
+                    "work": work.map(|(status, usage, reservations, unknown)|
                         json!({"status": status, "known_usage": serde_json::from_str::<Json>(&usage).unwrap_or(Json::Null),
                                "reservations": serde_json::from_str::<Json>(&reservations).unwrap_or(Json::Null),
                                "unknown_usage": unknown})),
@@ -517,7 +517,7 @@ pub struct Driver<P: Provider> {
 
 /// Start the driver over its state root. Bootstrap commands use fixed command
 /// ids, so restarting over an existing session replays receipts instead of
-/// duplicating instances, goals or input (§6.3 row 1).
+/// duplicating instances, work_scopes or input (§6.3 row 1).
 pub async fn start<P: Provider + 'static>(mut config: DriverConfig<P>) -> Result<DriverHandle, String> {
     std::fs::create_dir_all(&config.state_root)
         .map_err(|e| crate::cli::state_root_uncreatable(&config.state_root, &e))?;
@@ -528,13 +528,13 @@ pub async fn start<P: Provider + 'static>(mut config: DriverConfig<P>) -> Result
     let storage = Storage::open(&config.session_db, &config.session_id, true, config.storage_queue)?;
     let session_id = config.session_id.clone();
     let instance_id = config.instance_id.clone();
-    let goal_id = format!("goal-{session_id}");
+    let work_id = format!("work-{session_id}");
     let leader_profile = crate::providers::resolve_profile(config.profile.clone(), &config.catalog);
     bootstrap(
         &storage,
         &instance_id,
         &config.workspace.to_string_lossy(),
-        &config.goal_limits,
+        &config.work_limits,
         &leader_profile,
         // this path drives one instance over the session's own root, so the root here *is* the session root
         RetentionBoot {
@@ -544,16 +544,16 @@ pub async fn start<P: Provider + 'static>(mut config: DriverConfig<P>) -> Result
     )
     .await?;
     let (shared, task) = spawn_driver(config, &storage)?;
-    Ok(DriverHandle { storage, shared, session_id, instance_id, goal_id, task, _lock: lock })
+    Ok(DriverHandle { storage, shared, session_id, instance_id, work_id, task, _lock: lock })
 }
 
 /// Idempotent leader bootstrap (§6.3 row 1): fixed command ids replay
-/// receipts on restart instead of duplicating instances, goals or input.
+/// receipts on restart instead of duplicating instances, work_scopes or input.
 ///
-/// `goal_limits` may carry the config's `deadline_minutes` (see
-/// `crate::config::goal_limits`): the core takes an *absolute* deadline, so the
-/// bootstrap converts the duration here, at the moment the goal is created, and
-/// passes the rest of the limits through unchanged — what is stored on the goal is
+/// `work_limits` may carry the config's `deadline_minutes` (see
+/// `crate::config::work_limits`): the core takes an *absolute* deadline, so the
+/// bootstrap converts the duration here, at the moment the work is created, and
+/// passes the rest of the limits through unchanged — what is stored on the work is
 /// exactly what the runtime enforces.
 /// `leader_profile` is stored on the instance row (D-69): the leader's own driver
 /// takes its profile from the session configuration, but a *reader* — the TUI, a
@@ -564,7 +564,7 @@ pub(crate) async fn bootstrap(
     storage: &Storage,
     instance_id: &str,
     workspace: &str,
-    goal_limits: &Json,
+    work_limits: &Json,
     leader_profile: &teamagents_core::kernel::KernelProfile,
     retention: RetentionBoot,
 ) -> Result<(), String> {
@@ -572,11 +572,11 @@ pub(crate) async fn bootstrap(
         .call({
             let instance = instance_id.to_string();
             let workspace = workspace.to_string();
-            let mut goal_limits = goal_limits.clone();
+            let mut work_limits = work_limits.clone();
             let profile = json!({"model": leader_profile.model, "instructions": leader_profile.instructions,
                                  "options": leader_profile.options, "context_window": leader_profile.context_window,
                                  "images": leader_profile.images});
-            let deadline_minutes = goal_limits
+            let deadline_minutes = work_limits
                 .as_object_mut()
                 .and_then(|limits| limits.remove("deadline_minutes"))
                 .and_then(|minutes| minutes.as_u64());
@@ -595,15 +595,15 @@ pub(crate) async fn bootstrap(
                         ),
                         Identity::User,
                     )?;
-                    let mut goal = json!({"id": format!("goal-{}", control.session_id),
-                                          "instance_id": instance, "limits": goal_limits});
+                    let mut work = json!({"id": format!("work-{}", control.session_id),
+                                          "instance_id": instance, "limits": work_limits});
                     if let Some(minutes) = deadline_minutes {
-                        goal["deadline"] = json!(teamagents_core::models::now() + (minutes * 60) as f64);
+                        work["deadline"] = json!(teamagents_core::models::now() + (minutes * 60) as f64);
                     }
-                    control.submit(command("boot-goal", "create_goal", goal), Identity::User)?;
+                    control.submit(command("boot-work", "create_work", work), Identity::User)?;
                 }
-                if goal_limits["autonomous_work"] == json!(true) {
-                    let mut policy_limits = goal_limits.clone();
+                if work_limits["autonomous_work"] == json!(true) {
+                    let mut policy_limits = work_limits.clone();
                     if let Some(minutes) = deadline_minutes {
                         policy_limits["deadline_minutes"] = json!(minutes);
                     }
@@ -975,8 +975,8 @@ impl<P: Provider> Driver<P> {
                     .connection()
                     .query_row(
                         "SELECT i.lifecycle, i.phase, i.revision, i.context_epoch, i.active_request_id,
-                                i.active_goal_id, g.deadline, g.limits_json
-                         FROM instances i LEFT JOIN goals g ON g.id = i.active_goal_id
+                                i.active_work_id, g.deadline, g.limits_json
+                         FROM instances i LEFT JOIN work_scopes g ON g.id = i.active_work_id
                          WHERE i.id = ?1",
                         [&instance],
                         |row| {
@@ -986,9 +986,9 @@ impl<P: Provider> Driver<P> {
                                 revision: row.get(2)?,
                                 epoch: row.get(3)?,
                                 active_request: row.get(4)?,
-                                active_goal: row.get(5)?,
-                                goal_deadline: row.get(6)?,
-                                goal_checks: row
+                                active_work: row.get(5)?,
+                                work_deadline: row.get(6)?,
+                                work_checks: row
                                     .get::<_, Option<String>>(7)?
                                     .and_then(|limits| serde_json::from_str::<Json>(&limits).ok())
                                     .and_then(|limits| limits["required_checks"].as_array().cloned())
@@ -1241,7 +1241,7 @@ impl<P: Provider> Driver<P> {
             other => other?,
         };
         if begun["budget_refused"] == json!(true) || begun["deadline_refused"] == json!(true) {
-            // the goal budget and deadline stay authoritative (§8, A35): the
+            // the work budget and deadline stay authoritative (§8, A35): the
             // turn proceeds uncompressed and its own request is gated the same way
             return Ok(false);
         }
@@ -1682,7 +1682,7 @@ that delegated it learns the outcome only from a settlement.";
         } else {
             snapshot
         };
-        // D-410: before the request is built, a goal whose deadline is close gets its one wrap-up note, so the
+        // D-410: before the request is built, a work whose deadline is close gets its one wrap-up note, so the
         // model can settle or report with time to spare instead of being cut mid-edit.
         self.warn_before_deadline(snapshot).await?;
         // D-418: and the criterion itself, before the model plans the turn rather than when it claims to be done.
@@ -1691,7 +1691,7 @@ that delegated it learns the outcome only from a settlement.";
         // last request (the drain above applied it) or a task this instance has not
         // started yet. A task it already addressed is not a reason to ask again —
         // the model's plain reply ended its turn (§3: a plain reply settles no task
-        // and no goal) — and re-asking it was a turn storm: a real model answered
+        // and no work) — and re-asking it was a turn storm: a real model answered
         // "BLOCKED." as prose and the runtime asked 169 times / 1.2M prompt tokens
         // without any progress (D-65). V2Control's `NoTurnWithoutWork` forbids that
         // state outright. The instance therefore goes idle with the task still
@@ -1785,7 +1785,7 @@ that delegated it learns the outcome only from a settlement.";
             .await;
         match begun {
             Ok(result) if result["budget_refused"] == json!(true) || result["deadline_refused"] == json!(true) => {
-                // user budgets and goal deadlines stay authoritative (§8,
+                // user budgets and work deadlines stay authoritative (§8,
                 // A35): park with the reason
                 let reason = result["reason"].as_str().unwrap_or("request refused").to_string();
                 self.submit(
@@ -2486,7 +2486,7 @@ that delegated it learns the outcome only from a settlement.";
                 // A `finish` that stated no usable outcome arrives here as an
                 // ordinary intent (the kernel refuses to read an outcome it
                 // cannot verify). Answer it with the problem so the model can
-                // correct it in the same turn — never close the goal as a
+                // correct it in the same turn — never close the work as a
                 // failure the model never claimed, and never skip the required
                 // checks because the status went missing (§8, A16).
                 teamagents_core::kernel::FINISH_TOOL => {
@@ -2914,29 +2914,29 @@ that delegated it learns the outcome only from a settlement.";
                 ("cancel_task", params)
             }
             teamagents_core::kernel::VERIFY_TOOL => {
-                // D-393: run the target goal's user-pre-authorized checks as *this* instance and answer the model
-                // with the verdict. The round is registered under this instance id, which is exactly what a goal
+                // D-393: run the target work's user-pre-authorized checks as *this* instance and answer the model
+                // with the verdict. The round is registered under this instance id, which is exactly what a work
                 // requiring independent verification settles on — the producer's own round cannot.
-                let target = args["goal_id"]
+                let target = args["work_id"]
                     .as_str()
                     .filter(|id| !id.is_empty())
-                    .ok_or("verify_goal.goal_id required")?
+                    .ok_or("verify_work.work_id required")?
                     .to_string();
                 let (checks, _max_rounds) = self.required_checks(&target).await?;
                 if checks.is_empty() {
-                    return Err(format!("goal {target} carries no required checks: there is nothing to verify"));
+                    return Err(format!("work {target} carries no required checks: there is nothing to verify"));
                 }
                 let observed = self.observe_check_inputs(&checks);
                 let me = self.config.instance_id.clone();
                 let round = {
-                    let goal = target.clone();
+                    let work = target.clone();
                     self.storage
                         .call(move |control| {
                             control
                                 .connection()
                                 .query_row(
-                                    "SELECT COUNT(*) FROM model_requests WHERE goal_id = ?1 AND request_ref = 'required_check'",
-                                    [&goal],
+                                    "SELECT COUNT(*) FROM model_requests WHERE work_id = ?1 AND request_ref = 'required_check'",
+                                    [&work],
                                     |row| row.get::<_, i64>(0),
                                 )
                                 .map_err(|e| format!("verification rounds: {e}"))
@@ -2948,7 +2948,7 @@ that delegated it learns the outcome only from a settlement.";
                     self.command(
                         format!("verify-{operation_id}"),
                         "register_verification",
-                        json!({"goal_id": target, "instance_id": me, "round": round, "checks": observed}),
+                        json!({"work_id": target, "instance_id": me, "round": round, "checks": observed}),
                     ),
                     Identity::System,
                 )
@@ -2960,7 +2960,7 @@ that delegated it learns the outcome only from a settlement.";
                 self.execute_check_ops(&round_state.open).await?;
                 let (_, done) = self.check_round_state(&target, 0).await?;
                 let failures = done.as_ref().map(|round| self.check_verdict(&round.terminal)).unwrap_or_default();
-                let value = json!({"goal_id": target, "ok": failures.is_empty(), "failures": failures});
+                let value = json!({"work_id": target, "ok": failures.is_empty(), "failures": failures});
                 let receipt = self.receipt_skeleton(operation_id, intent, true, value.to_string());
                 let receipt = teamagents_core::kernel::ToolReceipt { ok: true, ..receipt };
                 self.complete_op(
@@ -2975,11 +2975,11 @@ that delegated it learns the outcome only from a settlement.";
             teamagents_core::kernel::DELEGATE_TOOL => {
                 let task_id =
                     args["task_id"].as_str().map(str::to_string).unwrap_or_else(|| format!("t-{operation_id}"));
-                // D-266: the task is charged to the delegating instance's **active goal** (the `delegate`
+                // D-266: the task is charged to the delegating instance's **active work** (the `delegate`
                 // description's own promise, §5.3). Until this was fixed the driver hard-coded the session's
-                // auto-named goal, so a goal the *user* opened and attached could never be charged and the
-                // delegation was refused with "goal goal-<session> is not active" — measured in the test below.
-                // Omitting the id lets the control plane resolve the requester's active goal, and refuse with
+                // auto-named work, so a work the *user* opened and attached could never be charged and the
+                // delegation was refused with "work work-<session> is not active" — measured in the test below.
+                // Omitting the id lets the control plane resolve the requester's active work, and refuse with
                 // its own message when there is none.
                 let mut params = json!({"task_id": task_id, "assignee": args["assignee"],
                                         "description": args["description"]});
@@ -3031,7 +3031,7 @@ that delegated it learns the outcome only from a settlement.";
                                         "profile": {"model": profile.model, "instructions": profile.instructions,
                                                     "tools": profile.tools, "options": profile.options,
                                                     "context_window": profile.context_window},
-                                        "workspace_ref": workspace_path}); // the spawner's active goal charges the child's task
+                                        "workspace_ref": workspace_path}); // the spawner's active work charges the child's task
                 if let Some(task) = args.get("task") {
                     params["task"] = task.clone();
                 }
@@ -3257,7 +3257,7 @@ that delegated it learns the outcome only from a settlement.";
     }
 
     /// The stored finish candidate — read from its decision, never re-taken
-    /// from the model (mirrors complete_goal's read). The decision rowid
+    /// from the model (mirrors complete_work's read). The decision rowid
     /// orders check rounds against the candidate that triggered them (§8).
     async fn completion_candidate(&self) -> Result<(i64, Json), String> {
         let instance = self.config.instance_id.clone();
@@ -3285,10 +3285,10 @@ that delegated it learns the outcome only from a settlement.";
     }
 
     async fn step_completion(&mut self, snapshot: &Snapshot) -> Result<(), String> {
-        if let Some(goal) = snapshot.active_goal.clone() {
-            if !self.goal_is_active(&goal).await? {
-                // the goal already reached a terminal status: this turn just
-                // ends, it never re-runs the checks or re-closes the goal
+        if let Some(work) = snapshot.active_work.clone() {
+            if !self.work_is_active(&work).await? {
+                // the work already reached a terminal status: this turn just
+                // ends, it never re-runs the checks or re-closes the work
                 self.submit(
                     self.command(
                         format!("close-completion-{}", uuid::Uuid::new_v4()),
@@ -3305,23 +3305,23 @@ that delegated it learns the outcome only from a settlement.";
             // only a claimed success is verified; a candidate that admits
             // undelivered work is never upgraded by passing checks (§8)
             if outcome == "success" {
-                let (checks, max_rounds) = self.required_checks(&goal).await?;
+                let (checks, max_rounds) = self.required_checks(&work).await?;
                 if !checks.is_empty() {
-                    return self.step_completion_checks(&goal, candidate_row, &checks, max_rounds).await;
+                    return self.step_completion_checks(&work, candidate_row, &checks, max_rounds).await;
                 }
             }
             self.submit(
                 self.command(
-                    format!("complete-goal-{goal}-{candidate_row}"),
-                    "complete_goal",
-                    json!({"goal_id": goal, "instance_id": self.config.instance_id}),
+                    format!("complete-work-{work}-{candidate_row}"),
+                    "complete_work",
+                    json!({"work_id": work, "instance_id": self.config.instance_id}),
                 ),
                 Identity::System,
             )
             .await?;
             return Ok(());
         }
-        // no owned goal: the finish settles the oldest open assigned task
+        // no owned work: the finish settles the oldest open assigned task
         // from the stored candidate (§5.3); an empty queue just closes
         match self.oldest_open_task().await? {
             Some(task_id) => {
@@ -3358,28 +3358,28 @@ that delegated it learns the outcome only from a settlement.";
         Ok(())
     }
 
-    /// Is this goal still the instance's live goal? A terminal goal must not
-    /// run another completion round (§8): a finish that arrives after the goal
+    /// Is this work still the instance's live work? A terminal work must not
+    /// run another completion round (§8): a finish that arrives after the work
     /// closed ends its turn instead of re-verifying anything.
-    async fn goal_is_active(&self, goal: &str) -> Result<bool, String> {
-        let goal = goal.to_string();
+    async fn work_is_active(&self, work: &str) -> Result<bool, String> {
+        let work = work.to_string();
         let status: Option<String> = self
             .storage
             .call(move |control| {
                 control
                     .connection()
-                    .query_row("SELECT status FROM goals WHERE id = ?1", [&goal], |row| row.get(0))
+                    .query_row("SELECT status FROM work_scopes WHERE id = ?1", [&work], |row| row.get(0))
                     .optional()
-                    .map_err(|e| format!("goal status: {e}"))
+                    .map_err(|e| format!("work status: {e}"))
             })
             .await??;
         Ok(status.as_deref() == Some("ACTIVE"))
     }
 
-    /// Goal-level required checks from the stored limits (§8): predefined by
-    /// the user or project bootstrap at create_goal; an empty list settles
+    /// Work-level required checks from the stored limits (§8): predefined by
+    /// the user or project bootstrap at create_work; an empty list settles
     /// completion on the candidate alone. Returns (checks, max_rounds).
-    /// D-418: tell the model, once per goal, which acceptance commands the goal must satisfy — at the *start* of
+    /// D-418: tell the model, once per work, which acceptance commands the work must satisfy — at the *start* of
     /// its turn, not when it claims to be done.
     ///
     /// The gate that checks them runs at the completion boundary (`repair_completion`), and three measurements say
@@ -3388,17 +3388,17 @@ that delegated it learns the outcome only from a settlement.";
     /// ended BLOCKED (D-386). The criterion was knowable from the first second — the user wrote it in their config —
     /// and the runtime was keeping it to itself until the end.
     async fn brief_checks(&mut self, snapshot: &Snapshot) -> Result<(), String> {
-        let Some(goal) = snapshot.active_goal.clone() else { return Ok(()) };
-        if snapshot.goal_checks.is_empty() {
+        let Some(work) = snapshot.active_work.clone() else { return Ok(()) };
+        if snapshot.work_checks.is_empty() {
             return Ok(());
         }
         // Best effort, like the wrap-up note: nothing was appended if this failed, so the next step tries again.
         let _ = self
             .submit(
                 self.command(
-                    format!("check-briefing-{goal}"),
-                    "goal_checks_briefing",
-                    json!({"goal_id": goal, "instance_id": self.config.instance_id}),
+                    format!("check-briefing-{work}"),
+                    "work_checks_briefing",
+                    json!({"work_id": work, "instance_id": self.config.instance_id}),
                 ),
                 Identity::System,
             )
@@ -3406,12 +3406,12 @@ that delegated it learns the outcome only from a settlement.";
         Ok(())
     }
 
-    /// D-410: tell the model once, while a live goal's deadline is close, how long is left. A deadline with no
+    /// D-410: tell the model once, while a live work's deadline is close, how long is left. A deadline with no
     /// note is a deadline the model only ever learns about when a request is *refused*, which is the wrong moment
     /// (the turn is over) — see D-397 and D-400 for what that cost.
     async fn warn_before_deadline(&mut self, snapshot: &Snapshot) -> Result<(), String> {
-        let Some(goal) = snapshot.active_goal.clone() else { return Ok(()) };
-        let Some(deadline) = snapshot.goal_deadline else { return Ok(()) };
+        let Some(work) = snapshot.active_work.clone() else { return Ok(()) };
+        let Some(deadline) = snapshot.work_deadline else { return Ok(()) };
         let remaining = deadline - teamagents_core::models::now();
         if remaining <= 0.0 || remaining > DEADLINE_WARNING_SECS {
             return Ok(());
@@ -3422,9 +3422,9 @@ that delegated it learns the outcome only from a settlement.";
         let _ = self
             .submit(
                 self.command(
-                    format!("deadline-warning-{goal}"),
+                    format!("deadline-warning-{work}"),
                     "deadline_warning",
-                    json!({"goal_id": goal, "instance_id": self.config.instance_id}),
+                    json!({"work_id": work, "instance_id": self.config.instance_id}),
                 ),
                 Identity::System,
             )
@@ -3432,28 +3432,28 @@ that delegated it learns the outcome only from a settlement.";
         Ok(())
     }
 
-    /// D-393: does this goal require a round that another instance registered?
-    async fn requires_independent(&self, goal: &str) -> Result<bool, String> {
-        let goal = goal.to_string();
+    /// D-393: does this work require a round that another instance registered?
+    async fn requires_independent(&self, work: &str) -> Result<bool, String> {
+        let work = work.to_string();
         let stored: Option<String> = self
             .storage
             .call(move |control| {
                 control
                     .connection()
-                    .query_row("SELECT limits_json FROM goals WHERE id = ?1", [&goal], |row| row.get(0))
+                    .query_row("SELECT limits_json FROM work_scopes WHERE id = ?1", [&work], |row| row.get(0))
                     .optional()
-                    .map_err(|e| format!("goal limits: {e}"))
+                    .map_err(|e| format!("work limits: {e}"))
             })
             .await??;
         let limits: Json = stored.as_deref().and_then(|l| serde_json::from_str(l).ok()).unwrap_or(json!({}));
         Ok(limits["independent_verification"] == json!(true))
     }
 
-    /// D-393: is there a **green** check round for this goal registered by an instance other than this one? The
+    /// D-393: is there a **green** check round for this work registered by an instance other than this one? The
     /// verdict is read from that round's own operations, never from a claim about them: every terminal receipt
     /// must be a success, and an open operation means the round is still in flight.
-    async fn verifier_round_is_green(&self, goal: &str) -> Result<bool, String> {
-        let goal = goal.to_string();
+    async fn verifier_round_is_green(&self, work: &str) -> Result<bool, String> {
+        let work = work.to_string();
         let mine = self.config.instance_id.clone();
         self.storage
             .call(move |control| {
@@ -3461,9 +3461,9 @@ that delegated it learns the outcome only from a settlement.";
                 let request: Option<String> = conn
                     .query_row(
                         "SELECT r.request_id FROM model_requests r
-                         WHERE r.goal_id = ?1 AND r.request_ref = 'required_check' AND r.instance_id <> ?2
+                         WHERE r.work_id = ?1 AND r.request_ref = 'required_check' AND r.instance_id <> ?2
                          ORDER BY r.rowid DESC LIMIT 1",
-                        rusqlite::params![goal, mine],
+                        rusqlite::params![work, mine],
                         |row| row.get(0),
                     )
                     .optional()
@@ -3493,19 +3493,19 @@ that delegated it learns the outcome only from a settlement.";
             .await?
     }
 
-    /// Goal-level required checks from the stored limits (§8): predefined by
-    /// the user or project bootstrap at create_goal; an empty list settles
+    /// Work-level required checks from the stored limits (§8): predefined by
+    /// the user or project bootstrap at create_work; an empty list settles
     /// completion on the candidate alone. Returns (checks, max_rounds).
-    async fn required_checks(&self, goal: &str) -> Result<(Vec<Json>, i64), String> {
-        let goal = goal.to_string();
+    async fn required_checks(&self, work: &str) -> Result<(Vec<Json>, i64), String> {
+        let work = work.to_string();
         let stored: Option<String> = self
             .storage
             .call(move |control| {
                 control
                     .connection()
-                    .query_row("SELECT limits_json FROM goals WHERE id = ?1", [&goal], |row| row.get(0))
+                    .query_row("SELECT limits_json FROM work_scopes WHERE id = ?1", [&work], |row| row.get(0))
                     .optional()
-                    .map_err(|e| format!("goal limits: {e}"))
+                    .map_err(|e| format!("work limits: {e}"))
             })
             .await??;
         let limits: Json = stored.as_deref().and_then(|l| serde_json::from_str(l).ok()).unwrap_or(json!({}));
@@ -3514,18 +3514,18 @@ that delegated it learns the outcome only from a settlement.";
         Ok((checks, max_rounds))
     }
 
-    /// The latest check round registered against the goal that is newer than
-    /// the triggering candidate, plus how many rounds the goal has used.
+    /// The latest check round registered against the work that is newer than
+    /// the triggering candidate, plus how many rounds the work has used.
     /// Rounds from before the candidate belong to an older finish.
-    async fn check_round_state(&self, goal: &str, candidate_row: i64) -> Result<(i64, Option<CheckRound>), String> {
-        let goal = goal.to_string();
+    async fn check_round_state(&self, work: &str, candidate_row: i64) -> Result<(i64, Option<CheckRound>), String> {
+        let work = work.to_string();
         self.storage
             .call(move |control| {
                 let conn = control.connection();
                 let rounds: i64 = conn
                     .query_row(
-                        "SELECT COUNT(*) FROM model_requests WHERE request_ref = 'required_check' AND goal_id = ?1",
-                        [&goal],
+                        "SELECT COUNT(*) FROM model_requests WHERE request_ref = 'required_check' AND work_id = ?1",
+                        [&work],
                         |row| row.get(0),
                     )
                     .map_err(|e| format!("check rounds: {e}"))?;
@@ -3533,9 +3533,9 @@ that delegated it learns the outcome only from a settlement.";
                     .query_row(
                         "SELECT d.decision_id, d.rowid FROM decisions d
                          JOIN model_requests r ON d.request_id = r.request_id
-                         WHERE r.request_ref = 'required_check' AND r.goal_id = ?1
+                         WHERE r.request_ref = 'required_check' AND r.work_id = ?1
                          ORDER BY d.rowid DESC LIMIT 1",
-                        [&goal],
+                        [&work],
                         |row| Ok((row.get(0)?, row.get(1)?)),
                     )
                     .optional()
@@ -3584,37 +3584,37 @@ that delegated it learns the outcome only from a settlement.";
     /// persisted, so a crash mid-round resumes at exactly this machine.
     async fn step_completion_checks(
         &mut self,
-        goal: &str,
+        work: &str,
         candidate_row: i64,
         checks: &[Json],
         max_rounds: i64,
     ) -> Result<(), String> {
-        let (rounds, current) = self.check_round_state(goal, candidate_row).await?;
+        let (rounds, current) = self.check_round_state(work, candidate_row).await?;
         if let Some(round) = current {
             if !round.open.is_empty() {
                 return self.execute_check_ops(&round.open).await;
             }
             let mut failures = self.check_verdict(&round.terminal);
-            // D-393: the checks may pass and the goal still not be settleable — when it *requires* independent
+            // D-393: the checks may pass and the work still not be settleable — when it *requires* independent
             // verification and the round that passed is this instance's own. The synthetic failure rides the
             // ordinary bounded repair path, so the model is told exactly what is missing and what resolves it
-            // (another instance calling `verify_goal`), and an unwilling or unable producer parks BLOCKED.
+            // (another instance calling `verify_work`), and an unwilling or unable producer parks BLOCKED.
             if failures.is_empty()
-                && self.requires_independent(goal).await?
-                && !self.verifier_round_is_green(goal).await?
+                && self.requires_independent(work).await?
+                && !self.verifier_round_is_green(work).await?
             {
                 failures.push(json!({
                     "check_id": "independent-verification",
                     "class": "not_independent",
-                    "reason": format!("goal {goal} requires independent verification and {} produced this claim;                                        have another instance run `verify_goal {goal}`", self.config.instance_id),
+                    "reason": format!("work {work} requires independent verification and {} produced this claim;                                        have another instance run `verify_work {work}`", self.config.instance_id),
                 }));
             }
             if failures.is_empty() {
                 self.submit(
                     self.command(
-                        format!("complete-goal-{goal}-{candidate_row}"),
-                        "complete_goal",
-                        json!({"goal_id": goal, "instance_id": self.config.instance_id}),
+                        format!("complete-work-{work}-{candidate_row}"),
+                        "complete_work",
+                        json!({"work_id": work, "instance_id": self.config.instance_id}),
                     ),
                     Identity::System,
                 )
@@ -3635,9 +3635,9 @@ that delegated it learns the outcome only from a settlement.";
                     .collect();
                 self.submit(
                     self.command(
-                        format!("block-goal-{goal}"),
-                        "block_goal",
-                        json!({"goal_id": goal, "instance_id": self.config.instance_id,
+                        format!("block-work-{work}"),
+                        "block_work",
+                        json!({"work_id": work, "instance_id": self.config.instance_id,
                                "reason": format!("required checks failed ({}) after {rounds} round(s)", summary.join(", "))}),
                     ),
                     Identity::System,
@@ -3647,9 +3647,9 @@ that delegated it learns the outcome only from a settlement.";
             }
             self.submit(
                 self.command(
-                    format!("repair-completion-{goal}-{rounds}"),
+                    format!("repair-completion-{work}-{rounds}"),
                     "repair_completion",
-                    json!({"instance_id": self.config.instance_id, "goal_id": goal, "round": rounds,
+                    json!({"instance_id": self.config.instance_id, "work_id": work, "round": rounds,
                            "failures": failures}),
                 ),
                 Identity::System,
@@ -3660,9 +3660,9 @@ that delegated it learns the outcome only from a settlement.";
         if rounds >= max_rounds {
             self.submit(
                 self.command(
-                    format!("block-goal-{goal}"),
-                    "block_goal",
-                    json!({"goal_id": goal, "instance_id": self.config.instance_id,
+                    format!("block-work-{work}"),
+                    "block_work",
+                    json!({"work_id": work, "instance_id": self.config.instance_id,
                            "reason": format!("required checks did not pass within {max_rounds} rounds")}),
                 ),
                 Identity::System,
@@ -3673,9 +3673,9 @@ that delegated it learns the outcome only from a settlement.";
         let observed = self.observe_check_inputs(checks);
         self.submit(
             self.command(
-                format!("check-round-{goal}-{}", rounds + 1),
+                format!("check-round-{work}-{}", rounds + 1),
                 "register_check_runs",
-                json!({"goal_id": goal, "instance_id": self.config.instance_id,
+                json!({"work_id": work, "instance_id": self.config.instance_id,
                        "round": rounds + 1, "checks": observed}),
             ),
             Identity::System,
@@ -3761,7 +3761,7 @@ that delegated it learns the outcome only from a settlement.";
     /// Hash each check's declared inputs at observation time (§8): the
     /// recorded hashes bind the check results to input versions and are
     /// re-verified before completion. Unsafe paths never arrive here — the
-    /// create_goal gate rejects absolute paths and `..` escapes.
+    /// create_work gate rejects absolute paths and `..` escapes.
     fn observe_check_inputs(&self, checks: &[Json]) -> Vec<Json> {
         checks
             .iter()

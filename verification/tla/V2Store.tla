@@ -27,7 +27,7 @@
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets
 
-CONSTANTS OurTables,      \* the tables SCHEMA creates, e.g. {"meta","goals","events"}
+CONSTANTS OurTables,      \* the tables SCHEMA creates, e.g. {"meta","work_scopes","events"}
           ForeignTables,  \* tables of some other program, e.g. {"users"}
           IgnoreForeign,  \* counterfactual: skip the foreign-table guard (pre-D-87)
           RefusalWrites,  \* D-462 counterfactual: a refused open writes to the file anyway

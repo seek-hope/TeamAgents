@@ -18,8 +18,8 @@ fn read_only(name: &str) -> bool {
 }
 
 fn retired(tx: &Connection, request: &str) -> Result<bool, String> {
-    let (instance,epoch,goal,current_epoch,lifecycle,context,request_ref):(String,i64,Option<String>,i64,String,Option<String>,String)=tx.query_row(
-        "SELECT r.instance_id,r.epoch,r.goal_id,i.context_epoch,i.lifecycle,w.context_json,r.request_ref FROM model_requests r
+    let (instance,epoch,work,current_epoch,lifecycle,context,request_ref):(String,i64,Option<String>,i64,String,Option<String>,String)=tx.query_row(
+        "SELECT r.instance_id,r.epoch,r.work_id,i.context_epoch,i.lifecycle,w.context_json,r.request_ref FROM model_requests r
         JOIN instances i ON i.id=r.instance_id LEFT JOIN work_requests w ON w.request_id=r.request_id WHERE r.request_id=?1",
         [request],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).map_err(|e|format!("execution scope: {e}"))?;
     if epoch != current_epoch || lifecycle != "ACTIVE" {
@@ -27,10 +27,12 @@ fn retired(tx: &Connection, request: &str) -> Result<bool, String> {
     }
     if request_ref == "required_check" {
         return tx
-            .query_row("SELECT NOT EXISTS(SELECT 1 FROM goals WHERE id=?1 AND status='ACTIVE')", [goal], |r| r.get(0))
+            .query_row("SELECT NOT EXISTS(SELECT 1 FROM work_scopes WHERE id=?1 AND status='ACTIVE')", [work], |r| {
+                r.get(0)
+            })
             .map_err(|e| format!("check execution scope: {e}"));
     }
-    if goal != budget_goal(tx, &instance)? {
+    if work != budget_work(tx, &instance)? {
         return Ok(true);
     }
     if let Some(context) = context {
@@ -52,8 +54,8 @@ fn retired(tx: &Connection, request: &str) -> Result<bool, String> {
     }
     // ponytail: legacy requests have no exact task attribution. A failed/cancelled
     // assignment is conservatively ambiguous until its tracked execution stops.
-    tx.query_row("SELECT EXISTS(SELECT 1 FROM tasks WHERE assignee=?1 AND goal_id=?2 AND status IN ('FAILED','BLOCKED','CANCELLED'))",
-        rusqlite::params![instance,goal],|r|r.get(0)).map_err(|e|format!("legacy execution scope: {e}"))
+    tx.query_row("SELECT EXISTS(SELECT 1 FROM tasks WHERE assignee=?1 AND work_id=?2 AND status IN ('FAILED','BLOCKED','CANCELLED'))",
+        rusqlite::params![instance,work],|r|r.get(0)).map_err(|e|format!("legacy execution scope: {e}"))
 }
 
 pub(in crate::v2::control) fn dispatch_scope(tx: &Connection, operation: &str) -> Result<(), String> {
@@ -78,13 +80,13 @@ pub(in crate::v2::control) fn candidates(tx: &Connection, instance: &str) -> Res
     let mut stmt=tx.prepare("SELECT o.operation_id,r.request_id,r.instance_id,i.workspace_ref,o.status,json_extract(o.intent_json,'$.name')
         FROM operations o JOIN decisions d ON d.decision_id=o.decision_id JOIN model_requests r ON r.request_id=d.request_id
         JOIN instances i ON i.id=r.instance_id LEFT JOIN work_requests w ON w.request_id=r.request_id
-        LEFT JOIN goals g ON g.id=r.goal_id LEFT JOIN tasks t ON t.id=json_extract(w.context_json,'$.task_id')
+        LEFT JOIN work_scopes g ON g.id=r.work_id LEFT JOIN tasks t ON t.id=json_extract(w.context_json,'$.task_id')
         WHERE o.quiescence_json IS NULL
         AND (i.lifecycle<>'ACTIVE' OR r.epoch<>i.context_epoch OR g.status<>'ACTIVE'
             OR t.status NOT IN ('RUNNING','PENDING')
-            OR (COALESCE(json_extract(w.context_json,'$.task_id'),'')='' AND i.active_goal_id IS NOT r.goal_id)
+            OR (COALESCE(json_extract(w.context_json,'$.task_id'),'')='' AND i.active_work_id IS NOT r.work_id)
             OR (w.request_id IS NULL AND EXISTS(SELECT 1 FROM tasks legacy WHERE legacy.assignee=r.instance_id
-                AND legacy.goal_id=r.goal_id AND legacy.status IN ('FAILED','BLOCKED','CANCELLED'))))
+                AND legacy.work_id=r.work_id AND legacy.status IN ('FAILED','BLOCKED','CANCELLED'))))
         AND o.status NOT IN ('PREPARED','CANCELLED_BEFORE_START')
         AND NOT (o.status IN ('SUCCEEDED','FAILED','CANCELLED') AND COALESCE(json_extract(o.receipt_json,'$.started'),1)=0)
         AND ((json_extract(o.intent_json,'$.name')='shell' AND COALESCE(t.status,g.status,'SUCCEEDED')<>'SUCCEEDED')
@@ -192,7 +194,7 @@ fn stopped(tx: &Connection, session: &str, params: &Json, identity: &Identity) -
         for (instance, context) in waiters {
             let old: Json = serde_json::from_str(&context).map_err(|e| format!("workspace waiter scope: {e}"))?;
             let current = view(tx, &instance)?;
-            if current["goal_id"] == old["goal_id"]
+            if current["work_id"] == old["work_id"]
                 && current["epoch"] == old["epoch"]
                 && current["task_id"] == old["task_id"]
             {

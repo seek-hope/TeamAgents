@@ -21,9 +21,9 @@ pub const SPAWN_TOOL: &str = "spawn";
 /// D-265: the requester's own exit from a task it delegated (§5.3 says "the requester or the user closes
 /// it"); the control plane re-checks that the caller *is* the requester at dispatch.
 pub const CANCEL_TOOL: &str = "cancel_task";
-/// D-393: the independent-verification tool. An instance runs *another* goal's user-pre-authorized checks and the
-/// round is recorded under its own instance, which is what a goal requiring independent verification settles on.
-pub const VERIFY_TOOL: &str = "verify_goal";
+/// D-393: the independent-verification tool. An instance runs *another* work's user-pre-authorized checks and the
+/// round is recorded under its own instance, which is what a work requiring independent verification settles on.
+pub const VERIFY_TOOL: &str = "verify_work";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryKind {
@@ -32,7 +32,7 @@ pub enum EntryKind {
     Assistant,
     ToolResult,
     Note,
-    /// The runtime's own closing word for a turn: the settlement note a goal
+    /// The runtime's own closing word for a turn: the settlement note a work
     /// close/block or a turn close appends so the turn has an ending the model
     /// did not have to produce (§8, D-71). It rides as user-role text like a
     /// note, but unlike one it is *not* awaiting an answer: the last word is
@@ -226,7 +226,7 @@ pub enum KernelOutput {
     /// Execute these tool intents (decision + operations registered by the
     /// runtime in one transaction with the response import).
     ToolIntents(Vec<ToolIntent>),
-    /// Plain reply: does NOT settle any task or goal (§3).
+    /// Plain reply: does NOT settle any task or work (§3).
     Reply(String),
     /// Single finish call: triggers the completion checks (§8).
     Completion(CompletionCandidate),
@@ -323,7 +323,7 @@ pub fn builtin_tool_schemas() -> Vec<Json> {
             "type": "function",
             "function": {
                 "name": FINISH_TOOL,
-                "description": "Finish the current goal exactly once. Must be the only tool call in this response. Report the real outcome; a summary that admits undelivered work must not claim success.",
+                "description": "Finish the current work exactly once. Must be the only tool call in this response. Report the real outcome; a summary that admits undelivered work must not claim success.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -397,13 +397,13 @@ pub fn collaboration_tool_schemas(actions: &[&str]) -> Vec<Json> {
                 "type": "function",
                 "function": {
                     "name": VERIFY_TOOL,
-                    "description": "Verify another instance's claim: run the target goal's user-pre-authorized acceptance checks yourself and record the result under your own instance. Use it when you are asked to check someone else's work. A goal that requires independent verification cannot settle on its producer's own round, so this is the only way such a goal can settle — report the verdict you get back, including its failures.",
+                    "description": "Verify another instance's claim: run the target work's user-pre-authorized acceptance checks yourself and record the result under your own instance. Use it when you are asked to check someone else's work. A work that requires independent verification cannot settle on its producer's own round, so this is the only way such a work can settle — report the verdict you get back, including its failures.",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "goal_id": {"type": "string", "description": "The goal whose checks you are running."}
+                            "work_id": {"type": "string", "description": "The work whose checks you are running."}
                         },
-                        "required": ["goal_id"]
+                        "required": ["work_id"]
                     }
                 }
             }),
@@ -411,7 +411,7 @@ pub fn collaboration_tool_schemas(actions: &[&str]) -> Vec<Json> {
                 "type": "function",
                 "function": {
                     "name": DELEGATE_TOOL,
-                    "description": "Delegate a task to another instance with a narrow return path: the assignee can settle exactly this task back to you. Costs belong to your active admitted goal; terminal goals never reopen. If there is no active goal, follow the current work admission or recovery state before delegating. Wait on {kind:'task',task_id:'<id>'} with timer_seconds as a fallback: a task result is not a chat message. In enrolled work, member attention can supersede the wait without settling the task. Inspect task state and saved evidence after attention or a timeout. Cancellation does not prove the old command stopped; shared-workspace takeover needs recorded stop evidence, or use an independent workspace and integrate explicitly. Never report unverified work as success.",
+                    "description": "Delegate a task to another instance with a narrow return path: the assignee can settle exactly this task back to you. Costs belong to your active admitted work; terminal work_scopes never reopen. If there is no active work, follow the current work admission or recovery state before delegating. Wait on {kind:'task',task_id:'<id>'} with timer_seconds as a fallback: a task result is not a chat message. In enrolled work, member attention can supersede the wait without settling the task. Inspect task state and saved evidence after attention or a timeout. Cancellation does not prove the old command stopped; shared-workspace takeover needs recorded stop evidence, or use an independent workspace and integrate explicitly. Never report unverified work as success.",
                     "parameters": {
                         "type": "object",
                         "properties": {

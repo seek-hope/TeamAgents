@@ -12,7 +12,7 @@ catalogue, generated from the two dispatch points in the code:
 
 and one more table from the same file: **literal JSON object fields in the daemon and diagnostics**, with the function
 or read arm that builds it. The arrays a client reads (`instances[]`, `tasks[]`, `approvals[]`, `grants[]`) and a
-checkpoint's `goal` object are rows of the daemon's own views; the guide's §1.2 calls them part of the scripting
+checkpoint's `work` object are rows of the daemon's own views; the guide's §1.2 calls them part of the scripting
 contract and points *here* for their fields, and until this table existed a row field could be added to the
 protocol without any document changing — `reason` on the instance rows arrived exactly that way (D-165).
 
@@ -63,7 +63,7 @@ def enclosing(text: str, position: int) -> str:
 def literal_fields(text: str):
     """[(where, [fields])] for every `json!({ … })` in the protocol file, in source order.
 
-    The keys are the literal's own top level; a nested `json!` (the goal object inside a snapshot) is a literal
+    The keys are the literal's own top level; a nested `json!` (the work object inside a snapshot) is a literal
     of its own and is picked up by the same scan, so no key is counted twice.
     """
     out = []
@@ -175,7 +175,7 @@ def main(argv):
         assert "observations" in rows["observe_operation_stops"][1]
         assert rows["observe_operation_stops"][2]
         assert not rows["capability_requests"][2], "identity from the next arm must not leak"
-        assert not rows["complete_goal"][2], "the immediate call does not receive identity"
+        assert not rows["complete_work"][2], "the immediate call does not receive identity"
         print("protocol catalogue self-check: qualified handlers and per-arm identity passed")
         return 0
     generated = tables()

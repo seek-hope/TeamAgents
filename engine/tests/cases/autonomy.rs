@@ -24,7 +24,7 @@ fn work_checkpoint(id: &str, value: Json) -> Json {
 
 fn autonomous_config<P: Provider + 'static>(root: &Root, provider: P) -> DriverConfig<P> {
     let mut config = root.config_with(provider);
-    config.goal_limits = json!({"autonomous_work":true});
+    config.work_limits = json!({"autonomous_work":true});
     config
 }
 
@@ -120,7 +120,7 @@ async fn autonomy_shared_takeover_waits_for_real_stop_and_preserves_unknown_rece
     assert!(process.0.try_wait().unwrap().is_none(), "observation cannot stop the original process");
     process.0.kill().unwrap();
     process.0.wait().unwrap();
-    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
     assert_eq!(std::fs::read_to_string(root.dir.join("ws/takeover.txt")).unwrap(), "integrated");
     assert_eq!(recorded(&seen).len(), 4);
     let preserved = handle
@@ -168,7 +168,7 @@ async fn autonomy_continues_after_prose_and_verifies_the_written_result() {
     ]);
     let handle = start(autonomous_config(&root, provider)).await.unwrap();
     handle.input("Write the result and verify it.").await.unwrap();
-    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
     assert_eq!(std::fs::read_to_string(root.dir.join("ws/result.txt")).unwrap(), "verified");
     let requests = recorded(&seen);
     assert_eq!(requests.len(), 5);
@@ -203,7 +203,7 @@ async fn autonomy_question_survives_restart_without_another_confirmation() {
         .unwrap();
     assert_eq!(saved["state"], "NEEDS_INPUT");
     handle.input("Use the current stable API.").await.unwrap();
-    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
     let requests = recorded(&resumed);
     assert_eq!(requests.len(), 1, "the answer must not trigger another clarification ritual");
     assert!(request_text(&requests[0]).contains("Keep the public API compatible"));
@@ -233,7 +233,7 @@ async fn autonomy_recovery_budget_survives_an_inflight_crash() {
         .unwrap();
     assert_eq!(state["repair_turns"], 3);
     assert_eq!(state["state"], "BLOCKED");
-    assert_eq!(handle.snapshot().await.unwrap()["goal"]["status"], "ACTIVE");
+    assert_eq!(handle.snapshot().await.unwrap()["work"]["status"], "ACTIVE");
     handle.shutdown().await.unwrap();
 }
 
@@ -252,7 +252,7 @@ async fn autonomy_repeated_actions_stop_without_inventing_progress() {
     wait_event(&handle, "work_blocked", 15000).await;
     assert_eq!(recorded(&seen).len(), 5, "three equal observations plus two bounded recovery attempts");
     let events = handle.events(0).await.unwrap();
-    assert!(!events.iter().any(|e| e["kind"] == "goal_completed"));
+    assert!(!events.iter().any(|e| e["kind"] == "work_completed"));
     handle.shutdown().await.unwrap();
 }
 
@@ -272,7 +272,7 @@ async fn autonomy_wait_sleeps_until_its_registered_event_then_continues() {
     handle.input("Wait for the peer or the deadline.").await.unwrap();
     wait_phase(&handle, "WAITING", 5000).await;
     assert_eq!(recorded(&seen).len(), 1, "waiting must not poll the model");
-    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
     assert_eq!(recorded(&seen).len(), 2);
     handle.shutdown().await.unwrap();
 }
@@ -299,7 +299,7 @@ async fn autonomy_compaction_retains_user_references_and_decisions() {
     handle.input(&bulk).await.unwrap();
     wait_event(&handle, "work_checkpoint", 5000).await;
     handle.input("Use stable.").await.unwrap();
-    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
     let requests = recorded(&seen);
     assert_eq!(requests.len(), 3, "one compaction plus the question and final answer");
     assert_eq!(requests[1]["tools"], 0);
@@ -310,16 +310,16 @@ async fn autonomy_compaction_retains_user_references_and_decisions() {
     assert!(final_context.contains("Use stable."));
     assert!(!final_context.contains(&bulk));
     assert_eq!(
-        handle.snapshot().await.unwrap()["goal"]["known_usage"]["total"],
+        handle.snapshot().await.unwrap()["work"]["known_usage"]["total"],
         15,
-        "compaction remains charged to the original goal"
+        "compaction remains charged to the original work"
     );
     handle.shutdown().await.unwrap();
 }
 
 #[tokio::test]
-async fn autonomy_required_checks_still_repair_before_goal_completion() {
-    if !autonomy_runner_child("autonomy_required_checks_still_repair_before_goal_completion") {
+async fn autonomy_required_checks_still_repair_before_work_completion() {
+    if !autonomy_runner_child("autonomy_required_checks_still_repair_before_work_completion") {
         eprintln!("Completed in the isolated child runner; its exit and test count were checked.");
         return;
     }
@@ -331,10 +331,10 @@ async fn autonomy_required_checks_still_repair_before_goal_completion() {
         Step::Message(finish_call("Check repaired")),
     ]);
     let mut config = autonomous_config(&root, provider);
-    config.goal_limits["required_checks"] = json!([{"id":"result","command":"test -f required.txt"}]);
+    config.work_limits["required_checks"] = json!([{"id":"result","command":"test -f required.txt"}]);
     let handle = start(config).await.unwrap();
     handle.input("Create required.txt and pass its check.").await.unwrap();
-    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
     assert!(root.dir.join("ws/required.txt").exists());
     handle.shutdown().await.unwrap();
 }

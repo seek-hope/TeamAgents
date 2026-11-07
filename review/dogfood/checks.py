@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""A real-model check that a failing acceptance check really blocks a goal (A16).
+"""A real-model check that a failing acceptance check really blocks a work (A16).
 
 One session, one configured `[[checks]]` entry that cannot pass (`exit 1`: a builtin, so no workspace content
 changes its status — the file test this probe used to carry could be satisfied by writing the file the check
 names, and a model did exactly that, D-146), and a task a model can actually complete (write a file). The
 runtime runs the check at the completion boundary: the model's `finish` claims success, the check fails, the
-work goes back for a bounded repair round, and the goal must end **BLOCKED with the failing check id** instead
+work goes back for a bounded repair round, and the work must end **BLOCKED with the failing check id** instead
 of reporting success — which is the whole point of the completion gate (§8/A16).
 
 The artifact decides the other half: the file the model was asked to write must really exist, so the run shows
-"the work happened, the goal was not reported done" rather than "nothing happened".
+"the work happened, the work was not reported done" rather than "nothing happened".
 
     python3 review/dogfood/checks.py                  # fresh /tmp state root, DeepSeek
     python3 review/dogfood/checks.py --provider kimi  # the same scenario over `responses`
@@ -63,7 +63,7 @@ context_window = 262144
 
 # `exit 1` is a bash builtin: its exit status is the same whatever the workspace holds, so no action the model
 # can take makes this gate pass. A workspace-relative file test is *not* such a command — the model wrote the
-# file it named, on purpose, and the goal settled SUCCEEDED (D-146).
+# file it named, on purpose, and the work settled SUCCEEDED (D-146).
 CHECK = """[[checks]]
 id = "impossible"
 command = "exit 1"
@@ -86,11 +86,11 @@ Then report the task as finished."""
 
 def session_facts(state_root: pathlib.Path) -> dict:
     db = sqlite3.connect(f"file:{state_root}/session.sqlite?mode=ro", uri=True)
-    goals = list(db.execute("SELECT id, status, limits_json FROM goals ORDER BY rowid"))
+    work_scopes = list(db.execute("SELECT id, status, limits_json FROM work_scopes ORDER BY rowid"))
     events = [(row[0], json.loads(row[1])) for row in db.execute("SELECT kind, payload_json FROM events ORDER BY sequence")]
     requests = list(db.execute("SELECT COUNT(*) FROM model_requests"))[0][0]
     entries = [row[0] for row in db.execute("SELECT message_json FROM context_entries ORDER BY idx")]
-    return {"goals": goals, "events": events, "requests": requests, "entries": entries}
+    return {"work_scopes": work_scopes, "events": events, "requests": requests, "entries": entries}
 
 
 
@@ -141,14 +141,14 @@ def main() -> int:
     elapsed = round(time.time() - started, 1)
     report = json.loads(run.stdout) if run.stdout.strip().startswith("{") else {}
     print(f"provider={args.provider} exec exit={run.returncode} elapsed={elapsed}s end={report.get('end')} "
-          f"goal={report.get('goal_status')}")
+          f"work={report.get('work_status')}")
     if run.stderr.strip():
         print("stderr:", run.stderr.strip()[:300])
 
     facts = session_facts(state_root)
-    print(f"model requests: {facts['requests']} | goals: {facts['goals']}")
+    print(f"model requests: {facts['requests']} | work_scopes: {facts['work_scopes']}")
     kinds = [kind for kind, _ in facts["events"]]
-    for kind in ("check_round_registered", "completion_repair", "goal_completed"):
+    for kind in ("check_round_registered", "completion_repair", "work_completed"):
         print(f"  {kind}: {kinds.count(kind)}")
 
     # 1. the work really happened (otherwise this proves nothing about the gate)
@@ -158,29 +158,29 @@ def main() -> int:
     else:
         failures.append(f"hello.txt is missing or wrong: {hello.read_text() if hello.is_file() else '(absent)'!r}")
 
-    # 2. no success was reported: the check gated the goal
+    # 2. no success was reported: the check gated the work
     if report.get("end") != "failed":
         failures.append(f"a run whose required check cannot pass must end failed, not {report.get('end')!r}")
     if run.returncode == 0:
         failures.append("the headless run exited 0 although its configured check never passed")
-    statuses = {goal[1] for goal in facts["goals"]}
+    statuses = {work[1] for work in facts["work_scopes"]}
     if "SUCCEEDED" in statuses:
-        failures.append(f"a goal was reported SUCCEEDED although its check cannot pass: {facts['goals']}")
+        failures.append(f"a work was reported SUCCEEDED although its check cannot pass: {facts['work_scopes']}")
     if "BLOCKED" not in statuses:
-        failures.append(f"the goal did not end BLOCKED: {facts['goals']}")
+        failures.append(f"the work did not end BLOCKED: {facts['work_scopes']}")
 
     # 3. the settlement is BLOCKED, and the failing check is named in the ledger
-    settled = [payload for kind, payload in facts["events"] if kind == "goal_completed"]
+    settled = [payload for kind, payload in facts["events"] if kind == "work_completed"]
     if not settled or settled[-1].get("status") != "BLOCKED":
-        failures.append(f"the goal did not settle BLOCKED: {settled}")
+        failures.append(f"the work did not settle BLOCKED: {settled}")
     else:
-        # Who decided the block is part of the evidence, not a pass/fail: the runtime blocks a goal whose
+        # Who decided the block is part of the evidence, not a pass/fail: the runtime blocks a work whose
         # checks exhaust their repair rounds (`blocked_by: runtime`), and a model that reads a gate no
         # workspace state can satisfy may concede on its own first — the gate refused its success claim in
         # round 1 either way (D-146).
         rounds = kinds.count("check_round_registered")
         decider = settled[-1].get("blocked_by") or "the model's own blocked finish"
-        print(f"the goal settled BLOCKED: {settled[-1].get('status')} after {rounds} check round(s), "
+        print(f"the work settled BLOCKED: {settled[-1].get('status')} after {rounds} check round(s), "
               f"settled by {decider}")
     repairs = [payload for kind, payload in facts["events"] if kind == "completion_repair"]
     named = [failure for payload in repairs for failure in payload.get("failures", [])]

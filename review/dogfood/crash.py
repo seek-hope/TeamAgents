@@ -153,7 +153,7 @@ def main() -> int:
 
     # 3. start the session again: the supervisor recovers the instance and consumes the receipt
     done, report = run(RESUME, args.timeout)
-    print(f"  resumed run exit={done.returncode} end={report.get('end')} goal={report.get('goal_status')} "
+    print(f"  resumed run exit={done.returncode} end={report.get('end')} work={report.get('work_status')} "
           f"input_queued={report.get('input_queued')} reply={str(report.get('reply'))[:60]!r}")
     if done.stderr.strip().startswith("exec:"):
         print("  resume stderr:", done.stderr.strip()[:160])

@@ -115,7 +115,7 @@ def main() -> int:
 
     # 1. the work is done and a passing check decides exit 0
     first, report = run_exec(state_root, workspace, env, FIRST, ["test -f hello.txt"])
-    print(f"1. passing check: exit={first.returncode} end={report.get('end')} goal={report.get('goal_status')}")
+    print(f"1. passing check: exit={first.returncode} end={report.get('end')} work={report.get('work_status')}")
     if first.returncode != 0:
         failures.append(f"a turn whose acceptance check passes must exit 0, got {first.returncode}")
     hello = workspace / "hello.txt"

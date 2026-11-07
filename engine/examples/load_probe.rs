@@ -167,7 +167,7 @@ fn main() -> Fallible<()> {
         cmd("boot-instance", "create_instance", json!({"id": "i-main", "workspace_ref": dir.to_string_lossy()})),
         Identity::User,
     )?;
-    ctl.submit(cmd("boot-goal", "create_goal", json!({"id": "goal-s-a32", "instance_id": "i-main"})), Identity::User)?;
+    ctl.submit(cmd("boot-work", "create_work", json!({"id": "work-s-a32", "instance_id": "i-main"})), Identity::User)?;
     // a second, small instance: reading it must never touch the big history
     ctl.submit(
         cmd("peer-instance", "create_instance", json!({"id": "i-peer", "workspace_ref": dir.to_string_lossy()})),

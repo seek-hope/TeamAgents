@@ -24,10 +24,10 @@ usage: teamagents [--cwd DIR] [--state-root PATH] [--session ID] [--model KEY] [
   teamagents authority approve --request ID     approve one capability request (user only)\n\
   teamagents authority deny --request ID        deny one capability request (user only)\n\
   teamagents approvals [list] [--json]          the approvals a session is waiting on\n\
-  teamagents goals [list] [--json]              the goals the session carries (D-267)\n\
-  teamagents goals open --id ID [--attach X]    open the next goal, optionally attached to an instance,\n\
+  teamagents work_scopes [list] [--json]              the work_scopes the session carries (D-267)\n\
+  teamagents work_scopes open --id ID [--attach X]    open the next work, optionally attached to an instance,\n\
       [--check ID=COMMAND]… [--deadline MIN]    with the user's own required checks and a deadline\n\
-  teamagents goals cancel --id ID               close that goal and release the instance its refusal parked\n\
+  teamagents work_scopes cancel --id ID               close that work and release the instance its refusal parked\n\
   teamagents approvals approve --id ID          approve that call, once (bound to its arguments)\n\
   teamagents approvals deny --id ID             deny it; the operation fails closed\n\
   teamagents inputs paths [--query PREFIX] [--json]  complete workspace attachment paths\n\
@@ -53,7 +53,7 @@ usage: teamagents [--cwd DIR] [--state-root PATH] [--session ID] [--model KEY] [
   teamagents sessions history --id ID [--before N] [--limit N] [--json]  page all stored records without starting it\n\
   teamagents sessions delete --id ID [--stop] --yes [--json]  delete its history; --stop also stops its daemon and work\n\
   teamagents sessions prune [--days N] [--dry-run] [--yes]  drop archived sessions older than the window\n\
-  teamagents automations [list] [--json]        schedules that start a goal on their own (D-367)\n\
+  teamagents automations [list] [--json]        schedules that start a work on their own (D-367)\n\
   teamagents automations add --every MIN --prompt TEXT [--name NAME]   create one\n\
   teamagents automations pause|resume --id ID   stop it, or re-arm it one period out\n\
   teamagents automations remove --id ID --yes   delete it\n\
@@ -86,7 +86,7 @@ exec accepts repeated --attach PATH (workspace-relative UTF-8 text or PNG/JPEG/G
 1 MiB/text, 5 MiB/image, 16 MiB total). Files are snapshotted by the session daemon; symlinks are refused.\n\
 exec reads the prompt from stdin when it is \"-\", runs each --check acceptance command\n\
 in the workspace after the turn ends (a verdict on the exit code), and attaches each\n\
---accept ID=COMMAND to the goal before the input lands (a gate the runtime repairs\n\
+--accept ID=COMMAND to the work before the input lands (a gate the runtime repairs\n\
 against at the completion boundary), and exits 0 completed, 1 failed or unfinished,\n\
 3 approval required, 124 timeout, 2 usage. --json prints one report object; --stream-json\n\
 prints the session's events (one {\"type\":\"event\",…} line each, in order, then the same\n\
@@ -168,7 +168,7 @@ pub struct Args {
     pub after_turn: bool,
     pub timeout: Option<u64>,
     pub checks: Vec<String>,
-    /// D-385: `exec --accept ID=COMMAND` — goal-level required checks attached to the goal before the input lands.
+    /// D-385: `exec --accept ID=COMMAND` — work-level required checks attached to the work before the input lands.
     pub accept: Vec<String>,
     /// D-390: `--` was seen — everything after it is a positional argument, never a flag.
     pub after_double_dash: bool,
@@ -192,7 +192,7 @@ pub struct Args {
     pub dry_run: bool,
     /// D-248: `daemon --stop` — stop the session's daemon (as opposed to starting one).
     pub daemon_stop: bool,
-    /// D-267: `goals open --attach INSTANCE` — attach the new goal to that instance, which is what makes a later
+    /// D-267: `work_scopes open --attach INSTANCE` — attach the new work to that instance, which is what makes a later
     /// delegation charge to it (D-266).
     pub attach: Option<String>,
     pub attachments: Vec<String>,
@@ -221,7 +221,7 @@ pub struct Args {
     pub input_revision: Option<i64>,
     pub recipient: Option<String>,
     pub after: Option<i64>,
-    /// D-267: `goals open --deadline MINUTES` — a deadline for the new goal, measured from now (§8).
+    /// D-267: `work_scopes open --deadline MINUTES` — a deadline for the new work, measured from now (§8).
     pub deadline_minutes: Option<u64>,
     /// D-412: `mcp login --paste` — the browser is on another machine, so read the redirected URL from stdin
     /// instead of waiting on the loopback listener.
@@ -442,8 +442,8 @@ fn parse_args() -> Args {
                 i += 1;
             }
             "serve" | "init" | "doctor" | "validate" | "sessions" | "automations" | "version" | "exec"
-            | "authority" | "approvals" | "instances" | "tasks" | "runners" | "artifacts" | "goals" | "surface"
-            | "mcp" | "status" | "history" | "inputs" => {
+            | "authority" | "approvals" | "instances" | "tasks" | "runners" | "artifacts" | "work_scopes"
+            | "surface" | "mcp" | "status" | "history" | "inputs" => {
                 if args.command.is_some() {
                     reject("two entry points were given: pick one (teamagents --help lists them)");
                 }
@@ -477,7 +477,7 @@ fn parse_args() -> Args {
                             | "tasks"
                             | "runners"
                             | "artifacts"
-                            | "goals"
+                            | "work_scopes"
                             | "surface"
                             | "sessions"
                             | "automations"
@@ -556,7 +556,7 @@ fn parse_args() -> Args {
                             | "instances"
                             | "tasks"
                             | "runners"
-                            | "goals"
+                            | "work_scopes"
                             | "surface"
                             | "sessions"
                             | "automations"
@@ -752,7 +752,7 @@ fn parse_args() -> Args {
                 args.attachments.push(value_after(&argv, i, "--attach"));
                 i += 2;
             }
-            "--attach" if args.command.as_deref() == Some("goals") => {
+            "--attach" if args.command.as_deref() == Some("work_scopes") => {
                 if args.attach.is_some() {
                     given_twice("--attach");
                 }
@@ -764,7 +764,7 @@ fn parse_args() -> Args {
                 );
                 i += 2;
             }
-            "--deadline" if args.command.as_deref() == Some("goals") => {
+            "--deadline" if args.command.as_deref() == Some("work_scopes") => {
                 if args.deadline_minutes.is_some() {
                     given_twice("--deadline");
                 }
@@ -846,7 +846,7 @@ fn parse_args() -> Args {
                 args.timeout = Some(parsed);
                 i += 2;
             }
-            "--check" if matches!(args.command.as_deref(), Some("exec" | "goals")) => {
+            "--check" if matches!(args.command.as_deref(), Some("exec" | "work_scopes")) => {
                 args.checks.push(
                     argv.get(i + 1)
                         .cloned()
@@ -1043,7 +1043,7 @@ fn run_exec(args: &Args) -> i32 {
             Ok(checks) => checks,
             Err(code) => return code,
         },
-        accept_goal: None,
+        accept_work: None,
         workspace,
     })
 }
@@ -1549,62 +1549,66 @@ fn run_mcp_logout(args: &Args) -> i32 {
     }
 }
 
-/// `teamagents goals`: the user's goal surface (D-267) — which goals the session carries, and how to open the
-/// next one. A settled goal cannot be reopened, so this is the lever a session longer than one goal needs.
-fn run_goals(args: &Args) -> i32 {
-    use teamagents_engine::v2::goals::{GoalCommand, GoalOptions};
+/// `teamagents work_scopes`: the user's work surface (D-267) — which work_scopes the session carries, and how to open the
+/// next one. A settled work cannot be reopened, so this is the lever a session longer than one work needs.
+fn run_work(args: &Args) -> i32 {
+    use teamagents_engine::v2::work_scopes::{WorkCommand, WorkOptions};
     let state_root = args.state_root.clone().map(PathBuf::from).unwrap_or_else(teamagents_engine::v2_root);
     let verb = args.positional.as_deref().unwrap_or("list");
     let command = match verb {
         "list" => {
             if args.approval_id.is_some() || args.attach.is_some() {
-                eprintln!("goals list takes no --id/--attach; use `goals open --id ID [--attach INSTANCE]`");
+                eprintln!(
+                    "work_scopes list takes no --id/--attach; use `work_scopes open --id ID [--attach INSTANCE]`"
+                );
                 return 2;
             }
-            GoalCommand::List
+            WorkCommand::List
         }
         "open" => {
             let Some(id) = args.approval_id.clone() else {
-                eprintln!("goals open needs --id ID (any name you will recognize later)");
+                eprintln!("work_scopes open needs --id ID (any name you will recognize later)");
                 return 2;
             };
-            // --check ID=COMMAND, repeatable: the user's own required checks on the new goal (§8)
+            // --check ID=COMMAND, repeatable: the user's own required checks on the new work (§8)
             let mut required_checks = Vec::new();
             for spec in &args.checks {
                 let Some((check_id, command)) = spec.split_once('=') else {
-                    eprintln!("goals open --check wants ID=COMMAND, got {spec:?}");
+                    eprintln!("work_scopes open --check wants ID=COMMAND, got {spec:?}");
                     return 2;
                 };
                 if check_id.is_empty() || command.trim().is_empty() {
-                    eprintln!("goals open --check wants a non-empty id and command, got {spec:?}");
+                    eprintln!("work_scopes open --check wants a non-empty id and command, got {spec:?}");
                     return 2;
                 }
                 required_checks.push(serde_json::json!({"id": check_id, "command": command}));
             }
             let deadline = args.deadline_minutes.map(|minutes| teamagents_core::models::now() + (minutes * 60) as f64);
-            GoalCommand::Open { id, attach: args.attach.clone(), required_checks, deadline }
+            WorkCommand::Open { id, attach: args.attach.clone(), required_checks, deadline }
         }
         "cancel" => {
             let Some(id) = args.approval_id.clone() else {
-                eprintln!("goals cancel needs --id ID (the goal to close)");
+                eprintln!("work_scopes cancel needs --id ID (the work to close)");
                 return 2;
             };
             if args.attach.is_some() || !args.checks.is_empty() || args.deadline_minutes.is_some() {
-                eprintln!("goals cancel takes only --id: it closes the goal and releases what its refusal parked");
+                eprintln!(
+                    "work_scopes cancel takes only --id: it closes the work and releases what its refusal parked"
+                );
                 return 2;
             }
-            GoalCommand::Cancel { id }
+            WorkCommand::Cancel { id }
         }
         other => {
             eprintln!(
-                "goals: unknown command {other:?}; use `teamagents goals [list]`, \
-                 `goals open --id ID [--attach INSTANCE] [--check ID=COMMAND]… [--deadline MINUTES]`, or \
-                 `goals cancel --id ID`"
+                "work_scopes: unknown command {other:?}; use `teamagents work_scopes [list]`, \
+                 `work_scopes open --id ID [--attach INSTANCE] [--check ID=COMMAND]… [--deadline MINUTES]`, or \
+                 `work_scopes cancel --id ID`"
             );
             return 2;
         }
     };
-    teamagents_engine::v2::goals::run(GoalOptions {
+    teamagents_engine::v2::work_scopes::run(WorkOptions {
         socket: state_root.join("daemon.sock"),
         command,
         json_out: args.exec_json,
@@ -1627,7 +1631,7 @@ fn resolve_session(args: &mut Args) -> Result<(), String> {
 }
 
 /// `teamagents automations`: the user's schedule surface (D-367). Filesystem management over the state root's
-/// `automations.json`; the daemon does the ticking, opening a goal and submitting the prompt for each due one.
+/// `automations.json`; the daemon does the ticking, opening a work and submitting the prompt for each due one.
 fn run_automations(args: &Args) -> i32 {
     use teamagents_engine::v2::automations::Automations;
     let home = args.state_root.clone().map(PathBuf::from).unwrap_or_else(teamagents_engine::v2_root);
@@ -2850,7 +2854,7 @@ fn main() {
         Some("exec") => run_exec(&args),
         Some("authority") => run_authority(&args),
         Some("approvals") => run_approvals(&args),
-        Some("goals") => run_goals(&args),
+        Some("work_scopes") => run_work(&args),
         Some("mcp") => run_mcp(&args),
         Some("instances") => run_instances(&args),
         Some("inputs") => run_inputs(&args),

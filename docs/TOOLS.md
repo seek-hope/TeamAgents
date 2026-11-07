@@ -5,18 +5,18 @@ receipts (A08/A30); `finish`, `wait` and `work_checkpoint` are transactional con
 decisions and context. The offered surface is selected in three layers:
 
 * **The profile's tools** — the schemas in `reference::basic_tool_schemas(web, skills)`, which a session starts
-  from as `reference::session_tool_schemas`: the file, shell and `skill` tools, plus **each** web kind only when
-  the config declares a `[tools.*]` binding of it (§5.2: binding is the authorization — a session with no
-  `[tools.fetch]`/`[tools.search]` entry offers neither, D-168). The leader's profile ships them by default
+  with via `reference::session_tool_schemas`: the file, shell, and `skill` tools, plus each web kind only when
+  the config declares a `[tools.*]` binding for it (§5.2: binding is the authorization — a session with no
+  `[tools.fetch]`/`[tools.search]` entry offers neither, D-168). The leader's profile ships these by default
   (`docs/USER-GUIDE.md` §5).
-* **The instance's grants** — the team tools in `kernel::collaboration_tool_schemas(actions)` appear only for the
-  actions the instance holds a grant for. D-61's no-ambient-shell default remains; D-455 can derive an
+* **The instance's grants** — the team tools in `kernel::collaboration_tool_schemas(actions)` appear only for
+  actions the instance holds a grant for. D-61's no-ambient-shell default still applies; D-455 can derive an
   explicitly requested, task-scoped grant from a user-issued delegable parent, or await a user decision.
   `wait` is always offered to team instances. The dispatch boundary re-checks the effective grant (§6.1), so
   an unoffered call fails closed instead of running.
 * **The session's bindings** — `[tools.*]` in the config, including MCP services (D-74). Their tools are
-  discovered at session start and reachable through codemode's normalized service/tool names, not separately
-  advertised model functions. Doctor reports configured services; status reports the live bound surface.
+  discovered at session start and accessed through codemode's normalized service/tool names, rather than advertised
+  as separate model functions. Doctor reports configured services; status reports the live bound surface.
 
 `kernel::builtin_tool_schemas()` is the floor: `finish` and the readback tool are offered to every instance.
 For enrolled work, `work_checkpoint` is a sole control action for progress, questions, blocking and internal
@@ -33,7 +33,7 @@ regenerated. Descriptions are quoted verbatim because they are what the model re
 
 *Offered by `kernel::builtin_tool_schemas()` (every instance).*
 
-Finish the current goal exactly once. Must be the only tool call in this response. Report the real outcome; a summary that admits undelivered work must not claim success.
+Finish the current work exactly once. Must be the only tool call in this response. Report the real outcome; a summary that admits undelivered work must not claim success.
 
 | Parameter | Type | Required | Meaning |
 |---|---|---|---|
@@ -83,21 +83,21 @@ Send a message to another instance. Delivery is queued and applied at the recipi
 | `recipient` | `string` | yes | Target instance id. |
 | `text` | `string` | yes | — |
 
-### `verify_goal`
+### `verify_work`
 
 *Offered by `kernel::collaboration_tool_schemas(actions)` (per grant).*
 
-Verify another instance's claim: run the target goal's user-pre-authorized acceptance checks yourself and record the result under your own instance. Use it when you are asked to check someone else's work. A goal that requires independent verification cannot settle on its producer's own round, so this is the only way such a goal can settle — report the verdict you get back, including its failures.
+Verify another instance's claim: run the target work's user-pre-authorized acceptance checks yourself and record the result under your own instance. Use it when you are asked to check someone else's work. A work that requires independent verification cannot settle on its producer's own round, so this is the only way such a work can settle — report the verdict you get back, including its failures.
 
 | Parameter | Type | Required | Meaning |
 |---|---|---|---|
-| `goal_id` | `string` | yes | The goal whose checks you are running. |
+| `work_id` | `string` | yes | The work whose checks you are running. |
 
 ### `delegate`
 
 *Offered by `kernel::collaboration_tool_schemas(actions)` (per grant).*
 
-Delegate a task to another instance with a narrow return path: the assignee can settle exactly this task back to you. Costs belong to your active admitted goal; terminal goals never reopen. If there is no active goal, follow the current work admission or recovery state before delegating. Wait on {kind:'task',task_id:'<id>'} with timer_seconds as a fallback: a task result is not a chat message. In enrolled work, member attention can supersede the wait without settling the task. Inspect task state and saved evidence after attention or a timeout. Cancellation does not prove the old command stopped; shared-workspace takeover needs recorded stop evidence, or use an independent workspace and integrate explicitly. Never report unverified work as success.
+Delegate a task to another instance with a narrow return path: the assignee can settle exactly this task back to you. Costs belong to your active admitted work; terminal work_scopes never reopen. If there is no active work, follow the current work admission or recovery state before delegating. Wait on {kind:'task',task_id:'<id>'} with timer_seconds as a fallback: a task result is not a chat message. In enrolled work, member attention can supersede the wait without settling the task. Inspect task state and saved evidence after attention or a timeout. Cancellation does not prove the old command stopped; shared-workspace takeover needs recorded stop evidence, or use an independent workspace and integrate explicitly. Never report unverified work as success.
 
 | Parameter | Type | Required | Meaning |
 |---|---|---|---|

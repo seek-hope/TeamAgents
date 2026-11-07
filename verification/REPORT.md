@@ -5,6 +5,22 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
+## D-498 local work-vocabulary replay (2026-11-07)
+
+The uncommitted D-498 worktree renames the goal vocabulary to work scopes throughout the models and
+configurations; it does not adopt canonical allocation or change the fairness/settlement contract. All 58
+positive configurations passed in 55 traversals with actual exit 0 in 2070.4 seconds, all 298 controls were
+refuted with exit 0 in 275.1 seconds, all 65 witnesses passed in 52.8 seconds, and all nine Kani harnesses
+passed in 34.6 seconds. The full 738-test project gate and PTY matrix also passed.
+
+Receipts are `work-vocabulary-{model-all-2,counterexamples-1,witnesses-1,kani-1,pty-1,check-final-4}.{json,log}`
+under the ignored `review/tmp/d497/`. The earlier `model-all-1` reached both large state graphs without a
+violation but hit its 2400-second outer timeout during temporal checking; it is retained as exit 124, not a pass.
+The longer replay used unchanged model bounds. D-499 removes only unused Rust mirror types and duplicate
+maintenance guidance; the formal material and Kani subjects are unchanged, so this replay remains applicable
+while the full project gate is re-run. No material commit, independent audit, installation, live-service run or
+public-release result is created by this local replay. The D-496 pin below remains historical evidence.
+
 ## 0. Gate status (re-run 2026-11-03 at `61feaf5f`)
 
 D-496 material commit `61feaf5fe0682632a1203607c21e0df39c86f73f` pins the models, configurations,
@@ -372,12 +388,12 @@ recomputes that number, so a claim that loses its control reappears there and fa
 ## 0. Gate status (re-run 2026-10-05 at `609c15c3`)
 
 * **D-418 added the check briefing and its two claims, and re-ran all three targets on this tree (2026-10-05).**
-  `V2Checks.tla` gained the `Brief` step — the runtime tells the instance which checks the goal must satisfy while
+  `V2Checks.tla` gained the `Brief` step — the runtime tells the instance which checks the work must satisfy while
   the work is planned, rather than when the gate runs at the completion boundary — with `BriefingIsOnce` (state) and
-  `BriefingIsForAGoalWithChecks` (temporal). `make verify-model-all`: all **36** configurations `No error has been
+  `BriefingIsForAWorkWithChecks` (temporal). `make verify-model-all`: all **36** configurations `No error has been
   found` (rc 0); the new one is `MC_checks_briefing.cfg`, exhaustive in seconds. `make
   verify-model-counterexamples`: all **102** negative controls are refuted (rc 0); the new one is
-  `MC_checks_brief_without.cfg`, which briefs a goal that requires nothing. `make verify-kani` reports
+  `MC_checks_brief_without.cfg`, which briefs a work that requires nothing. `make verify-kani` reports
   `Complete - 3 successfully verified harnesses, 0 failures, 3 total` (rc 0). The round changed
   `verification/tla/V2Checks.tla`, added two configurations and registered them in both targets.
 
@@ -403,7 +419,7 @@ recomputes that number, so a claim that loses its control reappears there and fa
 * **D-410 added the wrap-up-warning model and re-ran all three targets on this tree (2026-10-04).**
   `V2Control.tla` gained the driver's wrap-up note as a modelled step: a second monotone clock fact
   (`nearDeadline`, the code's `remaining <= 120s`) beside `DeadlinePasses`, the `Warn(i)` action (one note per
-  goal, appended only while the goal is ACTIVE and the deadline still ahead, landing as unaddressed work like any
+  work, appended only while the work is ACTIVE and the deadline still ahead, landing as unaddressed work like any
   boundary input) and its two claims — `AtMostOneWarning` (state) and `WarnIsTimely` (temporal). `make
   verify-model-all`: all **34** configurations `No error has been found` (rc 0); the new one is
   `MC_control_warn.cfg`, 582,397 states generated / 113,280 distinct. `make verify-model-counterexamples`:
@@ -431,8 +447,8 @@ recomputes that number, so a claim that loses its control reappears there and fa
 
 * **D-393 added the independent-verification provenance rule and re-ran all three targets on this tree
   (2026-10-03).** `V2Checks.tla` gained `registrar`, the `RegisterVerifierRound` action and
-  `IndependenceIsNotSelfVerified`: a settlement on a round for a goal that requires independent verification must
-  be registered by an instance other than the producer, and a goal with no required checks has nothing to verify
+  `IndependenceIsNotSelfVerified`: a settlement on a round for a work that requires independent verification must
+  be registered by an instance other than the producer, and a work with no required checks has nothing to verify
   and is exempt. `make verify-model-all`: all **32** configurations `No error has been found` (rc 0); the new one
   is `MC_checks_independent.cfg`, exhaustive in under a second. `make verify-model-counterexamples`: all **93** negative controls are refuted (rc 0); the new one is
   `MC_checks_self_verified.cfg`, which accepts the producing
@@ -455,9 +471,9 @@ recomputes that number, so a claim that loses its control reappears there and fa
 ## 0. Gate status (re-run 2026-10-02 at `a9091290`)
 
 * **D-385 added the required-check *ingress* to the check model and re-ran all three targets on this tree
-  (2026-10-02).** `require_checks` lets a user attach acceptance commands to a goal before it starts verifying,
+  (2026-10-02).** `require_checks` lets a user attach acceptance commands to a work before it starts verifying,
   so `V2Checks.tla` now carries `required` and `roundChecks` as variables and two new claims:
-  `EveryRequiredCheckWasVerified` (a SUCCEEDED goal's required contract is exactly what the round it closed on
+  `EveryRequiredCheckWasVerified` (a SUCCEEDED work's required contract is exactly what the round it closed on
   ran and passed) and `ChecksOnlyJoinBeforeAClaim` (the rule that makes it hold, monitored by `lateJoin`).
   `make verify-model-all`: all **29** configurations `No error has been found` (rc 0) — the extended
   `MC_checks.cfg` is exhaustive in under a second (718 states generated / 297 distinct / depth 14).
@@ -514,13 +530,13 @@ recomputes that number, so a claim that loses its control reappears there and fa
   reports `Complete - 3 successfully verified harnesses, 0 failures, 3 total` (rc 0). The round changed
   `verification/tla/V2History.tla` and its three configurations and nothing else in the material.
 
-* **This round (2026-09-29) added the goal-cancel lever's rule and re-ran all three targets on that tree.**
+* **This round (2026-09-29) added the work-cancel lever's rule and re-ran all three targets on that tree.**
   `make verify-model-all`: all **24** configurations `No error has been found` (rc 0).
   `make verify-model-counterexamples`: **74** controls refuted (rc 0) — the new `MC_control_cancel.cfg` is
-  the seventy-fourth, refuted on `CancelledGoalReleasesParkedInstances`. `make verify-kani`: `Complete - 3
+  the seventy-fourth, refuted on `CancelledWorkReleasesParkedInstances`. `make verify-kani`: `Complete - 3
   successfully verified harnesses, 0 failures, 3 total` (rc 0). The configurations, controls and harnesses
-  are the ones the sections below count; the round changed `V2Control.tla`'s `CancelGoal`,
-  `ReleaseOnCancel` and `CancelledGoalReleasesParkedInstances` and nothing else in the material.
+  are the ones the sections below count; the round changed `V2Control.tla`'s `CancelWork`,
+  `ReleaseOnCancel` and `CancelledWorkReleasesParkedInstances` and nothing else in the material.
 
 * **D-295 measured the pure-function layer's remaining reach and changed no material.** The unproven item 7
   below named three functions "only reached by bounded enumeration"; a Kani harness on the one this crate can
@@ -588,7 +604,7 @@ recomputes that number, so a claim that loses its control reappears there and fa
   property (`AuthorizedEffectsOnly`, `InputLandsAtTheBoundary`, `NoRequestAfterDeadline`, `NoTurnWithoutWork`
   twice, `SettlementFollowsATurnAfterTheLanding`, `NoForeignAdoption`, three temporal refutations, the
   four retention guards: `NoReferenceToEvictedFact`, `EvidenceIsNeverEvicted` and `OnlyOldFactsAreEvicted`
-  twice, the four task controls D-218 added: `RegisteredWorkNeedsAnActiveGoal`, `RequestsResolveToActiveGoals`,
+  twice, the four task controls D-218 added: `RegisteredWorkNeedsAnActiveWork`, `RequestsResolveToActiveWorks`,
   `DependenciesPointBackwards` and `NoOpenTaskOnDeadAssignee`, the seven D-219 added: `NoEntryIsEverLost`,
   `CoverageNeverLifted`, `RequestClosesOnce`, `ReceiptsAreStable`, `LogMonotone`, `NoResyncInThisVersion` and
   `RoundsAreMonotone`, the three D-220 added: `GcClaimsOnlyUnreferencedLive`, `ResolvedWaitIsAnswered` and
@@ -608,10 +624,10 @@ recomputes that number, so a claim that loses its control reappears there and fa
   — the maintenance pass taking the state root's lock beside a live session — and the three D-291 added:
   `ReadersSeeTheCommittedPrefix` and `NoReaderSeesUncommitted` (the two state halves of "a reader that follows
   its cursor sees exactly the committed log") and `WriterProgressesDespiteAStalledReader` (the temporal half,
-  a stalled client never holding a commit back)), and the one D-344 added: `CancelledGoalReleasesParkedInstances`
-  — closing a goal nothing can spend must give back the instance its refusal parked, the lever A18's known gap
+  a stalled client never holding a commit back)), and the one D-344 added: `CancelledWorkReleasesParkedInstances`
+  — closing a work nothing can spend must give back the instance its refusal parked, the lever A18's known gap
   asks for; `MC.cfg` verifies the same property with `ReleaseOnCancel = TRUE`, and `MC_control_cancel.cfg` sets
-  it `FALSE` and is refuted on it (`Error: Action property CancelledGoalReleasesParkedInstances is violated.`).
+  it `FALSE` and is refuted on it (`Error: Action property CancelledWorkReleasesParkedInstances is violated.`).
   The round after it (D-348, the wait contract's three settled rules) adds three more refuted controls and the
   same re-run: `verify-model-all` **24/24**, all **77** controls refuted, and `make verify-kani`
   `Complete - 3 successfully verified harnesses, 0 failures, 3 total` — all three rc 0 on 2026-09-29.
@@ -709,7 +725,7 @@ summarized above and mapped in the verification README; older counts do not desc
 **What can be claimed**:
 
 - The safety properties of twenty-six surfaces (control plane, artifacts/GC, waits/wakeups,
-  tasks/delegation/goal settlement, compression, the daemon protocol, the required checks, the authority,
+  tasks/delegation/work settlement, compression, the daemon protocol, the required checks, the authority,
   the member's workspace (§5.1's merge and retirement rules, D-252),
   layer, the user's authority surface, session-store identity, and — added 2026-09-27, D-225 — the approval
   window, and — added 2026-09-27, D-192 — the
@@ -748,8 +764,8 @@ summarized above and mapped in the verification README; older counts do not desc
   not a proven conclusion.
 - **Bounded state spaces**: every enumeration runs on an explicitly bounded configuration (finite instances,
   tasks, requests and log lengths) and the frontier is recorded in the README. The task product is the concrete
-  example (D-218): 2 tasks with one instance and one goal is exhaustive (612,802 states), while 2 tasks with 2
-  instances and 2 goals did not converge in five minutes (33.6M generated / 7.9M distinct, queue still growing),
+  example (D-218): 2 tasks with one instance and one work is exhaustive (612,802 states), while 2 tasks with 2
+  instances and 2 work_scopes did not converge in five minutes (33.6M generated / 7.9M distinct, queue still growing),
   and the symmetry the README named as the upgrade cut that by only about 1.6× — so it stays a *search* target
   (`make verify-model-sim SIM_CONFIG=MC_task.cfg`), not a proof.
 - **Code outside the model**: provider adapters, MCP, Skills, TUI rendering and hit-testing, shell/bubblewrap
@@ -783,9 +799,9 @@ summarized above and mapped in the verification README; older counts do not desc
 Evidence that the checks are neither vacuous nor insensitive ("passing" is not because a check is too weak):
 
 - Checker sensitivity: `the_invariant_checker_detects_broken_states` breaks state on purpose (unknown status
-  values, a rewritten terminal state, a stale goal pointer, lifted coverage, coverage pointing at a
+  values, a rewritten terminal state, a stale work pointer, lifted coverage, coverage pointing at a
   non-summary) and the checker must report each one.
-- Coverage assertions: the random walk must really reach "a wait resolved / a settled goal / a settled task /
+- Coverage assertions: the random walk must really reach "a wait resolved / a settled work / a settled task /
   a terminal operation / an epoch reset / a terminated instance / a LIVE artifact / a submitted compression /
   a decided approval / a command replay / a dispatch refused after revocation".
 - Non-vacuity on the model side: splitting the `V2Daemon` `checkpoint` into two steps made
@@ -820,22 +836,22 @@ already there and simply never enforced against this path.
 |---|---|
 | `make verify-model` (MC.cfg) | **No error found** — 6 s, unchanged |
 | Negative control `MC_control_reask.cfg` | re-opening a turn while the last word is the model's own (the pre-D-65 code) makes TLC report **`Invariant NoTurnWithoutWork is violated`**; `make verify-model-counterexamples` requires exactly that |
-| Correspondence (`engine/tests/v2_supervisor.rs`) | `a_prose_reply_leaves_one_turn_and_the_delegator_resolves_the_task`: one request, the task `RUNNING`, the leader `WAITING`, the user cancels, the leader wakes, the goal settles. With the pre-fix clause restored the same test fails (`4` requests in 1.5 s instead of `1`) |
+| Correspondence (`engine/tests/v2_supervisor.rs`) | `a_prose_reply_leaves_one_turn_and_the_delegator_resolves_the_task`: one request, the task `RUNNING`, the leader `WAITING`, the user cancels, the leader wakes, the work settles. With the pre-fix clause restored the same test fails (`4` requests in 1.5 s instead of `1`) |
 | Real model (measured before the fix) | 169 requests / 1,226,717 prompt tokens / 181 context entries in ~15 minutes answering `BLOCKED.` as prose, no progress (`review/dogfood/authority.py`, first prompt shape; ACCEPTANCE's known gaps held the numbers and now points at A07) |
 
-### The goal's ceilings (added 2026-09-25, D-64)
+### The work's ceilings (added 2026-09-25, D-64)
 
 The usage ceiling was already modelled (`BudgetFits`, `ReservationsAdmitted`, `AdmissionGate`, A18); the
-*deadline* was not, and exposing both to the user (D-64) made that the gap to close. `V2Control`'s goal now
+*deadline* was not, and exposing both to the user (D-64) made that the gap to close. `V2Control`'s work now
 carries `deadlinePassed` (an environment action moves the clock past the deadline; the fact is monotone),
-`BeginRequest` requires `~goal.deadlinePassed`, and `NoRequestAfterDeadline` states the gate.
+`BeginRequest` requires `~work.deadlinePassed`, and `NoRequestAfterDeadline` states the gate.
 
 | Run | Result |
 |---|---|
 | `make verify-model` (MC.cfg) | **No error found** — 6 s with the new invariant and property |
 | `make verify-model-all` (MC_control_two.cfg) | **No error found** — 1,263,649 states / 165,792 distinct / ~45 s (two instances, the deadline flag included) |
 | Negative control `MC_control_deadline.cfg` | a runtime that ignores the deadline (switch `IgnoreDeadline`) makes TLC report **`Action property NoRequestAfterDeadline is violated`**; `make verify-model-counterexamples` requires exactly that |
-| Correspondence (`core/src/v2/control.rs`, `engine/tests/cli.rs`) | `goal_deadline_refuses_new_requests_and_dispatches` (the gate) and the daemon test that the configured `deadline_minutes` becomes an absolute deadline ~15 minutes out on the real goal, with the duration key never stored |
+| Correspondence (`core/src/v2/control.rs`, `engine/tests/cli.rs`) | `work_deadline_refuses_new_requests_and_dispatches` (the gate) and the daemon test that the configured `deadline_minutes` becomes an absolute deadline ~15 minutes out on the real work, with the duration key never stored |
 
 ### A run's outcome follows its own input (added 2026-09-25, D-72)
 
@@ -845,17 +861,17 @@ convention: an outcome recorded before the input landed belongs to a turn the in
 client reads its own entry and the first turn-ending entry after it. The premise is exact — a landing puts the
 input in the context the next request is fixed from — so D-72 states it as `SettlementFollowsATurnAfterTheLanding`
 (a settlement must follow a request begun since the instance's last landing) and records it in a monitor when
-the goal settles. `SettleGoal` also gained the abstraction it was missing: it now requires `tail = "assistant"`,
+the work settles. `SettleWork` also gained the abstraction it was missing: it now requires `tail = "assistant"`,
 i.e. the settlement is about the model's own completion, which is what both code paths do.
 
 | Run | Result |
 |---|---|
 | `make verify-model-all` (MC.cfg) | **No error has been found** — 84,877 states generated / 18,384 distinct / 0 left (the guard narrows the graph: a settlement now needs the model's own response) |
 | `make verify-model-all` (MC_control_two.cfg) | **No error has been found** — 958,777 states / 131,440 distinct / 0 left |
-| Negative control `MC_control_landing.cfg` | storing the input *inside* the running turn (the pre-D-63 switch `AllowMidTurnInput`) makes TLC report **`Invariant SettlementFollowsATurnAfterTheLanding is violated`**, and the counterexample is the story: `BeginRequest → MidTurnInput → RecordAttempt → ImportResponse → SettleGoal` with `settledAfterTurn = FALSE` — the settlement of a turn that never saw the input |
-| Correspondence (`engine/tests/v2_daemon.rs`) | `a_queued_input_is_not_answered_by_the_previous_turns_settlement` (real socket: the queued run reports `end: reply` + its own answer + `goal_status: null` while the session's goal is `SUCCEEDED`; **fails with the pre-fix decision restored**: `left: Completed, right: Reply`), `a_queued_input_is_not_answered_by_the_previous_turns_reply`, `a_queued_input_a_reset_sealed_is_reported_undelivered` |
+| Negative control `MC_control_landing.cfg` | storing the input *inside* the running turn (the pre-D-63 switch `AllowMidTurnInput`) makes TLC report **`Invariant SettlementFollowsATurnAfterTheLanding is violated`**, and the counterexample is the story: `BeginRequest → MidTurnInput → RecordAttempt → ImportResponse → SettleWork` with `settledAfterTurn = FALSE` — the settlement of a turn that never saw the input |
+| Correspondence (`engine/tests/v2_daemon.rs`) | `a_queued_input_is_not_answered_by_the_previous_turns_settlement` (real socket: the queued run reports `end: reply` + its own answer + `work_status: null` while the session's work is `SUCCEEDED`; **fails with the pre-fix decision restored**: `left: Completed, right: Reply`), `a_queued_input_is_not_answered_by_the_previous_turns_reply`, `a_queued_input_a_reset_sealed_is_reported_undelivered` |
 | Pure rule (`engine/src/v2/exec.rs`) | `v2::exec::tests::an_outcome_before_the_runs_own_input_is_not_its_outcome` enumerates the shapes: an input that never landed, an earlier settlement, tool traffic inside the run's own turn, a later turn's entries, the run's own settlement, a closed turn, and a bare tool call |
-| Real models (`review/dogfood/queued_input.py`) | deepseek: run 1 `completed`/`SUCCEEDED`, the queued run `reply`/`BANANA`/`goal_status: null` (2.8 s) — kimi: the same shape (40.4 s). Against the pre-fix build the harness fails on the queued run with `end=completed / goal=SUCCEEDED / reply=null` |
+| Real models (`review/dogfood/queued_input.py`) | deepseek: run 1 `completed`/`SUCCEEDED`, the queued run `reply`/`BANANA`/`work_status: null` (2.8 s) — kimi: the same shape (40.4 s). Against the pre-fix build the harness fails on the queued run with `end=completed / work=SUCCEEDED / reply=null` |
 
 ### The runtime's own word (added 2026-09-25, D-71)
 
@@ -865,7 +881,7 @@ runtime's own closing notes were stored *as* assistant entries to keep an instan
 tail value for two speakers — and the headless client, reading "the last assistant entry is the reply",
 reported the runtime's block note as the member's answer with exit 0 (a real Kimi run; D-71). The model now
 distinguishes the two speakers: the tail is committed when it is the model's own text (`"assistant"`) **or**
-the runtime's closing note (`"runtime"`, which `SettleGoal` now leaves), and a turn opens only for the
+the runtime's closing note (`"runtime"`, which `SettleWork` now leaves), and a turn opens only for the
 unaddressed tails (`UnaddressedTails == {"user", "tool"}`). `CommittedTails` is the shared statement, so the
 invariant and the guard cannot drift apart.
 
@@ -874,10 +890,10 @@ invariant and the guard cannot drift apart.
 | `make verify-model-all` (MC.cfg) | **No error found** — 137,401 states generated / 28,688 distinct / 0 left / depth 15 (the guard change makes the state graph slightly smaller; `NoTurnWithoutWork` reads `tail \notin CommittedTails`) |
 | `make verify-model-all` (MC_control_two.cfg) | **No error found** — 1,316,137 states generated / 173,184 distinct / 0 left |
 | Negative control `MC_control_runtimeTail.cfg` | treating the runtime's own closing note as unaddressed work (switch `RuntimeTailIsWork`, exactly the clause the old rule implied) makes TLC report **`Invariant NoTurnWithoutWork is violated`**, with the violating state showing `tail = "runtime"` and `phase = "MODEL_PENDING"` — i.e. the runtime re-opening a turn against its own settlement. `make verify-model-counterexamples` requires exactly that, so the new clause is not vacuous |
-| Correspondence (`engine/tests/v2_daemon.rs`) | `a_runtime_blocked_goal_is_not_reported_as_a_reply`: a real daemon, a socket, three repair rounds against a check that never passes — the run reports `failed` / `BLOCKED` / `reply: null` / exit 1, the settlement is an event (`blocked_by: runtime`), and the instance's tail entry is of kind `runtime` with the user's role |
-| Correspondence (`engine/tests/v2_daemon.rs`) | `a_turn_closed_by_the_runtime_without_a_settlement_is_not_a_reply`: the second run on an already-settled goal reports `unsettled` (exit 1) in under a second of work instead of reading the closing note as a reply or waiting out the deadline |
+| Correspondence (`engine/tests/v2_daemon.rs`) | `a_runtime_blocked_work_is_not_reported_as_a_reply`: a real daemon, a socket, three repair rounds against a check that never passes — the run reports `failed` / `BLOCKED` / `reply: null` / exit 1, the settlement is an event (`blocked_by: runtime`), and the instance's tail entry is of kind `runtime` with the user's role |
+| Correspondence (`engine/tests/v2_daemon.rs`) | `a_turn_closed_by_the_runtime_without_a_settlement_is_not_a_reply`: the second run on an already-settled work reports `unsettled` (exit 1) in under a second of work instead of reading the closing note as a reply or waiting out the deadline |
 | Correspondence (`core`, `tui`) | `closing_a_turn_answers_its_finish_call` (the marker is a `runtime` entry in the user's voice; the finish call is still answered next to it), `migrate_rewrites_the_runtimes_closing_notes` (a schema-2 store is rewritten: the runtime's notes only, the member's answer and the tool receipt untouched), `the_runtimes_closing_note_is_not_the_members_message` (the TUI renders it as the runtime's, never as the instance's) |
-| Real model, both protocols (`review/dogfood/checks.py`) | deepseek: exit 1, `end=failed`, goal `BLOCKED`, 11 requests, 9.7 s — kimi (`responses`): exit 1, `end=failed`, goal `BLOCKED`, 8 requests, 37.8 s. The Kimi run reported `exit 0 / end=reply / goal=None` before the fix |
+| Real model, both protocols (`review/dogfood/checks.py`) | deepseek: exit 1, `end=failed`, work `BLOCKED`, 11 requests, 9.7 s — kimi (`responses`): exit 1, `end=failed`, work `BLOCKED`, 8 requests, 37.8 s. The Kimi run reported `exit 0 / end=reply / work=None` before the fix |
 
 ### The inbound boundary (added 2026-09-25, D-63)
 
@@ -948,7 +964,7 @@ D-87 defect itself.
 | ID | Issue | Spec counterexample | Fix and regression |
 |---|---|---|---|
 | **V-W1** | a wait's tool_call was answered only on the drain path; "satisfied at registration" and "superseded/closed epoch" left it unanswered, so a strict endpoint rejects the next request | `ResolvedWaitAnswersItsCall is violated` (`ArmWait → Supersede → CANCELLED, answers=0`) | `answer_closed_waits` extended to both paths; `wait_call_answered_outside_the_drain_path`; invariant `ResolvedWaitIsAnswered` |
-| **V-G1** | a settled goal still accepted new work (delegation, opening operations, billing) | `RegisteredWorkNeedsAnActiveGoal`, `ClosedGoalTakesNoNewOperation` violated (the first is refutable again since D-218: `MC_task_delegates_to_settled.cfg`) | `budget_goal` accepts only ACTIVE goals, settlement detaches the pointer, delegation requires ACTIVE; `a_settled_goal_takes_no_new_work`; invariants such as `NoStaleActiveGoal`, and since D-218 the billing half too (`MC_task_bills_settled.cfg`) |
+| **V-G1** | a settled work still accepted new work (delegation, opening operations, billing) | `RegisteredWorkNeedsAnActiveWork`, `ClosedWorkTakesNoNewOperation` violated (the first is refutable again since D-218: `MC_task_delegates_to_settled.cfg`) | `budget_work` accepts only ACTIVE work_scopes, settlement detaches the pointer, delegation requires ACTIVE; `a_settled_work_takes_no_new_work`; invariants such as `NoStaleActiveWork`, and since D-218 the billing half too (`MC_task_bills_settled.cfg`) |
 | **V-P1** | a terminated instance kept a stale execution pointer (`phase = MODEL_PENDING` pointing at a cancelled request) | code-level invariant: `OneActiveRequest: instance i1 is MODEL_PENDING with 0 pending turn requests` | the termination branch normalizes like `reset_instance`/`fail_request`; `terminating_an_instance_normalizes_its_execution_pointer` |
 | **V-P2** | `import_response` never checked `kind`, so a compression request could be imported as a turn | the walk reached the path and succeeded (the spec requires a refusal) | the control plane refuses `kind != 'turn'`; `import_response_refuses_a_compression_request` |
 | Property fix | `V2Checks` first stated "SUCCEEDED implies the recorded verdict is pass" — a **vacuous** property (an action writes that variable itself) | relaxing `Accept` still "passed" | rewritten to bind the **observed check result**; relaxing it is then immediately refuted |
@@ -968,8 +984,8 @@ The "formal layer" column lists only what the model, the code-level corresponden
 
 | Item | Scenario | Formal coverage | Still uncovered |
 |---|---|---|---|
-| A01 | one Leader completes a goal | the `V2Control` phase machine, `OneActiveRequest`, `NoTurnWithoutWork`; code-level "one active turn request" | real provider turn behaviour |
-| A02 | A→B→C→A communication | code-level: envelope deduplication, grants as prerequisites, goal pointer | topology/cycles themselves |
+| A01 | one Leader completes a work | the `V2Control` phase machine, `OneActiveRequest`, `NoTurnWithoutWork`; code-level "one active turn request" | real provider turn behaviour |
+| A02 | A→B→C→A communication | code-level: envelope deduplication, grants as prerequisites, work pointer | topology/cycles themselves |
 | A03 | limited delegation and parent revocation | code-level: a dispatch after revocation is refused (the `!dispatch_without_grant` probe plus a coverage assertion); model `StaleExecutorRejected` | cascading semantics of the grant tree |
 | A04 | a queued action meets a revocation | as above (dispatch after revocation must be refused) | queuing/re-authorization timing |
 | A05 | reading another instance's history | — | sample tests |
@@ -985,7 +1001,7 @@ The "formal layer" column lists only what the model, the code-level corresponden
 | A15 | environment identity | — | process-identity evidence |
 | A16 | a required check fails | all 8 `V2Checks` properties (including "only self-reported successes are verified") | the execution details of `execute_check_ops` |
 | A17 | artifacts change after a check | the stale cases in `V2Checks` and `BlockedAfterTheBudgetOrStale` | real file-hash re-verification |
-| A18 | multi-instance usage budget | `V2Control` (reservation ceiling, admission gate, release) plus `V2Task` (the `budget_goal` resolution rules) | real provider billing |
+| A18 | multi-instance usage budget | `V2Control` (reservation ceiling, admission gate, release) plus `V2Task` (the `budget_work` resolution rules) | real provider billing |
 | A19 | truncated stream and connection loss | `V2Control`: `SelectionIsComplete`; code-level "a selected attempt is complete"; `V2Retry`: the budget half — at most `budget + 1` attempts, 0 meaning one attempt, the park at exhaustion, and each instance's budget from its own profile (D-247) | which failures are *transient*, the backoff between attempts, and the adapters' wire behaviour |
 | A20 | restart after compaction | all 8 `V2Compress` properties plus 5 code-level groups (monotone coverage, originals never lost, tail append) | — |
 | A21 | the user adjusts an instance directly | — | sample tests for the single-writer context, plus the live TUI runs (`review/dogfood/tui.py` for the composer path, `cancel.py`/`job_identity.py` for a direct input to a member, `approval.py` for the approvals box) |
@@ -1002,7 +1018,7 @@ The "formal layer" column lists only what the model, the code-level corresponden
 | A32 | very large history measurement | pure-function seamless paging reconstruction (the coordinate semantics of readback) | the performance numbers themselves |
 | A33 | two daemons / stale lock | `V2Coordinator` (5 claims): one coordinator per root, no held lock without a holder, the fork window is not mistaken for a holder, and the D-253 maintenance pass waits for the session (D-210) | real lock and second-daemon evidence |
 | A34 | incompatible schema | `V2Store` (a foreign database is never stamped as ours, a refusal writes nothing, a half-initialized database is completed rather than stranded) plus the refuted control `MC_store_adopt.cfg` | byte-level evidence in `review/dogfood/boundary.py` and migration sample tests |
-| A35 | goal deadline | the deadline gates in `V2Control` (`AdmissionGate` plus a hard dispatch refusal) | real clock boundaries |
+| A35 | work deadline | the deadline gates in `V2Control` (`AdmissionGate` plus a hard dispatch refusal) | real clock boundaries |
 | A36 | install / init / doctor / cleanup | — | CLI and cleanup evidence |
 
 Subtotal: **28 items** have a non-empty "formal coverage" entry (A01–A04, A06–A11, A13, A16–A20, A22–A25,
@@ -1119,7 +1135,7 @@ the sole reason a mutating step proceeds.
 | `V2Control` operation finality | `complete_operation` | terminal check, then a guarded update; a replay returns the stored state only when status and receipt match | **closed**; `concurrent_completion_of_one_operation_settles_once` |
 | `V2Control` envelope dedup (`AtMostOncePerEnvelope`) | `submit_input`, `drain_inbox`, `append_context` | the envelope row is written in the transaction; a second command id for the same envelope fails on its primary key | **closed**; `concurrent_input_for_one_envelope_applies_once` |
 | `V2Grants` revocation and dispatch staleness (`OnceStaleNeverExecutes`) | `issue_grant`, `revoke_grant`, `revoke_grant_tree` | parent chain and revision are read and written in the transaction; dispatch compares `grant_revision` and refuses a mismatch | **closed** by the revision predicate |
-| `V2Checks` completion gate (`SettleWithoutChecks` refuted) | `complete_goal`, `register_check_runs` | round and receipt reads and the settle update share the transaction | **closed** |
+| `V2Checks` completion gate (`SettleWithoutChecks` refuted) | `complete_work`, `register_check_runs` | round and receipt reads and the settle update share the transaction | **closed** |
 | The driver's snapshot → command step | `driver.rs::step_*` reads a `Snapshot`, then submits one command | **two transactions**: the second carries a `revision`/status predicate from the first | **open by design**; a stale predicate is refused, so the pair composes |
 | Attachment staging → input binding | `artifact_stage` (one command), then `submit_input` + `bind_input_attachments` (another) | staging commits first; binding re-validates `owner_ref = command_id AND status = 'STAGING'` in the second transaction | **open by design**; the ownership predicate is the guard |
 | Job dispatch → receipt | `dispatch_operation`, then `client::spawn` / `go` / `await_job` | the database transition commits before the job starts; the journal records READY/GO, and a lost in-flight result becomes `OUTCOME_UNKNOWN` | **open by design**; the journal is the anchor and the command is never replayed on a guess |

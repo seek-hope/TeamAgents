@@ -1,38 +1,21 @@
 # Development handoff
 
-D-496 formal material is pinned at `61feaf5fe0682632a1203607c21e0df39c86f73f`: 58 positive configurations
-pass in 55 traversals, with 298 controls, 65 witnesses, nine Kani harnesses and the full 737-test/lint/hygiene/
-leak gate passing. Three duplicate graph searches are removed; guarded request/subset evaluation preserves
-the graphs. A serial small-fixture median changes from 31.03 to 30.09 seconds; this is not an end-to-end CI
-or wide speedup. Identity canonicalization and explicit-stutter removal remain isolated experiments, with
-bounded relational evidence and uncompleted general proof obligations. The [formal search report](../review/formal-optimization-2026-11-03/REPORT.md)
-records replay commands and limits. No runtime source, installed binary, user state or release changes.
-Recheck Git status: the same ten preexisting documentation changes are preserved. New delivery CI is pending.
+D-499 is the current maintenance follow-up: ten unused persistence mirror types are removed and duplicate
+handoff/development guidance is consolidated. It changes no schema, protocol, runtime behavior or formal model.
 
-D-495 formal material is pinned at `36afc59b6fa00128f8ecd886ab1817f41412bc32`: 58 positive configurations,
-298 named counterexamples, 65 normal-path witnesses and nine Kani harnesses pass. The wide configuration
-timed out and is unproved. The full local regression passed 737 tests, lint, hygiene and leak checks.
-CI [41584637839](https://github.com/seek-hope/TeamAgents/actions/runs/41584637839) passed all three jobs.
-[The formal report](../verification/REPORT.md) and its generated
-requirement inventory separate partial formal support from outstanding implementation/refinement/composition
-work. Runtime source and installed binaries remain D-494; no new public release or user-state change is
-part of this work.
+D-498 is the current uncommitted worktree change: the goal entity and its public vocabulary are removed in
+favor of work scopes, with schema 8 migration preserving old budget, acceptance, ownership and event history.
+The full 738-test repository gate, 58 positive configurations/55 traversals, 298 controls, 65 witnesses, nine
+Kani harnesses and the complete PTY matrix pass. The first positive replay timed out at 2400 seconds and is not
+counted; the complete replay has actual exit 0 in 2070.4 seconds. These are local worktree receipts, not a new
+material commit or canonical-allocation proof. Runtime/installed binaries and the public release remain unchanged.
 
-Updated **2026-11-03**. **D-494** repairs provider/runner ingestion and supervision, durable start acceptance,
-storage-backpressure recovery, idle context loading and TUI rendering/frame deadlines. The material source
-and installed native binaries are pinned to `0027ffe2ffbbba57acf852f59bf8904dce5b0ac3`. Both binaries were
-privately backed up and atomically replaced; installed init/schema-7/idle/shutdown and conversation/graphics
-PTY checks passed without model requests. No user daemon was started and the user config is unchanged.
-D-491's shortcuts, D-490's colors and D-487's control/data contracts remain.
-Use [ACCEPTANCE.md](ACCEPTANCE.md) for gate evidence and [DECISIONS.md](DECISIONS.md) for the confirmed
-contract. Recheck Git status: ten documentation files had preexisting changes when D-494 began and are
-preserved outside its scoped commits.
-Earlier delivery: both binaries were replaced from D-492 after private backups and isolated smoke.
-At the user's subsequent request, old backup binaries and the old-source probe build were removed while
-read-only session backups were retained, and the existing user daemon was stopped normally with committed
-state kept. No runner process remained. A later client starts a fresh daemon. D-493 subsequently replaced the
-public v0.2.0 tag and release from `bee64381`; its workflow and published-install check passed. The archive
-SHA-256 is `bf527c449f098060e76b0fc7055643bbef448ba4aa9734a063f2ea4dc28f3934`.
+Earlier baselines are kept as history rather than repeated as current work. D-496 formal material is pinned at
+`61feaf5fe0682632a1203607c21e0df39c86f73f`; D-494 runtime/install material is pinned at
+`0027ffe2ffbbba57acf852f59bf8904dce5b0ac3`; the public v0.2.0 archive remains D-493. See the
+[formal report](../verification/REPORT.md), [formal search report](../review/formal-optimization-2026-11-03/REPORT.md)
+and [robustness review](../review/optimization-2026-11-03/REPORT.md) for their exact evidence and limits.
+Current acceptance evidence belongs in [ACCEPTANCE.md](ACCEPTANCE.md), not in copied status paragraphs here.
 
 ## Start here
 
@@ -46,19 +29,20 @@ SHA-256 is `bf527c449f098060e76b0fc7055643bbef448ba4aa9734a063f2ea4dc28f3934`.
 ## Current behavior
 
 The shared behavior prompt prioritizes user instructions and intent, initiative, free exploration and excellent
-results within the authorized scope. Routine implementation choices need no repeated confirmation. A goal
+results within the authorized scope. Routine implementation choices need no repeated confirmation. A work
 carries the whole admitted work across turns, compaction and restart. Questions, event waits, blocking, stops
 and completion are distinct; a progress reply is not completion. Checkpoints are model claims, not authority.
 
-After terminal work, information-only replies create no goal; actionable requests are admitted internally.
+After terminal work, information-only replies create no work; actionable requests are admitted internally.
 Admission retains the original input, policy, deadline and known/unknown usage. New input cannot replenish an
 active budget or resume PARKED work. Stale preparation, responses and completion cannot take over a new
 assignment. Required checks and scoped evidence still gate success. Retention keeps pending/live input
 envelopes, including acceptance metadata, until work closes or the instance terminates.
 
-Schema **v7** adds work state and fences older writers. Migration preserves history and does not auto-enroll
-old idle work. Forking keeps decisions, pending costs and user stops but not execution; it requires fresh
-execution evidence and refuses tracked execution without stop evidence. Export labels checkpoint provenance.
+Schema **v8** uses work scopes and work IDs throughout. Its explicit v7 migration preserves the old scope
+records, references and events without auto-enrolling old idle work into the continuation policy. Forking keeps
+decisions, pending costs and user stops but not execution; it requires fresh execution evidence and refuses
+tracked execution without stop evidence. Export labels checkpoint provenance.
 Older binaries cannot write an upgraded database; reverting an executable alone is not a database rollback.
 
 Shell, acceptance commands and local MCP run on the host. Retired sandbox settings are rejected. Capability
@@ -107,8 +91,8 @@ explicit initialization.
 | Storage saturation and idle context reads | `engine/tests/cases/supervisor_robustness.rs`; included by `v2_supervisor` |
 | Formal transition contracts | `verification/tla/V2Work.tla`, `verification/tla/V2JobSupervision.tla`, `verification/tla/V2Discovery.tla`; control/wait retain their legacy scheduler scope |
 
-Run `make check` before committing; `make fmt` also formats the two new included test files. Use the formal
-and PTY targets documented in DEVELOPMENT. Do not replace a failed behavioral check with a weaker assertion.
+Run `make check` before committing; `make fmt` formats every crate, including test files loaded with `include!`.
+Use the formal and PTY targets documented in DEVELOPMENT. Do not replace a failed behavioral check with a weaker assertion.
 
 ## Evidence and remaining work
 
@@ -120,10 +104,10 @@ The D-494 [review](../review/optimization-2026-11-03/REPORT.md) records old-code
 redraw fixture: at 201,599 wrapped rows, median frame time changes from 77.206 to 1.812 ms and allocations
 from 49,052,488 to 23,210 bytes/frame. Full-history hashing remains linear. Its historical formal catalogue had 41
 modules, 50 positive configurations, 273 negative controls and one uncompleted wide configuration; seven
-Kani arithmetic harnesses passed. D-495's current counts appear above. Catalogue completeness is not
+Kani arithmetic harnesses passed. D-495's counts remain in its historical report. Catalogue completeness is not
 Rust/SQLite refinement or full-system proof.
 
-The [goal-autonomy source study](../review/goal-autonomy-2026-10-28/REPORT.md) informed D-487; upstream source
+The [work-autonomy source study](../review/goal-autonomy-2026-10-28/REPORT.md) informed D-487; upstream source
 inspection is not an executed comparison. Local scripted providers and process tests do not establish real-model
 success, comparative cost or reduced user intervention. Reviewer accounting, broader provider/terminal
 acceptance and matched Pi trials remain separate candidates. No paid trial or public release is part of D-487.

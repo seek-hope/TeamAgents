@@ -50,7 +50,7 @@ TABLES = {
     "ToolBinding": "[tools.<name>]",
     "Retention": "[retention]",
     "Hooks": "[hooks]",
-    "GoalLimits": "[limits]",
+    "WorkLimits": "[limits]",
     "CheckSpec": "[[checks]]",
 }
 # What the field holds when the key is absent. This is the *Rust* default, not necessarily the effective one: an

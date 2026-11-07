@@ -115,7 +115,7 @@ impl Root {
             max_retries: 2,
             storage_queue: 64,
             poll: Duration::from_millis(15),
-            goal_limits: json!({}),
+            work_limits: json!({}),
             require_shell_approval: false,
         }
     }
@@ -133,8 +133,8 @@ async fn wait_event(handle: &DriverHandle, kind: &str, timeout_ms: u64) -> Json 
     panic!("event {kind} did not arrive within {timeout_ms}ms");
 }
 
-async fn run_to_goal_close(handle: &DriverHandle) -> String {
-    let event = wait_event(handle, "goal_completed", 15_000).await;
+async fn run_to_work_close(handle: &DriverHandle) -> String {
+    let event = wait_event(handle, "work_completed", 15_000).await;
     event["payload"]["status"].as_str().unwrap_or("").to_string()
 }
 
@@ -221,7 +221,7 @@ for line in sys.stdin:
     config.bindings = vec!["host_probe".into()];
     let handle = start(config).await.expect("start");
     handle.input("probe the host").await.expect("input");
-    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
     let results = tool_results(&root);
     let reply = results.iter().find(|entry| entry.contains("outside=")).cloned().unwrap_or_default();
     assert!(reply.contains("outside=ok"), "host mode reaches the host path: {reply}");
@@ -276,7 +276,7 @@ for line in sys.stdin:
         config.bindings = vec!["net_probe".into()];
         let handle = start(config).await.expect("start");
         handle.input("try to reach the listener").await.expect("input");
-        assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED", "{tag}");
+        assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED", "{tag}");
         let results = tool_results(&root);
         let reply = results.iter().find(|entry| entry.contains("network=")).cloned().unwrap_or_default();
         assert!(reply.contains("network=yes"), "{tag}: the server observed {reply:?}");
@@ -394,7 +394,7 @@ for line in sys.stdin:
     config.bindings = vec!["slow_call".into()];
     let handle = start(config).await.expect("start");
     handle.input("call the slow tool").await.expect("input");
-    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
     let results = tool_results(&root);
     let reply = results.iter().find(|entry| entry.contains("timed out")).cloned().unwrap_or_default();
     assert!(!reply.is_empty(), "the timeout reaches the model as a receipt: {results:?}");
@@ -417,7 +417,7 @@ async fn mcp_tool_round_trips_through_the_same_receipt_contract() {
     config.bindings = vec!["echo_service".into()];
     let handle = start(config).await.expect("start");
     handle.input("echo twice").await.expect("input");
-    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
     // advertised with the first model request already (§5.2)
     let advertised = seen.0.lock().unwrap().clone();
     assert!(advertised[0].iter().any(|name| name == "codemode"), "advertised: {advertised:?}");
@@ -451,7 +451,7 @@ return "filtered";
     config.bindings = vec!["echo_service".into()];
     let handle = start(config).await.expect("start");
     handle.input("use the mcp echo tool").await.expect("input");
-    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
     // the model sees one `codemode` tool, not the bound MCP tools individually
     let advertised = seen.0.lock().unwrap().clone();
     assert!(advertised[0].iter().any(|name| name == "codemode"), "advertised: {advertised:?}");
@@ -515,7 +515,7 @@ for line in sys.stdin:
     config.bindings = vec!["stats".into()];
     let handle = start(config).await.expect("start");
     handle.input("count the records").await.expect("input");
-    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
     let results = tool_results(&root);
     let reply = results.iter().find(|entry| entry.contains("count=3")).cloned().unwrap_or_default();
     assert!(!reply.is_empty(), "the structured value is what the script saw: {results:?}");
@@ -557,7 +557,7 @@ sys.exit(0)
     config.bindings = vec!["echo_service".into()];
     let handle = start(config).await.expect("start");
     handle.input("try the mcp echo tool").await.expect("input");
-    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
     let results = tool_results(&root);
     let reply = results.iter().find(|entry| entry.contains("pre_tool hook")).cloned().unwrap_or_default();
     assert!(!reply.is_empty(), "the nested veto reaches the script: {results:?}");
@@ -592,7 +592,7 @@ async fn optional_mcp_service_failure_only_drops_the_capability() {
     config.bindings = vec!["echo_service".into()];
     let handle = start(config).await.expect("start");
     handle.input("just finish").await.expect("input");
-    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
     let advertised = seen.0.lock().unwrap().clone();
     assert!(!advertised[0].iter().any(|name| name == "echo_echo"), "advertised: {advertised:?}");
     handle.shutdown().await.expect("shutdown");
@@ -678,7 +678,7 @@ for line in sys.stdin:
     let handle = start(config).await.expect("restart");
     let event = wait_event(&handle, "operation_completed", 10_000).await;
     assert_eq!(event["payload"]["status"], json!("OUTCOME_UNKNOWN"));
-    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
     let calls = std::fs::read_to_string(&marker).unwrap();
     assert_eq!(calls.matches("called").count(), 1, "the committed MCP call must not be re-issued");
     handle.shutdown().await.expect("shutdown");
@@ -708,7 +708,7 @@ async fn skill_tool_searches_and_reads_through_the_same_contract() {
     config.bindings = vec!["skills".into()];
     let handle = start(config).await.expect("start");
     handle.input("use a skill").await.expect("input");
-    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
     let advertised = seen.0.lock().unwrap().clone();
     assert!(advertised[0].iter().any(|name| name == "skill"), "advertised: {advertised:?}");
     let results = tool_results(&root);
@@ -731,7 +731,7 @@ async fn skill_call_without_the_binding_fails_honestly() {
     config.bindings = vec![]; // advertised by the profile, but not bound
     let handle = start(config).await.expect("start");
     handle.input("use a skill").await.expect("input");
-    assert_eq!(run_to_goal_close(&handle).await, "SUCCEEDED");
+    assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
     let results = tool_results(&root);
     assert!(results.iter().any(|body| body.contains("not bound")), "{results:?}");
     handle.shutdown().await.expect("shutdown");
