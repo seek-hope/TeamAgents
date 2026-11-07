@@ -5,23 +5,26 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
-## D-498 local work-vocabulary replay (2026-11-07)
+## 0. Gate status (re-run 2026-11-07 at `53547c3b`)
 
-The uncommitted D-498 worktree renames the goal vocabulary to work scopes throughout the models and
-configurations; it does not adopt canonical allocation or change the fairness/settlement contract. All 58
-positive configurations passed in 55 traversals with actual exit 0 in 2070.4 seconds, all 298 controls were
-refuted with exit 0 in 275.1 seconds, all 65 witnesses passed in 52.8 seconds, and all nine Kani harnesses
-passed in 34.6 seconds. The full 738-test project gate and PTY matrix also passed.
+D-498/D-499 material commit `53547c3b9358a77fa24320f6b08a5e8b8343f5d9` renames the goal vocabulary to
+work scopes throughout the models and configurations and removes unused Rust mirror types. It does not adopt
+canonical allocation or change the fairness/settlement contract. All **58** positive configurations passed in
+**55** traversals with actual exit 0 in 2070.4 seconds, all **298** named negative controls were refuted with
+exit 0 in 275.1 seconds, all **65** normal-path witnesses passed in 52.8 seconds, and all **9** Kani harnesses
+passed in 34.6 seconds. Kani reported `Complete - 9 successfully verified harnesses, 0 failures, 9 total`.
+The full 738-test project gate and PTY matrix also passed.
 
 Receipts are `work-vocabulary-{model-all-2,counterexamples-1,witnesses-1,kani-1,pty-1,check-final-4}.{json,log}`
 under the ignored `review/tmp/d497/`. The earlier `model-all-1` reached both large state graphs without a
 violation but hit its 2400-second outer timeout during temporal checking; it is retained as exit 124, not a pass.
 The longer replay used unchanged model bounds. D-499 removes only unused Rust mirror types and duplicate
 maintenance guidance; the formal material and Kani subjects are unchanged, so this replay remains applicable
-while the full project gate is re-run. No material commit, independent audit, installation, live-service run or
-public-release result is created by this local replay. The D-496 pin below remains historical evidence.
+while the full project gate is re-run. The replay predates the commit, whose tree pins those same inputs. No
+independent audit, installation, live-service run or public-release result is created by this local replay.
+The D-496 pin below remains historical evidence.
 
-## 0. Gate status (re-run 2026-11-03 at `61feaf5f`)
+## D-496 historical gate (2026-11-03 at `61feaf5f`)
 
 D-496 material commit `61feaf5fe0682632a1203607c21e0df39c86f73f` pins the models, configurations,
 proof sources, runner and Makefile. All 417 material-file SHA-256 values match the validated tree and the

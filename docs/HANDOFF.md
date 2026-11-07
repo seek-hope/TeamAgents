@@ -1,14 +1,15 @@
 # Development handoff
 
-D-499 is the current maintenance follow-up: ten unused persistence mirror types are removed and duplicate
-handoff/development guidance is consolidated. It changes no schema, protocol, runtime behavior or formal model.
+D-498/D-499 are the current committed source baseline (`53547c3b`). The maintenance follow-up removes ten
+unused persistence mirror types and consolidates duplicate handoff/development guidance without changing
+schema, protocol, runtime behavior or the formal model.
 
-D-498 is the current uncommitted worktree change: the goal entity and its public vocabulary are removed in
-favor of work scopes, with schema 8 migration preserving old budget, acceptance, ownership and event history.
-The full 738-test repository gate, 58 positive configurations/55 traversals, 298 controls, 65 witnesses, nine
-Kani harnesses and the complete PTY matrix pass. The first positive replay timed out at 2400 seconds and is not
-counted; the complete replay has actual exit 0 in 2070.4 seconds. These are local worktree receipts, not a new
-material commit or canonical-allocation proof. Runtime/installed binaries and the public release remain unchanged.
+The goal entity and its public vocabulary are removed in favor of work scopes, with schema 8 migration
+preserving old budget, acceptance, ownership and event history. The full 738-test repository gate, 58 positive
+configurations/55 traversals, 298 controls, 65 witnesses, nine Kani harnesses and the complete PTY matrix pass.
+The first positive replay timed out at 2400 seconds and is not counted; the complete replay has actual exit 0
+in 2070.4 seconds. These pre-commit local receipts are pinned by the material commit; they are not a
+canonical-allocation proof. Runtime/installed binaries and the public release remain unchanged.
 
 Earlier baselines are kept as history rather than repeated as current work. D-496 formal material is pinned at
 `61feaf5fe0682632a1203607c21e0df39c86f73f`; D-494 runtime/install material is pinned at
