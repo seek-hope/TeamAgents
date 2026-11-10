@@ -7,7 +7,7 @@ D-500 adds lazy input revisions, reviewer budget/usage recovery, real Cargo/Pyth
 MCP resource list/read. It preserves schema, authority and cancellation contracts; the remaining live-service,
 matched-Pi, general-SDK and full-proof obligations stay open.
 
-D-498/D-499 are the previous committed baseline (`53547c3b`). D-500 (`bdfc2e27`) removes ten
+D-498/D-499 are the previous committed baseline (`53547c3b`). D-500 (`bdfc2e27`) and D-501 (`cd6125f9`) remove ten
 unused persistence mirror types and consolidates duplicate handoff/development guidance without changing
 schema, protocol, runtime behavior or the formal model.
 
