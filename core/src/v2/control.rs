@@ -296,6 +296,8 @@ fn dispatch(
         "cancel_operation" => cancel_operation(tx, session_id, params),
         "approve" => approve(tx, session_id, params, identity),
         "deny" => deny(tx, session_id, params, identity),
+        "begin_review" => begin_review(tx, session_id, params, identity),
+        "record_review_attempt" => record_review_attempt(tx, session_id, params, identity),
         "review_decision" => review_decision(tx, session_id, params, identity),
         "fail_request" => fail_request(tx, session_id, params),
         "cancel_request" => cancel_request(tx, session_id, params),
@@ -2213,7 +2215,8 @@ fn submit_input(tx: &Connection, session_id: &str, params: &Json, identity: &Ide
         rusqlite::params![envelope_id, session_id, sender, instance_id, epoch, payload.to_string(), sequence, state],
     )
     .map_err(|e| format!("envelope {envelope_id}: {e}"))?;
-    record_input_revision(tx, envelope_id, 0, "submitted", &payload)?;
+    // Revision history is lazy: the envelope remains the original payload until
+    // the first edit/cancel, whose transaction records revision 0 before changing it.
     if deferred {
         publish_list(tx, session_id, params)?;
         event(tx, session_id, "input_queued", instance_id, &json!({"envelope_id": envelope_id, "deferred": true}))?;
@@ -4056,6 +4059,153 @@ fn require_system(identity: &Identity) -> Result<(), String> {
         return Err("automatic review decisions require the runtime's system identity".into());
     }
     Ok(())
+}
+
+/// Register an approval-review request without advancing the instance's phase.
+/// It shares the work's budget and deadline, while the parked instance remains parked.
+fn begin_review(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
+    require_system(identity)?;
+    let request_id = params["request_id"].as_str().ok_or("begin_review.request_id required")?;
+    let operation_id = params["operation_id"].as_str().ok_or("begin_review.operation_id required")?;
+    let est = params["est_prompt_tokens"].as_i64().ok_or("begin_review.est_prompt_tokens required")?;
+    let (instance_id, epoch, operation_work, operation_status, approval_status): (
+        String,
+        i64,
+        Option<String>,
+        String,
+        String,
+    ) = tx
+        .query_row(
+            "SELECT r.instance_id,o.epoch,o.work_id,o.status,a.status FROM operations o
+             JOIN decisions d ON d.decision_id=o.decision_id JOIN model_requests r ON r.request_id=d.request_id
+             JOIN instances i ON i.id=r.instance_id JOIN approvals a ON a.operation_id=o.operation_id
+             WHERE o.operation_id=?1 AND i.session_id=?2",
+            rusqlite::params![operation_id, session_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        )
+        .map_err(|e| format!("begin_review operation {operation_id}: {e}"))?;
+    if operation_status != "PREPARED" || approval_status != "PENDING" {
+        return Err(format!("operation {operation_id} is not awaiting its pending approval"));
+    }
+    let (session, _, lifecycle, _, _) = load_instance(tx, &instance_id)?;
+    if session != session_id || lifecycle == "TERMINATED" {
+        return Err(format!("instance {instance_id} is not live in this session"));
+    }
+
+    // A driver restart must not replay an unknown model call. Close any pending
+    // review for this operation as unknown usage and release its reservation first.
+    let pending: Vec<String> = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT request_id FROM model_requests WHERE request_ref=?1 AND kind='review' AND status='PENDING'",
+            )
+            .map_err(|e| format!("review recovery prepare: {e}"))?;
+        let rows =
+            stmt.query_map([operation_id], |row| row.get(0)).map_err(|e| format!("review recovery query: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("review recovery rows: {e}"))?
+    };
+    for old in pending {
+        record_attempt(
+            tx,
+            session_id,
+            &json!({"request_id": old, "attempt_id": format!("{old}/lost"), "status": "LOST",
+                    "error_class": "interrupted", "unknown_usage": true}),
+        )?;
+        tx.execute("UPDATE model_requests SET status='CANCELLED' WHERE request_id=?1", [&old])
+            .map_err(|e| format!("review recovery close: {e}"))?;
+        release_reservation(tx, &old)?;
+        event(
+            tx,
+            session_id,
+            "review_interrupted",
+            &instance_id,
+            &json!({"request_id": old, "operation_id": operation_id, "unknown_usage": true}),
+        )?;
+    }
+
+    let work_id = match operation_work {
+        Some(work) => Some(work),
+        None => budget_work(tx, &instance_id)?,
+    };
+    if let Some(work) = work_id.as_deref() {
+        if !work_is_active(tx, work)? {
+            return Ok(json!({"request_id": request_id, "work_inactive": true,
+                             "reason": format!("work {work} is not active")}));
+        }
+        if work_deadline_passed(tx, work)? {
+            event(
+                tx,
+                session_id,
+                "work_deadline_refused",
+                &instance_id,
+                &json!({"work_id": work, "request_id": request_id, "kind": "review"}),
+            )?;
+            return Ok(json!({"request_id": request_id, "deadline_refused": true,
+                             "reason": format!("work {work} deadline passed")}));
+        }
+        if let Some(reason) = reserve_budget(tx, session_id, work, &instance_id, request_id, est)? {
+            return Ok(json!({"request_id": request_id, "budget_refused": true, "reason": reason}));
+        }
+    }
+    tx.execute(
+        "INSERT INTO model_requests
+         (request_id,instance_id,epoch,work_id,request_ref,status,est_prompt_tokens,kind,offered_tools,surface_authorized)
+         VALUES (?1,?2,?3,?4,?5,'PENDING',?6,'review','[]',1)",
+        rusqlite::params![request_id, instance_id, epoch, work_id, operation_id, est],
+    )
+    .map_err(|e| format!("begin_review {request_id}: {e}"))?;
+    event(
+        tx,
+        session_id,
+        "review_began",
+        &instance_id,
+        &json!({"request_id": request_id, "operation_id": operation_id, "work_id": work_id,
+                "est_prompt_tokens": est}),
+    )?;
+    Ok(json!({"request_id": request_id, "work_id": work_id, "operation_id": operation_id,
+              "kind": "review", "epoch": epoch}))
+}
+
+/// Record and close an approval-review attempt atomically. No response text enters
+/// the member's context; the approval decision remains a separate user-governed fact.
+fn record_review_attempt(
+    tx: &Connection,
+    session_id: &str,
+    params: &Json,
+    identity: &Identity,
+) -> Result<Json, String> {
+    require_system(identity)?;
+    let request_id = params["request_id"].as_str().ok_or("record_review_attempt.request_id required")?;
+    let (kind, status): (String, String) = tx
+        .query_row("SELECT kind,status FROM model_requests WHERE request_id=?1", [request_id], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .map_err(|e| format!("record_review_attempt request {request_id}: {e}"))?;
+    if kind != "review" || status != "PENDING" {
+        return Err(format!("request {request_id} is not a pending review"));
+    }
+    let attempt_status = params["status"].as_str().ok_or("record_review_attempt.status required")?;
+    if !matches!(attempt_status, "COMPLETE" | "FAILED") {
+        return Err(format!("review attempt status must be COMPLETE or FAILED, got {attempt_status:?}"));
+    }
+    let result = record_attempt(tx, session_id, params)?;
+    let closed = if attempt_status == "COMPLETE" { "COMPLETE" } else { "FAILED" };
+    tx.execute("UPDATE model_requests SET status=?1 WHERE request_id=?2", rusqlite::params![closed, request_id])
+        .map_err(|e| format!("review close: {e}"))?;
+    release_reservation(tx, request_id)?;
+    let operation_id: String = tx
+        .query_row("SELECT request_ref FROM model_requests WHERE request_id=?1", [request_id], |row| row.get(0))
+        .map_err(|e| format!("review operation: {e}"))?;
+    event(
+        tx,
+        session_id,
+        "review_attempt_closed",
+        &operation_id,
+        &json!({"request_id": request_id, "operation_id": operation_id, "status": closed,
+                "unknown_usage": params["unknown_usage"].as_bool().unwrap_or(false)}),
+    )?;
+    Ok(json!({"request_id": request_id, "operation_id": operation_id, "status": closed,
+              "selected": result["selected"].clone()}))
 }
 
 /// Automatic-review decision. It is a distinct command from `approve`/`deny`
@@ -6731,6 +6881,112 @@ mod tests {
             .query_row("SELECT status FROM operations WHERE operation_id = 'd-y:0'", [], |row| row.get(0))
             .unwrap();
         assert_eq!(operation, "CANCELLED");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn review_usage_is_reserved_recorded_and_recovered() {
+        let (mut ctl, path) = control("review-accounting");
+        create_instance(&mut ctl, "i1");
+        ctl.submit(
+            cmd(
+                "work-review",
+                "create_work",
+                json!({"id": "g1", "instance_id": "i1", "limits": {"max_total_tokens": 1000}}),
+            ),
+            Identity::User,
+        )
+        .expect("work");
+        open_decision(&mut ctl, "x", "i1", 1, 1);
+        let asked = ctl
+            .submit(
+                cmd(
+                    "approve-review",
+                    "dispatch_operation",
+                    json!({"operation_id": "d-x:0", "approval_required": true}),
+                ),
+                Identity::System,
+            )
+            .expect("approval");
+        assert_eq!(asked["status"], json!("APPROVAL_REQUIRED"));
+        let initial_total: i64 = ctl
+            .connection()
+            .query_row("SELECT json_extract(known_usage_json,'$.total') FROM work_scopes WHERE id='g1'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let begin = |request: &str, estimate: i64| json!({"request_id": request, "operation_id": "d-x:0", "est_prompt_tokens": estimate});
+        assert!(ctl.submit(cmd("review-user", "begin_review", begin("review-user", 1)), Identity::User).is_err());
+        let first = ctl.submit(cmd("begin-review-1", "begin_review", begin("review-1", 10)), Identity::System).unwrap();
+        assert_eq!(first["work_id"], json!("g1"));
+        let pending: (String, String) = ctl
+            .connection()
+            .query_row("SELECT kind,status FROM model_requests WHERE request_id='review-1'", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(pending, ("review".into(), "PENDING".into()));
+        let reserved: String = ctl
+            .connection()
+            .query_row("SELECT reservations_json FROM work_scopes WHERE id='g1'", [], |row| row.get(0))
+            .unwrap();
+        assert!(reserved.contains("review-1"), "the review has its own reservation: {reserved}");
+        ctl.submit(
+            cmd(
+                "record-review-1",
+                "record_review_attempt",
+                json!({"request_id": "review-1", "attempt_id": "review-1/a1", "status": "COMPLETE",
+                       "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}}),
+            ),
+            Identity::System,
+        )
+        .expect("record review");
+        let known: String = ctl
+            .connection()
+            .query_row("SELECT known_usage_json FROM work_scopes WHERE id='g1'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(serde_json::from_str::<Json>(&known).unwrap()["total"], json!(initial_total + 5));
+        let released: String = ctl
+            .connection()
+            .query_row("SELECT reservations_json FROM work_scopes WHERE id='g1'", [], |row| row.get(0))
+            .unwrap();
+        assert!(!released.contains("review-1"));
+
+        ctl.submit(cmd("begin-review-2", "begin_review", begin("review-2", 10)), Identity::System).unwrap();
+        ctl.submit(cmd("begin-review-3", "begin_review", begin("review-3", 10)), Identity::System).unwrap();
+        let recovered: String = ctl
+            .connection()
+            .query_row("SELECT status FROM model_requests WHERE request_id='review-2'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(recovered, "CANCELLED");
+        let unknown: i64 = ctl
+            .connection()
+            .query_row("SELECT unknown_usage FROM work_scopes WHERE id='g1'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(unknown, 1, "the interrupted review's possible usage is not erased");
+        ctl.submit(
+            cmd(
+                "record-review-3",
+                "record_review_attempt",
+                json!({"request_id": "review-3", "attempt_id": "review-3/a1", "status": "COMPLETE",
+                       "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7}}),
+            ),
+            Identity::System,
+        )
+        .unwrap();
+        let known: String = ctl
+            .connection()
+            .query_row("SELECT known_usage_json FROM work_scopes WHERE id='g1'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(serde_json::from_str::<Json>(&known).unwrap()["total"], json!(initial_total + 12));
+        let refused =
+            ctl.submit(cmd("begin-review-over", "begin_review", begin("review-over", 2000)), Identity::System).unwrap();
+        assert_eq!(refused["budget_refused"], json!(true));
+        let registered: i64 = ctl
+            .connection()
+            .query_row("SELECT COUNT(*) FROM model_requests WHERE request_id='review-over'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(registered, 0, "a refused review never calls the model or registers a request");
         cleanup(&path);
     }
 

@@ -1,4 +1,4 @@
-> Development source validation (D-499, 2026-11-07): core 175 / engine 459 / tui 104. These source
+> Development source validation (D-499, 2026-11-07): core 177 / engine 460 / tui 104. These source
 > changes have not been published as a replacement archive. The release description below records D-493.
 > Current source uses work scopes and schema 8 with explicit legacy migration; the published archive does not.
 

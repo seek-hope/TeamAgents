@@ -81,7 +81,6 @@ def render(records):
               "  all work states are not completely composed. The new export model checks a read snapshot and publication only.",
               "- Wait diagnosis is based on impossible conditions and available external paths, not a graph-cycle",
               "  detector; absence of a timer is not proof of deadlock. The complete diagnostic implementation is not proved.",
-              "- Reviewer usage propagation is still an implementation accounting gap. Model accounting does not fix it.",
               "- The wider central configuration and arbitrary-string capability proofs require separate completed",
               "  evidence. Timeouts, simulation and smaller configurations cannot substitute for them.", ""]
     return "\n".join(lines)

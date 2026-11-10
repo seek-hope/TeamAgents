@@ -472,6 +472,8 @@ module the method's rule is checked in; the property-by-property anchors above s
 | `complete_operation` | `V2Control.tla` |
 | `cancel_operation` | `V2Control.tla` |
 | `approve` | `V2Approval.tla` |
+| `begin_review` | `unproven`: the reviewer request shares the work budget and recovers interrupted usage without changing instance phase; the control/driver tests cover this, but no TLA model covers the reviewer |
+| `record_review_attempt` | `unproven`: the attempt records usage, closes the review and releases its reservation atomically; this is covered by control/driver tests, not a reviewer-model proof |
 | `review_decision` | `unproven`: D-458 automatic review decides one pending operation approval; the control boundary and the reviewer adapter are tested, but no TLA model covers the reviewer |
 | `set_instance_profile` | `unproven`: D-470 user-only model/effort switch at a READY/WAITING boundary, with the driver reloading the profile before each request; the control-plane guard and the reload are covered by core tests, but no TLA model covers the switch |
 | `deny` | `V2Approval.tla` |

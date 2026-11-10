@@ -110,5 +110,5 @@ Rust/SQLite refinement or full-system proof.
 
 The [work-autonomy source study](../review/goal-autonomy-2026-10-28/REPORT.md) informed D-487; upstream source
 inspection is not an executed comparison. Local scripted providers and process tests do not establish real-model
-success, comparative cost or reduced user intervention. Reviewer accounting, broader provider/terminal
+success, comparative cost or reduced user intervention. Reviewer judgement quality, broader provider/terminal
 acceptance and matched Pi trials remain separate candidates. No paid trial or public release is part of D-487.

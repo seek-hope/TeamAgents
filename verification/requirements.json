@@ -247,7 +247,7 @@
           "path": "core/src/v2/control/work_tests.rs"
         }
       ],
-      "remaining": "Scheduler/provider fairness is assumed; reviewer usage propagation remains an accounting gap."
+      "remaining": "Scheduler/provider fairness is assumed; reviewer usage is recorded through the same budget path, but review quality remains external."
     },
     {
       "id": "Q11",
@@ -880,7 +880,7 @@
           "path": "engine/tests/cases/autonomy.rs"
         }
       ],
-      "remaining": "Reviewer usage propagation remains incomplete; unknown prices cannot be made exact by a model."
+      "remaining": "Reviewer usage is recorded with reservation/recovery; unknown provider prices remain visibly unknown and cannot be made exact by a model."
     },
     {
       "id": "A19",

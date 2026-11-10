@@ -19,7 +19,7 @@ check passed; this does not change the comparison evidence below.
 | Editing and tools (DD-05) | Atomic disjoint edits, bounded read parallelism, file/Shell/Skill tools, provider-neutral search, MCP and codemode | Host execution is not confinement. Complete cross-language/Skill workflows need broader evidence |
 | Conversation and models (D-489–D-491 / DD-06) | Grok-style Leader conversation with elevated prompts, grouped activity, live status, compact model chrome and `@` file references; shared message/queue editing and complete answers | Scripted TestBackend/PTY checks, not a usability benchmark or every terminal/provider |
 | Collaboration and recovery | Scoped task grants, independent members, worktrees, durable operations, runner recovery and declared-workspace takeover checks | Task cancellation is not process stop. Unknown effects are not replayed; remote/escaped effects are outside the local group observer |
-| Verification and accounting | User-required checks, scoped completion evidence, known/unknown usage, native windows and cache telemetry | Check quality and semantic completeness remain distinct. Reviewer usage is still not charged to the work |
+| Verification and accounting | User-required checks, scoped completion evidence, known/unknown usage, native windows and cache telemetry. Reviewer calls share the work budget and record interrupted/unknown usage | Check quality and semantic completeness remain distinct; reviewer judgement still needs independent adversarial evidence |
 
 DD-11 was approved and implemented as D-487; it is no longer an unapproved proposal. Its dated
 [source study](../review/goal-autonomy-2026-10-28/REPORT.md) explains the upstream design inputs and their limits.
@@ -36,7 +36,7 @@ bounded agreement. Paid trials, external-service changes and publication need se
 |---|---|---|
 | DD-02 / P0 | Complete host development and Skill workflows | Real Rust, Python and Node edit/build/test tasks; relative Skill files/scripts; missing tools and capability revocation |
 | DD-03 / P0, postponed | Matched Pi comparison on held-out coding tasks | Frozen versions/tasks, same model/native window/effort/authority/budget, repeated paired trials, hidden checks, honest outcomes, interventions and time; priced cost only if authorized |
-| DD-07 / P1 | Complete model accounting and approval review | Every model-call class accounted for, unknown usage retained, independent adversarial review; dated price sources where authorized |
+| DD-07 / P1 | Approval-review quality and adversarial evidence | Reviewer usage accounting, reservation and interruption recovery are implemented; independent adversarial review and dated price semantics remain |
 | DD-08 / P1 | Wider provider, image, MCP OAuth and terminal acceptance | Isolated real round trips with denial, revocation, restart and cleanup; the user's selected shell, terminal, multiplexer and SSH combinations |
 | DD-09 / P2 | Additional integration coverage | Versioned contracts and runnable examples for a specifically needed auth, resource, SDK/client or extension interface |
 | DD-10 / P2 | Distribution freshness | Exact authorized artifacts, clean-host install/update/rollback, retained config and source/artifact identity; documentation work does not authorize a release |

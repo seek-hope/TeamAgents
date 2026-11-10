@@ -149,28 +149,30 @@ policy on its own. See the handler and control wrapper for scope, revision, gran
 | `cancel_operation` | `operation_id`, `reason` | no | `core/src/v2/control.rs:296` |
 | `approve` | `approval_id`, `expires_at` | yes | `core/src/v2/control.rs:297` |
 | `deny` | `approval_id` | yes | `core/src/v2/control.rs:298` |
-| `review_decision` | `approval_id`, `outcome`, `rationale`, `reviewer_model`, `risk_level`, `user_authorization` | yes | `core/src/v2/control.rs:299` |
-| `fail_request` | `park`, `reason`, `request_id` | no | `core/src/v2/control.rs:300` |
-| `cancel_request` | `reason`, `request_id` | no | `core/src/v2/control.rs:301` |
-| `interrupt_instance` | `instance_id`, `reason` | yes | `core/src/v2/control.rs:302` |
-| `complete_work` | `instance_id`, `work_id` | no | `core/src/v2/control.rs:303` |
-| `register_check_runs` | — | yes | `core/src/v2/control.rs:304` |
-| `register_verification` | — | yes | `core/src/v2/control.rs:305` |
-| `repair_completion` | `failures`, `instance_id`, `round`, `work_id` | yes | `core/src/v2/control.rs:306` |
-| `block_work` | `instance_id`, `reason`, `work_id` | yes | `core/src/v2/control.rs:307` |
-| `deadline_warning` | `instance_id`, `work_id` | yes | `core/src/v2/control.rs:308` |
-| `work_checks_briefing` | `instance_id`, `work_id` | yes | `core/src/v2/control.rs:309` |
-| `cancel_work` | `work_id` | yes | `core/src/v2/control.rs:310` |
-| `close_completion` | `instance_id` | no | `core/src/v2/control.rs:311` |
-| `artifact_abandon` | `id` | no | `core/src/v2/control.rs:312` |
-| `set_lifecycle` | `instance_id`, `lifecycle`, `reason` | yes | `core/src/v2/control.rs:313` |
-| `artifact_stage` | `digest`, `id`, `kind`, `owner_ref`, `owner_scope`, `size`, `storage_ref` | no | `core/src/v2/control.rs:314` |
-| `artifact_publish` | `id` | no | `core/src/v2/control.rs:315` |
-| `artifact_release_spent_owners` | `days`, `limit` | no | `core/src/v2/control.rs:316` |
-| `artifact_gc_claim` | `limit` | no | `core/src/v2/control.rs:317` |
-| `artifact_collect` | `id` | no | `core/src/v2/control.rs:318` |
-| `prune_history` | `days`, `evidence`, `now` | no | `core/src/v2/control.rs:319` |
-| `fork_reset` | `keep_instance`, `source_root`, `target_root` | yes | `core/src/v2/control.rs:320` |
+| `begin_review` | `est_prompt_tokens`, `operation_id`, `request_id` | yes | `core/src/v2/control.rs:299` |
+| `record_review_attempt` | `request_id`, `status`, `unknown_usage` | yes | `core/src/v2/control.rs:300` |
+| `review_decision` | `approval_id`, `outcome`, `rationale`, `reviewer_model`, `risk_level`, `user_authorization` | yes | `core/src/v2/control.rs:301` |
+| `fail_request` | `park`, `reason`, `request_id` | no | `core/src/v2/control.rs:302` |
+| `cancel_request` | `reason`, `request_id` | no | `core/src/v2/control.rs:303` |
+| `interrupt_instance` | `instance_id`, `reason` | yes | `core/src/v2/control.rs:304` |
+| `complete_work` | `instance_id`, `work_id` | no | `core/src/v2/control.rs:305` |
+| `register_check_runs` | — | yes | `core/src/v2/control.rs:306` |
+| `register_verification` | — | yes | `core/src/v2/control.rs:307` |
+| `repair_completion` | `failures`, `instance_id`, `round`, `work_id` | yes | `core/src/v2/control.rs:308` |
+| `block_work` | `instance_id`, `reason`, `work_id` | yes | `core/src/v2/control.rs:309` |
+| `deadline_warning` | `instance_id`, `work_id` | yes | `core/src/v2/control.rs:310` |
+| `work_checks_briefing` | `instance_id`, `work_id` | yes | `core/src/v2/control.rs:311` |
+| `cancel_work` | `work_id` | yes | `core/src/v2/control.rs:312` |
+| `close_completion` | `instance_id` | no | `core/src/v2/control.rs:313` |
+| `artifact_abandon` | `id` | no | `core/src/v2/control.rs:314` |
+| `set_lifecycle` | `instance_id`, `lifecycle`, `reason` | yes | `core/src/v2/control.rs:315` |
+| `artifact_stage` | `digest`, `id`, `kind`, `owner_ref`, `owner_scope`, `size`, `storage_ref` | no | `core/src/v2/control.rs:316` |
+| `artifact_publish` | `id` | no | `core/src/v2/control.rs:317` |
+| `artifact_release_spent_owners` | `days`, `limit` | no | `core/src/v2/control.rs:318` |
+| `artifact_gc_claim` | `limit` | no | `core/src/v2/control.rs:319` |
+| `artifact_collect` | `id` | no | `core/src/v2/control.rs:320` |
+| `prune_history` | `days`, `evidence`, `now` | no | `core/src/v2/control.rs:321` |
+| `fork_reset` | `keep_instance`, `source_root`, `target_root` | yes | `core/src/v2/control.rs:322` |
 
 ### Object fields built by the daemon and diagnostics
 

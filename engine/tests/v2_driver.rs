@@ -925,7 +925,60 @@ async fn auto_review_allows_one_operation_without_a_user_decision() {
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     assert!(marker.exists(), "an auto-reviewed command must run");
+    let connection = rusqlite::Connection::open(root.dir.join("session.sqlite")).unwrap();
+    let (kind, status): (String, String) = connection
+        .query_row("SELECT kind,status FROM model_requests WHERE kind='review'", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .expect("the review is a first-class model request");
+    assert_eq!((kind.as_str(), status.as_str()), ("review", "COMPLETE"));
+    let review_tokens: i64 = connection
+        .query_row(
+            "SELECT json_extract(a.usage_json,'$.total_tokens') FROM attempts a
+             JOIN model_requests r ON r.request_id=a.request_id WHERE r.kind='review'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(review_tokens, 5);
+    let known_total: i64 = connection
+        .query_row("SELECT json_extract(known_usage_json,'$.total') FROM work_scopes", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(known_total, 15, "the shell, reviewer and finish calls are all billed");
+    drop(connection);
 
+    handle.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn auto_review_failure_keeps_pending_and_records_unknown_usage() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("auto-review-unknown-usage");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let script = vec![
+        Step::Message(shell_call("c1", "printf should-not-run > denied.txt")),
+        Step::Error("review transport failed"),
+    ];
+    let mut config = root.config(ScriptedProvider { script: Mutex::new(script.into()) });
+    config.require_shell_approval = true;
+    config.approvals_reviewer = "auto_review".into();
+    config.permissions = "approved_scope".into();
+    let handle = start(config).await.expect("start");
+    handle.input("run the reviewed command").await.expect("input");
+    let closed = wait_event(&handle, "review_attempt_closed", 10_000).await;
+    assert_eq!(closed["payload"]["status"], json!("FAILED"));
+    assert_eq!(closed["payload"]["unknown_usage"], json!(true));
+    let connection = rusqlite::Connection::open(root.dir.join("session.sqlite")).unwrap();
+    let status: String =
+        connection.query_row("SELECT status FROM model_requests WHERE kind='review'", [], |row| row.get(0)).unwrap();
+    assert_eq!(status, "FAILED");
+    let unknown: i64 = connection.query_row("SELECT unknown_usage FROM work_scopes", [], |row| row.get(0)).unwrap();
+    assert_eq!(unknown, 1);
+    let pending: i64 =
+        connection.query_row("SELECT COUNT(*) FROM approvals WHERE status='PENDING'", [], |row| row.get(0)).unwrap();
+    assert_eq!(pending, 1, "a failed review never becomes an implicit approval");
+    assert!(!root.dir.join("ws").join("denied.txt").exists());
+    drop(connection);
     handle.shutdown().await.expect("shutdown");
 }
 

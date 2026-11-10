@@ -510,6 +510,9 @@ pub struct Driver<P: Provider> {
     wire_mask: Option<std::collections::HashSet<String>>,
     /// User hooks (`[hooks] notify` / `pre_tool`), if the config configures any.
     hooks: Option<Arc<Hooks>>,
+    /// A failed review stays with the user for this driver's lifetime. Restarting
+    /// is explicit recovery; a pending approval alone never causes a retry storm.
+    review_failed: std::collections::HashSet<String>,
     /// Last lifecycle seen by the loop: `run_paused` fires on the edge, and the
     /// boot value never counts as a transition.
     last_lifecycle: Option<String>,
@@ -756,6 +759,7 @@ pub(crate) fn spawn_driver<P: Provider + 'static>(
         last_prompt_loaded: false,
         wire_mask: None,
         hooks,
+        review_failed: std::collections::HashSet::new(),
         last_lifecycle: None,
     };
     let task = tokio::spawn(driver.run());
@@ -2247,12 +2251,53 @@ that delegated it learns the outcome only from a settlement.";
                 let scope = json!({"workspace": self.config.workspace.display().to_string(),
                                    "permissions": self.config.permissions});
                 let request = reviewer::build_request(&model, &self.config.profile.options, intent, &context, &scope);
+                let request_id = request.request_id.clone();
+                let began = self
+                    .submit(
+                        self.command(
+                            format!("review-begin-{request_id}"),
+                            "begin_review",
+                            json!({"request_id": request_id, "operation_id": operation_id,
+                                   "est_prompt_tokens": request.est_prompt_tokens}),
+                        ),
+                        Identity::System,
+                    )
+                    .await?;
+                if began["budget_refused"].as_bool().unwrap_or(false)
+                    || began["deadline_refused"].as_bool().unwrap_or(false)
+                    || began["work_inactive"].as_bool().unwrap_or(false)
+                {
+                    return Err(began["reason"].as_str().unwrap_or("approval review was refused").into());
+                }
                 let cancel = Cancel::new();
-                match reviewer_provider.as_ref() {
+                let started = std::time::Instant::now();
+                let reviewed = match reviewer_provider.as_ref() {
                     Some(provider) => reviewer::review(provider, &request, &cancel).await,
                     None => reviewer::review(&self.config.provider, &request, &cancel).await,
+                };
+                let elapsed_ms = started.elapsed().as_millis() as u64;
+                let (assessment, usage, failure) = match reviewed {
+                    Ok((assessment, usage)) => (Some(assessment), usage, None),
+                    Err(error) => (None, None, Some(error)),
+                };
+                let unknown_usage = usage.is_none();
+                self.submit(
+                    self.command(
+                        format!("review-attempt-{request_id}"),
+                        "record_review_attempt",
+                        json!({"request_id": request_id, "attempt_id": format!("{request_id}/1"),
+                               "status": if assessment.is_some() { "COMPLETE" } else { "FAILED" },
+                               "elapsed_ms": elapsed_ms, "usage": usage.map(|usage| usage.to_json()),
+                               "unknown_usage": unknown_usage,
+                               "error_class": failure.as_ref().map(|_| "review_failed")}),
+                    ),
+                    Identity::System,
+                )
+                .await?;
+                if let Some(error) = failure {
+                    return Err(format!("{error:?}"));
                 }
-                .map_err(|error| format!("{error:?}"))?
+                assessment.expect("a completed review has an assessment")
             }
         };
         let outcome = match assessment.outcome {
@@ -2451,12 +2496,16 @@ that delegated it learns the outcome only from a settlement.";
                         if self.config.approvals_reviewer == "auto_review"
                             && self.config.permissions != "full_auto"
                             && !approval_id.is_empty()
+                            && !self.review_failed.contains(&operation_id)
                         {
                             match self.review_operation(&operation_id, &intent, &approval_id).await {
                                 Ok(_) => {}
-                                Err(error) => eprintln!(
-                                    "auto-review left approval {approval_id} pending instead of allowing it: {error}"
-                                ),
+                                Err(error) => {
+                                    self.review_failed.insert(operation_id.clone());
+                                    eprintln!(
+                                        "auto-review left approval {approval_id} pending instead of allowing it: {error}"
+                                    );
+                                }
                             }
                         }
                         // The reviewer either decided (the next step re-reads),

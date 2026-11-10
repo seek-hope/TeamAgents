@@ -9,7 +9,7 @@
 use crate::providers::{Cancel, Provider};
 use serde_json::{json, Value as Json};
 use std::time::Duration;
-use teamagents_core::kernel::{estimated_tokens, ModelRequest};
+use teamagents_core::kernel::{estimated_tokens, ModelRequest, Usage};
 
 pub const REVIEW_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_CONTEXT_CHARS: usize = 8_000;
@@ -123,7 +123,7 @@ pub async fn review<P: Provider>(
     provider: &P,
     request: &ModelRequest,
     cancel: &Cancel,
-) -> Result<Assessment, ReviewError> {
+) -> Result<(Assessment, Option<Usage>), ReviewError> {
     let mut on_event = |_| {};
     let future = provider.complete(request, cancel, &mut on_event);
     let outcome = match tokio::time::timeout(REVIEW_TIMEOUT, future).await {
@@ -135,7 +135,8 @@ pub async fn review<P: Provider>(
         }
     };
     let text = outcome.response.message["content"].as_str().unwrap_or("");
-    parse(text).map_err(ReviewError::Parse)
+    let assessment = parse(text).map_err(ReviewError::Parse)?;
+    Ok((assessment, outcome.response.usage))
 }
 
 #[cfg(test)]

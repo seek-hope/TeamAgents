@@ -134,6 +134,33 @@ fn concurrent_cancel_and_drain_never_apply_cancelled_input() {
 }
 
 #[test]
+fn unedited_input_has_no_redundant_revision_copy() {
+    let (session, mut ctl) = Session::new();
+    queue(&mut ctl, "a", "original");
+    let initial: i64 = ctl
+        .connection()
+        .query_row("SELECT COUNT(*) FROM input_revisions WHERE envelope_id='a'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(initial, 0, "the envelope already owns the unchanged original payload");
+    apply(&mut ctl, "edit", "edit_input", revise("a", 0)).unwrap();
+    let rows: Vec<(i64, String)> = ctl
+        .connection()
+        .prepare("SELECT revision, payload_json FROM input_revisions WHERE envelope_id='a' ORDER BY revision")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].0, 0);
+    assert_eq!(rows[1].0, 1);
+    assert_eq!(serde_json::from_str::<Value>(&rows[0].1).unwrap()["text"], "original");
+    assert_eq!(serde_json::from_str::<Value>(&rows[1].1).unwrap()["text"], "revised");
+    drop(ctl);
+    drop(session);
+}
+
+#[test]
 fn migration_preserves_legacy_pending_input_and_captures_original_before_edit() {
     let (session, mut ctl) = Session::new();
     queue(&mut ctl, "a", "legacy");

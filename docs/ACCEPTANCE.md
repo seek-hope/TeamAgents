@@ -9,7 +9,7 @@ boundaries; later source changes do not inherit those results.
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 175 / engine 459 / tui 104 test targets).
+`make check` is green (core 177 / engine 460 / tui 104 test targets).
 `make pty` passed on 2026-11-03: the terminal-profile matrix (xterm-256color, screen-256color, tmux-256color, xterm-kitty and Kitty under tmux) plus both forced graphics protocols, all rc 0 and
 credential-free. PTY checks cover protocol bytes, input ownership, resize and cleanup, not a complete
 actual graphical-terminal or OS matrix. These gates do not renew real-provider, OAuth, formal-proof or
@@ -220,7 +220,7 @@ unresolved policy dependencies without presenting every former gap as current.
 | Repository AGENTS.md discovery, trust and precedence are implemented; Leader source observations and an edit-between-turn test exist, while worker/worktree coverage and durable per-request provenance remain open | D-467, D-479, engine/src/config.rs |
 | Multi-edit and parallel read-only batches are implemented; ordered per-instance tools and MCP-only synchronous codemode remain | D-469, engine/src/reference.rs, engine/src/v2/driver.rs, engine/src/codemode.rs |
 | Message-level branches and fork-while-live remain; the model/effort switch and explicit after-turn follow-up queue are implemented, and fork requires a stopped source daemon | D-470, D-473, D-476, engine/src/v2/sessions.rs, tui/src/v2app.rs |
-| Cache telemetry is implemented; priced cost/attribution and reviewer model usage in work budgets are not | D-458/D-459; DD-07 |
+| Cache telemetry and reviewer usage accounting are implemented, including interrupted/unknown usage; priced cost semantics and reviewer judgement quality remain external | `control::review_usage_is_reserved_recorded_and_recovered`, `v2_driver::auto_review_failure_keeps_pending_and_records_unknown_usage`; D-458/D-459; DD-07 |
 | Live selected provider/image/MCP OAuth and wider terminal/security evidence remains partial | individual A rows and dated reports; DD-08 |
 | No MCP resource browsing or general SDK/extension interface; provider auth coverage is narrower than Pi | DD-09; existing Unix protocol and hooks are real capabilities, not equivalent extension APIs |
 | Public v0.2.0 (Linux x86_64) replaced with the hardened source under D-493; workflow and published-download installation checks cover the exact artifact | D-477, D-493; DD-10 |
@@ -528,7 +528,7 @@ Remaining limits: no paid model trial or measured long-task reliability/cost imp
 can interrupt legitimate repetition. Projection bounds (32 KiB checkpoint, recent input excerpts) do not
 promise a fit in every native model window; overflow still requires explicit recovery. Local stop observation
 does not prove remote effects, escaped descendants or undeclared/shared paths quiescent. Reviewer usage
-accounting remains a separate gap. Source, installed binaries and the older published archive are distinct.
+judgement quality remains a separate evidence gap. Source, installed binaries and the older published archive are distinct.
 
 ## Source cleanup and robustness (D-492)
 

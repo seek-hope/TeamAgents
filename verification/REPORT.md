@@ -1110,7 +1110,7 @@ It is a historical ledger, not the current coverage inventory; current evidence 
    journal's hash chain and artifact hashing, the symlink/rename syscalls, the stop/start handshake with the
    daemon, the release download, and the product's own transaction order — `engine/tests/update.rs` exercises
    those against the real journal.
-10. **Automatic review (`review_decision`)**: D-458 lets a read-only reviewer turn one pending operation approval into a decision when `[permissions] approvals_reviewer = "auto_review"`. The control plane's finality, single-use and revision checks are covered by `core` tests, and the reviewer's fail-closed paths by `engine` tests, but the reviewer's own judgement is not modelled by `V2Approval.tla` and its output is not a proof of safety.
+10. **Automatic review (`begin_review`, `record_review_attempt`, `review_decision`)**: D-458 lets a read-only reviewer turn one pending operation approval into a decision when `[permissions] approvals_reviewer = "auto_review"`. The control plane's finality, single-use and revision checks are covered by `core` tests, and the reviewer's fail-closed paths by `engine` tests. Review usage registration, reservation, settlement and interruption recovery have concrete tests, but no TLA model covers those review requests or the reviewer's own judgement; its output is not a proof of safety.
 11. **Hooks, session export and the MCP transport are outside the models.** `V2Codemode` pins the `pre_tool`
    veto for *nested* codemode calls; a direct tool call's veto, the `notify` stream, the export snapshot's
    consistency and the MCP wire are covered by sample tests and probes only.
