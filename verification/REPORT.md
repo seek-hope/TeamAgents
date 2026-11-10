@@ -5,21 +5,22 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
-## 0. Gate status (re-run 2026-11-07 at `53547c3b`)
+## 0. Gate status (re-run 2026-11-10 at `072a160c`)
 
-D-498/D-499 material commit `53547c3b9358a77fa24320f6b08a5e8b8343f5d9` renames the goal vocabulary to
-work scopes throughout the models and configurations and removes unused Rust mirror types. It does not adopt
-canonical allocation or change the fairness/settlement contract. All **58** positive configurations passed in
-**55** traversals with actual exit 0 in 2070.4 seconds, all **298** named negative controls were refuted with
-exit 0 in 275.1 seconds, all **65** normal-path witnesses passed in 52.8 seconds, and all **9** Kani harnesses
-passed in 34.6 seconds. Kani reported `Complete - 9 successfully verified harnesses, 0 failures, 9 total`.
-The full 738-test project gate and PTY matrix also passed.
+D-500 material commit `072a160c2447a0700ebc02a0aa08d01c8a8dcc17` fixes lazy input revisions and reviewer
+usage accounting while preserving the goal-to-work vocabulary and fairness/settlement contract. It does not
+adopt canonical allocation. All **58** positive configurations passed in **55** traversals with actual exit 0
+in 2057.5 seconds, all **298** named negative controls were refuted with exit 0 in 275.1 seconds, all **65**
+normal-path witnesses passed in 52.8 seconds, and all **9** Kani harnesses passed in 34.6 seconds. Kani reported
+`Complete - 9 successfully verified harnesses, 0 failures, 9 total`. Real Cargo/Python/Node workflows and MCP
+resource list/read have dedicated integration tests; the full 747-test project gate and PTY matrix also passed.
 
-Receipts are `work-vocabulary-{model-all-2,counterexamples-1,witnesses-1,kani-1,pty-1,check-final-4}.{json,log}`
-under the ignored `review/tmp/d497/`. The earlier `model-all-1` reached both large state graphs without a
-violation but hit its 2400-second outer timeout during temporal checking; it is retained as exit 124, not a pass.
-The longer replay used unchanged model bounds. D-499 removes only unused Rust mirror types and duplicate
-maintenance guidance; the formal material and Kani subjects are unchanged, so this replay remains applicable
+Receipts are `completion-model-all-072a160c-1` and `completion-work-check-7`, with the earlier
+`work-vocabulary-{counterexamples-1,witnesses-1,kani-1,pty-1}` controls, all under the ignored
+`review/tmp/d497/`.
+The earlier `model-all-1` reached both large state graphs without a violation but hit its 2400-second outer
+timeout during temporal checking; it is retained as exit 124, not a pass. The longer replay used unchanged
+model bounds. D-500's changes are outside the TLA models and Kani subjects, so the replay remains applicable
 while the full project gate is re-run. The replay predates the commit, whose tree pins those same inputs. No
 independent audit, installation, live-service run or public-release result is created by this local replay.
 The D-496 pin below remains historical evidence.
