@@ -109,7 +109,13 @@ def run(force):
                 os.kill(pid, signal.SIGWINCH)
                 if effective == "kitty":
                     wait(lambda _: b"a=p,i=" in raw[before:], "resized image placement")
-                    for y, x, command in re.findall(rb"\x1b\[(\d+);(\d+)H\x1b_G(a=p,[^;]+);", bytes(raw[before:])):
+                    # The resize may first emit the old layout, then the new one.
+                    # Let that transition finish before checking the final placement.
+                    time.sleep(0.1)
+                    drain()
+                    placements = re.findall(rb"\x1b\[(\d+);(\d+)H\x1b_G(a=p,[^;]+);", bytes(raw[before:]))
+                    assert placements, "resize produced no image placement"
+                    for y, x, command in placements[-1:]:
                         fields = dict(pair.split(b"=", 1) for pair in command.split(b","))
                         assert int(y) - 1 + int(fields[b"r"]) <= rows - 4, "image overlaps composer"
                         assert int(x) - 1 + int(fields[b"c"]) <= cols - 1, "image crosses transcript"
