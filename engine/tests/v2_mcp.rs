@@ -427,6 +427,67 @@ async fn mcp_tool_round_trips_through_the_same_receipt_contract() {
     handle.shutdown().await.expect("shutdown");
 }
 
+#[tokio::test]
+async fn mcp_resources_list_and_read_through_the_bound_service() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("resources");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let script = r#"
+const rows = await tools.mcp_resource({action: "list"});
+const doc = await tools.mcp_resource({action: "read", uri: "memo://public"});
+text(JSON.stringify([rows, doc]));
+"#;
+    let provider = ScriptedProvider::new(vec![
+        tool_call("c1", "codemode", json!({"code": script})),
+        finish_call("read the public resource"),
+    ]);
+    let seen = provider.seen();
+    let mut config = root.config(provider);
+    config.catalog = echo_catalog(env!("CARGO_BIN_EXE_fake-mcp-server"));
+    config.bindings = vec!["echo_service".into()];
+    let handle = start(config).await.expect("start");
+    handle.input("list and read the public resource").await.expect("input");
+    assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
+    let advertised = seen.0.lock().unwrap().clone();
+    assert!(advertised[0].iter().any(|name| name == "codemode"), "advertised: {advertised:?}");
+    let results = tool_results(&root);
+    assert!(results.iter().any(|body| body.contains("public memo")), "{results:?}");
+    assert!(results.iter().any(|body| body.contains("public memo text")), "{results:?}");
+    assert!(results.iter().any(|body| body.contains("echo")), "the result names its bound service: {results:?}");
+    handle.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn mcp_resource_requires_a_service_when_multiple_are_bound() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let root = root("resources-ambiguous");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let script = r#"const result = await tools.mcp_resource({action: "list"}); text(result);"#;
+    let provider = ScriptedProvider::new(vec![
+        tool_call("c1", "codemode", json!({"code": script})),
+        finish_call("reported the ambiguous service"),
+    ]);
+    let mut config = root.config(provider);
+    let mut catalog = echo_catalog(env!("CARGO_BIN_EXE_fake-mcp-server"));
+    catalog.tools.insert(
+        "other_service".into(),
+        serde_json::from_value::<ToolBinding>(json!({
+            "kind": "mcp", "mcp_server": "other", "mcp_transport": "stdio",
+            "mcp_execution": "host", "command": env!("CARGO_BIN_EXE_fake-mcp-server"),
+            "tool_names": ["echo"],
+        }))
+        .unwrap(),
+    );
+    config.catalog = catalog;
+    config.bindings = vec!["echo_service".into(), "other_service".into()];
+    let handle = start(config).await.expect("start");
+    handle.input("list resources without naming a service").await.expect("input");
+    assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
+    let results = tool_results(&root);
+    assert!(results.iter().any(|body| body.contains("mcp_resource.service is required")), "{results:?}");
+    handle.shutdown().await.expect("shutdown");
+}
+
 /// D-374: bound MCP tools are reached through the one `codemode` tool, and the script's own output — not the
 /// nested payloads — is what lands in the conversation. The model-visible surface is the evidence for the first
 /// half, the stored `tool_result` for the second.
@@ -715,6 +776,101 @@ async fn skill_tool_searches_and_reads_through_the_same_contract() {
     assert!(results.iter().any(|body| body.contains("ponytail —")), "{results:?}");
     assert!(results.iter().any(|body| body.contains("ponytail body")), "{results:?}");
     handle.shutdown().await.expect("shutdown");
+}
+
+#[derive(Clone, Copy)]
+enum SkillWorkflow {
+    Rust,
+    Python,
+    Node,
+}
+
+async fn run_real_skill_workflow(kind: SkillWorkflow) {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let tag = match kind {
+        SkillWorkflow::Rust => "rust",
+        SkillWorkflow::Python => "python",
+        SkillWorkflow::Node => "node",
+    };
+    let root = root(&format!("skill-real-{tag}"));
+    let workspace = root.dir.join("ws");
+    let registry = root.dir.join("registry");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::create_dir_all(registry.join("demo/scripts")).unwrap();
+    std::fs::write(
+        registry.join("demo/SKILL.md"),
+        "---\nname: demo\ndescription: run the real project checks\n---\nRead scripts/verify.sh, then run it through shell.",
+    )
+    .unwrap();
+    let command = match kind {
+        SkillWorkflow::Rust => {
+            std::fs::create_dir_all(workspace.join("src")).unwrap();
+            std::fs::write(
+                workspace.join("Cargo.toml"),
+                "[package]\nname = \"skill_demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            )
+            .unwrap();
+            std::fs::write(
+                workspace.join("src/lib.rs"),
+                "pub fn answer() -> u64 { 42 }\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn answers() { assert_eq!(super::answer(), 42); }\n}\n",
+            )
+            .unwrap();
+            format!("cargo test --offline --manifest-path {}", workspace.join("Cargo.toml").display())
+        }
+        SkillWorkflow::Python => {
+            std::fs::create_dir_all(workspace.join("tests")).unwrap();
+            std::fs::write(
+                workspace.join("tests/test_math.py"),
+                "import unittest\n\nclass MathTest(unittest.TestCase):\n    def test_answer(self):\n        self.assertEqual(6 * 7, 42)\n",
+            )
+            .unwrap();
+            format!("python3 -m unittest discover -s {} -v", workspace.join("tests").display())
+        }
+        SkillWorkflow::Node => {
+            std::fs::write(
+                workspace.join("test.mjs"),
+                "import test from 'node:test';\nimport assert from 'node:assert/strict';\ntest('answer', () => assert.equal(6 * 7, 42));\n",
+            )
+            .unwrap();
+            format!("node --test {}", workspace.join("test.mjs").display())
+        }
+    };
+    let script = registry.join("demo/scripts/verify.sh");
+    std::fs::write(&script, format!("set -eu\n{command}\n")).unwrap();
+    let provider = ScriptedProvider::new(vec![
+        tool_call("c1", "skill", json!({"action": "read", "name": "demo", "path": "scripts/verify.sh"})),
+        tool_call("c2", "shell", json!({"command": format!("bash {}", script.display())})),
+        finish_call("real project checks passed"),
+    ]);
+    let mut config = root.config(provider);
+    config.profile.tools = basic_tool_schemas(false, true);
+    config.catalog.skills_paths = vec![registry.to_string_lossy().into_owned()];
+    config.bindings = vec!["skills".into()];
+    let handle = start(config).await.expect("start");
+    handle.input("run the real project checks").await.expect("input");
+    assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
+    let results = tool_results(&root);
+    match kind {
+        SkillWorkflow::Rust => assert!(results.iter().any(|body| body.contains("test result: ok")), "{results:?}"),
+        SkillWorkflow::Python => assert!(results.iter().any(|body| body.contains("OK")), "{results:?}"),
+        SkillWorkflow::Node => assert!(results.iter().any(|body| body.contains("pass 1")), "{results:?}"),
+    }
+    handle.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn skill_workflow_runs_real_cargo_tests() {
+    run_real_skill_workflow(SkillWorkflow::Rust).await;
+}
+
+#[tokio::test]
+async fn skill_workflow_runs_real_python_tests() {
+    run_real_skill_workflow(SkillWorkflow::Python).await;
+}
+
+#[tokio::test]
+async fn skill_workflow_runs_real_node_tests() {
+    run_real_skill_workflow(SkillWorkflow::Node).await;
 }
 
 #[tokio::test]

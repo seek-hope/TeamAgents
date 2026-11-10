@@ -300,4 +300,17 @@ Durable memory that outlives this session. `remember` stores one short note (tex
 | `query` | `string` | no | recall: case-insensitive substring of the text, or a tag; empty means the newest notes. |
 | `limit` | `integer` | no | recall: at most this many notes (default 5). |
 
+### `mcp_resource`
+
+*Offered by `bound::BoundTools::schemas` (bound MCP services).*
+
+List or read resources from a bound MCP service (binding is the authorization). Use action list with an optional cursor, or action read with a non-empty uri. service is required only when multiple services are bound.
+
+| Parameter | Type | Required | Meaning |
+|---|---|---|---|
+| `action` | `string` | yes | list to enumerate resources or read to fetch one resource |
+| `service` | `string` | no | bound MCP service name; required when multiple services are bound |
+| `uri` | `string` | no | resource URI for action read |
+| `cursor` | `string` | no | optional resources/list pagination cursor |
+
 <!-- generated: end -->

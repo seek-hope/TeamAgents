@@ -127,14 +127,55 @@ impl BoundTools {
     /// joined text — exactly what a codemode script should receive. An MCP tool that reports failure
     /// (`isError`) is an `Err` carrying its text, so `await tools.x()` rejects in the script.
     pub fn call(&self, name: &str, args: &Json) -> Option<Result<Json, String>> {
+        if name == "mcp_resource" {
+            return Some(self.call_resource(args));
+        }
         let tool = self.tools.iter().find(|t| t.name == name)?;
         let (client, remote) = tool.remote.as_ref()?;
         Some(render_result(client.call_tool_result(remote, args), tool.output_schema.as_ref(), &tool.name))
     }
 
+    fn call_resource(&self, args: &Json) -> Result<Json, String> {
+        let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("");
+        let mut services = std::collections::BTreeMap::new();
+        for tool in &self.tools {
+            if let Some((client, _)) = &tool.remote {
+                services.entry(tool.namespace.clone()).or_insert_with(|| client.clone());
+            }
+        }
+        if services.is_empty() {
+            return Err("mcp_resource needs a bound MCP service".into());
+        }
+        let requested = args.get("service").and_then(|v| v.as_str()).unwrap_or("");
+        let (namespace, client) = if requested.is_empty() && services.len() == 1 {
+            services.into_iter().next().expect("one bound MCP service")
+        } else if requested.is_empty() {
+            return Err("mcp_resource.service is required when multiple MCP services are bound".into());
+        } else {
+            let Some(service) = services.remove(requested) else {
+                let mut known: Vec<&str> = services.keys().map(String::as_str).collect();
+                known.sort_unstable();
+                return Err(format!("unknown MCP service {requested:?}; known: {}", known.join(", ")));
+            };
+            (requested.to_string(), service)
+        };
+        let result = match action {
+            "list" => client.resources(args.get("cursor").and_then(|v| v.as_str())),
+            "read" => {
+                let Some(uri) = args.get("uri").and_then(|v| v.as_str()).filter(|uri| !uri.is_empty()) else {
+                    return Err("mcp_resource.uri must be a non-empty string for action read".into());
+                };
+                client.read_resource(uri)
+            }
+            other => Err(format!("unknown mcp_resource action {other:?} (use list|read)")),
+        };
+        render_result(result.map(|value| json!({"service": namespace, "result": value})), None, "mcp_resource")
+    }
+
     /// Ready-to-advertise function schemas for the member's model call.
     pub fn schemas(&self) -> Vec<Json> {
-        self.tools
+        let mut schemas: Vec<Json> = self
+            .tools
             .iter()
             .map(|t| {
                 json!({
@@ -143,7 +184,24 @@ impl BoundTools {
                     "parameters": t.parameters,
                 })
             })
-            .collect()
+            .collect();
+        if !self.tools.is_empty() {
+            schemas.push(json!({
+                "name": "mcp_resource",
+                "description": "List or read resources from a bound MCP service (binding is the authorization). Use action list with an optional cursor, or action read with a non-empty uri. service is required only when multiple services are bound.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["list", "read"]},
+                        "service": {"type": "string"},
+                        "uri": {"type": "string"},
+                        "cursor": {"type": "string"},
+                    },
+                    "required": ["action"],
+                },
+            }));
+        }
+        schemas
     }
 
     pub fn docs(&self) -> Vec<(String, String)> {

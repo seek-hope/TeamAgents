@@ -38,9 +38,23 @@ fn main() {
         let result = match method {
             "initialize" => json!({
                 "protocolVersion": "2025-06-18",
-                "capabilities": {"tools": {}},
+                "capabilities": {"tools": {}, "resources": {}},
                 "serverInfo": {"name": "fake-mcp-server", "version": env!("CARGO_PKG_VERSION")},
             }),
+            "resources/list" => json!({"resources": [{
+                "uri": "memo://public",
+                "name": "public memo",
+                "description": "A public test resource",
+                "mimeType": "text/plain",
+            }], "nextCursor": "page-2"}),
+            "resources/read" => {
+                let uri = params.get("uri").and_then(|v| v.as_str()).unwrap_or("");
+                if uri != "memo://public" {
+                    json!({"content": [{"type": "text", "text": format!("unknown resource {uri}")}], "isError": true})
+                } else {
+                    json!({"contents": [{"uri": uri, "mimeType": "text/plain", "text": "public memo text"}]})
+                }
+            }
             "tools/list" => json!({"tools": [{
                 "name": "echo",
                 "description": "Echo the given text N times.",

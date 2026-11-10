@@ -163,7 +163,7 @@ struct Meta {
 }
 
 fn metas(tools: &BoundTools) -> Vec<Meta> {
-    tools
+    let mut meta: Vec<Meta> = tools
         .tools
         .iter()
         .map(|tool| Meta {
@@ -177,7 +177,17 @@ fn metas(tools: &BoundTools) -> Vec<Meta> {
             ),
             namespace: tool.namespace.clone(),
         })
-        .collect()
+        .collect();
+    if !meta.is_empty() {
+        meta.push(Meta {
+            ident: "mcp_resource".into(),
+            real: "mcp_resource".into(),
+            description: "List or read resources from a bound MCP service.".into(),
+            declaration: "mcp_resource(args: {action: string; service?: string; uri?: string; cursor?: string}): Promise<unknown>".into(),
+            namespace: "resources".into(),
+        });
+    }
+    meta
 }
 
 /// The model-facing tool schema: the intro text plus a declaration of every bound MCP tool. Only called when at

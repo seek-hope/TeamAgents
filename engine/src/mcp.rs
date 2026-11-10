@@ -429,6 +429,17 @@ impl McpClient {
         Ok(reply.get("tools").and_then(|v| v.as_array()).cloned().unwrap_or_default())
     }
 
+    /// resources/list → the first or next resource page.
+    pub fn resources(&self, cursor: Option<&str>) -> Result<Json, String> {
+        let params = cursor.map_or_else(|| json!({}), |cursor| json!({"cursor": cursor}));
+        self.call("resources/list", params, self.startup_ms)
+    }
+
+    /// resources/read → one URI's text/blob content, without flattening its parts.
+    pub fn read_resource(&self, uri: &str) -> Result<Json, String> {
+        self.call("resources/read", json!({"uri": uri}), self.tool_ms)
+    }
+
     /// tools/call → the text content of the result (or an error string).
     /// The **raw** `tools/call` result (D-376). The old direct path flattened it to text, which lost the parts
     /// codemode needs: an `outputSchema` tool's `structuredContent`, and `isError` as a field rather than a
@@ -872,6 +883,66 @@ for line in sys.stdin:
         let error = http_roundtrip(&endpoint, None, &session, None, &json!({"id": 1}), 2_000).unwrap_err();
         server.join().unwrap();
         assert!(error.to_string().contains("exceeds"), "{error}");
+    }
+
+    #[test]
+    fn http_resources_list_and_read() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            for _ in 0..5 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut length = 0usize;
+                let mut is_get = false;
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line.starts_with("GET ") {
+                        is_get = true;
+                    }
+                    if line == "\r\n" || line.is_empty() {
+                        break;
+                    }
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = value.trim().parse().unwrap_or(0);
+                    }
+                }
+                if is_get {
+                    write!(stream, "HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                        .unwrap();
+                    stream.flush().unwrap();
+                    continue;
+                }
+                let mut request = vec![0u8; length];
+                reader.read_exact(&mut request).unwrap();
+                let request: Json = serde_json::from_slice(&request).unwrap();
+                let method = request["method"].as_str().unwrap_or("");
+                let result = match method {
+                    "initialize" => json!({"protocolVersion": "2025-06-18", "capabilities": {"resources": {}}}),
+                    "resources/list" => json!({"resources": [{"uri": "memo://public", "name": "public memo"}]}),
+                    "resources/read" => json!({"contents": [{"uri": "memo://public", "text": "public memo text"}]}),
+                    "DELETE" => json!({}),
+                    _ => json!({}),
+                };
+                let body = json!({"jsonrpc": "2.0", "id": request["id"], "result": result}).to_string();
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nmcp-session-id: test-session\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .unwrap();
+                stream.flush().unwrap();
+            }
+        });
+        let client = McpClient::connect_http(&endpoint, None, 2_000, 2_000).unwrap();
+        let listed = client.resources(None).unwrap();
+        assert_eq!(listed["resources"][0]["uri"], "memo://public");
+        let read = client.read_resource("memo://public").unwrap();
+        assert_eq!(read["contents"][0]["text"], "public memo text");
+        client.close();
+        server.join().unwrap();
     }
 
     #[test]

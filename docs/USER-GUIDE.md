@@ -897,8 +897,9 @@ teamagents work_scopes cancel --id work-spent    # close a work nothing can spen
   reason, which is the other path to the same lever.
 - **Bind an MCP service in config** with `[tools.<name>] kind = "mcp"`. It can come from user config or a
   trusted project; an untrusted project cannot bind one. Tools are available through codemode under normalized
-  service/tool names. `doctor` lists static setup problems without starting the service. MCP resource
-  discovery/reading is not implemented.
+  service/tool names. `doctor` lists static setup problems without starting the service. MCP resources use
+  `tools.mcp_resource({action: "list"})` and `tools.mcp_resource({action: "read", uri: "..."})`; optional
+  `cursor` paginates list results, and `service` is required whenever more than one service is bound.
 - **Call MCP tools through codemode**: the model receives one `codemode` tool rather than every bound MCP
   tool as a separate function. JavaScript can batch and filter calls, and only the script's own output enters
   the conversation. Native file/Shell tools are not available inside this composition surface, and the host

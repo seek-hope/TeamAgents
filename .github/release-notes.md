@@ -1,4 +1,4 @@
-> Development source validation (D-499, 2026-11-07): core 177 / engine 460 / tui 104. These source
+> Development source validation (D-500, 2026-11-10): core 177 / engine 466 / tui 104. These source
 > changes have not been published as a replacement archive. The release description below records D-493.
 > Current source uses work scopes and schema 8 with explicit legacy migration; the published archive does not.
 
@@ -24,8 +24,8 @@
   windows and configurable reasoning efforts.
 - Host Shell, acceptance commands and local MCP services. Ordinary Shell needs no per-call approval; task
   capability checks and self-update approval remain. Retired sandbox settings are rejected during migration.
-- File tools, persistent Shell state, DeepSeek/Exa search and DeepSeek fetch, Skills, stdio/HTTP MCP and QuickJS
-  `codemode` composition. Hooks can report events or veto native tool calls.
+- File tools, persistent Shell state, DeepSeek/Exa search and DeepSeek fetch, Skills, stdio/HTTP MCP resources
+  and QuickJS `codemode` composition. Hooks can report events or veto native tool calls.
 - Trusted `AGENTS.md` discovery, bounded Skill support files, disjoint multi-file edits and parallel read-only
   batches.
 - Attachments, pending-input editing, follow-up queues, session search/fork/export, an external editor and

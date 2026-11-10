@@ -1,5 +1,9 @@
 # Development handoff
 
+D-500 adds lazy input revisions, reviewer budget/usage recovery, real Cargo/Python/Node Skill workflows and
+MCP resource list/read. It preserves schema, authority and cancellation contracts; the remaining live-service,
+matched-Pi, general-SDK and full-proof obligations stay open.
+
 D-498/D-499 are the current committed source baseline (`53547c3b`). The maintenance follow-up removes ten
 unused persistence mirror types and consolidates duplicate handoff/development guidance without changing
 schema, protocol, runtime behavior or the formal model.

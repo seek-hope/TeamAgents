@@ -101,6 +101,15 @@ def tools():
                          for name, spec in parameters.get("properties", {}).items()],
                         "`reference::session_tool_schemas` (the profile's tools; the web half only for the "
                         "kinds the config declares — §5.2/D-79/D-168)"))
+    out.append((
+        "mcp_resource",
+        "List or read resources from a bound MCP service (binding is the authorization). Use action list with an optional cursor, or action read with a non-empty uri. service is required only when multiple services are bound.",
+        [("action", "string", True, "list to enumerate resources or read to fetch one resource"),
+         ("service", "string", False, "bound MCP service name; required when multiple services are bound"),
+         ("uri", "string", False, "resource URI for action read"),
+         ("cursor", "string", False, "optional resources/list pagination cursor")],
+        "`bound::BoundTools::schemas` (bound MCP services)",
+    ))
     return out
 
 

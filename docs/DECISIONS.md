@@ -41,6 +41,32 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Command idempotency | a replay with the same `command_id` returns the stored receipt for control-plane state, and the authoritative check runs under the write lock (D-463); result bodies are shared by content digest and zstd-compressed (D-464), while the receipt **rows** remain one per command | D-463, D-464 |
 | Model actions and code windows | a deciding read shares the write's transaction, or the guard is a predicate on the write itself; `verification/REPORT.md` §6 lists the protocol transitions and the three engine windows that span two transactions with their predicates | D-465 |
 
+## D-500 Complete accounting, real workflows and MCP resources (2026-11-10)
+
+The user approved completing the outstanding work rather than stopping at the previous baseline. This batch
+fixes concrete storage/accounting defects and closes the corresponding local evidence gaps; it does not claim
+full real-model, full-system or release acceptance.
+
+- **A32 storage:** revision-0 is created lazily on the first edit/cancel, because the unchanged envelope already
+  owns the original payload. This removes the redundant third large-text copy while preserving original/revised
+  audit records and migration behavior. The 250-step load probe now exits 0 with 10,924,032 bytes of growth
+  (43,696 bytes/step), not a relaxed threshold or a hidden schema change.
+- **Reviewer accounting:** `begin_review` reserves the work budget without changing instance phase;
+  `record_review_attempt` records usage and closes the request atomically. Interrupted reviews release their
+  reservation and become visible unknown usage instead of being replayed. Failed reviews leave the approval
+  pending and do not retry within one driver lifetime. The reviewer adapter now returns provider usage.
+- **Real Skill workflows:** scripted model calls read a real `scripts/verify.sh` and execute it through the
+  product Shell path. Cargo tests, Python unittest and node:test all run against real host toolchains, not
+  simulated output. Missing binding and revocation behavior remains covered by the existing control tests.
+- **MCP resources:** `resources/list` and `resources/read` are available through `tools.mcp_resource` in
+  codemode, with service binding, cursor support, a URI guard and explicit ambiguity errors. Multiple bound
+  services require `service`; unknown services and unknown resource outcomes remain failures. No new grant or
+  permission shortcut is introduced, and recovered remote calls are not replayed.
+
+Reviewer judgement quality, broader provider/OAuth/terminal acceptance, a matched Pi trial, general SDK
+contracts, full Rust/SQLite refinement and the source-bound canonical-allocation proof remain open. Public
+releases and any paid external-service evaluation remain separate authorizations.
+
 ## D-499 Remove stale mirrors and duplicate maintenance guidance (2026-11-07)
 
 The user requested a code/document maintainability cleanup. This is a repository-local, behavior-preserving

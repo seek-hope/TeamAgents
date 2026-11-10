@@ -2331,7 +2331,7 @@ impl V2Toolkit {
     /// recovery boundary (A25): MCP tools directly, and `codemode`, which may have run an MCP call before the
     /// crash — server idempotence annotations never authorize a replay of a remote effect.
     pub(crate) fn is_mcp_tool(&self, name: &str) -> bool {
-        name == crate::codemode::TOOL_NAME || self.bound.names().contains(name)
+        name == crate::codemode::TOOL_NAME || name == "mcp_resource" || self.bound.names().contains(name)
     }
 
     /// Reap bound MCP server processes on driver shutdown (§6.4); the
