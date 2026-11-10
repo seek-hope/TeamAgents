@@ -1,7 +1,7 @@
 # Acceptance matrix (A01–A36)
 
 Baseline: [the design and acceptance baseline](DESIGN.md) §12/§16. Current source inspection and local
-regression baseline: **2026-11-10, D-500**.
+regression baseline: **2026-11-10, D-501**.
 This is not a new independent acceptance audit or real-model run.
 The D-451 product/installation receipts and the D-452 independent audit retain their original source/date
 boundaries; later source changes do not inherit those results.
@@ -34,6 +34,10 @@ renewing the earlier PTY/install/live-service results. The current [requirement 
 classifies every Q/A requirement and its remaining obligations. It does not upgrade the acceptance icons
 below or renew real-service results. Model fixes, normal-path witnesses and bounded production-code Kani
 proofs are recorded in the formal report; runtime source and installed binaries remain D-494.
+
+D-501 upgrades the bundled SQLite to 3.54.1 through `rusqlite 0.41.1` and `libsqlite3-sys 0.39.1`, resolving
+RUSTSEC-2026-0459 without changing the store schema or WAL durability contract. Core/engine tests and all
+three dependency advisory/source checks pass.
 
 D-500 makes revision history lazy, records reviewer usage with reservation/recovery, and prevents failed-review
 retry storms. Real Cargo/Python/Node Skill workflows pass through the product Shell path, while MCP resources

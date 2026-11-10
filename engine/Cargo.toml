@@ -8,7 +8,7 @@ teamagents-core = { path = "../core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 serde-saphyr = { version = "2", default-features = false, features = ["deserialize"] }
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 ureq = { version = "2", features = ["json"] }
 url = "2"
 toml = "0.8"

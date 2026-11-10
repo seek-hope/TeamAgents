@@ -41,6 +41,15 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Command idempotency | a replay with the same `command_id` returns the stored receipt for control-plane state, and the authoritative check runs under the write lock (D-463); result bodies are shared by content digest and zstd-compressed (D-464), while the receipt **rows** remain one per command | D-463, D-464 |
 | Model actions and code windows | a deciding read shares the write's transaction, or the guard is a predicate on the write itself; `verification/REPORT.md` §6 lists the protocol transitions and the three engine windows that span two transactions with their predicates | D-465 |
 
+## D-501 Upgrade bundled SQLite past the page-cache vulnerability (2026-11-10)
+
+Dependency review found RUSTSEC-2026-0459: bundled SQLite versions before 3.54.0 could return uninitialized
+page-cache memory when a database and its sibling WAL used different page sizes. `core` and `engine` now use
+`rusqlite 0.41.1` with `libsqlite3-sys 0.39.1` (SQLite 3.54.1). The pinned Rust toolchain remains compatible.
+This is a security maintenance change, not a protocol or schema migration; WAL, `synchronous=FULL`, the store
+identity checks and schema-8 migration are unchanged. Core and engine suites pass, and all three dependency
+advisory/source checks pass again.
+
 ## D-500 Complete accounting, real workflows and MCP resources (2026-11-10)
 
 The user approved completing the outstanding work rather than stopping at the previous baseline. This batch

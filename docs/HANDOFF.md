@@ -1,5 +1,8 @@
 # Development handoff
 
+D-501 upgrades `rusqlite`/`libsqlite3-sys` past RUSTSEC-2026-0459 while preserving the schema-8/WAL contract.
+Core and engine suites and all dependency advisory/source checks pass.
+
 D-500 adds lazy input revisions, reviewer budget/usage recovery, real Cargo/Python/Node Skill workflows and
 MCP resource list/read. It preserves schema, authority and cancellation contracts; the remaining live-service,
 matched-Pi, general-SDK and full-proof obligations stay open.
