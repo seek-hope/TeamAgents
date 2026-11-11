@@ -1,4 +1,4 @@
-> Development source validation (D-505, 2026-11-11): core 186 / engine 477 / tui 105. These source
+> Development source validation (D-506, 2026-11-11): core 186 / engine 477 / tui 105. These source
 > changes have not been published as a replacement archive. The release description below records D-493.
 > Current source uses work scopes, schema 9 and one session exploration tree; the published archive does not.
 

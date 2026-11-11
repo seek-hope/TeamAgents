@@ -42,6 +42,24 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Command idempotency | a replay with the same `command_id` returns the stored receipt for control-plane state, and the authoritative check runs under the write lock (D-463); result bodies are shared by content digest and zstd-compressed (D-464), while the receipt **rows** remain one per command | D-463, D-464 |
 | Model actions and code windows | a deciding read shares the write's transaction, or the guard is a predicate on the write itself; `verification/REPORT.md` §6 lists the protocol transitions and the three engine windows that span two transactions with their predicates | D-465 |
 
+## D-506 Model the session exploration-tree commands (2026-11-11)
+
+The user asked to advance formalization of D-504's new control commands. `V2SearchTree.tla` now models
+`read_search_tree`, `apply_search_tree` and the tree half of `compress_context`: User/Leader authority, stale
+revision refusal, matching-cause replay, root/parent/acyclicity/focus preservation, update/move/merge/add/focus,
+merge reference union, complete revision history, full source watermarks and summary-preserving patch failure.
+
+Five operation-family configurations prevent an all-operation state explosion. Update/move/merge/focus start
+with a valid populated tree so their paths are non-vacuous; add starts from the root. Twenty-one controls remove
+individual guards, including rejected-patch revision, merge structure/focus and every generic monitor. Eight
+witnesses cover add/read, replay, update, move, focus, merge and valid/invalid compaction. The review also fixed
+one production readback defect: a cause-level replay reconstructs `added_ids` from the stored patch and revision,
+so a client that lost the original response still learns the control-assigned node ids. Tree/revision transition
+semantics and the schema are unchanged. Arbitrary text, multi-operation
+patch order, provider/JSON parsing, SQL execution, schema migration, Rust/SQLite refinement and live-model
+navigation quality remain outside the finite model. It neither adopts canonical allocation nor closes the wide
+run or full-system composition.
+
 ## D-505 Upgrade rustix past the zero-length xattr buffer vulnerability (2026-11-11)
 
 D-504's remote dependency-advisory job failed on the newly published RUSTSEC-2026-0486: `rustix 1.1.4`

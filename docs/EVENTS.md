@@ -80,7 +80,7 @@ the log is still a supported way to observe it (and the probes that do assert on
 | `review_began` | `&instance_id` | `est_prompt_tokens`, `operation_id`, `request_id`, `work_id` | `core/src/v2/control.rs:4200` | observability only |
 | `review_interrupted` | `&instance_id` | `operation_id`, `request_id`, `unknown_usage` | `core/src/v2/control.rs:4160` | observability only |
 | `search_tree_update_failed` | `instance_id` | `reason`, `request_id` | `core/src/v2/control.rs:2965` | `engine/tests/v2_driver.rs` |
-| `search_tree_updated` | `&leader(tx)?` | `cause`, `cause_ref`, `node_count`, `revision`, `source_entry_id` | `core/src/v2/control/search_tree.rs:641` | `engine/tests/v2_driver.rs` |
+| `search_tree_updated` | `&leader(tx)?` | `cause`, `cause_ref`, `node_count`, `revision`, `source_entry_id` | `core/src/v2/control/search_tree.rs:650` | `engine/tests/v2_driver.rs` |
 | `task_blocked` | `&task` | `operation_id`, `reason`, `task_id` | `core/src/v2/control.rs:3791` | `tui/src/v2app.rs`, `engine/src/v2/diagnostics/tests.rs`, `engine/src/v2/diagnostics.rs`, `review/dogfood/unknown_outcome.py` |
 | `task_cancelled` | `&assignee` | `reason`, `task_id` | `core/src/v2/control.rs:2017` | `tui/scripts/pty_v2_smoke.py`, `tui/src/v2app.rs`, `engine/tests/v2_supervisor.rs` |
 | `task_completed` | `&requester` | `assignee`, `delivered`, `status`, `task_id` | `core/src/v2/control.rs:1964` | `tui/src/v2app.rs`, `engine/tests/v2_driver.rs`, `engine/tests/v2_supervisor.rs`, `review/dogfood/providers.py`, `review/eval/r2-p6/anatomy.py` |

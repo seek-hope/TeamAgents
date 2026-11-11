@@ -7,15 +7,25 @@ in [README.md](README.md); the fix ledger is in
 
 ## 0. Gate status (re-run 2026-11-11 at `78035030`)
 
-D-504 adds one session-level exploration tree beside compaction. Its two new control commands are explicitly
-unmodelled; the existing formal inputs are unchanged. The current targets verified all **59** configurations in
-**56** traversals with actual exit 0 in 1952.8 seconds and refuted all **304** negative controls with exit 0 in
-307.8 seconds. All **68** normal-path witnesses passed in 59.7 seconds, and all **9** Kani harnesses passed in
-37.6 seconds. Kani reported `Complete - 9 successfully verified harnesses, 0 failures, 9 total`. Receipts are
-`d504-{model-all,controls,witnesses-run,kani}` under `review/tmp/d497/`. A mistyped witness target returned 2
-without running anything and is retained separately as `d504-witnesses`; it is not evidence.
+D-506 adds the bounded `V2SearchTree` transition model for `read_search_tree`, `apply_search_tree` and the tree
+half of compaction. The current targets verified all **64** configurations in **61** traversals with actual exit 0
+in 1716.6 seconds and refuted all **325** negative controls with exit 0 in 283.4 seconds. All **76** normal-path
+witnesses passed in 57.9 seconds, and all **9** Kani harnesses passed in 30.8 seconds. Kani reported `Complete - 9
+successfully verified harnesses, 0 failures, 9 total`. Receipts are `d506-{model-all-complete,controls-complete,
+witnesses-complete,kani-complete}` under `review/tmp/d497/`. The 21 search-tree controls cover every non-`TypeOK`
+claim in the positive configuration; generated coverage retains `TypeOK` as the type-only exception.
 
-The new Rust tests cover Leader authority, replay, schema 9 migration, patch atomicity, cycle/bounds checks,
+Independent review caught and the Rust tests now pin a replay-result fix: cause-level replay reconstructs
+`added_ids` from the stored patch/revision. Failed probes, parser errors and deliberately stopped earlier
+traversals remain under the same evidence root and are not counted. The model still excludes arbitrary strings,
+multi-operation patch order, JSON/provider parsing, SQL execution and schema migration; it is not Rust/SQLite
+refinement, semantic tree-completeness or live-model navigation-quality evidence. Wide exhaustive search,
+full-system composition and Policy B remain open.
+
+### D-504 previous gate
+
+D-504 introduced the tree and schema 9. Its input-bound replay passed 59 configurations/56 traversals, 304
+controls, 68 witnesses and nine Kani harnesses. The Rust tests cover Leader authority, replay, schema 9 migration, patch atomicity, cycle/bounds checks,
 terminal-control escaping, empty-epoch watermarks, compaction through the retained tail, fail-soft summaries,
 CLI/daemon reads and export. They do not prove semantic tree completeness, live-model navigation quality or
 reduced lostness. Wide exhaustive search, full-system composition, Rust/SQLite refinement and Policy B remain
@@ -1145,12 +1155,13 @@ It is a historical ledger, not the current coverage inventory; current evidence 
     READY/WAITING boundary and the driver reloads the model/options before each request. The control-plane guard,
     the reload and the CLI path are covered by core tests and the web-grant/TurnControl tests cover the adjacent
     domain allowlist, but no TLA model covers the profile switch itself.
-13. **Session exploration tree (`read_search_tree`, `apply_search_tree`)**: D-504 adds one revisioned,
-    model-maintained navigation tree per session and advances it on Leader compaction. Rust core/driver/daemon/
-    export tests cover Leader authorization, custom Leader ids, stale watermarks, replay, merge/cycle/bounds
-    checks and fail-soft compaction. No TLA model covers the new commands or proves tree completeness, semantic
-    correctness, live-model navigation quality or reduced user lostness. Existing compression/control models do
-    not include the tree patch, and schema 9's migration is implementation-tested rather than a refinement proof.
+13. **Session exploration tree (`read_search_tree`, `apply_search_tree`)**: D-506's bounded `V2SearchTree`
+    covers User/Leader authority, revision admission, replay stability, root/parent/cycle/focus invariants,
+    merge-reference preservation, revision history, complete source watermarks and fail-soft compaction. Five
+    operation-family configurations, twenty-one controls and eight normal-path witnesses make the transitions
+    non-vacuous. It does not enumerate arbitrary strings, multi-operation patch order, JSON/provider parsing,
+    SQL execution or schema migration, and proves neither Rust/SQLite refinement nor semantic tree quality or
+    reduced user lostness. Those remain implementation-tested or open, not claims inherited from V2Control.
 
 ## 6. Atomic model actions and their implementation windows (D-465)
 

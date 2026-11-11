@@ -1,5 +1,10 @@
 # Development handoff
 
+D-506 models `read_search_tree`, `apply_search_tree` and compaction's tree patch in `V2SearchTree`. All 64
+positive configurations/61 traversals, 325 controls, 76 witnesses and nine Kani harnesses pass. Twenty-one
+controls cover every non-TypeOK tree claim. Replay now reconstructs `added_ids` from stored patch/revision.
+Multi-op text/SQLite details, schema migration, refinement and live-model navigation quality remain open.
+
 D-505 upgrades the TUI lockfile to rustix 1.1.6 after remote CI reported RUSTSEC-2026-0486. All three
 advisory/source checks, the full project gate and the PTY matrix pass. No advisory is ignored and no formal input changes.
 

@@ -1,7 +1,7 @@
 # Acceptance matrix (A01–A36)
 
 Baseline: [the design and acceptance baseline](DESIGN.md) §12/§16. Current source inspection and local
-regression baseline: **2026-11-11, D-505**.
+regression baseline: **2026-11-11, D-506**.
 This is not a new independent acceptance audit or real-model run.
 The D-451 product/installation receipts and the D-452 independent audit retain their original source/date
 boundaries; later source changes do not inherit those results.
@@ -35,6 +35,12 @@ classifies every Q/A requirement and its remaining obligations. It does not upgr
 below or renew real-service results. Model fixes, normal-path witnesses and bounded production-code Kani
 proofs are recorded in the formal report; runtime source and installed binaries remain D-494.
 
+D-506 adds the bounded `V2SearchTree` model for the new read/apply commands and compaction integration. All 64
+positive configurations/61 traversals, 325 controls, 76 witnesses and nine Kani harnesses pass with actual exit 0.
+Twenty-one controls cover every non-TypeOK tree claim; eight witnesses cover normal operations and both compact
+outcomes. The review also fixes replay-time `added_ids` reconstruction. Arbitrary strings, multi-op ordering,
+JSON/SQLite details, schema migration and live-model navigation quality remain outside this finite model.
+
 D-505 upgrades the TUI dependency from `rustix 1.1.4` to 1.1.6 after remote CI reported RUSTSEC-2026-0486.
 All three advisory/source checks, the full `make check` gate and the PTY matrix pass; no advisory is ignored. The TLA/Kani inputs are
 unchanged and retain the D-504 replay boundary.
@@ -45,8 +51,9 @@ recent turn. Strict revisioned add/update/move/merge/focus patches use the opera
 history or change authority. `/tree`, `teamagents search_tree [--json]` and session export expose the same
 projection. Core/driver/daemon/export regressions cover custom Leader ids, replay, cycles, references, stale
 patches, savepoint rollback, terminal-control escaping, empty-epoch watermarks and fail-soft summaries. These are scripted/local checks, not live-model tree quality or lostness
-measurements; the new control commands remain explicitly unmodelled in the formal report. The existing formal
-inputs re-pass all 59 positive configurations/56 traversals, 304 controls, 68 witnesses and nine Kani harnesses.
+measurements. D-504 initially left the new control commands unmodelled; D-506 adds their bounded model and
+controls. The D-504 replay retained its input boundary with 59 positive configurations/56 traversals, 304
+controls, 68 witnesses and nine Kani harnesses.
 
 D-503 adds the bounded `V2Review` model: all 59 positive configurations/56 traversals, 304 controls, 68
 witnesses and nine Kani harnesses pass. The model covers review evidence, self-update refusal, parked phase,

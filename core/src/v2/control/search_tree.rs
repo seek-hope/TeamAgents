@@ -597,7 +597,16 @@ fn apply_patch_inner(
             )
             .map_err(|e| format!("search-tree replay source: {e}"))
             .and_then(|text| serde_json::from_str(&text).map_err(|e| format!("search-tree replay source JSON: {e}")))?;
+        let added_ids: Vec<String> = patch["operations"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .enumerate()
+            .filter(|(_, operation)| operation["op"] == json!("add"))
+            .map(|(ordinal, _)| format!("n{revision}-{}", ordinal + 1))
+            .collect();
         let mut result = decorate(tx, Head { revision, tree, source })?;
+        result["added_ids"] = json!(added_ids);
         result["replayed"] = json!(true);
         return Ok(result);
     }
@@ -854,6 +863,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(cause_replay["replayed"], json!(true));
+        assert_eq!(cause_replay["added_ids"], json!(["n1-1"]));
         let stale = submit(
             &mut control,
             "tree-stale",

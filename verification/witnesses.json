@@ -496,6 +496,70 @@
       "predicate": "s.published /\\ s.captured = {1} /\\ s.live = Rows /\\ s.seen = {1} /\\ s.cancelled",
       "purpose": "The original snapshot publishes even if cancellation arrives after the final check, before hard_link.",
       "path": ["Snapshot", "Page(1, 1)", "Append", "Complete", "Sync", "CheckPublication", "Cancel", "Publish"]
+    },
+    {
+      "id": "search_tree_add_and_read",
+      "module": "V2SearchTree",
+      "config": "MC_search_tree_add.cfg",
+      "predicate": "revision = 1 /\\ \"a\" \\in nodes /\\ lastRead.kind = \"read\" /\\ lastRead.accepted /\\ ~lastRead.stale",
+      "purpose": "Leader adds a session branch and reads a current tree after a new conversation entry.",
+      "path": ["AdvanceEntry", "Apply(\"leader\", \"c1\", Request(\"add\", 0, \"a\", \"root\", \"open\"))", "Read(\"leader\")"]
+    },
+    {
+      "id": "search_tree_replay_stable",
+      "module": "V2SearchTree",
+      "config": "MC_search_tree.cfg",
+      "predicate": "revision = 1 /\\ lastApply.accepted /\\ lastApply.replay",
+      "purpose": "The same operation cause replays its result without adding a second tree revision.",
+      "path": ["Apply(\"leader\", \"c1\", Request(\"focus\", 0, \"root\", \"none\", \"open\"))", "Apply(\"leader\", \"c1\", Request(\"focus\", 0, \"root\", \"none\", \"open\"))"]
+    },
+    {
+      "id": "search_tree_update_status",
+      "module": "V2SearchTree",
+      "config": "MC_search_tree_update.cfg",
+      "predicate": "revision = 1 /\\ status[\"a\"] = \"abandoned\" /\\ parent[\"a\"] = \"root\"",
+      "purpose": "A revision-checked update abandons a branch without moving it.",
+      "path": ["Apply(\"leader\", \"c1\", Request(\"update\", 0, \"a\", \"none\", \"abandoned\"))"]
+    },
+    {
+      "id": "search_tree_move_branch",
+      "module": "V2SearchTree",
+      "config": "MC_search_tree_move.cfg",
+      "predicate": "revision = 1 /\\ parent[\"a\"] = \"b\"",
+      "purpose": "A move operation reorganizes an existing valid branch without creating a cycle.",
+      "path": ["Apply(\"leader\", \"c1\", Request(\"move\", 0, \"a\", \"b\", \"open\"))"]
+    },
+    {
+      "id": "search_tree_focus_branch",
+      "module": "V2SearchTree",
+      "config": "MC_search_tree.cfg",
+      "predicate": "revision = 1 /\\ focus = \"a\"",
+      "purpose": "Focus selects an existing non-root exploration branch.",
+      "path": ["Apply(\"leader\", \"c1\", Request(\"focus\", 0, \"a\", \"none\", \"open\"))"]
+    },
+    {
+      "id": "search_tree_merge_refs",
+      "module": "V2SearchTree",
+      "config": "MC_search_tree_merge.cfg",
+      "predicate": "revision = 1 /\\ nodes = {\"root\", \"b\"} /\\ parent[\"b\"] = \"root\" /\\ focus = \"root\" /\\ refs[\"root\"] = {\"ra\"}",
+      "purpose": "Merging a focused branch reparents its child, transfers focus and preserves source references.",
+      "path": ["Apply(\"leader\", \"c1\", Request(\"merge\", 0, \"a\", \"root\", \"open\"))"]
+    },
+    {
+      "id": "search_tree_compact_valid",
+      "module": "V2SearchTree",
+      "config": "MC_search_tree_add.cfg",
+      "predicate": "summaries = 1 /\\ revision = 1 /\\ lastCompact.applied /\\ source = position",
+      "purpose": "A valid compaction patch advances the tree and summary at the current watermark.",
+      "path": ["AdvanceEntry", "Compact(Request(\"add\", 0, \"a\", \"root\", \"open\"))"]
+    },
+    {
+      "id": "search_tree_compact_invalid",
+      "module": "V2SearchTree",
+      "config": "MC_search_tree.cfg",
+      "predicate": "summaries = 1 /\\ revision = 0 /\\ lastCompact.error /\\ ~lastCompact.applied",
+      "purpose": "A stale compaction patch leaves the tree untouched while its summary commits.",
+      "path": ["AdvanceEntry", "Compact(Request(\"focus\", 1, \"root\", \"none\", \"open\"))"]
     }
   ]
 }
