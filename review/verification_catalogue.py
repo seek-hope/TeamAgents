@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The formal-verification material, against the targets that drive it and the report that counts it (D-185).
 
-`verification/tla/` holds forty-six TLA+ modules and three-hundred-and-fifty-seven configurations — and **these numbers are
+`verification/tla/` holds forty-seven TLA+ modules and three-hundred-and-sixty-four configurations — and **these numbers are
 checked against the directory by this script's own rule**, because the sentence that said "forty" was the
 kind of count nothing looked at (the module count in this line and the two the report states are all
 compared with what the tree holds); `verification/REPORT.md`
@@ -607,14 +607,19 @@ def main(argv) -> int:
             continue
         names = []
         for line in block.group(1).split("\n"):
-            name = line.split("\\*")[0].strip().rstrip(",")
-            if name:
-                names.append(name)
+            for part in line.split("\\*")[0].split(","):
+                name = part.strip()
+                if name:
+                    names.append(name)
         written = {}
         for name, rhs in assigns.findall(text):
             written.setdefault(name, []).append(rhs.split("\\*")[0].strip())
+        # A variable chosen from a set at Init is not a constant merely because
+        # later actions retain it (for example, the reviewed operation's intent).
+        chosen = {name for name, _domain in
+                  re.findall(r"^\s*[\\/]*\s*([A-Za-z][A-Za-z0-9_]*)\s*\\in\s+([^\n]+)", text, re.M)}
         dead = [name for name in names
-                if not written.get(name) or all(rhs == name for rhs in written[name])]
+                if name not in chosen and (not written.get(name) or all(rhs == name for rhs in written[name]))]
         if dead:
             findings.append(f"{tla}/{spec} never changes {', '.join(dead)}: a variable no action writes is a "
                             "constant of the model, so every claim over it holds for want of a step that could "

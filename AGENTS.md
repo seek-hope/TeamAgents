@@ -53,7 +53,7 @@ make verify-kani                         # Kani proofs (paging arithmetic)
 python3 review/eval/r2-p6/run.py --phase pilot --out <new date directory>  # real-model A/B/C comparison (needs credentials)
 ```
 
-- Local source baseline (2026-11-10, D-502): `make check` is green — core 178 / engine 470 / tui 104;
+- Local source baseline (2026-11-11, D-503): `make check` is green — core 178 / engine 470 / tui 104;
   `make pty` passes. Formal results and their abstraction limits are in `verification/REPORT.md`.
   This does not renew D-452's independent audit or historical real-service results.
   Raw evaluation JSONL lives in `review/eval/r2-p6/runs/`, per-item evidence in `docs/ACCEPTANCE.md`.
@@ -72,7 +72,9 @@ python3 review/eval/r2-p6/run.py --phase pilot --out <new date directory>  # rea
   types and duplicate maintenance guidance without changing runtime semantics. D-500 adds lazy input revisions,
   reviewer usage recovery, real Skill workflows and MCP resource list/read. D-501 upgrades bundled SQLite past
   RUSTSEC-2026-0459. D-502 closes reproduced reviewer fail-closed/context/accounting gaps and adds local tmux/SSH
-  evidence; live reviewer judgement remains unproven. Automatic reminders and other unselected candidates remain unapproved.
+  evidence; live reviewer judgement remains unproven. D-503 adds a bounded reviewer TLA model and controls without
+  changing production behavior or closing wide/Policy B/refinement gaps. Automatic reminders and other unselected
+  candidates remain unapproved.
 - Skipped checks and the current baseline are collected in `docs/ACCEPTANCE.md`. A green Cargo run is not a
   real-service acceptance result.
 - Real-model evaluation always uses the model's native context window and records the value and its source;

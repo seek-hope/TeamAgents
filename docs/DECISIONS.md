@@ -41,6 +41,21 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Command idempotency | a replay with the same `command_id` returns the stored receipt for control-plane state, and the authoritative check runs under the write lock (D-463); result bodies are shared by content digest and zstd-compressed (D-464), while the receipt **rows** remain one per command | D-463, D-464 |
 | Model actions and code windows | a deciding read shares the write's transaction, or the guard is a predicate on the write itself; `verification/REPORT.md` §6 lists the protocol transitions and the three engine windows that span two transactions with their predicates | D-465 |
 
+## D-503 Model the automatic-review lifecycle without claiming reviewer judgement (2026-11-11)
+
+`verification/tla/V2Review.tla` adds a bounded model for D-458/D-500/D-502's existing control path. It changes
+no production behavior and adopts no canonical allocation. One parked operation covers pending/completed/failed/
+interrupted review, a replacement review after the record/decision crash window, denial and dispatch. Automatic
+allow requires a completed consistent assessment and cannot approve self-update; review leaves the instance
+parked and closes release reservations. Known usage equals five tokens per priced response, including malformed
+failures; unpriced completion and transport/interruption paths increment unknown usage.
+
+Six `MC_review_*` controls independently remove those guards. Witnesses cover normal allow/dispatch,
+malformed-known failure and unpriced-complete allow. A separate mutation of the normal malformed accounting arm
+must also refute the usage invariant, so that property does not depend only on the fault flag. Parser quality,
+real-model judgement, prices, provider scheduling, SQL details and Rust refinement remain outside this finite
+model. The wide configuration, full-system composition and Policy B source-bound equivalence stay open.
+
 ## D-502 Close automatic-review fail-closed gaps and extend local transport evidence (2026-11-10)
 
 An independent read-only adversarial pass, followed by locally reproduced failures, found that the automatic

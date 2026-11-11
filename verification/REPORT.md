@@ -5,7 +5,24 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
-## 0. Gate status (re-run 2026-11-10 at `072a160c`)
+## 0. Gate status (re-run 2026-11-11 at `072a160c`)
+
+D-503 adds the bounded `V2Review` transition model without changing production source or adopting canonical
+allocation. The current targets verified all **59** configurations in **56** traversals with actual exit 0 in
+1999.9 seconds and refuted all **304** negative controls with exit 0 in 332.7 seconds. All **68** normal-path
+witnesses passed in 73.3 seconds, and all **9** Kani harnesses passed in 42.3 seconds. Kani reported `Complete - 9
+successfully verified harnesses, 0 failures, 9 total`. Receipts are `d503-{model-all-v2,controls-v2,witnesses-v2,kani}`
+under `review/tmp/d497/`; the positive aggregate records 59 source configurations, 56 traversals and zero errors.
+
+The new model checks completed/consistent review evidence, user-only self-update, parked-phase preservation,
+reservation release and exact known totals for priced responses. It covers unpriced completion and the
+record/decision replacement-review window. Six controls refute the separate guards, and a mutation of the normal
+malformed accounting arm also refutes `FailedKnownUsageIsSettled`. An initial full replay was deliberately
+stopped after independent model review found accounting and lifecycle omissions; it is not counted. Parser
+quality, real-model judgement, provider prices/fairness, full-system composition and Rust/SQLite refinement
+remain open, as do the wide exhaustive run and Policy B's source-bound equivalence.
+
+### D-500 previous gate
 
 D-500 material commit `072a160c2447a0700ebc02a0aa08d01c8a8dcc17` fixes lazy input revisions and reviewer
 usage accounting while preserving the goal-to-work vocabulary and fairness/settlement contract. It does not
@@ -1111,7 +1128,7 @@ It is a historical ledger, not the current coverage inventory; current evidence 
    journal's hash chain and artifact hashing, the symlink/rename syscalls, the stop/start handshake with the
    daemon, the release download, and the product's own transaction order — `engine/tests/update.rs` exercises
    those against the real journal.
-10. **Automatic review (`begin_review`, `record_review_attempt`, `review_decision`)**: D-458 lets a read-only reviewer turn one pending operation approval into a decision when `[permissions] approvals_reviewer = "auto_review"`. The control plane's finality, single-use and revision checks are covered by `core` tests, and the reviewer's fail-closed paths by `engine` tests. Review usage registration, reservation, settlement and interruption recovery have concrete tests, but no TLA model covers those review requests or the reviewer's own judgement; its output is not a proof of safety.
+10. **Automatic review (`begin_review`, `record_review_attempt`, `review_decision`)**: D-458 lets a read-only reviewer turn one pending operation approval into a decision when `[permissions] approvals_reviewer = "auto_review"`. D-503's bounded `V2Review` model covers the review lifecycle, completed/consistent allow evidence, self-update refusal, parked phase, reservation release and known/unknown usage, with six controls and three witnesses. Control/driver tests remain the parser and implementation evidence. The model does not establish reviewer judgement, prompt-injection resistance, provider prices, full-system composition or Rust/SQLite refinement.
 11. **Hooks, session export and the MCP transport are outside the models.** `V2Codemode` pins the `pre_tool`
    veto for *nested* codemode calls; a direct tool call's veto, the `notify` stream, the export snapshot's
    consistency and the MCP wire are covered by sample tests and probes only.

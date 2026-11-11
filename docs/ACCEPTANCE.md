@@ -1,7 +1,7 @@
 # Acceptance matrix (A01–A36)
 
 Baseline: [the design and acceptance baseline](DESIGN.md) §12/§16. Current source inspection and local
-regression baseline: **2026-11-10, D-502**.
+regression baseline: **2026-11-11, D-503**.
 This is not a new independent acceptance audit or real-model run.
 The D-451 product/installation receipts and the D-452 independent audit retain their original source/date
 boundaries; later source changes do not inherit those results.
@@ -34,6 +34,11 @@ renewing the earlier PTY/install/live-service results. The current [requirement 
 classifies every Q/A requirement and its remaining obligations. It does not upgrade the acceptance icons
 below or renew real-service results. Model fixes, normal-path witnesses and bounded production-code Kani
 proofs are recorded in the formal report; runtime source and installed binaries remain D-494.
+
+D-503 adds the bounded `V2Review` model: all 59 positive configurations/56 traversals, 304 controls, 68
+witnesses and nine Kani harnesses pass. The model covers review evidence, self-update refusal, parked phase,
+reservations and known/unknown usage, not reviewer judgement, provider prices, full-system composition or
+Rust/SQLite refinement. The wide run and Policy B source-bound equivalence remain open.
 
 D-502 fixes independently identified and locally reproduced automatic-review violations: strict complete
 responses, consistent low-risk/high-authorization allows, current-epoch user-only authorization context,

@@ -1,5 +1,9 @@
 # Development handoff
 
+D-503 adds the bounded V2Review model with 59 positive configurations/56 traversals, 304 controls, 68 witnesses
+and nine Kani harnesses passing. It changes no production behavior; reviewer judgement, wide exhaustive search,
+full-system composition, Rust/SQLite refinement and Policy B source-bound equivalence remain open.
+
 D-502 closes reproduced automatic-review parsing, authorization-context, control-evidence and known-usage gaps.
 Its dated adversarial report distinguishes those implementation fixes from still-open live-model judgement
 quality. Actual tmux and isolated loopback-SSH PTY probes pass; neither is a real-provider or public-host matrix.

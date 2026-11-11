@@ -64,6 +64,7 @@ a row here is not a `TypeOK*` claim.
 | `V2Prune` | `TypeOK` |
 | `V2Retention` | `TypeOK` |
 | `V2Retry` | `TypeOK` |
+| `V2Review` | `TypeOK` |
 | `V2Schedule` | `TypeOK` |
 | `V2SessionUi` | `TypeOK` |
 | `V2Sessions` | `TypeOK` |

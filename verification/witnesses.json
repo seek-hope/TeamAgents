@@ -406,6 +406,27 @@
       "purpose": "Admission usage transfers once before an active work effect."
     },
     {
+      "id": "review_allow_dispatches",
+      "module": "V2Review",
+      "config": "MC_review.cfg",
+      "predicate": "intent = \"shell\" /\\ effect /\\ known = 5 /\\ ~reserved",
+      "purpose": "A completed consistent review allows the parked shell operation and releases its reservation."
+    },
+    {
+      "id": "review_malformed_known_usage",
+      "module": "V2Review",
+      "config": "MC_review.cfg",
+      "predicate": "review = \"FAILED\" /\\ known = 5 /\\ pricedResponses = 1",
+      "purpose": "A malformed but priced response records known usage and closes without approval."
+    },
+    {
+      "id": "review_unpriced_complete_allow",
+      "module": "V2Review",
+      "config": "MC_review.cfg",
+      "predicate": "effect /\\ review = \"COMPLETE\" /\\ known = 0 /\\ unknown = 1",
+      "purpose": "A valid unpriced completion can allow while recording unknown rather than zero-cost usage."
+    },
+    {
       "id": "executionchain_success_import",
       "module": "V2ExecutionChain",
       "config": "MC_executionchain.cfg",
