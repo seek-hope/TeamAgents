@@ -5,16 +5,25 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
-## 0. Gate status (re-run 2026-11-11 at `777cf0af`)
+## 0. Gate status (re-run 2026-11-11 at `78035030`)
 
-D-503 adds the bounded `V2Review` transition model without changing production source or adopting canonical
-allocation. The current targets verified all **59** configurations in **56** traversals with actual exit 0 in
-1999.9 seconds and refuted all **304** negative controls with exit 0 in 332.7 seconds. All **68** normal-path
-witnesses passed in 73.3 seconds, and all **9** Kani harnesses passed in 42.3 seconds. Kani reported `Complete - 9
-successfully verified harnesses, 0 failures, 9 total`. Receipts are `d503-{model-all-v2,controls-v2,witnesses-v2,kani}`
-under `review/tmp/d497/`; the positive aggregate records 59 source configurations, 56 traversals and zero errors.
+D-504 adds one session-level exploration tree beside compaction. Its two new control commands are explicitly
+unmodelled; the existing formal inputs are unchanged. The current targets verified all **59** configurations in
+**56** traversals with actual exit 0 in 1952.8 seconds and refuted all **304** negative controls with exit 0 in
+307.8 seconds. All **68** normal-path witnesses passed in 59.7 seconds, and all **9** Kani harnesses passed in
+37.6 seconds. Kani reported `Complete - 9 successfully verified harnesses, 0 failures, 9 total`. Receipts are
+`d504-{model-all,controls,witnesses-run,kani}` under `review/tmp/d497/`. A mistyped witness target returned 2
+without running anything and is retained separately as `d504-witnesses`; it is not evidence.
 
-The new model checks completed/consistent review evidence, user-only self-update, parked-phase preservation,
+The new Rust tests cover Leader authority, replay, schema 9 migration, patch atomicity, cycle/bounds checks,
+terminal-control escaping, empty-epoch watermarks, compaction through the retained tail, fail-soft summaries,
+CLI/daemon reads and export. They do not prove semantic tree completeness, live-model navigation quality or
+reduced lostness. Wide exhaustive search, full-system composition, Rust/SQLite refinement and Policy B remain
+open.
+
+### D-503 previous gate
+
+The D-503 model checks completed/consistent review evidence, user-only self-update, parked-phase preservation,
 reservation release and exact known totals for priced responses. It covers unpriced completion and the
 record/decision replacement-review window. Six controls refute the separate guards, and a mutation of the normal
 malformed accounting arm also refutes `FailedKnownUsageIsSettled`. An initial full replay was deliberately

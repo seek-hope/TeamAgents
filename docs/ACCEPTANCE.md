@@ -41,7 +41,8 @@ recent turn. Strict revisioned add/update/move/merge/focus patches use the opera
 history or change authority. `/tree`, `teamagents search_tree [--json]` and session export expose the same
 projection. Core/driver/daemon/export regressions cover custom Leader ids, replay, cycles, references, stale
 patches, savepoint rollback, terminal-control escaping, empty-epoch watermarks and fail-soft summaries. These are scripted/local checks, not live-model tree quality or lostness
-measurements; the new control commands remain explicitly unmodelled in the formal report.
+measurements; the new control commands remain explicitly unmodelled in the formal report. The existing formal
+inputs re-pass all 59 positive configurations/56 traversals, 304 controls, 68 witnesses and nine Kani harnesses.
 
 D-503 adds the bounded `V2Review` model: all 59 positive configurations/56 traversals, 304 controls, 68
 witnesses and nine Kani harnesses pass. The model covers review evidence, self-update refusal, parked phase,
