@@ -456,6 +456,8 @@ module the method's rule is checked in; the property-by-property anchors above s
 | `complete_task` | `V2Task.tla` |
 | `cancel_task` | `V2Task.tla` |
 | `read_history` | `V2History.tla` |
+| `read_search_tree` | `unproven`: D-504's User/Leader session-tree projection, source watermark and stale calculation are covered by core/daemon tests, but no TLA model covers them |
+| `apply_search_tree` | `unproven`: D-504's revision-checked atomic add/update/move/merge/focus patch, cycle/bounds checks and stable replay are covered by Rust tests, but no TLA model covers them |
 | `fire_timer` | `V2Wait.tla` |
 | `blocked_report` | `V2Wait.tla` |
 | `submit_input` | `V2Control.tla` (the inbound boundary); `V2InputQueue.tla` (verified snapshots, original revision and at-most-once consumption) |

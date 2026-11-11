@@ -159,6 +159,8 @@ fn stream(
         ("work_states","Durable work state","SELECT rowid,json_object('work_id',NULLIF(work_id,''),'instance_id',instance_id,'epoch',epoch,'task_id',task_id,'state',state,'checkpoint_raw',checkpoint_json,'checkpoint_provenance','model_claim','policy_raw',policy_json,'pending_reason',pending_reason,'repair_turns',empty_turns,'revision',revision,'reason',reason) FROM work_states WHERE rowid>?1 ORDER BY rowid LIMIT ?2"),
         ("work_inputs","Work input attribution","SELECT rowid,json_object('work_id',NULLIF(work_id,''),'instance_id',instance_id,'epoch',epoch,'envelope_id',envelope_id,'state',state) FROM work_inputs WHERE rowid>?1 ORDER BY rowid LIMIT ?2"),
         ("work_requests","Frozen work context","SELECT rowid,json_object('request_id',request_id,'projection_raw',context_json,'billed_work_id',billed_work_id,'unknown_usage',unknown_usage) FROM work_requests WHERE rowid>?1 ORDER BY rowid LIMIT ?2"),
+        ("search_tree_revisions","Session exploration tree","SELECT rowid,json_object('session_id',session_id,'revision',revision,'tree_raw',tree_json,'patch_raw',patch_json,'source_instance',source_instance,'source_epoch',source_epoch,'source_entry_id',source_entry_id,'cause',cause,'cause_ref',cause_ref,'actor',actor,'created',created) FROM search_tree_revisions WHERE rowid>?1 ORDER BY rowid LIMIT ?2"),
+        ("search_tree_head","Session exploration-tree head","SELECT rowid,json_object('session_id',session_id,'revision',revision) FROM search_tree_head WHERE rowid>?1 ORDER BY rowid LIMIT ?2"),
         ("input_revisions","Input revisions","SELECT rowid, json_object('envelope_id',envelope_id,'revision',revision,'action',action,'payload_raw',payload_json,'created',created) FROM input_revisions WHERE rowid > ?1 ORDER BY rowid LIMIT ?2"),
         ("input_attachments","Attachment references","SELECT x.rowid, json_object('envelope_id',x.envelope_id,'ordinal',x.ordinal,'artifact_id',x.artifact_id,'digest',a.digest,'size',a.size,'completeness',a.completeness) FROM input_attachments x LEFT JOIN artifacts a ON a.id=x.artifact_id WHERE x.rowid > ?1 ORDER BY x.rowid LIMIT ?2"),
     ] {
@@ -180,7 +182,8 @@ fn stream(
                     let mut value:Json=serde_json::from_str(raw).map_err(|e|e.to_string())?;
                     value["cursor"]=json!(after);
                     for (raw, parsed) in [("message_raw","message"),("payload_raw","payload"),("refs_raw","refs"),
-                        ("limits_raw","limits"),("usage_raw","known_usage"),("checkpoint_raw","checkpoint"),("policy_raw","policy"),("projection_raw","projection")] {
+                        ("limits_raw","limits"),("usage_raw","known_usage"),("checkpoint_raw","checkpoint"),("policy_raw","policy"),("projection_raw","projection"),
+                        ("tree_raw","tree"),("patch_raw","patch")] {
                         if let Some(source)=value.get(raw).cloned() {
                             match source.as_str().map(serde_json::from_str::<Json>) {
                                 Some(Ok(data)) => {value.as_object_mut().unwrap().remove(raw);value[parsed]=data;}

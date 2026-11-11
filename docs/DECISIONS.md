@@ -17,6 +17,7 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | CodeGraph | optional stdio MCP service (`codegraph serve --mcp`) queried through codemode; existing indexes only unless the user explicitly initializes one; shared daemon by default, no automatic install/init | D-483 |
 | Release publication | v0.2.0 is the first public release (Linux x86_64, musl static), rebuilt with D-476 and replaced again with the current hardened source under D-493; future tags still need explicit user authorization and `TEAMAGENTS_RELEASE_APPROVED=true` | D-457, D-475, D-477, D-493 |
 | Context compaction | triggered by real window usage; the summary keeps the original request and acceptance criteria, and the full text stays retrievable | D-28 |
+| Exploration tree | one revisioned, model-maintained navigation tree per session, advanced by Leader compaction and explicit tree operations; it is not per-instance state, execution history, authority or proof | D-504 |
 | Task priority | complex coding and long-horizon stability come first | D-35 |
 | Work and initiative | honor user instructions and intent; explore freely and pursue excellent, thoroughly verified results within the authorized scope. Durable work_scopes span turns, compaction and restart; bounded recovery prevents empty loops | D-487 |
 | Work vocabulary and migration | there is no separate goal entity: work scopes own budget, deadline, admission and acceptance; work states/tasks own continuation and attribution. Schema 8 migrates the old goal records and events explicitly | D-498 |
@@ -40,6 +41,39 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Prompt cache | cache hit/miss/write are provider-reported and visible; the L1 frontier is fixed between compactions; Anthropic gets explicit breakpoints and OpenAI a stable key; DeepSeek stays automatic | D-459 |
 | Command idempotency | a replay with the same `command_id` returns the stored receipt for control-plane state, and the authoritative check runs under the write lock (D-463); result bodies are shared by content digest and zstd-compressed (D-464), while the receipt **rows** remain one per command | D-463, D-464 |
 | Model actions and code windows | a deciding read shares the write's transaction, or the guard is a predicate on the write itself; `verification/REPORT.md` §6 lists the protocol transitions and the three engine windows that span two transactions with their predicates | D-465 |
+
+## D-504 Add one session-level exploration tree beside compaction (2026-11-11)
+
+The user selected a **session-level** exploration tree rather than one tree per instance, explicitly to avoid
+multiplying and complicating the navigation structure. One session owns one current tree and append-only
+revisions. It records questions, hypotheses, attempts, findings, decisions, obstacles and next steps with source
+references and a focus node. These are model-maintained navigation claims, not verified facts, work completion,
+permissions, an alternate checkpoint or a way to rewind side effects.
+
+- Schema 9 persists the Leader role, `search_tree_revisions` and a head pointer. Bootstrap records the Leader;
+  migration derives it from work policy, `i-leader`, or the earliest instance. `read_search_tree` is User/Leader
+  only. `apply_search_tree` uses a base revision and stable operation identity, so stale patches fail and recovery
+  cannot apply one patch twice. Add/update/move/merge/focus operations are atomic and bounded to 96 nodes, 32
+  operations and 32 levels with strict text/reference limits. Merging preserves source refs and reparents
+  children; no operation deletes conversation history. A savepoint rolls back every partial patch on error;
+  source freshness compares the complete `(instance, epoch, entry)` watermark, including empty epochs. Human
+  rendering escapes model-supplied terminal controls and embedded line breaks without changing stored JSON.
+- Only Leader compaction advances the shared tree. Its model input contains the previous cumulative tree and the
+  newly visible conversation, including the retained recent tail; it never reads member-private history. A
+  compaction response is a strict JSON envelope containing the existing structured summary and a tree patch.
+  Legacy text still commits as a summary but leaves the tree stale. An invalid/stale tree patch emits
+  `search_tree_update_failed` while the summary and turn continue; it never blocks compaction or work.
+- The Leader receives a bounded focus/unresolved view on later requests and may call `search_tree` with `show`
+  or `apply`. Focus guides attention only. Users inspect the same daemon projection with `/tree` or
+  `teamagents search_tree [--json]`; session export includes all revisions and the head. Nodes omitted by a patch
+  remain; abandonment is explicit and prior revisions stay readable.
+
+Core, driver, daemon and export tests cover permissions, custom Leader ids, replay, stale watermarks, cycles,
+merge/reference preservation, compact-through-latest-input, tool operations and fail-soft patch handling. This is
+scripted/local evidence, not live-model tree quality, reduced-lostness proof or a formal model of the two new
+control commands. Those commands are explicitly unproven in `verification/REPORT.md`; existing control proofs
+are not extended by assertion. No per-instance tree, cross-session tree, graphical topology editor or automatic
+member-private aggregation is introduced.
 
 ## D-503 Model the automatic-review lifecycle without claiming reviewer judgement (2026-11-11)
 

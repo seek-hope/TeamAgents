@@ -9,6 +9,8 @@ use serde_json::{json, Value as Json};
 pub const FINISH_TOOL: &str = "finish";
 /// Built-in readback tool: pages the full stored output of an earlier call.
 pub const READBACK_TOOL: &str = "read_history";
+/// Leader-only session exploration navigation (D-504).
+pub const SEARCH_TREE_TOOL: &str = "search_tree";
 /// Collaboration tools (§5.2): wait is a control-flow action (sole call,
 /// like finish); send/delegate/spawn are ordinary tool intents whose grants
 /// are re-checked at the dispatch linearization point (§6.1).
@@ -353,6 +355,28 @@ pub fn builtin_tool_schemas() -> Vec<Json> {
             }
         }),
     ]
+}
+
+/// Session exploration tree operations. This schema is offered only to the
+/// Leader by the runtime; the control plane repeats that identity check.
+pub fn search_tree_tool_schema() -> Json {
+    json!({
+        "type":"function",
+        "function":{
+            "name":SEARCH_TREE_TOOL,
+            "description":"View or reorganize the session-level exploration tree. Use action=show to read it. Use action=apply with the current base_revision and an operations array to add/update/move/merge nodes or set focus. Nodes are navigation claims with source refs, not proof, work completion, permissions or a way to rewind side effects. Prune by marking a branch abandoned; previous revisions remain stored.",
+            "parameters":{
+                "type":"object",
+                "properties":{
+                    "action":{"type":"string","enum":["show","apply"]},
+                    "base_revision":{"type":"integer","minimum":0,"description":"Required for apply; read it from the current tree."},
+                    "operations":{"type":"array","maxItems":32,"description":"Atomic patch: add {op,parent_id,node}; update {op,id,...fields}; move {op,id,parent_id}; merge {op,from_id,into_id,optional summary}; focus {op,id}. Node kinds: question/hypothesis/attempt/finding/decision/obstacle/next_step. Statuses: active/open/resolved/blocked/abandoned.","items":{"type":"object"}}
+                },
+                "required":["action"],
+                "additionalProperties":false
+            }
+        }
+    })
 }
 
 /// Collaboration tool schemas (§5.2), appended by the runtime only for the

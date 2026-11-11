@@ -1,6 +1,6 @@
 # TeamAgents user guide
 
-This guide describes current source through D-489. For installation, see [INSTALL.md](INSTALL.md); for evidence
+This guide describes current source through D-504. For installation, see [INSTALL.md](INSTALL.md); for evidence
 and candidate work, see [ACCEPTANCE.md](ACCEPTANCE.md) and [PRODUCT-COMPARISON.md](PRODUCT-COMPARISON.md).
 Historical decisions and experiments are not instructions for the current product.
 
@@ -38,6 +38,12 @@ teamagents                           # open the TUI (starts this session's daemo
   the error. Nothing is sent automatically. Appending /edit to nonempty draft text and pressing Enter opens
   the same editor; /edit alone shows instructions. Staged attachments are separate from the edited text.
   The editor is a trusted local program running with the user's permissions, not a model sandbox tool.
+- **Session exploration tree (D-504)**: `/tree` shows one session-level tree of questions, hypotheses,
+  attempts, findings, decisions, obstacles and next steps, with source references and a focus marker.
+  Leader compaction advances it through the retained recent conversation; member-private history is not copied
+  into it. Ask the Leader in ordinary language to merge, move, update, abandon or focus branches. The tree is
+  navigation, not verified completion or a way to undo tool effects. `stale` means later conversation is not yet
+  incorporated. `teamagents search_tree [--json]` reads the same projection without starting a daemon.
 - **Interrupt and quit**: Ctrl+C or /interrupt cancels the Leader's in-flight model request. The receipt
   says whether anything was interrupted. Running tools and delegated work continue; developer controls are
   listed below. Ctrl+Q or /quit quits the TUI while the daemon keeps running.

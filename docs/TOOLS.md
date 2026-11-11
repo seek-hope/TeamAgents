@@ -19,6 +19,8 @@ decisions and context. The offered surface is selected in three layers:
   as separate model functions. Doctor reports configured services; status reports the live bound surface.
 
 `kernel::builtin_tool_schemas()` is the floor: `finish` and the readback tool are offered to every instance.
+The Leader alone also receives `kernel::search_tree_tool_schema()` for the session exploration tree (D-504);
+its show/apply operations use the durable ledger and never expose member-private history.
 For enrolled work, `work_checkpoint` is a sole control action for progress, questions, blocking and internal
 new-work admission. It does not grant capabilities. Behavior instructions encourage exploration and excellent
 results within user intent and scope; harness instructions define scheduling, evidence and stopping.
@@ -144,6 +146,18 @@ Park this instance until the conditions hold or the timer fires. Must be the onl
 | `mode` | `string` | yes | — |
 | `conditions` | `array` | yes | — |
 | `timer_seconds` | `number` | no | Optional deadline from now; the wait closes when it fires. |
+
+### `search_tree`
+
+*Offered by `kernel::search_tree_tool_schema()` (Leader only; D-504).*
+
+View or reorganize the session-level exploration tree. Use action=show to read it. Use action=apply with the current base_revision and an operations array to add/update/move/merge nodes or set focus. Nodes are navigation claims with source refs, not proof, work completion, permissions or a way to rewind side effects. Prune by marking a branch abandoned; previous revisions remain stored.
+
+| Parameter | Type | Required | Meaning |
+|---|---|---|---|
+| `action` | `string` | yes | — |
+| `base_revision` | `integer` | no | Required for apply; read it from the current tree. |
+| `operations` | `array` | no | Atomic patch: add {op,parent_id,node}; update {op,id,...fields}; move {op,id,parent_id}; merge {op,from_id,into_id,optional summary}; focus {op,id}. Node kinds: question/hypothesis/attempt/finding/decision/obstacle/next_step. Statuses: active/open/resolved/blocked/abandoned. |
 
 ### `ls`
 

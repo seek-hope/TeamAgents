@@ -95,6 +95,11 @@ fn reply(text: &str) -> Json {
     json!({"role": "assistant", "content": text})
 }
 
+fn search_tree_call(id: &str, args: Json) -> Json {
+    json!({"role":"assistant","content":"",
+           "tool_calls":[{"id":id,"type":"function","function":{"name":"search_tree","arguments":args.to_string()}}]})
+}
+
 fn shell_call(id: &str, command: &str) -> Json {
     json!({"role": "assistant", "content": "",
            "tool_calls": [{"id": id, "type": "function",
@@ -239,6 +244,68 @@ async fn boot(tag: &str, scripts: HashMap<String, Vec<Json>>) -> (Root, DaemonHa
     std::fs::create_dir_all(root.dir.join("ws")).unwrap();
     let handle = serve(config(&root, scripts)).await.expect("daemon");
     (root, handle)
+}
+
+#[tokio::test]
+async fn daemon_reads_the_same_session_search_tree_projection() {
+    let (root, handle) = boot(
+        "search-tree-read",
+        HashMap::from([(
+            "i-leader".into(),
+            vec![
+                search_tree_call(
+                    "tree-add",
+                    json!({"action":"apply","base_revision":0,"operations":[{
+                        "op":"add","parent_id":"root","node":{"title":"Shared session branch","kind":"finding"}
+                    }]}),
+                ),
+                reply("done"),
+            ],
+        )]),
+    )
+    .await;
+    let socket = root.dir.join("state/daemon.sock");
+    let run = headless_result(exec_options(&socket, &root.dir.join("ws"), "organize this", vec![])).await;
+    assert!(run.is_ok(), "{:?}", run.err());
+    let mut client = Client::connect(&socket).await;
+    let reply = client.call("search_tree", json!({})).await;
+    assert_eq!(reply["ok"], json!(true), "{reply}");
+    let tree = &reply["result"];
+    assert_eq!(tree["revision"], json!(1));
+    assert_eq!(tree["nodes"][1]["title"], json!("Shared session branch"));
+    assert!(tree["text"].as_str().unwrap().contains("Shared session branch"));
+    drop(client);
+    let cli = tokio::task::spawn_blocking({
+        let state = root.dir.join("state");
+        move || {
+            std::process::Command::new(env!("CARGO_BIN_EXE_teamagents"))
+                .args(["search_tree", "--state-root"])
+                .arg(state)
+                .arg("--json")
+                .output()
+                .unwrap()
+        }
+    })
+    .await
+    .unwrap();
+    assert!(cli.status.success(), "{}", String::from_utf8_lossy(&cli.stderr));
+    let cli_tree: Json = serde_json::from_slice(&cli.stdout).unwrap();
+    assert_eq!(cli_tree["revision"], json!(1));
+    assert_eq!(cli_tree["nodes"][1]["title"], json!("Shared session branch"));
+    let rejected = tokio::task::spawn_blocking({
+        let state = root.dir.join("state");
+        move || {
+            std::process::Command::new(env!("CARGO_BIN_EXE_teamagents"))
+                .args(["search_tree", "--after-turn", "--state-root"])
+                .arg(state)
+                .output()
+                .unwrap()
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(rejected.status.code(), Some(2), "{}", String::from_utf8_lossy(&rejected.stderr));
+    handle.shutdown().await.unwrap();
 }
 
 #[tokio::test]

@@ -5,8 +5,8 @@ it: the TUI, `teamagents exec`, the CLI verbs (`instances`, `tasks`, `approvals`
 under `review/dogfood/`. DESIGN.md calls it "one JSON-lines protocol (`/v1`)" and states its guarantees
 (handshake, `command_id` dedup, the event watermark); this document lists what it actually carries, generated from
 the two dispatchers in the code. The [visual architecture](ARCHITECTURE.md) relates these methods to state,
-transactions and recovery. Database schema 8, socket protocol 1 and work policy 1 are separate versions. Schema 8
-removes the goal vocabulary and migrates existing scope, ownership and event records to work.
+transactions and recovery. Database schema 9, socket protocol 1 and work policy 1 are separate versions. Schema 8
+removed the goal vocabulary; schema 9 adds the session exploration-tree revisions, head and Leader role (D-504).
 
 **Framing.** One JSON object per line, UTF-8, no other framing. The daemon speaks first: a greeting carrying
 `server`, `protocol_version` (currently `1`), `session_id`, `state_root`, `permissions` and `workspace` — a client
@@ -100,79 +100,82 @@ policy on its own. See the handler and control wrapper for scope, revision, gran
 | `previews` | — | `previews` | `engine/src/v2/daemon.rs:701` |
 | `checkpoint` | — | `snapshot`, `watermark` | `engine/src/v2/daemon.rs:707` |
 | `events` | `since` | `events`, `resync_required`, `watermark` | `engine/src/v2/daemon.rs:714` |
-| `history` | `instance_id`, `limit` | `entries`, `envelope_id`, `epoch`, `idx`, `instance_id`, `kind`, `message`, `work_work_id`, `workspace` | `engine/src/v2/daemon.rs:723` |
-| `surfaces` | `instance_id`, `limit` | `epoch`, `instance_id`, `kind`, `offered_tools`, `request_id`, `status`, `surface_authorized`, `surfaces`, `work_id` | `engine/src/v2/daemon.rs:757` |
-| `inputs` | — | `envelope_id`, `epoch`, `inputs`, `instance_id`, `next_after`, `payload`, `revision`, `sequence` | `engine/src/v2/daemon.rs:789` |
-| `tasks` | — | `tasks` | `engine/src/v2/daemon.rs:840` |
-| `approvals` | — | `approvals`, `id`, `operation_id`, `preview`, `tool` | `engine/src/v2/daemon.rs:849` |
-| `work_scopes` | — | `attached_instances`, `deadline`, `id`, `known_usage`, `limits`, `status`, `summary`, `unknown_usage`, `work_scopes` | `engine/src/v2/daemon.rs:878` |
-| `grants` | — | `action`, `capability_requests`, `delegable`, `grants`, `id`, `issuer`, `parent_grant_id`, `requester`, `resource_scope`, `revision`, `revoked`, `status`, `subject`, `task_id` | `engine/src/v2/daemon.rs:925` |
+| `search_tree` | — | — | `engine/src/v2/daemon.rs:723` |
+| `history` | `instance_id`, `limit` | `entries`, `envelope_id`, `epoch`, `idx`, `instance_id`, `kind`, `message`, `work_work_id`, `workspace` | `engine/src/v2/daemon.rs:731` |
+| `surfaces` | `instance_id`, `limit` | `epoch`, `instance_id`, `kind`, `offered_tools`, `request_id`, `status`, `surface_authorized`, `surfaces`, `work_id` | `engine/src/v2/daemon.rs:765` |
+| `inputs` | — | `envelope_id`, `epoch`, `inputs`, `instance_id`, `next_after`, `payload`, `revision`, `sequence` | `engine/src/v2/daemon.rs:797` |
+| `tasks` | — | `tasks` | `engine/src/v2/daemon.rs:848` |
+| `approvals` | — | `approvals`, `id`, `operation_id`, `preview`, `tool` | `engine/src/v2/daemon.rs:857` |
+| `work_scopes` | — | `attached_instances`, `deadline`, `id`, `known_usage`, `limits`, `status`, `summary`, `unknown_usage`, `work_scopes` | `engine/src/v2/daemon.rs:886` |
+| `grants` | — | `action`, `capability_requests`, `delegable`, `grants`, `id`, `issuer`, `parent_grant_id`, `requester`, `resource_scope`, `revision`, `revoked`, `status`, `subject`, `task_id` | `engine/src/v2/daemon.rs:933` |
 
 ### Commands (executed by the control plane)
 
 | Method | Parameters the handler reads | Identity passed | Handled at |
 |---|---|---|---|
-| `create_instance` | `id`, `profile`, `workspace_ref` | yes | `core/src/v2/control.rs:262` |
-| `spawn_instance` | `acceptance_refs`, `capabilities`, `instance_id`, `instructions`, `profile`, `task`, `task_id`, `work_id`, `workspace_ref` | yes | `core/src/v2/control.rs:263` |
-| `issue_grant` | `action`, `delegable`, `parent_grant_id`, `resource_scope`, `subject`, `task_id` | yes | `core/src/v2/control.rs:264` |
-| `revoke_grant` | `grant_id` | yes | `core/src/v2/control.rs:265` |
-| `capability_requests` | — | no | `core/src/v2/control.rs:266` |
-| `approve_capability` | `request_id` | yes | `core/src/v2/control.rs:267` |
-| `deny_capability` | `request_id` | yes | `core/src/v2/control.rs:268` |
-| `reauthorize_operation` | `operation_id` | no | `core/src/v2/control.rs:269` |
-| `reset_instance` | `instance_id`, `reason` | yes | `core/src/v2/control.rs:270` |
-| `configure_work` | `leader_id`, `limits` | yes | `core/src/v2/control.rs:271` |
-| `create_work` | `deadline`, `id`, `instance_id`, `limits`, `original_request_ref` | yes | `core/src/v2/control.rs:272` |
-| `require_checks` | `checks`, `work_id` | yes | `core/src/v2/control.rs:273` |
-| `send_message` | `correlation_id`, `max_inbox`, `recipient`, `text` | yes | `core/src/v2/control.rs:274` |
-| `drain_inbox` | `instance_id` | yes | `core/src/v2/control.rs:275` |
-| `set_instance_profile` | `effort`, `instance_id`, `model` | yes | `core/src/v2/control.rs:276` |
-| `delegate_task` | `acceptance_refs`, `assignee`, `dependencies`, `description`, `task_id`, `work_id` | yes | `core/src/v2/control.rs:277` |
-| `start_task` | `task_id` | yes | `core/src/v2/control.rs:278` |
-| `complete_task` | `result_refs`, `status`, `summary`, `task_id` | yes | `core/src/v2/control.rs:279` |
-| `cancel_task` | `reason`, `task_id` | yes | `core/src/v2/control.rs:280` |
-| `read_history` | `epoch`, `instance_id`, `limit` | yes | `core/src/v2/control.rs:281` |
-| `fire_timer` | `now` | yes | `core/src/v2/control.rs:282` |
-| `blocked_report` | — | yes | `core/src/v2/control.rs:283` |
-| `submit_input` | `after`, `checks`, `envelope_id`, `instance_id`, `text` | yes | `core/src/v2/control.rs:284` |
-| `edit_input` | `envelope_id`, `instance_id`, `revision`, `text` | yes | `core/src/v2/control.rs:285` |
-| `cancel_input` | `envelope_id`, `instance_id`, `revision`, `text` | yes | `core/src/v2/control.rs:286` |
-| `begin_request` | `est_prompt_tokens`, `instance_id`, `offered_tools`, `prepared_work`, `request_id`, `request_ref`, `revision`, `surface_authorized` | yes | `core/src/v2/control.rs:287` |
-| `record_attempt` | `attempt_id`, `elapsed_ms`, `error_class`, `request_id`, `response_ref`, `status`, `stream`, `unknown_usage`, `usage` | no | `core/src/v2/control.rs:288` |
-| `begin_compression` | `est_prompt_tokens`, `instance_id`, `prepared_work`, `request_id`, `request_ref`, `revision` | yes | `core/src/v2/control.rs:289` |
-| `compress_context` | `attempt_id`, `instance_id`, `keep_ids`, `request_id`, `summary` | yes | `core/src/v2/control.rs:290` |
-| `fail_compression` | `reason`, `request_id` | no | `core/src/v2/control.rs:291` |
-| `import_response` | `checkpoint`, `completion`, `decision_id`, `entry`, `grant_revision`, `intents`, `notes`, `request_id`, `wait` | yes | `core/src/v2/control.rs:292` |
-| `observe_operation_stops` | `observations` | yes | `core/src/v2/control.rs:293` |
-| `dispatch_operation` | `approval_required`, `operation_id`, `permission_revision` | no | `core/src/v2/control.rs:294` |
-| `complete_operation` | `operation_id`, `receipt`, `status` | no | `core/src/v2/control.rs:295` |
-| `cancel_operation` | `operation_id`, `reason` | no | `core/src/v2/control.rs:296` |
-| `approve` | `approval_id`, `expires_at` | yes | `core/src/v2/control.rs:297` |
-| `deny` | `approval_id` | yes | `core/src/v2/control.rs:298` |
-| `begin_review` | `est_prompt_tokens`, `operation_id`, `request_id` | yes | `core/src/v2/control.rs:299` |
-| `record_review_attempt` | `request_id`, `status`, `unknown_usage`, `usage` | yes | `core/src/v2/control.rs:300` |
-| `review_decision` | `approval_id`, `operation_id`, `outcome`, `rationale`, `review_request_id`, `reviewer_model`, `risk_level`, `user_authorization` | yes | `core/src/v2/control.rs:301` |
-| `fail_request` | `park`, `reason`, `request_id` | no | `core/src/v2/control.rs:302` |
-| `cancel_request` | `reason`, `request_id` | no | `core/src/v2/control.rs:303` |
-| `interrupt_instance` | `instance_id`, `reason` | yes | `core/src/v2/control.rs:304` |
-| `complete_work` | `instance_id`, `work_id` | no | `core/src/v2/control.rs:305` |
-| `register_check_runs` | — | yes | `core/src/v2/control.rs:306` |
-| `register_verification` | — | yes | `core/src/v2/control.rs:307` |
-| `repair_completion` | `failures`, `instance_id`, `round`, `work_id` | yes | `core/src/v2/control.rs:308` |
-| `block_work` | `instance_id`, `reason`, `work_id` | yes | `core/src/v2/control.rs:309` |
-| `deadline_warning` | `instance_id`, `work_id` | yes | `core/src/v2/control.rs:310` |
-| `work_checks_briefing` | `instance_id`, `work_id` | yes | `core/src/v2/control.rs:311` |
-| `cancel_work` | `work_id` | yes | `core/src/v2/control.rs:312` |
-| `close_completion` | `instance_id` | no | `core/src/v2/control.rs:313` |
-| `artifact_abandon` | `id` | no | `core/src/v2/control.rs:314` |
-| `set_lifecycle` | `instance_id`, `lifecycle`, `reason` | yes | `core/src/v2/control.rs:315` |
-| `artifact_stage` | `digest`, `id`, `kind`, `owner_ref`, `owner_scope`, `size`, `storage_ref` | no | `core/src/v2/control.rs:316` |
-| `artifact_publish` | `id` | no | `core/src/v2/control.rs:317` |
-| `artifact_release_spent_owners` | `days`, `limit` | no | `core/src/v2/control.rs:318` |
-| `artifact_gc_claim` | `limit` | no | `core/src/v2/control.rs:319` |
-| `artifact_collect` | `id` | no | `core/src/v2/control.rs:320` |
-| `prune_history` | `days`, `evidence`, `now` | no | `core/src/v2/control.rs:321` |
-| `fork_reset` | `keep_instance`, `source_root`, `target_root` | yes | `core/src/v2/control.rs:322` |
+| `create_instance` | `id`, `is_leader`, `profile`, `workspace_ref` | yes | `core/src/v2/control.rs:278` |
+| `spawn_instance` | `acceptance_refs`, `capabilities`, `instance_id`, `instructions`, `profile`, `task`, `task_id`, `work_id`, `workspace_ref` | yes | `core/src/v2/control.rs:279` |
+| `issue_grant` | `action`, `delegable`, `parent_grant_id`, `resource_scope`, `subject`, `task_id` | yes | `core/src/v2/control.rs:280` |
+| `revoke_grant` | `grant_id` | yes | `core/src/v2/control.rs:281` |
+| `capability_requests` | — | no | `core/src/v2/control.rs:282` |
+| `approve_capability` | `request_id` | yes | `core/src/v2/control.rs:283` |
+| `deny_capability` | `request_id` | yes | `core/src/v2/control.rs:284` |
+| `reauthorize_operation` | `operation_id` | no | `core/src/v2/control.rs:285` |
+| `reset_instance` | `instance_id`, `reason` | yes | `core/src/v2/control.rs:286` |
+| `configure_work` | `leader_id`, `limits` | yes | `core/src/v2/control.rs:287` |
+| `create_work` | `deadline`, `id`, `instance_id`, `limits`, `original_request_ref` | yes | `core/src/v2/control.rs:288` |
+| `require_checks` | `checks`, `work_id` | yes | `core/src/v2/control.rs:289` |
+| `send_message` | `correlation_id`, `max_inbox`, `recipient`, `text` | yes | `core/src/v2/control.rs:290` |
+| `drain_inbox` | `instance_id` | yes | `core/src/v2/control.rs:291` |
+| `set_instance_profile` | `effort`, `instance_id`, `model` | yes | `core/src/v2/control.rs:292` |
+| `delegate_task` | `acceptance_refs`, `assignee`, `dependencies`, `description`, `task_id`, `work_id` | yes | `core/src/v2/control.rs:293` |
+| `start_task` | `task_id` | yes | `core/src/v2/control.rs:294` |
+| `complete_task` | `result_refs`, `status`, `summary`, `task_id` | yes | `core/src/v2/control.rs:295` |
+| `cancel_task` | `reason`, `task_id` | yes | `core/src/v2/control.rs:296` |
+| `read_history` | `epoch`, `instance_id`, `limit` | yes | `core/src/v2/control.rs:297` |
+| `read_search_tree` | — | yes | `core/src/v2/control.rs:298` |
+| `apply_search_tree` | `base_revision`, `operation_id`, `operations` | yes | `core/src/v2/control.rs:299` |
+| `fire_timer` | `now` | yes | `core/src/v2/control.rs:300` |
+| `blocked_report` | — | yes | `core/src/v2/control.rs:301` |
+| `submit_input` | `after`, `checks`, `envelope_id`, `instance_id`, `text` | yes | `core/src/v2/control.rs:302` |
+| `edit_input` | `envelope_id`, `instance_id`, `revision`, `text` | yes | `core/src/v2/control.rs:303` |
+| `cancel_input` | `envelope_id`, `instance_id`, `revision`, `text` | yes | `core/src/v2/control.rs:304` |
+| `begin_request` | `est_prompt_tokens`, `instance_id`, `offered_tools`, `prepared_work`, `request_id`, `request_ref`, `revision`, `surface_authorized` | yes | `core/src/v2/control.rs:305` |
+| `record_attempt` | `attempt_id`, `elapsed_ms`, `error_class`, `request_id`, `response_ref`, `status`, `stream`, `unknown_usage`, `usage` | no | `core/src/v2/control.rs:306` |
+| `begin_compression` | `est_prompt_tokens`, `instance_id`, `prepared_work`, `request_id`, `request_ref`, `revision` | yes | `core/src/v2/control.rs:307` |
+| `compress_context` | `attempt_id`, `instance_id`, `keep_ids`, `request_id`, `search_tree`, `search_tree_error`, `summary` | yes | `core/src/v2/control.rs:308` |
+| `fail_compression` | `reason`, `request_id` | no | `core/src/v2/control.rs:309` |
+| `import_response` | `checkpoint`, `completion`, `decision_id`, `entry`, `grant_revision`, `intents`, `notes`, `request_id`, `wait` | yes | `core/src/v2/control.rs:310` |
+| `observe_operation_stops` | `observations` | yes | `core/src/v2/control.rs:311` |
+| `dispatch_operation` | `approval_required`, `operation_id`, `permission_revision` | no | `core/src/v2/control.rs:312` |
+| `complete_operation` | `operation_id`, `receipt`, `status` | no | `core/src/v2/control.rs:313` |
+| `cancel_operation` | `operation_id`, `reason` | no | `core/src/v2/control.rs:314` |
+| `approve` | `approval_id`, `expires_at` | yes | `core/src/v2/control.rs:315` |
+| `deny` | `approval_id` | yes | `core/src/v2/control.rs:316` |
+| `begin_review` | `est_prompt_tokens`, `operation_id`, `request_id` | yes | `core/src/v2/control.rs:317` |
+| `record_review_attempt` | `request_id`, `status`, `unknown_usage`, `usage` | yes | `core/src/v2/control.rs:318` |
+| `review_decision` | `approval_id`, `operation_id`, `outcome`, `rationale`, `review_request_id`, `reviewer_model`, `risk_level`, `user_authorization` | yes | `core/src/v2/control.rs:319` |
+| `fail_request` | `park`, `reason`, `request_id` | no | `core/src/v2/control.rs:320` |
+| `cancel_request` | `reason`, `request_id` | no | `core/src/v2/control.rs:321` |
+| `interrupt_instance` | `instance_id`, `reason` | yes | `core/src/v2/control.rs:322` |
+| `complete_work` | `instance_id`, `work_id` | no | `core/src/v2/control.rs:323` |
+| `register_check_runs` | — | yes | `core/src/v2/control.rs:324` |
+| `register_verification` | — | yes | `core/src/v2/control.rs:325` |
+| `repair_completion` | `failures`, `instance_id`, `round`, `work_id` | yes | `core/src/v2/control.rs:326` |
+| `block_work` | `instance_id`, `reason`, `work_id` | yes | `core/src/v2/control.rs:327` |
+| `deadline_warning` | `instance_id`, `work_id` | yes | `core/src/v2/control.rs:328` |
+| `work_checks_briefing` | `instance_id`, `work_id` | yes | `core/src/v2/control.rs:329` |
+| `cancel_work` | `work_id` | yes | `core/src/v2/control.rs:330` |
+| `close_completion` | `instance_id` | no | `core/src/v2/control.rs:331` |
+| `artifact_abandon` | `id` | no | `core/src/v2/control.rs:332` |
+| `set_lifecycle` | `instance_id`, `lifecycle`, `reason` | yes | `core/src/v2/control.rs:333` |
+| `artifact_stage` | `digest`, `id`, `kind`, `owner_ref`, `owner_scope`, `size`, `storage_ref` | no | `core/src/v2/control.rs:334` |
+| `artifact_publish` | `id` | no | `core/src/v2/control.rs:335` |
+| `artifact_release_spent_owners` | `days`, `limit` | no | `core/src/v2/control.rs:336` |
+| `artifact_gc_claim` | `limit` | no | `core/src/v2/control.rs:337` |
+| `artifact_collect` | `id` | no | `core/src/v2/control.rs:338` |
+| `prune_history` | `days`, `evidence`, `now` | no | `core/src/v2/control.rs:339` |
+| `fork_reset` | `keep_instance`, `source_root`, `target_root` | yes | `core/src/v2/control.rs:340` |
 
 ### Object fields built by the daemon and diagnostics
 

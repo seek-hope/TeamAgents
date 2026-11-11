@@ -1136,6 +1136,12 @@ It is a historical ledger, not the current coverage inventory; current evidence 
     READY/WAITING boundary and the driver reloads the model/options before each request. The control-plane guard,
     the reload and the CLI path are covered by core tests and the web-grant/TurnControl tests cover the adjacent
     domain allowlist, but no TLA model covers the profile switch itself.
+13. **Session exploration tree (`read_search_tree`, `apply_search_tree`)**: D-504 adds one revisioned,
+    model-maintained navigation tree per session and advances it on Leader compaction. Rust core/driver/daemon/
+    export tests cover Leader authorization, custom Leader ids, stale watermarks, replay, merge/cycle/bounds
+    checks and fail-soft compaction. No TLA model covers the new commands or proves tree completeness, semantic
+    correctness, live-model navigation quality or reduced user lostness. Existing compression/control models do
+    not include the tree patch, and schema 9's migration is implementation-tested rather than a refinement proof.
 
 ## 6. Atomic model actions and their implementation windows (D-465)
 

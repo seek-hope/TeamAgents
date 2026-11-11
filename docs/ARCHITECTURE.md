@@ -334,6 +334,8 @@ artifacts add the following records:
 | `waits` | `id`; instance, epoch, ALL/ANY conditions and timer | Durable suspension without model polling |
 | `input_revisions` | `(envelope_id, revision)` | Append-only edit/cancel history |
 | `input_attachments` | `(envelope_id, ordinal)`; unique `artifact_id` | Immutable per-input attachment snapshots |
+| `search_tree_revisions` | `(session_id, revision)`; unique `(session_id, cause_ref)` | Append-only session exploration-tree patches, snapshots and source watermarks |
+| `search_tree_head` | `session_id` | Pointer to the one current session-tree revision |
 | `artifacts` | `id`; digest, owner, storage reference and completeness | Referenced bytes with explicit publication and collection states |
 
 Together the diagrams and table cover every table in [the schema](../core/src/v2/store.rs). For exact columns,
@@ -631,13 +633,17 @@ flowchart TB
     normalize --> mask["L1 view masking and readback references"]
     mask --> request
     work[("Current work and original input references")] --> request
+    searchTree[("Session search-tree revisions")] --> request
     surface["Authorized schemas and provider reserves"] --> request
     request --> occupancy{"Near capacity or overflow?"}
     occupancy -->|"no"| provider["Provider-native request"]
     occupancy -->|"yes"| compact["Billed L2 compression request"]
     compact --> summary["Summary + retained entry references"]
+    compact --> treeRevision["Atomic exploration-tree patch"]
+    treeRevision --> searchTree
     summary --> history
-    summary --> rebuild["Reattach current work; recompute tokens"]
+    summary --> rebuild["Reattach current work and tree; recompute tokens"]
+    treeRevision --> rebuild
     rebuild --> request
 ```
 
@@ -645,6 +651,12 @@ L1 changes the wire view of old tool outputs, keeping the original content addre
 frozen between compactions to preserve a stable provider cache prefix. L2 is a recorded model request, normally
 triggered near 90% of the native window or by overflow; it marks covered entries with `compressed_by` and keeps
 originals available for readback. An explicit context reset is a different operation and bumps the epoch.
+
+D-504 keeps one session exploration tree beside the summary. Only the persisted Leader role writes it. The
+compaction patch covers the previous cumulative tree plus newly visible Leader entries through the retained
+tail; member-private history is not read. The next request receives the current focus/unresolved projection.
+A stale patch leaves the previous revision visibly stale without blocking the summary. Tree operations are
+revision-checked durable commands, never alternate history, work completion or authority.
 
 The window must include instructions, schemas, history, output and protocol reserves. DeepSeek Flash uses its
 confirmed native 1M configuration. Provider-specific reasoning and tool-correlation fields retain their native

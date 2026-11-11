@@ -4,7 +4,23 @@
 //! identity, operation ids, permission revisions and sequence numbers are
 //! filled here — never taken from model or client fields.
 
+mod search_tree;
 mod work;
+
+/// Session-level exploration navigation, derived only from Leader-visible history.
+pub fn search_tree_snapshot(conn: &Connection, session: &str) -> Result<Json, String> {
+    search_tree::snapshot(conn, session)
+}
+
+/// Previous tree plus revision for the next compaction patch.
+pub fn search_tree_compaction(conn: &Connection, session: &str) -> Result<Json, String> {
+    search_tree::compaction_snapshot(conn, session)
+}
+
+/// Bounded unresolved/focus view for the Leader's next request.
+pub fn search_tree_prompt(conn: &Connection, session: &str) -> Result<String, String> {
+    search_tree::prompt(conn, session)
+}
 
 /// Trusted runtime projection. Callers enforce the same history visibility as other control views.
 pub fn work_state(conn: &Connection, instance: &str) -> Result<Json, String> {
@@ -279,6 +295,8 @@ fn dispatch(
         "complete_task" => complete_task(tx, session_id, params, identity),
         "cancel_task" => cancel_task(tx, session_id, params, identity),
         "read_history" => read_history(tx, session_id, params, identity),
+        "read_search_tree" => search_tree::read(tx, session_id, params, identity),
+        "apply_search_tree" => search_tree::apply(tx, session_id, params, identity),
         "fire_timer" => fire_timer(tx, session_id, params, identity),
         "blocked_report" => blocked_report(tx, session_id, params, identity),
         "submit_input" => submit_input(tx, session_id, params, identity),
@@ -949,12 +967,17 @@ fn create_instance(tx: &Connection, session_id: &str, params: &Json, identity: &
     let id = params["id"].as_str().ok_or("create_instance.id required")?;
     let profile = params.get("profile").cloned().unwrap_or(json!({}));
     let workspace = params["workspace_ref"].as_str().unwrap_or("");
+    let is_leader = params["is_leader"].as_bool().unwrap_or(false) && matches!(identity, Identity::User);
+    if is_leader {
+        tx.execute("UPDATE instances SET is_leader=0 WHERE session_id=?1", [session_id])
+            .map_err(|e| format!("create_instance {id}: replace Leader role: {e}"))?;
+    }
     tx.execute(
         "INSERT INTO instances
          (id, session_id, profile_revision, workspace_ref, context_epoch, lifecycle, phase,
-          revision, active_work_id, active_request_id, context_head, profile_json)
-         VALUES (?1, ?2, 1, ?3, 0, 'ACTIVE', 'READY', 0, NULL, NULL, 0, ?4)",
-        rusqlite::params![id, session_id, workspace, profile.to_string()],
+          revision, active_work_id, active_request_id, context_head, profile_json, is_leader)
+         VALUES (?1, ?2, 1, ?3, 0, 'ACTIVE', 'READY', 0, NULL, NULL, 0, ?4, ?5)",
+        rusqlite::params![id, session_id, workspace, profile.to_string(), is_leader],
     )
     .map_err(|e| format!("create_instance {id}: {e}"))?;
     if !workspace.is_empty() && matches!(identity, Identity::User) {
@@ -2928,6 +2951,25 @@ fn compress_context(tx: &Connection, session_id: &str, params: &Json, identity: 
     tx.execute("UPDATE model_requests SET status = 'COMPLETE' WHERE request_id = ?1", [request_id])
         .map_err(|e| format!("close compression {request_id}: {e}"))?;
     release_reservation(tx, request_id)?;
+    let mut tree_revision = Json::Null;
+    let mut tree_error = Json::Null;
+    if let Some(error) = params["search_tree_error"].as_str().filter(|error| !error.is_empty()) {
+        tree_error = json!(error);
+    } else if params["search_tree"].is_object() {
+        match search_tree::apply_compaction(tx, session_id, instance_id, request_id, &params["search_tree"]) {
+            Ok(updated) => tree_revision = updated["revision"].clone(),
+            Err(error) => tree_error = json!(error),
+        }
+    }
+    if let Some(error) = tree_error.as_str() {
+        event(
+            tx,
+            session_id,
+            "search_tree_update_failed",
+            instance_id,
+            &json!({"request_id":request_id,"reason":error}),
+        )?;
+    }
     let _ = identity;
     event(
         tx,
@@ -2937,7 +2979,8 @@ fn compress_context(tx: &Connection, session_id: &str, params: &Json, identity: 
         &json!({"request_id": request_id, "summary_id": summary_id, "covered": covered.len(),
                 "covers_to": covers_to, "kept": keep.len()}),
     )?;
-    Ok(json!({"summary_id": summary_id, "covered": covered.len(), "covers_to": covers_to}))
+    Ok(json!({"summary_id": summary_id, "covered": covered.len(), "covers_to": covers_to,
+              "search_tree_revision": tree_revision, "search_tree_error": tree_error}))
 }
 
 /// R22/A20 failure step: close the compression request and release its

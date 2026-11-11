@@ -38,6 +38,30 @@ pub fn run(socket: &Path, history: Option<(&str, u64)>, json_out: bool) -> i32 {
     }
 }
 
+/// Read the one session exploration tree without starting a daemon.
+pub fn search_tree(socket: &Path, json_out: bool) -> i32 {
+    let result = (|| {
+        let mut client = Client::connect(socket).map_err(|e| (2, format!("search_tree: {e}")))?;
+        let mut report = client.call("search_tree", json!({})).map_err(|e| (1, e))?;
+        report["session_id"] = json!(client.session_id);
+        Ok::<Json, (i32, String)>(report)
+    })();
+    match result {
+        Ok(report) => {
+            if json_out {
+                println!("{report}");
+            } else {
+                println!("{}", report["text"].as_str().unwrap_or("Session search tree is unavailable"));
+            }
+            0
+        }
+        Err((code, message)) => {
+            eprintln!("{message}");
+            code
+        }
+    }
+}
+
 fn inspect(socket: &Path, history: Option<(&str, u64)>) -> Result<Json, (i32, String)> {
     let mut client = Client::connect(socket).map_err(|e| (2, format!("inspect: {e}")))?;
     let checkpoint = client.call("checkpoint", json!({})).map_err(|e| (1, e))?;

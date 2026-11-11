@@ -1,6 +1,6 @@
-> Development source validation (D-503, 2026-11-11): core 178 / engine 470 / tui 104. These source
+> Development source validation (D-504, 2026-11-11): core 186 / engine 477 / tui 105. These source
 > changes have not been published as a replacement archive. The release description below records D-493.
-> Current source uses work scopes and schema 8 with explicit legacy migration; the published archive does not.
+> Current source uses work scopes, schema 9 and one session exploration tree; the published archive does not.
 
 > These notes describe the D-493 same-version replacement of v0.2.0, built from current main after the
 > D-492 robustness review. Earlier v0.2.0 artifacts and hashes are historical.
@@ -11,7 +11,7 @@
   committed together. Recovery reuses verified results and records unknown outcomes without blind replay.
 - Persistent work across turns, compaction and restart, with bounded continuation, explicit questions and
   stops, scoped completion evidence and internal admission of subsequent work. Work scopes own budget,
-  deadlines and acceptance; schema 8 migrates legacy records. Checkpoints retain model claims; input,
+  deadlines and acceptance; schema 9 preserves legacy records and adds the session exploration tree. Checkpoints retain model claims; input,
   authority, costs and execution outcomes keep separate provenance.
 - One daemon per session. The TUI and `teamagents exec` use its Unix-socket JSON protocol and resume from the
   last event watermark.
@@ -28,6 +28,8 @@
   and QuickJS `codemode` composition. Hooks can report events or veto native tool calls.
 - Trusted `AGENTS.md` discovery, bounded Skill support files, disjoint multi-file edits and parallel read-only
   batches.
+- One revisioned session exploration tree beside compaction, with Leader-only writes, source references,
+  natural-language branch operations, `/tree` and `teamagents search_tree [--json]` views.
 - Attachments, pending-input editing, follow-up queues, session search/fork/export, an external editor and
   read-only work diagnostics with explicit recovery instructions.
 - Grok-style Leader conversation with Codex CLI colors, elevated user prompts, operation-derived tool groups,

@@ -81,7 +81,11 @@ flowchart TB
 
 Closing a client leaves the daemon running. A committed job can survive a daemon restart. The kernel prepares
 requests and interprets responses; the control plane owns authoritative state; the engine owns I/O; the TUI
-owns presentation. The current format is database schema 8, socket protocol 1 and work policy 1.
+owns presentation. The current format is database schema 9, socket protocol 1 and work policy 1.
+
+D-504 adds one session-level exploration tree beside compaction. It preserves revisioned hypotheses, attempts,
+findings, decisions and source references without exposing member-private history. Use `/tree` or
+`teamagents search_tree [--json]` to inspect it; ask the Leader to reorganize or focus branches.
 
 [Deployment and bootstrap](docs/ARCHITECTURE.md#1-deployment-and-ownership) ·
 [Data relationships and transactions](docs/ARCHITECTURE.md#2-durable-data)
@@ -328,11 +332,11 @@ Common TUI keys:
 - `Ctrl+O` expands or folds tool previews. `Ctrl+G` switches between previews and source.
   `TEAMAGENTS_GRAPHICS=auto|kitty|blocks|off` selects the graphics mode.
 
-Slash commands are `/help`, `/sessions`, `/interrupt`, `/quit`, `/model`, `/attach`, `/detach`, `/queue` and
-`/edit`. Completion fills a command without sending it; press Enter separately to submit. For a file reference,
+Slash commands are `/help`, `/sessions`, `/interrupt`, `/quit`, `/model`, `/attach`, `/detach`, `/queue`, `/tree`
+and `/edit`. Completion fills a command without sending it; press Enter separately to submit. For a file reference,
 type `@PATH` and Tab, then accept a candidate; the file is staged and sent only with your message.
 
-For stored state, use `teamagents status --json` or
+For stored state, use `teamagents status --json`, `teamagents search_tree --json` or
 `teamagents history --id INSTANCE --limit 400 --json`. The [user guide](docs/USER-GUIDE.md#1-quick-start)
 documents the remaining management commands and report fields.
 

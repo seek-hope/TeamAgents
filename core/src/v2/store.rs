@@ -62,7 +62,9 @@ CREATE TABLE IF NOT EXISTS instances (
     active_work_id TEXT,
     active_request_id TEXT,
     context_head INTEGER NOT NULL DEFAULT 0,
-    profile_json TEXT NOT NULL
+    profile_json TEXT NOT NULL,
+    -- Exactly the bootstrap Leader maintains the session exploration tree.
+    is_leader INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS work_scopes (
@@ -205,6 +207,28 @@ CREATE TABLE IF NOT EXISTS context_entries (
 -- apply dedup: one context change per (instance, epoch, envelope)
 CREATE UNIQUE INDEX IF NOT EXISTS idx_context_apply_dedup
     ON context_entries(instance_id, epoch, envelope_id) WHERE envelope_id IS NOT NULL;
+
+-- D-504: one model-maintained exploration tree per session. Revisions are
+-- append-only; the head is only a pointer, never a second mutable tree copy.
+CREATE TABLE IF NOT EXISTS search_tree_revisions (
+    session_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    tree_json TEXT NOT NULL,
+    patch_json TEXT NOT NULL,
+    source_instance TEXT,
+    source_epoch INTEGER,
+    source_entry_id TEXT,
+    cause TEXT NOT NULL,
+    cause_ref TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    created REAL NOT NULL,
+    PRIMARY KEY(session_id, revision),
+    UNIQUE(session_id, cause_ref)
+);
+CREATE TABLE IF NOT EXISTS search_tree_head (
+    session_id TEXT PRIMARY KEY,
+    revision INTEGER NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS model_requests (
     request_id TEXT PRIMARY KEY,
@@ -629,6 +653,23 @@ fn migrate(conn: &Connection, from: i64) -> Result<(), String> {
             // budget, acceptance, ownership or event history. The old tables are
             // copied before any legacy table is dropped.
             7 => migrate_work_scope_vocabulary(&tx)?,
+            // 8 -> 9 (D-504): add the session-level exploration-tree projection.
+            // Existing histories remain untouched and start with an empty revision-0 tree.
+            8 => {
+                if !column_present(&tx, "instances", "is_leader")? {
+                    tx.execute("ALTER TABLE instances ADD COLUMN is_leader INTEGER NOT NULL DEFAULT 0", [])
+                        .map_err(|e| format!("migrate 8 -> 9 Leader role: {e}"))?;
+                }
+                tx.execute_batch(
+                    "UPDATE instances SET is_leader=1
+                     WHERE id=COALESCE((SELECT json_extract(value,'$.leader_id') FROM meta WHERE key='work_policy_v1'),'i-leader');
+                     UPDATE instances SET is_leader=1
+                     WHERE rowid=(SELECT rowid FROM instances ORDER BY rowid LIMIT 1)
+                       AND NOT EXISTS(SELECT 1 FROM instances WHERE is_leader=1);",
+                )
+                .map_err(|e| format!("migrate 8 -> 9 Leader selection: {e}"))?;
+                tx.execute_batch(SCHEMA).map_err(|e| format!("migrate 8 -> 9 search tree: {e}"))?;
+            }
             other => return Err(format!("no migration step from v2 schema version {other}")),
         }
         version += 1;
@@ -1074,7 +1115,7 @@ mod tests {
         let conn = open(&p, false).unwrap();
         let version: String =
             conn.query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap();
-        assert_eq!(version, "8");
+        assert_eq!(version, V2_SCHEMA_VERSION.to_string());
         let row: (String, String) = conn
             .query_row("SELECT status,known_usage_json FROM work_scopes WHERE id='old'", [], |r| {
                 Ok((r.get(0)?, r.get(1)?))
@@ -1171,7 +1212,7 @@ mod tests {
         let conn = open(&p, false).expect("migrate old work vocabulary");
         let version: String =
             conn.query_row("SELECT value FROM meta WHERE key='schema_version'", [], |row| row.get(0)).unwrap();
-        assert_eq!(version, "8");
+        assert_eq!(version, V2_SCHEMA_VERSION.to_string());
         assert!(!table_exists(&conn, "goals").unwrap());
         let scope: (String, i64, String, String, String, i64) = conn
             .query_row(
@@ -1240,6 +1281,46 @@ mod tests {
             [],
         )
         .unwrap();
+        drop(conn);
+        cleanup(&p);
+    }
+
+    #[test]
+    fn open_migrates_v8_to_the_session_search_tree() {
+        let p = path("migrate-search-tree");
+        {
+            let conn = open(&p, true).unwrap();
+            conn.execute(
+                "INSERT INTO instances (id,session_id,profile_revision,lifecycle,phase,profile_json)
+                 VALUES ('i-leader','s1',0,'ACTIVE','READY','{}')",
+                [],
+            )
+            .unwrap();
+            conn.execute_batch(
+                "DROP TABLE search_tree_head;
+                 DROP TABLE search_tree_revisions;
+                 ALTER TABLE instances DROP COLUMN is_leader;
+                 UPDATE meta SET value='8' WHERE key='schema_version';",
+            )
+            .unwrap();
+        }
+        let conn = open(&p, false).expect("migrate v8 search tree");
+        let version: String =
+            conn.query_row("SELECT value FROM meta WHERE key='schema_version'", [], |row| row.get(0)).unwrap();
+        assert_eq!(version, "9");
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM instances WHERE id='i-leader'", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        for table in ["search_tree_head", "search_tree_revisions"] {
+            assert_eq!(
+                conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1", [table], |row| row
+                    .get::<_, i64>(0),)
+                    .unwrap(),
+                1
+            );
+        }
         drop(conn);
         cleanup(&p);
     }

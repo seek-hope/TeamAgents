@@ -1,5 +1,12 @@
 # Development handoff
 
+D-504 adds one session-level exploration tree beside compaction. Schema 9 persists the Leader role and
+append-only tree revisions. Leader compaction advances the cumulative tree through the retained recent input;
+members' private history stays outside it. Revisioned show/add/update/move/merge/focus operations use the
+ordinary ledger and stable replay identities. `/tree`, `teamagents search_tree [--json]` and session export read
+the same projection. Invalid patches leave the old tree stale without blocking summaries or turns. The new
+commands are explicitly unmodelled; live-model navigation quality remains unmeasured.
+
 D-503 adds the bounded V2Review model with 59 positive configurations/56 traversals, 304 controls, 68 witnesses
 and nine Kani harnesses passing. It changes no production behavior; reviewer judgement, wide exhaustive search,
 full-system composition, Rust/SQLite refinement and Policy B source-bound equivalence remain open.
@@ -55,8 +62,9 @@ active budget or resume PARKED work. Stale preparation, responses and completion
 assignment. Required checks and scoped evidence still gate success. Retention keeps pending/live input
 envelopes, including acceptance metadata, until work closes or the instance terminates.
 
-Schema **v8** uses work scopes and work IDs throughout. Its explicit v7 migration preserves the old scope
-records, references and events without auto-enrolling old idle work into the continuation policy. Forking keeps
+Schema **v9** retains the schema-8 work-scope migration and adds the session exploration tree plus Leader role.
+Its explicit migration preserves old scope records, references and events without auto-enrolling old idle work
+or inventing a tree for old history. Forking keeps
 decisions, pending costs and user stops but not execution; it requires fresh execution evidence and refuses
 tracked execution without stop evidence. Export labels checkpoint provenance.
 Older binaries cannot write an upgraded database; reverting an executable alone is not a database rollback.

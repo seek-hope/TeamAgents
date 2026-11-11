@@ -17,6 +17,7 @@ usage: teamagents [--cwd DIR] [--state-root PATH] [--session ID] [--model KEY] [
   teamagents exec [--json|--stream-json] [--timeout SEC] [--check CMD] [--accept ID=CMD] [--] \"…\"   one headless input\n\
   teamagents status [--json]                  session checkpoint, model, usage, limits and MCP state\n\
   teamagents history [--id INSTANCE] [--limit N] [--json]  newest 1..1000 stored entries (default 400, Leader)\n\
+  teamagents search_tree [--json]             show the session-level exploration tree\n\
   teamagents authority [list] [--json]          the session's grants and pending capability requests\n\
   teamagents authority grant --subject ID --action A --scope S [--parent G] [--delegable]\n\
   teamagents authority revoke --grant ID        revoke that grant and everything derived from it\n\
@@ -443,7 +444,7 @@ fn parse_args() -> Args {
             }
             "serve" | "init" | "doctor" | "validate" | "sessions" | "automations" | "version" | "exec"
             | "authority" | "approvals" | "instances" | "tasks" | "runners" | "artifacts" | "work_scopes"
-            | "surface" | "mcp" | "status" | "history" | "inputs" => {
+            | "surface" | "mcp" | "status" | "history" | "search_tree" | "inputs" => {
                 if args.command.is_some() {
                     reject("two entry points were given: pick one (teamagents --help lists them)");
                 }
@@ -470,6 +471,7 @@ fn parse_args() -> Args {
                             | "doctor"
                             | "status"
                             | "history"
+                            | "search_tree"
                             | "inputs"
                             | "authority"
                             | "approvals"
@@ -2454,6 +2456,11 @@ fn run_tasks(args: &Args) -> i32 {
 /// Read-only status and bounded member history over the running session socket (D-445).
 fn run_inspect(args: &Args) -> i32 {
     let history = args.command.as_deref() == Some("history");
+    let search_tree = args.command.as_deref() == Some("search_tree");
+    if search_tree && (args.approval_id.is_some() || args.limit.is_some() || args.after_turn) {
+        eprintln!("search_tree takes only --state-root/--session and --json");
+        return 2;
+    }
     if args.positional.is_some()
         || args.cwd.is_some()
         || args.model.is_some()
@@ -2472,6 +2479,9 @@ fn run_inspect(args: &Args) -> i32 {
         return 2;
     }
     let root = args.state_root.clone().map(PathBuf::from).unwrap_or_else(teamagents_engine::v2_root);
+    if search_tree {
+        return teamagents_engine::v2::inspect::search_tree(&root.join("daemon.sock"), args.exec_json);
+    }
     teamagents_engine::v2::inspect::run(
         &root.join("daemon.sock"),
         history.then_some((args.approval_id.as_deref().unwrap_or("i-leader"), limit)),
@@ -2863,7 +2873,7 @@ fn main() {
         Some("tasks") => run_tasks(&args),
         Some("runners") => run_runners(&args),
         Some("surface") => run_surface(&args),
-        Some("status" | "history") => run_inspect(&args),
+        Some("status" | "history" | "search_tree") => run_inspect(&args),
         Some("artifacts") => run_artifacts(&args),
         _ if args.plain || args.resume.is_some() || args.team.is_some() => {
             eprintln!("--plain/--resume/--team are no longer supported; use teamagents (TUI) or teamagents exec.");

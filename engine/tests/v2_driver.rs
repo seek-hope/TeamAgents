@@ -305,6 +305,11 @@ impl Provider for RecordingProvider {
 
 /// `read_history` is the built-in readback tool: it pages the stored output of
 /// an earlier call, covered entries included (A20).
+fn search_tree_call(id: &str, args: Json) -> Json {
+    json!({"role":"assistant","content":"",
+           "tool_calls":[{"id":id,"type":"function","function":{"name":"search_tree","arguments":args.to_string()}}]})
+}
+
 fn readback_call(id: &str, source: &str) -> Json {
     json!({"role": "assistant", "content": "",
            "tool_calls": [{"id": id, "type": "function",
@@ -2154,6 +2159,144 @@ async fn long_context_compacts_before_the_turn_and_survives_a_restart() {
     let text = request_text(&requests[0]);
     assert!(text.contains("Compacted conversation summary"), "{text}");
     assert!(!text.contains("the long specification"), "the restart keeps the compacted view");
+    handle.shutdown().await.expect("shutdown");
+}
+
+/// D-504: Leader compaction commits the summary and the cumulative session
+/// tree patch together, and the next request sees the new navigation view.
+#[tokio::test]
+async fn leader_compaction_advances_the_session_search_tree() {
+    let root = root("search-tree-compact");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let bulk = format!("tree investigation {}", "padding ".repeat(4_000));
+    let compaction = json!({
+        "summary":"[Compacted conversation summary]\n1. Original request: map the investigation",
+        "tree":{"base_revision":0,"operations":[{
+            "op":"add","parent_id":"root","node":{"title":"Compare parser designs","kind":"hypothesis",
+                "summary":"Two parser designs remain to compare.","source_refs":["i-main:0:1"]}
+        }]}
+    });
+    let (provider, log) = recording(vec![
+        Step::Message(reply("first answer")),
+        Step::Message(reply(&compaction.to_string())),
+        Step::Message(reply("second answer")),
+    ]);
+    let mut config = root.config_with(provider);
+    config.profile.context_window = Some(8_000);
+    let handle = start(config).await.expect("start");
+    handle.input(&bulk).await.expect("input");
+    wait_event_count(&handle, "response_imported", 1, 15_000).await;
+    handle.input("now compare them").await.expect("input");
+    wait_event_count(&handle, "search_tree_updated", 1, 15_000).await;
+    wait_event_count(&handle, "context_compressed", 1, 15_000).await;
+    wait_event_count(&handle, "response_imported", 2, 15_000).await;
+    let requests = recorded(&log);
+    assert_eq!(requests.len(), 3, "two turns and one compaction");
+    assert!(request_text(&requests[1]).contains("Previous session tree"));
+    assert!(request_text(&requests[1]).contains("now compare them"));
+    assert!(request_text(&requests[2]).contains("Compare parser designs"));
+    assert!(request_text(&requests[2]).contains("Session search tree"));
+    let mut control = second_control(&root);
+    let tree = control
+        .submit(cmd("read-tree", "read_search_tree", json!({})), teamagents_core::v2::Identity::User)
+        .expect("tree");
+    assert_eq!(tree["revision"], json!(1));
+    assert_eq!(tree["nodes"].as_array().unwrap().len(), 2);
+    assert_eq!(tree["nodes"][1]["title"], json!("Compare parser designs"));
+    assert_eq!(tree["nodes"][1]["kind"], json!("hypothesis"));
+    assert_eq!(tree["source"]["instance_id"], json!("i-main"));
+    assert!(no_event(&handle, "search_tree_update_failed").await);
+    drop(control);
+    handle.shutdown().await.expect("shutdown");
+}
+
+/// D-504: natural-language tree edits use the ordinary operation ledger and
+/// stable command identities; show returns the same session projection.
+#[tokio::test]
+async fn leader_operates_one_session_tree_through_the_tool_ledger() {
+    let root = root("search-tree-tool");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let (provider, log) = recording(vec![
+        Step::Message(search_tree_call(
+            "tree-add",
+            json!({"action":"apply","base_revision":0,"operations":[{
+                "op":"add","parent_id":"root","node":{"title":"Map the parser","kind":"attempt","status":"active"}
+            }]}),
+        )),
+        Step::Message(search_tree_call("tree-show", json!({"action":"show"}))),
+        Step::Message(search_tree_call(
+            "tree-focus",
+            json!({"action":"apply","base_revision":1,"operations":[{"op":"focus","id":"n1-1"}]}),
+        )),
+        Step::Message(reply("tree updated")),
+    ]);
+    let handle = start(root.config_with(provider)).await.expect("start");
+    handle.input("map this exploration and focus the parser branch").await.expect("input");
+    wait_event_count(&handle, "search_tree_updated", 2, 15_000).await;
+    wait_event_count(&handle, "response_imported", 4, 15_000).await;
+    let requests = recorded(&log);
+    assert!(requests[0]["tool_names"].as_array().unwrap().iter().any(|name| name == "search_tree"));
+    let mut control = second_control(&root);
+    let tree = control
+        .submit(cmd("read-tree-tool", "read_search_tree", json!({})), teamagents_core::v2::Identity::User)
+        .expect("tree");
+    assert_eq!(tree["revision"], json!(2));
+    assert_eq!(tree["focus"], json!("n1-1"));
+    assert_eq!(tree["nodes"][1]["title"], json!("Map the parser"));
+    let successes: i64 = control
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM operations WHERE json_extract(intent_json,'$.name')='search_tree' AND status='SUCCEEDED'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(successes, 3);
+    let revisions: i64 =
+        control.connection().query_row("SELECT COUNT(*) FROM search_tree_revisions", [], |row| row.get(0)).unwrap();
+    assert_eq!(revisions, 2);
+    drop(control);
+    handle.shutdown().await.expect("shutdown");
+}
+
+/// D-504: a stale tree patch loses only the derived update. The summary and
+/// the user's turn still commit, and the failure remains observable.
+#[tokio::test]
+async fn invalid_tree_patch_does_not_block_compaction_or_the_turn() {
+    let root = root("search-tree-stale-patch");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let bulk = format!("tree investigation {}", "padding ".repeat(4_000));
+    let compaction = json!({
+        "summary":"[Compacted conversation summary]\n1. Original request: preserve the summary",
+        "tree":{"base_revision":99,"operations":[]}
+    });
+    let (provider, _) = recording(vec![
+        Step::Message(reply("first answer")),
+        Step::Message(reply(&compaction.to_string())),
+        Step::Message(reply("second answer")),
+    ]);
+    let mut config = root.config_with(provider);
+    config.profile.context_window = Some(8_000);
+    let handle = start(config).await.expect("start");
+    handle.input(&bulk).await.expect("input");
+    wait_event_count(&handle, "response_imported", 1, 15_000).await;
+    handle.input("continue").await.expect("input");
+    let failed = wait_event_count(&handle, "search_tree_update_failed", 1, 15_000).await;
+    assert!(failed[0]["payload"]["reason"].as_str().unwrap().contains("current revision is 0"));
+    wait_event_count(&handle, "context_compressed", 1, 15_000).await;
+    wait_event_count(&handle, "response_imported", 2, 15_000).await;
+    let mut control = second_control(&root);
+    let tree = control
+        .submit(cmd("read-stale-tree", "read_search_tree", json!({})), teamagents_core::v2::Identity::User)
+        .expect("old tree");
+    assert_eq!(tree["revision"], json!(0));
+    assert_eq!(tree["stale"], json!(true));
+    let summary: String = control
+        .connection()
+        .query_row("SELECT message_json FROM context_entries WHERE kind='summary'", [], |row| row.get(0))
+        .unwrap();
+    assert!(summary.contains("preserve the summary"));
+    drop(control);
     handle.shutdown().await.expect("shutdown");
 }
 

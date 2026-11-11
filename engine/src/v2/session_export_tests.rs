@@ -47,6 +47,16 @@ fn full_exports_keep_associations_and_refuse_overwrite_limits_and_cancellation()
         [json!({"work_id":"g","state":"NEEDS_INPUT"}).to_string()],
     )
     .unwrap();
+    let tree = json!({"version":1,"focus":"root","nodes":[{"id":"root","parent_id":null,
+        "title":"Session exploration","summary":"root","kind":"question","status":"active","source_refs":[]}]});
+    conn.execute(
+        "INSERT INTO search_tree_revisions
+         (session_id,revision,tree_json,patch_json,cause,cause_ref,actor,created)
+         VALUES ('default',1,?1,'{\"base_revision\":0,\"operations\":[]}','compaction','comp-1','compression',0)",
+        [tree.to_string()],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO search_tree_head VALUES ('default',1)", []).unwrap();
     let cancel = AtomicBool::new(false);
     let path = root.0.join("export.json");
     let report = export(&registry, "default", &path, Format::Json, &cancel).unwrap();
@@ -64,6 +74,9 @@ fn full_exports_keep_associations_and_refuse_overwrite_limits_and_cancellation()
     assert_eq!(data["work_requests"][0]["projection"]["state"], "NEEDS_INPUT");
     assert_eq!(data["work_requests"][0]["billed_work_id"], "g");
     assert_eq!(data["work_requests"][0]["unknown_usage"], 1);
+    assert_eq!(data["search_tree_revisions"][0]["tree"], tree);
+    assert_eq!(data["search_tree_revisions"][0]["patch"]["base_revision"], 0);
+    assert_eq!(data["search_tree_head"][0]["revision"], 1);
     let before = std::fs::read(&path).unwrap();
     assert!(export(&registry, "default", &path, Format::Json, &cancel).is_err());
     assert_eq!(std::fs::read(&path).unwrap(), before);

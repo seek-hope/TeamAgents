@@ -177,6 +177,8 @@ pub enum V2Effect {
     InputPaths {
         prefix: String,
     },
+    /// Read the one session-level exploration tree.
+    SearchTree,
     /// Open the external editor for this draft (D-454).
     EditDraft {
         initial: String,
@@ -1022,6 +1024,7 @@ Ctrl+M or /model changes the Leader's model and reasoning effort at its next tur
 Attachments: eight files, 1 MiB UTF-8 text or 5 MiB PNG/JPEG/GIF/WebP, 16 MiB total; symlinks are refused.
 Ctrl+O expands or folds tool previews; /sessions shows full stored results.
 Ctrl+G switches graphics previews and source; image files stay unchanged.
+/tree shows the session exploration tree; ask the Leader to reorganize or focus it.
 Developer tools: teamagents --help; teamagents status --json; teamagents history --id ID.
 {}
 {}",
@@ -1038,6 +1041,7 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
                 .command_note("Ctrl+E edits the current draft; type /edit after a draft to open it in VISUAL/EDITOR."),
             "/sessions" => return self.open_sessions(),
             "/queue" => return self.open_queue(),
+            "/tree" => return Some(V2Effect::SearchTree),
             "/interrupt" => return self.interrupt(),
             "/model" => return self.open_profile(),
             "/quit" => {

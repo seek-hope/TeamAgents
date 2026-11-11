@@ -116,10 +116,11 @@ For a manual source upgrade:
 4. Run `teamagents version` and `teamagents doctor`, then reconnect to the intended session. `init` does not
    merge new settings into an existing config; review and edit them explicitly.
 
-Current source upgrades v6/v7 databases to **schema v8**. The v7 step adds durable work and its stop/admission
-semantics; the v8 step migrates legacy goal records, references and events into work scopes. Existing work and
-history are preserved, and old idle sessions are not automatically enrolled. Older writers cannot reopen the
-upgraded database; retain a pre-upgrade session backup if binary rollback must remain possible.
+Current source upgrades v6/v7/v8 databases to **schema v9**. The v7 step adds durable work and its stop/admission
+semantics; v8 migrates legacy goal records, references and events into work scopes; v9 adds the session
+exploration-tree projection and Leader role. Existing work and history are preserved, old idle sessions are not
+automatically enrolled, and old trees start empty rather than being invented during migration. Older writers
+cannot reopen the upgraded database; retain a pre-upgrade session backup if binary rollback must remain possible.
 
 Older `sessions/` layouts and pre-v2 configs are not migrated automatically. `doctor` reports the old
 directory without adopting it. Inventory old data, choose a new state root and remove anything only through an

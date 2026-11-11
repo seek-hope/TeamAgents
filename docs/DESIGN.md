@@ -438,6 +438,16 @@ arbitrary small window and keeps the original request, user revisions, acceptanc
 receipt references. The gain of a compaction algorithm is measured separately, and reducing the real window is
 never dressed up as an optimisation.
 
+D-504 adds one **session-level** exploration tree beside compaction. The previous cumulative tree and newly
+visible Leader conversation, including the retained recent tail, produce an atomic tree revision on each Leader
+compaction. A focus/unresolved projection joins later Leader requests, and the Leader can explicitly show or
+patch the tree through the durable operation ledger. Users read the same projection through the daemon, CLI or
+TUI. Node references lead back to the original history; revisions are append-only and tree operations cannot
+delete messages, settle work, grant capabilities or rewind effects. Member-private history never enters this
+shared projection. A stale or invalid tree patch leaves the old tree visibly stale without blocking the summary
+or the user's turn. The tree is model-maintained navigation, not another source of truth, a per-instance tree or
+proof that its nodes are complete or correct.
+
 A shell receipt carries whether the command actually started, the execution mode, cwd, exit code or signal,
 duration, output reference and the cancel/timeout reason. Setup failures are distinct from non-zero exits.
 Cwd and exports persist per member in the host state namespace. Verification uses the host environment. A tool is available only when the current identity is allowed to execute it, and an

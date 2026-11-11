@@ -414,8 +414,8 @@ async fn handle(request: &Json, supervisor: &SupervisorHandle, session_db: &Path
     let method = request.get("method").and_then(|v| v.as_str()).unwrap_or("");
     let params = request.get("params").cloned().unwrap_or(json!({}));
     match method {
-        "checkpoint" | "events" | "history" | "tasks" | "grants" | "approvals" | "work_scopes" | "surfaces"
-        | "previews" | "inputs" => {
+        "checkpoint" | "events" | "history" | "search_tree" | "tasks" | "grants" | "approvals" | "work_scopes"
+        | "surfaces" | "previews" | "inputs" => {
             // §9: previews are the supervisor's in-memory streaming text, not a table; every other read comes from
             // the database. Passing the payload keeps previews inside `read_method`'s dispatch, which is what
             // `docs/PROTOCOL.md` is generated from.
@@ -719,6 +719,14 @@ fn read_method(
             let current = watermark(conn)?;
             let events = read_events(conn, since)?;
             Ok(json!({"events": events, "watermark": current, "resync_required": false}))
+        }
+        "search_tree" => {
+            let session: String = conn
+                .query_row("SELECT session_id FROM instances WHERE is_leader=1 ORDER BY rowid LIMIT 1", [], |row| {
+                    row.get(0)
+                })
+                .map_err(|e| format!("search-tree session: {e}"))?;
+            teamagents_core::v2::control::search_tree_snapshot(conn, &session)
         }
         "history" => {
             let instance = params.get("instance_id").and_then(|v| v.as_str()).unwrap_or("");

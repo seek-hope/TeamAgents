@@ -72,7 +72,8 @@ def tools():
     types_text = TYPES.read_text(errors="replace")
     consts = constants(types_text)
     for function, label in (("fn builtin_tool_schemas()", "`kernel::builtin_tool_schemas()` (every instance)"),
-                            ("fn collaboration_tool_schemas(", "`kernel::collaboration_tool_schemas(actions)` (per grant)")):
+                            ("fn collaboration_tool_schemas(", "`kernel::collaboration_tool_schemas(actions)` (per grant)"),
+                            ("fn search_tree_tool_schema()", "`kernel::search_tree_tool_schema()` (Leader only; D-504)")):
         start = types_text.index(function)
         end = types_text.index("\n}\n", start)
         body = types_text[start:end]

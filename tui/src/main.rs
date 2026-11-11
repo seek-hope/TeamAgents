@@ -322,6 +322,10 @@ fn run_v2_effect(effect: V2Effect, client: &mut DaemonClient, app: &mut V2App, s
                 Err(e) => app.command_failed(&e),
             }
         }
+        V2Effect::SearchTree => match client.call("search_tree", json!({})) {
+            Ok(reply) => app.command_note(reply["text"].as_str().unwrap_or("Session search tree is unavailable")),
+            Err(error) => app.command_failed(&error),
+        },
         V2Effect::SetProfile { instance, model, effort } => {
             let mut params = json!({"instance_id": instance});
             if let Some(model) = model {

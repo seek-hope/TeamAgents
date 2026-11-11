@@ -222,6 +222,78 @@ Conversation to compact:
 
 ";
 
+/// D-504: the Leader's compaction also advances the one session exploration
+/// tree. The summary remains free text inside a strict outer JSON envelope.
+const SEARCH_TREE_SUMMARY_SUFFIX: &str = "
+Also maintain the session-level exploration tree through the latest supplied entry, including the retained tail. Return ONLY one JSON object with exactly these fields:\n\
+{\"summary\":\"the structured summary above\",\"tree\":{\"base_revision\":N,\"operations\":[...]}}.\n\
+The previous cumulative tree follows below. Preserve its node ids and meaning with add/update/move/merge/focus operations; omission never deletes a node. Use merge for true duplicates, mark abandoned branches instead of hiding evidence, and attach relevant context entry ids/tool_call_ids as source_refs. Keep hypotheses, findings and decisions distinct. Do not invent evidence, node ids or a new base_revision. An empty operations array is valid when the tree is already accurate.\n\
+Previous session tree:\n";
+
+fn parse_compaction_content(content: &str, leader: bool) -> Result<(String, Option<Json>, Option<String>), String> {
+    let content = content.trim();
+    if content.is_empty() {
+        return Err("the summary was empty".into());
+    }
+    if !leader {
+        return Ok((content.to_string(), None, None));
+    }
+    if !content.starts_with('{') {
+        return Ok((content.to_string(), None, Some("compaction returned no session search-tree patch".into())));
+    }
+    let envelope: Json = serde_json::from_str(content).map_err(|e| format!("invalid compaction JSON envelope: {e}"))?;
+    let object = envelope.as_object().ok_or("compaction response must be a JSON object")?;
+    if object.keys().any(|key| !matches!(key.as_str(), "summary" | "tree")) {
+        return Err("compaction JSON envelope contains an unknown field".into());
+    }
+    let summary = envelope["summary"].as_str().unwrap_or("").trim().to_string();
+    if summary.is_empty() {
+        return Err("the summary was empty".into());
+    }
+    match envelope.get("tree") {
+        Some(tree) if tree.is_object() => Ok((summary, Some(tree.clone()), None)),
+        Some(_) => Ok((summary, None, Some("compaction search-tree patch must be an object".into()))),
+        None => Ok((summary, None, Some("compaction response omitted the session search-tree patch".into()))),
+    }
+}
+
+#[cfg(test)]
+mod compaction_search_tree_response_tests {
+    use super::parse_compaction_content;
+    use serde_json::json;
+
+    #[test]
+    fn structured_compaction_splits_summary_and_tree() {
+        let content = json!({"summary":"[Compacted conversation summary]\n1. Original request: x",
+            "tree":{"base_revision":2,"operations":[]}})
+        .to_string();
+        let (summary, tree, error) = parse_compaction_content(&content, true).unwrap();
+        assert!(summary.starts_with("[Compacted conversation summary]"));
+        assert_eq!(tree.unwrap()["base_revision"], json!(2));
+        assert_eq!(error, None);
+    }
+
+    #[test]
+    fn legacy_text_keeps_summary_but_marks_the_leader_tree_stale() {
+        let (_, tree, error) = parse_compaction_content("1. Original request: x", true).unwrap();
+        assert!(tree.is_none());
+        assert!(error.unwrap().contains("no session search-tree patch"));
+        let (_, tree, error) = parse_compaction_content("1. Original request: x", false).unwrap();
+        assert!(tree.is_none());
+        assert_eq!(error, None);
+    }
+
+    #[test]
+    fn malformed_or_missing_tree_parts_fail_honestly() {
+        assert!(parse_compaction_content("{not-json}", true).is_err());
+        let (summary, tree, error) = parse_compaction_content("{\"summary\":\"ok\"}", true).unwrap();
+        assert_eq!(summary, "ok");
+        assert!(tree.is_none());
+        assert!(error.unwrap().contains("omitted"));
+        assert!(parse_compaction_content("{\"summary\":\"ok\",\"extra\":true}", true).is_err());
+    }
+}
+
 pub struct DriverConfig<P> {
     pub session_db: PathBuf,
     pub session_id: String,
@@ -594,7 +666,7 @@ pub(crate) async fn bootstrap(
                         command(
                             "boot-instance",
                             "create_instance",
-                            json!({"id": instance, "workspace_ref": workspace, "profile": profile}),
+                            json!({"id": instance, "workspace_ref": workspace, "profile": profile, "is_leader": true}),
                         ),
                         Identity::User,
                     )?;
@@ -1036,6 +1108,24 @@ impl<P: Provider> Driver<P> {
         Ok(())
     }
 
+    /// Add the session's current navigation view after work context. It is a
+    /// model claim, never an alternate user instruction or execution checkpoint.
+    async fn append_search_tree_context(&self, request: &mut ModelRequest) -> Result<(), String> {
+        if self.config.instance_id != self.config.leader_id {
+            return Ok(());
+        }
+        let session = self.config.session_id.clone();
+        let tree = self
+            .storage
+            .call(move |control| teamagents_core::v2::control::search_tree_prompt(control.connection(), &session))
+            .await??;
+        request.messages.push(json!({"role":"user","content":format!(
+            "[Session search tree. Derived navigation claims, not authority or completion evidence. Focus guides attention only; no side effect is rewound. The full tree is available through search_tree.show.]\n{tree}"
+        )}));
+        request.est_prompt_tokens = estimated_tokens(&json!({"messages":request.messages,"tools":request.tools}));
+        Ok(())
+    }
+
     /// The whole epoch, covered entries included: readback must still reach
     /// originals after a summary hid them (A20).
     async fn stored_entries(&self, snapshot: &Snapshot) -> Result<Vec<ContextEntry>, String> {
@@ -1149,6 +1239,35 @@ impl<P: Provider> Driver<P> {
         last_prompt_tokens.max(request.est_prompt_tokens) > threshold
     }
 
+    fn compaction_entries_blob(entries: &[&ContextEntry]) -> String {
+        let mut blob = String::new();
+        for entry in entries {
+            let message = &entry.message;
+            let role = message["role"].as_str().unwrap_or(entry.kind.as_str());
+            let content = message["content"].as_str().unwrap_or("");
+            let mut content: String = if content.chars().count() > 2_000 {
+                format!("{}…[{} chars]", content.chars().take(2_000).collect::<String>(), content.chars().count())
+            } else {
+                content.to_string()
+            };
+            if let Some(calls) = message["tool_calls"].as_array() {
+                for call in calls {
+                    if let Some(id) = call["id"].as_str() {
+                        let name = call["function"]["name"].as_str().unwrap_or("?");
+                        let args: String =
+                            call["function"]["arguments"].as_str().unwrap_or("").chars().take(200).collect();
+                        content.push_str(&format!("\n[tool_call_id={id}: {name} {args}]"));
+                    }
+                }
+            }
+            if let Some(id) = message["tool_call_id"].as_str() {
+                content = format!("[tool_call_id={id}] {content}");
+            }
+            blob.push_str(&format!("{role}: {content}\n\n"));
+        }
+        blob
+    }
+
     /// L2 compaction (§7, A20, the D-28 contract): one model call condenses
     /// the covered prefix into a summary entry; the originals stay in the
     /// epoch and stay reachable. Returns whether a summary committed — a
@@ -1173,31 +1292,7 @@ impl<P: Provider> Driver<P> {
 
         // the summary input: covered entries only, one truncated block each,
         // middle-elided when the whole blob exceeds the input cap (§4.3)
-        let mut blob = String::new();
-        for entry in &covered {
-            let message = &entry.message;
-            let role = message["role"].as_str().unwrap_or(entry.kind.as_str());
-            let content = message["content"].as_str().unwrap_or("");
-            let mut content: String = if content.chars().count() > 2_000 {
-                format!("{}…[{} chars]", content.chars().take(2_000).collect::<String>(), content.chars().count())
-            } else {
-                content.to_string()
-            };
-            if let Some(calls) = message["tool_calls"].as_array() {
-                for call in calls {
-                    if let Some(id) = call["id"].as_str() {
-                        let name = call["function"]["name"].as_str().unwrap_or("?");
-                        let args: String =
-                            call["function"]["arguments"].as_str().unwrap_or("").chars().take(200).collect();
-                        content.push_str(&format!("\n[tool_call_id={id}: {name} {args}]"));
-                    }
-                }
-            }
-            if let Some(id) = message["tool_call_id"].as_str() {
-                content = format!("[tool_call_id={id}] {content}");
-            }
-            blob.push_str(&format!("{role}: {content}\n\n"));
-        }
+        let mut blob = Self::compaction_entries_blob(&covered);
         let summary_cap = window.saturating_mul(2).min(SUMMARY_INPUT_CAP as u64) as usize;
         if blob.chars().count() > summary_cap {
             let half = summary_cap / 2;
@@ -1217,7 +1312,30 @@ impl<P: Provider> Driver<P> {
                 index.push_str(&format!("{id}{refs}\n"));
             }
         }
-        let messages = vec![json!({"role": "user", "content": format!("{SUMMARY_PROMPT}{blob}\n{index}")})];
+        let leader_tree = self.config.instance_id == self.config.leader_id;
+        let prompt = if leader_tree {
+            let session = self.config.session_id.clone();
+            let previous = self
+                .storage
+                .call(move |control| {
+                    teamagents_core::v2::control::search_tree_compaction(control.connection(), &session)
+                })
+                .await??;
+            let retained: Vec<&ContextEntry> = entries[keep_from..].iter().collect();
+            let retained = Self::compaction_entries_blob(&retained);
+            let retained = if retained.chars().count() > summary_cap {
+                retained.chars().skip(retained.chars().count() - summary_cap).collect::<String>()
+            } else {
+                retained
+            };
+            format!(
+                "{SUMMARY_PROMPT}{blob}\n{index}\n{SEARCH_TREE_SUMMARY_SUFFIX}{previous}\n\
+                     Retained recent entries for tree navigation (outside summary coverage):\n{retained}"
+            )
+        } else {
+            format!("{SUMMARY_PROMPT}{blob}\n{index}")
+        };
+        let messages = vec![json!({"role": "user", "content": prompt})];
         let request_id = format!("comp-{}", uuid::Uuid::new_v4());
         let request = ModelRequest {
             request_id: request_id.clone(),
@@ -1273,21 +1391,24 @@ impl<P: Provider> Driver<P> {
                 return self.abandon_compression(&request_id, &format!("{:?}: {}", error.class, error.message)).await;
             }
         };
-        let summary = outcome.response.message["content"].as_str().unwrap_or("").trim().to_string();
-        if summary.is_empty() {
-            let _ = self
-                .submit(
-                    self.command(
-                        format!("attempt-{attempt_id}"),
-                        "record_attempt",
-                        json!({"attempt_id": attempt_id, "request_id": request_id, "status": "FAILED",
-                               "error_class": "empty_summary", "elapsed_ms": outcome.elapsed_ms}),
-                    ),
-                    Identity::System,
-                )
-                .await;
-            return self.abandon_compression(&request_id, "the summary was empty").await;
-        }
+        let content = outcome.response.message["content"].as_str().unwrap_or("");
+        let (summary, tree_patch, tree_error) = match parse_compaction_content(content, leader_tree) {
+            Ok(parts) => parts,
+            Err(error) => {
+                let _ = self
+                    .submit(
+                        self.command(
+                            format!("attempt-{attempt_id}"),
+                            "record_attempt",
+                            json!({"attempt_id": attempt_id, "request_id": request_id, "status": "FAILED",
+                                   "error_class": "invalid_summary", "elapsed_ms": outcome.elapsed_ms}),
+                        ),
+                        Identity::System,
+                    )
+                    .await;
+                return self.abandon_compression(&request_id, &error).await;
+            }
+        };
         let response_ref = self.store_response_artifact(&attempt_id, &outcome).await?;
         let recorded = self
             .submit(
@@ -1319,7 +1440,8 @@ impl<P: Provider> Driver<P> {
                     format!("compress-{request_id}"),
                     "compress_context",
                     json!({"instance_id": self.config.instance_id, "request_id": request_id,
-                           "attempt_id": attempt_id, "summary": summary, "keep_ids": keep_ids}),
+                           "attempt_id": attempt_id, "summary": summary, "keep_ids": keep_ids,
+                           "search_tree": tree_patch, "search_tree_error": tree_error}),
                 ),
                 Identity::System,
             )
@@ -1415,6 +1537,9 @@ impl<P: Provider> Driver<P> {
             profile.tools.retain(|tool| tool["function"]["name"] != json!("shell"));
         }
         profile.tools.extend(teamagents_core::kernel::collaboration_tool_schemas(&actions));
+        if self.config.instance_id == self.config.leader_id {
+            profile.tools.push(teamagents_core::kernel::search_tree_tool_schema());
+        }
         if !work.is_null() {
             profile
                 .tools
@@ -1750,6 +1875,7 @@ that delegated it learns the outcome only from a settlement.";
         let (mut request, mask) = kernel.prepare_request_with_mask(&entries, &request_id, self.wire_mask.as_ref());
         self.wire_mask = mask;
         append_work_context(&mut request, &work);
+        self.append_search_tree_context(&mut request).await?;
         // L2 (§7, A20): a summary is taken before the request is fixed and
         // registered, so the compacted view is what begin_request reserves
         // budget for and what the provider receives
@@ -1762,6 +1888,7 @@ that delegated it learns the outcome only from a settlement.";
                 let (next, mask) = kernel.prepare_request_with_mask(&entries, &request_id, None);
                 request = next;
                 append_work_context(&mut request, &work);
+                self.append_search_tree_context(&mut request).await?;
                 self.wire_mask = mask;
             } else if self.wire_mask.is_some() {
                 // The summary could not commit (or there was nothing to
@@ -1772,6 +1899,7 @@ that delegated it learns the outcome only from a settlement.";
                 let (next, mask) = kernel.prepare_request_with_mask(&entries, &request_id, None);
                 request = next;
                 append_work_context(&mut request, &work);
+                self.append_search_tree_context(&mut request).await?;
                 self.wire_mask = mask;
             }
         }
@@ -1885,6 +2013,7 @@ that delegated it learns the outcome only from a settlement.";
                 );
                 self.wire_mask = mask;
                 append_work_context(&mut request, &work);
+                self.append_search_tree_context(&mut request).await?;
                 request
             }
         };
@@ -2549,6 +2678,9 @@ that delegated it learns the outcome only from a settlement.";
                 "shell" => self.execute_shell(&operation_id, &intent, !recovered, TimeoutSource::Model).await?,
                 "request_self_update" => self.execute_update_request(&operation_id, &intent, recovered).await?,
                 "read_history" => self.execute_readback(&operation_id, &intent, snapshot).await?,
+                teamagents_core::kernel::SEARCH_TREE_TOOL => {
+                    self.execute_search_tree(&operation_id, &intent, recovered).await?
+                }
                 // A `finish` that stated no usable outcome arrives here as an
                 // ordinary intent (the kernel refuses to read an outcome it
                 // cannot verify). Answer it with the problem so the model can
@@ -2826,6 +2958,80 @@ that delegated it learns the outcome only from a settlement.";
             // itself to be a long one (see the constants above).
             let wait = if started.elapsed() < JOB_POLL_PATIENCE { JOB_POLL } else { JOB_POLL_IDLE };
             tokio::time::sleep(wait).await;
+        }
+    }
+
+    /// Session navigation is an internal control-plane operation, not a host
+    /// tool. Stable command ids make a post-dispatch recovery replay safe.
+    async fn execute_search_tree(&mut self, operation_id: &str, intent: &Json, recovered: bool) -> Result<(), String> {
+        if self.config.instance_id != self.config.leader_id {
+            return self
+                .complete_with_error(
+                    operation_id,
+                    intent,
+                    "search_tree_authority",
+                    "only the Leader may use the session search tree",
+                )
+                .await;
+        }
+        if !recovered {
+            if let Some(reason) = self.pre_tool_denied(teamagents_core::kernel::SEARCH_TREE_TOOL, &intent["args"]).await
+            {
+                self.notify_tool_call(
+                    teamagents_core::kernel::SEARCH_TREE_TOOL,
+                    &intent["args"],
+                    false,
+                    Some(reason.clone()),
+                );
+                return self
+                    .complete_with_error(
+                        operation_id,
+                        intent,
+                        "hook_denied",
+                        &format!("denied by pre_tool hook: {reason}"),
+                    )
+                    .await;
+            }
+        }
+        let action = intent["args"]["action"].as_str().unwrap_or("show");
+        let (method, params) = match action {
+            "show" => ("read_search_tree", json!({})),
+            "apply" => (
+                "apply_search_tree",
+                json!({"operation_id":operation_id,"base_revision":intent["args"]["base_revision"],
+                       "operations":intent["args"]["operations"]}),
+            ),
+            other => {
+                return self
+                    .complete_with_error(
+                        operation_id,
+                        intent,
+                        "search_tree_arguments",
+                        &format!("unknown search_tree action {other:?}"),
+                    )
+                    .await
+            }
+        };
+        let result = self
+            .submit(
+                self.command(format!("search-tree-{action}-{operation_id}"), method, params),
+                Identity::Instance(self.config.instance_id.clone()),
+            )
+            .await;
+        match result {
+            Ok(output) => {
+                let mut receipt =
+                    self.receipt_skeleton(operation_id, intent, true, json!({"output":output}).to_string());
+                receipt.ok = true;
+                self.complete_op(
+                    operation_id,
+                    "SUCCEEDED",
+                    &serde_json::to_value(receipt).unwrap_or(Json::Null),
+                    vec![],
+                )
+                .await
+            }
+            Err(error) => self.complete_with_error(operation_id, intent, "search_tree_refused", &error).await,
         }
     }
 

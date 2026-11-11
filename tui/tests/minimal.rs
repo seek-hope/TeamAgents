@@ -93,6 +93,16 @@ fn help_reports_live_environment_without_changing_drafts_or_permissions() {
 }
 
 #[test]
+fn tree_command_reads_the_session_projection_without_becoming_model_input() {
+    let mut app = app();
+    app.composer.set_text("/tree");
+    assert_eq!(app.handle_key(key(KeyCode::Enter)), Some(V2Effect::SearchTree));
+    assert!(app.composer.text().is_empty());
+    assert!(app.entries.iter().all(|entry| !entry.text.contains("/tree")));
+    assert!(teamagents_tui::completion::COMMANDS.iter().any(|(command, _)| *command == "/tree"));
+}
+
+#[test]
 fn interruption_and_exit_are_distinct_and_keep_the_draft() {
     let mut app = app();
     app.composer.set_text("unfinished instruction");
