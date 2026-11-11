@@ -2193,7 +2193,7 @@ that delegated it learns the outcome only from a settlement.";
     /// D-458: the recent user/instruction facts the reviewer is allowed to
     /// see. Bounded here as well as in the prompt: an approval is not a
     /// context-export path.
-    async fn review_context(&self) -> Result<String, String> {
+    async fn review_context(&self) -> Result<(String, String), String> {
         let instance = self.config.instance_id.clone();
         let rows: Vec<(String, Option<String>)> = self
             .storage
@@ -2201,9 +2201,12 @@ that delegated it learns the outcome only from a settlement.";
                 let mut stmt = control
                     .connection()
                     .prepare(
-                        "SELECT kind, message_json FROM context_entries
-                         WHERE instance_id = ?1 AND kind IN ('user', 'instructions')
-                         ORDER BY idx DESC LIMIT 8",
+                        "SELECT c.kind, c.message_json FROM context_entries c
+                         JOIN envelopes e ON e.id = c.envelope_id
+                         JOIN instances i ON i.id = c.instance_id AND i.context_epoch = c.epoch
+                         WHERE c.instance_id = ?1 AND c.kind = 'user'
+                           AND e.kind = 'user_input' AND e.sender = 'user'
+                         ORDER BY c.idx DESC LIMIT 8",
                     )
                     .map_err(|e| format!("review context prepare: {e}"))?;
                 let rows = stmt
@@ -2222,7 +2225,11 @@ that delegated it learns the outcome only from a settlement.";
             }
             out.push_str(&format!("[{kind}] {content}\n"));
         }
-        Ok(out)
+        let (rules, unreadable) = crate::config::instruction_text(&self.config.catalog.instruction_files);
+        if !unreadable.is_empty() {
+            return Err(format!("approval review cannot read configured instructions: {}", unreadable.join("; ")));
+        }
+        Ok((out, rules))
     }
 
     /// D-458: review one parked operation. `Ok(true)` means the reviewer
@@ -2239,6 +2246,7 @@ that delegated it learns the outcome only from a settlement.";
             }
             None => (self.config.profile.model.clone(), None),
         };
+        let mut completed_review = None;
         let assessment = match reviewer::hard_deny(intent) {
             Some(reason) => reviewer::Assessment {
                 risk_level: "critical".into(),
@@ -2247,10 +2255,17 @@ that delegated it learns the outcome only from a settlement.";
                 rationale: reason,
             },
             None => {
-                let context = self.review_context().await?;
+                let (context, instructions) = self.review_context().await?;
                 let scope = json!({"workspace": self.config.workspace.display().to_string(),
                                    "permissions": self.config.permissions});
-                let request = reviewer::build_request(&model, &self.config.profile.options, intent, &context, &scope);
+                let request = reviewer::build_request(
+                    &model,
+                    &self.config.profile.options,
+                    intent,
+                    &context,
+                    &instructions,
+                    &scope,
+                );
                 let request_id = request.request_id.clone();
                 let began = self
                     .submit(
@@ -2278,7 +2293,7 @@ that delegated it learns the outcome only from a settlement.";
                 let elapsed_ms = started.elapsed().as_millis() as u64;
                 let (assessment, usage, failure) = match reviewed {
                     Ok((assessment, usage)) => (Some(assessment), usage, None),
-                    Err(error) => (None, None, Some(error)),
+                    Err(failure) => (None, failure.usage, Some(failure.error)),
                 };
                 let unknown_usage = usage.is_none();
                 self.submit(
@@ -2297,6 +2312,7 @@ that delegated it learns the outcome only from a settlement.";
                 if let Some(error) = failure {
                     return Err(format!("{error:?}"));
                 }
+                completed_review = Some(request_id);
                 assessment.expect("a completed review has an assessment")
             }
         };
@@ -2310,7 +2326,8 @@ that delegated it learns the outcome only from a settlement.";
                 "review_decision",
                 json!({"approval_id": approval_id, "outcome": outcome, "risk_level": assessment.risk_level,
                        "user_authorization": assessment.user_authorization, "rationale": assessment.rationale,
-                       "reviewer_model": model, "operation_id": operation_id}),
+                       "reviewer_model": model, "operation_id": operation_id,
+                       "review_request_id": completed_review}),
             ),
             Identity::System,
         )

@@ -150,8 +150,8 @@ policy on its own. See the handler and control wrapper for scope, revision, gran
 | `approve` | `approval_id`, `expires_at` | yes | `core/src/v2/control.rs:297` |
 | `deny` | `approval_id` | yes | `core/src/v2/control.rs:298` |
 | `begin_review` | `est_prompt_tokens`, `operation_id`, `request_id` | yes | `core/src/v2/control.rs:299` |
-| `record_review_attempt` | `request_id`, `status`, `unknown_usage` | yes | `core/src/v2/control.rs:300` |
-| `review_decision` | `approval_id`, `outcome`, `rationale`, `reviewer_model`, `risk_level`, `user_authorization` | yes | `core/src/v2/control.rs:301` |
+| `record_review_attempt` | `request_id`, `status`, `unknown_usage`, `usage` | yes | `core/src/v2/control.rs:300` |
+| `review_decision` | `approval_id`, `operation_id`, `outcome`, `rationale`, `review_request_id`, `reviewer_model`, `risk_level`, `user_authorization` | yes | `core/src/v2/control.rs:301` |
 | `fail_request` | `park`, `reason`, `request_id` | no | `core/src/v2/control.rs:302` |
 | `cancel_request` | `reason`, `request_id` | no | `core/src/v2/control.rs:303` |
 | `interrupt_instance` | `instance_id`, `reason` | yes | `core/src/v2/control.rs:304` |

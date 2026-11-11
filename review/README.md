@@ -14,6 +14,7 @@ before claiming a falsification, rule out probe error. Current behavior is defin
 
 | Path | Contents and boundary |
 |---|---|
+| [Automatic-review adversarial review](reviewer-2026-11-10/REPORT.md) | D-502 reproduced parser, authority-context, control-evidence and accounting failures and their regressions; no live-model judgement or price evidence |
 | [Formal search optimization](formal-optimization-2026-11-03/REPORT.md) | D-496 identical-graph batching, equivalent request/subset evaluation and isolated reduction experiments; bounds and liveness preserved, wide unproved |
 | [Robustness and performance review](optimization-2026-11-03/REPORT.md) | D-494 provider/runner/storage/TUI regressions, synthetic redraw measurements and formal coverage audit; no independent audit or real-model comparison |
 | [Security and cleanup review](security-2026-10-29/REPORT.md) | D-492 dependency advisories, concrete OAuth/MCP/update bounds, old-code controls, dead-code and stale-document cleanup; not a full independent security audit |
@@ -46,7 +47,7 @@ and explains the maintenance workflow. The groups below are an index, not anothe
 | Evaluation and formal material | `eval_manifests.py`, `eval_surface.py`, `eval/r2-p6/anatomy.py`, `verification_catalogue.py` |
 | Probe selection | `dogfood/probes.py` |
 
-There are now **18** probes in the offline set, selected by `dogfood/probes.py`. For the current tree, `citations.py` verifies that 325 relative links resolve today. It checks 752 commands, 28 distinct targets, 22 declared as checked on 2026-11-03;
+There are now **18** probes in the offline set, selected by `dogfood/probes.py`. For the current tree, `citations.py` verifies that 329 relative links resolve today. It checks 752 commands, 28 distinct targets, 22 declared as checked on 2026-11-03;
 its other totals are recomputed and compared with the script's own docstring.
 
 Useful manual checks:
@@ -82,6 +83,7 @@ local binary or network sources. None of these manual tools belongs in an offlin
 
 <!-- The reading map (D-443): the review material is evidence, one home each. The three dated notes are kept
      because decisions and the verification report cite them, and ACCEPTANCE Q19 keeps review evidence. -->
+<!-- maps: review/reviewer-2026-11-10/REPORT.md reader=evidence -->
 <!-- maps: review/formal-optimization-2026-11-03/REPORT.md reader=evidence -->
 <!-- maps: review/optimization-2026-11-03/REPORT.md reader=evidence -->
 <!-- maps: review/security-2026-10-29/REPORT.md reader=evidence -->

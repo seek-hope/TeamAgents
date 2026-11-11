@@ -755,6 +755,19 @@ well), which the probe tolerates — it asserts the ring's hops, not silence. On
 delivered message is a `user`-kind context entry (not a `message`-kind one), which is why the probe's wait
 looks for the rendered `[message from …]` line instead of a kind.
 
+## `ssh_pty.py`: existing PTY smokes over isolated loopback SSH (D-502)
+
+```bash
+python3 review/dogfood/ssh_pty.py --out review/tmp/ssh-pty-1
+```
+
+This manual probe needs `ssh`, `ssh-keygen` and `sshd`. It starts a temporary user-mode loopback server with
+one-use keys, runs the existing v2 and graphics PTY smokes for xterm and screen profiles, writes their actual
+exit codes and terminates only its own server. It does not edit system SSH configuration, user authorization
+files or known_hosts. The remote commands create their own nested PTYs, so the result covers real SSH execution
+and terminal environments, not public-host latency, graphical-terminal pixels or a security boundary. It is not
+in the generic offline set because sshd is an environment-specific prerequisite.
+
 ## `unknown_outcome.py`: the crash that leaves nothing verifiable (A09)
 
 `crash.py` covers the *recoverable* crash: the daemon dies, the runner survives and finishes the job, and the

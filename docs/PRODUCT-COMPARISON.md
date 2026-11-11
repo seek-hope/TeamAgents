@@ -14,14 +14,16 @@ check passed; this does not change the comparison evidence below.
 | Area | Current behavior | Evidence boundary |
 |---|---|---|
 | Work continuity (D-487 / DD-11) | Shared behavior emphasizes user intent, initiative and excellent results. Works persist across turns, compaction and restart; continuation is bounded; questions, attention, stops and completion are distinct. Subsequent work is admitted internally with its costs and limits | Scripted providers, SQLite/fault tests and recorded process groups; no measured long-task success rate. Heuristics can block legitimate repetition |
-| Repository setup | TeamAgents reads repository-local configuration for trusted canonical roots and discovers instruction files; user-only policy stays at user level | Configuration tests and isolated probes; dependency diagnosis is not a complete build or Skill-workflow acceptance |
+| Repository setup | TeamAgents reads repository-local configuration for trusted canonical roots and discovers instruction files; user-only policy stays at user level | Configuration, missing-tool and revocation tests plus real Cargo/Python/Node Skill workflows; not every dependency ecosystem |
 | Diagnosis and inputs (DD-01 / DD-04) | Read-only diagnosis, explicit recovery, instruction/source observations, immutable queued-input revisions and delivery receipts | Observation does not prove execution or completion; a config change is not a hot reload |
 | Editing and tools (DD-05) | Atomic disjoint edits, bounded read parallelism, file/Shell/Skill tools, provider-neutral search, MCP resources and codemode | Host execution is not confinement. Real Cargo/Python/Node and MCP resource checks are local; broader dependency workflows and real-service evidence remain |
 | Conversation and models (D-489–D-491 / DD-06) | Grok-style Leader conversation with elevated prompts, grouped activity, live status, compact model chrome and `@` file references; shared message/queue editing and complete answers | Scripted TestBackend/PTY checks, not a usability benchmark or every terminal/provider |
 | Collaboration and recovery | Scoped task grants, independent members, worktrees, durable operations, runner recovery and declared-workspace takeover checks | Task cancellation is not process stop. Unknown effects are not replayed; remote/escaped effects are outside the local group observer |
-| Verification and accounting | User-required checks, scoped completion evidence, known/unknown usage, native windows and cache telemetry. Reviewer calls share the work budget and record interrupted/unknown usage | Check quality and semantic completeness remain distinct; reviewer judgement still needs independent adversarial evidence |
+| Verification and accounting | User-required checks, scoped completion evidence, known/unknown usage, native windows and cache telemetry. Reviewer calls share the work budget; D-502 adds independent adversarial implementation review and fail-closed regressions | Check quality and semantic completeness remain distinct; live reviewer judgement and novel prompt-injection resistance remain unmeasured |
 
-DD-11 was approved and implemented as D-487; it is no longer an unapproved proposal. Its dated
+DD-02's specified local Rust/Python/Node, relative-Skill, missing-tool and revocation coverage is implemented
+through D-500 and existing environment/control tests. This does not claim every package manager or dependency
+workflow. DD-11 was approved and implemented as D-487; it is no longer an unapproved proposal. Its dated
 [source study](../review/goal-autonomy-2026-10-28/REPORT.md) explains the upstream design inputs and their limits.
 Local validation and its limits are recorded in ACCEPTANCE. D-461, D-467, D-469 and D-473/D-476 implement the
 other selected DD items above. Their remaining evidence limits do not authorize arbitrary new features.
@@ -34,10 +36,9 @@ bounded agreement. Paid trials, external-service changes and publication need se
 
 | ID / priority | Candidate | Required evidence or decision |
 |---|---|---|
-| DD-02 / P0 | Complete host development and Skill workflows | Real Rust, Python and Node edit/build/test tasks; relative Skill files/scripts; missing tools and capability revocation |
 | DD-03 / P0, postponed | Matched Pi comparison on held-out coding tasks | Frozen versions/tasks, same model/native window/effort/authority/budget, repeated paired trials, hidden checks, honest outcomes, interventions and time; priced cost only if authorized |
-| DD-07 / P1 | Approval-review quality and adversarial evidence | Reviewer usage accounting, reservation and interruption recovery are implemented; independent adversarial review and dated price semantics remain |
-| DD-08 / P1 | Wider provider, image, MCP OAuth and terminal acceptance | Isolated real round trips with denial, revocation, restart and cleanup; the user's selected shell, terminal, multiplexer and SSH combinations |
+| DD-07 / P1 | Approval-review quality and adversarial evidence | D-502 adds independent adversarial implementation review and reproduced controls; live-model judgement quality and dated price semantics remain |
+| DD-08 / P1 | Wider provider, image, MCP OAuth and terminal acceptance | D-502 covers actual tmux and isolated loopback SSH; isolated real provider/OAuth round trips, public-host and selected graphical-terminal combinations remain |
 | DD-09 / P2 | MCP resource browsing and additional integration coverage | resources/list/read are implemented with binding and ambiguity checks; broader auth, SDK/client and extension interfaces still need versioned contracts and runnable examples |
 | DD-10 / P2 | Distribution freshness | Exact authorized artifacts, clean-host install/update/rollback, retained config and source/artifact identity; documentation work does not authorize a release |
 

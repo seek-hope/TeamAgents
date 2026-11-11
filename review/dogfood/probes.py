@@ -91,9 +91,9 @@ MODELS = [
     ("protocols.py", [], "every wire protocol accepted against a real service (DESIGN §7/D-151)"),
 ]
 
-# Files in this directory that are not probes (none today: every module here is one, and a module that
-# accumulates helpers should be named here with its reason).
-NOT_PROBES: set = set()
+# Helpers and manual environment-specific probes excluded from both generic sets.
+# ssh_pty.py needs a local sshd and is run explicitly with its own output directory.
+NOT_PROBES: set = {"ssh_pty.py"}
 
 SETS = {"offline": OFFLINE, "models": MODELS, "all": OFFLINE + MODELS}
 # Per-probe budget, by set: the credential-free probes answer in under a minute, while a model probe waits on

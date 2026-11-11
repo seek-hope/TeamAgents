@@ -1,5 +1,9 @@
 # Development handoff
 
+D-502 closes reproduced automatic-review parsing, authorization-context, control-evidence and known-usage gaps.
+Its dated adversarial report distinguishes those implementation fixes from still-open live-model judgement
+quality. Actual tmux and isolated loopback-SSH PTY probes pass; neither is a real-provider or public-host matrix.
+
 D-501 upgrades `rusqlite`/`libsqlite3-sys` past RUSTSEC-2026-0459 while preserving the schema-8/WAL contract.
 Core and engine suites and all dependency advisory/source checks pass.
 
@@ -7,9 +11,9 @@ D-500 adds lazy input revisions, reviewer budget/usage recovery, real Cargo/Pyth
 MCP resource list/read. It preserves schema, authority and cancellation contracts; the remaining live-service,
 matched-Pi, general-SDK and full-proof obligations stay open.
 
-D-498/D-499 are the previous committed baseline (`53547c3b`). D-500 (`bdfc2e27`) and D-501 (`cd6125f9`) remove ten
-unused persistence mirror types and consolidates duplicate handoff/development guidance without changing
-schema, protocol, runtime behavior or the formal model.
+D-498/D-499 are the previous committed baseline (`53547c3b`): they removed ten unused persistence mirror types
+and consolidated duplicate handoff/development guidance. D-500 (`bdfc2e27`) and D-501 (`cd6125f9`) then added
+the accounting/workflow/resource fixes and SQLite security upgrade without changing the schema-8 contract.
 
 The goal entity and its public vocabulary are removed in favor of work scopes, with schema 8 migration
 preserving old budget, acceptance, ownership and event history. The full 738-test repository gate, 58 positive

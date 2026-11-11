@@ -4189,6 +4189,13 @@ fn record_review_attempt(
         return Err(format!("review attempt status must be COMPLETE or FAILED, got {attempt_status:?}"));
     }
     let result = record_attempt(tx, session_id, params)?;
+    // A provider can return priced usage with a malformed review response.
+    // FAILED records that known cost too; only COMPLETE is settled by record_attempt.
+    if attempt_status == "FAILED" && !params["usage"].is_null() && !params["unknown_usage"].as_bool().unwrap_or(false) {
+        if let Some(work) = request_work(tx, request_id)? {
+            settle_usage(tx, &work, &params["usage"])?;
+        }
+    }
     let closed = if attempt_status == "COMPLETE" { "COMPLETE" } else { "FAILED" };
     tx.execute("UPDATE model_requests SET status=?1 WHERE request_id=?2", rusqlite::params![closed, request_id])
         .map_err(|e| format!("review close: {e}"))?;
@@ -4233,11 +4240,36 @@ fn review_decision(tx: &Connection, session_id: &str, params: &Json, identity: &
         let reason = format!("denied by auto-review: {rationale}");
         return deny_approval(tx, session_id, approval_id, &reason, Some(&review));
     }
-    let operation_id: String = tx
-        .query_row("SELECT operation_id FROM approvals WHERE id = ?1 AND status = 'PENDING'", [approval_id], |row| {
-            row.get(0)
-        })
+    let (operation_id, intent_json): (String, String) = tx
+        .query_row(
+            "SELECT o.operation_id,o.intent_json FROM approvals a JOIN operations o ON o.operation_id=a.operation_id
+             WHERE a.id = ?1 AND a.status = 'PENDING'",
+            [approval_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
         .map_err(|e| format!("review approval {approval_id}: {e}"))?;
+    if params["operation_id"].as_str() != Some(operation_id.as_str()) {
+        return Err("review_decision.operation_id does not match the parked approval".into());
+    }
+    let review_request_id = params["review_request_id"].as_str().ok_or("review allow requires a completed review")?;
+    let reviewed: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM model_requests
+             WHERE request_id=?1 AND request_ref=?2 AND kind='review' AND status='COMPLETE')",
+            rusqlite::params![review_request_id, operation_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("review evidence: {e}"))?;
+    if !reviewed {
+        return Err("review allow requires a completed review for this operation".into());
+    }
+    if risk_level != "low" || user_authorization != "high" {
+        return Err("review allow requires low risk and high user authorization".into());
+    }
+    let intent: Json = serde_json::from_str(&intent_json).map_err(|e| format!("review operation intent: {e}"))?;
+    if intent["name"].as_str() == Some("request_self_update") {
+        return Err("self-update approval is user-only".into());
+    }
     let changed = tx
         .execute("UPDATE approvals SET status = 'APPROVED' WHERE id = ?1 AND status = 'PENDING'", [approval_id])
         .map_err(|e| format!("review approve: {e}"))?;
@@ -6831,14 +6863,37 @@ mod tests {
             .expect("park");
         assert_eq!(asked["status"], json!("APPROVAL_REQUIRED"));
         let approval_id = asked["approval_id"].as_str().expect("approval id").to_string();
-        let review = json!({"approval_id": approval_id, "outcome": "allow", "risk_level": "low",
-                            "user_authorization": "high", "rationale": "within the requested workspace",
-                            "reviewer_model": "reviewer"});
+        let review = json!({"approval_id": approval_id, "operation_id": "d-x:0", "review_request_id": "review-x",
+                            "outcome": "allow", "risk_level": "low", "user_authorization": "high",
+                            "rationale": "within the requested workspace", "reviewer_model": "reviewer"});
         // only the runtime may submit the automatic decision
         assert!(ctl
             .submit(cmd("rv-user", "review_decision", review.clone()), Identity::User)
             .unwrap_err()
             .contains("system identity"));
+        assert!(ctl
+            .submit(cmd("rv-unreviewed", "review_decision", review.clone()), Identity::System)
+            .unwrap_err()
+            .contains("completed review"));
+        ctl.submit(
+            cmd(
+                "rv-begin",
+                "begin_review",
+                json!({"request_id": "review-x", "operation_id": "d-x:0", "est_prompt_tokens": 1}),
+            ),
+            Identity::System,
+        )
+        .expect("begin review");
+        ctl.submit(
+            cmd(
+                "rv-attempt",
+                "record_review_attempt",
+                json!({"request_id": "review-x", "attempt_id": "review-x/1", "status": "COMPLETE",
+                       "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}}),
+            ),
+            Identity::System,
+        )
+        .expect("complete review");
         let decided = ctl.submit(cmd("rv-1", "review_decision", review), Identity::System).expect("review allow");
         assert_eq!(decided["status"], json!("APPROVED"));
         let status: String = ctl
@@ -6881,6 +6936,64 @@ mod tests {
             .query_row("SELECT status FROM operations WHERE operation_id = 'd-y:0'", [], |row| row.get(0))
             .unwrap();
         assert_eq!(operation, "CANCELLED");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn automatic_review_never_allows_self_update() {
+        let (mut ctl, path) = control("review-self-update");
+        create_instance(&mut ctl, "i1");
+        open_decision(&mut ctl, "x", "i1", 0, 1);
+        let asked = ctl
+            .submit(
+                cmd("dp-self", "dispatch_operation", json!({"operation_id": "d-x:0", "approval_required": true})),
+                Identity::System,
+            )
+            .expect("park");
+        let approval_id = asked["approval_id"].as_str().unwrap().to_string();
+        ctl.connection()
+            .execute(
+                "UPDATE operations SET intent_json='{\"name\":\"request_self_update\",\"args\":{}}' WHERE operation_id='d-x:0'",
+                [],
+            )
+            .unwrap();
+        ctl.submit(
+            cmd(
+                "rv-self-begin",
+                "begin_review",
+                json!({"request_id": "review-self", "operation_id": "d-x:0", "est_prompt_tokens": 1}),
+            ),
+            Identity::System,
+        )
+        .expect("begin review");
+        ctl.submit(
+            cmd(
+                "rv-self-attempt",
+                "record_review_attempt",
+                json!({"request_id": "review-self", "attempt_id": "review-self/1", "status": "COMPLETE",
+                       "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}}),
+            ),
+            Identity::System,
+        )
+        .expect("complete review");
+        let error = ctl
+            .submit(
+                cmd(
+                    "rv-self-decision",
+                    "review_decision",
+                    json!({"approval_id": approval_id, "operation_id": "d-x:0", "review_request_id": "review-self",
+                           "outcome": "allow", "risk_level": "low", "user_authorization": "high",
+                           "rationale": "incorrect model approval", "reviewer_model": "reviewer"}),
+                ),
+                Identity::System,
+            )
+            .unwrap_err();
+        assert!(error.contains("user-only"), "{error}");
+        let status: String = ctl
+            .connection()
+            .query_row("SELECT status FROM approvals WHERE id=?1", [&approval_id], |row| row.get(0))
+            .unwrap();
+        assert_eq!(status, "PENDING");
         cleanup(&path);
     }
 

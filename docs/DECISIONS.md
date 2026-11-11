@@ -41,6 +41,31 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Command idempotency | a replay with the same `command_id` returns the stored receipt for control-plane state, and the authoritative check runs under the write lock (D-463); result bodies are shared by content digest and zstd-compressed (D-464), while the receipt **rows** remain one per command | D-463, D-464 |
 | Model actions and code windows | a deciding read shares the write's transaction, or the guard is a predicate on the write itself; `verification/REPORT.md` §6 lists the protocol transitions and the three engine windows that span two transactions with their predicates | D-465 |
 
+## D-502 Close automatic-review fail-closed gaps and extend local transport evidence (2026-11-10)
+
+An independent read-only adversarial pass, followed by locally reproduced failures, found that the automatic
+reviewer accepted incomplete or contradictory assessments, mixed peer/old-epoch text into authorization context,
+could drop current instructions at its context bound, allowed an unreviewed control-plane allow, and discarded
+known usage when a priced response was malformed. These were implementation violations of D-458's existing
+strict, read-only, fail-closed contract, not a request for broader automatic authority.
+
+- Review responses are one strict JSON object with all four typed fields. Automatic allow requires low risk and
+  high user authorization; malformed or contradictory responses leave the operation pending.
+- Review context includes only current-epoch `user_input` envelopes sent by the user, plus configured instruction
+  files. Peer messages and old epochs are excluded. User facts and instructions have independent bounded shares
+  that preserve their newest tails and an explicit truncation marker; unreadable instructions fail closed.
+- Control-plane allow requires the matching operation and completed review request, repeats the consistency
+  checks and rejects self-update. Deterministic denial does not need a model request. Lexical hard denials cover
+  the reproduced variants but remain a conservative backstop, not complete shell parsing.
+- A malformed response with provider usage records that known usage even though the review attempt is FAILED.
+  Transport/timeout usage remains unknown, reservations release and failed reviews do not retry in one driver.
+
+The dated [adversarial review](../review/reviewer-2026-11-10/REPORT.md) separates pre-fix failures from current
+tests. This is implementation evidence, not live-model judgement quality or a price estimate. Actual tmux runs
+passed for `tmux-256color` and Kitty-inside-tmux fallback. `review/dogfood/ssh_pty.py` also passed the existing
+TUI/graphics checks through an isolated temporary loopback sshd for xterm and screen profiles. That probe uses
+nested PTYs on local SSH; it establishes no public-host, real-provider, external-OAuth or graphical-pixel matrix.
+
 ## D-501 Upgrade bundled SQLite past the page-cache vulnerability (2026-11-10)
 
 Dependency review found RUSTSEC-2026-0459: bundled SQLite versions before 3.54.0 could return uninitialized

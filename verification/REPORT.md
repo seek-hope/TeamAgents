@@ -61,7 +61,7 @@ hygiene and process/scratch leak checks. An independent staged checkout excludin
 documentation changes also passed hygiene. Those ten changes remain outside the scoped commits.
 Runtime source and installed binaries remain D-494; no PTY, live-service, installation or public-release
 acceptance is renewed. The wide result remains D-495's timeout, not a new completed search. Full
-implementation refinement/composition, arbitrary-string proofs and reviewer usage remain unresolved.
+implementation refinement/composition, arbitrary-string proofs and reviewer judgement/control models remain unresolved.
 
 ## D-495 historical gate (2026-11-03 at `36afc59b`)
 
@@ -163,7 +163,7 @@ backpressure and repeated idle history materialization.
 | TUI and graphics | TUI, session UI, presentation, input queue, display worker and Kani arithmetic | Rendering libraries, Unicode shaping, total socket deadlines and measured redraw cost are not proved by these models. |
 | Artifacts, workspaces and paths | Artifact, workspace, prune, project-trust and trust models | Real paths, symlink races, Git behavior and filesystem permissions require separate probes. |
 | Installation and updates | Update model and archive/install tests | Release transport, supply chain and native installer execution remain outside TLC. |
-| Usage and budgets | Control/work/task accounting transitions and scoped admission | Provider-reported costs are not validated by TLC. The known reviewer-usage propagation gap remains open. |
+| Usage and budgets | Control/work/task accounting transitions and scoped admission | Provider-reported costs are not validated by TLC. Reviewer usage has code tests; its commands and judgement remain outside the TLA boundary. |
 | Historical isolation | Isolation model remains internally checked | D-480 removed OS sandbox backends; this is historical evidence, not current host isolation. |
 | Combined system | Bounded command-sequence correspondence and per-module counterfactuals | No Rust/SQLite refinement, universal liveness, full composition, real-model quality or cost proof. |
 

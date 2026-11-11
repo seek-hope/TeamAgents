@@ -1,7 +1,7 @@
 # Acceptance matrix (A01–A36)
 
 Baseline: [the design and acceptance baseline](DESIGN.md) §12/§16. Current source inspection and local
-regression baseline: **2026-11-10, D-501**.
+regression baseline: **2026-11-10, D-502**.
 This is not a new independent acceptance audit or real-model run.
 The D-451 product/installation receipts and the D-452 independent audit retain their original source/date
 boundaries; later source changes do not inherit those results.
@@ -9,7 +9,7 @@ boundaries; later source changes do not inherit those results.
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 177 / engine 466 / tui 104 test targets).
+`make check` is green (core 178 / engine 470 / tui 104 test targets).
 `make pty` passed on 2026-11-03: the terminal-profile matrix (xterm-256color, screen-256color, tmux-256color, xterm-kitty and Kitty under tmux) plus both forced graphics protocols, all rc 0 and
 credential-free. PTY checks cover protocol bytes, input ownership, resize and cleanup, not a complete
 actual graphical-terminal or OS matrix. These gates do not renew real-provider, OAuth, formal-proof or
@@ -34,6 +34,14 @@ renewing the earlier PTY/install/live-service results. The current [requirement 
 classifies every Q/A requirement and its remaining obligations. It does not upgrade the acceptance icons
 below or renew real-service results. Model fixes, normal-path witnesses and bounded production-code Kani
 proofs are recorded in the formal report; runtime source and installed binaries remain D-494.
+
+D-502 fixes independently identified and locally reproduced automatic-review violations: strict complete
+responses, consistent low-risk/high-authorization allows, current-epoch user-only authorization context,
+bounded preservation of current user facts and configured policy, control-plane review/self-update guards, and
+known usage on malformed but provider-priced responses. The [dated adversarial review](../review/reviewer-2026-11-10/REPORT.md)
+records old-code failures and current regressions; it is not live-model judgement evidence. Actual tmux runs and
+`review/dogfood/ssh_pty.py`'s isolated loopback-SSH runs pass for their declared terminal profiles. These local
+transports do not establish external provider/OAuth, public-host or graphical-terminal acceptance.
 
 D-501 upgrades the bundled SQLite to 3.54.1 through `rusqlite 0.41.1` and `libsqlite3-sys 0.39.1`, resolving
 RUSTSEC-2026-0459 without changing the store schema or WAL durability contract. Core/engine tests and all
@@ -216,7 +224,7 @@ decides from its own stored receipts, so a check added later would never run —
 
 ## Known gaps and resolution history
 
-The table below is the current summary at D-480 (`7ae6bd5b`). Candidate work and its acceptance methods live once in
+The table below is the current summary at D-502. Candidate work and its acceptance methods live once in
 [Remaining candidates](PRODUCT-COMPARISON.md#remaining-candidates); those candidates
 are not confirmed design changes. The expandable history retains re-runnable findings, corrections and
 unresolved policy dependencies without presenting every former gap as current.
@@ -224,14 +232,14 @@ unresolved policy dependencies without presenting every former gap as current.
 | Current boundary | Evidence / candidate |
 |---|---|
 | Idle worker with unsettled task; cancellation, interruption and termination retain distinct effects | D-461 delivers DD-01 option A: read-only diagnosis and explicit recovery instructions. Automatic reminders are excluded; real-user effectiveness remains unmeasured |
-| Skill resources are readable on the host; complete dependency workflows still need evidence | D-468, D-480, engine/src/tools.rs; DD-02 |
+| Real Cargo/Python/Node Skill workflows, missing-tool diagnosis and capability revocation have local evidence; broader dependency ecosystems remain unmeasured | D-468, D-480, D-500, engine/src/environment.rs, `control::revocation_blocks_queued_dispatch_until_reauthorized` |
 | No matched current Pi coding-success/intervention/cost comparison | existing A/B/C arms are internal; DD-03; Q16 success-form question remains separate from D-264's latency finding |
 | Repository AGENTS.md discovery, trust and precedence are implemented; Leader source observations and an edit-between-turn test exist, while worker/worktree coverage and durable per-request provenance remain open | D-467, D-479, engine/src/config.rs |
 | Multi-edit and parallel read-only batches are implemented; ordered per-instance tools and MCP-only synchronous codemode remain | D-469, engine/src/reference.rs, engine/src/v2/driver.rs, engine/src/codemode.rs |
 | Message-level branches and fork-while-live remain; the model/effort switch and explicit after-turn follow-up queue are implemented, and fork requires a stopped source daemon | D-470, D-473, D-476, engine/src/v2/sessions.rs, tui/src/v2app.rs |
-| Cache telemetry and reviewer usage accounting are implemented, including interrupted/unknown usage; priced cost semantics and reviewer judgement quality remain external | `control::review_usage_is_reserved_recorded_and_recovered`, `v2_driver::auto_review_failure_keeps_pending_and_records_unknown_usage`; D-458/D-459; DD-07 |
-| Live selected provider/image/MCP OAuth and wider terminal/security evidence remains partial | individual A rows and dated reports; DD-08 |
-| No MCP resource browsing or general SDK/extension interface; provider auth coverage is narrower than Pi | DD-09; existing Unix protocol and hooks are real capabilities, not equivalent extension APIs |
+| Reviewer accounting and adversarial implementation controls are implemented; live-model judgement quality and priced-cost semantics remain external | `control::review_usage_is_reserved_recorded_and_recovered`, `v2_driver::auto_review_parse_failure_preserves_known_usage`; D-458/D-459/D-502; DD-07 |
+| Actual tmux and isolated loopback-SSH PTY checks pass; live provider/image/MCP OAuth, public-host and wider graphical-terminal/security evidence remains partial | D-502, `review/dogfood/ssh_pty.py`, individual A rows and dated reports; DD-08 |
+| MCP resource list/read is implemented; general SDK/extension interfaces and broader provider auth coverage remain open | D-500; DD-09; existing Unix protocol and hooks are real capabilities, not equivalent extension APIs |
 | Public v0.2.0 (Linux x86_64) replaced with the hardened source under D-493; workflow and published-download installation checks cover the exact artifact | D-477, D-493; DD-10 |
 | Artifact policy and references remain a decision boundary | D-438; D-436 implements owner release after the configured retention window, not arbitrary deletion |
 
@@ -622,7 +630,7 @@ smoke passed `@` attachment submission, approvals, editing, resize and clean det
 | D-482 provider-neutral web search | engine/src/search.rs and engine/src/tools.rs: DeepSeek/Exa request shapes, RRF, partial failure, retry, cache/single-flight and credential/binding tests | live paid Search acceptance and measured cost/latency; web_fetch is unchanged |
 | D-483 CodeGraph MCP integration | engine/examples/codegraph_probe.rs: real existing-index discovery and codemode query, no model or auto-init | broader project/watcher coverage; shared-daemon and freshness limits remain |
 | D-456 DeepSeek web tools (historical search baseline) | engine/src/tools.rs response/binding/credential/private-address tests | fresh live Search/Fetch service acceptance; historical backend probes are not renewed |
-| D-458 automatic operation review | core review-decision test, engine/src/v2/reviewer.rs tests and v2_driver scripted-provider/real-shell case | reviewer billing in work limits, independent adversarial/live-model review |
+| D-458/D-502 automatic operation review | strict parser/context/control/usage regressions and the dated D-502 adversarial implementation review; real Shell remains fail-closed on review failure | live-model judgement quality and novel prompt-injection resistance; token usage is not a price estimate |
 | D-459 cache prefix and telemetry | kernel usage/masking tests, provider body/usage tests and exec aggregation tests | new service hit-rate/cost improvement; no warming or price table |
 
 D-455's dated contract coverage follows; its 2026-10-21 gate is historical and does not renew external-service
