@@ -5,7 +5,7 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
-## 0. Gate status (re-run 2026-11-11 at `072a160c`)
+## 0. Gate status (re-run 2026-11-11 at `777cf0af`)
 
 D-503 adds the bounded `V2Review` transition model without changing production source or adopting canonical
 allocation. The current targets verified all **59** configurations in **56** traversals with actual exit 0 in
