@@ -5,7 +5,7 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
-## 0. Gate status (re-run 2026-11-11 at `78035030`)
+## 0. Gate status (re-run 2026-11-11 at `c2302913`)
 
 D-506 adds the bounded `V2SearchTree` transition model for `read_search_tree`, `apply_search_tree` and the tree
 half of compaction. The current targets verified all **64** configurations in **61** traversals with actual exit 0
