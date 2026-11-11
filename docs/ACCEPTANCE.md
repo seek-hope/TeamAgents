@@ -1,7 +1,7 @@
 # Acceptance matrix (A01–A36)
 
 Baseline: [the design and acceptance baseline](DESIGN.md) §12/§16. Current source inspection and local
-regression baseline: **2026-11-11, D-504**.
+regression baseline: **2026-11-11, D-505**.
 This is not a new independent acceptance audit or real-model run.
 The D-451 product/installation receipts and the D-452 independent audit retain their original source/date
 boundaries; later source changes do not inherit those results.
@@ -34,6 +34,10 @@ renewing the earlier PTY/install/live-service results. The current [requirement 
 classifies every Q/A requirement and its remaining obligations. It does not upgrade the acceptance icons
 below or renew real-service results. Model fixes, normal-path witnesses and bounded production-code Kani
 proofs are recorded in the formal report; runtime source and installed binaries remain D-494.
+
+D-505 upgrades the TUI dependency from `rustix 1.1.4` to 1.1.6 after remote CI reported RUSTSEC-2026-0486.
+All three advisory/source checks, the full `make check` gate and the PTY matrix pass; no advisory is ignored. The TLA/Kani inputs are
+unchanged and retain the D-504 replay boundary.
 
 D-504 adds one session-level exploration tree beside compaction. Schema 9 preserves append-only revisions and
 the Leader role; only Leader compaction advances the tree from Leader-visible history through the retained

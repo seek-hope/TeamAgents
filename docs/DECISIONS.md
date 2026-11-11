@@ -42,6 +42,15 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Command idempotency | a replay with the same `command_id` returns the stored receipt for control-plane state, and the authoritative check runs under the write lock (D-463); result bodies are shared by content digest and zstd-compressed (D-464), while the receipt **rows** remain one per command | D-463, D-464 |
 | Model actions and code windows | a deciding read shares the write's transaction, or the guard is a predicate on the write itself; `verification/REPORT.md` §6 lists the protocol transitions and the three engine windows that span two transactions with their predicates | D-465 |
 
+## D-505 Upgrade rustix past the zero-length xattr buffer vulnerability (2026-11-11)
+
+D-504's remote dependency-advisory job failed on the newly published RUSTSEC-2026-0486: `rustix 1.1.4`
+extended-attribute functions could mark unwritten bytes initialized for a zero-length buffer, reachable from
+safe code. The TUI lockfile now selects **rustix 1.1.6**, the upstream fix. No advisory is ignored and no product
+API or search-tree behavior changes. All three crate graphs pass advisory/source checks, the TUI suite passes,
+and the full project/PTY gates are re-run. D-504's TLA/Kani inputs are unchanged, so their existing receipts stay
+bound to those inputs rather than being represented as a new formal result.
+
 ## D-504 Add one session-level exploration tree beside compaction (2026-11-11)
 
 The user selected a **session-level** exploration tree rather than one tree per instance, explicitly to avoid

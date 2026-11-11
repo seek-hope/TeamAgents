@@ -1,5 +1,8 @@
 # Development handoff
 
+D-505 upgrades the TUI lockfile to rustix 1.1.6 after remote CI reported RUSTSEC-2026-0486. All three
+advisory/source checks, the full project gate and the PTY matrix pass. No advisory is ignored and no formal input changes.
+
 D-504 adds one session-level exploration tree beside compaction. Schema 9 persists the Leader role and
 append-only tree revisions. Leader compaction advances the cumulative tree through the retained recent input;
 members' private history stays outside it. Revisioned show/add/update/move/merge/focus operations use the
