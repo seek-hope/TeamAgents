@@ -560,6 +560,30 @@
       "predicate": "summaries = 1 /\\ revision = 0 /\\ lastCompact.error /\\ ~lastCompact.applied",
       "purpose": "A stale compaction patch leaves the tree untouched while its summary commits.",
       "path": ["AdvanceEntry", "Compact(Request(\"focus\", 1, \"root\", \"none\", \"open\"))"]
+    },
+    {
+      "id": "search_tree_pair_ordered",
+      "module": "V2SearchTree",
+      "config": "MC_search_tree_pair.cfg",
+      "predicate": "revision = 1 /\\ focus = \"a\" /\\ lastApply.kind = \"pair\" /\\ lastApply.accepted",
+      "purpose": "The second operation observes the first operation's new node in one atomic patch.",
+      "path": ["ApplyPair(\"leader\", \"c1\", Request(\"add\", 0, \"a\", \"root\", \"open\"), Request(\"focus\", 0, \"a\", \"none\", \"open\"))"]
+    },
+    {
+      "id": "search_tree_pair_replay",
+      "module": "V2SearchTree",
+      "config": "MC_search_tree_pair.cfg",
+      "predicate": "revision = 1 /\\ lastApply.kind = \"pair\" /\\ lastApply.accepted /\\ lastApply.replay",
+      "purpose": "A two-operation patch replays without adding another revision.",
+      "path": ["ApplyPair(\"leader\", \"c1\", Request(\"add\", 0, \"a\", \"root\", \"open\"), Request(\"focus\", 0, \"a\", \"none\", \"open\"))", "ApplyPair(\"leader\", \"c1\", Request(\"add\", 0, \"a\", \"root\", \"open\"), Request(\"focus\", 0, \"a\", \"none\", \"open\"))"]
+    },
+    {
+      "id": "search_tree_pair_rejected",
+      "module": "V2SearchTree",
+      "config": "MC_search_tree_pair.cfg",
+      "predicate": "revision = 0 /\\ nodes = {\"root\"} /\\ lastApply.kind = \"pair\" /\\ ~lastApply.accepted",
+      "purpose": "An invalid second operation rejects the whole pair without retaining the first add.",
+      "path": ["ApplyPair(\"leader\", \"c1\", Request(\"add\", 0, \"a\", \"root\", \"open\"), Request(\"focus\", 0, \"b\", \"none\", \"open\"))"]
     }
   ]
 }

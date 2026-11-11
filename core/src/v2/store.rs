@@ -656,6 +656,12 @@ fn migrate(conn: &Connection, from: i64) -> Result<(), String> {
             // 8 -> 9 (D-504): add the session-level exploration-tree projection.
             // Existing histories remain untouched and start with an empty revision-0 tree.
             8 => {
+                if from == 8 && (table_exists(&tx, "search_tree_head")? || table_exists(&tx, "search_tree_revisions")?)
+                {
+                    return Err(
+                        "schema 8 store already contains unexpected search-tree tables; refusing migration".into()
+                    );
+                }
                 if !column_present(&tx, "instances", "is_leader")? {
                     tx.execute("ALTER TABLE instances ADD COLUMN is_leader INTEGER NOT NULL DEFAULT 0", [])
                         .map_err(|e| format!("migrate 8 -> 9 Leader role: {e}"))?;
@@ -1297,7 +1303,14 @@ mod tests {
             )
             .unwrap();
             conn.execute_batch(
-                "DROP TABLE search_tree_head;
+                "INSERT INTO work_scopes
+                 (id,session_id,original_request_ref,status,limits_json,known_usage_json,reservations_json)
+                 VALUES ('work-old','s1','entry-old','ACTIVE','{}','{}','{}');
+                 INSERT INTO context_entries(instance_id,epoch,idx,id,kind,message_json,created)
+                 VALUES ('i-leader',0,1,'entry-old','user','{\"role\":\"user\",\"content\":\"keep\"}',0);
+                 INSERT INTO events(session_id,sequence,kind,scope,payload_json,created)
+                 VALUES ('s1',1,'old_event','','{}',0);
+                 DROP TABLE search_tree_head;
                  DROP TABLE search_tree_revisions;
                  ALTER TABLE instances DROP COLUMN is_leader;
                  UPDATE meta SET value='8' WHERE key='schema_version';",
@@ -1313,6 +1326,17 @@ mod tests {
                 .unwrap(),
             1
         );
+        for table in ["work_scopes", "context_entries", "events"] {
+            assert_eq!(
+                conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get::<_, i64>(0)).unwrap(),
+                1
+            );
+        }
+        assert_eq!(
+            conn.query_row("SELECT is_leader FROM instances WHERE id='i-leader'", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
         for table in ["search_tree_head", "search_tree_revisions"] {
             assert_eq!(
                 conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1", [table], |row| row
@@ -1322,6 +1346,35 @@ mod tests {
             );
         }
         drop(conn);
+        cleanup(&p);
+    }
+
+    #[test]
+    fn v8_search_tree_conflict_rolls_back_migration() {
+        let p = path("migrate-search-tree-conflict");
+        {
+            let conn = open(&p, true).unwrap();
+            conn.execute_batch(
+                "DROP TABLE search_tree_head;
+                 DROP TABLE search_tree_revisions;
+                 ALTER TABLE instances DROP COLUMN is_leader;
+                 CREATE TABLE search_tree_revisions(unexpected TEXT);
+                 UPDATE meta SET value='8' WHERE key='schema_version';",
+            )
+            .unwrap();
+        }
+        let error = open(&p, false).unwrap_err();
+        assert!(error.contains("unexpected search-tree tables"), "{error}");
+        let reader = open_read_only(&p).unwrap();
+        let version: String =
+            reader.query_row("SELECT value FROM meta WHERE key='schema_version'", [], |row| row.get(0)).unwrap();
+        assert_eq!(version, "8");
+        assert!(!column_present(&reader, "instances", "is_leader").unwrap());
+        let sql: String = reader
+            .query_row("SELECT sql FROM sqlite_master WHERE name='search_tree_revisions'", [], |row| row.get(0))
+            .unwrap();
+        assert!(sql.contains("unexpected"), "{sql}");
+        drop(reader);
         cleanup(&p);
     }
 

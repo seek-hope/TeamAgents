@@ -152,7 +152,15 @@ fn terminal_text(text: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
-            other if other.is_control() => out.push_str(&format!("\\u{{{:x}}}", other as u32)),
+            other
+                if other.is_control()
+                    || matches!(
+                        other as u32,
+                        0x061c | 0x200e | 0x200f | 0x2028 | 0x2029 | 0x202a..=0x202e | 0x2066..=0x2069 | 0xfeff
+                    ) =>
+            {
+                out.push_str(&format!("\\u{{{:x}}}", other as u32))
+            }
             other => out.push(other),
         }
     }
@@ -749,6 +757,23 @@ mod tests {
         let _ = std::fs::remove_file(format!("{}-shm", path.display()));
     }
 
+    fn apply(
+        control: &mut crate::v2::Control,
+        command: &str,
+        operation: &str,
+        base: i64,
+        operations: Json,
+    ) -> Result<Json, String> {
+        control.submit(
+            crate::v2::Command {
+                command_id: command.into(),
+                method: "apply_search_tree".into(),
+                params: json!({"operation_id":operation,"base_revision":base,"operations":operations}),
+            },
+            Identity::Instance(LEADER.into()),
+        )
+    }
+
     #[test]
     fn operations_preserve_history_and_reject_cycles() {
         let (tree, added) = apply_operations(
@@ -974,5 +999,107 @@ mod tests {
         assert_eq!(second["source"]["epoch"], json!(6));
         assert_eq!(second["stale"], json!(false));
         cleanup(control, &path);
+    }
+
+    #[test]
+    fn multi_operation_patches_are_ordered_atomic_and_replayable() {
+        let (mut control, path) = leader_control("multi-op");
+        let operations = json!([
+            {"op":"add","parent_id":"root","node":{"title":"A","kind":"hypothesis"}},
+            {"op":"add","parent_id":"n1-1","node":{"title":"B","kind":"attempt"}},
+            {"op":"update","id":"n1-2","status":"active","summary":"B is current"},
+            {"op":"focus","id":"n1-2"}
+        ]);
+        let applied = apply(&mut control, "multi-1", "op-multi", 0, operations.clone()).unwrap();
+        assert_eq!(applied["revision"], json!(1));
+        assert_eq!(applied["added_ids"], json!(["n1-1", "n1-2"]));
+        assert_eq!(applied["nodes"][2]["parent_id"], json!("n1-1"));
+        assert_eq!(applied["nodes"][2]["status"], json!("active"));
+        assert_eq!(applied["focus"], json!("n1-2"));
+        let replay = apply(&mut control, "multi-replay", "op-multi", 0, operations).unwrap();
+        assert_eq!(replay["replayed"], json!(true));
+        assert_eq!(replay["added_ids"], json!(["n1-1", "n1-2"]));
+        let before = snapshot(control.connection(), "s1").unwrap();
+        let error = apply(
+            &mut control,
+            "multi-invalid",
+            "op-multi-invalid",
+            1,
+            json!([
+                {"op":"update","id":"n1-1","title":"must not survive"},
+                {"op":"move","id":"n1-1","parent_id":"missing"}
+            ]),
+        )
+        .unwrap_err();
+        assert!(error.contains("missing"), "{error}");
+        assert_eq!(snapshot(control.connection(), "s1").unwrap(), before);
+        let revisions: i64 =
+            control.connection().query_row("SELECT COUNT(*) FROM search_tree_revisions", [], |row| row.get(0)).unwrap();
+        assert_eq!(revisions, 1);
+        cleanup(control, &path);
+    }
+
+    #[test]
+    fn arbitrary_unicode_and_controls_keep_json_but_escape_human_output() {
+        let (mut control, path) = leader_control("unicode");
+        let alphabet =
+            ['Ω', 'λ', '🙂', '\u{1b}', '\u{7}', '\n', '\r', '\t', '\0', '\u{2028}', '\u{202e}', '"', '\\', 'a'];
+        for index in 0..64usize {
+            let generated: String = (0..24).map(|offset| alphabet[(index * 7 + offset * 3) % alphabet.len()]).collect();
+            let title = format!("branch-{index}-\nFORGED-{generated}");
+            let summary = format!("summary-{generated}");
+            let reference = format!("ref-{index}\n\u{1b}{generated}");
+            let applied = apply(
+                &mut control,
+                &format!("unicode-command-{index}"),
+                &format!("unicode-op-{index}"),
+                index as i64,
+                json!([{"op":"add","parent_id":"root","node":{"title":title,"summary":summary,"source_refs":[reference]}}]),
+            )
+            .unwrap();
+            let node = applied["nodes"].as_array().unwrap().last().unwrap();
+            // text_field normalizes boundary whitespace; all internal Unicode
+            // and controls remain exactly as supplied.
+            assert_eq!(node["title"], json!(title.trim()));
+            assert_eq!(node["summary"], json!(summary.trim()));
+            let text = applied["text"].as_str().unwrap();
+            for forbidden in ['\u{1b}', '\u{7}', '\u{2028}', '\u{202e}'] {
+                assert!(!text.contains(forbidden), "terminal control remained in {text:?}");
+            }
+            assert!(!text.contains("\nFORGED"), "an injected line survived: {text:?}");
+        }
+        cleanup(control, &path);
+    }
+
+    #[test]
+    fn compaction_patch_rolls_back_revision_and_event_failures() {
+        for (tag, trigger) in [
+            (
+                "revision",
+                "CREATE TRIGGER fail_tree_revision BEFORE INSERT ON search_tree_revisions
+                 BEGIN SELECT RAISE(FAIL, 'forced revision failure'); END;",
+            ),
+            (
+                "event",
+                "CREATE TRIGGER fail_tree_event BEFORE INSERT ON events
+                 WHEN NEW.kind = 'search_tree_updated'
+                 BEGIN SELECT RAISE(FAIL, 'forced event failure'); END;",
+            ),
+        ] {
+            let (control, path) = leader_control(tag);
+            control.connection().execute_batch(trigger).unwrap();
+            let patch = json!({"base_revision":0,"operations":[]});
+            let error =
+                apply_compaction(control.connection(), "s1", LEADER, &format!("comp-{tag}"), &patch).unwrap_err();
+            assert!(error.contains("forced"), "{error}");
+            for table in ["search_tree_revisions", "search_tree_head"] {
+                let count: i64 = control
+                    .connection()
+                    .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))
+                    .unwrap();
+                assert_eq!(count, 0, "{tag} left partial {table}");
+            }
+            cleanup(control, &path);
+        }
     }
 }

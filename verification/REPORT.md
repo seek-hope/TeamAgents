@@ -7,20 +7,24 @@ in [README.md](README.md); the fix ledger is in
 
 ## 0. Gate status (re-run 2026-11-11 at `c2302913`)
 
-D-506 adds the bounded `V2SearchTree` transition model for `read_search_tree`, `apply_search_tree` and the tree
-half of compaction. The current targets verified all **64** configurations in **61** traversals with actual exit 0
-in 1716.6 seconds and refuted all **325** negative controls with exit 0 in 283.4 seconds. All **76** normal-path
-witnesses passed in 57.9 seconds, and all **9** Kani harnesses passed in 30.8 seconds. Kani reported `Complete - 9
-successfully verified harnesses, 0 failures, 9 total`. Receipts are `d506-{model-all-complete,controls-complete,
-witnesses-complete,kani-complete}` under `review/tmp/d497/`. The 21 search-tree controls cover every non-`TypeOK`
-claim in the positive configuration; generated coverage retains `TypeOK` as the type-only exception.
+D-507 extends `V2SearchTree` to ordered two-operation patches using the same state conversion as single
+operations. The current targets verified all **65** configurations in **62** traversals with actual exit 0 in
+2528.8 seconds and refuted all **327** negative controls with exit 0 in 288.9 seconds. All **79** normal-path
+witnesses passed in 61.5 seconds, and all **9** Kani harnesses passed in 43.1 seconds. Kani reported `Complete - 9
+successfully verified harnesses, 0 failures, 9 total`. Receipts are `d507-{model-all-final-2,controls-final-2,
+witnesses-final-2,kani-final}` under `review/tmp/d497/`. The 23 search-tree controls cover every non-`TypeOK`
+claim, now including atomic pair rejection and pair replay; generated coverage retains `TypeOK` as the exception.
 
-Independent review caught and the Rust tests now pin a replay-result fix: cause-level replay reconstructs
-`added_ids` from the stored patch/revision. Failed probes, parser errors and deliberately stopped earlier
-traversals remain under the same evidence root and are not counted. The model still excludes arbitrary strings,
-multi-operation patch order, JSON/provider parsing, SQL execution and schema migration; it is not Rust/SQLite
-refinement, semantic tree-completeness or live-model navigation-quality evidence. Wide exhaustive search,
-full-system composition and Policy B remain open.
+New executable coverage includes multi-operation ordering, arbitrary Unicode/control text, compact JSON variants,
+SQLite revision/head/event rollback, migration conflict refusal and random control-walk tree invariants. Earlier
+probe errors and stopped superseded traversals are retained but not counted. This remains a finite model plus
+implementation evidence, not arbitrary-input TLA enumeration, full Rust/SQLite refinement or live-model
+navigation-quality evidence. Wide exhaustive search, full-system composition and Policy B remain open.
+
+### D-506 previous gate
+
+D-506 introduced the bounded command model and replay-time `added_ids` reconstruction. It passed 64
+configurations/61 traversals, 325 controls, 76 witnesses and nine Kani harnesses under its source pin.
 
 ### D-504 previous gate
 
@@ -1158,9 +1162,9 @@ It is a historical ledger, not the current coverage inventory; current evidence 
 13. **Session exploration tree (`read_search_tree`, `apply_search_tree`)**: D-506's bounded `V2SearchTree`
     covers User/Leader authority, revision admission, replay stability, root/parent/cycle/focus invariants,
     merge-reference preservation, revision history, complete source watermarks and fail-soft compaction. Five
-    operation-family configurations, twenty-one controls and eight normal-path witnesses make the transitions
-    non-vacuous. It does not enumerate arbitrary strings, multi-operation patch order, JSON/provider parsing,
-    SQL execution or schema migration, and proves neither Rust/SQLite refinement nor semantic tree quality or
+    operation-family configurations plus ordered pairs, twenty-three controls and eleven normal-path witnesses
+    make the transitions non-vacuous. Arbitrary strings, JSON/provider parsing, SQL execution and schema migration
+    have expanded executable coverage, but the model proves neither Rust/SQLite refinement nor semantic tree quality or
     reduced user lostness. Those remain implementation-tested or open, not claims inherited from V2Control.
 
 ## 6. Atomic model actions and their implementation windows (D-465)

@@ -42,6 +42,25 @@ earlier implementations stays reachable through Git history (`git log -- docs/ar
 | Command idempotency | a replay with the same `command_id` returns the stored receipt for control-plane state, and the authoritative check runs under the write lock (D-463); result bodies are shared by content digest and zstd-compressed (D-464), while the receipt **rows** remain one per command | D-463, D-464 |
 | Model actions and code windows | a deciding read shares the write's transaction, or the guard is a predicate on the write itself; `verification/REPORT.md` §6 lists the protocol transitions and the three engine windows that span two transactions with their predicates | D-465 |
 
+## D-507 Expand search-tree coverage across ordered patches and implementation edges (2026-11-12)
+
+The user asked to implement every coverable remainder rather than leave a broad exemption list. D-507 adds an
+ordered two-operation action to the **same** `V2SearchTree` state conversion, not a separate simplified model.
+The second operation is validated against the first operation's result; invalid successors roll back the whole
+pair and matching pair causes replay without growth. Pair-specific controls and witnesses cover order, atomicity
+and replay, while all D-506 single-operation properties continue to apply.
+
+Implementation-side coverage now includes multi-operation generated-id ordering and atomic rejection, arbitrary
+Unicode/control text with normalized stored JSON and escaped human output, nested/malformed compact JSON, real
+SQLite revision/head/event failures, v8 history preservation and rejection of unexpected pre-existing tree tables.
+The executable control-plane walk reads and writes the tree, checks root/parent/focus/reachability/revision history
+after every step and includes a corrupted-tree negative control. Its original 24-step exploration is retained,
+with two appended tree commands so new coverage cannot displace approval coverage.
+
+Human rendering additionally escapes Unicode line separators and bidi/isolate formatting controls. These are
+bounded executable checks and finite models, not arbitrary-input TLA enumeration, complete Rust/SQLite refinement
+or a live-model navigation-quality experiment. No paid or external evaluation is part of D-507.
+
 ## D-506 Model the session exploration-tree commands (2026-11-11)
 
 The user asked to advance formalization of D-504's new control commands. `V2SearchTree.tla` now models

@@ -65,6 +65,8 @@ struct Coverage {
     approval_decided: bool,
     replay_checked: bool,
     revocation_checked: bool,
+    tree_read: bool,
+    tree_written: bool,
 }
 
 impl Coverage {
@@ -80,6 +82,8 @@ impl Coverage {
         self.approval_decided |= other.approval_decided;
         self.replay_checked |= other.replay_checked;
         self.revocation_checked |= other.revocation_checked;
+        self.tree_read |= other.tree_read;
+        self.tree_written |= other.tree_written;
     }
 }
 
@@ -120,6 +124,7 @@ struct Harness {
     /// Revocation coverage: an effective grant was revoked and the following dispatch was refused
     revoked: bool,
     dispatch_refused_after_revoke: bool,
+    tree_read: bool,
 }
 
 impl Drop for Harness {
@@ -154,6 +159,7 @@ impl Harness {
             divergent_refused: false,
             revoked: false,
             dispatch_refused_after_revoke: false,
+            tree_read: false,
         }
     }
 
@@ -234,6 +240,9 @@ impl Harness {
         if self.last_label == "!dispatch_without_grant" && result.is_err() {
             self.dispatch_refused_after_revoke = true;
         }
+        if self.last_label == "search_tree_read" && result.is_ok() {
+            self.tree_read = true;
+        }
         if result.is_ok() {
             // remember replays too (the same id can be replayed again)
             self.last_command = Some((command, identity));
@@ -308,6 +317,8 @@ impl Harness {
             approval_decided: exists("SELECT id FROM approvals WHERE status IN ('APPROVED', 'DENIED', 'EXPIRED')"),
             replay_checked: self.replayed && self.divergent_refused,
             revocation_checked: self.revoked && self.dispatch_refused_after_revoke,
+            tree_read: self.tree_read,
+            tree_written: exists("SELECT session_id FROM search_tree_head"),
         }
     }
 
@@ -704,6 +715,56 @@ impl Harness {
             }
         }
 
+        // D-507: the real SQLite tree projection keeps the same structural
+        // invariants as V2SearchTree after every random command.
+        match teamagents_core::v2::control::search_tree_snapshot(self.ctl.connection(), "s1") {
+            Err(error) => reports.push(format!("SearchTree: projection is invalid: {error}")),
+            Ok(tree) => {
+                let nodes = tree["nodes"].as_array().cloned().unwrap_or_default();
+                let ids: HashSet<String> =
+                    nodes.iter().filter_map(|node| node["id"].as_str().map(str::to_string)).collect();
+                if !ids.contains("root") {
+                    reports.push("SearchTree: root is missing".into());
+                }
+                if !ids.contains(tree["focus"].as_str().unwrap_or("")) {
+                    reports.push("SearchTree: focus names no current node".into());
+                }
+                let parents: HashMap<String, Option<String>> = nodes
+                    .iter()
+                    .map(|node| {
+                        (node["id"].as_str().unwrap_or("").to_string(), node["parent_id"].as_str().map(str::to_string))
+                    })
+                    .collect();
+                for id in &ids {
+                    let mut current = id.clone();
+                    let mut seen = HashSet::new();
+                    while current != "root" {
+                        if !seen.insert(current.clone()) {
+                            reports.push(format!("SearchTree: cycle at {id}"));
+                            break;
+                        }
+                        let Some(parent) = parents.get(&current).cloned().flatten() else {
+                            reports.push(format!("SearchTree: {id} has no reachable parent"));
+                            break;
+                        };
+                        if !ids.contains(&parent) {
+                            reports.push(format!("SearchTree: {id} names missing parent {parent}"));
+                            break;
+                        }
+                        current = parent;
+                    }
+                }
+                let revision = tree["revision"].as_i64().unwrap_or(-1);
+                let count = |sql: &str| -> i64 {
+                    self.rows(sql, &[]).first().and_then(|row| row[0].parse().ok()).unwrap_or(-1)
+                };
+                let revisions = count("SELECT COUNT(*) FROM search_tree_revisions");
+                if revision < 0 || revisions != revision {
+                    reports.push(format!("SearchTree: revision {revision} has {revisions} stored revisions"));
+                }
+            }
+        }
+
         // context_epoch: entries cannot exceed the instance's current epoch
         for row in &instances {
             let epoch: i64 = row[5].parse().unwrap_or(0);
@@ -729,7 +790,7 @@ impl Harness {
 }
 
 // ------------------------------------------------------------- step kinds --
-const STEPS: usize = 38;
+const STEPS: usize = 40;
 
 /// Build command kind `kind` for the current state; returns None when its preconditions do not hold (the step is skipped).
 fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
@@ -796,7 +857,7 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 command: Command {
                     command_id: String::new(),
                     method: "create_instance".into(),
-                    params: json!({"id": id, "workspace_ref": "/tmp/ws"}),
+                    params: json!({"id": id, "workspace_ref": "/tmp/ws", "is_leader": ids.is_empty()}),
                 },
                 identity: Identity::User,
             })
@@ -1446,6 +1507,35 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 identity: Identity::System,
             })
         }
+        // 38: the user reads the session exploration tree.
+        38 => Some(Step {
+            label: "search_tree_read".into(),
+            command: Command { command_id: String::new(), method: "read_search_tree".into(), params: json!({}) },
+            identity: Identity::User,
+        }),
+        // 39: the Leader applies a valid focus patch at the current revision.
+        39 => {
+            let revision: i64 = harness
+                .rows("SELECT revision FROM search_tree_head LIMIT 1", &[])
+                .first()
+                .and_then(|row| row[0].parse().ok())
+                .unwrap_or(0);
+            let leader = harness
+                .rows("SELECT id FROM instances WHERE is_leader=1 LIMIT 1", &[])
+                .first()
+                .map(|row| row[0].clone())?;
+            let operation = format!("tree-op-{}", harness.counter + 1);
+            Some(Step {
+                label: format!("search_tree_apply({revision})"),
+                command: Command {
+                    command_id: String::new(),
+                    method: "apply_search_tree".into(),
+                    params: json!({"operation_id":operation,"base_revision":revision,
+                        "operations":[{"op":"focus","id":"root"}]}),
+                },
+                identity: Identity::Instance(leader),
+            })
+        }
         _ => None,
     }
 }
@@ -1488,10 +1578,13 @@ fn spec_invariants_hold_over_random_walks() {
         harness.rng = 0x9E3779B97F4A7C15 ^ (walk.wrapping_mul(0xD1B54A32D192ED03) | 1);
         harness.check("init");
         let mut taken: HashMap<String, usize> = HashMap::new();
-        for _ in 0..24 {
+        for step_index in 0..26 {
+            // Keep the original 24-step exploration intact, then append the two
+            // tree operations: new coverage must not displace approval coverage.
+            let available = if step_index < 24 { 0..38 } else { 38..40 };
             // pick only among commands usable right now, preferring the kind used least in this walk
             // (coverage driven): otherwise the walk repeats one safe action and never reaches deep paths
-            let mut options: Vec<Step> = (0..STEPS).filter_map(|kind| make_step(&mut harness, kind)).collect();
+            let mut options: Vec<Step> = available.filter_map(|kind| make_step(&mut harness, kind)).collect();
             if options.is_empty() {
                 break;
             }
@@ -1523,6 +1616,8 @@ fn spec_invariants_hold_over_random_walks() {
             reached.replay_checked,
         ),
         ("a dispatch refused after revocation (A03/A04)", reached.revocation_checked),
+        ("a session-tree read", reached.tree_read),
+        ("a session-tree write", reached.tree_written),
     ] {
         assert!(seen, "the random walk never covered: {name}");
     }
@@ -1628,5 +1723,20 @@ fn the_invariant_checker_detects_broken_states() {
     assert!(
         reported.iter().any(|line| line.contains("NoStaleActiveWork")),
         "the stale pointer must be reported: {reported:?}"
+    );
+
+    // D-507: a malformed persisted tree is detected by the executable checker.
+    let mut harness = Harness::new("broken-search-tree");
+    let step = make_step(&mut harness, 0).expect("create Leader");
+    let _ = harness.run_step(step);
+    let step = make_step(&mut harness, 39).expect("write search tree");
+    let _ = harness.run_step(step);
+    let healthy = harness.violations();
+    assert!(healthy.is_empty(), "a normal tree write must report no violation: {healthy:?}");
+    harness.ctl.connection().execute("UPDATE search_tree_revisions SET tree_json = '{}'", []).unwrap();
+    let reported = harness.violations();
+    assert!(
+        reported.iter().any(|line| line.contains("SearchTree:")),
+        "the malformed tree must be reported: {reported:?}"
     );
 }

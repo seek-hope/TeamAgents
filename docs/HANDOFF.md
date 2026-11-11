@@ -1,5 +1,10 @@
 # Development handoff
 
+D-507 adds ordered pair transitions to V2SearchTree and executable coverage for multi-op ordering/replay,
+arbitrary text, compact JSON, SQLite rollback, migration conflicts and random-walk tree invariants. All 65
+positive configurations/62 traversals, 327 controls, 79 witnesses and nine Kani harnesses pass. This remains
+finite plus executable evidence, not full refinement or live-model quality evidence.
+
 D-506 models `read_search_tree`, `apply_search_tree` and compaction's tree patch in `V2SearchTree`. All 64
 positive configurations/61 traversals, 325 controls, 76 witnesses and nine Kani harnesses pass. Twenty-one
 controls cover every non-TypeOK tree claim. Replay now reconstructs `added_ids` from stored patch/revision.

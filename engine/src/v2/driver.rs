@@ -292,6 +292,35 @@ mod compaction_search_tree_response_tests {
         assert!(error.unwrap().contains("omitted"));
         assert!(parse_compaction_content("{\"summary\":\"ok\",\"extra\":true}", true).is_err());
     }
+
+    #[test]
+    fn compaction_json_preserves_nested_patches_and_rejects_wrong_shapes() {
+        let envelope = json!({"summary":"summary λ 🙂","tree":{"base_revision":7,"operations":[
+            {"op":"add","parent_id":"root","node":{"title":"λ","source_refs":["entry:1"]}},
+            {"op":"focus","id":"n8-1"}
+        ]}});
+        let content = format!(" \n{envelope}\n");
+        let (summary, tree, error) = parse_compaction_content(&content, true).unwrap();
+        assert_eq!(summary, "summary λ 🙂");
+        assert_eq!(tree.unwrap(), envelope["tree"]);
+        assert_eq!(error, None);
+        for invalid in [
+            format!("{envelope} trailing"),
+            "{\"summary\":false,\"tree\":{}}".into(),
+            "{\"summary\":\"   \",\"tree\":{}}".into(),
+        ] {
+            assert!(parse_compaction_content(&invalid, true).is_err(), "accepted {invalid}");
+        }
+        // Wrong tree types still preserve a valid summary while making the
+        // derived tree failure explicit, matching the commit-time boundary.
+        let (_, tree, error) = parse_compaction_content("{\"summary\":\"ok\",\"tree\":null}", true).unwrap();
+        assert!(tree.is_none());
+        assert!(error.unwrap().contains("must be an object"));
+        let (legacy, tree, error) = parse_compaction_content("[]", true).unwrap();
+        assert_eq!(legacy, "[]");
+        assert!(tree.is_none());
+        assert!(error.unwrap().contains("no session search-tree patch"));
+    }
 }
 
 pub struct DriverConfig<P> {

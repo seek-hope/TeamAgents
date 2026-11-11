@@ -1,6 +1,6 @@
 ----------------------------- MODULE V2SearchTree -----------------------------
 (***************************************************************************
-D-506: bounded session exploration-tree control commands.
+D-506/D-507: bounded session exploration-tree control commands.
 
 Code anchors: core/src/v2/control.rs::{read_search_tree,apply_search_tree,
 compress_context}, core/src/v2/control/search_tree.rs. One session has one
@@ -14,8 +14,8 @@ tree and revision unchanged. Source freshness compares instance/epoch/entry.
 
 Abstraction: at most root+a+b, one cause id, one entry per epoch and integer
 revisions stand in for JSON text and SQLite rows. Request records model the
-five operation families. Multi-operation patch order, arbitrary strings and
-provider parsing remain in Rust tests. This is finite behavioral evidence, not
+five operation families plus ordered two-operation patches. Arbitrary strings
+and provider parsing remain in Rust tests. This is finite behavioral evidence, not
 Rust/SQLite refinement or proof of semantic tree quality. Bad selects one
 missing guard; every behavioral claim has its own refuting configuration.
 ***************************************************************************)
@@ -51,11 +51,20 @@ MergeRequests ==
 FocusRequests ==
   { Request("focus", base, node, "none", "open") :
       base \in 0..3, node \in NodeIds }
+PairParts ==
+  { Request("add", base, "a", parent, "open") :
+      base \in 0..3, parent \in {"root", "a"} }
+  \cup
+  { Request("focus", base, node, "none", "open") :
+      base \in 0..3, node \in BaseNodes }
+  \cup
+  { Request("merge", base, "a", "root", "open") : base \in 0..3 }
 
 Requests == CASE Family = "add" -> AddRequests
               [] Family = "update" -> UpdateRequests
               [] Family = "move" -> MoveRequests
               [] Family = "merge" -> MergeRequests
+              [] Family = "pair" -> PairParts
               [] OTHER -> FocusRequests
 
 VARIABLES
@@ -70,14 +79,19 @@ VARIABLES
   history,
   causeRevision,
   causeRequest,
+  pairRevision,
+  pairFirst,
+  pairSecond,
   usedIds,
   summaries,
   lastApply,
   lastRead,
   lastCompact
 
+pairVars == <<pairRevision, pairFirst, pairSecond>>
+
 vars == <<nodes, parent, refs, status, focus, source, position, revision,
-          history, causeRevision, causeRequest, usedIds, summaries,
+          history, causeRevision, causeRequest, pairRevision, pairFirst, pairSecond, usedIds, summaries,
           lastApply, lastRead, lastCompact>>
 
 Tree == [nodes |-> nodes, parent |-> parent, refs |-> refs, status |-> status,
@@ -95,11 +109,13 @@ RefFor(node) == CASE node = "a" -> "ra"
                   [] node = "b" -> "rb"
                   [] OTHER -> "other"
 
-Descendant(candidate, ancestor) ==
+DescendantAt(candidate, ancestor, links) ==
   \/ candidate = ancestor
-  \/ parent[candidate] = ancestor
-  \/ parent[parent[candidate]] = ancestor
-  \/ parent[parent[parent[candidate]]] = ancestor
+  \/ links[candidate] = ancestor
+  \/ links[links[candidate]] = ancestor
+  \/ links[links[links[candidate]]] = ancestor
+
+Descendant(candidate, ancestor) == DescendantAt(candidate, ancestor, parent)
 
 ReachesRoot(node) ==
   \/ node = "root"
@@ -107,63 +123,67 @@ ReachesRoot(node) ==
   \/ parent[parent[node]] = "root"
   \/ parent[parent[parent[node]]] = "root"
 
-Valid(request) ==
+ValidAt(request, candidate, ids) ==
   CASE request.op = "add" ->
          /\ request.node \in {"a", "b"}
-         /\ request.node \notin usedIds
-         /\ request.parent \in nodes
-         /\ Cardinality(nodes) < 3
+         /\ request.node \notin ids
+         /\ request.parent \in candidate.nodes
+         /\ Cardinality(candidate.nodes) < 3
     [] request.op = "update" ->
-         /\ request.node \in nodes
+         /\ request.node \in candidate.nodes
          /\ request.node # "root"
          /\ request.status \in {"resolved", "abandoned"}
     [] request.op = "move" ->
-         /\ request.node \in nodes
+         /\ request.node \in candidate.nodes
          /\ request.node # "root"
-         /\ request.parent \in nodes
-         /\ (Bad = "cycle" \/ ~Descendant(request.parent, request.node))
+         /\ request.parent \in candidate.nodes
+         /\ (Bad = "cycle" \/ ~DescendantAt(request.parent, request.node, candidate.parent))
     [] request.op = "merge" ->
-         /\ request.node \in nodes
-         /\ request.parent \in nodes
+         /\ request.node \in candidate.nodes
+         /\ request.parent \in candidate.nodes
          /\ request.node # "root"
          /\ request.node # request.parent
-         /\ (Bad = "cycle" \/ ~Descendant(request.parent, request.node))
-    [] request.op = "focus" -> request.node \in nodes
+         /\ (Bad = "cycle" \/ ~DescendantAt(request.parent, request.node, candidate.parent))
+    [] request.op = "focus" -> request.node \in candidate.nodes
     [] OTHER -> FALSE
 
-Evaluate(request) ==
+Valid(request) == ValidAt(request, Tree, usedIds)
+
+EvaluateAt(request, candidate) ==
   LET isAdd == request.op = "add"
       isMove == request.op = "move"
       isMerge == request.op = "merge"
       isUpdate == request.op = "update"
       isFocus == request.op = "focus"
-      newNodes == CASE isAdd -> nodes \cup {request.node}
-                    [] isMerge -> nodes \ {request.node}
-                    [] OTHER -> IF Bad = "root_delete" THEN nodes \ {"root"}
-                                ELSE IF Bad = "node_limit" THEN nodes \cup {"c"} ELSE nodes
+      newNodes == CASE isAdd -> candidate.nodes \cup {request.node}
+                    [] isMerge -> candidate.nodes \ {request.node}
+                    [] OTHER -> IF Bad = "root_delete" THEN candidate.nodes \ {"root"}
+                                ELSE IF Bad = "node_limit" THEN candidate.nodes \cup {"c"} ELSE candidate.nodes
       newParent == [node \in AllNodes |->
         CASE isAdd /\ node = request.node -> request.parent
           [] isMove /\ node = request.node -> IF Bad = "parent_drop" THEN "none" ELSE request.parent
           [] isMerge /\ node = request.node -> "none"
-          [] isMerge /\ parent[node] = request.node ->
-               IF Bad = "merge_structure" THEN parent[node] ELSE request.parent
-          [] OTHER -> parent[node]]
+          [] isMerge /\ candidate.parent[node] = request.node ->
+               IF Bad = "merge_structure" THEN candidate.parent[node] ELSE request.parent
+          [] OTHER -> candidate.parent[node]]
       newRefs == [node \in AllNodes |->
         CASE isAdd /\ node = request.node -> {RefFor(request.node)}
           [] isMerge /\ node = request.parent ->
-               IF Bad = "merge_refs" THEN refs[request.parent]
-               ELSE refs[request.parent] \cup refs[request.node]
+               IF Bad = "merge_refs" THEN candidate.refs[request.parent]
+               ELSE candidate.refs[request.parent] \cup candidate.refs[request.node]
           [] isMerge /\ node = request.node -> {}
-          [] OTHER -> refs[node]]
+          [] OTHER -> candidate.refs[node]]
       newStatus == [node \in AllNodes |->
-        IF isUpdate /\ node = request.node THEN request.status ELSE status[node]]
+        IF isUpdate /\ node = request.node THEN request.status ELSE candidate.status[node]]
       newFocus == CASE isFocus -> IF Bad = "focus" THEN "missing" ELSE request.node
-                    [] isMerge /\ focus = request.node ->
-                         IF Bad = "merge_structure" THEN focus ELSE request.parent
-                    [] OTHER -> focus
-      newSource == IF Bad = "source" THEN source ELSE position
+                    [] isMerge /\ candidate.focus = request.node ->
+                         IF Bad = "merge_structure" THEN candidate.focus ELSE request.parent
+                    [] OTHER -> candidate.focus
+      newSource == IF Bad = "source" THEN candidate.source ELSE position
   IN [nodes |-> newNodes, parent |-> newParent, refs |-> newRefs,
       status |-> newStatus, focus |-> newFocus, source |-> newSource]
+
+Evaluate(request) == EvaluateAt(request, Tree)
 
 CommitTree(result) ==
   /\ nodes' = result.nodes
@@ -186,6 +206,7 @@ Apply(actor, cause, request) ==
       accepted == authorized /\ ((replay /\ matching) \/ fresh)
       writes == accepted /\ (~replay \/ Bad = "replay")
   IN
+  /\ Family # "pair"
   /\ lastApply' = [kind |-> "apply", actor |-> actor,
                    request |-> IF accepted THEN request ELSE NoRequest,
                    accepted |-> accepted, replay |-> replay, before |-> Tree,
@@ -210,6 +231,48 @@ Apply(actor, cause, request) ==
   /\ lastCompact' = NoCompact
   /\ position' = IF Bad = "apply_position" THEN [position EXCEPT !.epoch = 1] ELSE position
   /\ UNCHANGED summaries
+  /\ UNCHANGED pairVars
+
+ApplyPair(actor, cause, first, second) ==
+  LET firstTree == EvaluateAt(first, Tree)
+      firstIds == usedIds \cup IF first.op = "add" THEN {first.node} ELSE {}
+      firstValid == ValidAt(first, Tree, usedIds)
+      secondTree == EvaluateAt(second, firstTree)
+      secondValid == ValidAt(second, firstTree, firstIds)
+      replay == pairRevision[cause] >= 0
+      matching == pairFirst[cause] = first /\ pairSecond[cause] = second
+      authorized == actor \in {"user", "leader"} \/ Bad = "member_write"
+      fresh == ~replay /\ first.base = revision /\ second.base = first.base
+                /\ revision < 3 /\ firstValid /\ secondValid
+      accepted == authorized /\ ((replay /\ matching) \/ fresh)
+      writes == accepted /\ (~replay \/ Bad = "pair_replay")
+      secondIds == firstIds \cup IF second.op = "add" THEN {second.node} ELSE {}
+  IN
+  /\ Family = "pair"
+  /\ lastApply' = [kind |-> "pair", actor |-> actor,
+                   request |-> IF accepted THEN first ELSE NoRequest,
+                   accepted |-> accepted, replay |-> replay, before |-> Tree,
+                   beforeRevision |-> revision, beforePosition |-> position]
+  /\ IF writes THEN
+       /\ CommitTree(secondTree)
+       /\ revision' = revision + 1
+       /\ history' = history \cup {revision + 1}
+       /\ usedIds' = secondIds
+       /\ pairRevision' = [pairRevision EXCEPT ![cause] = revision + 1]
+       /\ pairFirst' = [pairFirst EXCEPT ![cause] = first]
+       /\ pairSecond' = [pairSecond EXCEPT ![cause] = second]
+     ELSE IF Bad = "pair_atomic" /\ ~accepted /\ ~replay /\ firstValid /\ revision < 3 THEN
+       /\ CommitTree(firstTree)
+       /\ revision' = revision + 1
+       /\ history' = history \cup {revision + 1}
+       /\ usedIds' = firstIds
+       /\ UNCHANGED pairVars
+     ELSE
+       UNCHANGED <<nodes, parent, refs, status, focus, source, revision,
+                   history, usedIds, pairRevision, pairFirst, pairSecond>>
+  /\ lastRead' = NoRead
+  /\ lastCompact' = NoCompact
+  /\ UNCHANGED <<position, summaries, causeRevision, causeRequest>>
 
 Read(actor) ==
   /\ lastRead' = [kind |-> "read", actor |-> actor,
@@ -221,6 +284,7 @@ Read(actor) ==
   /\ focus' = IF Bad = "read_writes" THEN IF focus = "root" THEN "a" ELSE "root" ELSE focus
   /\ UNCHANGED <<nodes, parent, refs, status, source, position, revision,
                  history, causeRevision, causeRequest, usedIds, summaries>>
+  /\ UNCHANGED pairVars
 
 AdvanceEntry ==
   /\ position.entry = "none"
@@ -230,6 +294,7 @@ AdvanceEntry ==
   /\ lastCompact' = NoCompact
   /\ UNCHANGED <<nodes, parent, refs, status, focus, source, revision,
                  history, causeRevision, causeRequest, usedIds, summaries>>
+  /\ UNCHANGED pairVars
 
 ResetEpoch ==
   /\ position.epoch = 0
@@ -239,6 +304,7 @@ ResetEpoch ==
   /\ lastCompact' = NoCompact
   /\ UNCHANGED <<nodes, parent, refs, status, focus, source, revision,
                  history, causeRevision, causeRequest, usedIds, summaries>>
+  /\ UNCHANGED pairVars
 
 Compact(request) ==
   LET result == Evaluate(request)
@@ -246,6 +312,7 @@ Compact(request) ==
       applies == validPatch
       partial == Bad = "partial_compact" /\ ~validPatch
   IN
+  /\ Family # "pair"
   /\ summaries < 4
   /\ summaries' = IF Bad = "drop_summary" THEN summaries ELSE summaries + 1
   /\ lastCompact' = [kind |-> "compact", applied |-> applies,
@@ -269,11 +336,14 @@ Compact(request) ==
        UNCHANGED <<nodes, parent, refs, status, focus, source, revision,
                    history, usedIds, causeRevision, causeRequest>>
   /\ UNCHANGED position
+  /\ UNCHANGED pairVars
 
 Stutter == UNCHANGED vars
 
 Next ==
   \/ \E actor \in Actors : \E cause \in CauseIds : \E request \in Requests : Apply(actor, cause, request)
+  \/ \E actor \in Actors : \E cause \in CauseIds : \E first \in Requests : \E second \in Requests :
+       ApplyPair(actor, cause, first, second)
   \/ \E actor \in Actors : Read(actor)
   \/ \E request \in Requests : Compact(request)
   \/ AdvanceEntry
@@ -295,6 +365,9 @@ Init ==
   /\ history = {0}
   /\ causeRevision = [cause \in CauseIds |-> (0 - 1)]
   /\ causeRequest = [cause \in CauseIds |-> NoRequest]
+  /\ pairRevision = [cause \in CauseIds |-> (0 - 1)]
+  /\ pairFirst = [cause \in CauseIds |-> NoRequest]
+  /\ pairSecond = [cause \in CauseIds |-> NoRequest]
   /\ usedIds = {"root"} \cup nodes
   /\ summaries = 0
   /\ lastApply = NoApply
@@ -302,6 +375,8 @@ Init ==
   /\ lastCompact = NoCompact
 
 Spec == Init /\ [][Next]_vars
+
+AppliedCommand == lastApply.kind \in {"apply", "pair"}
 
 \* --------------------------------------------------------------- invariants --
 TypeOK ==
@@ -316,27 +391,28 @@ TypeOK ==
   /\ summaries \in 0..4
   /\ position.epoch \in 0..1
   /\ position.entry \in {"none", "e0", "e1"}
+  /\ \A cause \in CauseIds: pairRevision[cause] >= (0 - 1) /\ pairRevision[cause] <= 3
 
 OnlyAuthorizedReads ==
   lastRead.kind = "read" /\ lastRead.actor \in {"member", "system"} => ~lastRead.accepted
 
 OnlyAuthorizedWrites ==
-  lastApply.kind = "apply" /\ lastApply.actor \in {"member", "system"} => ~lastApply.accepted
+  AppliedCommand /\ lastApply.actor \in {"member", "system"} => ~lastApply.accepted
 
 RejectedApplyPreservesTree ==
-  lastApply.kind = "apply" /\ ~lastApply.accepted =>
+  AppliedCommand /\ ~lastApply.accepted =>
     Tree = lastApply.before /\ revision = lastApply.beforeRevision
 
 ReplayDoesNotGrow ==
-  lastApply.kind = "apply" /\ lastApply.accepted /\ lastApply.replay =>
+  AppliedCommand /\ lastApply.accepted /\ lastApply.replay =>
     revision = lastApply.beforeRevision
 
 FreshApplyRequiresCurrentRevision ==
-  lastApply.kind = "apply" /\ lastApply.accepted /\ ~lastApply.replay =>
+  AppliedCommand /\ lastApply.accepted /\ ~lastApply.replay =>
     lastApply.request.base = lastApply.beforeRevision
 
 ApplyPreservesPosition ==
-  lastApply.kind = "apply" => position = lastApply.beforePosition
+  AppliedCommand => position = lastApply.beforePosition
 
 ReadDoesNotChangeTree ==
   lastRead.kind = "read" => Tree = lastRead.before
@@ -352,7 +428,7 @@ NodeLimit == Cardinality(nodes) <= 3
 RevisionHistoryComplete == history = 0..revision
 
 AcceptedApplyRefreshesSource ==
-  lastApply.kind = "apply" /\ lastApply.accepted /\ ~lastApply.replay => source = position
+  AppliedCommand /\ lastApply.accepted /\ ~lastApply.replay => source = position
 
 MergePreservesRefs ==
   lastApply.kind = "apply" /\ lastApply.accepted /\ ~lastApply.replay

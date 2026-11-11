@@ -172,11 +172,11 @@ TLA_METADIR ?= $(CURDIR)/review/tmp/tla
 # complete graph, avoiding repeated partial-graph work as reachable paths grow.
 # The larger configuration remains a separate verify-model-wide run. Identical
 # model/spec/domain configurations share one traversal with their claim union;
-# original configs remain the catalogue and witness inputs (64 configs, 61 runs).
+# original configs remain the catalogue and witness inputs (65 configs, 62 runs).
 verify-model-all: verify-tools
 	@python3 review/verification_batches.py --self-check
 	@python3 review/verification_batches.py --check-fixtures --jar "$(TLA_TOOLS_DIR)/tla2tools.jar"
-	@cd verification/tla && pairs=""; for cfg in MC.cfg MC_control_two.cfg MC_control_attempts.cfg MC_control_decisions.cfg MC_control_warn.cfg MC_executionchain.cfg MC_streamboundary.cfg MC_profileswitch.cfg MC_skillauthority.cfg MC_exportsnapshot.cfg MC_work.cfg MC_review.cfg MC_search_tree.cfg MC_search_tree_add.cfg MC_search_tree_update.cfg MC_search_tree_move.cfg MC_search_tree_merge.cfg MC_oauth.cfg MC_artifact.cfg MC_wait.cfg MC_wait_deferred.cfg MC_task.cfg MC_task_two.cfg MC_approval.cfg MC_compress.cfg MC_daemon.cfg MC_daemon_stop.cfg MC_checks.cfg MC_checks_briefing.cfg MC_checks_independent.cfg MC_memory.cfg MC_grants.cfg MC_grants_task.cfg MC_capabilities.cfg MC_authority.cfg MC_store.cfg MC_retention.cfg MC_history.cfg MC_sessions.cfg MC_schedule.cfg MC_isolation.cfg MC_isolation_ssh.cfg MC_codemode.cfg MC_images.cfg MC_images_blind_model.cfg MC_update.cfg MC_jobs.cfg MC_jobsupervision.cfg MC_inbox.cfg MC_diskfull.cfg MC_discovery.cfg MC_coordinator.cfg MC_trust.cfg MC_prompt.cfg MC_retry.cfg MC_workspace.cfg MC_concurrency.cfg MC_projecttrust.cfg MC_prune.cfg MC_tui.cfg MC_sessionui.cfg MC_presentation.cfg MC_inputqueue.cfg MC_displayworker.cfg; do \
+	@cd verification/tla && pairs=""; for cfg in MC.cfg MC_control_two.cfg MC_control_attempts.cfg MC_control_decisions.cfg MC_control_warn.cfg MC_executionchain.cfg MC_streamboundary.cfg MC_profileswitch.cfg MC_skillauthority.cfg MC_exportsnapshot.cfg MC_work.cfg MC_review.cfg MC_search_tree.cfg MC_search_tree_add.cfg MC_search_tree_update.cfg MC_search_tree_move.cfg MC_search_tree_merge.cfg MC_search_tree_pair.cfg MC_oauth.cfg MC_artifact.cfg MC_wait.cfg MC_wait_deferred.cfg MC_task.cfg MC_task_two.cfg MC_approval.cfg MC_compress.cfg MC_daemon.cfg MC_daemon_stop.cfg MC_checks.cfg MC_checks_briefing.cfg MC_checks_independent.cfg MC_memory.cfg MC_grants.cfg MC_grants_task.cfg MC_capabilities.cfg MC_authority.cfg MC_store.cfg MC_retention.cfg MC_history.cfg MC_sessions.cfg MC_schedule.cfg MC_isolation.cfg MC_isolation_ssh.cfg MC_codemode.cfg MC_images.cfg MC_images_blind_model.cfg MC_update.cfg MC_jobs.cfg MC_jobsupervision.cfg MC_inbox.cfg MC_diskfull.cfg MC_discovery.cfg MC_coordinator.cfg MC_trust.cfg MC_prompt.cfg MC_retry.cfg MC_workspace.cfg MC_concurrency.cfg MC_projecttrust.cfg MC_prune.cfg MC_tui.cfg MC_sessionui.cfg MC_presentation.cfg MC_inputqueue.cfg MC_displayworker.cfg; do \
 		pairs="$$pairs $$cfg:$$( $(CFG_CASE) )"; \
 	done; \
 	python3 ../../review/verification_batches.py --jar "$(TLA_TOOLS_DIR)/tla2tools.jar" $$pairs
@@ -212,6 +212,7 @@ verify-model-counterexamples: verify-tools
 		MC_search_tree_apply_position.cfg:V2SearchTree.tla MC_search_tree_read_writes.cfg:V2SearchTree.tla \
 		MC_search_tree_root_delete.cfg:V2SearchTree.tla MC_search_tree_parent_drop.cfg:V2SearchTree.tla MC_search_tree_node_limit.cfg:V2SearchTree.tla \
 		MC_search_tree_compact_error_flag.cfg:V2SearchTree.tla MC_search_tree_compact_no_advance.cfg:V2SearchTree.tla \
+		MC_search_tree_pair_atomic.cfg:V2SearchTree.tla MC_search_tree_pair_replay.cfg:V2SearchTree.tla \
 		MC_tui_target.cfg:V2Tui.tla MC_tui_approval.cfg:V2Tui.tla MC_tui_exit.cfg:V2Tui.tla \
 		MC_inputqueue_settled.cfg:V2InputQueue.tla MC_inputqueue_revision.cfg:V2InputQueue.tla MC_inputqueue_original.cfg:V2InputQueue.tla MC_inputqueue_snapshot.cfg:V2InputQueue.tla MC_inputqueue_replay.cfg:V2InputQueue.tla MC_inputqueue_unverified.cfg:V2InputQueue.tla \
 		MC_displayworker_stale.cfg:V2DisplayWorker.tla MC_displayworker_deadline.cfg:V2DisplayWorker.tla MC_displayworker_leak.cfg:V2DisplayWorker.tla MC_displayworker_apply.cfg:V2DisplayWorker.tla MC_displayworker_overflow.cfg:V2DisplayWorker.tla MC_displayworker_drop.cfg:V2DisplayWorker.tla \

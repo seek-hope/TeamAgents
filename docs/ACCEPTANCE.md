@@ -1,7 +1,7 @@
 # Acceptance matrix (A01–A36)
 
 Baseline: [the design and acceptance baseline](DESIGN.md) §12/§16. Current source inspection and local
-regression baseline: **2026-11-11, D-506**.
+regression baseline: **2026-11-12, D-507**.
 This is not a new independent acceptance audit or real-model run.
 The D-451 product/installation receipts and the D-452 independent audit retain their original source/date
 boundaries; later source changes do not inherit those results.
@@ -9,7 +9,7 @@ boundaries; later source changes do not inherit those results.
 ✅ = the listed path has automated evidence (it does not prove every release condition of the scenario);
 🔶 = partial coverage or a known gap; ⚠ = not implemented.
 
-`make check` is green (core 186 / engine 477 / tui 105 test targets).
+`make check` is green (core 190 / engine 478 / tui 105 test targets).
 `make pty` passed on 2026-11-03: the terminal-profile matrix (xterm-256color, screen-256color, tmux-256color, xterm-kitty and Kitty under tmux) plus both forced graphics protocols, all rc 0 and
 credential-free. PTY checks cover protocol bytes, input ownership, resize and cleanup, not a complete
 actual graphical-terminal or OS matrix. These gates do not renew real-provider, OAuth, formal-proof or
@@ -34,6 +34,12 @@ renewing the earlier PTY/install/live-service results. The current [requirement 
 classifies every Q/A requirement and its remaining obligations. It does not upgrade the acceptance icons
 below or renew real-service results. Model fixes, normal-path witnesses and bounded production-code Kani
 proofs are recorded in the formal report; runtime source and installed binaries remain D-494.
+
+D-507 extends the bounded tree model to ordered two-operation patches and expands implementation evidence for
+multi-op ordering/replay, arbitrary Unicode/control text, compact JSON, SQLite rollback, migration conflicts and
+random-walk tree invariants. All 65 positive configurations/62 traversals, 327 controls, 79 witnesses and nine
+Kani harnesses pass with actual exit 0. This is finite plus executable coverage, not full Rust/SQLite refinement
+or a live-model quality experiment.
 
 D-506 adds the bounded `V2SearchTree` model for the new read/apply commands and compaction integration. All 64
 positive configurations/61 traversals, 325 controls, 76 witnesses and nine Kani harnesses pass with actual exit 0.
