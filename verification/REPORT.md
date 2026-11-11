@@ -5,7 +5,7 @@ what evidence, and what it does **not** prove. The property-by-property mapping 
 in [README.md](README.md); the fix ledger is in
 [review/fix-notes-verification-2026-09-24.md](../review/fix-notes-verification-2026-09-24.md).
 
-## 0. Gate status (re-run 2026-11-11 at `c2302913`)
+## 0. Gate status (re-run 2026-11-12 at `6f7fe033`)
 
 D-507 extends `V2SearchTree` to ordered two-operation patches using the same state conversion as single
 operations. The current targets verified all **65** configurations in **62** traversals with actual exit 0 in
