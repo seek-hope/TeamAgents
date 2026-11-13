@@ -87,7 +87,7 @@ module the method's rule is checked in; the property-by-property anchors above s
 | `begin_review` | `V2Review.tla`: pending lifecycle, parked phase and reservation; budget/deadline composition and driver retry suppression remain code-tested |
 | `record_review_attempt` | `V2Review.tla`: close/release, exact known totals for priced complete/malformed responses, and unknown unpriced/transport/interrupted usage; actual provider payload parsing remains code-tested |
 | `review_decision` | `V2Review.tla`: completed consistent review and self-update guards for automatic allow; finality/revision composition remains in V2Approval/V2Control and Rust tests |
-| `set_instance_profile` | `unproven`: D-470 user-only model/effort switch at a READY/WAITING boundary, with the driver reloading the profile before each request; the control-plane guard and the reload are covered by core tests, but no TLA model covers the switch |
+| `set_instance_profile` | `V2ProfileSwitch.tla`: user-only model/effort switch at a READY/WAITING boundary and frozen request snapshot; native adapter fields and context windows remain Rust/provider-tested |
 | `deny` | `V2Approval.tla` |
 | `fail_request` | `V2Control.tla` |
 | `cancel_request` | `V2Control.tla` |

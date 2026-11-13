@@ -63,11 +63,6 @@ The original 24-step control-plane exploration is retained before the two explic
 does not displace existing approval coverage. These tests use real SQLite and scripted providers, not a claim of
 arbitrary-input TLA enumeration.
 
-## 5. Unproven list (honest boundaries)
-
-- **`set_instance_profile`**: the User-only model/effort switch at a READY/WAITING boundary and the driver's
-  per-request reload are covered by core tests, not by a TLA model. It is an explicit unproven protocol method.
-
 ## 3. What remains unproven or unmeasured
 
 1. **Full refinement and composition.** No complete Rust/SQLite trace refinement, whole-system composition,

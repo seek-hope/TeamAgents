@@ -69,7 +69,8 @@ def tool_call(name: str, arguments: dict) -> bytes:
 SHELL_TURN = tool_call("shell", {"command": COMMAND, "timeout": 60})
 # Every later turn ends the work: the recovery after the stop may itself continue the turn, so the script holds
 # more finishes than the probe asks for and never depends on which turn consumes which.
-FINISH_TURNS = [tool_call("finish", {"status": "success", "summary": "the command finished and was imported"})
+FINISH_TURNS = [tool_call("finish", {"status": "success", "summary": "the command finished and was imported",
+                                        "evidence": ["tool:call-shell"]})
                 for _ in range(3)]
 
 

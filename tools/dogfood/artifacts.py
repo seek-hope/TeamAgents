@@ -79,7 +79,8 @@ class FakeChat(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             conversation = []
         if any(message.get("role") == "tool" for message in conversation):
-            reply = tool_call("finish", {"status": "success", "summary": "the big output was captured"})
+            reply = tool_call("finish", {"status": "success", "summary": "the big output was captured",
+                                         "evidence": ["tool:call-shell"]})
         else:
             reply = tool_call("shell", {"command": BIG, "timeout": 60})
         self.wfile.write(reply)

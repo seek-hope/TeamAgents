@@ -38,7 +38,7 @@ BIN = REPO / "engine/target/debug/teamagents"
 KEY_VAR = "TEAMAGENTS_INSTRUCTION_PROBE_KEY"
 CANARY = "CANARY_INSTRUCTION_9F2A"
 MEMBER_MARKER = "MEMBER_INSTRUCTIONS_7C1B"
-GUIDANCE = "run-and-fix loop"  # the phrase D-262 added to LEADER_INSTRUCTIONS
+GUIDANCE = "Give members a concrete result"  # leader delegation guidance in work::LEADER (D-487)
 
 HEAD = b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n"
 SPAWN = HEAD + (
@@ -116,8 +116,8 @@ def judgement(systems: list, doctor_row: str) -> list:
         if f"instruction file:" not in text:
             failures.append(f"request {index + 1}'s system prompt has no heading naming the file: {text[:120]!r}")
     for index, text in enumerate(systems):
-        # D-258: the runtime's own settlement rule reaches every member as well, and only a real prompt shows it
-        if "Settlement rule:" not in text:
+        # D-258 / D-487: every request receives either the worker/legacy settlement rule or the enrolled work protocol
+        if "Settlement rule:" not in text and "Durable work protocol:" not in text:
             failures.append(f"request {index + 1}'s system prompt does not carry the settlement rule: {text[:120]!r}")
     # D-262: the product's leader prompt carries the measured delegation guidance; a worker's does not
     leaders = [text for text in systems if MEMBER_MARKER not in text]

@@ -200,7 +200,7 @@ def main() -> int:
               f"failure={str(report.get('failure'))[:70]!r} requests_seen={len(seen)}")
         if facts["exit"] != 1:
             failures.append(f"a permanent failure must end the run with 1, got {facts['exit']}")
-        if not str(report.get("failure") or "").startswith("permanent model error:"):
+        if not str(report.get("failure") or "").startswith("the leader instance i-leader is PARKED: permanent model error:"):
             failures.append(f"the failure is not classified permanent: {report.get('failure')!r}")
         if len(seen) != 1:
             failures.append(f"a permanent failure must not be retried: {len(seen)} requests")

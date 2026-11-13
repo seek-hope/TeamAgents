@@ -531,6 +531,7 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
                            "cache_hit_tokens": 0, "cache_miss_tokens": 0, "cache_write_tokens": 0,
                            "requests": 0, "unpriced_attempts": 0});
     let mut turn_failure: Option<String> = None;
+    let mut parked_wrapped = false;
     let mut reply: Option<String> = None;
     let mut pending_approval: Option<String> = None;
     // D-431: the work this run settled, so the reply fallback reads *that* work's completion summary rather
@@ -604,6 +605,7 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
                         model_request_failed = true;
                         turn_failure =
                             Some(event["payload"]["reason"].as_str().unwrap_or("the model request failed").to_string());
+                        parked_wrapped = false;
                     }
                     // One place decides whether this event ends the run while its turn can never finish (see
                     // `run_fate`): a refused request, a retired instance, a reset that took the epoch away.
@@ -740,8 +742,12 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
             && matches!(attribution, Attribution::Pending | Attribution::Closed)
         {
             // A runtime failure remains a failure when its work projection is STOPPED.
-            let cause = park_reason.as_deref().or(turn_failure.as_deref());
-            turn_failure = Some(parked_fate(&instance, cause));
+            // Wrap at most once per failure so the drain pass never nests "is PARKED: is PARKED:".
+            if !parked_wrapped {
+                let cause = park_reason.as_deref().or(turn_failure.as_deref());
+                turn_failure = Some(parked_fate(&instance, cause));
+                parked_wrapped = true;
+            }
             if !model_request_failed || !input_applied {
                 refused.get_or_insert_with(|| "the leader parked before this run's turn started".to_string());
             }

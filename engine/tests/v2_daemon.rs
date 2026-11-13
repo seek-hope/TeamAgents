@@ -2000,11 +2000,9 @@ async fn a_failed_turn_ends_the_headless_run_instead_of_timing_out() {
     let run = headless(options).await;
     assert_eq!(run.end, End::Failed, "{}", run.report);
     assert_eq!(run.end.exit_code(run.checks_ok), 1);
-    assert!(
-        run.report["failure"].as_str().is_some_and(|reason| reason.contains("401")),
-        "the classified reason is reported: {}",
-        run.report
-    );
+    let failure = run.report["failure"].as_str().expect("failure reason");
+    assert!(failure.contains("401"), "the classified reason is reported: {}", run.report);
+    assert_eq!(failure.matches("is PARKED:").count(), 1, "parked wrapper must not nest across drain pass: {failure}");
     assert!(
         started.elapsed() < Duration::from_secs(60),
         "a permanent model error must not wait for the deadline ({}s)",

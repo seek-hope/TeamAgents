@@ -80,7 +80,8 @@ def tool_call(name: str, arguments: dict) -> bytes:
 
 
 SHELL_TURN = tool_call("shell", {"command": COMMAND, "timeout": 60})
-FINISH_TURN = tool_call("finish", {"status": "success", "summary": "the command finished"})
+FINISH_TURN = tool_call("finish", {"status": "success", "summary": "the command finished",
+                                     "evidence": ["tool:call-shell"]})
 
 
 class FakeChat(BaseHTTPRequestHandler):
