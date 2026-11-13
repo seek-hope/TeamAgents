@@ -150,15 +150,16 @@ async fn a_stalled_client_cannot_starve_status_or_deadline_supervision() {
     reader.read_line(&mut line).await.unwrap();
     assert!(line.contains("RUNNING"));
     let responsive = tokio::time::timeout(Duration::from_millis(500), client::status(&dir)).await.is_ok();
-    tokio::time::sleep(Duration::from_millis(3_000)).await;
-    let settled = client::persisted_journal(&dir).unwrap().terminal();
+    // Wait for the actual terminal journal rather than assuming the 2 s
+    // deadline has already elapsed on a loaded CI runner.
+    let settled = wait_terminal(&dir, 5_000).await;
     drop(reader);
     // Cleanup before asserting so the failing old implementation leaves no job.
     let _ = client::cancel(&dir).await;
     let _ = wait_terminal(&dir, 5_000).await;
     let _ = client::shutdown(&dir).await;
     assert!(responsive, "another connection must remain responsive");
-    assert!(settled, "a stalled client must not postpone the job deadline");
+    assert_eq!(settled, "CANCELLED", "a stalled client must not postpone the job deadline");
 }
 
 #[tokio::test]
