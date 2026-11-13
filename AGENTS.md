@@ -46,7 +46,7 @@ make verify-witnesses
 make verify-kani
 ```
 
-Current baseline: **773 Rust tests** (core 190 / engine 478 / tui 105), **65 positive TLA configurations in 62
+Current baseline (2026-11-13, D-508 `52e96b3c`): **773 Rust tests** (core 190 / engine 478 / tui 105), **65 positive TLA configurations in 62
 traversals**, **327 controls**, **79 witnesses**, **9 Kani harnesses**, and **393 configurations across 48
 modules**. `make check` is green. Formal results and abstraction limits are in `verification/REPORT.md`.
 A green Cargo run is not a real-service acceptance result.

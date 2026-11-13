@@ -4,12 +4,11 @@ This report records the currently accepted finite verification evidence and its 
 earlier runs. The property/configuration mapping is in [README.md](README.md); executable reproduction commands
 are in [DEVELOPMENT.md](../docs/DEVELOPMENT.md).
 
-## 0. Gate status (re-run 2026-11-12 at `6f7fe033`)
+## 0. Gate status (re-run 2026-11-13 at `52e96b3c`)
 
 The current targets verified all **65** configurations in **62** traversals, refuted all **327** negative controls,
 reached all **79** normal-path witnesses, and passed all **9** Kani harnesses. The latest complete local replay
-took 2528.8 seconds for positive configurations, 288.9 seconds for controls, 61.5 seconds for witnesses and
-43.1 seconds for Kani. Kani reported `Complete - 9 successfully verified harnesses, 0 failures, 9 total`.
+used the current source and exited 0 for every target. Kani reported `Complete - 9 successfully verified harnesses, 0 failures, 9 total`.
 
 `verification/tla/V2SearchTree.tla` has SHA-256
 `b2d814d597ddb5f9382ca712e6431a1bf3d67ab7b21ce2f44137c5cae39a2c12`.

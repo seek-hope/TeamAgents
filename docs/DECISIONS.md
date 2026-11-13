@@ -136,7 +136,7 @@ evaluation evidence.
 - These results do not establish full Rust/SQLite refinement, whole-system composition, Policy B source-bound
   equivalence, wide exhaustive completion, arbitrary-input TLA coverage or live-model navigation quality.
 
-## D-508 Keep only current project state and tools (2026-11-12)
+## D-508 Keep only current project state and tools (2026-11-13)
 
 The tree contains the current Rust implementation, current documentation and executable development/verification
 tools. `review/` has been removed; required utilities are under `tools/`. No review reports, evaluation datasets

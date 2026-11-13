@@ -2,6 +2,8 @@
 
 ## Current baseline
 
+Current material commit: D-508 `52e96b3c`.
+
 The current source implements the requirements in [DESIGN.md](DESIGN.md), the rules in [DECISIONS.md](DECISIONS.md),
 and the acceptance matrix in [ACCEPTANCE.md](ACCEPTANCE.md). Current formal evidence and its limits are in
 [verification/REPORT.md](../verification/REPORT.md).
