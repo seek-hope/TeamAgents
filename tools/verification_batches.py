@@ -86,6 +86,20 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def heap_flag():
+    """Size TLC's heap to avoid spurious low-memory liveness warnings on 16 GiB CI hosts."""
+    try:
+        for line in pathlib.Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
+            if line.startswith("MemTotal:"):
+                kib = int(line.split()[1])
+                if kib >= 12 * 1024 * 1024:
+                    return "-Xmx8g"
+                break
+    except (OSError, ValueError, IndexError):
+        pass
+    return "-Xmx4g"
+
+
 def self_check():
     with tempfile.TemporaryDirectory(prefix="teamagents-batch-controls-") as directory:
         root = pathlib.Path(directory)
@@ -204,7 +218,7 @@ def main():
         print(f"== {', '.join(names)} ==", flush=True)
         start = time.monotonic()
         meta = out / f"states-{number:02}"
-        command = ["java", "-Xmx4g", "-XX:+UseParallelGC", "-cp", str(jar), "tlc2.TLC",
+        command = ["java", heap_flag(), "-XX:+UseParallelGC", "-cp", str(jar), "tlc2.TLC",
                    "-lncheck", "final", "-fp", "64", "-workers", str(args.workers),
                    "-metadir", str(meta), "-config", cfg.name, group["model"].name]
         with log.open("w") as stream:
