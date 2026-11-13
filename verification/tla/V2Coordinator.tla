@@ -33,7 +33,7 @@
 (* "state root already has a coordinator" refusal for a real holder), and the  *)
 (* two tests `a_momentarily_held_lock_is_absorbed` and the second-coordinator  *)
 (* one; engine/src/v2/driver.rs takes it at `state_lock(&config.state_root.    *)
-(* join("coordinator.lock"))`, and `review/dogfood/boundary.py` is the live    *)
+(* join("coordinator.lock"))`, and `tools/dogfood/boundary.py` is the live    *)
 (* half (a second daemon, a restart after SIGKILL).                           *)
 (*                                                                            *)
 (* What the model is and is not: it abstracts the descriptor table to one     *)

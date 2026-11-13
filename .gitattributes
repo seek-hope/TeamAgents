@@ -1,5 +1,0 @@
-# Frozen evaluation evidence keeps the model's raw output bytes (patch-context
-# blank lines, grading logs); trailing whitespace there is evidence content and
-# is exempt from the patch-whitespace check.
-review/eval/**/tasks/** whitespace=-trailing-space
-review/eval/**/runs/** whitespace=-trailing-space

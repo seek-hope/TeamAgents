@@ -18,7 +18,7 @@ __pycache__/
 # The SWE-bench harness writes its per-instance logs to `logs/run_evaluation/...` relative to cwd; the
 # adapter now points that cwd at the run's own output directory, and this keeps a stray run out of the tree.
 /logs/
-/review/tmp/
+/tools/tmp/
 # CodeGraph's local index: a ~40 MB SQLite database plus its socket, pid files and daemon log. It is a
 # per-machine query cache over the sources, never repository content.
 /.codegraph/

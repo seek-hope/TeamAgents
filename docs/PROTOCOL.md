@@ -2,7 +2,7 @@
 
 The session is a daemon behind one Unix socket (`<state root>/daemon.sock`), and everything else is a client of
 it: the TUI, `teamagents exec`, the CLI verbs (`instances`, `tasks`, `approvals`, `authority`) and every probe
-under `review/dogfood/`. DESIGN.md calls it "one JSON-lines protocol (`/v1`)" and states its guarantees
+under `tools/dogfood/`. DESIGN.md calls it "one JSON-lines protocol (`/v1`)" and states its guarantees
 (handshake, `command_id` dedup, the event watermark); this document lists what it actually carries, generated from
 the two dispatchers in the code. The [visual architecture](ARCHITECTURE.md) relates these methods to state,
 transactions and recovery. Database schema 9, socket protocol 1 and work policy 1 are separate versions. Schema 8

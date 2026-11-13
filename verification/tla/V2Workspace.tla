@@ -27,7 +27,7 @@
 (* engine/src/v2/driver.rs (`prepare_spawn_workspace` writes the record before *)
 (* the instance boots, so a later retirement cleans up exactly what it made).  *)
 (*                                                                           *)
-(* The live halves are review/dogfood/workspace.py (a real model walks the      *)
+(* The live halves are tools/dogfood/workspace.py (a real model walks the      *)
 (* lifecycle, and since D-252 merges through the product's own lever) and       *)
 (* engine/tests/v2_daemon.rs's merge test (the real binary, a real git         *)
 (* repository, a real daemon).                                                 *)

@@ -3,7 +3,7 @@
 //! (catalog keys), cooperating over the controlled message plane.
 //!
 //!   cargo run --offline --manifest-path engine/Cargo.toml --example accept_probe -- \
-//!     --evidence review/tmp/r2-p5-accept --workspace /tmp/ws \
+//!     --evidence tools/tmp/r2-p5-accept --workspace /tmp/ws \
 //!     --lead leader_main --worker <openai-key-in-user-config> \
 //!     [--permissions approved_scope|full_auto] [--timeout 600] [--dry-run]
 //!

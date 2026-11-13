@@ -4,7 +4,7 @@
 //! context built through the production `Control` plane.
 //!
 //!   cargo run --offline --manifest-path engine/Cargo.toml --example load_probe -- \
-//!     review/tmp/r2-p5-load [--steps 250] [--payload 20000]
+//!     tools/tmp/r2-p5-load [--steps 250] [--payload 20000]
 //!
 //! The probe writes `report.json` into a fresh evidence directory. Synthetic
 //! text is not a tokenizer input: numbers describe local overhead, never model

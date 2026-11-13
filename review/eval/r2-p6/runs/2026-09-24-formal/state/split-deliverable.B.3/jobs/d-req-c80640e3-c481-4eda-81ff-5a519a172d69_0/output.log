@@ -1,5 +1,0 @@
-sum 44
-words ['Apple', 'apple', 'fig', 'pear', 'plum'] 5
-verified
-===
-sum=44; unique_words=5

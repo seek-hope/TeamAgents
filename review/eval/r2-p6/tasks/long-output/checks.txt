@@ -1,1 +1,0 @@
-python3 -c "value = open('answer.txt').read().strip(); assert value == 'mid-9f3a1c', repr(value)"

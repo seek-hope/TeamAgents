@@ -30,7 +30,7 @@
 (* the `retention`/`hooks`/`checks`/`limits` loop that copies only the user's, *)
 (* and every refusal pushed into `ProjectMerge.refused`), and                *)
 (* `read_config_file` (an unreadable file is an error, not an empty one).      *)
-(* The live half is `review/dogfood/project_config.py`: the offered-surface    *)
+(* The live half is `tools/dogfood/project_config.py`: the offered-surface    *)
 (* witness twice, refused and trusted, plus a project that tries to grant      *)
 (* itself the flag. The tests are `config::project_config_tests` (the two      *)
 (* loaders agree; an untrusted project lands nothing and says so; a project    *)

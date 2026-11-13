@@ -1,172 +1,115 @@
-# TeamAgents repository conventions (binding for every agent working in this repo)
+# TeamAgents repository conventions
+
+These conventions apply to every agent working in this repository.
 
 ## Continuing in a new session
 
-Read [the development handoff](docs/HANDOFF.md) for the last completed source baseline, evidence boundaries,
-regression entry points and candidate next steps. Recheck Git status before relying on its snapshot.
+Read [the development handoff](docs/HANDOFF.md) for the current baseline, evidence boundaries, regression entry
+points and open work. Recheck Git status before relying on its snapshot.
 
 <!-- maps: docs/HANDOFF.md reader=agent -->
 
 ## Baseline and deviations
 
-- The design and acceptance baseline is `docs/DESIGN.md` (requirements Q1–Q19, architecture and protocol
-  constraints, the A01–A36 acceptance matrix and the definition of done). Per-item evidence and known gaps
-  are in `docs/ACCEPTANCE.md`; currently binding decisions and still-valid earlier rules are in
-  `docs/DECISIONS.md`.
-- **Any implementation that differs from the confirmed design (even a simpler or better one) must be
-  discussed with the user and confirmed before it goes into code.** Confirmed deviations are recorded in
-  `docs/DECISIONS.md`; unconfirmed ones stay in discussion.
-- This repository is a standalone Rust project: all implementation code is Rust (the `core`, `engine` and
-  `tui` crates). `tui/scripts/*.py` and the Python fake servers inside some Rust tests are test-only.
-- The repository carries only the current implementation: material from earlier implementations and their
-  migration was removed from the tree (it stays reachable through Git history, see `git log -- docs/archive`).
+- The design and acceptance baseline is `docs/DESIGN.md` (Q1–Q19, architecture/protocol constraints and A01–A36).
+  Per-item evidence and open obligations are in `docs/ACCEPTANCE.md`; current rules are in `docs/DECISIONS.md`.
+- **Discuss and confirm any deviation from the confirmed design before changing code.** Record the resulting
+  current rule in `docs/DECISIONS.md`.
+- This is a standalone Rust project: implementation code is Rust (`core`, `engine`, `tui`). Python in
+  `tui/scripts/`, `tools/` and test fake servers is test-only.
+- Keep only current implementation and current development/verification tools in the tree. Git history remains
+  the mechanism for examining earlier states.
 
-## Language (repository-wide)
+## Language
 
-- **Code is English only**: identifiers, comments, doc comments, error messages, help text, user-facing
-  strings, scripts, workflows. No Chinese anywhere in code.
-- **Documentation is English only**, with exactly one exception: `README.zh-CN.md`, the Chinese README.
-  Commit messages are English too. `make language-check` (part of `make hygiene`) enforces this on the whole
-  tracked tree, so a stray non-English character fails the gate instead of being caught in review.
-- One deliberate exception inside the code scan: the frozen evaluation material under
-  `review/eval/r2-p6/tasks/**` (task prompts and fixtures) and the recorded trial output under
-  `review/eval/r2-p6/runs/**` keep their original bytes, because the manifests pin their hashes and they are
-  evidence of runs that already happened. Changing them would require re-freezing the manifests and re-running
-  the experiments.
+- **Code is English only**: identifiers, comments, doc comments, errors, help, user-facing strings, scripts and
+  workflows.
+- **Documentation is English only**, except `README.zh-CN.md`. Commit messages are English too.
+- `make language-check` enforces this on the tracked tree. New scratch under `tools/tmp/` is ignored.
 
 ## Quick commands
 
-The single development entry point and its maintenance rules are in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
-The toolchain is pinned in `rust-toolchain.toml`; run `make check` before committing (offline by default),
-`make fmt` to fix formatting, and `make pty` for the isolated real-terminal check. The first run may need
-`make check CARGO_FLAGS=--locked` to download dependencies.
+The development entry point is [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md). The toolchain is pinned in
+`rust-toolchain.toml`. Run `make check` before committing, `make fmt` to format, and `make pty` for the isolated
+real-terminal matrix. The first run may need `make check CARGO_FLAGS=--locked` to download dependencies.
 
 ```bash
-cargo test --offline --manifest-path core/Cargo.toml    # authoritative core (control plane + kernel + specs)
-cargo test --offline --manifest-path engine/Cargo.toml  # engine (phase machine, supervisor, daemon, jobs, MCP)
-cargo test --offline --manifest-path tui/Cargo.toml     # TUI logic + TestBackend frames
-engine/target/debug/teamagents {init,doctor,daemon,exec,version}  # CLI entry points
-engine/target/debug/teamagents exec --json --timeout 180 "…"      # headless turn (starts the daemon if needed)
-make pty                                 # real-terminal matrix (tui/scripts/pty_matrix.py, one pty per profile)
-make verify-model-all                    # small TLA+ configurations for all modules (see verification/README.md)
-make verify-kani                         # Kani proofs (paging arithmetic)
-python3 review/eval/r2-p6/run.py --phase pilot --out <new date directory>  # real-model A/B/C comparison (needs credentials)
+cargo test --offline --manifest-path core/Cargo.toml
+cargo test --offline --manifest-path engine/Cargo.toml
+cargo test --offline --manifest-path tui/Cargo.toml
+engine/target/debug/teamagents {init,doctor,daemon,exec,version}
+engine/target/debug/teamagents exec --json --timeout 180 "…"
+make pty
+make verify-model-all
+make verify-model-counterexamples
+make verify-witnesses
+make verify-kani
 ```
 
-- Local source baseline (2026-11-12, D-507 `6f7fe033`): `make check` is green — core 190 / engine 478 / tui 105;
-  `make pty` passes. Formal results and their abstraction limits are in `verification/REPORT.md`.
-  This does not renew D-452's independent audit or historical real-service results.
-  Raw evaluation JSONL lives in `review/eval/r2-p6/runs/`, per-item evidence in `docs/ACCEPTANCE.md`.
-  Candidate daily-coding work has one home, `docs/PRODUCT-COMPARISON.md`. D-461 approves and implements
-  DD-01 option A (read-only diagnosis and explicit recovery); D-479 adds the approved environment/input diagnostics.
-  D-480 removes OS sandbox backends; ordinary Shell and local MCP run on the host. Capability grants,
-  operation records, recovery and self-update approval remain. Old sandbox configuration is rejected.
-  D-487 adds persistent work, bounded continuation and internal admission; legacy unenrolled sessions retain
-  their earlier scheduling. D-489 adapts Grok Build's single-conversation TUI and `@` file references without
-  changing the daemon or execution contracts; D-490 applies Codex CLI colors and D-491 adjusts shortcuts.
-  D-492 adds dependency-advisory CI, bounded OAuth/MCP/update inputs and locked atomic credential writes.
-  D-494 hardens provider/runner boundaries, preserves supervision under storage backpressure, reduces idle
-  history reads and viewport allocations, and audits formal coverage with explicit remaining proof limits.
-  D-498 removes the separate goal entity; work scopes own budget/admission/acceptance, work states/tasks own
-  continuation, and schema 8 explicitly migrates legacy records. D-499 removes unused persistence mirror
-  types and duplicate maintenance guidance without changing runtime semantics. D-500 adds lazy input revisions,
-  reviewer usage recovery, real Skill workflows and MCP resource list/read. D-501 upgrades bundled SQLite past
-  RUSTSEC-2026-0459. D-502 closes reproduced reviewer fail-closed/context/accounting gaps and adds local tmux/SSH
-  evidence; live reviewer judgement remains unproven. D-503 adds a bounded reviewer TLA model and controls without
-  changing production behavior or closing wide/Policy B/refinement gaps. D-504 adds one session-level exploration
-  tree beside compaction, schema 9, revisioned Leader-only operations and CLI/TUI/export views; member-private
-  history stays outside it, and live-model navigation quality is unmeasured. D-505 upgrades rustix past
-  RUSTSEC-2026-0486 without changing product behavior or formal inputs. D-506 adds bounded search-tree command/
-  compaction models with 64 positive configurations/61 traversals, 325 controls and 76 witnesses, and fixes
-  replay-time `added_ids` reconstruction. D-507 extends executable and finite coverage to ordered patch pairs,
-  arbitrary text, JSON/SQLite faults, migration conflicts and random tree invariants. Automatic reminders and
-  other unselected candidates remain unapproved.
-- Skipped checks and the current baseline are collected in `docs/ACCEPTANCE.md`. A green Cargo run is not a
-  real-service acceptance result.
-- Real-model evaluation always uses the model's native context window and records the value and its source;
-  never shrink a window for a real-model test. DeepSeek Flash uses the user-confirmed 1M configuration.
-  Tests run with a non-native window are invalid, must be deleted rather than renamed as stress experiments.
+Current baseline: **773 Rust tests** (core 190 / engine 478 / tui 105), **65 positive TLA configurations in 62
+traversals**, **327 controls**, **79 witnesses**, **9 Kani harnesses**, and **393 configurations across 48
+modules**. `make check` is green. Formal results and abstraction limits are in `verification/REPORT.md`.
+A green Cargo run is not a real-service acceptance result.
 
-## Architecture at a glance (read this before changing code)
+Real-model evaluation must use the model's native context window and record it with its source. A synthetic small
+window is for scripted regression only.
 
-This describes the current code.
+## Current architecture
 
-- Single team-transaction entry point: `core/src/v2/control.rs::Control::submit` (ingest → validate →
-  reduce → persist, one SQLite transaction per session; identity, operation ids and permission revisions are
-  filled in by the control plane, never taken from a model or client field).
-- Authoritative state: `core/src/v2/store.rs` (WAL plus explicit `synchronous=FULL`; a format stamp refuses
-  foreign or wrong-version databases). In-process callers serialize through the bounded single-writer worker
-  in `engine/src/v2/storage.rs`.
-- Execution: `engine/src/v2/driver.rs` (phase machine; model and tool waits happen outside transactions) and
-  `engine/src/v2/supervisor.rs` (one coordinator per state root driving every ACTIVE instance). Shell
-  commands run in the runner process of `engine/src/jobs`.
-- Tools and bindings: `engine/src/tools.rs` (files, shell, fetch), `engine/src/search.rs` (DeepSeek/Exa search),
-  `engine/src/bound.rs` (binding is the
-  authorization), `engine/src/mcp.rs` (stdio and streamable HTTP). User hooks live in `engine/src/hooks.rs`
-  (`[hooks]`: `pre_tool` veto, `notify` events).
-- Information permissions: visibility and delivery decisions in `core/src/v2/control.rs` plus the context
-  views in `core/src/kernel/*` (`audience` visibility is not `push` delivery; observers get scoped payloads).
-- Product layer: `engine/src/v2/daemon.rs` (one Unix-socket JSON-lines service per state root),
-  `engine/src/v2/exec.rs` (headless client), `engine/src/cli.rs`, `tui/src/daemon_client.rs`. Rendering and
-  mouse hit-testing share `tui/src/v2ui.rs::geometry`.
-- Workspace policies: `engine/src/workspace.rs` (shared / isolated / git worktree, §5.1) is selected by the
-  `workspace` argument of the `spawn` tool. `driver::prepare_spawn_workspace` resolves the policy before the
-  child instance starts and records it in `<instances_dir>/<id>/workspace.json`; the supervisor retires that
-  workspace when the instance is `TERMINATED` (it refuses to delete anything with uncommitted or unmerged
-  work and reports why).
+- Single team-transaction entry: `core/src/v2/control.rs::Control::submit` (ingest, validate, reduce and persist
+  in one SQLite transaction). Identity, operation ids and permission revisions come from the control plane.
+- Authoritative state: `core/src/v2/store.rs` with WAL and explicit `synchronous=FULL`; schema 9 and explicit
+  migration. In-process callers serialize through `engine/src/v2/storage.rs`.
+- Execution: `engine/src/v2/driver.rs` and `engine/src/v2/supervisor.rs`. Model and tool waits happen outside
+  transactions. Shell commands run through `engine/src/jobs`.
+- Tools and bindings: `engine/src/tools.rs`, `engine/src/search.rs`, `engine/src/bound.rs`, `engine/src/mcp.rs`
+  and `engine/src/hooks.rs`. Binding is authorization; instructions and tool output cannot grant it.
+- Information permissions: `core/src/v2/control.rs` and `core/src/kernel/*` distinguish visibility from delivery.
+  User reads all; an instance reads only itself. The shared session tree uses Leader-visible information only.
+- Product layer: `engine/src/v2/daemon.rs`, `engine/src/v2/exec.rs`, `engine/src/cli.rs` and
+  `tui/src/daemon_client.rs`. Rendering and hit-testing share `tui/src/v2ui.rs::geometry`.
+- Workspace policies: `engine/src/workspace.rs` and `driver::prepare_spawn_workspace`, selected by
+  `spawn.workspace`. Retirement refuses uncommitted or unmerged work.
+- Exploration tree: `core/src/v2/control/search_tree.rs`, with append-only revisions and a head pointer. Only
+  Leader compaction advances it. Ordered patches reject atomically and replay without growth.
+- Development and verification tools live under `tools/`. There is no review/evaluation data dependency.
 
-## Reviews and evidence (`review/*`)
+## Operating notes
 
-- Current evidence: `docs/ACCEPTANCE.md` (per item A01–A36), `verification/REPORT.md` (formal-verification
-  results, evidence, unproven list) and whatever `review/README.md` lists as current.
-- Older review and evaluation batches from earlier implementations are no longer in the tree; they are
-  reachable through Git history (`git log -- review/archive`) and do not describe the current code.
-- Read-only reviews must not modify the reviewed files, and every conclusion needs a re-runnable command or
-  probe (probes go to /tmp or `review/tmp/`). Before claiming a falsification, rule out probe error.
+- Cancelling a task does not prove execution stopped. Instance termination is user-only. Confirm runner/process
+  stop evidence before shared-workspace takeover. Unknown effects are never replayed.
+- A task may park in `BLOCKED` after exhausted checks, member failure or cancellation; this is not success.
+  Cancel it with `teamagents tasks cancel --id` and redispatch as new work when appropriate.
+- Enrolled work can continue after progress prose, but empty replies, plan-only loops and repeated patterns can
+  block honestly. A BLOCKED task does not satisfy a task-result wait; cancellation does.
+- Interrupts have recovery boundaries. Known results are reused; in-flight losses become `OUTCOME_UNKNOWN`.
+- Approvals bind one operation, argument hash and permission revision, and are consumed by that dispatch.
+  Automatic review never approves self-update.
+- Transport failures are retried only while no visible text was emitted and `max_retries` remains. Protocol
+  failure or emitted text ends the attempt honestly.
+- Work deadline and usage ceiling apply to turns, retries, compaction, review and verification. Unknown usage is
+  recorded rather than treated as zero cost.
+- Heavy read/report work should write artifacts early rather than ending with uncommitted conclusions.
 
-## Operating notes for team runs (measured)
+## Current evidence and open obligations
 
-- **Cancelling a task does not prove its execution stopped.** Cancellation releases the delegator but a
-  running command can outlive the assignment. Instance termination is user-only; confirm runner/operation
-  stop evidence before shared-workspace takeover. D-487's observer checks the recorded local process group
-  without signalling it or rewriting an unknown receipt. Historical probe: `review/dogfood/cancel.py` (D-88).
-- **A task can park in `BLOCKED`** when required checks are exhausted, a member fails or work is cancelled;
-  a blocked task prevents the work from completing. Use `teamagents tasks cancel --id` to cancel
-  it (without a live turn it goes straight to `CANCELLED`);
-  re-dispatch blocked work as a new task.
-- **Enrolled work continues after progress prose** under D-487's bounded recovery policy. Empty replies,
-  plan-only loops and repeated action/observation patterns can block with a reason. Member attention can
-  supersede a coordinator wait without settling the task. Legacy unenrolled work retains D-65's idle-after-prose
-  behavior. A BLOCKED task does not satisfy a task-result wait; cancellation does.
-- **Avoid interrupting a member turn**: keep tasks small and acceptance criteria explicit. After an
-  interruption recovery is driven by persisted location — known results are reused, in-flight losses are
-  recorded as `OUTCOME_UNKNOWN`, and side effects are never replayed on a guess.
-- **Approvals** bind one concrete operation, its argument hash and its permission revision, so an approval is
-  used up by that single dispatch. The PENDING approval of an operation that settles or an instance that
-  terminates is expired automatically; a leftover can be denied with `d` in the conditional approvals box.
-- **Transport failures**: a read timeout or truncated stream after the response headers is retried inside
-  the turn up to `max_retries` as long as no visible text was emitted; once text went out (or the protocol
-  itself failed) the attempt fails immediately and the reason lands in the receipt
-  (`transient retries exhausted` / `permanent model error` / `context overflow`).
-- **Work deadline and budget**: a work may carry a `deadline` and a usage ceiling; past the deadline no new
-  request starts, and usage is settled honestly.
-- **"Write early" for heavy tasks**: a turn is bounded by budget and wall clock, so a read-many/write-report
-  task should drop artifacts on disk along the way instead of ending with uncommitted conclusions.
+- Local scripted checks and finite models do not establish real-model quality, reduced lostness, external
+  provider/OAuth acceptance, clean-host install/update/rollback or matched-Pi outcome/cost comparisons.
+- Wide exhaustive search, full Rust/SQLite refinement, whole-system composition and Policy B source-bound
+  equivalence remain open.
+- Scheduler/provider fairness, filesystem races, escaped descendants, remote effects and real power-loss timing
+  remain environmental obligations.
+- `tools/tmp/` is ignored scratch for new local runs, not committed evidence.
 
 ## Code style
 
-- Lazy-first: standard library over existing dependencies over new ones; abstractions and scaffolding only
-  as far as the current need goes.
-- Every non-trivial piece of logic gets a runnable check (an acceptance test or a `__main__` self-check);
-  deleting code beats adding code.
-- CI and local development share the same make targets; Clippy runs with `-D warnings` on all targets and is
-  never disabled crate-wide.
-- engine integration tests isolate `XDG_CONFIG_HOME`/`XDG_STATE_HOME` through a child process
-  (`Command::env`, see `engine/tests/cli.rs`); when a test really must change the process environment it
-  touches only its own variables and restores them within the same test.
-- Leave a `ponytail:` comment on simplifications with a known ceiling (state the upgrade path).
-- Credentials are read from environment variables or the machine's own stores; never write them into the
-  repository, prompts, events or logs.
-- Skills: the single user-level registration root is `~/.agents/skills`, covering the
-  `K-Dense-AI/scientific-agent-skills` collection, `browser-use` and `find-skills`. Install companion skills
-  there and read them on demand with `skill search/read`. Provenance and scope: D-34 in `docs/DECISIONS.md`.
+- Lazy-first: standard library over existing dependencies over new ones; abstractions only for current need.
+- Every non-trivial behavior gets a runnable acceptance test or self-check. Deleting code is preferred.
+- CI and local development share make targets. Clippy runs with `-D warnings` on all targets.
+- Engine integration tests isolate `XDG_CONFIG_HOME` and `XDG_STATE_HOME` in child processes. Environment changes
+  touch only the test's own variables and restore them within that test.
+- Leave a `ponytail:` comment on simplifications with a known ceiling and state the upgrade path.
+- Credentials come from environment variables or machine stores; never write them into the repository, prompts,
+  events or logs.
+- Skills are registered at `~/.agents/skills` and read on demand with `skill search/read`; skill instructions
+  never widen execution permissions.

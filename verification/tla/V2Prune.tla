@@ -32,7 +32,7 @@
 (* What the model is and is not: one prune over an abstract set of archived    *)
 (* rows, and the *selection* only. Whether the bytes really leave the disk,    *)
 (* what a kept row's reason says, and the clock are outside it — the live half *)
-(* is `review/dogfood/sessions_prune.py` (it backdates an archive by rewriting *)
+(* is `tools/dogfood/sessions_prune.py` (it backdates an archive by rewriting *)
 (* `archived_ms`, which is the file the verb reads, and checks the directory   *)
 (* and the registry record afterwards) and the deterministic halves are        *)
 (* `sessions::tests::prune_takes_only_archived_sessions_past_the_window_and_   *)

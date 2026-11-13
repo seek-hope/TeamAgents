@@ -1,63 +1,34 @@
-# Daily coding readiness and candidate work
+# Current product comparison and open work
 
-Updated **2026-10-29** for D-492. This page owns the remaining candidate queue. Current behavior is in
-[USER-GUIDE.md](USER-GUIDE.md), evidence in [ACCEPTANCE.md](ACCEPTANCE.md), and confirmed decisions in
-[DECISIONS.md](DECISIONS.md). A queue item is not implementation, model-spend or publication authorization.
+This is the only candidate-work queue. It records what is not yet established by current source or evidence.
+Implemented behavior is summarized in [CAPABILITIES.md](CAPABILITIES.md); acceptance evidence is in
+[ACCEPTANCE.md](ACCEPTANCE.md).
 
-TeamAgents supports controlled daily coding on Linux with configured models and development tools. Current
-evidence does not establish equal task success, lower cost or less intervention than Pi, nor a general sole-agent
-replacement. The public v0.2.0 archive was replaced from `bee64381` on 2026-10-30 and its published install
-check passed; this does not change the comparison evidence below.
+## Implemented and verified locally
 
-## Implemented scope
+- Persistent work, scoped collaboration, recovery, required checks and usage accounting.
+- Files, host Shell, Web tools, Skills, MCP resources and restricted codemode.
+- One Leader TUI with sessions, editing, approvals, media and `/tree` access.
+- One session-level exploration tree with revisioned atomic patches, compaction integration, CLI/daemon/export
+  projections and ordered-pair verification.
+- Current development and verification tools under `tools/`.
+- 773 Rust tests, 65 positive TLA configurations in 62 traversals, 327 controls, 79 witnesses and 9 Kani
+  harnesses. PTY covers five terminal profiles and both forced graphics modes.
 
-| Area | Current behavior | Evidence boundary |
+## Open work
+
+| Priority | Open item | Required next evidence or decision |
 |---|---|---|
-| Work continuity (D-487 / DD-11) | Shared behavior emphasizes user intent, initiative and excellent results. Works persist across turns, compaction and restart; continuation is bounded; questions, attention, stops and completion are distinct. Subsequent work is admitted internally with its costs and limits | Scripted providers, SQLite/fault tests and recorded process groups; no measured long-task success rate. Heuristics can block legitimate repetition |
-| Repository setup | TeamAgents reads repository-local configuration for trusted canonical roots and discovers instruction files; user-only policy stays at user level | Configuration, missing-tool and revocation tests plus real Cargo/Python/Node Skill workflows; not every dependency ecosystem |
-| Diagnosis and inputs (DD-01 / DD-04) | Read-only diagnosis, explicit recovery, instruction/source observations, immutable queued-input revisions and delivery receipts | Observation does not prove execution or completion; a config change is not a hot reload |
-| Editing and tools (DD-05) | Atomic disjoint edits, bounded read parallelism, file/Shell/Skill tools, provider-neutral search, MCP resources and codemode | Host execution is not confinement. Real Cargo/Python/Node and MCP resource checks are local; broader dependency workflows and real-service evidence remain |
-| Conversation and models (D-489–D-491 / DD-06) | Grok-style Leader conversation with elevated prompts, grouped activity, live status, compact model chrome and `@` file references; shared message/queue editing and complete answers | Scripted TestBackend/PTY checks, not a usability benchmark or every terminal/provider |
-| Collaboration and recovery | Scoped task grants, independent members, worktrees, durable operations, runner recovery and declared-workspace takeover checks | Task cancellation is not process stop. Unknown effects are not replayed; remote/escaped effects are outside the local group observer |
-| Verification and accounting | User-required checks, scoped completion evidence, known/unknown usage, native windows and cache telemetry. Reviewer calls share the work budget; D-502 adds independent adversarial implementation review and fail-closed regressions | Check quality and semantic completeness remain distinct; live reviewer judgement and novel prompt-injection resistance remain unmeasured |
+| P0 | Matched Pi / alternative-harness comparison | Frozen versions/tasks, same model/native window/effort/authority/budget, repeated paired trials, hidden checks, honest outcomes, interventions, duration and priced cost if separately authorized |
+| P1 | Reviewer and model judgement quality | Independent adversarial cases, current-model results, prompt-injection resistance and explicit price semantics |
+| P1 | Provider and environment acceptance | Real providers and native protocols, Search/Fetch, images, MCP OAuth, public hosts and selected graphical-terminal combinations |
+| P1 | Exploration-tree usefulness | Evaluate whether real models produce accurate, complete trees and reduce user lostness; scripted transition checks alone are insufficient |
+| P2 | Integration contracts | Specifically needed versioned MCP auth/SDK/client/extension interfaces and runnable examples; resource list/read alone does not close this |
+| P2 | Distribution acceptance | Exact authorized artifacts on a genuinely clean host: install, upgrade, rollback, retained config and source/artifact identity |
+| P2 | Formal completion | Wide exhaustive search, full Rust/SQLite refinement, whole-system composition and Policy B source-bound bidirectional fair-trace equivalence |
+| P2 | Repository configuration | reads repository-local configuration only through explicit project trust; permissions, hooks, checks, limits, retention and update policy remain user-only |
+| P2 | Environmental semantics | Scheduler/provider fairness, filesystem races, escaped descendants, remote effects and real power-loss behavior |
+| P2 | Retention and integration policy | Artifact lifetime versus history retention, broader dependency ecosystems and general long-horizon outcomes |
 
-DD-02's specified local Rust/Python/Node, relative-Skill, missing-tool and revocation coverage is implemented
-through D-500 and existing environment/control tests. This does not claim every package manager or dependency
-workflow. DD-11 was approved and implemented as D-487; it is no longer an unapproved proposal. Its dated
-[source study](../review/goal-autonomy-2026-10-28/REPORT.md) explains the upstream design inputs and their limits.
-Local validation and its limits are recorded in ACCEPTANCE. D-461, D-467, D-469 and D-473/D-476 implement the
-other selected DD items above. Their remaining evidence limits do not authorize arbitrary new features.
-
-## Remaining candidates
-
-Priorities express daily-development impact, not delivery promises. P0 blocks a general sole-agent
-recommendation; P1 addresses recurring friction; P2 depends on the user's actual workflow. Each item needs a
-bounded agreement. Paid trials, external-service changes and publication need separate authorization.
-
-| ID / priority | Candidate | Required evidence or decision |
-|---|---|---|
-| DD-03 / P0, postponed | Matched Pi comparison on held-out coding tasks | Frozen versions/tasks, same model/native window/effort/authority/budget, repeated paired trials, hidden checks, honest outcomes, interventions and time; priced cost only if authorized |
-| DD-07 / P1 | Approval-review quality and adversarial evidence | D-502 adds independent adversarial implementation review and reproduced controls; live-model judgement quality and dated price semantics remain |
-| DD-08 / P1 | Wider provider, image, MCP OAuth and terminal acceptance | D-502 covers actual tmux and isolated loopback SSH; isolated real provider/OAuth round trips, public-host and selected graphical-terminal combinations remain |
-| DD-09 / P2 | MCP resource browsing and additional integration coverage | resources/list/read are implemented with binding and ambiguity checks; broader auth, SDK/client and extension interfaces still need versioned contracts and runnable examples |
-| DD-10 / P2 | Distribution freshness | Exact authorized artifacts, clean-host install/update/rollback, retained config and source/artifact identity; documentation work does not authorize a release |
-
-Artifact lifetime versus history retention (D-438) and the interpretation of Q16 collaboration (D-264) remain
-policy questions. Ambient capability inheritance is excluded. Do not add a framework, larger TUI, marketplace,
-LSP or automatic indexing merely to resemble another product.
-
-## Comparison evidence
-
-| Evidence | What it establishes |
-|---|---|
-| Pi 1.3.0 source/docs inspection, 2026-10-22 | Historical inspection only; the removed feature-by-feature table is available in Git history and is not a current product specification |
-| D-485 follow-up, 2026-10-28 | Pi 1.4.0 was started offline; fixed Codex source `13b0217567d3` informed conversation UX. Codex was not executed, and no paired model trial ran |
-| [D-489 TUI study](../review/tui-reference-2026-10-29/REPORT.md) | Pinned Codex, Grok Build and herdr implementations/screenshots; Grok selected for the closest single-conversation fit. Upstream source inspection is not an executed usability comparison |
-| [D-450 comparison](../review/parity-2026-10-08/REPORT.md) | Earlier pinned versions and scoped presentation evidence |
-| [D-451 maturity report](../review/maturity-2026-10-11/REPORT.md) | Immutable local workflow and installation receipts, valid for their pinned source |
-| [Capability ledger](CAPABILITIES.md) and [benchmark ledger](../review/benchmark/README.md) | Historical real-service/coding results with their own models, sources and limits |
-| Current local checks | `make check`, `make pty` and the formal targets; current results belong in ACCEPTANCE and the formal report |
-
-Keep the Rust control plane, authoritative SQLite database, daemon/client boundary, minimal conversation, and
-scriptable management. User instruction and intent drive exploration. Existing authorization stays in effect,
-while new authority, replaying unknown effects, and unselected policy changes each require an explicit decision.
+Paid trials, external-service changes, installation/runtime replacement and public release are separate operations
+and are not implied by this queue.

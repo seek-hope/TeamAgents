@@ -40,7 +40,7 @@
 (* first, and the recovery path rewrites the unverifiable band to             *)
 (* OUTCOME_UNKNOWN with `starts`/`command_hash` beside it; engine/src/jobs/   *)
 (* client.rs — `go` is idempotent and `persisted_journal` is what judges a    *)
-(* dead runner. The live halves are review/dogfood/job_identity.py (A15/A10:  *)
+(* dead runner. The live halves are tools/dogfood/job_identity.py (A15/A10:  *)
 (* pid/start_ticks/boot_id re-derived from /proc, a duplicate GO, a guessed   *)
 (* job token) and the crash probes (crash.py, unknown_outcome.py, cancel.py). *)
 (*                                                                           *)

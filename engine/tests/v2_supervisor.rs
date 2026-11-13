@@ -1432,7 +1432,7 @@ async fn the_delegator_cancels_its_own_abandoned_task_and_its_wait_resolves() {
 /// with a *user input* instead ("a delegated task would keep it busy … and its extra requests would make the
 /// 'next request' assertions ambiguous"), so the task-driven shape was never covered.
 ///
-/// The live `review/dogfood/authority.py` run of 2026-09-27 failed in exactly that shape (kept session:
+/// The live `tools/dogfood/authority.py` run of 2026-09-27 failed in exactly that shape (kept session:
 /// `/tmp/teamagents-probe-harness-3/authority`): after `teamagents authority grant --subject
 /// worker_shell_probe --action shell --scope workspace` (unrevoked, the worker's `workspace_ref` the shared
 /// workspace, its stored profile still carrying the `shell` schema), the worker's two following task-driven

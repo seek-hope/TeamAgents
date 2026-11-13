@@ -28,7 +28,7 @@
 (* resolves `providers::resolve_model(&catalog, &profile.model)` and passes    *)
 (* that entry's `max_retries`, with the session constant as the fallback),     *)
 (* engine/src/v2/driver.rs (`attempt <= max_retries` and the park sentence).   *)
-(* The live half is `review/dogfood/max_retries.py` (offline): a config asking *)
+(* The live half is `tools/dogfood/max_retries.py` (offline): a config asking *)
 (* for 0 sends one request, one asking for 3 sends four, and the key omitted   *)
 (* sends the struct default's count.                                          *)
 (*                                                                           *)

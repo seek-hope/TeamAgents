@@ -22,7 +22,7 @@
 (* caller) and `UserConfig::instruction_files`; engine/src/v2/driver.rs      *)
 (* `team_kernel` — the one place an instance's system text is composed, so   *)
 (* the leader and every child pass through it, and it composes per turn.     *)
-(* The live half is `review/dogfood/instructions.py` (credential-free since  *)
+(* The live half is `tools/dogfood/instructions.py` (credential-free since  *)
 (* D-246): a local server answers the leader with a `spawn` call and the     *)
 (* probe reads the captured requests, so the assertion is on the bytes the   *)
 (* provider received; `config::instruction_text_…` covers the composition.   *)

@@ -1,6 +1,6 @@
 # Claims without a refuting control
 
-`review/verification_catalogue.py` requires every **behavioural** claim a positive configuration checks to be
+`tools/verification_catalogue.py` requires every **behavioural** claim a positive configuration checks to be
 either the `expects:` target of a counterexample configuration (that control is then shown to
 refute it, D-462) or a row here with a status. **0** claims are in this state today: they are
 enumerated exhaustively by TLC, but no configuration is shown to break them, so a claim that
@@ -9,7 +9,7 @@ go down by adding a control (and then deleting the row) or by replacing the row 
 status: `entailed-by: <Claim>` (the named claim is refuted by a control and implies this one) or
 `structural: <reason>` (a property of the definition, not of a reachable state).
 
-Regenerate with `python3 review/verification_catalogue.py --write-coverage`.
+Regenerate with `python3 tools/verification_catalogue.py --write-coverage`.
 
 | Module | Claim | Status |
 |---|---|---|

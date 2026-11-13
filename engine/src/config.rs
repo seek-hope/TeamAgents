@@ -223,7 +223,7 @@ pub fn sessions_dir() -> PathBuf {
 
 /// The file a user creates in a state root to say "keep this root": the third class DESIGN §9 separates, and the
 /// `evidence` guard `verification/tla/V2Retention.tla` pins (D-192's `MC_retention_evicts_evidence` control is the
-/// counterfactual "a sweep that ignores the mark"). The design's own evaluation evidence (`review/eval/**`) is
+/// counterfactual "a sweep that ignores the mark"). External evaluation evidence is
 /// never inside a session database, so the mark is how a *user* keeps a session's history: the retention sweep
 /// refuses a marked root and `doctor` says so (D-245).
 pub const EVIDENCE_MARKER: &str = "EVIDENCE";

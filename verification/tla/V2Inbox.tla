@@ -33,7 +33,7 @@
 (* 'ACCEPTED' ORDER BY sequence` read, the stale-epoch branch that seals      *)
 (* SUPERSEDED and names the ids (`sealed_ids`, D-72), the `append_context(…)  *)
 (* Some(&id) …)` whose id is the dedup key, and the 'APPLIED' marker beside   *)
-(* it. The live half is `review/dogfood/crash.py` and `unknown_outcome.py`    *)
+(* it. The live half is `tools/dogfood/crash.py` and `unknown_outcome.py`    *)
 (* for the restart shapes and `queued_input.py` for D-72.                    *)
 (*                                                                           *)
 (* The ids *are* the envelope sequence numbers (`queue_envelope` assigns        *)

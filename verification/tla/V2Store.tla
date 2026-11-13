@@ -20,7 +20,7 @@
 (* never does. The stronger, byte-level version of that claim lives in the     *)
 (* code's own test (`open_never_adopts_an_unstamped_file_that_holds_foreign_   *)
 (* tables` compares the file with what it held before) and in               *)
-(* `review/dogfood/boundary.py`, which hashes the file across a real `exec`.   *)
+(* `tools/dogfood/boundary.py`, which hashes the file across a real `exec`.   *)
 (*                                                                          *)
 (* The counterfactual `IgnoreForeign` is the D-87 defect: `create = true`      *)
 (* initializes whenever there is no stamp, foreign tables or not.             *)

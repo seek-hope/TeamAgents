@@ -1,2 +1,0 @@
-/bin/bash: line 28: cd: units/slugify: No such file or directory
-SLUGIFY_EXIT=1

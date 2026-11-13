@@ -16,7 +16,7 @@ Three rules decide whether a key is applied:
   `skills_paths` and `instruction_files` merge in, and your own definitions of the same name always win.
   `[permissions]` (trust and operation-review keys), `hooks`, `checks`, `retention`, `limits` and
   `update` may only ever come from your config, trusted or not. USER-GUIDE §2 describes this boundary;
-  ACCEPTANCE records current coverage. `python3 review/project_config_claim.py` checks the basic loading
+  ACCEPTANCE records current coverage. `python3 tools/project_config_claim.py` checks the basic loading
   claim, while the loader tests cover ancestor discovery and canonical-root trust (D-434).
 * **The reference distinguishes runtime consumers from configuration/CLI plumbing.** A field reported as
   having no runtime reader is not necessarily ignored: archived_days is consumed by sessions prune (D-435),
@@ -34,7 +34,7 @@ Three rules decide whether a key is applied:
   is a value that is free-form by design: `generation_options` is a `HashMap` the provider passes through, so its
   keys are the service's, not this build's.
 
-The table is generated from the structs in `core/src/models.rs` by `python3 review/config_reference.py --write`;
+The table is generated from the structs in `core/src/models.rs` by `python3 tools/config_reference.py --write`;
 `make hygiene` fails when the two drift. Two things to read carefully: the **Absent** column is the value the
 field holds when the key is missing, which is not always the *effective* default (an `Option` key is usually read
 with `unwrap_or(…)`, so the reader decides — `tool_timeout_s` is unset here and 120 seconds where it is used), and

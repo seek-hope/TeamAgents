@@ -1,1 +1,0 @@
-python3 -c "import configparser; c = configparser.ConfigParser(); assert c.read('app.ini'), 'app.ini missing'; assert c['staging']['retries'] == '5', c['staging']['retries']; assert c['dev']['retries'] == '3' and c['prod']['retries'] == '3', 'unrelated sections changed'"

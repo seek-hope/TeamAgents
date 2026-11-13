@@ -9,7 +9,7 @@
       "bridges": [
         {
           "kind": "evaluation",
-          "path": "review/eval/r2-p6/run.py"
+          "path": "docs/PRODUCT-COMPARISON.md"
         }
       ],
       "remaining": "No formal theorem establishes model ability, cost or equal-budget comparative gain."
@@ -389,7 +389,7 @@
       "bridges": [
         {
           "kind": "evaluation",
-          "path": "review/eval/r2-p6/run.py"
+          "path": "docs/PRODUCT-COMPARISON.md"
         }
       ],
       "remaining": "No bounded protocol model proves comparative task success."
@@ -402,7 +402,7 @@
       "bridges": [
         {
           "kind": "evaluation",
-          "path": "review/eval/r2-p6/run.py"
+          "path": "docs/PRODUCT-COMPARISON.md"
         }
       ],
       "remaining": "No statistical significance or cost forecast follows from formal gates."

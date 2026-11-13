@@ -579,7 +579,7 @@ mod tests {
 
     /// D-416: the three numbers a stream reports. A frame resets the gap clock, the first one measures the wait for
     /// the model's first word, and a body that never streamed reports no frames — which is not the same as a stream
-    /// with no gap (that difference is what makes the column in `review/benchmark/cadence.py` readable).
+    /// with no gap (that difference is what makes the column in the benchmark cadence table readable).
     #[test]
     fn frames_measure_the_first_wait_and_the_longest_silence() {
         let mut timing = StreamTiming::new(std::time::Instant::now());

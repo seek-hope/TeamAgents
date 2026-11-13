@@ -25,7 +25,7 @@ For enrolled work, `work_checkpoint` is a sole control action for progress, ques
 new-work admission. It does not grant capabilities. Behavior instructions encourage exploration and excellent
 results within user intent and scope; harness instructions define scheduling, evidence and stopping.
 
-The section below is generated from those three functions by `python3 review/tool_catalogue.py --write`, so a
+The section below is generated from those three functions by `python3 tools/tool_catalogue.py --write`, so a
 renamed tool, a new parameter or a reworded model-facing description fails `make hygiene` until the document is
 regenerated. Descriptions are quoted verbatim because they are what the model reads.
 

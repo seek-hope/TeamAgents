@@ -1,475 +1,46 @@
-# Formal verification (control plane and beyond)
+# Current formal verification guide
 
-Work: turn the **confirmed protocol properties** of the [design](../docs/DESIGN.md) into machine-checkable
-specs instead of relying on sample tests alone.
-
-D-480 removed OS sandbox execution. V2Isolation and its configurations are retained as historical
-abstract evidence and still checked for internal consistency; they no longer map to a product backend.
-
-Verification has three layers, all material sitting in this directory: (1) **protocol models** — TLA+/TLC
-specs (`tla/V2*.tla` plus `MC*.cfg`) abstracting the protocol behaviour of `core/src/v2/control.rs` and
-`engine/src/v2/driver.rs`; (2) the **executable spec-to-code correspondence** — `core/tests/v2_invariants.rs`
-recomputes the invariants over real command sequences; (3) the **pure-function layer** — bounded enumeration in
-`core/tests/kernel_properties.rs` plus Kani proofs in `kani/`. The TLA+ model is **not a refinement proof**:
-results on the model do not automatically hold for the code, and code-side results come from bounded
-exploration. The boundaries are in "Boundaries" below and in [REPORT.md](REPORT.md). The two positive targets (`verify-model*`) and `verify-kani` **require their success marker** — a TLC run that prints
-"No error has been found", a Kani summary with zero failures — because their output also contains the failure
-words, and a recipe whose status was a `grep` for those could pass while a property was violated (D-122). A run
-that prints a `Warning:` is a failure too (D-206): TLC reports an inconsistent model — an `UNCHANGED` list that
-contradicts an assignment, so the action is inert — as a warning and still says `No error has been found`, which is
-how the first version of `V2Jobs` had a counterfactual that silently *verified* instead of refuting. One ordering
-note (D-202): §0 pins the commit the gates were last run at, and the rule that checks it reads the *committed*
-material — so a change to `tla/` or `kani/` lands one commit before the pin that documents its re-run, which is the
-shape D-206 was committed in.
-
-<!-- maps: verification/REPORT.md reader=evidence -->
-
-## D-496 positive traversal batching
-
-The 59 positive source configurations run in **56 traversals**. The
-[batch runner](../review/verification_batches.py) groups only the same root module and identical non-claim
-configuration, then checks every invariant/property in their union. Original configurations remain the
-catalogue, requirement and witness inputs; 304 negative controls still run separately. Unknown syntax,
-indented directive keywords, fault-control inputs and colliding config basenames are rejected. Actual TLC
-fixtures check that a failure in the second source configuration cannot disappear when claims are combined.
-Replay directories preserve original/generated configs, module sources, logs, commands and SHA-256 values.
-
-The control model avoids repeated active-request searches and enumerates operation subsets after choosing
-the response branch. It retains every original transition choice and fairness assumption. The
-[measurement report](../review/formal-optimization-2026-11-03/REPORT.md) records exact action comparison,
-profiling and isolated canonical-ID/stutter experiments. Those experiments are not part of the accepted
-model, and neither a smaller experimental graph nor a green finite run completes the wide or implementation
-proof obligations. The current verified material and gate results remain in [REPORT.md](REPORT.md).
-
-## D-495 reachability, repaired abstractions and current requirements
-
-The current inventory has **47 modules**, **59 positive configurations**, **304 negative controls**,
-one separately driven wide configuration and **68 normal-path witnesses** across all 46 current modules.
-The historical isolation module remains separate. Counts describe the inventory; completed run evidence
-and the immutable material pin belong in [REPORT.md](REPORT.md).
-
-[REQUIREMENTS.md](REQUIREMENTS.md), generated from `requirements.json`, classifies every Q1-Q19 and A01-A36
-entry with checked claims, concrete bridge files and explicit residual obligations. Catalogue completeness
-is not complete formal coverage of the implementation: no full Rust/SQLite refinement or module-composition
-theorem is claimed. The catalogue gate also validates this inventory and the witness inventory.
-
-<!-- maps: verification/REQUIREMENTS.md reader=evidence -->
-
-Three distinct gates are required: positive safety/liveness checks, named fault controls, and existential
-normal-path witnesses. `make verify-witnesses` runs the latter from `witnesses.json` without enabling faults
-or changing constants. A negative reachability predicate must produce the exact expected safety violation
-and a noninitial trace; exhaustive absence, timeout, warnings and other errors fail. A guided path intersects
-the original Next relation and preserves Init and the fairness suffix; it can restrict but cannot invent
-transitions. Executed fixtures accept a valid path and reject a forged transition and an absent target.
-Traces and SHA-256 replay receipts are retained in the runner's printed output directory. One witness per
-module is an anti-vacuity floor, not complete action/path coverage.
-
-The old control model selected only replies, so tools/waits/completion never happened. It now enumerates
-response kinds and outcomes, records actual attempt identities, counts equal reservation amounts separately,
-and allocates fresh operation slots per request. `tla/MC_control_attempts.cfg` exposes lost/late attempts;
-`tla/MC_control_decisions.cfg` exposes two successive decisions without overwriting old operations.
-Reset/termination close pending requests and PREPARED operations, request cancellation for dispatched work,
-and keep late receipts on their original operations. `NoDispatchOnTerminated` constrains new dispatch,
-not historical effects; `NoReceiptAcrossEpochs` constrains context import, not old-operation settlement.
-Completion and wait phases have their real exit paths. Per-instance TurnStep uses **strong fairness**:
-recurring crashes can break weak-fair enabling intervals. This is an explicit scheduler/provider assumption,
-not a promise of progress on an unavailable host. TLC checks temporal properties on the complete graph
-(`-lncheck final`); a partial search never passes.
-
-Artifact publication preserves owner holds. Ordinary history references can be removed under abstract
-eligibility guards; release and GC claim/delete/collect are separately reachable. `ReleaseKeepsTheRowAndTheBytes`
-is a release-step property, not a permanent prohibition on later legal GC. `tla/MC_wait_deferred.cfg` adds a
-real unswept operation fact; task/message atomic wake remains unchanged. Authority enumerates both concrete
-instance targets and includes a normal task-capability approval path. Low-level arbitrary task metadata is
-not a proved extension of that path.
-
-| New finite model and positive configuration | Scope, bridge and precise negative controls |
-|---|---|
-| `tla/V2ExecutionChain.tla`, `tla/MC_executionchain.cfg` | Control dispatch, hook veto, durable runner acceptance, journal recovery, immutable receipts and epoch-fenced consumption. Anchors: `core/src/v2/control.rs`, `engine/src/v2/driver.rs`, `engine/src/jobs/runner.rs`, `engine/src/v2/work.rs`; bridges: `engine/tests/cases/jobs_robustness.rs`, `engine/tests/cases/autonomy.rs`. Cancellation and observed stop are distinct. This is one finite composition slice, not a theorem composing all modules or actual fsync/signals. Claims: `TypeOK`, `DispatchWasAuthorized`, `EffectHasControlCommit`, `EffectHasDurableAcceptance`, `VetoPreventsEffect`, `UnknownIsNeverReplayed`, `ContextKeepsItsEpoch`, `TakeoverNeedsStopEvidence`, `TerminalReceiptIsImmutable`. Controls: `tla/MC_executionchain_accept.cfg` → `EffectHasDurableAcceptance`; `tla/MC_executionchain_commit.cfg` → `EffectHasControlCommit`; `tla/MC_executionchain_epoch.cfg` → `ContextKeepsItsEpoch`; `tla/MC_executionchain_receipt.cfg` → `TerminalReceiptIsImmutable`; `tla/MC_executionchain_replay.cfg` → `UnknownIsNeverReplayed`; `tla/MC_executionchain_stale.cfg` → `DispatchWasAuthorized`; `tla/MC_executionchain_takeover.cfg` → `TakeoverNeedsStopEvidence`; `tla/MC_executionchain_veto.cfg` → `VetoPreventsEffect`. |
-| `tla/V2StreamBoundary.tla`, `tla/MC_streamboundary.cfg` | Bounded provider bodies, complete frames/responses, stall renewal and visible-text retry barriers. Anchor: `engine/src/providers/stream.rs`; bridge: `engine/tests/cases/provider_robustness.rs`. UTF-8/JSON parsing and HTTP/TLS remain tested implementations, not proved parsers. Claims: `TypeOK`, `BodyIsBounded`, `OnlyCompleteResponsesExecute`, `InvalidEventsAreRejected`, `PartialChunksDoNotRenew`, `VisibleTextIsNotReplayed`, `RetryBudgetIsBounded`. Controls: `tla/MC_streamboundary_invalid.cfg` → `InvalidEventsAreRejected`; `tla/MC_streamboundary_partial.cfg` → `OnlyCompleteResponsesExecute`; `tla/MC_streamboundary_retry.cfg` → `RetryBudgetIsBounded`; `tla/MC_streamboundary_size.cfg` → `BodyIsBounded`; `tla/MC_streamboundary_stall.cfg` → `PartialChunksDoNotRenew`; `tla/MC_streamboundary_visible.cfg` → `VisibleTextIsNotReplayed`. |
-| `tla/V2ProfileSwitch.tla`, `tla/MC_profileswitch.cfg` | Only a user may switch a nonterminated instance at READY/WAITING; admitted request profiles remain frozen. Anchor: `core/src/v2/control.rs::set_instance_profile`; bridges: control unit tests and `engine/tests/v2_driver.rs`. Two resolved profile names abstract native provider options. Claims: `TypeOK`, `OnlyUserSwitches`, `SwitchUsesSafeBoundary`, `RequestProfileIsFrozen`. Controls: `tla/MC_profileswitch_midturn.cfg` → `SwitchUsesSafeBoundary`; `tla/MC_profileswitch_nonuser.cfg` → `OnlyUserSwitches`; `tla/MC_profileswitch_rewrite.cfg` → `RequestProfileIsFrozen`; `tla/MC_profileswitch_terminated.cfg` → `SwitchUsesSafeBoundary`. |
-| `tla/V2SkillAuthority.tla`, `tla/MC_skillauthority.cfg` | A skill read needs its binding and a canonical regular file inside the registry; content cannot mint authority. Anchor: `engine/src/tools.rs`; bridges: its skill unit tests and `engine/tests/v2_mcp.rs`. Filesystem checks are premises, not a proof against path races. Claims: `TypeOK`, `SkillReadNeedsBinding`, `SkillReadStaysInRegistry`, `SkillContentCannotGrant`. Controls: `tla/MC_skillauthority_escape.cfg` → `SkillReadStaysInRegistry`; `tla/MC_skillauthority_grant.cfg` → `SkillContentCannotGrant`; `tla/MC_skillauthority_unbound.cfg` → `SkillReadNeedsBinding`. |
-| `tla/V2ExportSnapshot.tla`, `tla/MC_exportsnapshot.cfg` | Pages share one read snapshot; bounded, complete, synced output is published without replacing an existing destination. Anchor: `engine/src/v2/session_export.rs`; bridge: `engine/src/v2/session_export_tests.rs`. Cancellation is sampled before publication; a later cancellation cannot undo hard_link. A crash after publication may leave valid output without a success reply. SQLite and filesystem atomicity are assumed; fork/retention composition is not proved. Claims: `TypeOK`, `PagesShareSnapshot`, `ExportBytesAreBounded`, `PublicationIsComplete`, `ExistingDestinationSurvives`. Controls: `tla/MC_exportsnapshot_publish.cfg` → `PublicationIsComplete`; `tla/MC_exportsnapshot_replace.cfg` → `ExistingDestinationSurvives`; `tla/MC_exportsnapshot_size.cfg` → `ExportBytesAreBounded`; `tla/MC_exportsnapshot_snapshot.cfg` → `PagesShareSnapshot`. |
-
-Kani now compiles `core/src/v2/capability.rs` directly. In addition to the seven existing arithmetic harnesses,
-`capability_vocabulary_matches_the_requested_shape` proves six actions by twelve representative scopes;
-`unknown_action_cannot_gain_session_authority` proves rejection of every one-byte ASCII action even with
-session scope. These two harnesses do **not** prove arbitrary Unicode scope algebra, prefix transitivity or
-all command identities. Broader bounded-string proof attempts were stopped for resource use and are not
-evidence of success.
-
-## D-494 supervision and evidence checks (historical baseline)
-
-The D-494 catalogue contained 41 modules, 50 positive configurations, 273 negative controls and one
-separately driven wide configuration. The catalogue now derives checked claims only from the positive
-configurations. A control must actually list its expected claim. All exhaustive targets reject warnings
-and require a successful exit and verdict. Negative verdicts are checked by
-[tlc_verdict.py](../review/tlc_verdict.py): a generic temporal failure is accepted only when the configuration
-lists exactly its expected temporal property. A named constant-FALSE invariant is a static refutation;
-it is not reported as an explored counterexample trace.
-
-| Model and positive configuration | Checked behavior and dedicated controls | Boundary |
-|---|---|---|
-| `tla/V2JobSupervision.tla`, `tla/MC_jobsupervision.cfg` | `TypeOK`, `UnsavedAcceptanceNeverExecutes`, `CancelGraceNeverReplenished`, `CancelledGroupWasEscalated`, `TerminalHasRetirementTime`, `NormalServicesArePreserved`, `DeadlineEventuallyCancels`, `SettledRunnerEventuallyLeaves` cover durable acceptance, stalled clients, timer resets, repeated cancel, leader reaping, retirement and normal background services. | One clock step abstracts a deadline/grace interval. Signal delivery and identity are abstract; no OS, escaped-descendant, remote-effect or Rust refinement proof. |
-| `tla/V2Discovery.tla`, `tla/MC_discovery.cfg` | `TypeOK`, `ExitedCoordinatorNotifiesDrivers`, `DiscoverySurvivesBackpressure` cover a temporary full storage queue and cleanup after a fatal discovery error. | One finite saturation burst and fair drain/discovery; no progress promise under permanent overload or failed driver construction. |
-| `tla/V2Daemon.tla`, `tla/MC_daemon.cfg` | `CommandApplicationCountIsBounded` counts applications per command. The historical `AppliedAtMostOnce` predicate checks receipt presence; it alone does not prove deduplication. | The model abstracts command transactions and does not prove SQLite/Rust refinement. |
-
-The nine job-supervision controls are `tla/MC_jobsupervision_socket.cfg`, `tla/MC_jobsupervision_timer.cfg`, `tla/MC_jobsupervision_grace.cfg`, `tla/MC_jobsupervision_reap.cfg`, `tla/MC_jobsupervision_timestamp.cfg`, `tla/MC_jobsupervision_normal.cfg`, `tla/MC_jobsupervision_retire.cfg`, `tla/MC_jobsupervision_persist.cfg`, `tla/MC_jobsupervision_completion.cfg`; the discovery controls are `tla/MC_discovery_pressure.cfg` and `tla/MC_discovery_cleanup.cfg`.
-The daemon count control is `tla/MC_daemon_duplicate_effect.cfg`. Each names the property it must refute.
-The complete proof boundary and the remaining implementation gaps are in [REPORT.md](REPORT.md).
+This guide describes the current TLA+/Kani material and how to run it. Results and abstraction limits are in
+[REPORT.md](REPORT.md); requirement/evidence mapping is in [REQUIREMENTS.md](REQUIREMENTS.md).
 
 ## Running
 
 ```bash
-make verify-model           # small control-plane configuration (seconds)
-make verify-model-all       # small configurations for all modules (control plane, artifacts, waits,
-                            # tasks, compression, daemon (its protocol and the D-248 stop lever), required
-                            # checks, authority, the user's surface,
-                            # session-store identity, retention, the job handshake, the inbox, the write-failure
-                            # latch, the coordinator lock, the config trust gate, what a prompt carries,
-                            # the retry budget, the member workspace, the daemon's concurrent readers)
-make verify-model-counterexamples   # the negative controls (authority surface D-61, inbound boundary D-63,
-                            # the retry boundary D-64/D-65, the runtime's own closing word D-71, the
-                            # landing-attribution rule D-72, the store-identity guard D-87, the four retention
-                            # guards D-192, the four job-handshake rules D-206, the five inbox rules D-207, the four write-failure
-                            # rules D-208, the three coordinator-lock rules D-210, the five trust-gate
-                            # rules D-244, the three prompt-composition rules D-246, the three retry-budget
-                            # rules D-247 and the three concurrency rules D-291):
-                            # each must be *refuted*, or the property it targets proves nothing
-make verify-model-wide      # wide control-plane configuration (2 instances / 2 operations; tens to hundreds of
-                            # millions of states, slow — the 2-instance run is what catches per-instance
-                            # fairness regressions. Beyond a bounded attempt: D-210)
-make verify-model-sim       # any configuration by random simulation (~2-4 minutes, 20k behaviors of depth
-                            # 100): the *invariants* only — simulation checks no temporal property — and a
-                            # violation found here is real while absence proves nothing (D-211, D-215).
-                            # `SIM_CONFIG=…` picks one, including the refuted controls
-make verify-witnesses       # reachable normal paths; not safety proofs
-make verify-kani            # arithmetic and bounded capability vocabulary (Kani toolchain required)
-cargo test --offline --manifest-path core/Cargo.toml --test v2_invariants   # spec-to-code correspondence
+make verify-model-all
+make verify-model-counterexamples
+make verify-witnesses
+make verify-kani
 ```
 
-The first run downloads the pinned `tla2tools.jar` (TLC v1.7.1, SHA-256 in the Makefile) into
-`$TLA_TOOLS_DIR` (default `~/.local/share/teamagents-verify`) and verifies it; the toolchain never enters the
-repository and never enters `make check`. Java is required (this machine uses OpenJDK 27).
+The first run may download the pinned **TLC v1.7.1** jar; its SHA-256 is pinned in `Makefile`. Keep generated states and manual probes under `tools/tmp/`.
+Do not treat simulation, a timeout, a witness or a green exit without semantic checks as proof.
 
-<!-- maps: verification/COVERAGE.md reader=evidence -->
+Current inventory: **393 configurations across 48 modules**: **65 positive configurations in 62 traversals**,
+**327 controls**, and one separate wide configuration. There are **79 witnesses** and **9 Kani harnesses**.
+Witnesses demonstrate reachability only. The wide configuration is not claimed complete, and Policy B canonical
+allocation is not adopted.
 
-## Specs and configurations
+## Session exploration tree
 
-| File | Contents |
-|---|---|
-| `tla/V2InputQueue.tla` + `tla/MC_inputqueue.cfg` | D-451 `TypeOK`, `VerifiedAdmission`, `PendingRevisionOnly`, `OriginalRetained`, `SnapshotDelivery`, `AtMostOnceDelivery`. Controls: `tla/MC_inputqueue_settled.cfg`, `tla/MC_inputqueue_revision.cfg`, `tla/MC_inputqueue_original.cfg`, `tla/MC_inputqueue_snapshot.cfg`, `tla/MC_inputqueue_replay.cfg`, `tla/MC_inputqueue_unverified.cfg`. Atomic snapshot admission and revision/consumption safety. Anchors: `core/src/v2/control.rs`, `engine/src/v2/attachments.rs`; bridges: `core/tests/input_queue.rs`, `engine/src/v2/attachments_tests.rs`, `engine/tests/cases/inputs.rs`. Filesystem checks and hashes are abstract verified predicates, not proved implementations. |
-| `tla/V2DisplayWorker.tla` + `tla/MC_displayworker.cfg` | D-451 `TypeOK`, `CurrentStartOnly`, `ObservedStopReaps`, `NoOrphanProcess`, `WorkerOutputBound`, `CurrentResultOnly`, `OwnerDropReaps`. Controls: `tla/MC_displayworker_stale.cfg`, `tla/MC_displayworker_deadline.cfg`, `tla/MC_displayworker_leak.cfg`, `tla/MC_displayworker_apply.cfg`, `tla/MC_displayworker_overflow.cfg`, `tla/MC_displayworker_drop.cfg`. Owned process and bounded output safety after the parent observes deadlines/cancellation. Anchors: `tui/src/graphics.rs`, `tui/src/subprocess.rs`; bridges: `tui/src/graphics_worker_tests.rs` and subprocess tests. Stop/reap is an atomic abstract transition, not a proof of kernel scheduling, parser termination, syscall isolation or liveness. |
-| `tla/V2Presentation.tla` + `tla/MC_presentation.cfg` | D-450 `TypeOK`, `CompletionOnlyEdits`, `CancelKeepsDraft`, `OnlyVisibleAdmitted`, `CacheIsBounded` and `StaleResultIgnored`. Five controls (`tla/MC_presentation_dispatch.cfg`, `tla/MC_presentation_erase.cfg`, `tla/MC_presentation_eager.cfg`, `tla/MC_presentation_overflow.cfg`, `tla/MC_presentation_stale.cfg`) refute the respective safety properties. Anchors: `tui/src/completion.rs`, `tui/src/graphics.rs`; concrete bridge: `tui/tests/parity.rs`, `tui/src/graphics_tests.rs` and PTY smoke. No parser-termination, graphical-quality, liveness or Rust-refinement proof. |
-| `tla/V2SessionUi.tla` + `tla/MC_sessionui.cfg` | D-446 session-browser receipts: `TypeOK`, `ConfirmedDelete` binds deletion to explicit confirmation; `SwitchAfterSuccess` keeps the old client until opening succeeds; `ExitAfterSuccess` and `DeletedCurrentExits` bind exit to successful current-session deletion. Controls `tla/MC_sessionui_confirm.cfg`, `tla/MC_sessionui_switch.cfg`, `tla/MC_sessionui_earlyexit.cfg`, `tla/MC_sessionui_keepopen.cfg` each refute their respective rule. Code anchors: `tui/src/sessions.rs`, `tui/src/session_client.rs`; bridge: `review/dogfood/tui_sessions.py` and `engine/tests/session_browser.rs`. No filesystem-atomicity, process-identity or rendering proof. |
-| `tla/V2Tui.tla` + `tla/MC_tui.cfg` | D-445 minimal client dispatch: `LeaderOnly` fixes send/interrupt targets; `ExplicitDecision` requires focused, pending approval and an explicit decision key; `ExitOnlyDetaches` separates exit from engine control. The last dispatch records the observed state so later polls cannot change its justification. Negative controls `tla/MC_tui_target.cfg`, `tla/MC_tui_approval.cfg`, `tla/MC_tui_exit.cfg` respectively redirect to a worker, approve while composing, and cancel on exit; each refutes its corresponding claim. Code anchors: `tui/src/v2app.rs`, with concrete bridges in `tui/tests/minimal.rs` and the PTY smoke. No proof of rendering, transport delivery, or stopping tools. |
-| `tla/V2Control.tla` | control-plane abstraction: instance phase machine, requests/attempts, decisions and operations, approvals, the dispatch linearization point, cancel/timeout, epoch resets, work budget reservations and settlement, crash/recovery, and the inbound boundary (an input that arrives during a turn waits for it, D-63) |
-| `tla/MC.cfg` | small configuration (1 instance / 1 operation / 2 request slots / 1 attempt slot / 1 epoch reset / 1 unknown usage) |
-| `tla/MC_control_midturninput.cfg` | negative control for D-63: the driver applies input *inside* the running turn (the pre-D-63 behaviour). `make verify-model-counterexamples` requires TLC to refute `InputLandsAtTheBoundary` here |
-| `tla/MC_control_two.cfg` | two-instance control-plane configuration (same domains as `MC.cfg`): the small check that tells a *per-instance* fairness or liveness assumption apart from one that lets one instance be starved by the other's progress |
-| `tla/MC_control_two_disjunction.cfg`, `tla/MC_control_deadline.cfg`, `tla/MC_control_reask.cfg`, `tla/MC_control_runtimeTail.cfg`, `tla/MC_control_landing.cfg` | negative controls (D-63/D-64/D-65/D-71/D-72): fairness as one disjunction over instances, a runtime that ignores the work's deadline, a runtime that re-opens a turn while the last word is the model's own (the pre-D-65 code), one that treats the runtime's own closing note as unaddressed work (the shape the pre-D-71 idle rule implied), and one that stores an input *inside* the running turn so its settlement belongs to a turn that never saw it (the pre-D-63 shape, and the premise the D-72 attribution rule rests on). All five must be refuted by `make verify-model-counterexamples` |
-| `tla/MC_control_warn.cfg` | the D-410 warning rules on `MC.cfg`'s session: `AtMostOneWarning` (the runtime appends at most one wrap-up note per work) and `WarnIsTimely` (it does so only while the work is live and the deadline is still ahead) |
-| `tla/MC_control_warn_late.cfg`, `tla/MC_control_warn_repeat.cfg` | negative controls (D-410): a runtime that warns a work already past its deadline (`WarnIsTimely` must be refuted — the note asks the model to settle while the gate refuses the request that would) and one that warns the same work on every step near it (`AtMostOneWarning` must be refuted) |
-| `tla/MC_control_cancel.cfg` | negative control (D-341/D-344): a runtime that closes a spent work (`CANCELLED`) and leaves the instance its refusal parked where it was — the dead end A18's known gap describes, where the user's only way out was to abandon the session. `make verify-model-counterexamples` requires TLC to refute `CancelledWorkReleasesParkedInstances` here, and `MC.cfg` (`ReleaseOnCancel = TRUE`) verifies the same property |
-| `tla/MC_wide.cfg` | wide control-plane configuration (2 instances / 2 operations with one requiring approval / 3 request slots / 2 attempt slots) |
-| `tla/V2Artifact.tla` + `tla/MC_artifact.cfg` | artifacts and GC: write bytes → STAGING row → reference and LIVE in one transaction → GC claim → the caller deletes the bytes → the row is collected (`artifact_collect`), with abandon for a STAGING orphan; the runtime's half runs at a driver's boot (D-191). `tla/MC_artifact_gc_ignores_references.cfg` is its counterfactual control (D-220): the collector never reads the reference table, so an artifact messages still point at is claimed, and `GcClaimsOnlyUnreferencedLive` is refuted. **D-436 adds the half the product was missing** — a drop of the publishing owner's hold (`DropOwner`) — with **two** rules, one invariant each: a hold may be released only once its owner has *finished* (`OwnerHoldsUntilItsSubjectIsFinished`, refuted by `tla/MC_artifact_release_live_owner.cfg`, whose `ReleaseLiveOwner` releases a hold regardless) and only once the artifact is *past the retention window* (`NothingIsReleasedInsideTheWindow`, refuted by `tla/MC_artifact_release_fresh.cfg`, whose `ReleaseFreshArtifact` releases inside it); the release touches nothing but the hold (`ReleaseKeepsTheRowAndTheBytes`). The rule's shape is the product's: a request that is not `PENDING`, an operation whose status is terminal but **not** `OUTCOME_UNKNOWN` (that one's runner may still verify), no other scope at all, and the window is the user's `[retention] history_days` — the same window that sweeps the events referencing the artifact, with 0 (the default) releasing nothing at all. Before D-436 the model's `~owner[id]` had no counterpart in the code and the D-253 probe measured the consequence (a scripted session's 300 KB tool output left three LIVE artifacts, 0 claimable); the age half was added because the probe caught the *first* version releasing a freshly settled operation's blob at once, which deletes data earlier than any window the user had chosen. Two configurations' worth of lesson, recorded because it happened three times in two days: **each counterfactual needs a subject of its own** — the first draft of the fresh-artifact control had every artifact outside the window outside `Spent` too, so the owner guard fired first and the config verified instead of refuting **D-462** gives the eight claims it had only enumerated their own controls: `tla/MC_artifact_reference_unpersisted.cfg`, `tla/MC_artifact_live_unpersisted.cfg` (through a publish that never wrote bytes), `tla/MC_artifact_release_deletes_bytes.cfg`, `tla/MC_artifact_collector_ghost.cfg` (a delete that leaves the row), `tla/MC_artifact_reference_to_staging.cfg`, `tla/MC_artifact_delete_anyone.cfg`, `tla/MC_artifact_claim_anyone.cfg` and `tla/MC_artifact_live_without_reference.cfg`. |
-| `tla/V2Retention.tla` + `tla/MC_retention.cfg` | retention as DESIGN states it, *before* an implementation (D-75 recorded the keys as accepted-but-unapplied, D-192 models the rule): a fact may leave the database only when retention is switched on (`history_days` = 0 keeps the full history), it is at least that old, no live reference protects it and it is not evaluation evidence — with the interleavings that make the rule worth checking (a reference attaching, detaching, evidence being marked while days pass). Its claims are named: `EvictionOnlyUnderTheGuards` (the guards evaluated at the step that evicts), `NoReferenceToEvictedFact` (no live reference outlives the fact it points at), `EvidenceIsNeverEvicted` (evidence is never evicted, however old) and `OnlyOldFactsAreEvicted` (the state half: a fact that is gone was old and retention was on). The negative controls `tla/MC_retention_evicts_live.cfg`, `tla/MC_retention_evicts_evidence.cfg`, `tla/MC_retention_evicts_young.cfg` and `tla/MC_retention_runs_disabled.cfg` each forget one guard and must be refuted by `make verify-model-counterexamples`; it is safety only, because the design does not promise a cleanup ever runs **D-462** adds `tla/MC_retention_ignores_live_only.cfg`, which evicts a live-referenced fact and refutes `EvictionOnlyUnderTheGuards`. |
-| `tla/V2History.tla` + `tla/MC_history.cfg` | private history and who may read it (§5.1/§5.4, A05, Q8): a read records its actor and its target, and the rule is checked over every interleaving — an instance may read only its own history (`InstancesReadOnlyTheirOwn`) and the runtime never reads one (`SystemNeverReads`), while the user's "may read any" is the absence of a restriction and so has no state half to break. Its two negative controls `tla/MC_history_leaks.cfg` (an instance allowed to read a stranger's history) and `tla/MC_history_system_reads.cfg` (the runtime reading a member's) each refute exactly the claim they name, measured 2026-09-30: the positive configuration is exhaustive in under a second (81 states generated / 16 distinct). Safety only — a read need not happen (no liveness), and the command's refusal of a target from another session is `V2Store`'s identity, not modelled here |
-| `tla/V2Sessions.tla` + `tla/MC_sessions.cfg` | named sessions under one base (D-364): a registry maps session ids to directories, and the rules around it — `RegistryIsInjective` (no two ids name one path, which is what A33 forbids; the per-path coordinator lock itself is `V2Coordinator`'s `AtMostOneCoordinator`, not restated here), `NoCoordinatorForAnArchivedSession` (an archived session is not attachable, so nothing holds it), the step rule `ArchiveOnlyWhenIdle` (the code's `refuse_if_live`), and `DefaultIsNeverArchived` (the base directory's own session is never moved aside). Its three negative controls `tla/MC_sessions_shared_path.cfg`, `tla/MC_sessions_archive_held.cfg` and `tla/MC_sessions_archive_default.cfg` each forget one rule and must be refuted; measured 2026-09-30, the positive configuration is exhaustive in under a second (253 states generated / 62 distinct). Safety only: a session need not ever be opened, and the filesystem effects (a directory that really moves) are the code's, pinned by the `sessions` tests **D-462** adds `tla/MC_sessions_archive_while_held.cfg`, which archives a held session and refutes `ArchiveOnlyWhenIdle`. |
-| `tla/V2Schedule.tla` + `tla/MC_schedule.cfg` | automations (D-367): a user-defined schedule that starts a work on its own, and the four rules a scheduler can get wrong — a slot is never run twice (`NoDuplicateRun`: beginning a run advances `nextAt` in the same step), two runs of one automation never overlap (`AtMostOneRunPerAutomation`), a disabled automation never runs (`DisabledNeverRuns`), and a run starts only at a due slot (`OnlyDueSlotsRun`). Its four negative controls `tla/MC_schedule_duplicate.cfg`, `tla/MC_schedule_overlap.cfg`, `tla/MC_schedule_disabled.cfg` and `tla/MC_schedule_early.cfg` each forget one guard and must be refuted; measured 2026-09-30, the positive configuration is exhaustive in seconds (304,069 states generated / 71,064 distinct). Safety only — a run need not ever happen — and the period is abstracted into "the slot advances by one"; the coalescing of missed slots and the work a run opens are the code's, pinned by `automations.rs`'s tests and the daemon test |
-| `tla/V2Isolation.tla` + `tla/MC_isolation.cfg` | Historical: OS sandbox support and live probes were removed in D-480. Retained abstract evidence for the retired contract only. the sandbox backend choice and its fail-closed rule (D-369, generalising A14): a command runs under the configured backend or it does not run — never silently on another backend (`RunsOnlyUnderTheConfiguredBackend`, the fallback that would make `sandbox = "docker"` quietly a host shell) and never on a backend the probe refused (`UnavailableBackendNeverRuns`). The two rules are independent (a fallback can be to an *available* backend; an unusable backend can be the configured one) and each has its own refuted control, `tla/MC_isolation_fallback.cfg` and `tla/MC_isolation_unavailable.cfg`; the positive configuration is exhaustive in under a second. Safety only — a command need not ever run — and the probe and argv are the code's, pinned by the Docker tests and A14's refusal tests |
-| `tla/V2Codemode.tla` + `tla/MC_codemode.cfg` | codemode: what a script may do and what may reach the model's context (D-374, extended by D-376). `OnlyScriptOutputEnters` says every context item is a script's own output — a nested MCP call's payload never lands there — with `ScriptsAlwaysEmit` as the non-vacuity companion; `VetoedNeverCalled` says a nested call the user's `pre_tool` hook denies never executes, so a script is not a way around the hook. `tla/MC_codemode_leak.cfg` (a run pushes its nested payloads too) and `tla/MC_codemode_veto.cfg` (the veto is not applied to nested calls) must each be refuted by `make verify-model-counterexamples`; measured 2026-09-30, the positive configuration is exhaustive in under a second (34 states generated / 9 distinct). Safety only — a script need not run — and the payload contents, the JSON round trip, the deadline, the output budget and the identifier normalization are the code's, pinned by `codemode.rs`'s tests and `engine/tests/v2_mcp.rs` |
-| `tla/V2Images.tla` + `tla/MC_images.cfg` | the image flow (D-392): a `view_image` result is a reference at rest, and the request builder either loads it into a real image part or substitutes the placeholder text. `NoImagesWithoutSupport` — a part only ever reaches a model that declared `images = true`; `PartsOnlyFromLoadedBytes` — a part exists only for bytes that were really read; `UnreadableIsReported` — a reference whose bytes cannot be read is reported as text, never dropped silently; `NoLeakedImages` and `NoUnbackedParts` are the monitors. `tla/MC_images_blind_model.cfg` is the non-vision arm of the same rules, and `tla/MC_images_blind_parts.cfg` is the counterfactual control that expands without consulting the capability (D-392) **D-462** adds `tla/MC_images_leaked.cfg` (NoLeakedImages), `tla/MC_images_unbacked.cfg` (NoUnbackedParts, through a SendUnloadedParts counterfactual), `tla/MC_images_parts_from_loaded.cfg` (PartsOnlyFromLoadedBytes) and `tla/MC_images_unreadable_ok.cfg` (UnreadableIsReported). |
-| `tla/V2Oauth.tla` + `tla/MC_oauth.cfg` | MCP OAuth sign-in (D-412): the authorization-code flow with PKCE for an HTTP MCP service, as `engine/src/mcp_auth.rs` runs it. Its five claims are `TokenOnlyToItsResource` (a token is presented only to the endpoint its authorization request named — the RFC 8707 `resource`, repeated at the token endpoint and stored with the credential), `VerifierNeverLeavesTheClient` (the PKCE verifier travels to the token endpoint only, never on the authorization URL the user sees), `CodesAreSingleUse` (a replayed code would turn a leaked redirect URL into a second credential), `NoRequestWithAnExpiredToken` (an expired credential is refreshed when the server issued a refresh token, or the user signs in again) and `LogoutIsEffective` (the step that presents a token is a step where the service's stored credential *was* that token). The five controls `tla/MC_oauth_wrong_resource.cfg`, `tla/MC_oauth_reuses_code.cfg`, `tla/MC_oauth_verifier_leaks.cfg`, `tla/MC_oauth_uses_expired.cfg` and `tla/MC_oauth_logout_ignored.cfg` each drop one guard and must be refuted by `make verify-model-counterexamples` |
-| `tla/V2Memory.tla` + `tla/MC_memory.cfg` | durable memory (D-405): one append-only note store at the state root that every session under it recalls from. `NotesAreAppendOnly` — a note is never rewritten or evicted, so a recall that answered one way keeps answering that way (the code refuses at its cap instead of dropping the oldest); `TheStoreRefusesAtTheCap` — the store stays within its bound by refusal; `RecallIsBounded` — a recall returns at most `RECALL_MAX` notes and only notes that exist. `tla/MC_memory_evicts.cfg` is the counterfactual control that drops the oldest note to make room (D-405) **D-462** adds `tla/MC_memory_accept_beyond_cap.cfg` (TheStoreRefusesAtTheCap) and `tla/MC_memory_recall_beyond_cap.cfg` (RecallIsBounded). |
-| `tla/V2Jobs.tla` + `tla/MC_jobs.cfg` | the job handshake and the recovery verdict (§6.2/§6.3, A10/A11; D-91/D-112/D-153): the journal's phases (READY, START_ACCEPTED, RUNNING, CANCEL_REQUESTED, terminal), the acceptance persisted *before* the spawn (`NoEffectBeforeAccept`, `EffectImpliesAcceptedStart`), a duplicate GO as a no-op (`AtMostOneExecutor`, reading the journal's own `starts` counter), CANCEL before the start as final (`LateGoIsRejected`), and the recovery read — one atomic snapshot of the journal and the effect — that says "did not run" only for a READY journal and records `unknown` for the START_ACCEPTED/RUNNING/CANCEL_REQUESTED band (`UnverifiableStartIsNeverGuessedNotRun`, `NotRunMeansNoEffect`, whose counterexample is the accept-after-spawn shape); `SettledRunnerLeaves` (under weak fairness of the shutdown step) is D-153's rule that a settled job's runner goes away rather than idling forever, and — added by D-250/D-251 — `NothingInFlightWasRetired`, `OnlyTheJobsOwnGroupIsSignalled` and `NoLiveCommandWasSignalled` are the `runners` lever's rules: a retire goes through the runner's own gate, so a job whose *start was accepted* (the band the recovery read treats as unverifiable) is never taken away. The five negative controls `tla/MC_jobs_guess_notrun.cfg`, `tla/MC_jobs_double_go.cfg`, `tla/MC_jobs_late_go.cfg`, `tla/MC_jobs_spawn_first.cfg`, `tla/MC_jobs_retires_a_running_command.cfg` and D-251's two — `tla/MC_jobs_service_signals_a_stranger.cfg` (the service stop signalling a group the kernel gave the same id to, whose members were born after the job ended → `OnlyTheJobsOwnGroupIsSignalled`) and `tla/MC_jobs_service_signals_a_live_command.cfg` (the service stop signalling a command that is still running → `NoLiveCommandWasSignalled`); both rules are the lever's own, because nothing is left to ask — the `recycled` state models the kernel handing the id out again, and a group identifier is verified by *when its members were born* rather than by the id alone (`jobs::stop_leftover_group`, measured against a forged journal by `jobs::tests::a_group_whose_members_are_newer_than_the_job_is_never_signalled` and live by `review/dogfood/runners.py`). each forget one rule — a missing pid read as "did not run", a duplicate GO starting a second command, a late GO after CANCELLED_BEFORE_START starting it anyway, a command spawned before its acceptance was persisted (which is what makes a run invisible to recovery), and a retire asked of a runner whose command is in flight (which is what a lever that bypassed the runner's gate would do) — and must each be refuted by `make verify-model-counterexamples`. The model abstracts pid, start_ticks and boot_id into one "the recorded identity verifies" variable and assumes authenticated control requests; the deadline, the TERM→KILL escalation and the identity refusal are the runner's own tests and the live probes (`review/dogfood/job_identity.py`, `crash.py`, `unknown_outcome.py`, `cancel.py`) |
-| `tla/V2Inbox.tla` + `tla/MC_inbox.cfg` | the inbox and the application of an envelope (§5.3, A06, A24; D-63/D-72): an envelope is persisted as accepted, the recipient applies the lowest pending envelope of the current epoch **once** — the append carries the envelope id as its dedup key, so a replay appends nothing (`AtMostOncePerEnvelope`) — in sequence order (`LogIsIncreasing`), a stale-epoch envelope seals instead of leaking into the new epoch (`NoStaleApplication`), nothing accepted is ever silently dropped (`NoSilentLoss`), no send is accepted into a full inbox (`BoundedInbox`, the bound `queue_envelope` checks; a lost marker may legitimately leave more rows pending than the cap), and only the user or the instance itself drains (`DrainIsOwned`). Its five negative controls `tla/MC_inbox_no_dedup.cfg`, `tla/MC_inbox_drop_when_full.cfg`, `tla/MC_inbox_unbounded.cfg`, `tla/MC_inbox_stale_applied.cfg` and `tla/MC_inbox_foreign_drain.cfg` each forget one rule and must be refuted. The model is safety only (no fairness: whether a drain runs is the client's business) |
-| `tla/V2DiskFull.tla` + `tla/MC_diskfull.cfg` | the write-failure latch (§4.4, A31): a step whose submit fails with `StorageFull` latches, the driver stops running steps — the failed step is never retried and new side effects stay stopped (`NoStepRunsWhileLatched`) — success is never faked (`NoFakedSuccess`), the park is retried at poll pace and its reason names the in-flight persistence loss (`LossIsReported`), the latch clears only because that park landed — which needs a write to land (`LatchClearsOnlyWhenWritable`) — and the user resumes once space is freed (`ParkEventuallyLands`, under strong fairness of the park: the retry is live *while writability recurs*, because a single writable moment proves nothing). Its four negative controls `tla/MC_diskfull_keep_driving.cfg`, `tla/MC_diskfull_fake_success.cfg`, `tla/MC_diskfull_park_silently.cfg` and `tla/MC_diskfull_clear_anyway.cfg` each forget one rule and must be refuted |
-| `tla/V2Coordinator.tla` + `tla/MC_coordinator.cfg` | the coordinator lock and its fork window (§6.1, A33): one coordinator per state root (`AtMostOneCoordinator` — the kernel grants the lock to one holder), a restart that lands while only a *tool child's* inherited copy holds it waits for `exec` instead of reporting a coordinator that is not really there (`TheWindowIsNotMistakenForAHolder`), and with no coordinator alive the only thing that may still hold the lock is a child in that window (`NoHeldLockWithoutAHolder` — nothing inherits it past `exec`), with `RecoveryIsLive` for the poll-pace retry. Its three negative controls `tla/MC_coordinator_report.cfg`, `tla/MC_coordinator_inherit.cfg` and `tla/MC_coordinator_shared.cfg` each forget one rule and must be refuted | **D-253 added the second kind of coordinator**: the maintenance pass (`artifacts gc`) takes the same lock for one bounded run, so `SweepWaitsForTheSession` (a pass holds the lock only while no driver does) is checked beside `AtMostOneCoordinator`, whose claim now counts both kinds — refuted by `tla/MC_coordinator_sweep_beside_a_session.cfg`, and `RecoveryIsLive` now needs the pass's exit to be weakly fair (measured while writing it: with the pass able to re-acquire, the liveness property failed, and the *abstraction* was wrong, not the property).
-| `tla/V2Wait.tla` + `tla/MC_wait.cfg` | waits/wakeups/timers/supersede: evaluate at registration → parked drain scan → answer in the same transaction when satisfied → cancel/supersede/re-arm. `tla/MC_wait_closes_without_answering.cfg` is its counterfactual control (D-220), and it restores the refutation finding V-W1 is recorded against: both non-drain exits close the wait and answer nothing, which `ResolvedWaitIsAnswered` refutes — the pre-fix shape had lived in `MC_wait_contract.cfg` until that was renamed into the positive `MC_wait.cfg`. Two more claims it carries: `SatisfiedHoldsConditions` (a SATISFIED wait really had its conditions hold — no spurious wake; the answer of a CANCELLED wait is a cancellation notice) and `AnswerImpliesResolved` (an answer only ever joins the context together with a resolved wait). Since D-348 (the user's decision D-341) it also carries the wait contract's three settled semantics rules, each with its own refuted control: `MessageStaysAMessage` — a delegated task's settlement is a task fact and never satisfies a `message` condition (`tla/MC_wait_widens_a_message.cfg`, `WidenMessageToTaskResults = TRUE`, refuted), `ReportsAreNotSettlements` — a reported `BLOCKED` is a report, not a settlement (`tla/MC_wait_wakes_on_report.cfg`, `WakeOnReport = TRUE`, refuted), and `IdleIsNotASettlement` — an assignee that goes idle settles nothing, so the wait stays pending (`tla/MC_wait_wakes_on_idle.cfg`, `WakeOnIdle = TRUE`, refuted) **D-462** adds a control per claim the module only enumerated: `tla/MC_wait_answer_twice.cfg` (WakeAnswerAtMostOnce), `tla/MC_wait_answer_unresolved.cfg` (AnswerImpliesResolved), `tla/MC_wait_pending_while_ready.cfg` (PendingImpliesParked), `tla/MC_wait_park_after_answer.cfg` (WaitingHasPendingWait), `tla/MC_wait_answer_unused_slot.cfg` (UnusedSlotHasNoAnswer) and `tla/MC_wait_never_sweep.cfg`, which stops every sweep so a satisfied wait is stranded and `NoStrandedPending` fails as a temporal property. |
-| `tla/V2Task.tla` + `tla/MC_task.cfg`, `tla/MC_task_two.cfg` | task lifecycle and work settlement: delegation (dependencies must exist first, the work must be ACTIVE) → start → settle/cancel → system parking → termination cascade; work creation, request admission, open operations, settlement and detach. `tla/MC_task_two.cfg` adds the second task slot at one instance and one work, which is what makes `DependenciesPointBackwards` and `NoSelfDependency` non-vacuous (with one task a prerequisite can only be empty). Its four counterfactual constants (D-218) each name a plausible mistake and must be refuted: `tla/MC_task_delegates_to_settled.cfg` (delegation onto a settled work — finding V-G1 — refutes `RegisteredWorkNeedsAnActiveWork`), `tla/MC_task_bills_settled.cfg` (a request billed to a settled work refutes `RequestsResolveToActiveWorks`), `tla/MC_task_unordered_dependency.cfg` (a prerequisite that is the task itself or a later one refutes `DependenciesPointBackwards`, and with it `NoSelfDependency`) and `tla/MC_task_terminate_leaves_tasks.cfg` (a termination that leaves the instance's open tasks open refutes `NoOpenTaskOnDeadAssignee`) |
-| `tla/V2Compress.tla` + `tla/MC_compress.cfg` | context compression (A20): open/submit/fail/cancelled by a closed epoch; summaries append at the tail, coverage only grows, originals are never deleted and a request closes only once (`RequestClosesOnce`, which D-212 found unlisted — and which D-219 found *entailed by `TypeOK`*: it was a disjunction over `RequestState` and could not fail, so the transition property it names was unmodelled until it became a monitor). Three counterfactual constants and their controls: `tla/MC_compress_deletes_originals.cfg` (a summary deletes the entries it covers → `NoEntryIsEverLost`), `tla/MC_compress_lifts_coverage.cfg` (a commit lifts coverage → `CoverageNeverLifted`) and `tla/MC_compress_rewrites_closed.cfg` (a late failure rewrites a closed request → `RequestClosesOnce`) **D-462** adds one control per claim: `tla/MC_compress_append_in_hole.cfg` (TailAppend), `tla/MC_compress_keep_reservation.cfg` (ClosedCompressionReleasesReservation), `tla/MC_compress_cover_backwards.cfg` (CoveragePointsForward), `tla/MC_compress_cover_to_non_summary.cfg` (CoveredStaysCoveredByItsSummary) and `tla/MC_compress_cover_self.cfg` (NewestSummaryIsVisible). |
-| `tla/V2Daemon.tla` + `tla/MC_daemon.cfg` | session daemon protocol (A28): deduplication and replay of stable command ids, the atomic snapshot+watermark pair of `checkpoint`, gap-free `events(since)`, a slow client never blocking the writer. Three counterfactual constants and their controls (D-219): `tla/MC_daemon_rewrites_receipt.cfg` (a same-payload replay re-applies and moves the receipt → `ReceiptsAreStable`), `tla/MC_daemon_rolls_back_log.cfg` (a compaction drops the oldest version → `LogMonotone`) and `tla/MC_daemon_reclaims_events.cfg` (events are reclaimed → `NoResyncInThisVersion`). **D-249 turns the gap-freeness that row claimed into a claim the model can break**: `served` records the sequences handed to a client and `servedCount` counts the handovers, so `NothingIsServedTwice` (the count equals the number of *distinct* sequences served — a client that re-reads behind its watermark would break it) and the transition property `HandoversAreTheFullRange` (what one handover adds is the whole range after the client's watermark, gap included) are checked, with two controls: `tla/MC_daemon_skips_an_event.cfg` (a batch serves the log minus one event → `HandoversAreTheFullRange`) and `tla/MC_daemon_delivers_twice.cfg` (a batch counts an event it did not hand over → `NothingIsServedTwice`). Before them, gap-free `events(since)` was a property of the model's arithmetic: no step could serve anything but the contiguous range, and the first attempt at the claim ("the log's prefix from 1") was violated by the *positive* configuration as soon as a client checkpointed and then fetched only the new events. Measured 2026-09-27: exhaustive in 12 s, 1,694,761 states generated / 135,750 distinct. **D-248 adds the session's stop lever to the same module**: a client asks this session to stop over the socket it is listening on (`teamagents daemon --stop`), the daemon *answers* that request, and only then does the accept loop leave with the socket — so a daemon that is gone has answered every stop request it took (`StopsOnlyAfterAnswering`, the receipt rule; `tla/MC_daemon_stop.cfg`) and an answered stop *ends* the session (`AStopIsAnsweredAndEndsTheSession`, the liveness half, which is why this module carries `WF_vars(Leave)`). Its two counterfactual controls: `tla/MC_daemon_stop_before_receipt.cfg` (the accept loop leaves a stop request unanswered → `StopsOnlyAfterAnswering`) and `tla/MC_daemon_keeps_serving_after_receipt.cfg` (an answered stop the daemon ignores → the liveness property; before the `[]` wrapper was added the property was evaluated at the initial state and the control verified instead of refuting). Measured 2026-09-27: exhaustive in 11 s, 275,993 states generated / 21,790 distinct. **D-462** adds one control per claim the module had only enumerated: `tla/MC_daemon_split_checkpoint.cfg` (SnapshotNeverLeadsCursor), `tla/MC_daemon_view_from_snapshot.cfg` (ViewMatchesCursor), `tla/MC_daemon_cursor_ahead.cfg` (CursorNeverBeyondLog), `tla/MC_daemon_apply_without_receipt.cfg` (AppliedAtMostOnce), `tla/MC_daemon_receipt_beyond_log.cfg` (ReceiptNamesARealVersion) and `tla/MC_daemon_apply_on_another_version.cfg` (AppliedCommandsUsedTheWireVersion) |
-| `tla/V2SearchTree.tla` + `tla/MC_search_tree*.cfg` | D-506 session-tree control: User/Leader authority, current-revision admission, replay stability, root/parent/cycle/focus invariants, merge reference preservation, append-only revision history, complete source watermarks and fail-soft compaction. Six operation-family configurations avoid vacuous update/move/merge coverage and include ordered pairs; twenty-three controls remove individual guards and eleven witnesses reach normal paths. Arbitrary text/JSON/SQLite details and semantic tree quality remain outside. |
-| `tla/V2Review.tla` + `tla/MC_review.cfg` | D-503 bounded automatic-review lifecycle: `AllowRequiresCompletedReview`, `AllowRequiresConsistentAssessment`, `SelfUpdateRemainsUserOnly`, `ReviewLeavesInstanceParked`, `ClosedReviewReleasesReservation` and `FailedKnownUsageIsSettled`. Controls `tla/MC_review_unreviewed.cfg`, `tla/MC_review_inconsistent.cfg`, `tla/MC_review_self_update.cfg`, `tla/MC_review_phase.cfg`, `tla/MC_review_reservation.cfg` and `tla/MC_review_usage.cfg` remove one guard each and must be refuted. One parked operation and integer usage stand in for SQL/provider details. Witnesses cover normal allow, malformed-known failure and unpriced-complete allow; parser quality, real-model judgement, prices and Rust/SQLite refinement remain outside. |
-| `tla/V2Approval.tla` + `tla/MC_approval.cfg` | the approval window of a gated operation (A25/A08; D-225): an operation parks behind a PENDING approval instead of dispatching, the user's decision is final (`ApprovalDecisionIsFinal` — APPROVED, DENIED and EXPIRED are never rewritten) and may carry the window, the effect lands only inside that window (`NoLateEffect` records an effect that did not, and `EffectImpliesApproved` is the state half), a closing operation expires its pending approval (`TerminalOperationHasNoPendingApproval`), and a parked operation holds a row to be decided (`ParkedHasAnApprovalRow`). Its four counterfactual controls: `tla/MC_approval_drops_the_expiry.cfg` (dispatch ignores the horizon → `NoLateEffect`), `tla/MC_approval_rewrites_a_decision.cfg` (a decided approval is rewritten → `ApprovalDecisionIsFinal`, and measured: the same control also refutes `EffectImpliesApproved`), `tla/MC_approval_keeps_pending_on_close.cfg` (a closing operation leaves its approval pending → `TerminalOperationHasNoPendingApproval`) and `tla/MC_approval_parks_without_a_row.cfg` (parking creates no approval row → `ParkedHasAnApprovalRow`) |
-| `tla/V2Trust.tla` + `tla/MC_trust.cfg` | the repository-local config and its one gate (D-244): a session reads the user's config and `<cwd>/.teamagents/config.toml`, and a *cloned repository* reaches nothing without the user's opt-in (`NothingFromTheProjectUntrusted`), never replaces a name the user defined (`UserDefinitionsNeverOverridden`), never sets `[permissions]` (the mode and the flag itself), hooks, checks, retention or limits (`PolicyClassesStayTheUsers`) and cannot grant itself the gate (`TrustOnlyFromTheUser`); a refusal is recorded, never silent (`RefusalsAreNamed`, what `ProjectMerge.refused` and `doctor`'s row exist for). Its five counterfactual controls: `tla/MC_trust_models_always_merge.cfg` (model profiles merge with no gate — the rule D-244 narrowed → `NothingFromTheProjectUntrusted`), `tla/MC_trust_project_overrides_user.cfg` (a project entry replaces the user's → `UserDefinitionsNeverOverridden`), `tla/MC_trust_project_sets_policy.cfg` (hooks/checks/limits from the project too → `PolicyClassesStayTheUsers`), `tla/MC_trust_project_grants_itself.cfg` (the project's own `[permissions]` table sets the flag → `TrustOnlyFromTheUser`) and `tla/MC_trust_refuses_silently.cfg` (a refused entry dropped with no note → `RefusalsAreNamed`). Measured 2026-09-27: the small configuration is exhaustive in 9 s (353,217 states generated / 25,376 distinct), which is what the `TypeOK` row beside them rests on |
-| `tla/V2ProjectTrust.tla` + `tla/MC_projecttrust.cfg` | **which repository's config a session may read** (D-434) — the layer under `V2Trust`: a repository's config merges only when the *intended* rule trusts the repository this session is in, the coarse `trust_project = true` or a `[permissions] trusted_projects` entry whose canonical class is this one (`TrustIsForTheRootTheUserListed`), two locations that resolve to one repository are one decision (`ListedTrustIsCanonical` — canonicalization's whole point), and the config is read once per session (`SessionEnds` is what makes a later edit a *new* decision). Its three counterfactual controls: `tla/MC_projecttrust_raw.cfg` (compare the typed path instead of the canonical class — the symlink case → `ListedTrustIsCanonical`), `tla/MC_projecttrust_project_grants.cfg` (the repository's own `[permissions]` table answers the question → `TrustIsForTheRootTheUserListed`) and `tla/MC_projecttrust_stale.cfg` (a grant outlives the entry that made it → `TrustIsForTheRootTheUserListed`). What it is not: "a listed repository is not its neighbours or its children" is a *prefix* question, which a TLC configuration cannot express (its `CONSTANTS` are plain set enumerations — `\X` and `\cup` are refused, measured), so that negation is `config::project_config_tests::project_trust_is_the_canonical_root_the_user_listed`'s `repo` / `repo-two` pair, and the module header states the division. Two things the modelling itself caught: the first draft let the user edit the config *mid-session*, and TLC refuted the safety invariant on a state the product cannot be in; and staleness first had a monitor variable of its own, which fired in the positive configuration on exactly the states safety already covers, so it was deleted as redundant. Measured 2026-10-06: the positive configuration is exhaustive in seconds (545 states generated / 88 distinct), and each control is refuted by exactly the property named here |
-| `tla/V2Isolation.tla` + `tla/MC_isolation.cfg` | Historical: OS sandbox support and live probes were removed in D-480. Retained abstract evidence for the retired contract only. **D-437 adds the ssh backend to the same two rules** — the module was already parametric over `Backends`, so the third backend needed configurations rather than a specification: `tla/MC_isolation_ssh.cfg` (verified: the configured backend is another host, and a command runs under it and nowhere else) and two controls, one per failure that ssh makes plausible — `tla/MC_isolation_ssh_unreachable.cfg` (the host does not answer and a command runs anyway → `UnavailableBackendNeverRuns`) and `tla/MC_isolation_ssh_fallback.cfg` (a lost connection falls back to a local backend → `RunsOnlyUnderTheConfiguredBackend`). The live halves are `review/dogfood/sandbox_ssh.py` (a real sshd: the command runs in the configured *remote* directory and nowhere locally, and with the sshd stopped the product records ssh's own refusal instead of running anything here) and the argv/validation tests in `tools::tests::ssh_argv_sends_the_command_to_the_remote_under_the_products_own_options` and `config::tests`. What the backend does **not** promise is stated where it is chosen: it is not a namespace (`network = false` cannot be enforced on the remote, and a cancelled call may leave the remote process running) |
-| `tla/V2Prune.tla` + `tla/MC_prune.cfg` | **what `sessions prune` may take** (D-435) — `[retention] archived_days` applied at last: a session leaves only when it is *archived*, its archive time is *recorded*, that time is older than the window, no daemon still serves it and its state root carries no `EVIDENCE` marker; `NothingThatShouldStayLeaves` is the one safety property (the monitor records a removal the intended rule would have kept) and `TakenIsGone` adds that the verb has no undo. Its four counterfactual controls, one per guard and each refuted by `NothingThatShouldStayLeaves`: `tla/MC_prune_window.cfg` (age is not consulted), `tla/MC_prune_dating.cfg` (a row with no recorded archive time is taken), `tla/MC_prune_live.cfg` (a served session is taken) and `tla/MC_prune_evidence.cfg` (a marked root is taken). What it is not: the bytes really leaving the disk, the wording of a kept row's reason and the clock — those are `review/dogfood/sessions_prune.py` (it backdates an archive by rewriting `archived_ms`, the file the verb reads, then checks the directory and the registry) and the two `sessions::tests` plus the CLI contract test. Two things the configurations themselves had to get right: each guard gets a session of its *own* (the first draft put `served` and `marked` on one session, so neither counterfactual could fire — the other guard always masked it) and the "inside the window" session has to carry a recorded archive time, or the dating guard catches it first and the window control verifies instead of refuting. Measured 2026-10-06: the positive configuration is exhaustive in under a second (9 states generated / 4 distinct, two removals so the monitor is checked across more than one step) |
-| `tla/V2Prompt.tla` + `tla/MC_prompt.cfg` | what a member's prompt carries (D-102's promise, D-246): an instance that runs a turn is prompted with the session's `instruction_files` — the leader and every child, however late the child was spawned (`EverybodyHasTheRules`) — a prompt is composed from the rules as they are *now*, so an edit lands on the next turn (`PromptsFollowTheCurrentRules`) and an unreadable file is noted rather than dropped in silence (`UnreadableRulesAreNoted`). Its three counterfactual controls: `tla/MC_prompt_members_use_their_profile.cfg` (a member's prompt is its own profile only — the shape D-102 measured), `tla/MC_prompt_rules_frozen_at_start.cfg` (the composition uses the rules as of the session's start) and `tla/MC_prompt_ignore_unreadable.cfg` (an unreadable file dropped without a note). Measured 2026-09-27: exhaustive in 2 s (612 states generated / 210 distinct), and each control is refuted by exactly the invariant named here. Its first draft was caught by TLC itself: `stalePrompt' = stalePrompt \/ …` needed parentheses, because `=` binds tighter than `\/` — the conjunct was satisfiable without assigning the variable, which TLC reports as "Successor state is not completely specified" |
-| `tla/V2Retry.tla` + `tla/MC_retry.cfg` | the retry budget of one request (A19; D-240 measured the key ignored, D-247 applied it per instance): at most the first attempt plus `budget` retries for every instance (`NoAttemptBeyondTheBudget`), a budget of 0 meaning one attempt (`ZeroMeansOneAttempt`), the park at exhaustion and never before it (`ParkOnlyAfterTheBudget`), and the budget an instance runs with being *its own* profile's (`ResolvedIsTheInstancesOwn` — D-247's rule). Its three counterfactual controls: `tla/MC_retry_session_constant.cfg` (one session constant serves every member: the pre-D-247 shape), `tla/MC_retry_off_by_one.cfg` (one attempt beyond the budget) and `tla/MC_retry_parks_early.cfg` (a park before the budget is spent). Measured 2026-09-27: exhaustive in 1 s (63 states generated / 24 distinct), and each control is refuted by exactly the invariant named here. What it is not: only the *budget* half of A19 — which failures are transient (the classification) and the backoff between attempts stay outside, with the provider edge's tests and `review/dogfood/truncation.py` |
-| `tla/V2Workspace.tla` + `tla/MC_workspace.cfg` | one member's workspace lifecycle (§5.1/§12.3, D-46/D-76; D-252's merge): a `git_worktree` member works in its own checkout and on its own branch, and two operations move work between it and the session — the merge (`instances merge --id ID`) and retirement. `UncommittedWorkIsNeverMerged` (the merge carries the *branch*, so changes still in the checkout would be left behind — the module's "nothing in a member's directory is dropped silently" rule), `NoMergeWhileATurnRuns` (a turn in flight is writing the files the merge would bring in) and `RetirementNeverBuriesWork` (the documented refusal: "a directory with uncommitted or unmerged work is never deleted, only reported"). Its three counterfactual controls: `tla/MC_workspace_merges_a_dirty_checkout.cfg`, `tla/MC_workspace_merges_mid_turn.cfg` and `tla/MC_workspace_retires_with_work.cfg`. Measured 2026-09-28: exhaustive in 2 s (40 states / 10 distinct), and each control is refuted by exactly the claim named here. The live halves are `review/dogfood/workspace.py` (a real model walks the lifecycle and, since D-252, merges through the product's own lever) and `v2_daemon::the_instances_merge_lever_brings_a_worktree_members_branch_into_the_session_tree` (the real binary, a real git repository, a real daemon) |
-| `tla/V2Checks.tla` + `tla/MC_checks.cfg` | required checks (A16/§8): only self-reported successes are verified, failures enter a bounded repair round, an exhausted budget or an unusable verification path (stale observation, refused dispatch) parks the work BLOCKED, and a candidate is never upgraded. The contract's **ingress** is part of the model (D-385): `require_checks` lets the user attach acceptance commands before any claim, so `required` is a variable and `roundChecks` records what the registered round actually ran — `EveryRequiredCheckWasVerified` is the claim that a SUCCEEDED work's *required* set is exactly what passed, and `ChecksOnlyJoinBeforeAClaim` is the rule that makes it hold. D-393 adds the provenance rule: `IndependenceIsNotSelfVerified` says a settlement *on a round* for a work that requires independent verification must be registered by an instance other than the producer, with `tla/MC_checks_independent.cfg` verifying it and `tla/MC_checks_self_verified.cfg` refuting the control that accepts the producer's own round. Two counterfactual controls: `tla/MC_checks_rewinds_rounds.cfg` (D-219) resets the round counter instead of advancing it, which is what `RoundsAreMonotone` forbids, and `tla/MC_checks_late_require.cfg` (D-385) lets a check join after the claim, so the round never runs it — the reason `require_checks` refuses a work that has registered a round. D-418 adds the **briefing**: `BriefingIsOnce` (the instance is told the work's required checks at most once) and `BriefingIsForAWorkWithChecks` (that step happens only while the work is live and really requires something), verified by `tla/MC_checks_briefing.cfg` and refuted by the control `tla/MC_checks_brief_without.cfg`, which briefs a work that requires nothing. **D-462** gave each of the other seven claims its own control: `tla/MC_checks_brief_twice.cfg` (BriefingIsOnce), `tla/MC_checks_late_join.cfg` (ChecksOnlyJoinBeforeAClaim, through the existing LateRequire), `tla/MC_checks_round_without_claim.cfg` (ChecksOnlyVerifyAClaimedSuccess), `tla/MC_checks_upgrade_candidate.cfg` (NoUpgradeOfTheCandidate), `tla/MC_checks_unverified_accept.cfg` (NoUnverifiedSuccess), `tla/MC_checks_unbounded_rounds.cfg` (RoundsAreBounded) and `tla/MC_checks_block_without_cause.cfg` (BlockedAfterTheBudgetOrStale) |
-| `tla/V2Grants.tla` + `tla/MC_grants.cfg` | authority (§5.1/§6.1, A03/A04; D-58/D-59/D-60): the session's bootstrap grants, narrowing by an instance (manage covers message/delegate), the spawn-derived delegate grant, revocation with the parent tree cascade and the revision bump, the dispatch re-check, and the rule that the model-visible tool surface only offers what the instance's grants back. `tla/MC_grants_stale_offered_surface.cfg` is its counterfactual control (D-220): the revoke path computes the surface from the grant table as it was before the revocation, so a model is still shown a tool whose grant went away, which `OfferedToolsAreAuthorized` refutes. Its type claim is the composite `TypeOK`, listed beside its four components `TypeOKGrants`, `TypeOKRevision`, `TypeOKOffered` and `TypeOKOps` (D-212's convention: a claim that composes others is listed itself and its parts beside it). **D-462 gave every remaining claim its own refutation**: `tla/MC_grants_effect_twice.cfg`, `tla/MC_grants_stale_dispatch.cfg`, `tla/MC_grants_mint_beyond_parent.cfg`, `tla/MC_grants_runtime_issues.cfg`, `tla/MC_grants_revoke_keeps_live.cfg`, `tla/MC_grants_cascade_keeps_children.cfg` and `tla/MC_grants_instance_delegable.cfg`, `tla/MC_grants_bootstrap_extra.cfg` refute the eight claims the model was only enumerated for, and the task-scoped path became reachable at all: `tla/MC_grants_task.cfg` verifies `TaskScopedGrantsAreNonDelegable` and `TaskScopedGrantsHaveParents` while `tla/MC_grants_task_child_delegable.cfg` and `tla/MC_grants_task_child_orphan.cfg` refute them (before D-462 no configuration ever minted a task-scoped grant, so both claims were vacuously true) |
-| `tla/V2Update.tla` + `tla/MC_update.cfg` | **D-462** models D-453's governed self-update: the journal's monotone revision (`RevisionOnlyGrows`), a single writer's lock (`AtMostOneUpdater`), the switch only after a validated artifact (`SwitchOnlyAfterValidation`), exactly one active version (`ExactlyOneActiveVersion`), a rollback that needs a previous version (`RollbackNeedsAPrevious`), a failed health check that never completes the update (`FailedHealthNeverCompletes`), an interrupted update before the switch that keeps the old version (`PreSwitchCrashKeepsTheOldVersion`) and an interrupted rollback that settles to the previous one (`InterruptedRollbackSettlesToThePreviousVersion`). Each has its own control: `tla/MC_update_ignore_lock.cfg`, `tla/MC_update_rewrite_journal.cfg`, `tla/MC_update_skip_validation.cfg`, `tla/MC_update_keep_both_active.cfg`, `tla/MC_update_fresh_install.cfg`, `tla/MC_update_finish_anyway.cfg`, `tla/MC_update_pre_switch_crash.cfg` and `tla/MC_update_rollback_crash.cfg`. Anchors: `engine/src/update.rs`; the live halves are `engine/tests/update.rs` and the governed updater's journal. Boundaries: hashing, the filesystem, the daemon handshake and the release download are the code's, not the model's. |
-| `tla/V2Store.tla` + `tla/MC_store.cfg` | session-store identity (A34; D-87): opening a state root either owns the file or refuses it — a foreign program's tables are never stamped as ours, a refusal writes nothing, and a database interrupted between its schema batch and its stamp is completed rather than stranded. `tla/MC_store_adopt.cfg` is its negative control **D-462** adds `tla/MC_store_foreign_stamp.cfg` (NoForeignStamp) and `tla/MC_store_refuse_and_write.cfg` (RefusalIsSilent); `EveryRefusalIsSilent` and `NoForeignStampAlways` are the always-forms of those two and are recorded as entailments. |
-| `tla/V2Authority.tla` + `tla/MC_authority.cfg` | the user's authority surface (D-61): the view a client reads (and the id a revoke must name), the pair table the surface refuses against, a grant the user writes (optionally derived from one it holds), revocation by a nameable id with the subtree cascade, the surface as a *cached* per-request variable, and the dispatch re-check with a surface that may lag. Its three negative-control configurations (`MC_authority_badview.cfg`, `MC_authority_trustsurface.cfg`, `MC_authority_stalesurface.cfg`) are run by `make verify-model-counterexamples` and must each be refuted. **D-462** adds one per claim it had left unrefuted: `tla/MC_authority_cascade_over_reaches.cfg` (`CascadeOnlyTakesTheSubtree`), `tla/MC_authority_surface_foreign.cfg` (`SurfaceChangesOnlyToTheCurrentEntitlement`), `tla/MC_authority_spawn_delegable.cfg` (`DelegableGrantsAreUserIssued`) and `tla/MC_authority_task_child_delegable.cfg` (`TaskScopedGrantsAreNonDelegable`) **D-462** gives each claim the module still only enumerated its own control: `tla/MC_authority_ghost_grant.cfg` (AuthorityTracesToTheUser), `tla/MC_authority_extra_bootstrap.cfg` (BootstrappedAuthority), `tla/MC_authority_orphan_child.cfg` (CascadeTakesTheSubtree), `tla/MC_authority_wider_child.cfg` (ChildGrantsAreCoveredByTheirParent), `tla/MC_authority_two_effects.cfg` (EffectAtMostOnce), `tla/MC_authority_list_ghost.cfg` (ListedIdsAreUsed), `tla/MC_authority_dead_pair.cfg` (NoDeadGrantPair), `tla/MC_authority_stale_effect.cfg` (OnceStaleNeverExecutes) and `tla/MC_authority_revive_on_revoke.cfg` (RevokedStaysRevoked). |
-| `tla/V2Concurrency.tla` + `tla/MC_concurrency.cfg` | the daemon's concurrent readers beside its single writer (§9/§4.1, A28; D-291): a reader holds a cursor into the writer's committed log and is handed events in order, while the writer's commit guard names no reader — so a slow or stalled client never holds a commit back (`WriterProgressesDespiteAStalledReader`, a temporal claim under weak fairness of the writer's own step, where reader steps are deliberately not fair: a stalled client is one that never runs), a reader that follows its cursor was handed exactly the committed prefix, so nothing on the way was lost or reordered (`ReadersSeeTheCommittedPrefix`), and it never sees past the writer (`NoReaderSeesUncommitted`). Its three counterfactual controls: `tla/MC_concurrency_writer_waits.cfg` (the commit waits for every reader to catch up, so a stalled client starves the writer → the temporal claim), `tla/MC_concurrency_skips_an_event.cfg` (a read hands over a committed event that is not the cursor's next one → `ReadersSeeTheCommittedPrefix`) and `tla/MC_concurrency_reads_ahead.cfg` (a read hands over an event the writer has not committed → `NoReaderSeesUncommitted`). Measured 2026-09-28: exhaustive in under a second (85 states generated / 30 distinct). What it is not: pages, sockets, the accept loop or the storage worker's queue — the gap-free `events(since)` page is `V2Daemon`'s (D-249) and a full inbox's bound is `V2Inbox`'s — and it models one writer, so two writers racing is outside it. |
+`V2SearchTree` models `read_search_tree`, `apply_search_tree` and compaction's tree patch. It checks
+User/Leader authority, current-revision admission, stable replay, root/parent/acyclicity/focus, merge reference
+union and reparenting, revision history, complete source watermarks, ordered pair atomicity and fail-soft
+compaction. The second operation in a pair sees the first operation's result.
 
-Two control-plane configurations exist: `MC.cfg` (one instance, the default in `make verify-model-all`) and
-`MC_control_two.cfg` (two instances, the same domains — the small check that makes a *per-instance* fairness or
-liveness assumption testable, which the slower wide configuration cannot). The environment (tool results,
-approval timing, crash points, and whether a turn is in flight when input arrives) is **non-deterministic** in
-the model; that is exactly what is enumerated.
+The positive families are `MC_search_tree.cfg`, `MC_search_tree_add.cfg`, `MC_search_tree_update.cfg`,
+`MC_search_tree_move.cfg`, `MC_search_tree_merge.cfg` and `MC_search_tree_pair.cfg`. Update/move/merge/focus
+start from a valid populated tree to avoid vacuity. Pair controls `MC_search_tree_pair_atomic.cfg` and
+`MC_search_tree_pair_replay.cfg` reject partial application and replay growth. In total, 23 controls cover every
+non-`TypeOK` tree claim and 11 witnesses cover normal operations and both compact outcomes.
 
-## Enrolled durable work (D-487)
-
-`tla/V2Work.tla` and `tla/MC_work.cfg` check six finite, independent transition scenarios: recovery,
-stop, attention, takeover, scope and admission. A tagged state selects one scenario per behavior; this is
-not their Cartesian composition or a Rust/SQLite refinement proof. `TypeOK` checks its finite domains.
-The positive model explores 222 generated / 76 distinct states. Each behavioral claim has a control:
-
-| Claim | Contract | Negative control |
-|---|---|---|
-| `RecoveryRemainsBounded` | Restart or context renewal does not replenish the empty-response allowance. | `tla/MC_work_restart.cfg` |
-| `StopSurvivesObservation` | Asynchronous observations preserve an explicit user stop. | `tla/MC_work_stop.cfg` |
-| `AttentionIsNotSettlement` | Attention cancels a wait without fabricating task settlement. | `tla/MC_work_attention.cfg` |
-| `ResolvedAttentionIsAnswered` | A cancelled or satisfied attention wait has an answer. | `tla/MC_work_unanswered.cfg` |
-| `TakeoverRequiresObservation` | Cancellation alone cannot authorize shared-workspace takeover. | `tla/MC_work_cancel_stop.cfg` |
-| `UnknownOutcomeIsPreserved` | Stop observation does not turn an unknown outcome into success. | `tla/MC_work_rewrite.cfg` |
-| `PreparationMatchesCurrentWork` | A prepared request must still match current input/assignment scope. | `tla/MC_work_prepare.cfg` |
-| `CompletionMatchesCurrentWork` | A completion candidate must match current input/assignment scope. | `tla/MC_work_completion.cfg` |
-| `EffectsRequireAdmission` | Execution effects require admitted work. | `tla/MC_work_early_effect.cfg` |
-| `InformationDoesNotCreateWork` | Information-only answers create no work. | `tla/MC_work_info_scope.cfg` |
-| `AdmissionUsageTransfersOnce` | Known and unknown admission usage transfers exactly once. | `tla/MC_work_double_bill.cfg` |
-
-Code anchors are `core/src/v2/control/work.rs`, `work/admission.rs`, `work/takeover.rs` and the driver.
-Core regressions exercise transactions/restart/fork; scripted driver tests bridge scheduling and a real local
-process-group observation. Semantic completeness, model classification, actual token prices, filesystem
-identity, remote/escaped effects, fork I/O and cross-scenario interleavings are outside this model.
-The existing `V2Control` idle-after-prose rule and `V2Wait` report/idle controls retain their legacy
-unenrolled scope. Enrolled attention supersedes waits; it does not weaken task-result conditions.
-
-## Claims without a refuting control
-
-Every claim a positive configuration checks is either the `expects:` target of a counterexample configuration
-(that control is then shown to refute it, D-462) or a row in [COVERAGE.md](COVERAGE.md). That file is the
-record: it opened with **105** claims that no configuration was shown to break, and D-462's batches closed all
-of them — **0** remain, each now the `expects:` target of its own control or a justified entailment. The list is
-the measure of how far "every claim can fail" has come. `review/verification_catalogue.py` recomputes the count
-and fails when a new claim lands in neither place, and `--write-coverage` regenerates the rows.
-
-**D-462 controls added after the table above** (one refuting configuration per claim; each carries an
-`expects:` marker the harness compares with TLC's verdict): `tla/MC_approval_unapproved.cfg`, `tla/MC_authority_badview.cfg`, `tla/MC_authority_stalesurface.cfg`, `tla/MC_authority_trustsurface.cfg`, `tla/MC_codemode_silent.cfg`, `tla/MC_coordinator_never_recovers.cfg`, `tla/MC_diskfull_never_park.cfg`, `tla/MC_grants_unauthorized_effect.cfg`, `tla/MC_inbox_out_of_order.cfg`, `tla/MC_prune_keep_present.cfg`, `tla/MC_store_accept_unstamped.cfg`, `tla/MC_store_interrupt_foreign.cfg`, `tla/MC_store_strand_interrupted.cfg`, `tla/MC_wait_close_without_holding.cfg`, `tla/MC_wait_mismatch_answer_call.cfg`.
-
-**D-462 controls continued**: `tla/MC_jobs_keep_runner.cfg` (SettledRunnerLeaves), `tla/MC_jobs_guess_not_run_effect.cfg` (NotRunMeansNoEffect) and `tla/MC_jobs_effect_before_accept.cfg` (EffectImpliesAcceptedStart).
-
-**D-462 controls for the control plane itself**: `tla/MC_control_BadAdmission.cfg`, `tla/MC_control_BadActiveRequest.cfg`, `tla/MC_control_EffectBeforeDispatch.cfg`, `tla/MC_control_KeepClosedReservation.cfg`, `tla/MC_control_OverReserve.cfg`, `tla/MC_control_SelectIncomplete.cfg`, `tla/MC_control_StaleExecutor.cfg`, `tla/MC_control_DoubleEffect.cfg`, `tla/MC_control_RewriteTerminalOp.cfg`, `tla/MC_control_RewriteTerminalWork.cfg`, `tla/MC_control_CrossEpochReceipt.cfg`, `tla/MC_control_EffectUnauthorized.cfg`, `tla/MC_control_EffectOnTerminated.cfg`, `tla/MC_control_EffectAfterCancel.cfg`, `tla/MC_control_PreparedEffect.cfg` (one per claim: AdmissionGate, OneActiveRequest, RecordBeforeEffect, ReservationReleased, ReservationsAdmitted, SelectionIsComplete, StaleExecutorRejected, EffectAtMostOnce, TerminalOpStable, TerminalWorkStatusStable, NoReceiptAcrossEpochs, NoEffectBeforeApproval, NoDispatchOnTerminated, CancelledBeforeStartHasNoEffect, PreparedIsNotTerminal).
-
-**D-462 controls for the task lifecycle**: `tla/MC_task_self_dependency.cfg`, `tla/MC_task_stale_active_work.cfg`, `tla/MC_task_stranger_writes.cfg`, `tla/MC_task_return_path_closed.cfg`, `tla/MC_task_rewrite_settled.cfg`, `tla/MC_task_system_settles.cfg` (NoSelfDependency, NoStaleActiveWork, OnlyPartiesWriteTasks, ReturnPathOnlyWhileOpen, SettledIsFinal, SystemOnlyParksTasks).
-
-## Verified properties and their code anchors
-
-| Property (spec) | Meaning | Code anchor | Acceptance |
-|---|---|---|---|
-| `TypeOK` | phase/lifecycle/operation status/effect counters hold legal values | the `models.rs` enums, `OpStatuses` | §4.1 |
-| `NoEffectBeforeApproval` | an operation needing approval has no effect before it is approved | the approval gate in `dispatch_operation`; `approve`/`deny` (reachable headlessly through `teamagents approvals`, D-67) | A25/A12 |
-| `RecordBeforeEffect` | a persisted dispatch record exists before any effect | `dispatch_operation` writes `DISPATCH_COMMITTED` first | A08/A11 |
-| `EffectAtMostOnce` | an operation has at most one external effect (recovery never replays) | the recovery path only sets `OUTCOME_UNKNOWN` | A08/A10/A13 |
-| `ReservationsAdmitted` | live reservations never exceed the ceiling (a consequence of the admission gate) | `known+reserved+est ≤ max` in `reserve_budget` | A18/§8 |
-| `AdmissionGate` (temporal) | every entry into `MODEL_PENDING` passed the admission gate | as above | A18/§8 |
-| `ReservationReleased` | closing a request (complete/fail/cancel) always releases its reservation | the `release_reservation` call sites | §8 |
-| `OneActiveRequest` | an instance has a single active request at a time | the phase/revision guard in `begin_request` | §3/§6.1 |
-| `SelectionIsComplete` | only an atomically selected complete attempt exists | the `selected_attempt_id IS NULL` update in `record_attempt` | A19 |
-| `NoTurnWithoutWork` | legacy unenrolled scheduling: no new turn opens while the last word is already committed — the model's own text **or** the runtime's own closing note | the closing entry plus the idle test in `step_ready` (D-65: it counts only *unaddressed* work, so an open task no longer re-asks the model; D-71: a settlement is a committed tail, `EntryKind::Runtime`) | §5.4/§3/§8 |
-| `CancelledWorkReleasesParkedInstances` | closing a work nothing can spend gives the session its workers back: the step that makes the work `CANCELLED` leaves no instance parked behind it | `cancel_work`'s release of the instances that work's refusal parked, and the `CANCELLED` status only the user's cancel writes (`core/src/v2/control.rs`); the lever A18's exhausted-work gap asks for (D-341/D-344) | A18 |
-| `AtMostOneWarning` | the runtime tells a work its deadline is close at most once — one note, not one per step | `deadline_warning`'s entry id `work-deadline-warning-<work>` and the driver's `warn_before_deadline` (D-410) | §8 |
-| `WarnIsTimely` (temporal) | a warning is only ever appended while the work is live and the deadline is still ahead | the same command's `ACTIVE` and future-deadline guards plus the driver's 120-second window (D-410) | A35 |
-| `NoRequestAfterDeadline` (temporal) | a work past its deadline begins no new request | the `work_deadline_passed` gate in `begin_request`/`begin_compression` plus the driver's park (D-64/A35) | A35 |
-| `InputLandsAtTheBoundary` | user input only ever enters the context at a READY boundary — never inside a turn whose request is already fixed | `submit_input` queueing while `MODEL_PENDING`/`TOOLS_PENDING`/`COMPLETION_PENDING`, and the boundary drain in `step_ready` (D-63) | §5.4/A21 |
-| `SettlementFollowsATurnAfterTheLanding` | an outcome belongs to the turn that produced it: the work can only settle after a request begun since the instance's last input landing | the boundary drain before `BeginRequest`, `complete_work` reading a decision's candidate, and the client's positional attribution in `exec` (D-72) | §5.3/§5.4/§8 |
-| `QueuedInputEntersTheContext` (temporal) | an input that waited for the boundary enters the context; it is never dropped while the instance keeps running (a park keeps it, a reset seals it with its epoch, termination ends it) | the `envelopes` state machine (`ACCEPTED` → `APPLIED`, sealed at a reset) plus the drain | A06/A21 |
-| `StaleExecutorRejected` | an executing instance holds the current revision | `revision == expected` in `begin_request` | §6.1 |
-| `NoDispatchOnTerminated` | no new dispatch for a terminated instance; an old in-flight effect may finish | TERMINATED in `set_lifecycle` plus the dispatch guard | §6.4 |
-| `PreparedIsNotTerminal` | a `PREPARED` operation has no effect yet | the operation state machine | §6.1 |
-| `CancelledBeforeStartHasNoEffect` | "cancelled before start" means no effect (a dispatch record may exist) | `cancel_operation` on `DISPATCH_COMMITTED` | A13 |
-| `TerminalOpStable` (temporal) | a terminal operation is never rewritten | the "already terminal" refusal in `complete_operation` | A13 |
-| `TerminalWorkStatusStable` (temporal) | a terminal work is never rewritten | the `already_closed` branch of `complete_work`/`block_work` | §8 |
-| `NoReceiptAcrossEpochs` (temporal) | old-operation receipts never enter the new context epoch; old operations may still settle | epoch-fenced consumption after `reset_instance` | A24 |
-
-### Private history (A05, Q8, §5.1/§5.4)
-
-| Property (spec) | Meaning | Code anchor | Acceptance |
-|---|---|---|---|
-| `TypeOK` | a recorded read names a session actor (the user, an instance, or the runtime) and an instance of the session | the identity/target validation in `read_history` | §4.1 |
-| `InstancesReadOnlyTheirOwn` | an instance may read only its own history; every foreign read is refused | the `Identity::Instance(actor)` arm of `read_history` | A05 |
-| `SystemNeverReads` | the runtime itself never reads a member's private history | the `Identity::System` refusal in `read_history` | §5.1/A05 |
-
-The user's half — "the user may read any instance's history" — is deliberately not a claim: it is the absence
-of a restriction, so no reachable state can break it. The code-level correspondence is
-`control::read_history_is_user_or_self_only`, which drives the user, self, foreign-instance and system arms
-against the real control entry.
-
-### Named sessions (`V2Sessions`, D-364, A33)
-
-| Property (spec) | Meaning | Code anchor | Acceptance |
-|---|---|---|---|
-| `TypeOK` | the registry names paths, a holder names a registered session, archived ids exist | the `Registry` fields in `sessions.rs` | §4.1 |
-| `RegistryIsInjective` | no two session ids name one path — two sessions never share a state root | `Registry::load`'s duplicate-path refusal and `new_session`'s unique id | A33 |
-| `NoCoordinatorForAnArchivedSession` | an archived session is not attachable, so nothing holds it | `Registry::resolve` refuses an archived id; `archive` moves the directory aside | D-364 |
-| `DefaultIsNeverArchived` | the base directory's own session is never moved aside | `Registry::archive`/`delete` refuse `default` | D-364 |
-| `ArchiveOnlyWhenIdle` (temporal) | a session is archived only while no daemon holds it | `refuse_if_live`, called by `Registry::archive`/`delete` | D-364 |
-
-### Automations (`V2Schedule`, D-367)
-
-| Property (spec) | Meaning | Code anchor | Acceptance |
-|---|---|---|---|
-| `TypeOK` | the clock, the flags, the slot map and the run log hold legal values | the `Automation` fields in `automations.rs` | §4.1 |
-| `NoDuplicateRun` | a slot is never run twice; beginning a run advances `next_at` in the same step | `Automations::mark_run` advances `next_at` and persists in one atomic write | D-367 |
-| `AtMostOneRunPerAutomation` | two runs of one automation never overlap | the scheduler skips an automation whose `last_work` is still active (`SupervisorHandle::work_status`) | D-367 |
-| `DisabledNeverRuns` | a paused automation never runs | `Automations::due` requires `enabled` | D-367 |
-| `OnlyDueSlotsRun` | a run starts only at its due slot | `Automations::due` requires `next_at <= now` | D-367 |
-
-### Historical sandbox backend (`V2Isolation`, D-369; removed by D-480)
-
-| Property (spec) | Meaning | Code anchor | Acceptance |
-|---|---|---|---|
-| `TypeOK` | the run set names backends, the two monitors are booleans | `SandboxBackend` in `tools.rs` | §4.1 |
-| `RunsOnlyUnderTheConfiguredBackend` | a command never runs under a backend other than the configured one | `ShellMode::from_permissions` carries the configured backend; `shell_command_spec` builds only that backend's argv | A14 |
-| `UnavailableBackendNeverRuns` | a command never runs under a backend the probe refused | `sandbox_state_for` refuses before `shell_command_spec` returns a spec | A14 |
-
-### Codemode (`V2Codemode`, D-374/D-376)
-
-| Property (spec) | Meaning | Code anchor | Acceptance |
-|---|---|---|---|
-| `TypeOK` | runs, nested calls and context items hold legal values | `codemode::run` in `engine/src/codemode.rs` | §4.1 |
-| `OnlyScriptOutputEnters` | a nested MCP call's payload is never in the model's context | the sandbox's registered host functions are the only capabilities, and `V2Toolkit::mcp_schemas` advertises one `codemode` tool instead of the MCP tools | D-374/A25 |
-| `ScriptsAlwaysEmit` | a run that happened emitted its own output (the non-vacuity companion) | `codemode::run` returns the collected output for every completed run | D-374 |
-| `VetoedNeverCalled` | a nested call the user's `pre_tool` hook denies never executes | the `ToolWiring` veto, asked once per nested call before `BoundTools::call` | D-376 |
-
-### Authority (A02/A03/A04, §5.1/§6.1, D-58/D-59/D-60)
-
-| Property (spec) | Meaning | Code anchor | Acceptance |
-|---|---|---|---|
-| `AuthorizedEffectsOnly` (temporal) | every effect is produced by a dispatch that held the authority at that step: a live covering grant **and** a still-current stamped revision | the guard of `dispatch_operation` (`grant_revision == permission_revision` plus `capability_gap`) | A03/A04 |
-| `EffectAtMostOnce` | an operation has at most one effect | `complete_operation`'s terminal-state guard and the recovery path | A08/A10 |
-| `OnceStaleNeverExecutes` | an operation refused at an outdated revision can never take effect afterwards | the revision only grows; a refusal is terminal for that operation | A04 |
-| `ChildGrantsAreCoveredByTheirParent` | a derived grant never exceeds its parent (its action and scope are covered) | the parent check in `issue_grant` | A03 |
-| `AuthorityTracesToTheUser` | authority is never invented: every live grant traces back to one the user issued | `issue_grant`'s identity rules (`Identity::System` refuses; an instance must hold a covering grant) | A02/A03 |
-| `RevokedStaysRevoked` / `CascadeTakesTheSubtree` | revocation is final and takes the whole subtree | `revoke_grant` + `revoke_grant_tree`, `revoked_at IS NULL` in every check | A03 |
-| `OfferedToolsAreAuthorized` | the model-visible surface never offers a tool the instance cannot dispatch | `driver::team_kernel` derives the collaboration tools and the shell tool from the instance's grants | §5.2/D-60 |
-| `BootstrappedAuthority` | the session boots with exactly the documented authority (leader: shell@workspace + manage/delegate/message@session; a spawned child holds none of it) | `driver::bootstrap` (D-58) and `create_instance`'s workspace grant | A01/A02 |
-
-### The user's authority surface (`V2Authority`, A02/A03, D-61)
-
-`V2Grants` models where authority comes from; this module models the surface a user drives it with — the
-questions that only exist once the user can. Each claim is paired with the control that must refute it
-(`make verify-model-counterexamples`), because a property that cannot fail proves nothing.
-
-| Property (spec) | Meaning | Code anchor | Control that refutes it | Acceptance |
-|---|---|---|---|---|
-| `NoDeadGrantPair` | the pairs the surface accepts are exactly the pairs some check asks about: a grant nothing consults is refused with a reason instead of written | `core/src/v2/capability.rs` (`ACTIONS`, `asks_about`, `authorizes_something`) and `authority.rs`'s guards | — (a constant table equality) | A03 |
-| `EveryLiveGrantBecomesRevocable` (temporal) | every live grant eventually appears in the view, so it can be named and revoked | `daemon.rs` `read_method("grants")` carrying `id`; `authority.rs` revoking by id or unambiguous prefix | `MC_authority_badview.cfg`: the view without the `id` field — the daemon before D-61 | A03 |
-| `CascadeOnlyTakesTheSubtree` (temporal) | revoking one grant takes exactly its subtree: the worker's grant dies with its parent, and the leader's authority does not | `revoke_grant_tree` and the `--parent` check in `issue_grant` | — | A03 |
-| `AuthorizedEffectsOnly` (temporal) | every effect comes from a dispatch that re-read the live grants at that step, even though the cached model-visible surface may lag | the `capability_gap`/grant-revision guard in `dispatch_operation` (§6.1/A04) | `MC_authority_trustsurface.cfg`: dispatch trusts the cached surface | A04 |
-| `StaleSurfaceCatchesUp` (temporal) | a surface that lags the entitlement catches up at the instance's next request — the grant really becomes visible | `driver::team_kernel` recomputing the tool list per request; `v2_supervisor::a_users_grant_reaches_the_workers_surface_at_the_next_request` | `MC_authority_stalesurface.cfg`: the surface computed once and never recomputed | §5.2/D-61 |
-| `SurfaceChangesOnlyToTheCurrentEntitlement` (temporal) | a surface change is always the entitlement of that moment: recomputed, never invented, never carried over | as above | — | §5.2 |
-| `ListedIdsAreUsed` | the view never invents an id | the `grants` SELECT | — | A03 |
-| `AuthorityTracesToTheUser`, `RevokedStaysRevoked`, `ChildGrantsAreCoveredByTheirParent`, `CascadeTakesTheSubtree`, `EffectAtMostOnce`, `OnceStaleNeverExecutes`, `BootstrappedAuthority` | as in `V2Grants`, in the presence of the surface's own grants | see the authority table above | — | A02/A03 |
-
-### Capability delegation (`V2Capabilities`, D-455)
-
-`tla/V2Capabilities.tla` + `tla/MC_capabilities.cfg` model the new delegation transition: the user marks a
-parent delegable, the leader mints one attenuated task child, settlement revokes it and parent revocation
-cascades. Its claims are `NoChildWithoutParent`, `ChildNonDelegable`, `TaskSettleRevokes` and
-`ParentRevokeCascades`, and each has its own control since D-462:
-`tla/MC_capabilities_bad.cfg` mints without a delegable parent, `tla/MC_capabilities_delegable_child.cfg`
-mints a re-delegable child, `tla/MC_capabilities_settle_keeps_child.cfg` leaves the grant alive after
-settlement and `tla/MC_capabilities_revoke_keeps_child.cfg` revokes the parent without cascading. Every one is
-listed by its `expects:` marker, so a control that stops refuting its own claim fails the target (D-462). The authority models carry the same fields and add `DelegableGrantsAreUserIssued`,
-`TaskScopedGrantsAreNonDelegable` and `TaskScopedGrantsHaveParents` (the latter two in V2Grants; the first two
-also in V2Authority). Both `make verify-model-all` and `make verify-model-counterexamples` run the new
-configuration.
-
-### Artifacts and GC (A30)
-
-| Property (spec) | Meaning | Code anchor |
-|---|---|---|
-| `NoReferenceToUnpersisted` | a referenced artifact has its bytes persisted | `store_response_artifact` (tmp → fsync → rename, then `artifact_stage`) |
-| `LiveIsPersisted` | a LIVE artifact has bytes | `artifact_publish` in the same transaction as the reference |
-| `GcClaimsOnlyUnreferencedLive` | a claimed (DELETING) artifact has no references | the candidate condition in `artifact_gc_claim` |
-| `CollectorSkipsIncomplete` | no half-written files are left to be collected (STAGING/ABANDONED are untouched by the deleter) | GC claims LIVE only; `artifact_abandon` only marks |
-| `ReferencesOnlyLive` (temporal) | a reference attaches to a LIVE artifact, or attaches in the same step as the LIVE flip, and the bytes already exist | `publish_one` plus the reference in one transaction |
-| `BytesOnlyDeletedWhileDeleting` (temporal) | a file disappears only while DELETING | the GC deletion order |
-| `ClaimOnlyFromLive` (temporal) | GC claims from LIVE only | as above |
-| `LiveFlipCarriesReference` (temporal) | STAGING → LIVE always carries the first reference (no "alive but unreferenced" window can be collected) | `publish_list` commits it in the same command |
-
-### Waits, wakeups and timers (A22/A23, RT-06)
-
-| Property (spec) | Meaning | Code anchor |
-|---|---|---|
-| `TypeOK` | phase/wait status/answer counts hold legal values | `waits.status`, `instances.phase` |
-| `WakeAnswerAtMostOnce` | a wakeup appends at most one answer per wait | the `PENDING → SATISFIED` guard in `wake_satisfied_at` plus `append_context` deduplication |
-| `AnswerImpliesConditions` | no spurious wakeups: an answer is appended only when the conditions really hold | `evaluate_wait` tests `satisfied` before appending; a task condition accepts `SUCCEEDED`/`FAILED`/`CANCELLED`, so cancelling a task releases its delegator (`v2_daemon::the_intervention_cli_cancels_a_task_and_pauses_and_resumes_an_instance`, D-65/D-68) |
-| `AnswerImpliesSatisfied` | an answer always appears in the same step as `SATISFIED` | as above (one transaction) |
-| `WakeAnswersItsCall` | the answer lands on the wait's own tool_call | `wait_call_id` plus `Observation::ToolResult` |
-| `WaitingHasPendingWait` | a parked instance has a PENDING wait of its own | `import_response` sets `WAITING` only when unsatisfied |
-| `PendingImpliesParked` | the owner of a PENDING wait is `WAITING` (so the drain is always available) | `submit_input`/`close_epoch_execution` set `READY` only after cancelling the wait |
-| `UnusedSlotHasNoAnswer` | an unused wait slot has no answer | wait rows are created per decision |
-| `NoStrandedPending` (temporal) | a PENDING wait whose conditions hold and that was not terminated is eventually closed (satisfied by the drain or cancelled by a supersede); it never hangs forever | the parked drain (weak fairness: the driver's poll) plus the supersede path |
-
-### Tasks, delegation and work settlement (A02/A09/A16)
-
-| Property (spec) | Meaning | Code anchor |
-|---|---|---|
-| `TypeOK` | task/work/operation/lifecycle values are legal | `tasks.status`, `work_scopes.status`, the operation status set |
-| `SystemOnlyParksTasks` | the system never settles or cancels a task; its only task write is parking as BLOCKED | `complete_task`/`cancel_task` refuse `Identity::System`; `park_tasks_for_unknown` |
-| `OnlyPartiesWriteTasks` | only the assignee, the delegator, the user or the system (parking) may change a task | the identity guards of the four actions; the delegator is the requester |
-| `SettledIsFinal` | a terminal task is never rewritten (`SUCCEEDED/FAILED/CANCELLED` land once) | the terminal branches of `complete_task`/`cancel_task` |
-| `ReturnPathOnlyWhileOpen` | the narrow return path exists only while the task is unsettled; `SUCCEEDED/FAILED` and cancellation revoke it, `BLOCKED` keeps it | the `revoke_grant_tree` call sites; `terminal = SUCCEEDED`/`FAILED` |
-| `DependenciesPointBackwards` | dependency edges point only at earlier tasks, so the dependency graph is **acyclic by construction** | `delegate_task` requires the dependency to exist |
-| `NoSelfDependency` | a task never depends on itself | the self-dependency check in `delegate_task` |
-| `NoOpenTaskOnDeadAssignee` | a terminated instance holds no open task | the termination cascade in `set_lifecycle` |
-| `NoStaleActiveWork` | no instance points at a settled work (settlement detaches the pointer and billing accepts ACTIVE work_scopes only) | `detach_work` and the `work_is_active` filter in `budget_work` (V-G1 fix) |
-| `RegisteredWorkNeedsAnActiveWork` | delegation lands on ACTIVE work_scopes only (monitoring variable `lateTask`) | the `work_is_active` guard in `delegate_task` (V-G1 fix) |
-| `RequestsResolveToActiveWorks` | a request resolves to an ACTIVE work (monitoring variable `lateRequest`) | the `work_is_active` filter in `budget_work` (V-G1 fix) |
-
-The task module asserts safety only: whether a task advances depends on the environment (member turns), and the
-design does not require the system to settle tasks on the user's behalf, so no liveness property is written.
-
-### Session exploration tree (`V2SearchTree`, D-506)
-
-| Claim group | Bounded rule | Code anchor |
-|---|---|---|
-| Authority | only User/Leader read or write; a rejected write preserves the tree | `control/search_tree.rs::{read,apply}` |
-| Revision and replay | a new patch needs the current base; a matching cause replays without growth; history stays complete | `apply_patch` and its `cause_ref`/base checks |
-| Structure | root, parents, acyclic reachability, focus and node bound hold for every accepted operation | `apply_operations` / `validate` |
-| Merge | target references are the union and children reparent without deleting conversation history | the `merge` operation |
-| Freshness | accepted writes bind the full instance/epoch/entry position; reads report the computed stale value | `current_position` / `decorate` |
-| Compaction | summary commits on both patch outcomes; a failed patch preserves tree and revision and reports error | `compress_context` and the patch savepoint |
-| Ordered pairs | two operations evaluate in order, reject atomically and replay without growth | `apply_operations` / `apply_patch`; `ApplyPair` in the model |
-| Witnesses | add/read, replay, update, move, focus, merge, valid compact and invalid compact | `verification/witnesses.json` entries `search_tree_*` |
-
-The checked claims are `TypeOK`, `OnlyAuthorizedReads`, `OnlyAuthorizedWrites`, `RejectedApplyPreservesTree`,
-`ReplayDoesNotGrow`, `FreshApplyRequiresCurrentRevision`, `ApplyPreservesPosition`, `ReadDoesNotChangeTree`,
-`ReadReportsStale`, `RootPresent`, `ParentsExist`, `Acyclic`, `FocusExists`, `NodeLimit`,
-`RevisionHistoryComplete`, `AcceptedApplyRefreshesSource`, `MergePreservesRefs`, `MergePreservesStructure`,
-`CompactionAlwaysCommitsSummary`, `FailedCompactionPreservesTree`, `FailedCompactionMarksError` and
-`ValidCompactionAdvancesTree`.
-
-Positive inputs are `MC_search_tree.cfg`, `MC_search_tree_add.cfg`, `MC_search_tree_update.cfg`,
-`MC_search_tree_move.cfg`, `MC_search_tree_merge.cfg` and `MC_search_tree_pair.cfg`. The refuting controls are
-`MC_search_tree_member_read.cfg`, `MC_search_tree_member_write.cfg`, `MC_search_tree_stale.cfg`,
-`MC_search_tree_cycle.cfg`, `MC_search_tree_replay.cfg`, `MC_search_tree_focus.cfg`,
-`MC_search_tree_merge_refs.cfg`, `MC_search_tree_merge_structure.cfg`, `MC_search_tree_delete_history.cfg`,
-`MC_search_tree_source.cfg`, `MC_search_tree_read_stale.cfg`, `MC_search_tree_drop_summary.cfg`,
-`MC_search_tree_partial_compact.cfg`, `MC_search_tree_rejected_revision.cfg`,
-`MC_search_tree_apply_position.cfg`, `MC_search_tree_read_writes.cfg`, `MC_search_tree_root_delete.cfg`,
-`MC_search_tree_parent_drop.cfg`, `MC_search_tree_node_limit.cfg`, `MC_search_tree_compact_error_flag.cfg`
-`MC_search_tree_compact_no_advance.cfg`, `MC_search_tree_pair_atomic.cfg` and
-`MC_search_tree_pair_replay.cfg`.
-
-The six positive configurations separate add/update/move/merge/focus/pair. Update/move/merge/focus start from a
-valid populated tree so their operations are non-vacuous; add covers construction and pair covers ordered
-second-operation visibility, atomic rejection and replay. Arbitrary strings, provider parsing, SQL execution and
-live-model tree quality have executable Rust coverage rather than a claim of arbitrary-input TLA proof.
+Arbitrary strings, provider/JSON parsing, SQL execution and schema migration have executable Rust coverage, not
+arbitrary-input TLA proofs. Live-model navigation quality is not established.
 
 ## Control-plane surface coverage
 
 `core/src/v2/control.rs`'s `dispatch` is the set of methods `Control::submit` accepts — the protocol surface the
 runtime and every client reach. This table names, for each method, the spec under which its protocol rule is
-checked. `review/verification_catalogue.py` compares the two directions: a method the code adds without a row
+checked. `tools/verification_catalogue.py` compares the two directions: a method the code adds without a row
 fails the audit, and a row whose method the dispatcher no longer accepts fails it too, so a rename cannot leave
 stale coverage behind. A method that is not modelled says `unproven` here **and** is named in
 [REPORT.md](REPORT.md)'s unproven list — an exemption declared where a reader looks (D-362). The spec names the
@@ -541,448 +112,309 @@ module the method's rule is checked in; the property-by-property anchors above s
 | `artifact_collect` | `V2Artifact.tla` |
 | `prune_history` | `V2Retention.tla` |
 
-## Three findings from the modelling work
-
-1. **The budget property must be written as an admission gate plus a reservation ceiling**, never as "actual
-   usage never exceeds the limit": in the model `known` is settled from provider-reported usage and bypasses
-   the gate, while `BeginRequest` is the gate. This matches §8 of the design ("no false promise of never
-   exceeding when provider billing is incomplete"); a naive formulation is refuted by TLC immediately.
-2. **Late usage does not reopen a terminal work.** A previously admitted request can report usage after its
-   work settles; attribution remains with that work. New enrolled work receives a separate work and carries
-   its admission usage once (`V2Work`). The earlier open product question about ordinary follow-up work was
-   resolved by D-487; these models still do not constitute a whole-runtime refinement proof.
-3. **`CANCELLED_BEFORE_START` means "no effect happened"**, not "never dispatched": cancelling an operation
-   that was dispatched but not started produces exactly that status, so the invariant must constrain
-   `effect = 0`.
-
-### Finding V-W1 (fixed, 2026-09-24)
-
-**A resolved wait must answer its own `wait` tool_call — two paths did not.**
-
-Fix: `answer_closed_waits` extends the answer to the two non-drain exits — satisfied at registration (inside
-`import_response`, sharing `wait_reason` with the drain) and superseded/closed epoch (`submit_input`,
-`close_epoch_execution`). The deduplication key stays the wait id, so a replay never appends a second answer.
-The spec side is guarded by `ResolvedWaitIsAnswered` and the regression is
-`wait_call_answered_outside_the_drain_path` (both paths assert the answer exists, is appended once and carries
-`superseded` for the supersede case).
-
-The counterexamples and probes recorded before the fix:
-
-Strict wire endpoints (OpenAI-style Responses, Anthropic) reject an assistant `tool_calls` message without
-matching tool responses, as the repository's own comments state (`core/src/kernel/mod.rs` and the
-`wake_satisfied_at` comment). Only the **drain path** (`wake_satisfied_at` scanning `PENDING` waits and
-appending an answer) paired them; the other two paths did not answer:
-
-1. **satisfied at registration** (the branch in `import_response` where `evaluate_wait` judges the wait
-   satisfied immediately — the very branch A23 uses so a wakeup is not lost): the wait lands as `SATISFIED`
-   and the instance never parks, and nothing later appends a tool_result for it;
-2. **superseded** (`submit_input` cancels the instance's whole `PENDING` batch, `close_epoch_execution`
-   likewise): no answer is appended either, so the instance starts its next turn carrying an unanswered `wait`
-   call.
-
-Evidence:
-
-- Spec counterexample (before the fix; the temporary configuration that triggered it was never committed):
-  TLC reported the invariant violation (now named `ResolvedWaitIsAnswered`) with the trace `ArmWait(PENDING)`
-  → `Supersede` → `CANCELLED` and `answers = 0`; the satisfied-at-registration case was triggered by the
-  satisfied branch of `ArmWait` in the same way (`answers` stayed 0). After the fix `V2Wait.tla` writes the
-  answer on both paths and `make verify-model-all` is green.
-- Code probe (`cargo test --offline --manifest-path core/Cargo.toml --lib
-  wait_call_answer_gap_outside_the_drain_path -- --nocapture`):
-
-  ```text
-  PROBE A: satisfied=true phase="READY" answers_for_wait_1=0   # satisfied at registration, no answer
-  PROBE B: phase_after_import="WAITING" wait_state=CANCELLED phase_after_input="READY" answers_for_wait_2=0  # superseded, no answer
-  ```
-
-Impact before the fix: on a strict endpoint the next request on those two paths would be rejected; a tolerant
-endpoint (the DeepSeek chat-completions used for local evaluation) accepts it, which is why real runs never
-exposed it. The fix extends the answer from the drain path to both, as the user's "fix everything" confirmed.
-
-### Finding V-G1 (fixed, 2026-09-24)
-
-**A work in a terminal state no longer accepts new work.** Before the fix, three paths ignored the work
-status:
-
-- `delegate_task` checked only that the assignee and (for instance delegation) the delegator were live and
-  that `work_id` existed — never that the work was ACTIVE;
-- when `import_response` opened an operation, `work_id` came from `request_work(active_work_id)` and likewise
-  ignored the work status;
-- `reserve_budget`/`settle_usage` ignored it as well (this is finding 2 above).
-
-Spec counterexamples (before the fix; `MC_task.cfg` guards both and TLC is green — and since D-218 the first is
-*refutable again*, so a regression that reopens it fails `make verify-model-counterexamples` rather than passing
-unnoticed):
-
-```text
-Error: Invariant RegisteredWorkNeedsAnActiveWork is violated.     # a task was delegated before its work existed
-Error: Invariant ClosedWorkTakesNoNewOperation is violated.       # a settled work still opened an operation
-```
-
-The two lived in the configuration the fix renamed into the positive `MC_task.cfg`, which left no refutation
-behind; D-218 brought the first back as the counterfactual `DelegateToSettledWork` and the control
-`tla/MC_task_delegates_to_settled.cfg` (it reports the same invariant), and the second property went with the
-spec that named it.
-
-Fix (landed after the user confirmed "fix everything"):
-
-- `budget_work` accepts only **ACTIVE** work_scopes as billing targets (both the instance's `active_work_id` and the
-  work of its oldest open task); when neither resolves it runs as "no work", exactly like a session without
-  one;
-- `complete_work`/`block_work` detach every instance pointer to the work when they settle it (`detach_work`,
-  returning a `detached` count);
-- `delegate_task` requires an ACTIVE work and otherwise fails with a pointer to `create_work` first;
-- the spec side is guarded by `NoStaleActiveWork`, `RegisteredWorkNeedsAnActiveWork` and
-  `RequestsResolveToActiveWorks`, with the regression `a_settled_work_takes_no_new_work` (pointer detached,
-  delegation refused, new requests not billed, a fresh work restoring both, and settled records frozen).
-
-Modelling conclusion (recorded in the `V2Task.tla` header): the linearization point for **new work is the
-request (`begin_request`), not the operation**. A request admitted while the work was ACTIVE may still open
-operations and settle usage against that work after settlement — that is honest accounting, not new work —
-which is why the property is written at the request level (`RequestsResolveToActiveWorks`) rather than the
-operation level.
-
-Known boundary (not enforced, see the `V2Task.tla` header): `complete_work` checks open operations but not
-tasks, so a work can settle while its own tasks are still open; those tasks keep running and their later
-requests have no billing work. Tightening that (tasks must settle first) needs a committed "completion
-refused" result for the driver and is future work.
-
-### Two more findings about the properties themselves
-
-4. **An in-transaction flip must be written into the property**: an artifact's first reference attaches in the
-   same step as `STAGING → LIVE`, so the naive "a reference attaches only to a LIVE artifact" is refuted by
-   TLC immediately; the correct formulation allows `row' = LIVE`.
-5. **Reference counting cannot use unbounded integers**: `refs++` makes the state space diverge (measured: not
-   converged at 180M states), while a **finite owner set** (an `Owners` constant) leaves the same
-   configuration with 64 reachable states. The same applies to the later modules.
-
-### Context compression (A20)
-
-| Property (spec) | Meaning | Code anchor |
-|---|---|---|
-| `TailAppend` | entries occupy a slot prefix: a new entry appends at the tail and is never inserted in the middle | `MAX(idx)+1` in `append_entry` |
-| `NoEntryIsEverLost` | originals are never deleted (coverage is a view fact; the monitoring variable `lost` stays empty) | `compress_context` only writes `compressed_by` and never deletes |
-| `CoveragePointsForward` | a summary is always newer than the entries it covers | the summary is appended (at the tail) before coverage is marked |
-| `CoverageNeverLifted` | coverage only grows and is never re-pointed at another summary (monitoring variable `uncovered` stays empty) | the coverage statement carries a `compressed_by IS NULL` guard |
-| `NewestSummaryIsVisible` | the newest summary is never covered itself (earlier summaries may be covered by later ones) | the commit order |
-| `CoveredStaysCoveredByItsSummary` | a covered entry points at a later, real summary | as above |
-| `ClosedCompressionReleasesReservation` | closing a compression request (complete/fail/cancelled by a closed epoch) releases its reservation | `release_reservation` in `compress_context`/`fail_compression`/`close_epoch_execution` |
-
-The admission of a compression request (lifecycle, work deadline, budget gate) uses the same code path as a
-turn request and is covered by `V2Control`'s `AdmissionGate`, so it is not modelled again here.
-
-### Session daemon protocol (A28)
-
-| Property (spec) | Meaning | Code anchor |
-|---|---|---|
-| `LogMonotone` | the event log only grows: versions are never reused or rolled back (monitoring variable `shrank` stays FALSE) | the auto-incrementing `events.sequence`; `read_events(since)` |
-| `AppliedAtMostOnce` | a command id takes effect at most once | the `commands` table deduplication in `submit_inner` |
-| `ReceiptsAreStable` | a stored receipt is never rewritten; a replay with the same payload returns the **stored** receipt (monitoring variable `drift` stays empty) | `submit_inner` returns `result_json` unchanged when the command id exists |
-| `ReceiptNamesARealVersion` | the version a receipt names really exists | as above |
-| `AppliedCommandsUsedTheWireVersion` | only handshake-compatible protocol versions may submit commands | the `PROTOCOL_VERSION` check |
-| `SnapshotNeverLeadsCursor` | a snapshot never claims a version ahead of the client's watermark — exactly what "snapshot plus watermark in one read transaction" buys | `checkpoint` in `daemon.rs` (reads the snapshot and `MAX(sequence)` inside one `unchecked_transaction`) |
-| `ViewMatchesCursor` / `CursorNeverBeyondLog` | after a reconnect the view and cursor agree with no gaps | `events` returns every event with `sequence > since` |
-| `NoResyncInThisVersion` | this version never reclaims events, so `resync_required` is always false (`pruned` is never set) | the header note "Events are never reclaimed in this first version" |
-
-`SnapshotNeverLeadsCursor` is a **non-vacuous** property: splitting `checkpoint` into "write the snapshot, then
-the watermark" (i.e. not one read transaction) is refuted by TLC immediately (measured:
-`Error: Invariant SnapshotNeverLeadsCursor is violated`). The "a slow client never blocks the writer" part is
-structural: `RuntimeEvent` does not depend on any client cursor, so no liveness property is written here.
-
-### Required checks (A16/§8)
-
-| Property (spec) | Meaning | Code anchor |
-|---|---|---|
-| `BriefingIsOnce` | the instance is told the work's required checks at most once — a briefing that repeated itself on every turn would be the turn storm in the runtime's own voice | `work_checks_briefing`'s entry id `work-checks-briefing-<work>` and the driver's `brief_checks` (D-418) — §8 |
-| `BriefingIsForAWorkWithChecks` (temporal) | that briefing happens only while the work is ACTIVE and its stored contract is non-empty — a criterion nobody asked for is worse than none | the same command's `ACTIVE` and non-empty-`required_checks` guards, which compose the text from the work's own stored limits (D-418) — A16/§8 |
-| `EveryRequiredCheckWasVerified` | a work becomes SUCCEEDED only when every check of its **required contract** was run by the round it closed on and really passed (the property is written on the **observed result**, not on a "verdict" variable; `MC_checks_late_require.cfg` refutes the late-addition variant) | `step_completion_checks`: `complete_work` only when `failures.is_empty()`; `require_checks` refusing a work that already registered a round |
-| `NoImagesWithoutSupport` | an image part reaches the wire only for a model whose profile declared image support | `expand_image_reference`'s `images` argument, resolved from the catalog entry |
-| `IndependenceIsNotSelfVerified` | a work that requires independent verification settles on a round *another* instance registered (`register_verification`), never on the producer's own; a work with no required checks has nothing to verify and is exempt | the `independent_verification` limit, the `verify_work` tool, and `complete_work`'s provenance read |
-| `NotesAreAppendOnly` | a note, once stored, never leaves the store — the memory a session wrote is the memory the next one reads | `Memory::remember` appending and persisting in one step, and refusing at `MAX_NOTES` rather than evicting |
-| `TheStoreRefusesAtTheCap` / `RecallIsBounded` | the store stays within its cap by refusal, and a recall returns at most `RECALL_MAX` notes, all of them real | `limit.clamp(1, RECALL_MAX)` in `Memory::recall`; the cap check in `remember` |
-| `PartsOnlyFromLoadedBytes` | an image part exists only for a reference whose bytes were really read | `load_image_reference` re-validating root, size and recorded type; every failure becomes text |
-| `NoLeakedImages` / `NoUnbackedParts` | the two monitors above, checked as invariants | the same two rules, as the driver calls them |
-| `ChecksOnlyJoinBeforeAClaim` | a required check is attached before the model claims success, never after (monitoring variable `lateJoin`) | `require_checks`' refusal; the driver reading the contract at the completion boundary |
-| `NoUpgradeOfTheCandidate` | the runtime never upgrades a model candidate: an admitted non-delivery is never SUCCEEDED (monitoring variable `nonSuccessSuccess`) | only self-reported successes are verified, and `complete_work` settles the **stored** candidate |
-| `ChecksOnlyVerifyAClaimedSuccess` | a candidate that does not run the checks settles by its own outcome (monitoring variable `lateRound`) | `step_completion_checks` only runs when `outcome == "success"` |
-| `RoundsAreMonotone` / `RoundsAreBounded` | rounds only grow and stay within budget (monitoring variable `rewound`) | the `rounds >= max_rounds` branch |
-| `BlockedAfterTheBudgetOrStale` | a self-reported success lands BLOCKED only for "budget exhausted" or "verification path unusable (stale observation)" | the `infra` (`dispatch_refused`/`spawn`) and `stale_inputs` classifications; `block_work` |
-| `NoUnverifiedSuccess` | no success is unverified (monitoring variable `upgrades`) | as above |
-
-Non-vacuity evidence: relaxing `Accept` to "one pass is enough (even with a failure)" is refuted by TLC
-immediately (`SuccessRequiresAllChecksPassed is violated`); writing the property as "SUCCEEDED implies the
-recorded verdict is pass" would be **vacuous** (the action writes that variable itself), which is why the final
-assertion binds the observed result.
-
-### Session-store identity (A34, D-87)
-
-| Property (spec) | Meaning | Code anchor |
-|---|---|---|
-| `NoForeignAdoption` | a file that holds another program's tables is never stamped as a session store, however often it is opened (monitor `adoptedForeign`) | `store::open`'s unstamped branch consults `foreign_tables` before writing anything |
-| `NoForeignStamp` | the same claim over the file itself: a v2 stamp never sits on a file with foreign tables | as above |
-| `RefusalsWriteNothing` | a refusal is silent — it never writes to the file it refused | the stamp is *read* through `sqlite_master`, and the writing pragmas (WAL, `synchronous`) are applied only after the format check accepts the file |
-| `InterruptedWroteOursOnly` | the crash path leaves our own tables and no foreign ones | the schema batch and the stamp insert are separate writes; the next open completes what it finds |
-| `AcceptedMeansStamped` | an accepted or initialized open ends on a v2 file | the format check precedes every acceptance |
-| `HalfInitializedIsCompleted` (leads-to) | a database interrupted between its schema and its stamp is completed rather than stranded, given weak fairness of the initializer | `create = true` on an unstamped file whose tables are all the schema's own |
-| `NoForeignStampAlways`, `EveryRefusalIsSilent` (temporal) | the two safety claims in `[][…]` form | as above |
-
-Non-vacuity evidence: `tla/MC_store_adopt.cfg` is the D-87 defect (`create = true` initializing whenever there
-is no stamp) and `make verify-model-counterexamples` requires TLC to report
-`Invariant NoForeignAdoption is violated` — it does. The byte-level side of "refusals write nothing" is checked
-where a model cannot see it: `open_never_adopts_an_unstamped_file_that_holds_foreign_tables` compares the file
-with what it held before, and `review/dogfood/boundary.py` hashes it across a real `exec`.
-
-## Executable spec-to-code correspondence (`core/tests/v2_invariants.rs`)
-
-The specs check an abstract state machine. `core/tests/v2_invariants.rs` (part of `make check`) recomputes the
-same invariants against the real `core::v2::Control`:
-
-```bash
-cargo test --offline --manifest-path core/Cargo.toml --test v2_invariants
-```
-
-- **Enumeration**: every command sequence of length ≤ 2 starts from a fresh database (38 command kinds, so
-  1,482 sequences), including refused combinations;
-- **Random walks**: 60 fixed-seed walks of 24 steps, each step choosing only among commands usable right now
-  and preferring the kind used least in this walk (coverage driven; otherwise the walk repeats one safe action
-  and never reaches deep paths). Fixed seeds make every trace reproducible;
-- **Re-checked after every step**: `TypeOK`, `SettledIsFinal`, `ReturnPathOnlyWhileOpen`,
-  `DependenciesPointBackwards`, `NoOpenTaskOnDeadAssignee`, `NoStaleActiveWork`, `ReservationReleased`,
-  `OneActiveRequest` (counting turn requests only: compression runs alongside and does not move the phase),
-  `SelectionIsComplete`, `ResolvedWaitIsAnswered`, `NoEffectBeforeApproval`, `LiveIsPersisted`, `TailAppend`,
-  `NoEntryIsEverLost`, `CoveragePointsForward`, `CoverageNeverLifted`, `NewestSummaryIsVisible`,
-  `ApprovalDecisionIsFinal` (a decided approval is never rewritten; PENDING → expired is legal),
-  `PendingApprovalOnlyForPreparedOperation` (RT-06: no pending approval survives a terminal operation),
-  `NoEffectAfterDenial`, `ReceiptsAreStable` (a stored receipt for a command id is never rewritten),
-  `ReplayedCommandIsInert` (a replay step must not move the command, event or context tables), `LogMonotone`
-  (the event log only grows) and context-epoch consistency;
-- **Coverage assertions**: the walk must really reach "a wait resolved / a settled work / a settled task / a
-  terminal operation / an epoch reset / a terminated instance / a LIVE artifact / a submitted compression / a
-  decided approval / a command replay (same id returns the stored receipt, a different payload is refused)",
-  otherwise the test fails (this prevents a vacuous pass);
-- **Negative control** (`the_invariant_checker_detects_broken_states`): when state is broken on purpose
-  (unknown status values, a rewritten terminal state, a stale work pointer) the checker must report it,
-  otherwise "everything passed" means nothing.
-
-This correspondence has already caught two code issues (V-P1 and V-P2 below) and covers several
-"must be refused" counterexample probes (delegating into a settled work, settling a task as a non-assignee).
-
-Boundary: this is **bounded enumeration plus sampling**, not a proof. It checks whether implementation states
-satisfy the invariants; it does not check liveness and does not cover concurrent interleavings
-(`Control::submit` is serialized on one connection; interleavings belong to the driver layer).
-
-### Finding V-P2 (found by the code-level invariants, fixed)
-
-The random walk reached "import a compression request as a turn": `import_response` checked only that the
-request was `PENDING`, never its `kind`, so a compression request could be imported into the context as a turn
-(append an assistant entry, open operations, close out as a turn) although a compression request may only be
-submitted by `compress_context` as a summary (§7/A20). The driver never calls it that way, but the control
-plane did not refuse it. Fix: `import_response` refuses requests whose `kind != 'turn'` and points at
-`compress_context`; regression `import_response_refuses_a_compression_request`.
-
-### Finding V-P1 (found by the code-level invariants, fixed)
-
-Terminating an instance cancelled the in-flight request through `close_epoch_execution`, but the TERMINATED
-branch of `set_lifecycle` did not reset the execution pointer the way `reset_instance`/`fail_request` do: the
-instance stayed at `phase = MODEL_PENDING` with `active_request_id` pointing at a `CANCELLED` request, so
-"phase is `MODEL_PENDING` implies a PENDING request exists" stopped holding for a terminated instance. Fix:
-the termination branch applies the same normalization (phase → READY, pointer cleared); regression
-`terminating_an_instance_normalizes_its_execution_pointer`.
-
-## Bounded enumeration of the pure functions (`core/tests/kernel_properties.rs`)
-
-The part of the kernel that never touches the database (wire view, output capping, paging, response
-classification) is checked by bounded enumeration, also as part of `make check`:
-
-```bash
-cargo test --offline --manifest-path core/Cargo.toml --test kernel_properties
-```
-
-| Check | Property |
-|---|---|
-| `wire_view_is_a_paired_permutation` | the output of `prepare_request`: the system prompt first, the rest a **permutation** of the input entries (nothing lost, nothing duplicated), every answered call immediately followed by its answer, and assistants keeping their relative order. It enumerates all 258 entry combinations of length ≤ 3 plus two longer cases, and asserts the pairing really moved something at least 10 times (otherwise the property would be vacuous) |
-| `tool_output_cap_keeps_head_and_tail_within_bounds` | content within the cap is not rewritten; beyond it the length stays bounded (≤ the cap plus 64 for the truncation marker), head and tail are kept and truncation is marked |
-| `paging_reconstructs_the_original_without_gaps` | page-by-page retrieval through `page_output` rebuilds the original **seamlessly** (every length 0..12 × limit 1..5); coordinates agree (`next_offset` equals the consumed length, eof has no further offset); invalid arguments and out-of-range requests fail loudly instead of truncating silently |
-| `response_classification_is_exhaustive` | `interpret_response`: a lone finish → completion candidate; a lone wait → a wait; mixed with other calls → dropped with a protocol note while the rest still become intents; an empty response → an ordinary reply |
-| `args_hash_is_deterministic` | equal arguments always produce the same `args_hash` (receipts, deduplication and replays rely on it) |
-
-Two boundaries, recorded honestly rather than as defects:
-
-- capping can **lengthen** input that barely exceeds the cap (head + tail + marker, at most +64 characters);
-  real shrinking happens far beyond the cap;
-- `pair_tool_results` only moves an answer **up** to behind its call, never down: an answer before its call
-  cannot occur in a real log (the runtime appends the call first), so that path is covered by the permutation
-  property alone.
-
-## Kani proofs: paging and viewport arithmetic (`make verify-kani`)
-
-`verification/kani/` is a crate used only by Kani: it compiles **the repository's own
-`core/src/kernel/types.rs`** through `#[path]` (adding only a `models::now` shim that none of the proven
-functions reads), so it proves the **published code**. It needs a local Kani toolchain
-(`cargo install --locked kani-verifier && cargo kani setup`) and, like the TLA+ targets, **never runs inside
-`make check`**.
-
-| Proof target | Coverage |
-|---|---|
-| `page_span_never_overflows_or_overruns` | for **every `usize`** (no assumptions beyond `offset <= total` and `limit >= 1`): a page is at most `limit` long, `offset + page` neither overflows nor runs past the end, a full page is taken unless the tail is reached, the tail consumes exactly the remainder, and the eof test is equivalent to "the remainder fits in limit" |
-| `empty_page_moves_nothing` | for every `usize`: at `offset == total` the page is empty and the cursor does not move |
-| `paging_covers_the_whole_output_exactly_once` | small lengths within the unwinding bound: page-by-page retrieval has no overlap, no gaps and a bounded page count |
-| `viewport_contains_selection_without_overflow` | every `usize` list length, selection and viewport height: bounded range, no overflowing endpoint, selected item visible when the range is nonempty |
-| `transcript_scroll_is_bounded_and_append_keeps_the_reader` | every `usize` transcript length, height and offset: bounded coordinates, zero offset follows the tail, a valid scrolled top row stays fixed on append; actual `transcript_window` source, D-447 |
-| `media_clipping_stays_inside_both_ranges` | every `usize` image position, length and viewport: visible rows stay inside both ranges with matching source/screen offsets; actual `clip_rows` source, D-448 |
-| `viewport_clicks_only_the_rendered_item` | every `usize` row and list input: a hit maps to the rendered item; blank rows never select an item |
-
-The proven `page_span(total, offset, limit) = min(limit, total - offset)` is the **published function**:
-`page_output` takes exactly that many characters per page (`take(page_span(...))`), so the arithmetic property
-"a page neither overruns nor overflows" covers the shipped code rather than a copied stand-in. `tui/src/viewport.rs` is compiled directly too (D-444), proving the shared list range and hit-testing arithmetic
-used by session rows, approvals and the composer. D-447 adds transcript scrolling. These proofs cover arithmetic for every `usize`, not
-terminal rendering or Unicode shaping. The viewport frame regressions and the PTY smoke cover those concrete
-input and rendering paths. All seven harnesses pass. Temporary-copy controls refute removal of the transcript
-append correction (D-447) and removal of the media viewport-offset correction (D-448). The latter fails
-the screen-bound assertion; `tui/tests/graphics.rs` and `tui/scripts/pty_graphics_smoke.py` exercise the actual
-image placement, source fallback and terminal-protocol paths. Decoders and third-party layouts remain outside
-the proof.
-
-**Honest boundaries** (measured, not guessed):
-
-- `page_output`'s **argument parsing** (through serde_json) is not covered by Kani: once coordinates are
-  symbolic, numeric comparison degrades into a symbolic `memcmp` (measured: not converged after 2200+
-  expansions) and expanding `chars().count()` bloats similarly. Argument validity therefore stays covered by
-  concrete-value enumeration (the out-of-range and invalid-argument cases in
-  `core/tests/kernel_properties.rs`).
-- `cap_tool_output`'s 24000-character threshold would need 24000 levels of unwinding, which Kani cannot do; it
-  is covered by concrete tests at boundary lengths.
-- The **remaining pure functions** (`args_hash`, `estimated_tokens`, `cap_tool_output`, and the view and
-  classification the crate does not compile in) are not proven, and D-295 measured where a harness on the ones
-  it does reach stops: `args_hash`'s shape claim (64 lowercase hex characters) runs into SHA-256 over the
-  serialized symbolic input (measured 2026-09-28 — `cargo kani --harness args_hash_is_64_lowercase_hex` ran
-  144 s, then CBMC reported "CBMC appears to have run out of memory" in the propositional reduction, over
-  358,973 SSA steps and 18,102 VCCs), a bound on `estimated_tokens` over a symbolic integer was still executing
-  serde_json's serialization after 900 s, and `cap_tool_output`'s identity branch over a four-byte symbolic
-  string was still unwinding `chars().count()` and checking allocations after 300 s. The wall is the symbolic
-  string/heap layer rather than the arithmetic — which is why the heap-free `usize` proofs do converge. The
-  probes were removed rather than left in the crate, where a harness that cannot converge would fail this
-  target; a proof here needs a stubbed or hand-modelled serializer.
-- Toolchain: Kani 0.68.0 with CBMC 6.11.0; Kani installs the nightly it pins (this machine uses
-  `nightly-2026-08-21`).
-
-## Boundaries (stated honestly)
-
-- What is verified are **model** properties: TLC enumerates an abstract state machine, not the Rust
-  implementation. Without a refinement proof (an optional later phase) this cannot be turned into "the Rust
-  code is proven".
-- Modelled: the control-plane state machine, artifacts and GC (A30), waits/wakeups/timers/supersede
-  (A22/A23 and the RT-06 deduplication semantics), tasks/delegation/work settlement (A02/A09), context
-  compression (A20), the daemon protocol's command deduplication and snapshot watermark (A28), the
-  required-check rounds with repair/blocking (A16), the job handshake with its recovery verdict (A10/A11), and
-  the inbox: the exactly-once application of an envelope, the sequence order, the bound, the stale-epoch seal and
-  the drain's identity check (§5.3, A06/A24), the write-failure latch with the park it retries (§4.4, A31), and
-  the coordinator lock with its fork window (§6.1, A33).
-- The inbox model (`V2Inbox`) models one recipient's inbox over three envelopes and two epochs, identifies an
-  envelope id with its sequence number (arrivals are ordered), and models one application step per envelope, so
-  "at a safe boundary" is a step here and the driver's boundary machinery stays with `V2Control`. Senders and the
-  `kind` vocabulary are not modelled (every kind obeys the same bound and no-loss rule), and DESIGN's permission
-  for status notes to coalesce has no implementation to model. `CrashLosesMarker` is the window the committed
-  code closes with one transaction; the model keeps it because the dedup, not the caller's transaction
-  discipline, should be what makes a replay safe.
-- The write-failure model (`V2DiskFull`) models one instance, one in-flight effect and no cost side (an artifact
-  write failing latches through the same signature, so "a write" is one thing here), no storage-worker queueing,
-  and no operation-ledger states after a lost outcome (that story is `V2Control`'s). Its liveness property says
-  what the design actually promises: the poll-pace retry is live *while writability recurs*, not that a single
-  writable moment is enough — the disk can refill before the next poll.
-- The coordinator-lock model (`V2Coordinator`) abstracts the descriptor table to one counter (how many processes
-  reference the description that holds the lock) and one tool child — a shell-job runner, an MCP server or a hook,
-  which all fork the same way — and it does not model the poll interval, the lock file's path, the OS's own lock
-  semantics beyond "exactly one holder", or what the child does after exec.
-- The job model (`V2Jobs`) abstracts the three identity fields (pid, `start_ticks`, `boot_id`) into one "the
-  recorded identity verifies" variable, assumes the control requests are authenticated (the abstract socket name
-  is derived from the job token, which is a transport property), and does not model the deadline, the TERM→KILL
-  escalation, the identity refusal against the job file, or the journal's bytes: those are the runner's own tests
-  plus `review/dogfood/job_identity.py`, `crash.py`, `unknown_outcome.py` and `cancel.py` against a real runner.
-- The authority model abstracts the scope vocabulary to the three kinds the code uses ("session" covers everything
-  below it, "workspace", and one scope per instance), models the two operations that matter (the leader's
-  delegation and a spawned child's shell call) rather than every tool intent, and assumes the instance a spawn
-  creates exists (the instance-creation transaction is modelled in `V2Control`/`V2Task`).
-- Modelled since D-247: the retry budget of one request (`tla/V2Retry.tla`) — at most `budget + 1` attempts, a
-  budget of 0 meaning one attempt, the park at exhaustion, and the budget being the instance's own profile's. Not
-  modelled there: *which* failures are transient (the classification is `V2Control`'s and the provider edge's), the
-  backoff between attempts, and what a parked work does next (`V2Control`'s).
-- Modelled since D-246: what a member's prompt carries (`tla/V2Prompt.tla`) — the session's instruction files
-  reach the leader and every child, composed per turn, and an unreadable file is noted. Not modelled there: the
-  rest of the prompt's text (the profile, the grants, the bindings — those are `V2Grants` and the tool catalogue),
-  the files' sizes and the context window, and where the composition happens in the code.
-- Modelled since D-244: the repository-local config's trust boundary (`tla/V2Trust.tla`) — the gate the merge
-  applies (`trusted` is set by the user's file alone), what a project may contribute once the user opts in, and
-  the classes a project never contributes. Not modelled there: where a configured path points, what a tool
-  binding *does*, the file syntax (an unknown key or a broken `[permissions]` table is a load error, covered by
-  the tests), and *which* entry was refused — the model keeps "a refusal happened" and whether it was recorded,
-  while the names `doctor` and the daemon log print are prose.
-- Modelled since D-225: the approval window (`tla/V2Approval.tla`) — the `expires_at` check the dispatch
-  re-check performs, the finality of a decision, and "no pending approval after a terminal operation".
-- Not modelled:
-  the execution details of `execute_check_ops` (dispatch/timeout/reconnect) are abstracted to "rounds and
-  verdict". Cross-instance settlement of a shared work budget (the worker attribution of A18) is modelled in
-  `V2Task` through `budget_work`'s resolution rules, including the "oldest open task only" ordering detail.
-- Weak fairness: `V2Wait`'s liveness depends on weak fairness of the parked drain, i.e. the driver's poll loop
-  continuing to try while `WAITING` (`engine/src/v2/driver.rs`); that is an implementation fact, not a proven
-  conclusion.
-- State-space frontier (`MC_grants`): the four bootstrap grants plus one free slot, two instances and two
-  operations = 1.29M states (178k distinct) in about one minute, with TLC's estimated chance that a fingerprint
-  collision hid a state at 1.2e-9. It is the slowest of the small configurations; the others are seconds.
-- State-space frontier (`MC_task`): 1 task / 2 instances / 2 work_scopes = 5.7M states in about 20 seconds, and
-  `MC_task_two.cfg` adds the second task with one instance and one work — 612,802 states / 56,074 distinct in 8 s
-  on 2026-09-27 — which is what makes the two dependency invariants non-vacuous, since a single task can only
-  declare the empty prerequisite. The **whole product** (2 tasks / 2 instances / 2 work_scopes, D-218) stays beyond a
-  bounded attempt: measured 2026-09-27 at 33.6M states generated / 7.9M distinct after five minutes with the
-  queue still growing, and the symmetry the report named is *not* enough — a sound block-preserving group over the
-  three constant sets (declared as model values, which TLC requires; it was added to a copy of this module, since
-  a configuration cannot carry the definition) cut the distinct count by only about 1.6× (31.5M / 5.0M after five
-  minutes, queue still growing), because most states are not in general position under the group; two tasks with
-  two instances (one work) and with two work_scopes (one instance) each also ran past five minutes. That configuration
-  needs a stronger abstraction, not symmetry. The simulation supplement searches it
-  instead — `make verify-model-sim SIM_CONFIG=MC_task.cfg`: 20,000 behaviors of depth 100, **7,663,011 states in
-  2 m 13 s** on 2026-09-27 with no invariant violated — which is a search and not a proof, and it checks no
-  temporal property.
-- The code-level correspondence (`core/tests/v2_invariants.rs`) is sampling plus bounded enumeration, not a
-  proof: it gives "these executions satisfy the invariants" plus checker sensitivity (the negative control),
-  never "all executions do".
-- State-space frontier: the wide configuration is 275M states in 11 minutes in the historical run, and a
-  one-hour bounded attempt on 2026-09-27 did not reach a verdict (2.9 GB of state store written): the fields and
-  properties added since then put it beyond a bounded attempt. The supplement named here is implemented as
-  `make verify-model-sim` (its default, `SIM_CONFIG=MC_wide.cfg`): 20,000 random behaviors of depth 100,
-  2,022,792 states checked in ~4 minutes on 2026-09-27 with no invariant violated — which is a *search*, not a proof, and it checks no temporal property
-  (the small configurations do that exhaustively). More instances or operations still need symmetry or constraints
-  — and symmetry alone was measured insufficient for the task product (D-218).
-
-## Conclusions and ledger
-
-- [REPORT.md](REPORT.md): the conclusions of the formal verification (what can and cannot be claimed), the
-  evidence list, the per-item A01–A36 ledger, the unproven list and the conditions that would overturn it.
-
-## Phase status and optional upgrades
-
-All four planned phases are complete; conclusions and the ledger are in [REPORT.md](REPORT.md):
-
-1. ~~Extend spec coverage~~: seven protocol surfaces are modelled (control plane, artifacts, waits, tasks,
-   compression, daemon, required checks), each mapped to code anchors and acceptance items.
-2. ~~Code-level invariant tests~~: landed as `core/tests/v2_invariants.rs` (bounded enumeration plus
-   coverage-driven random walks, coverage assertions and the checker-sensitivity negative control). proptest
-   was not introduced, because enumeration plus fixed-seed walks already give reproducible equivalent evidence
-   and stay lazy-first.
-3. ~~Pure-function layer~~: `core/tests/kernel_properties.rs` (bounded enumeration) plus `verification/kani`
-   (the Kani proof of the published `page_span`).
-4. ~~Verification report~~: [REPORT.md](REPORT.md).
-
-Still open as **upgrades** (not unfinished requirements, but optional depth):
-
-- Lean 4: an interactive prover that needs the elan toolchain and hand-written scripts; it would turn the
-  pure-function layer from "bounded enumeration plus bounded Kani proofs" into unbounded theorems, at the cost
-  of a narrower surface than "one more enumerated protocol surface".
-- A second task in `MC_task`: done where it converges (D-218 added `MC_task_two.cfg`, one instance and one work,
-  so the dependency invariants are no longer vacuous); the full 2 tasks / 2 instances / 2 work_scopes product needs a
-  stronger abstraction, since symmetry was measured at only ~1.6× (D-218) and the simulation supplement searches
-  that shape meanwhile.
-- The execution details of `execute_check_ops` (dispatch, timeout, reconnect): still covered only by the
-  code-level invariants and sample tests; the approval half of this bullet was modelled in D-225.
-- A refinement proof (model → implementation): needs every invariant mapped to an executable code assertion
-  (done) plus a proof that each implementation step lies in the model's step set (not done, see REPORT.md §5).
+
+## Current module and configuration inventory
+
+Every current module is listed with its configurations and marked claims. A marked claim without a refuting
+control or a documented type exception fails `tools/verification_catalogue.py`.
+
+### `V2Approval.tla`
+
+Configurations: `MC_approval.cfg`, `MC_approval_drops_the_expiry.cfg`, `MC_approval_keeps_pending_on_close.cfg`, `MC_approval_parks_without_a_row.cfg`, `MC_approval_rewrites_a_decision.cfg`, `MC_approval_unapproved.cfg`.
+
+Marked claims: `ApprovalDecisionIsFinal`, `EffectImpliesApproved`, `NoLateEffect`, `ParkedHasAnApprovalRow`, `TerminalOperationHasNoPendingApproval`, `TypeOK`.
+
+### `V2Artifact.tla`
+
+Configurations: `MC_artifact.cfg`, `MC_artifact_claim_anyone.cfg`, `MC_artifact_collector_ghost.cfg`, `MC_artifact_delete_anyone.cfg`, `MC_artifact_gc_ignores_references.cfg`, `MC_artifact_live_unpersisted.cfg`, `MC_artifact_live_without_reference.cfg`, `MC_artifact_reference_to_staging.cfg`, `MC_artifact_reference_unpersisted.cfg`, `MC_artifact_release_deletes_bytes.cfg`, `MC_artifact_release_fresh.cfg`, `MC_artifact_release_live_owner.cfg`.
+
+Marked claims: `BytesOnlyDeletedWhileDeleting`, `ClaimOnlyFromLive`, `CollectorSkipsIncomplete`, `GcClaimsOnlyUnreferencedLive`, `LiveFlipCarriesReference`, `LiveIsPersisted`, `NoReferenceToUnpersisted`, `NothingIsReleasedInsideTheWindow`, `OwnerHoldsUntilItsSubjectIsFinished`, `ReferencesOnlyLive`, `ReleaseKeepsTheRowAndTheBytes`, `TypeOK`.
+
+### `V2Authority.tla`
+
+Configurations: `MC_authority.cfg`, `MC_authority_badview.cfg`, `MC_authority_cascade_over_reaches.cfg`, `MC_authority_dead_pair.cfg`, `MC_authority_extra_bootstrap.cfg`, `MC_authority_ghost_grant.cfg`, `MC_authority_list_ghost.cfg`, `MC_authority_orphan_child.cfg`, `MC_authority_revive_on_revoke.cfg`, `MC_authority_spawn_delegable.cfg`, `MC_authority_stale_effect.cfg`, `MC_authority_stalesurface.cfg`, `MC_authority_surface_foreign.cfg`, `MC_authority_task_child_delegable.cfg`, `MC_authority_trustsurface.cfg`, `MC_authority_two_effects.cfg`, `MC_authority_wider_child.cfg`.
+
+Marked claims: `AuthorityTracesToTheUser`, `AuthorizedEffectsOnly`, `BootstrappedAuthority`, `CascadeOnlyTakesTheSubtree`, `CascadeTakesTheSubtree`, `ChildGrantsAreCoveredByTheirParent`, `DelegableGrantsAreUserIssued`, `EffectAtMostOnce`, `EveryLiveGrantBecomesRevocable`, `ListedIdsAreUsed`, `NoDeadGrantPair`, `OnceStaleNeverExecutes`, `RevokedStaysRevoked`, `StaleSurfaceCatchesUp`, `SurfaceChangesOnlyToTheCurrentEntitlement`, `TaskScopedGrantsAreNonDelegable`, `TypeOK`.
+
+### `V2Capabilities.tla`
+
+Configurations: `MC_capabilities.cfg`, `MC_capabilities_bad.cfg`, `MC_capabilities_delegable_child.cfg`, `MC_capabilities_revoke_keeps_child.cfg`, `MC_capabilities_settle_keeps_child.cfg`.
+
+Marked claims: `ChildNonDelegable`, `NoChildWithoutParent`, `ParentRevokeCascades`, `TaskSettleRevokes`.
+
+### `V2Checks.tla`
+
+Configurations: `MC_checks.cfg`, `MC_checks_block_without_cause.cfg`, `MC_checks_brief_twice.cfg`, `MC_checks_brief_without.cfg`, `MC_checks_briefing.cfg`, `MC_checks_independent.cfg`, `MC_checks_late_join.cfg`, `MC_checks_late_require.cfg`, `MC_checks_rewinds_rounds.cfg`, `MC_checks_round_without_claim.cfg`, `MC_checks_self_verified.cfg`, `MC_checks_unbounded_rounds.cfg`, `MC_checks_unverified_accept.cfg`, `MC_checks_upgrade_candidate.cfg`.
+
+Marked claims: `BlockedAfterTheBudgetOrStale`, `BriefingIsForAWorkWithChecks`, `BriefingIsOnce`, `ChecksOnlyJoinBeforeAClaim`, `ChecksOnlyVerifyAClaimedSuccess`, `EveryRequiredCheckWasVerified`, `IndependenceIsNotSelfVerified`, `NoUnverifiedSuccess`, `NoUpgradeOfTheCandidate`, `RoundsAreBounded`, `RoundsAreMonotone`, `TypeOK`.
+
+### `V2Codemode.tla`
+
+Configurations: `MC_codemode.cfg`, `MC_codemode_leak.cfg`, `MC_codemode_silent.cfg`, `MC_codemode_veto.cfg`.
+
+Marked claims: `OnlyScriptOutputEnters`, `ScriptsAlwaysEmit`, `TypeOK`, `VetoedNeverCalled`.
+
+### `V2Compress.tla`
+
+Configurations: `MC_compress.cfg`, `MC_compress_append_in_hole.cfg`, `MC_compress_cover_backwards.cfg`, `MC_compress_cover_self.cfg`, `MC_compress_cover_to_non_summary.cfg`, `MC_compress_deletes_originals.cfg`, `MC_compress_keep_reservation.cfg`, `MC_compress_lifts_coverage.cfg`, `MC_compress_rewrites_closed.cfg`.
+
+Marked claims: `ClosedCompressionReleasesReservation`, `CoverageNeverLifted`, `CoveragePointsForward`, `CoveredStaysCoveredByItsSummary`, `NewestSummaryIsVisible`, `NoEntryIsEverLost`, `RequestClosesOnce`, `TailAppend`, `TypeOK`.
+
+### `V2Concurrency.tla`
+
+Configurations: `MC_concurrency.cfg`, `MC_concurrency_reads_ahead.cfg`, `MC_concurrency_skips_an_event.cfg`, `MC_concurrency_writer_waits.cfg`.
+
+Marked claims: `NoReaderSeesUncommitted`, `ReadersSeeTheCommittedPrefix`, `TypeOK`, `WriterProgressesDespiteAStalledReader`.
+
+### `V2Control.tla`
+
+Configurations: `MC.cfg`, `MC_control_BadActiveRequest.cfg`, `MC_control_BadAdmission.cfg`, `MC_control_CrossEpochReceipt.cfg`, `MC_control_DoubleEffect.cfg`, `MC_control_EffectAfterCancel.cfg`, `MC_control_EffectBeforeDispatch.cfg`, `MC_control_EffectOnTerminated.cfg`, `MC_control_EffectUnauthorized.cfg`, `MC_control_KeepClosedReservation.cfg`, `MC_control_OverReserve.cfg`, `MC_control_PreparedEffect.cfg`, `MC_control_RewriteTerminalOp.cfg`, `MC_control_RewriteTerminalWork.cfg`, `MC_control_SelectIncomplete.cfg`, `MC_control_StaleExecutor.cfg`, `MC_control_attempts.cfg`, `MC_control_cancel.cfg`, `MC_control_deadline.cfg`, `MC_control_decisions.cfg`, `MC_control_landing.cfg`, `MC_control_midturninput.cfg`, `MC_control_reask.cfg`, `MC_control_runtimeTail.cfg`, `MC_control_two.cfg`, `MC_control_two_disjunction.cfg`, `MC_control_warn.cfg`, `MC_control_warn_late.cfg`, `MC_control_warn_repeat.cfg`, `MC_wide.cfg`.
+
+Marked claims: `AdmissionGate`, `AtMostOneWarning`, `CancelledBeforeStartHasNoEffect`, `CancelledWorkReleasesParkedInstances`, `EffectAtMostOnce`, `InputLandsAtTheBoundary`, `NoDispatchOnTerminated`, `NoEffectBeforeApproval`, `NoReceiptAcrossEpochs`, `NoRequestAfterDeadline`, `NoTurnWithoutWork`, `OneActiveRequest`, `PreparedIsNotTerminal`, `QueuedInputEntersTheContext`, `RecordBeforeEffect`, `ReservationReleased`, `ReservationsAdmitted`, `SelectionIsComplete`, `SettlementFollowsATurnAfterTheLanding`, `StaleExecutorRejected`, `TerminalOpStable`, `TerminalWorkStatusStable`, `TypeOK`, `WarnIsTimely`.
+
+### `V2Coordinator.tla`
+
+Configurations: `MC_coordinator.cfg`, `MC_coordinator_inherit.cfg`, `MC_coordinator_never_recovers.cfg`, `MC_coordinator_report.cfg`, `MC_coordinator_shared.cfg`, `MC_coordinator_sweep_beside_a_session.cfg`.
+
+Marked claims: `AtMostOneCoordinator`, `NoHeldLockWithoutAHolder`, `RecoveryIsLive`, `SweepWaitsForTheSession`, `TheWindowIsNotMistakenForAHolder`, `TypeOK`.
+
+### `V2Daemon.tla`
+
+Configurations: `MC_daemon.cfg`, `MC_daemon_apply_on_another_version.cfg`, `MC_daemon_apply_without_receipt.cfg`, `MC_daemon_cursor_ahead.cfg`, `MC_daemon_delivers_twice.cfg`, `MC_daemon_duplicate_effect.cfg`, `MC_daemon_keeps_serving_after_receipt.cfg`, `MC_daemon_receipt_beyond_log.cfg`, `MC_daemon_reclaims_events.cfg`, `MC_daemon_rewrites_receipt.cfg`, `MC_daemon_rolls_back_log.cfg`, `MC_daemon_skips_an_event.cfg`, `MC_daemon_split_checkpoint.cfg`, `MC_daemon_stop.cfg`, `MC_daemon_stop_before_receipt.cfg`, `MC_daemon_view_from_snapshot.cfg`.
+
+Marked claims: `AStopIsAnsweredAndEndsTheSession`, `AppliedAtMostOnce`, `AppliedCommandsUsedTheWireVersion`, `CommandApplicationCountIsBounded`, `CursorNeverBeyondLog`, `HandoversAreTheFullRange`, `LogMonotone`, `NoResyncInThisVersion`, `NothingIsServedTwice`, `ReceiptNamesARealVersion`, `ReceiptsAreStable`, `SnapshotNeverLeadsCursor`, `StopsOnlyAfterAnswering`, `TypeOK`, `ViewMatchesCursor`.
+
+### `V2Discovery.tla`
+
+Configurations: `MC_discovery.cfg`, `MC_discovery_cleanup.cfg`, `MC_discovery_pressure.cfg`.
+
+Marked claims: `DiscoverySurvivesBackpressure`, `ExitedCoordinatorNotifiesDrivers`, `TypeOK`.
+
+### `V2DiskFull.tla`
+
+Configurations: `MC_diskfull.cfg`, `MC_diskfull_clear_anyway.cfg`, `MC_diskfull_fake_success.cfg`, `MC_diskfull_keep_driving.cfg`, `MC_diskfull_never_park.cfg`, `MC_diskfull_park_silently.cfg`.
+
+Marked claims: `LatchClearsOnlyWhenWritable`, `LossIsReported`, `NoFakedSuccess`, `NoStepRunsWhileLatched`, `ParkEventuallyLands`, `TypeOK`.
+
+### `V2DisplayWorker.tla`
+
+Configurations: `MC_displayworker.cfg`, `MC_displayworker_apply.cfg`, `MC_displayworker_deadline.cfg`, `MC_displayworker_drop.cfg`, `MC_displayworker_leak.cfg`, `MC_displayworker_overflow.cfg`, `MC_displayworker_stale.cfg`.
+
+Marked claims: `CurrentResultOnly`, `CurrentStartOnly`, `NoOrphanProcess`, `ObservedStopReaps`, `OwnerDropReaps`, `TypeOK`, `WorkerOutputBound`.
+
+### `V2ExecutionChain.tla`
+
+Configurations: `MC_executionchain.cfg`, `MC_executionchain_accept.cfg`, `MC_executionchain_commit.cfg`, `MC_executionchain_epoch.cfg`, `MC_executionchain_receipt.cfg`, `MC_executionchain_replay.cfg`, `MC_executionchain_stale.cfg`, `MC_executionchain_takeover.cfg`, `MC_executionchain_veto.cfg`.
+
+Marked claims: `ContextKeepsItsEpoch`, `DispatchWasAuthorized`, `EffectHasControlCommit`, `EffectHasDurableAcceptance`, `TakeoverNeedsStopEvidence`, `TerminalReceiptIsImmutable`, `TypeOK`, `UnknownIsNeverReplayed`, `VetoPreventsEffect`.
+
+### `V2ExportSnapshot.tla`
+
+Configurations: `MC_exportsnapshot.cfg`, `MC_exportsnapshot_publish.cfg`, `MC_exportsnapshot_replace.cfg`, `MC_exportsnapshot_size.cfg`, `MC_exportsnapshot_snapshot.cfg`.
+
+Marked claims: `ExistingDestinationSurvives`, `ExportBytesAreBounded`, `PagesShareSnapshot`, `PublicationIsComplete`, `TypeOK`.
+
+### `V2Grants.tla`
+
+Configurations: `MC_grants.cfg`, `MC_grants_bootstrap_extra.cfg`, `MC_grants_cascade_keeps_children.cfg`, `MC_grants_effect_twice.cfg`, `MC_grants_instance_delegable.cfg`, `MC_grants_mint_beyond_parent.cfg`, `MC_grants_revoke_keeps_live.cfg`, `MC_grants_runtime_issues.cfg`, `MC_grants_stale_dispatch.cfg`, `MC_grants_stale_offered_surface.cfg`, `MC_grants_task.cfg`, `MC_grants_task_child_delegable.cfg`, `MC_grants_task_child_orphan.cfg`, `MC_grants_unauthorized_effect.cfg`.
+
+Marked claims: `AuthorityTracesToTheUser`, `AuthorizedEffectsOnly`, `BootstrappedAuthority`, `CascadeTakesTheSubtree`, `ChildGrantsAreCoveredByTheirParent`, `DelegableGrantsAreUserIssued`, `EffectAtMostOnce`, `OfferedToolsAreAuthorized`, `OnceStaleNeverExecutes`, `RevokedStaysRevoked`, `TaskScopedGrantsAreNonDelegable`, `TaskScopedGrantsHaveParents`, `TypeOK`, `TypeOKGrants`, `TypeOKOffered`, `TypeOKOps`, `TypeOKRevision`.
+
+### `V2History.tla`
+
+Configurations: `MC_history.cfg`, `MC_history_leaks.cfg`, `MC_history_system_reads.cfg`.
+
+Marked claims: `InstancesReadOnlyTheirOwn`, `SystemNeverReads`, `TypeOK`.
+
+### `V2Images.tla`
+
+Configurations: `MC_images.cfg`, `MC_images_blind_model.cfg`, `MC_images_blind_parts.cfg`, `MC_images_leaked.cfg`, `MC_images_parts_from_loaded.cfg`, `MC_images_unbacked.cfg`, `MC_images_unreadable_ok.cfg`.
+
+Marked claims: `NoImagesWithoutSupport`, `NoLeakedImages`, `NoUnbackedParts`, `PartsOnlyFromLoadedBytes`, `TypeOK`, `UnreadableIsReported`.
+
+### `V2Inbox.tla`
+
+Configurations: `MC_inbox.cfg`, `MC_inbox_drop_when_full.cfg`, `MC_inbox_foreign_drain.cfg`, `MC_inbox_no_dedup.cfg`, `MC_inbox_out_of_order.cfg`, `MC_inbox_stale_applied.cfg`, `MC_inbox_unbounded.cfg`.
+
+Marked claims: `AtMostOncePerEnvelope`, `BoundedInbox`, `DrainIsOwned`, `LogIsIncreasing`, `NoSilentLoss`, `NoStaleApplication`, `TypeOK`.
+
+### `V2InputQueue.tla`
+
+Configurations: `MC_inputqueue.cfg`, `MC_inputqueue_original.cfg`, `MC_inputqueue_replay.cfg`, `MC_inputqueue_revision.cfg`, `MC_inputqueue_settled.cfg`, `MC_inputqueue_snapshot.cfg`, `MC_inputqueue_unverified.cfg`.
+
+Marked claims: `AtMostOnceDelivery`, `OriginalRetained`, `PendingRevisionOnly`, `SnapshotDelivery`, `TypeOK`, `VerifiedAdmission`.
+
+### `V2Isolation.tla`
+
+Configurations: `MC_isolation.cfg`, `MC_isolation_fallback.cfg`, `MC_isolation_ssh.cfg`, `MC_isolation_ssh_fallback.cfg`, `MC_isolation_ssh_unreachable.cfg`, `MC_isolation_unavailable.cfg`.
+
+Marked claims: `RunsOnlyUnderTheConfiguredBackend`, `TypeOK`, `UnavailableBackendNeverRuns`.
+
+This is abstract isolation material only; it supplies no current host-sandbox guarantee.
+
+### `V2JobSupervision.tla`
+
+Configurations: `MC_jobsupervision.cfg`, `MC_jobsupervision_completion.cfg`, `MC_jobsupervision_grace.cfg`, `MC_jobsupervision_normal.cfg`, `MC_jobsupervision_persist.cfg`, `MC_jobsupervision_reap.cfg`, `MC_jobsupervision_retire.cfg`, `MC_jobsupervision_socket.cfg`, `MC_jobsupervision_timer.cfg`, `MC_jobsupervision_timestamp.cfg`.
+
+Marked claims: `CancelGraceNeverReplenished`, `CancelledGroupWasEscalated`, `DeadlineEventuallyCancels`, `NormalServicesArePreserved`, `SettledRunnerEventuallyLeaves`, `TerminalHasRetirementTime`, `TypeOK`, `UnsavedAcceptanceNeverExecutes`.
+
+### `V2Jobs.tla`
+
+Configurations: `MC_jobs.cfg`, `MC_jobs_double_go.cfg`, `MC_jobs_effect_before_accept.cfg`, `MC_jobs_guess_not_run_effect.cfg`, `MC_jobs_guess_notrun.cfg`, `MC_jobs_keep_runner.cfg`, `MC_jobs_late_go.cfg`, `MC_jobs_retires_a_running_command.cfg`, `MC_jobs_service_signals_a_live_command.cfg`, `MC_jobs_service_signals_a_stranger.cfg`, `MC_jobs_spawn_first.cfg`.
+
+Marked claims: `AtMostOneExecutor`, `EffectImpliesAcceptedStart`, `LateGoIsRejected`, `NoEffectBeforeAccept`, `NoLiveCommandWasSignalled`, `NotRunMeansNoEffect`, `NothingInFlightWasRetired`, `OnlyTheJobsOwnGroupIsSignalled`, `SettledRunnerLeaves`, `TypeOK`, `UnverifiableStartIsNeverGuessedNotRun`.
+
+### `V2Memory.tla`
+
+Configurations: `MC_memory.cfg`, `MC_memory_accept_beyond_cap.cfg`, `MC_memory_evicts.cfg`, `MC_memory_recall_beyond_cap.cfg`.
+
+Marked claims: `NotesAreAppendOnly`, `RecallIsBounded`, `TheStoreRefusesAtTheCap`, `TypeOK`.
+
+### `V2Oauth.tla`
+
+Configurations: `MC_oauth.cfg`, `MC_oauth_logout_ignored.cfg`, `MC_oauth_reuses_code.cfg`, `MC_oauth_uses_expired.cfg`, `MC_oauth_verifier_leaks.cfg`, `MC_oauth_wrong_resource.cfg`.
+
+Marked claims: `CodesAreSingleUse`, `LogoutIsEffective`, `NoRequestWithAnExpiredToken`, `TokenOnlyToItsResource`, `TypeOK`, `VerifierNeverLeavesTheClient`.
+
+### `V2Presentation.tla`
+
+Configurations: `MC_presentation.cfg`, `MC_presentation_dispatch.cfg`, `MC_presentation_eager.cfg`, `MC_presentation_erase.cfg`, `MC_presentation_overflow.cfg`, `MC_presentation_stale.cfg`.
+
+Marked claims: `CacheIsBounded`, `CancelKeepsDraft`, `CompletionOnlyEdits`, `OnlyVisibleAdmitted`, `StaleResultIgnored`, `TypeOK`.
+
+### `V2ProfileSwitch.tla`
+
+Configurations: `MC_profileswitch.cfg`, `MC_profileswitch_midturn.cfg`, `MC_profileswitch_nonuser.cfg`, `MC_profileswitch_rewrite.cfg`, `MC_profileswitch_terminated.cfg`.
+
+Marked claims: `OnlyUserSwitches`, `RequestProfileIsFrozen`, `SwitchUsesSafeBoundary`, `TypeOK`.
+
+### `V2ProjectTrust.tla`
+
+Configurations: `MC_projecttrust.cfg`, `MC_projecttrust_project_grants.cfg`, `MC_projecttrust_raw.cfg`, `MC_projecttrust_stale.cfg`.
+
+Marked claims: `ListedTrustIsCanonical`, `TrustIsForTheRootTheUserListed`, `TypeOK`.
+
+### `V2Prompt.tla`
+
+Configurations: `MC_prompt.cfg`, `MC_prompt_ignore_unreadable.cfg`, `MC_prompt_members_use_their_profile.cfg`, `MC_prompt_rules_frozen_at_start.cfg`.
+
+Marked claims: `EverybodyHasTheRules`, `PromptsFollowTheCurrentRules`, `TypeOK`, `UnreadableRulesAreNoted`.
+
+### `V2Prune.tla`
+
+Configurations: `MC_prune.cfg`, `MC_prune_dating.cfg`, `MC_prune_evidence.cfg`, `MC_prune_keep_present.cfg`, `MC_prune_live.cfg`, `MC_prune_window.cfg`.
+
+Marked claims: `NothingThatShouldStayLeaves`, `TakenIsGone`, `TypeOK`.
+
+### `V2Retention.tla`
+
+Configurations: `MC_retention.cfg`, `MC_retention_evicts_evidence.cfg`, `MC_retention_evicts_live.cfg`, `MC_retention_evicts_young.cfg`, `MC_retention_ignores_live_only.cfg`, `MC_retention_runs_disabled.cfg`.
+
+Marked claims: `EvictionOnlyUnderTheGuards`, `EvidenceIsNeverEvicted`, `NoReferenceToEvictedFact`, `OnlyOldFactsAreEvicted`, `TypeOK`.
+
+### `V2Retry.tla`
+
+Configurations: `MC_retry.cfg`, `MC_retry_off_by_one.cfg`, `MC_retry_parks_early.cfg`, `MC_retry_session_constant.cfg`.
+
+Marked claims: `NoAttemptBeyondTheBudget`, `ParkOnlyAfterTheBudget`, `ResolvedIsTheInstancesOwn`, `TypeOK`, `ZeroMeansOneAttempt`.
+
+### `V2Review.tla`
+
+Configurations: `MC_review.cfg`, `MC_review_inconsistent.cfg`, `MC_review_phase.cfg`, `MC_review_reservation.cfg`, `MC_review_self_update.cfg`, `MC_review_unreviewed.cfg`, `MC_review_usage.cfg`.
+
+Marked claims: `AllowRequiresCompletedReview`, `AllowRequiresConsistentAssessment`, `ClosedReviewReleasesReservation`, `FailedKnownUsageIsSettled`, `ReviewLeavesInstanceParked`, `SelfUpdateRemainsUserOnly`, `TypeOK`.
+
+### `V2Schedule.tla`
+
+Configurations: `MC_schedule.cfg`, `MC_schedule_disabled.cfg`, `MC_schedule_duplicate.cfg`, `MC_schedule_early.cfg`, `MC_schedule_overlap.cfg`.
+
+Marked claims: `AtMostOneRunPerAutomation`, `DisabledNeverRuns`, `NoDuplicateRun`, `OnlyDueSlotsRun`, `TypeOK`.
+
+### `V2SearchTree.tla`
+
+Configurations: `MC_search_tree.cfg`, `MC_search_tree_add.cfg`, `MC_search_tree_apply_position.cfg`, `MC_search_tree_compact_error_flag.cfg`, `MC_search_tree_compact_no_advance.cfg`, `MC_search_tree_cycle.cfg`, `MC_search_tree_delete_history.cfg`, `MC_search_tree_drop_summary.cfg`, `MC_search_tree_focus.cfg`, `MC_search_tree_member_read.cfg`, `MC_search_tree_member_write.cfg`, `MC_search_tree_merge.cfg`, `MC_search_tree_merge_refs.cfg`, `MC_search_tree_merge_structure.cfg`, `MC_search_tree_move.cfg`, `MC_search_tree_node_limit.cfg`, `MC_search_tree_pair.cfg`, `MC_search_tree_pair_atomic.cfg`, `MC_search_tree_pair_replay.cfg`, `MC_search_tree_parent_drop.cfg`, `MC_search_tree_partial_compact.cfg`, `MC_search_tree_read_stale.cfg`, `MC_search_tree_read_writes.cfg`, `MC_search_tree_rejected_revision.cfg`, `MC_search_tree_replay.cfg`, `MC_search_tree_root_delete.cfg`, `MC_search_tree_source.cfg`, `MC_search_tree_stale.cfg`, `MC_search_tree_update.cfg`.
+
+Marked claims: `AcceptedApplyRefreshesSource`, `Acyclic`, `ApplyPreservesPosition`, `CompactionAlwaysCommitsSummary`, `FailedCompactionMarksError`, `FailedCompactionPreservesTree`, `FocusExists`, `FreshApplyRequiresCurrentRevision`, `MergePreservesRefs`, `MergePreservesStructure`, `NodeLimit`, `OnlyAuthorizedReads`, `OnlyAuthorizedWrites`, `ParentsExist`, `ReadDoesNotChangeTree`, `ReadReportsStale`, `RejectedApplyPreservesTree`, `ReplayDoesNotGrow`, `RevisionHistoryComplete`, `RootPresent`, `TypeOK`, `ValidCompactionAdvancesTree`.
+
+### `V2SessionUi.tla`
+
+Configurations: `MC_sessionui.cfg`, `MC_sessionui_confirm.cfg`, `MC_sessionui_earlyexit.cfg`, `MC_sessionui_keepopen.cfg`, `MC_sessionui_switch.cfg`.
+
+Marked claims: `ConfirmedDelete`, `DeletedCurrentExits`, `ExitAfterSuccess`, `SwitchAfterSuccess`, `TypeOK`.
+
+### `V2Sessions.tla`
+
+Configurations: `MC_sessions.cfg`, `MC_sessions_archive_default.cfg`, `MC_sessions_archive_held.cfg`, `MC_sessions_archive_while_held.cfg`, `MC_sessions_shared_path.cfg`.
+
+Marked claims: `ArchiveOnlyWhenIdle`, `DefaultIsNeverArchived`, `NoCoordinatorForAnArchivedSession`, `RegistryIsInjective`, `TypeOK`.
+
+### `V2SkillAuthority.tla`
+
+Configurations: `MC_skillauthority.cfg`, `MC_skillauthority_escape.cfg`, `MC_skillauthority_grant.cfg`, `MC_skillauthority_unbound.cfg`.
+
+Marked claims: `SkillContentCannotGrant`, `SkillReadNeedsBinding`, `SkillReadStaysInRegistry`, `TypeOK`.
+
+### `V2Store.tla`
+
+Configurations: `MC_store.cfg`, `MC_store_accept_unstamped.cfg`, `MC_store_adopt.cfg`, `MC_store_foreign_stamp.cfg`, `MC_store_interrupt_foreign.cfg`, `MC_store_refuse_and_write.cfg`, `MC_store_strand_interrupted.cfg`.
+
+Marked claims: `AcceptedMeansStamped`, `EveryRefusalIsSilent`, `HalfInitializedIsCompleted`, `InterruptedWroteOursOnly`, `NoForeignAdoption`, `NoForeignStamp`, `NoForeignStampAlways`, `RefusalIsSilent`, `RefusalsWriteNothing`, `TypeOK`.
+
+### `V2StreamBoundary.tla`
+
+Configurations: `MC_streamboundary.cfg`, `MC_streamboundary_invalid.cfg`, `MC_streamboundary_partial.cfg`, `MC_streamboundary_retry.cfg`, `MC_streamboundary_size.cfg`, `MC_streamboundary_stall.cfg`, `MC_streamboundary_visible.cfg`.
+
+Marked claims: `BodyIsBounded`, `InvalidEventsAreRejected`, `OnlyCompleteResponsesExecute`, `PartialChunksDoNotRenew`, `RetryBudgetIsBounded`, `TypeOK`, `VisibleTextIsNotReplayed`.
+
+### `V2Task.tla`
+
+Configurations: `MC_task.cfg`, `MC_task_bills_settled.cfg`, `MC_task_delegates_to_settled.cfg`, `MC_task_return_path_closed.cfg`, `MC_task_rewrite_settled.cfg`, `MC_task_self_dependency.cfg`, `MC_task_stale_active_work.cfg`, `MC_task_stranger_writes.cfg`, `MC_task_system_settles.cfg`, `MC_task_terminate_leaves_tasks.cfg`, `MC_task_two.cfg`, `MC_task_unordered_dependency.cfg`.
+
+Marked claims: `DependenciesPointBackwards`, `NoOpenTaskOnDeadAssignee`, `NoSelfDependency`, `NoStaleActiveWork`, `OnlyPartiesWriteTasks`, `RegisteredWorkNeedsAnActiveWork`, `RequestsResolveToActiveWorks`, `ReturnPathOnlyWhileOpen`, `SettledIsFinal`, `SystemOnlyParksTasks`, `TypeOK`.
+
+### `V2Trust.tla`
+
+Configurations: `MC_trust.cfg`, `MC_trust_models_always_merge.cfg`, `MC_trust_project_grants_itself.cfg`, `MC_trust_project_overrides_user.cfg`, `MC_trust_project_sets_policy.cfg`, `MC_trust_refuses_silently.cfg`.
+
+Marked claims: `NothingFromTheProjectUntrusted`, `PolicyClassesStayTheUsers`, `RefusalsAreNamed`, `TrustOnlyFromTheUser`, `TypeOK`, `UserDefinitionsNeverOverridden`.
+
+### `V2Tui.tla`
+
+Configurations: `MC_tui.cfg`, `MC_tui_approval.cfg`, `MC_tui_exit.cfg`, `MC_tui_target.cfg`.
+
+Marked claims: `ExitOnlyDetaches`, `ExplicitDecision`, `LeaderOnly`, `TypeOK`.
+
+### `V2Update.tla`
+
+Configurations: `MC_update.cfg`, `MC_update_finish_anyway.cfg`, `MC_update_fresh_install.cfg`, `MC_update_ignore_lock.cfg`, `MC_update_keep_both_active.cfg`, `MC_update_pre_switch_crash.cfg`, `MC_update_rewrite_journal.cfg`, `MC_update_rollback_crash.cfg`, `MC_update_skip_validation.cfg`.
+
+Marked claims: `AtMostOneUpdater`, `ExactlyOneActiveVersion`, `FailedHealthNeverCompletes`, `InterruptedRollbackSettlesToThePreviousVersion`, `PreSwitchCrashKeepsTheOldVersion`, `RevisionOnlyGrows`, `RollbackNeedsAPrevious`, `SwitchOnlyAfterValidation`, `TypeOK`.
+
+### `V2Wait.tla`
+
+Configurations: `MC_wait.cfg`, `MC_wait_answer_twice.cfg`, `MC_wait_answer_unresolved.cfg`, `MC_wait_answer_unused_slot.cfg`, `MC_wait_close_without_holding.cfg`, `MC_wait_closes_without_answering.cfg`, `MC_wait_deferred.cfg`, `MC_wait_mismatch_answer_call.cfg`, `MC_wait_never_sweep.cfg`, `MC_wait_park_after_answer.cfg`, `MC_wait_pending_while_ready.cfg`, `MC_wait_wakes_on_idle.cfg`, `MC_wait_wakes_on_report.cfg`, `MC_wait_widens_a_message.cfg`.
+
+Marked claims: `AnswerImpliesResolved`, `IdleIsNotASettlement`, `MessageStaysAMessage`, `NoStrandedPending`, `PendingImpliesParked`, `ReportsAreNotSettlements`, `ResolvedWaitIsAnswered`, `SatisfiedHoldsConditions`, `TypeOK`, `UnusedSlotHasNoAnswer`, `WaitingHasPendingWait`, `WakeAnswerAtMostOnce`, `WakeAnswersItsCall`.
+
+### `V2Work.tla`
+
+Configurations: `MC_work.cfg`, `MC_work_attention.cfg`, `MC_work_cancel_stop.cfg`, `MC_work_completion.cfg`, `MC_work_double_bill.cfg`, `MC_work_early_effect.cfg`, `MC_work_info_scope.cfg`, `MC_work_prepare.cfg`, `MC_work_restart.cfg`, `MC_work_rewrite.cfg`, `MC_work_stop.cfg`, `MC_work_unanswered.cfg`.
+
+Marked claims: `AdmissionUsageTransfersOnce`, `AttentionIsNotSettlement`, `CompletionMatchesCurrentWork`, `EffectsRequireAdmission`, `InformationDoesNotCreateWork`, `PreparationMatchesCurrentWork`, `RecoveryRemainsBounded`, `ResolvedAttentionIsAnswered`, `StopSurvivesObservation`, `TakeoverRequiresObservation`, `TypeOK`, `UnknownOutcomeIsPreserved`.
+
+### `V2Workspace.tla`
+
+Configurations: `MC_workspace.cfg`, `MC_workspace_merges_a_dirty_checkout.cfg`, `MC_workspace_merges_mid_turn.cfg`, `MC_workspace_retires_with_work.cfg`.
+
+Marked claims: `NoMergeWhileATurnRuns`, `RetirementNeverBuriesWork`, `TypeOK`, `UncommittedWorkIsNeverMerged`.
+
+## Boundaries
+
+No full Rust/SQLite refinement, whole-system composition, arbitrary actor/command/bootstrap/schema/fork/retention/
+export composition, arbitrary-string capability algebra, provider/scheduler fairness or live-model navigation
+quality is established by this inventory. The separate wide configuration and Policy B source-bound bidirectional
+fair-trace equivalence remain open. `TypeOK` is tracked separately in [COVERAGE.md](COVERAGE.md).
+
+<!-- maps: verification/REPORT.md reader=evidence -->
+<!-- maps: verification/REQUIREMENTS.md reader=evidence -->
+<!-- maps: verification/COVERAGE.md reader=evidence -->

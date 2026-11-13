@@ -84,7 +84,7 @@ fn default_timeout() -> i64 {
 
 /// D-247: the budget the session passed for *every* instance before `max_retries` was applied per instance, so
 /// applying the key changed no configuration that omits it. (The comment sits *above* the function on purpose:
-/// `review/config_reference.py` reads a `#[serde(default = "…")]` value from the function's body and reports
+/// `tools/config_reference.py` reads a `#[serde(default = "…")]` value from the function's body and reports
 /// anything but a bare literal rather than guessing — which is how this one was noticed, D-239.)
 fn default_retries() -> i64 {
     2

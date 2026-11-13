@@ -5556,7 +5556,7 @@ fn artifact_release_spent_owners(tx: &Connection, session_id: &str, params: &Jso
 /// * an applied delivery stays while a **pending wait** still counts it as its fact — a `message` wait matches
 ///   `(recipient, sender, epoch)` and an `envelope` wait names the id — and its age is the age of the context
 ///   entry that recorded the application, because the envelope row carries no timestamp of its own;
-/// * evaluation evidence is not a row class inside this database (`review/eval/**` is the design's evidence, and
+/// * evaluation evidence is not a row class inside this database (external evidence is outside its cleanup scope, and
 ///   no product code writes there); the caller refuses to sweep a state root the user marked with the `EVIDENCE`
 ///   file, which is the user's way to say "this root is evidence".
 ///

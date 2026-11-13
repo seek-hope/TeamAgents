@@ -1,3 +1,0 @@
-[('deposit', 'a', 100), ('withdraw', 'a', 30)]
-70 0
-ValueError: negative amount: -5

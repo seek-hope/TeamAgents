@@ -25,7 +25,7 @@ ifeq ($(HOME),/tmp)
 endif
 
 .PHONY: help check deny fmt fmt-check lint test build pty probe-offline probe-models hygiene language-check \
-        benchmark-receipts verify-tools verify-model verify-model-all \
+        verify-tools verify-model verify-model-all \
         verify-model-counterexamples verify-witnesses verify-model-wide verify-model-sim verify-kani release-rehearsal
 
 help:
@@ -49,7 +49,6 @@ help:
 	@echo 'make verify-witnesses  executable normal-path reachability (not safety proofs)'
 	@echo 'make verify-model-wide  the wide control-plane configuration (slow, best effort)'
 	@echo 'make verify-model-sim  any configuration by random simulation (minutes; invariants only)'
-	@echo 'make benchmark-receipts JOBS=DIR [BENCH=swebench|tau3|tb]  benchmark receipt checks (D-421)'
 	@echo 'make verify-kani  production arithmetic and bounded capability-vocabulary proofs'
 	@echo 'first run with downloads: make check CARGO_FLAGS=--locked'
 
@@ -73,15 +72,15 @@ lint:
 
 # The three ways a test can leak — a live session daemon (D-111), a command runner that outlives it
 # (D-226) and a scratch directory (D-131) — are checked
-# by `review/leak_guard.py` around the run: it names and stops whatever appeared, instead of reporting a count
+# by `tools/leak_guard.py` around the run: it names and stops whatever appeared, instead of reporting a count
 # that leaves the reader guessing and a process that poisons the next run's baseline (D-147).
 # Display-process tests must execute a helper built from this source, including clean checkouts.
 test: build
 	@set -eu; guard=$$(mktemp); trap 'rm -f "$$guard"' EXIT HUP INT TERM; \
-		python3 review/leak_guard.py snapshot "$$guard"; \
+		python3 tools/leak_guard.py snapshot "$$guard"; \
 		for crate in $(CRATES); do cargo test $(CARGO_FLAGS) --manifest-path $$crate/Cargo.toml; done; \
-		python3 review/leak_guard.py audit "$$guard"; \
-		python3 review/test_counts.py
+		python3 tools/leak_guard.py audit "$$guard"; \
+		python3 tools/test_counts.py
 
 build:
 	cargo build $(CARGO_FLAGS) --manifest-path engine/Cargo.toml --bin teamagents
@@ -90,10 +89,10 @@ build:
 # The release path, short of publishing (D-217): the version gate, the musl-static release build of both binaries,
 # the archive the workflow packages, SHA256SUMS over it and the installer, and the workflow's own smoke — install
 # from the exact archive, `init` writing a config and a state root, the TUI executable. A build, not a check: the
-# release profile is its own cache and full musl release builds cost minutes. `review/build_references.py` (in
+# release profile is its own cache and full musl release builds cost minutes. `tools/build_references.py` (in
 # `make hygiene`) covers the files the workflow copies; this covers that the steps themselves run.
 release-rehearsal:
-	python3 review/release_rehearsal.py
+	python3 tools/release_rehearsal.py
 
 pty: build
 	@set -eu; check_dir=$$(mktemp -d); trap 'rm -rf "$$check_dir"' EXIT HUP INT TERM; \
@@ -111,23 +110,15 @@ pty: build
 # can leak (a live daemon, a scratch directory) because D-111 and D-131 were both found that way. Not part of
 # `make check`: the set takes about a minute.
 probe-offline: build
-	python3 review/dogfood/probes.py --self-check
-	python3 -u review/dogfood/probes.py --set offline
+	python3 tools/dogfood/probes.py --self-check
+	python3 -u tools/dogfood/probes.py --set offline
 
 # The probes that take a model, one after another (D-141): every live half of an acceptance item or decision
 # that needs credentials. About seven minutes; each probe runs at its model's native window (D-36). Not part of
 # `make check`: it spends real model calls.
 probe-models: build
-	python3 review/dogfood/probes.py --self-check
-	python3 -u review/dogfood/probes.py --set models
-
-# D-419/D-420/D-421: read a benchmark run's receipts before believing its number — the trajectory it kept, a second
-# reading of its verdict, and (SWE-bench) whether the guard against fetching a published fix was actually exercised.
-# Not part of `make check`: it needs a run directory, passed as `JOBS=<dir>` (`BENCH=tau3` for a tau3-bench run,
-# `BENCH=tb` for Terminal-Bench).
-benchmark-receipts:
-	@test -n "$(JOBS)" || { echo 'set JOBS=<run directory> (e.g. make benchmark-receipts JOBS=/tmp/swebench-final)'; exit 2; }
-	python3 review/benchmark/harness_health.py --$(if $(BENCH),$(BENCH),swebench) "$(JOBS)"
+	python3 tools/dogfood/probes.py --self-check
+	python3 -u tools/dogfood/probes.py --set models
 
 # Formal verification (TLA+/TLC; not part of make check; the first run downloads the pinned tla2tools.jar)
 TLA_TOOLS_DIR ?= $(HOME)/.local/share/teamagents-verify
@@ -135,7 +126,7 @@ TLA_VERSION := 1.7.1
 TLA_SHA256 := d532ba31aafe17afba1130f92410d9257454ff7393d1eb2fe032f0c07f352da5
 
 verify-tools:
-	@python3 review/tlc_verdict.py --self-check
+	@python3 tools/tlc_verdict.py --self-check
 	@mkdir -p "$(TLA_TOOLS_DIR)"
 	@if [ ! -f "$(TLA_TOOLS_DIR)/tla2tools.jar" ]; then \
 		echo "downloading TLC v$(TLA_VERSION) into $(TLA_TOOLS_DIR)"; \
@@ -151,12 +142,12 @@ verify-model: verify-tools
 	@cd verification/tla && meta="$(TLA_METADIR)/MC.cfg-$$$$"; rm -rf "$$meta"; \
 		out=$$(java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
 			tlc2.TLC -config MC.cfg -lncheck final -fp 64 -workers 4 -metadir "$$meta" V2Control.tla 2>&1); status=$$?; rm -rf "$$meta"; \
-		printf '%s\n' "$$out" | python3 ../../review/tlc_verdict.py positive MC.cfg $$status || exit 1
+		printf '%s\n' "$$out" | python3 ../../tools/tlc_verdict.py positive MC.cfg $$status || exit 1
 
 # The module each configuration runs, in one place: the exhaustive target and `verify-model-sim` both
 # expand this, so they cannot disagree, and it must name *every* configuration in the directory — a
 # configuration that fell through the `*)` default would silently run the wrong module (the rule
-# `review/verification_catalogue.py` enforces). The control families are matched by prefix, after the
+# `tools/verification_catalogue.py` enforces). The control families are matched by prefix, after the
 # exact arms, because shell `case` takes the first match.
 CFG_CASE = case $$cfg in MC.cfg|MC_control*) echo V2Control.tla;; MC_profileswitch*) echo V2ProfileSwitch.tla;; MC_skillauthority*) echo V2SkillAuthority.tla;; MC_exportsnapshot*) echo V2ExportSnapshot.tla;; MC_streamboundary*) echo V2StreamBoundary.tla;; MC_executionchain*) echo V2ExecutionChain.tla;; MC_artifact*) echo V2Artifact.tla;; MC_wait*) echo V2Wait.tla;; MC_task*) echo V2Task.tla;; MC_approval*) echo V2Approval.tla;; MC_compress*) echo V2Compress.tla;; MC_daemon*) echo V2Daemon.tla;; MC_checks*) echo V2Checks.tla;; MC_trust*) echo V2Trust.tla;; MC_projecttrust*) echo V2ProjectTrust.tla;; MC_prune*) echo V2Prune.tla;; MC_tui*) echo V2Tui.tla;; MC_presentation*) echo V2Presentation.tla;; MC_inputqueue*) echo V2InputQueue.tla;; MC_displayworker*) echo V2DisplayWorker.tla;; MC_prompt*) echo V2Prompt.tla;; MC_retry*) echo V2Retry.tla;; MC_grants*) echo V2Grants.tla;; MC_capabilities*) echo V2Capabilities.tla;; MC_authority*) echo V2Authority.tla;; MC_store*) echo V2Store.tla;; MC_retention*) echo V2Retention.tla;; MC_history*) echo V2History.tla;; MC_sessionui*) echo V2SessionUi.tla;; MC_sessions*) echo V2Sessions.tla;; MC_schedule*) echo V2Schedule.tla;; MC_isolation*) echo V2Isolation.tla;; MC_codemode*) echo V2Codemode.tla;; MC_images*) echo V2Images.tla;; MC_memory*) echo V2Memory.tla;; MC_update*) echo V2Update.tla;; MC_oauth*) echo V2Oauth.tla;; MC_jobsupervision*) echo V2JobSupervision.tla;; MC_jobs.cfg|MC_jobs_*) echo V2Jobs.tla;; MC_inbox*) echo V2Inbox.tla;; MC_diskfull*) echo V2DiskFull.tla;; MC_discovery*) echo V2Discovery.tla;; MC_coordinator*) echo V2Coordinator.tla;; MC_work.cfg|MC_work_*) echo V2Work.tla;; MC_search_tree*) echo V2SearchTree.tla;; MC_review*) echo V2Review.tla;; MC_workspace*) echo V2Workspace.tla;; MC_concurrency*) echo V2Concurrency.tla;; MC_control*) echo V2Control.tla;; MC_wide.cfg) echo V2Control.tla;; *) echo V2Artifact.tla;; esac
 
@@ -166,7 +157,7 @@ CFG_CASE = case $$cfg in MC.cfg|MC_control*) echo V2Control.tla;; MC_profileswit
 # counterexample target used to read a run that never started as "the property may be vacuous". Every invocation
 # gets its own meta directory under the ignored scratch root, removed as soon as TLC returns, so the targets are
 # independent of each other and of anything left behind, and the tracked tree keeps no TLC state.
-TLA_METADIR ?= $(CURDIR)/review/tmp/tla
+TLA_METADIR ?= $(CURDIR)/tools/tmp/tla
 
 # Bounded exhaustive configurations for every module; liveness is checked on the
 # complete graph, avoiding repeated partial-graph work as reachable paths grow.
@@ -174,12 +165,12 @@ TLA_METADIR ?= $(CURDIR)/review/tmp/tla
 # model/spec/domain configurations share one traversal with their claim union;
 # original configs remain the catalogue and witness inputs (65 configs, 62 runs).
 verify-model-all: verify-tools
-	@python3 review/verification_batches.py --self-check
-	@python3 review/verification_batches.py --check-fixtures --jar "$(TLA_TOOLS_DIR)/tla2tools.jar"
+	@python3 tools/verification_batches.py --self-check
+	@python3 tools/verification_batches.py --check-fixtures --jar "$(TLA_TOOLS_DIR)/tla2tools.jar"
 	@cd verification/tla && pairs=""; for cfg in MC.cfg MC_control_two.cfg MC_control_attempts.cfg MC_control_decisions.cfg MC_control_warn.cfg MC_executionchain.cfg MC_streamboundary.cfg MC_profileswitch.cfg MC_skillauthority.cfg MC_exportsnapshot.cfg MC_work.cfg MC_review.cfg MC_search_tree.cfg MC_search_tree_add.cfg MC_search_tree_update.cfg MC_search_tree_move.cfg MC_search_tree_merge.cfg MC_search_tree_pair.cfg MC_oauth.cfg MC_artifact.cfg MC_wait.cfg MC_wait_deferred.cfg MC_task.cfg MC_task_two.cfg MC_approval.cfg MC_compress.cfg MC_daemon.cfg MC_daemon_stop.cfg MC_checks.cfg MC_checks_briefing.cfg MC_checks_independent.cfg MC_memory.cfg MC_grants.cfg MC_grants_task.cfg MC_capabilities.cfg MC_authority.cfg MC_store.cfg MC_retention.cfg MC_history.cfg MC_sessions.cfg MC_schedule.cfg MC_isolation.cfg MC_isolation_ssh.cfg MC_codemode.cfg MC_images.cfg MC_images_blind_model.cfg MC_update.cfg MC_jobs.cfg MC_jobsupervision.cfg MC_inbox.cfg MC_diskfull.cfg MC_discovery.cfg MC_coordinator.cfg MC_trust.cfg MC_prompt.cfg MC_retry.cfg MC_workspace.cfg MC_concurrency.cfg MC_projecttrust.cfg MC_prune.cfg MC_tui.cfg MC_sessionui.cfg MC_presentation.cfg MC_inputqueue.cfg MC_displayworker.cfg; do \
 		pairs="$$pairs $$cfg:$$( $(CFG_CASE) )"; \
 	done; \
-	python3 ../../review/verification_batches.py --jar "$(TLA_TOOLS_DIR)/tla2tools.jar" $$pairs
+	python3 ../../tools/verification_batches.py --jar "$(TLA_TOOLS_DIR)/tla2tools.jar" $$pairs
 
 # The authority, inbound-boundary and store-identity claims must be *falsifiable*
 # (D-61/D-63/D-87): each configuration below states a plausible mistake and must make TLC refute the
@@ -309,18 +300,18 @@ verify-model-counterexamples: verify-tools
 		meta="$(TLA_METADIR)/$$cfg-$$$$"; rm -rf "$$meta"; \
 		out=$$(java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
 			tlc2.TLC -config $$cfg -fp 64 -workers 4 -metadir "$$meta" $$spec 2>&1); status=$$?; rm -rf "$$meta"; \
-		printf '%s\n' "$$out" | python3 ../../review/tlc_verdict.py negative $$cfg $$status || exit 1; \
+		printf '%s\n' "$$out" | python3 ../../tools/tlc_verdict.py negative $$cfg $$status || exit 1; \
 	done
 
 
 # Kani proofs (readback paging arithmetic; needs the Kani toolchain, not part of make check)
 KANI_PATH = $(HOME)/.cargo/bin:$(PATH)
 verify-witnesses: verify-tools
-	python3 review/verification_requirements.py --self-check
-	python3 review/verification_witnesses.py --check
-	python3 review/verification_witnesses.py --self-check
-	python3 review/verification_witnesses.py --check-fixtures --jar "$(TLA_TOOLS_DIR)/tla2tools.jar"
-	python3 review/verification_witnesses.py --jar "$(TLA_TOOLS_DIR)/tla2tools.jar"
+	python3 tools/verification_requirements.py --self-check
+	python3 tools/verification_witnesses.py --check
+	python3 tools/verification_witnesses.py --self-check
+	python3 tools/verification_witnesses.py --check-fixtures --jar "$(TLA_TOOLS_DIR)/tla2tools.jar"
+	python3 tools/verification_witnesses.py --jar "$(TLA_TOOLS_DIR)/tla2tools.jar"
 
 verify-kani:
 	@PATH="$(KANI_PATH)" command -v cargo-kani >/dev/null || { \
@@ -334,7 +325,7 @@ verify-model-wide: verify-tools
 	@cd verification/tla && meta="$(TLA_METADIR)/MC_wide.cfg-$$$$"; rm -rf "$$meta"; \
 		out=$$(java -Xmx4g -XX:+UseParallelGC -cp "$(TLA_TOOLS_DIR)/tla2tools.jar" \
 			tlc2.TLC -config MC_wide.cfg -fp 64 -workers 8 -metadir "$$meta" V2Control.tla 2>&1); status=$$?; rm -rf "$$meta"; \
-		printf '%s\n' "$$out" | python3 ../../review/tlc_verdict.py positive MC_wide.cfg $$status || exit 1
+		printf '%s\n' "$$out" | python3 ../../tools/tlc_verdict.py positive MC_wide.cfg $$status || exit 1
 
 # Two configurations are beyond a bounded exhaustive attempt — the wide control-plane one (D-210: an hour, no
 # verdict) and the task one, whose second task diverges at 43M states without converging — so this supplement
@@ -364,11 +355,9 @@ verify-model-sim: verify-tools
 			echo "$$cfg carried a TLC warning: an inconsistent model is a defect, not a note (see above)" >&2; exit 1; fi
 
 # Repository language rule (AGENTS.md): code and documentation are English only.
-# The two exceptions are README.zh-CN.md (the Chinese README) and the frozen
-# evaluation material under review/eval (task prompts, fixtures and recorded
-# trial output keep their original bytes and are pinned by the run manifests).
+# The exception is README.zh-CN.md (the Chinese README).
 # The pattern needs `grep -P` (GNU grep, true on the CI image and dev machines).
-LANGUAGE_EXCLUDES := ':(exclude)README.zh-CN.md' ':(exclude)review/eval/**' ':(exclude)review/tmp/**'
+LANGUAGE_EXCLUDES := ':(exclude)README.zh-CN.md' ':(exclude)tools/tmp/**'
 language-check:
 	@if git grep -n -I -P '[\x{3000}-\x{303f}\x{3400}-\x{4dbf}\x{4e00}-\x{9fff}\x{f900}-\x{faff}\x{ff01}-\x{ff60}\x{ffe0}-\x{ffe6}]' \
 		-- . $(LANGUAGE_EXCLUDES); then \
@@ -377,7 +366,7 @@ language-check:
 	fi
 
 # Repository shape rule: `docs/DECISIONS.md` is the binding record, so its shape is checked (D-107):
-# one heading per entry, newest-first, each with a body. `review/decisions_log.py` states the rules.
+# one heading per entry, newest-first, each with a body. `tools/decisions_log.py` states the rules.
 # The documentation's citations are the evidence ledger's commands (D-110): a `crate::test` or a path that
 # names nothing in the tree fails `make check`; the removed-item tables in DECISIONS.md are notes, not errors.
 # A command payload field nothing reads is dropped silently (D-123 was one: `error_class`); the caller's
@@ -389,7 +378,7 @@ language-check:
 # `docs/TOOLS.md` is generated from the tool schemas, so a renamed tool, a new parameter or a reworded
 # model-facing description must be documented in the same change (D-127).
 # `docs/CONFIG.md` is generated from the config structs, so a new key (or a renamed one) must be documented in
-# the same change (D-128); `review/config_keys.py` then says whether anything reads it.
+# the same change (D-128); `tools/config_keys.py` then says whether anything reads it.
 # A test that skips must say so (D-121): a bare `if <condition> { return; }` inside a test makes it a silent
 # no-op and can turn a missing capability into a false pass.
 hygiene: language-check
@@ -400,33 +389,30 @@ hygiene: language-check
 		'*.sqlite-wal' '*.sqlite-shm')" || \
 		{ echo 'tracked build artifacts (compile caches, Python caches, SQLite temporaries); remove them before committing.'; exit 1; }
 	sh -n install.sh
-	python3 review/build_references.py
-	python3 review/hygiene_catalogue.py
-	python3 review/flag_fields.py
-	python3 review/config_keys.py
-	python3 review/decisions_log.py
-	python3 review/decision_queue.py
-	python3 review/citations.py
-	python3 review/decision_citations.py
-	python3 review/silent_skips.py
-	python3 review/command_params.py
-	python3 review/event_catalogue.py
-	python3 review/protocol_catalogue.py
-	python3 review/tool_catalogue.py
-	python3 review/config_reference.py
-	python3 review/dead_code.py
-	python3 review/doc_inventory.py
-	python3 review/eval_manifests.py
-	python3 review/eval_surface.py
-	python3 review/eval/r2-p6/anatomy.py --self-check
-	python3 review/verification_catalogue.py --self-check
-	python3 review/exec_report.py
-	python3 review/tui_keys.py
-	python3 review/env_knobs.py
-	python3 review/dogfood/probes.py --self-check
-	python3 review/project_config_claim.py
-	python3 review/release_artifact.py
-	python3 review/readme_zh.py
-	python3 review/doc_flags.py
-	python3 review/requirement_trace.py
-	python3 review/markdown_tables.py
+	python3 tools/build_references.py
+	python3 tools/hygiene_catalogue.py
+	python3 tools/flag_fields.py
+	python3 tools/config_keys.py
+	python3 tools/decisions_log.py
+	python3 tools/decision_queue.py
+	python3 tools/citations.py
+	python3 tools/decision_citations.py
+	python3 tools/silent_skips.py
+	python3 tools/command_params.py
+	python3 tools/event_catalogue.py
+	python3 tools/protocol_catalogue.py
+	python3 tools/tool_catalogue.py
+	python3 tools/config_reference.py
+	python3 tools/dead_code.py
+	python3 tools/doc_inventory.py
+	python3 tools/verification_catalogue.py --self-check
+	python3 tools/exec_report.py
+	python3 tools/tui_keys.py
+	python3 tools/env_knobs.py
+	python3 tools/dogfood/probes.py --self-check
+	python3 tools/project_config_claim.py
+	python3 tools/release_artifact.py
+	python3 tools/readme_zh.py
+	python3 tools/doc_flags.py
+	python3 tools/requirement_trace.py
+	python3 tools/markdown_tables.py

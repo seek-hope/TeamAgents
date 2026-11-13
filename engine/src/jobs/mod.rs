@@ -425,7 +425,7 @@ mod tests {
     /// far coarser than the running-job tick, because a leaked runner used to pay that tick forever (measured
     /// 2026-09-26: 0.40 % of a core per process, 1,397 of them on one machine), and it must still be bounded,
     /// because a job directory that is gone means no client can resolve the runner's socket any more. The
-    /// measurement itself is `review/runner_cost.py`'s idle window.
+    /// measurement itself is `tools/runner_cost.py`'s idle window.
     #[test]
     fn an_idle_runner_checks_rarely_but_never_waits_forever() {
         use super::runner::IDLE_TICK;

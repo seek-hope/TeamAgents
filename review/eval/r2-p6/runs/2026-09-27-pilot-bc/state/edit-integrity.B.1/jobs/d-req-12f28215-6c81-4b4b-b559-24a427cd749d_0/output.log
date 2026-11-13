@@ -1,3 +1,0 @@
-[dev] retries = 3
-[staging] retries = 5
-[prod] retries = 3

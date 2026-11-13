@@ -1,2 +1,0 @@
-cd alpha && python3 check.py
-cd beta && python3 check.py
