@@ -103,7 +103,9 @@ async fn headless_large_history(oversized: bool) -> Result<teamagents_engine::v2
     let handle = serve(config(&root, HashMap::from([("i-leader".into(), vec![answer])]))).await.unwrap();
     let mut options =
         exec_options(&root.dir.join("state/daemon.sock"), &root.dir.join("ws"), "inspect the results", vec![]);
-    options.timeout_s = 3;
+    // This verifies pagination, not latency: gated setup and multi-megabyte JSON
+    // must share a bounded budget that also tolerates parallel CI load.
+    options.timeout_s = 30;
     let run = tokio::task::spawn_blocking(move || teamagents_engine::v2::exec::execute(&options));
     let mut client = Client::connect(&root.dir.join("state/daemon.sock")).await;
     tokio::time::timeout(Duration::from_secs(15), async {
