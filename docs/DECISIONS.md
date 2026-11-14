@@ -143,6 +143,18 @@ evaluation evidence.
 - These results do not establish full Rust/SQLite refinement, whole-system composition, Policy B source-bound
   equivalence, wide exhaustive completion, arbitrary-input TLA coverage or live-model navigation quality.
 
+## D-518 Refuse malformed tool arguments before dispatch (2026-11-15)
+
+Ordinary tool intents retain a control-derived parse error when the original call supplies malformed JSON,
+a non-object value or a non-string argument encoding. Dispatch refuses these intents before approval or
+execution; the driver records a failed, not-started receipt and the model can correct the call. The original
+response and known usage remain recorded. A valid argument object may contain `_invalid_arguments`; that
+field alone is not an error signal. Caller-written parse metadata is ignored. Older PREPARED sentinel-shaped
+intents are checked against their stored original call when it is available. Already-dispatched recovery
+keeps its earlier result/unknown-outcome rules. Regression coverage includes default-argument tools, parallel
+reads, valid sentinel data, reopening and refusal before approval. This does not add complete per-tool schema
+validation or change wait/checkpoint handling.
+
 ## D-517 Supply stored entry identities to compaction (2026-11-15)
 
 Compaction entry blocks include the JSON-quoted stored entry ID alongside role and content, before the existing

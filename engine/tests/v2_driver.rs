@@ -415,6 +415,69 @@ async fn end_to_end_shell_then_finish() {
     handle.shutdown().await.expect("shutdown");
 }
 
+#[tokio::test]
+async fn malformed_tool_arguments_do_not_execute_default_actions() {
+    for (tag, arguments, batch) in [
+        ("broken", json!("{\"path\":"), false),
+        ("array", json!("[]"), false),
+        ("null", json!("null"), false),
+        ("encoding", json!({"path":"."}), false),
+        ("batch", json!("{\"path\":"), true),
+    ] {
+        let root = root(&format!("malformed-arguments-{tag}"));
+        std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+        std::fs::write(root.dir.join("ws/unrequested-default-listing.txt"), "fixture").unwrap();
+        let mut calls = vec![json!({"id":"bad-args","type":"function",
+            "function":{"name":"ls","arguments":arguments}})];
+        if batch {
+            // The parser's sentinel is also a legitimate object key; only the original encoding proves failure.
+            calls.push(json!({"id":"valid-args","type":"function", "function":{"name":"ls",
+                "arguments":json!({"_invalid_arguments":"ordinary data"}).to_string()}}));
+        }
+        let (provider, requests) = recording(vec![
+            Step::Message(json!({"role":"assistant","content":"","tool_calls":calls})),
+            Step::Message(reply("observed")),
+        ]);
+        let mut config = root.config_with(provider);
+        config.bindings = vec!["files".into()];
+        config.profile.tools = teamagents_engine::reference::basic_tool_schemas(false, false);
+        let handle = start(config).await.unwrap();
+        handle.input("Inspect the requested path").await.unwrap();
+        let requests = wait_for_requests(&requests, 2, 5_000).await;
+        handle.shutdown().await.unwrap();
+        let control = second_control(&root);
+        let (status, receipt): (String, String) = control
+            .connection()
+            .query_row(
+                "SELECT status,receipt_json FROM operations WHERE json_extract(intent_json,'$.call_id')='bad-args'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let receipt: Json = serde_json::from_str(&receipt).unwrap();
+        assert_eq!(
+            status, "FAILED",
+            "{tag}: malformed arguments must not become a default directory listing: {receipt}"
+        );
+        assert_eq!(receipt["started"], false, "{tag}: {receipt}");
+        assert!(receipt["error"]["reason"].as_str().unwrap().contains("invalid tool arguments"));
+        assert!(request_text(&requests[1]).contains("invalid tool arguments"));
+        if batch {
+            let receipt: String = control
+                .connection()
+                .query_row(
+                    "SELECT receipt_json FROM operations WHERE json_extract(intent_json,'$.call_id')='valid-args'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let receipt: Json = serde_json::from_str(&receipt).unwrap();
+            assert_eq!(receipt["ok"], true, "{receipt}");
+            assert!(receipt["content"].as_str().unwrap().contains("unrequested-default-listing.txt"));
+        }
+    }
+}
+
 /// §6.2/A12/D-112: a shell command with a known outcome ends its runner. `jobs::client::shutdown` is the verb
 /// A12's own test uses, but nothing in the product called it, so every finished command left a detached runner
 /// behind: reparented to init, holding its job directory, ticking every 10 ms for the life of the machine

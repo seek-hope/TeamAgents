@@ -4,8 +4,8 @@
 
 Last completed delivery baseline: `b0a1091c` (D-509 through D-516). Subsequent CI fixes preserve the audited
 acceptance heading and give the large-history fixture a bounded 30-second budget (`8ec15d91`); its CI passed
-all three jobs. D-517 supplies stored entry identities to compaction and passed the full local gate, but has
-no new accepted release archive. Recheck Git for subsequent work.
+all three jobs. D-517 supplies stored entry identities to compaction; D-518 refuses malformed ordinary tool
+arguments before approval/execution. Neither has a new accepted release archive. Recheck Git for subsequent work.
 
 The current source implements the requirements in [DESIGN.md](DESIGN.md), the rules in [DECISIONS.md](DECISIONS.md),
 and the acceptance matrix in [ACCEPTANCE.md](ACCEPTANCE.md). Current formal evidence and its limits are in
@@ -13,9 +13,9 @@ and the acceptance matrix in [ACCEPTANCE.md](ACCEPTANCE.md). Current formal evid
 
 Current source inventory and verification:
 
-- **814 Rust tests**: core 197, engine 509, TUI 108; the full `make check` passed.
-  All 18 offline probes and the final release/install rehearsal passed. PTY passed on the unchanged TUI/daemon
-  code. The last accepted archive predates D-517 and passed isolated upgrade and rollback on the existing
+- **816 Rust tests**: core 198, engine 510, TUI 108; the full `make check` passed.
+  Earlier pinned builds passed all 18 offline probes and the release/install rehearsal. PTY passed on the unchanged TUI/daemon
+  code. The last accepted archive predates D-517/D-518 and passed isolated upgrade and rollback on the existing
   Debian host (see ACCEPTANCE.md).
 - **65 positive TLA configurations in 62 traversals**, **327 controls**, **79 witnesses**, **9 Kani harnesses**.
 - Catalogue: **393 configurations across 48 modules**, including the separate wide configuration.
@@ -42,6 +42,8 @@ These are local scripted, finite-model and real-terminal results, not full real-
 - `Control::submit` owns atomic team transactions; SQLite WAL and `synchronous=FULL` own durable facts.
 - Work scopes own budget, deadline, admission and acceptance. Work states/tasks own continuation and attribution.
 - Recovery reuses known results and records unknown effects as `OUTCOME_UNKNOWN`; side effects are not replayed.
+- Malformed ordinary tool arguments fail before dispatch, with raw calls and usage preserved. Valid sentinel-key
+  data is accepted; old PREPARED rows use available stored source calls to distinguish parser failures.
 - Cancelling a task does not prove its process stopped. Instance termination is user-only and needs separate
   stop evidence before shared-workspace takeover.
 - One daemon serves each session. TUI and exec resume from the event watermark and share the same runtime.

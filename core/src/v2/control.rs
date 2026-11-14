@@ -3621,7 +3621,11 @@ fn import_response(tx: &Connection, session_id: &str, params: &Json, identity: &
         // the hash is computed here from the stored args, never trusted from
         // the caller: it binds the fixed intent to its parameters (§6.1)
         let args_hash = crate::kernel::args_hash(&args);
-        let fixed = json!({"index": index, "call_id": call_id, "name": name, "args": args, "args_hash": args_hash});
+        let mut fixed = json!({"index": index, "call_id": call_id, "name": name, "args": args, "args_hash": args_hash});
+        // Derive parse failures from the original call, never from a model-written sentinel or validity flag.
+        if let Some(problem) = tool_argument_problem(&fixed["args"], entry_message, index) {
+            fixed["argument_error"] = json!(problem);
+        }
         tx.execute(
             "INSERT INTO operations
              (operation_id, decision_id, tool_index, work_id, epoch, intent_json, args_hash, grant_revision, status)
@@ -3927,6 +3931,56 @@ fn consume_if_closed(tx: &Connection, session_id: &str, decision_id: &str) -> Re
     Ok(false)
 }
 
+fn tool_argument_problem(args: &Json, message: &Json, index: i64) -> Option<String> {
+    if !args.is_object() {
+        return Some("expected a JSON object".into());
+    }
+    let call = message["tool_calls"].as_array()?.get(usize::try_from(index).ok()?)?;
+    let encoded = call["function"].get("arguments")?;
+    let Some(encoded) = encoded.as_str() else {
+        return Some("expected arguments encoded as a JSON string".into());
+    };
+    match serde_json::from_str::<Json>(encoded) {
+        Ok(Json::Object(_)) => None,
+        Ok(_) => Some("expected a JSON object".into()),
+        Err(error) => Some(error.to_string()),
+    }
+}
+
+fn prepared_argument_problem(
+    tx: &Connection,
+    instance: &str,
+    decision_id: &str,
+    intent: &Json,
+) -> Result<Option<String>, String> {
+    if let Some(problem) = intent["argument_error"].as_str() {
+        return Ok(Some(problem.into()));
+    }
+    let args = &intent["args"];
+    if !args.is_object() {
+        return Ok(Some("expected a JSON object".into()));
+    }
+    if !args.as_object().is_some_and(|args| args.len() == 1 && args.contains_key("_invalid_arguments")) {
+        return Ok(None);
+    }
+    // ponytail: old intents lack parse metadata. Recheck sentinel-shaped arguments against the original call
+    // while these roots are supported; the same key in valid tool/MCP input is ordinary user data.
+    let message: Option<String> = tx
+        .query_row(
+            "SELECT message_json FROM context_entries WHERE instance_id=?1 AND envelope_id=?2 AND kind='assistant'",
+            rusqlite::params![instance, decision_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("tool argument source: {e}"))?;
+    let message = message
+        .map(|message| serde_json::from_str::<Json>(&message))
+        .transpose()
+        .map_err(|e| format!("tool argument source: {e}"))?
+        .unwrap_or(Json::Null);
+    Ok(tool_argument_problem(args, &message, intent["index"].as_i64().unwrap_or(-1)))
+}
+
 /// Dispatch commit — the authorization linearization point (§6.1, A04):
 /// permission revision is re-checked inside the transaction; approval mode
 /// parks the operation behind a PENDING approval instead of dispatching.
@@ -3974,6 +4028,9 @@ fn dispatch_operation(tx: &Connection, session_id: &str, params: &Json) -> Resul
     work::takeover::dispatch_scope(tx, operation_id)?;
     // authorization is re-checked at dispatch, the linearization point (§6.1)
     let intent: Json = serde_json::from_str(&intent_json).map_err(|e| format!("intent {operation_id}: {e}"))?;
+    if let Some(problem) = prepared_argument_problem(tx, &instance, &decision_id, &intent)? {
+        return Err(format!("operation {operation_id} refused: invalid tool arguments: {problem}"));
+    }
     let check_owner: Option<String> = if request_ref == "required_check" {
         match op_work.as_deref() {
             Some(work) => tx
@@ -7422,6 +7479,74 @@ mod tests {
         assert_eq!(costs["g1"]["known_estimated_usd"], 0.0);
         drop(ctl);
         cleanup(&path);
+    }
+
+    #[test]
+    fn malformed_arguments_are_refused_before_approval_and_after_reopen() {
+        for (legacy, valid) in [(false, false), (true, false), (false, true)] {
+            let (mut ctl, path) = control("argument-validation");
+            create_instance(&mut ctl, "i1");
+            let request = begin_and_complete(&mut ctl, "arguments", "i1", 0);
+            let raw = if valid { r#"{"_invalid_arguments":"ordinary data"}"# } else { r#"{"command":"# };
+            let args =
+                if valid { json!({"_invalid_arguments":"ordinary data"}) } else { json!({"_invalid_arguments":raw}) };
+            ctl.submit(
+                cmd(
+                    "import",
+                    "import_response",
+                    json!({
+                        "request_id":request,"decision_id":"d1",
+                        "entry":{"role":"assistant","content":"","tool_calls":[{
+                            "id":"call","type":"function","function":{"name":"ls","arguments":raw}
+                        }]},
+                        "intents":[{"index":0,"call_id":"call","name":"ls","args":args,
+                                    "argument_error":if valid {json!("forged error")} else {Json::Null}}]
+                    }),
+                ),
+                Identity::System,
+            )
+            .unwrap();
+            let fixed: String = ctl
+                .connection()
+                .query_row("SELECT intent_json FROM operations WHERE operation_id='d1:0'", [], |row| row.get(0))
+                .unwrap();
+            let fixed: Json = serde_json::from_str(&fixed).unwrap();
+            assert_eq!(fixed["argument_error"].is_string(), !valid, "parse metadata is control-derived");
+            if legacy {
+                ctl.connection().execute(
+                    "UPDATE operations SET intent_json=json_remove(intent_json,'$.argument_error') WHERE operation_id='d1:0'",
+                    [],
+                ).unwrap();
+            }
+            drop(ctl);
+            let mut ctl = Control::open(&path, "s1", false).unwrap();
+            let result = ctl.submit(
+                cmd(
+                    "dispatch",
+                    "dispatch_operation",
+                    json!({
+                        "operation_id":"d1:0","approval_required":!valid
+                    }),
+                ),
+                Identity::System,
+            );
+            if valid {
+                assert_eq!(result.unwrap()["status"], "DISPATCH_COMMITTED");
+            } else {
+                let error = result.unwrap_err();
+                assert!(error.contains("invalid tool arguments"), "legacy={legacy}: {error}");
+                let status: String = ctl
+                    .connection()
+                    .query_row("SELECT status FROM operations WHERE operation_id='d1:0'", [], |row| row.get(0))
+                    .unwrap();
+                assert_eq!(status, "PREPARED");
+                let approvals: i64 =
+                    ctl.connection().query_row("SELECT COUNT(*) FROM approvals", [], |row| row.get(0)).unwrap();
+                assert_eq!(approvals, 0, "invalid arguments must not request approval");
+            }
+            drop(ctl);
+            cleanup(&path);
+        }
     }
 
     #[test]

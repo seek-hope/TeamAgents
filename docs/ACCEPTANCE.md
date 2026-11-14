@@ -6,8 +6,8 @@ This file records current behavior and reproducible evidence, not historical acc
 ✅ means the named local path has automated evidence. 🔶 means implementation exists but the stated external,
 empirical or full-system obligation remains open. No icon is a proof of every release condition.
 
-Current source inventory: core 197 / engine 509 / tui 108 test targets; the full gate passed.
-All 18 offline probes and the final release/install rehearsal passed. PTY passed on the unchanged TUI/daemon
+Current source inventory: core 198 / engine 510 / tui 108 test targets; the full gate passed.
+Earlier pinned builds passed all 18 offline probes and the release/install rehearsal. PTY passed on the unchanged TUI/daemon
 code before the final continuous-input accounting fix and buffer bound.
 Current formal gate: **65 positive configurations in 62 traversals**, **327 controls**, **79 witnesses** and
 **9 Kani harnesses**, all exit 0. The catalogue contains 393 configurations across 48 modules, including the
@@ -45,7 +45,7 @@ complete graphical-terminal or OS matrix.
 | A01 | A single Leader completes work, including work performed by the team it builds | `v2_driver::end_to_end_shell_then_finish`, `v2_supervisor::spawned_worker_settles_and_the_leader_completes`, headless execution tests |
 | A02 | A→B→C→A communication | `control::messages_flow_across_an_authorized_ring`, `tools/dogfood/team_ring.py` |
 | A03 | Limited delegation and parent revocation | `control::grants_narrow_only_and_parent_revocation_cascades`, authority CLI and `V2Authority` |
-| A04 | A queued action meets revocation | `control::revocation_blocks_queued_dispatch_until_reauthorized`, dispatch permission-revision checks |
+| A04 | A queued action meets revocation | `control::revocation_blocks_queued_dispatch_until_reauthorized`, dispatch permission-revision checks; malformed-argument regressions also cover refusal before approval and reopening |
 | A05 | Reading another instance's history | `control::read_history_is_user_or_self_only`, `V2History`; user may read, another instance may not |
 | A06 | A message is applied across a restart | `control::submit_input_keeps_the_envelope_dedup_across_a_reopen`, durable inbox/application checks |
 | A07 | Permanent start failure | `v2_spawn_failure`, classified setup failures and parked work rather than false success |
@@ -97,7 +97,7 @@ not form a statistical acceptance result. `ssh_pty.py` is an explicit isolated-l
 The last accepted archive, including the accounting, updater and client fixes, has SHA-256
 `951947815346f195fbf7a91091cf1089b9d55093498b69faf3f819a2384f223d`; its CLI has SHA-256
 `ae6aa27af25799e7f42fbe67c4e503d34c77bd593580f39687417a69d7ef526e`.
-It predates D-517's compaction entry metadata correction. On an existing Debian 12 host, isolated managed
+It predates D-517's compaction entry metadata correction and D-518's argument validation. On an existing Debian 12 host, isolated managed
 upgrade, explicit rollback, re-upgrade and an injected exit-42 startup failure followed by automatic rollback passed. Healthy checkpoints, unchanged configuration and all six
 saved history entries were checked after each transition. The failed upgrade's exit 1 was expected; the enclosing
 probe exited 0 and stopped its daemon; the scoped daemon/screen cleanup audit was empty. This compares two

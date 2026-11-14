@@ -132,6 +132,9 @@ alone is not process-stop evidence; shared-workspace takeover separately observe
 
 Dispatch is the authorization linearization point: operation identity, argument hash, grant revision and any
 approval are rechecked before an effect starts. A stale schema never authorizes an operation.
+Ordinary tool intents with malformed supplied argument encodings or non-object arguments are refused before
+approval and execution. The raw call remains in history; a failed, not-started receipt allows correction.
+A field named `_invalid_arguments` in valid JSON is ordinary data, not proof of a parse failure.
 
 ### 6.2 The necessary scope of the shell runner
 
