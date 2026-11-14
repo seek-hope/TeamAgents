@@ -1,4 +1,4 @@
-> Current source validation: core 198 / engine 510 / tui 108, plus 65 positive TLA configurations in 62
+> Current source validation: core 198 / engine 511 / tui 108, plus 65 positive TLA configurations in 62
 > traversals, 327 controls, 79 witnesses and 9 Kani harnesses. The latest `make check` passed. This document describes
 > current source, not an earlier release archive.
 
@@ -25,7 +25,7 @@
 
 ## Current evidence
 
-The full local gate passed **816 Rust tests** (core 198, engine 510, TUI 108). Formal material contains **393
+The full local gate passed **817 Rust tests** (core 198, engine 511, TUI 108). Formal material contains **393
 configurations across 48 modules**: **65 positive configurations in 62 traversals**, **327 negative controls**,
 **79 normal-path witnesses** and **9 Kani harnesses**. Search-tree coverage includes ordered pair transitions,
 23 controls covering every non-`TypeOK` tree claim and 11 witnesses. Witnesses demonstrate reachability only.

@@ -6,7 +6,7 @@ This file records current behavior and reproducible evidence, not historical acc
 ✅ means the named local path has automated evidence. 🔶 means implementation exists but the stated external,
 empirical or full-system obligation remains open. No icon is a proof of every release condition.
 
-Current source inventory: core 198 / engine 510 / tui 108 test targets; the full gate passed.
+Current source inventory: core 198 / engine 511 / tui 108 test targets; the full gate passed.
 The `0eb4ee98` runtime passed all 18 offline probes, the release/install rehearsal and fresh Debian/Ubuntu VM
 acceptance below. PTY passed on the unchanged TUI/daemon code before the final continuous-input accounting fix
 and buffer bound.
@@ -30,7 +30,7 @@ complete graphical-terminal or OS matrix.
 | Q9 | Instances are retained and sessions isolated | A24, A29, A33: session registry, lifecycle transitions, reset/fork and workspace policies |
 | Q10 | Work continues with optional budgets and bounded failures | A18, A35: work scopes, durable states, budget reservations, recovery and `work_deadline_*` tests |
 | Q11 | Required checks must pass; other claims need evidence; review is on demand | A16, A17: required-check repair, completion evidence, `engine/src/v2/reviewer.rs`; live reviewer judgement remains open |
-| Q12 | Basic tools, MCP and Skills ship without an external Codex backend | A25, A26: `engine/src/tools.rs`, `engine/src/mcp.rs`, local Cargo/Python/Node workflows |
+| Q12 | Basic tools, MCP and Skills ship without an external Codex backend | A25, A26: `engine/src/tools.rs`, `engine/src/mcp.rs`, local Cargo/Python/Node workflows; malformed per-edit hash preconditions reject the whole batch unchanged |
 | Q13 | Multiple providers and mixed models can cooperate | A27: provider adapters and `v2_supervisor::heterogeneous_instances_run_different_protocols_in_one_session`; broader live matrix remains open |
 | Q14 | Workspace is shared by default, with isolated/worktree options | A29: `engine/src/workspace.rs` and `driver::prepare_spawn_workspace`; shared files do not share private conversations |
 | Q15 | Authorized work resumes after restart; unknown effects are never blindly replayed | A08, A09, A11, A24: persisted-phase recovery, `OUTCOME_UNKNOWN`, durable operation and runner journals |
@@ -95,7 +95,7 @@ not form a statistical acceptance result. `ssh_pty.py` is an explicit isolated-l
 
 ## Scoped external and live receipts
 
-The current candidate was built from `0eb4ee98` and includes D-517/D-518. Its x86_64 Linux musl archive has SHA-256
+The last accepted candidate was built from `0eb4ee98` and includes D-517/D-518; it predates D-520. Its x86_64 Linux musl archive has SHA-256
 `568ddb813efd124c9e401e0df75f9f779bd7796c37cf3a1df478f947716d6d3d`; its CLI has SHA-256
 `2666b881f1401341cbd620941991e315e234724791bab2e2f168fd5dba61b838`. All 18 offline probes passed (154.0 seconds),
 and the release rehearsal built both binaries, checked the package and preserved configuration across repeated init.

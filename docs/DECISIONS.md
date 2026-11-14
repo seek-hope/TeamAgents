@@ -134,7 +134,7 @@ evaluation evidence.
 
 ### Current verification boundary
 
-- Current source contains 816 Rust tests: core 198, engine 510 and TUI 108.
+- Current source contains 817 Rust tests: core 198, engine 511 and TUI 108.
 - Formal material has 393 configurations across 48 modules: 65 positive configurations, 327 negative controls
   and one separate wide configuration. Positive inputs share 62 traversals only when model/spec/domain match.
 - There are 79 normal-path witnesses and 9 Kani harnesses. Witnesses demonstrate reachability, not safety.
@@ -142,6 +142,16 @@ evaluation evidence.
   claim and 11 witnesses. `TypeOK` remains a type-level claim, not a behavioral completeness proof.
 - These results do not establish full Rust/SQLite refinement, whole-system composition, Policy B source-bound
   equivalence, wide exhaustive completion, arbitrary-input TLA coverage or live-model navigation quality.
+
+## D-520 Validate supplied batch-edit hash preconditions (2026-11-15)
+
+Batch editing uses the same expected-hash validator as single-file editing and writing. Every supplied per-edit
+`expected_sha256` must be a 64-character hexadecimal string; null, other JSON types and malformed strings fail
+the whole batch before file staging or writes. Hashes remain optional and comparisons remain case-insensitive.
+This applies to the advertised batch form of `edit_file` and the existing `edit_files` alias. Real-file
+regressions reproduce the old ignored-null write and verify that a malformed later edit leaves both files
+unchanged, while valid and omitted hashes still work. Existing permission, conflict, atomic-commit and recovery
+rules remain in force.
 
 ## D-519 Audit current test-count totals and alternate formats (2026-11-15)
 

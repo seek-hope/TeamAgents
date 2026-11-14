@@ -2,10 +2,11 @@
 
 ## Current baseline
 
-Runtime source baseline: `0eb4ee98` (D-518), including D-517's stored compaction entry identities and refusal of
-malformed ordinary tool arguments before approval/execution. Its local gate, package rehearsal, offline probes
-and fresh Debian/Ubuntu VM acceptance passed. Earlier `c2adc991` CI passed all three jobs. D-519 also audits
-current test-count totals and alternate formats across the documentation. Recheck Git and CI for subsequent work.
+Current source also includes D-520's strict batch-edit hash preconditions. The last accepted package was built
+from `0eb4ee98` (D-518), including D-517's compaction entry identities and malformed-argument refusal; it predates
+D-520. Its local gate, package rehearsal, offline probes and fresh Debian/Ubuntu VM acceptance passed. Earlier
+`c2adc991` CI passed all three jobs. D-519 audits current test-count totals and alternate formats across the
+documentation. Recheck Git and CI for subsequent work.
 
 The current source implements the requirements in [DESIGN.md](DESIGN.md), the rules in [DECISIONS.md](DECISIONS.md),
 and the acceptance matrix in [ACCEPTANCE.md](ACCEPTANCE.md). Current formal evidence and its limits are in
@@ -13,7 +14,7 @@ and the acceptance matrix in [ACCEPTANCE.md](ACCEPTANCE.md). Current formal evid
 
 Current source inventory and verification:
 
-- **816 Rust tests**: core 198, engine 510, TUI 108; the full `make check` passed.
+- **817 Rust tests**: core 198, engine 511, TUI 108; the full `make check` passed.
   The runtime baseline passed all 18 offline probes and the release/install rehearsal. The candidate archive
   includes D-517/D-518 and passed installation, malformed-argument rejection, upgrade, explicit rollback and
   failed-startup recovery in fresh Debian 12 and Ubuntu 22.04.5 KVM guests (see ACCEPTANCE.md). PTY passed on
@@ -45,6 +46,8 @@ These are local scripted, finite-model and real-terminal results, not full real-
 - Recovery reuses known results and records unknown effects as `OUTCOME_UNKNOWN`; side effects are not replayed.
 - Malformed ordinary tool arguments fail before dispatch, with raw calls and usage preserved. Valid sentinel-key
   data is accepted; old PREPARED rows use available stored source calls to distinguish parser failures.
+- Batch file edits reject malformed supplied hash preconditions before writing any file. Valid hexadecimal
+  hashes remain case-insensitive, and omitting a hash retains the existing behavior.
 - Cancelling a task does not prove its process stopped. Instance termination is user-only and needs separate
   stop evidence before shared-workspace takeover.
 - One daemon serves each session. TUI and exec resume from the event watermark and share the same runtime.

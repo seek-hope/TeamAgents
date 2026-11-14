@@ -760,7 +760,7 @@ fn workspace_executor_with_control(
                 if old.is_empty() {
                     return Err(format!("{key}: old_string must not be empty"));
                 }
-                let expected = edit.get("expected_sha256").and_then(Json::as_str).map(str::to_string);
+                let expected = expected_hash(edit)?.map(str::to_string);
                 let file_root: PathBuf = if key.starts_with(ARTIFACTS_PREFIX) {
                     artifacts.own.as_deref().ok_or("no artifact directory for this member")?.to_path_buf()
                 } else {
@@ -2674,12 +2674,79 @@ mod tests {
         let err = executor(
             "edit_file",
             &json!({"edits": [
-                {"path": "f.txt", "old_string": "ONE", "new_string": "1", "expected_sha256": "deadbeef"}
+                {"path": "f.txt", "old_string": "ONE", "new_string": "1", "expected_sha256": "0".repeat(64)}
             ]}),
         )
         .unwrap_err();
         assert!(err.contains("conflict"), "{err}");
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn batch_edits_reject_malformed_hashes_without_writing_any_file() {
+        for tool in ["edit_file", "edit_files"] {
+            for bad_hash in [
+                json!(null),
+                json!(123),
+                json!(false),
+                json!([]),
+                json!({}),
+                json!(""),
+                json!("abcd"),
+                json!("g".repeat(64)),
+            ] {
+                let root = std::env::temp_dir().join(format!("ta-batch-hash-{}", uuid::Uuid::new_v4()));
+                std::fs::create_dir_all(&root).unwrap();
+                std::fs::write(root.join("a.txt"), "before-a\n").unwrap();
+                std::fs::write(root.join("b.txt"), "before-b\n").unwrap();
+                let executor = workspace_executor(root.clone(), None);
+                let result = executor(
+                    tool,
+                    &json!({"edits": [
+                        {"path": "a.txt", "old_string": "before-a", "new_string": "after-a"},
+                        {"path": "b.txt", "old_string": "before-b", "new_string": "after-b", "expected_sha256": bad_hash}
+                    ]}),
+                );
+                let a = std::fs::read_to_string(root.join("a.txt")).unwrap();
+                let b = std::fs::read_to_string(root.join("b.txt")).unwrap();
+                std::fs::remove_dir_all(&root).unwrap();
+                assert!(
+                    result.is_err(),
+                    "{tool} ignored malformed precondition {bad_hash}: {result:?}; files: {a:?}, {b:?}"
+                );
+                assert!(result.unwrap_err().contains("expected_sha256"));
+                assert_eq!(a, "before-a\n", "{tool}: {bad_hash}");
+                assert_eq!(b, "before-b\n", "{tool}: {bad_hash}");
+            }
+            let root = std::env::temp_dir().join(format!("ta-batch-hash-valid-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(root.join("a.txt"), "before-a\n").unwrap();
+            std::fs::write(root.join("b.txt"), "before-b\n").unwrap();
+            let executor = workspace_executor(root.clone(), None);
+            let a_hash = format!("{:x}", Sha256::digest(b"before-a\n"));
+            let b_hash = format!("{:x}", Sha256::digest(b"before-b\n")).to_ascii_uppercase();
+            let guarded = executor(
+                tool,
+                &json!({"edits": [
+                    {"path": "a.txt", "old_string": "before-a", "new_string": "after-a", "expected_sha256": a_hash},
+                    {"path": "b.txt", "old_string": "before-b", "new_string": "after-b", "expected_sha256": b_hash}
+                ]}),
+            );
+            let unguarded = executor(
+                tool,
+                &json!({"edits": [
+                    {"path": "a.txt", "old_string": "after-a", "new_string": "final-a"},
+                    {"path": "b.txt", "old_string": "after-b", "new_string": "final-b"}
+                ]}),
+            );
+            let a = std::fs::read_to_string(root.join("a.txt")).unwrap();
+            let b = std::fs::read_to_string(root.join("b.txt")).unwrap();
+            std::fs::remove_dir_all(&root).unwrap();
+            assert!(guarded.is_ok(), "{tool}: {guarded:?}");
+            assert!(unguarded.is_ok(), "{tool}: {unguarded:?}");
+            assert_eq!(a, "final-a\n");
+            assert_eq!(b, "final-b\n");
+        }
     }
 
     #[test]

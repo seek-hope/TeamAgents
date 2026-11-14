@@ -46,7 +46,7 @@ make verify-witnesses
 make verify-kani
 ```
 
-Current source inventory (2026-11-15): **816 Rust tests** (core 198 / engine 510 / tui 108), **65 positive TLA configurations in 62
+Current source inventory (2026-11-15): **817 Rust tests** (core 198 / engine 511 / tui 108), **65 positive TLA configurations in 62
 traversals**, **327 controls**, **79 witnesses**, **9 Kani harnesses**, and **393 configurations across 48
 modules**. The `0eb4ee98` runtime passed the full local gate, 18 offline probes and isolated release/install
 rehearsal. Its candidate passed ordinary-user install, argument rejection and same-schema upgrade/rollback in

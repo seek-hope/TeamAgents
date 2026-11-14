@@ -11,13 +11,14 @@ Implemented behavior is summarized in [CAPABILITIES.md](CAPABILITIES.md); accept
 - Protocol 2 has bounded event/history pages, explicit retention resync and separate delivery/snapshot cursors.
 - Files, host Shell, Web tools, Skills, MCP resources and restricted codemode. MCP revision `2025-06-18` is
   checked for stdio/streamable HTTP, resource-only bindings are retained, and catalogue pagination is bounded.
+  Batch file edits reject malformed supplied hash preconditions without changing any file (D-520).
 - One Leader TUI with sessions, editing, approvals, media and `/tree` access.
 - One session-level exploration tree with revisioned atomic patches, compaction integration, CLI/daemon/export
   projections and ordered-pair verification.
 - The product reads repository-local configuration after explicit trust; user permissions, hooks, checks,
   limits, retention and update policy remain under user configuration. This is current behavior, not open work.
 - Current development and verification tools under `tools/`.
-- **816 Rust tests** (full local gate passed), 65 positive TLA configurations in
+- **817 Rust tests** (full local gate passed), 65 positive TLA configurations in
   62 traversals, 327 controls, 79 witnesses and 9 Kani harnesses. PTY covers five terminal profiles and both
   forced graphics modes, plus `make probe-offline` (18/18 on `0eb4ee98`) and `make probe-models` (23/23 on its
   earlier pinned source). The current candidate also passed fresh Debian/Ubuntu VM installation and same-schema
