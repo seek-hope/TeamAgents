@@ -2,7 +2,7 @@
 
 ## Current baseline
 
-Last committed source baseline: `3274d1fa`; verification pin: `9b012df9`. Recheck Git for subsequent work.
+Last completed source baseline: `b0a1091c` (D-509 through D-516). Recheck Git for subsequent work.
 
 The current source implements the requirements in [DESIGN.md](DESIGN.md), the rules in [DECISIONS.md](DECISIONS.md),
 and the acceptance matrix in [ACCEPTANCE.md](ACCEPTANCE.md). Current formal evidence and its limits are in

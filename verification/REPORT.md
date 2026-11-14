@@ -4,10 +4,10 @@ This report records the currently accepted finite verification evidence and its 
 earlier runs. The property/configuration mapping is in [README.md](README.md); executable reproduction commands
 are in [DEVELOPMENT.md](../docs/DEVELOPMENT.md).
 
-## 0. Gate status (re-run 2026-11-14 at `3274d1fa`)
+## 0. Gate status (re-run 2026-11-14 at `b0a1091c`)
 
-The heading retains the last committed verification pin. The subsequent uncommitted source also completed
-a full finite replay; its new commit pin remains pending delivery.
+The finite replay preceded this delivery commit. All 446 recorded formal-input hashes were rechecked on
+2026-11-15 and match this baseline; runtime gates were refreshed after the final accounting/client fixes.
 
 The current finite replay verified all **65** configurations in **62** traversals, refuted all **327** negative controls,
 reached all **79** normal-path witnesses, and passed all **9** Kani harnesses. The sequential chain
@@ -16,9 +16,9 @@ the current files. Kani reported `Complete - 9 successfully verified harnesses, 
 
 `verification/tla/V2SearchTree.tla` has SHA-256
 `b2d814d597ddb5f9382ca712e6431a1bf3d67ab7b21ce2f44137c5cae39a2c12`.
-The committed baseline `3274d1fa` passed `make check` with **777 Rust tests**: core 191, engine 481 and TUI 105.
-The latest full local gate passed **814 Rust tests** (core 197, engine 509, TUI 108), including protocol paging,
-tariffs, retention, MCP, updater, continuous-input accounting and bounded-buffer regressions. All 18 offline
+The source baseline `b0a1091c` passed `make check` with **814 Rust tests**: core 197, engine 509 and TUI 108.
+These include protocol paging, tariffs, retention, MCP, updater, continuous-input accounting and bounded-buffer
+regressions. All 18 offline
 probes and the final release/install rehearsal passed; the archive also passed isolated Debian upgrade/rollback.
 The changed `V2Daemon.tla`, included in the complete replay, separately passed two positive configurations in one exhaustive traversal:
 135,750 distinct / 1,858,231 generated states. Its SHA-256 is
