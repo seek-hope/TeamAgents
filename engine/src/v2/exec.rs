@@ -3,13 +3,18 @@
 //! the outcome — it never runs a second engine.
 
 use serde_json::{json, Value as Json};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 /// Must match engine v2::daemon::PROTOCOL_VERSION.
-const PROTOCOL_VERSION: u64 = 1;
+const PROTOCOL_VERSION: u64 = teamagents_core::v2::wire::VERSION;
+
+mod accounting;
+use accounting::Accounting;
+
+type HistoryPage = (Vec<Json>, Option<(i64, i64)>);
 
 struct Conn {
     reader: BufReader<UnixStream>,
@@ -29,11 +34,23 @@ pub struct Client {
     pub session_workspace: String,
     next_request: u64,
     watermark: i64,
+    more_events: bool,
+    wire_version: u64,
+    maintenance_only: bool,
 }
 
 impl Client {
     pub fn connect(socket: &Path) -> Result<Client, String> {
-        let (conn, greeting) = handshake(socket)?;
+        Self::connect_inner(socket, false)
+    }
+
+    /// Only the unchanged checkpoint/shutdown envelopes are compatible with protocol 1.
+    pub(crate) fn connect_maintenance(socket: &Path) -> Result<Client, String> {
+        Self::connect_inner(socket, true)
+    }
+
+    fn connect_inner(socket: &Path, maintenance_only: bool) -> Result<Client, String> {
+        let (conn, greeting) = handshake(socket, maintenance_only)?;
         Ok(Client {
             socket: socket.to_path_buf(),
             conn,
@@ -43,6 +60,9 @@ impl Client {
             session_workspace: greeting["workspace"].as_str().unwrap_or("unknown").to_string(),
             next_request: 0,
             watermark: 0,
+            more_events: false,
+            wire_version: greeting["protocol_version"].as_u64().ok_or("daemon protocol missing")?,
+            maintenance_only,
         })
     }
 
@@ -51,19 +71,23 @@ impl Client {
     }
 
     fn roundtrip(&mut self, method: &str, params: Json, command_id: Option<&str>) -> Result<Json, String> {
+        if self.maintenance_only && (command_id.is_some() || !matches!(method, "checkpoint" | "shutdown")) {
+            return Err("maintenance connections permit only checkpoint and shutdown".into());
+        }
         self.next_request += 1;
         let request_id = format!("exec-{}", self.next_request);
-        let mut frame = json!({"protocol_version": PROTOCOL_VERSION, "request_id": request_id,
+        let mut frame = json!({"protocol_version": self.wire_version, "request_id": request_id,
                                "method": method, "params": params});
         if let Some(command_id) = command_id {
             frame["command_id"] = json!(command_id);
         }
-        let mut line = serde_json::to_string(&frame).map_err(|e| e.to_string())?;
-        line.push('\n');
-        self.conn.writer.write_all(line.as_bytes()).map_err(|e| format!("daemon write: {e}"))?;
-        let mut reply = String::new();
-        self.conn.reader.read_line(&mut reply).map_err(|e| format!("daemon read: {e}"))?;
+        let line = teamagents_core::v2::wire::encode_frame(&frame)?;
+        self.conn.writer.write_all(&line).map_err(|e| format!("daemon write: {e}"))?;
+        let reply = teamagents_core::v2::wire::read_frame(&mut self.conn.reader)?;
         let reply: Json = serde_json::from_str(&reply).map_err(|e| format!("daemon reply: {e}"))?;
+        if reply["request_id"].as_str() != Some(&request_id) {
+            return Err("daemon reply request_id mismatch".into());
+        }
         if reply["ok"] != json!(true) {
             return Err(format!("daemon refused {method}: {}", reply["error"]));
         }
@@ -80,21 +104,117 @@ impl Client {
 
     /// Events after the last delivered watermark (§9 reconnect contract).
     pub fn events(&mut self) -> Result<Vec<Json>, String> {
-        let result = self.call("events", json!({"since": self.watermark}))?;
-        let events = result["events"].as_array().cloned().unwrap_or_default();
-        for event in &events {
-            self.watermark = self.watermark.max(event["sequence"].as_i64().unwrap_or(self.watermark));
+        self.events_until(None)
+    }
+
+    fn events_until(&mut self, until: Option<i64>) -> Result<Vec<Json>, String> {
+        let mut params = json!({"since":self.watermark});
+        if let Some(until) = until {
+            params["until"] = json!(until);
         }
-        Ok(events)
+        let result = self.call("events", params)?;
+        let (cursor, more) = teamagents_core::v2::wire::event_cursor(&result, self.watermark)?;
+        self.watermark = cursor;
+        self.more_events = more;
+        Ok(result["events"].as_array().cloned().unwrap_or_default())
     }
 
     pub fn history(&mut self, instance: &str) -> Result<Vec<Json>, String> {
-        let result = self.call("history", json!({"instance_id": instance, "limit": 400}))?;
-        Ok(result["entries"].as_array().cloned().unwrap_or_default())
+        self.history_page(instance, None).map(|(entries, _)| entries)
+    }
+
+    fn history_page(&mut self, instance: &str, before: Option<(i64, i64)>) -> Result<HistoryPage, String> {
+        let mut params = json!({"instance_id":instance,"limit":400});
+        if let Some((epoch, idx)) = before {
+            params["before"] = json!({"epoch":epoch,"idx":idx});
+        }
+        let result = self.call("history", params)?;
+        let entries = result["entries"].as_array().ok_or("history.entries missing")?.clone();
+        let position = |value: &Json| -> Result<(i64, i64), String> {
+            let epoch = value["epoch"].as_i64().filter(|n| *n >= 0).ok_or("invalid history epoch")?;
+            let idx = value["idx"].as_i64().filter(|n| *n >= 0).ok_or("invalid history index")?;
+            Ok((epoch, idx))
+        };
+        let mut last = None;
+        for entry in &entries {
+            let current = position(entry)?;
+            if last.is_some_and(|last| last >= current) || before.is_some_and(|before| current >= before) {
+                return Err("history entries are not an ordered page before the requested cursor".into());
+            }
+            last = Some(current);
+        }
+        let next = if result["next_before"].is_null() { None } else { Some(position(&result["next_before"])?) };
+        if let Some(next) = next {
+            if entries.first().map(position).transpose()? != Some(next) || before.is_some_and(|before| next >= before) {
+                return Err("history continuation does not advance to the oldest entry".into());
+            }
+        }
+        Ok((entries, next))
+    }
+
+    fn history_attribution(
+        &mut self,
+        instance: &str,
+        envelope: &str,
+        scopes: &Json,
+        deadline: Instant,
+        accounting: &mut Accounting,
+    ) -> Result<(bool, Attribution), String> {
+        let mut before = None;
+        let own = loop {
+            let (entries, next) = self.history_page(instance, before)?;
+            if let Some(index) = entries.iter().position(|entry| entry["envelope_id"].as_str() == Some(envelope)) {
+                let work = entries[index]["work_work_id"].as_str();
+                accounting.input_position(&entries[index])?;
+                let end = entries[index + 1..].iter().find(|entry| Attribution::matches_end(entry, work));
+                if before.is_none() || end.is_some() {
+                    if let Some(end) = end {
+                        accounting.outcome(end)?;
+                    }
+                    return Ok((true, Attribution::read(envelope, scopes, &entries)));
+                }
+                break json!({"envelope_id":envelope,"work_work_id":entries[index]["work_work_id"]});
+            }
+            if next.is_none() {
+                return Ok((false, Attribution::Pending));
+            }
+            if Instant::now() > deadline {
+                return Err("deadline expired while locating the input in history".into());
+            }
+            before = next;
+        };
+        // The input is older than the recent page. Scan again with its work identity, retaining only
+        // one candidate rather than collecting every large tool result into an unbounded history vector.
+        before = None;
+        let mut candidate = None;
+        loop {
+            if Instant::now() > deadline {
+                return Err("deadline expired while reading the input's history outcome".into());
+            }
+            let (entries, next) = self.history_page(instance, before)?;
+            for entry in entries.into_iter().rev() {
+                if entry["envelope_id"].as_str() == Some(envelope) {
+                    if let Some(end) = &candidate {
+                        accounting.outcome(end)?;
+                    }
+                    let outcome = candidate
+                        .map(|end| Attribution::read(envelope, scopes, &[own, end]))
+                        .unwrap_or(Attribution::Pending);
+                    return Ok((true, outcome));
+                }
+                if Attribution::matches_end(&entry, own["work_work_id"].as_str()) {
+                    candidate = Some(entry);
+                }
+            }
+            if next.is_none() {
+                return Err("input disappeared while reading its history outcome".into());
+            }
+            before = next;
+        }
     }
 }
 
-fn handshake(socket: &Path) -> Result<(Conn, Json), String> {
+fn handshake(socket: &Path, maintenance: bool) -> Result<(Conn, Json), String> {
     // D-166: a state root that is a *file* makes every path under it meaningless, and the OS answer for the
     // connect below is `Not a directory (os error 20)`, which names neither the flag nor the fix. Every client
     // (exec and the four CLI verbs) arrives here with the same socket path, so the check lives here once.
@@ -109,11 +229,12 @@ fn handshake(socket: &Path) -> Result<(Conn, Json), String> {
     stream.set_write_timeout(Some(Duration::from_secs(30))).map_err(|e| e.to_string())?;
     let writer = stream.try_clone().map_err(|e| e.to_string())?;
     let mut reader = BufReader::new(stream);
-    let mut greeting = String::new();
-    reader.read_line(&mut greeting).map_err(|e| format!("daemon greeting: {e}"))?;
+    let greeting = teamagents_core::v2::wire::read_frame(&mut reader)?;
     let greeting: Json = serde_json::from_str(&greeting).map_err(|e| format!("daemon greeting: {e}"))?;
-    if greeting["server"] != json!("teamagents-daemon") || greeting["protocol_version"] != json!(PROTOCOL_VERSION) {
-        return Err(format!("socket {} is not a v2 daemon ({greeting})", socket.display()));
+    let version = greeting["protocol_version"].as_u64();
+    let compatible = version == Some(PROTOCOL_VERSION) || (maintenance && version == Some(1));
+    if greeting["server"] != json!("teamagents-daemon") || !compatible {
+        return Err(format!("socket {} has an incompatible daemon greeting ({greeting})", socket.display()));
     }
     Ok((Conn { reader, writer }, greeting))
 }
@@ -264,6 +385,17 @@ impl Attribution {
     /// older active work beside this run's own (D-267/D-268), is another work entirely: the run then read a
     /// settlement that was committed and in its own history as not-yet-committed and waited out its deadline
     /// (measured 2026-09-28, D-275).
+    fn matches_end(entry: &Json, work: Option<&str>) -> bool {
+        let source = entry["envelope_id"].as_str().unwrap_or("");
+        if source.starts_with("work-question-")
+            || source.starts_with("work-blocked-")
+            || source.starts_with("work-stopped-")
+        {
+            return true;
+        }
+        work.map(|work| Self::closing_work(entry) == Some(work)).unwrap_or_else(|| Self::ends_a_turn(entry))
+    }
+
     fn read(envelope: &str, work_scopes: &Json, history: &[Json]) -> Attribution {
         let Some(mine) = history.iter().position(|entry| entry["envelope_id"].as_str() == Some(envelope)) else {
             // the input has not landed yet (a turn was in flight when it arrived):
@@ -271,20 +403,7 @@ impl Attribution {
             return Attribution::Pending;
         };
         let work_work = history[mine]["work_work_id"].as_str();
-        let Some(end) = history[mine + 1..].iter().find(|entry| {
-            let source = entry["envelope_id"].as_str().unwrap_or("");
-            if source.starts_with("work-question-")
-                || source.starts_with("work-blocked-")
-                || source.starts_with("work-stopped-")
-            {
-                return true;
-            }
-            if let Some(work) = work_work {
-                Attribution::closing_work(entry) == Some(work)
-            } else {
-                Attribution::ends_a_turn(entry)
-            }
-        }) else {
+        let Some(end) = history[mine + 1..].iter().find(|entry| Self::matches_end(entry, work_work)) else {
             return Attribution::Pending;
         };
         let source = end["envelope_id"].as_str().unwrap_or("");
@@ -444,11 +563,10 @@ type EventSink<'a> = Option<&'a mut dyn FnMut(&Json) -> std::io::Result<()>>;
 pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRun, (i32, String)> {
     let mut client = Client::connect(&options.socket)
         .map_err(|error| (2, format!("exec: {error}; start teamagents daemon first (or just run teamagents)")))?;
-    // Drain the events recorded before this input and keep the watermark: a
-    // work settlement from an earlier run is history, not this run's outcome.
-    client.events().map_err(|error| socket_lost("reading the event stream", &error))?;
+    // Adopt a pre-input snapshot without loading old events or attributing their usage to this run.
     let checkpoint =
         client.call("checkpoint", json!({})).map_err(|error| socket_lost("reading the checkpoint", &error))?;
+    client.watermark = checkpoint["watermark"].as_i64().ok_or_else(|| (2, "checkpoint.watermark missing".into()))?;
     let (instance, lifecycle) = leader_instance(&checkpoint)
         .ok_or_else(|| (2, format!("exec: the session has no usable leader instance: {checkpoint}")))?;
     // Legacy sessions retain their explicit work-opening behavior. Enrolled sessions
@@ -524,12 +642,8 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
     let mut model_request_failed = false;
     let deadline = Instant::now() + Duration::from_secs(options.timeout_s);
     let mut work_status: Option<String> = None;
-    // D-427: what *this run* cost, summed from the provider's own reported usage on each recorded attempt (the
-    // work's settled total lives elsewhere; a run is what a user is looking at when they wonder about the bill).
-    // An attempt the provider never priced is counted, not hidden: `unpriced_attempts` says how many.
-    let mut usage = json!({"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
-                           "cache_hit_tokens": 0, "cache_miss_tokens": 0, "cache_write_tokens": 0,
-                           "requests": 0, "unpriced_attempts": 0});
+    // Registration positions identify this input's requests; event arrival time alone is not ownership.
+    let mut accounting = Accounting::default();
     let mut turn_failure: Option<String> = None;
     let mut parked_wrapped = false;
     let mut reply: Option<String> = None;
@@ -565,93 +679,123 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
         // read that missed it too — and the loop takes another pass. The other
         // order could see an idle instance whose settlement event was still
         // unread and report a finished run as `unsettled` (D-71).
-        let snapshot = client.call("checkpoint", json!({})).unwrap_or(Json::Null);
-        match client.events() {
-            Ok(events) => {
-                for event in &events {
-                    if let (Some(write), true) = (sink.as_mut(), streaming) {
-                        match write(event) {
-                            Ok(()) => {}
-                            Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => streaming = false,
-                            Err(error) => return Err((2, format!("exec: writing the event stream: {error}"))),
+        let snapshot =
+            client.call("checkpoint", json!({})).map_err(|error| socket_lost("reading the checkpoint", &error))?;
+        let target = snapshot["watermark"].as_i64().ok_or_else(|| (2, "checkpoint.watermark missing".into()))?;
+        let mut history_changed = false;
+        loop {
+            match client.events_until(Some(target)) {
+                Ok(events) => {
+                    for event in &events {
+                        let kind = event["kind"].as_str().unwrap_or("");
+                        history_changed |= matches!(kind, "work_completed" | "work_cancelled")
+                            || (event["scope"] == instance
+                                && (matches!(
+                                    kind,
+                                    "work_checkpoint"
+                                        | "work_blocked"
+                                        | "request_failed"
+                                        | "instance_lifecycle"
+                                        | "instance_reset"
+                                        | "instance_terminated"
+                                ) || (kind == "response_imported" && event["payload"]["intents"] == 0)));
+                        accounting
+                            .observe(event, &instance, &envelope)
+                            .map_err(|error| socket_lost("attributing request usage", &error))?;
+                        if let (Some(write), true) = (sink.as_mut(), streaming) {
+                            match write(event) {
+                                Ok(()) => {}
+                                Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => streaming = false,
+                                Err(error) => return Err((2, format!("exec: writing the event stream: {error}"))),
+                            }
                         }
-                    }
-                    // A permanently failed leader request is a terminal outcome
-                    // of this run: report it instead of waiting out the deadline.
-                    // Failures of *other* instances belong to the leader's turn,
-                    // not to this client.
-                    if event["kind"] == json!("work_input_admitted")
-                        && event["scope"] == json!(instance)
-                        && event["payload"]["envelope_id"] == json!(envelope)
-                    {
-                        input_applied = true;
-                        model_request_failed = false;
-                        admitted_work_work = event["payload"]["work_id"].as_str().map(str::to_string);
-                        if !options.accept.is_empty() {
-                            accept_work = admitted_work_work.clone();
+                        // A permanently failed leader request is a terminal outcome
+                        // of this run: report it instead of waiting out the deadline.
+                        // Failures of *other* instances belong to the leader's turn,
+                        // not to this client.
+                        if event["kind"] == json!("work_input_admitted")
+                            && event["scope"] == json!(instance)
+                            && event["payload"]["envelope_id"] == json!(envelope)
+                        {
+                            input_applied = true;
+                            model_request_failed = false;
+                            admitted_work_work = event["payload"]["work_id"].as_str().map(str::to_string);
+                            if !options.accept.is_empty() {
+                                accept_work = admitted_work_work.clone();
+                            }
                         }
-                    }
-                    if event["kind"] == json!("work_input_pending")
-                        && event["scope"] == json!(instance)
-                        && event["payload"]["envelope_id"] == json!(envelope)
-                    {
-                        input_applied = true;
-                        model_request_failed = false;
-                    }
-                    if event["kind"] == json!("attempt_recorded") {
-                        add_attempt_usage(&mut usage, &event["payload"]);
-                    }
-                    if event["kind"] == json!("request_failed") && event["scope"] == json!(instance) {
-                        model_request_failed = true;
-                        turn_failure =
-                            Some(event["payload"]["reason"].as_str().unwrap_or("the model request failed").to_string());
-                        parked_wrapped = false;
-                    }
-                    // One place decides whether this event ends the run while its turn can never finish (see
-                    // `run_fate`): a refused request, a retired instance, a reset that took the epoch away.
-                    // Reporting any of them as `124` would tell the caller "still running" about work nobody is
-                    // doing, and burn its deadline waiting for it.
-                    if event["scope"] == json!(instance) {
-                        if let Some(reason) = run_fate(event, &instance) {
-                            // remembered separately from `turn_failure`: a run whose turn never started (or
-                            // never finished) has no acceptance to verify either (D-96/D-97)
-                            refused.get_or_insert_with(|| reason.clone());
-                            turn_failure.get_or_insert(reason);
+                        if (event["kind"] == json!("work_input_pending")
+                            || (event["kind"] == json!("input") && event["payload"]["applied"] == true))
+                            && event["scope"] == json!(instance)
+                            && event["payload"]["envelope_id"] == json!(envelope)
+                        {
+                            input_applied = true;
+                            model_request_failed = false;
                         }
-                    }
-                    // A queued input is sealed, not delivered, when a context reset
-                    // moves the epoch before the boundary reaches it (§5.3/A24): the
-                    // run has nothing to wait for and must not call its own deadline
-                    // a timeout (D-72). The runtime names every envelope it seals.
-                    if event["kind"] == json!("input_cancelled")
-                        && event["scope"] == json!(instance)
-                        && event["payload"]["envelope_id"] == json!(envelope)
-                    {
-                        undelivered = true;
-                        turn_failure = Some("Pending input was cancelled before consumption.".into());
-                    }
-                    if event["kind"] == json!("envelopes_sealed") && event["scope"] == json!(instance) {
-                        let sealed = event["payload"]["envelope_ids"].as_array();
-                        if sealed.is_some_and(|ids| ids.iter().any(|id| id == &json!(envelope))) {
+                        if event["kind"] == json!("request_failed") && event["scope"] == json!(instance) {
+                            model_request_failed = true;
+                            turn_failure = Some(
+                                event["payload"]["reason"].as_str().unwrap_or("the model request failed").to_string(),
+                            );
+                            parked_wrapped = false;
+                        }
+                        // One place decides whether this event ends the run while its turn can never finish (see
+                        // `run_fate`): a refused request, a retired instance, a reset that took the epoch away.
+                        // Reporting any of them as `124` would tell the caller "still running" about work nobody is
+                        // doing, and burn its deadline waiting for it.
+                        if event["scope"] == json!(instance) {
+                            if let Some(reason) = run_fate(event, &instance) {
+                                // remembered separately from `turn_failure`: a run whose turn never started (or
+                                // never finished) has no acceptance to verify either (D-96/D-97)
+                                refused.get_or_insert_with(|| reason.clone());
+                                turn_failure.get_or_insert(reason);
+                            }
+                        }
+                        // A queued input is sealed, not delivered, when a context reset
+                        // moves the epoch before the boundary reaches it (§5.3/A24): the
+                        // run has nothing to wait for and must not call its own deadline
+                        // a timeout (D-72). The runtime names every envelope it seals.
+                        if event["kind"] == json!("input_cancelled")
+                            && event["scope"] == json!(instance)
+                            && event["payload"]["envelope_id"] == json!(envelope)
+                        {
                             undelivered = true;
+                            turn_failure = Some("Pending input was cancelled before consumption.".into());
                         }
-                    }
-                    // A park is the runtime saying nobody is driving this instance, and its `reason` is the
-                    // runtime's own words for why (a required MCP service that cannot start, a driver that
-                    // failed to boot — D-164). Before this no client ever showed it: the TUI logged only the
-                    // lifecycle word and `exec` reported a bare timeout, so the one sentence that tells the
-                    // user what to fix lived in `daemon.log`.
-                    if event["kind"] == json!("instance_lifecycle")
-                        && event["scope"] == json!(instance)
-                        && event["payload"]["lifecycle"] == json!("PARKED")
-                        && park_reason.is_none()
-                    {
-                        park_reason =
-                            event["payload"]["reason"].as_str().filter(|reason| !reason.is_empty()).map(str::to_string);
+                        if event["kind"] == json!("envelopes_sealed") && event["scope"] == json!(instance) {
+                            let sealed = event["payload"]["envelope_ids"].as_array();
+                            if sealed.is_some_and(|ids| ids.iter().any(|id| id == &json!(envelope))) {
+                                undelivered = true;
+                            }
+                        }
+                        // A park is the runtime saying nobody is driving this instance, and its `reason` is the
+                        // runtime's own words for why (a required MCP service that cannot start, a driver that
+                        // failed to boot — D-164). Before this no client ever showed it: the TUI logged only the
+                        // lifecycle word and `exec` reported a bare timeout, so the one sentence that tells the
+                        // user what to fix lived in `daemon.log`.
+                        if event["kind"] == json!("instance_lifecycle")
+                            && event["scope"] == json!(instance)
+                            && event["payload"]["lifecycle"] == json!("PARKED")
+                            && park_reason.is_none()
+                        {
+                            park_reason = event["payload"]["reason"]
+                                .as_str()
+                                .filter(|reason| !reason.is_empty())
+                                .map(str::to_string);
+                        }
                     }
                 }
+                Err(error) => return Err(socket_lost("reading the event stream", &error)),
             }
-            Err(error) => return Err(socket_lost("reading the event stream", &error)),
+            if !client.more_events {
+                break;
+            }
+            if Instant::now() > deadline {
+                return Err((
+                    2,
+                    "exec: deadline expired while draining events; outcome and usage are incomplete".into(),
+                ));
+            }
         }
         let instances = snapshot["snapshot"]["instances"]
             .as_array()
@@ -674,10 +818,17 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
         // session can carry an older active work beside this run's own, which made this run read its own
         // committed settlement as not-yet-committed and wait out the caller's deadline.
         let mut attribution = Attribution::Pending;
-        if settled {
-            if let (Ok(entries), Ok(work_scopes)) = (client.history(&instance), client.call("work_scopes", json!({}))) {
-                input_applied |= entries.iter().any(|entry| entry["envelope_id"].as_str() == Some(envelope.as_str()));
-                attribution = Attribution::read(&envelope, &work_scopes, &entries);
+        // A subsequent input can already be running; that does not erase this input's earlier outcome.
+        if settled || history_changed || settled_passes > 0 {
+            {
+                let work_scopes = client
+                    .call("work_scopes", json!({}))
+                    .map_err(|error| socket_lost("reading work scopes", &error))?;
+                let (applied, outcome) = client
+                    .history_attribution(&instance, &envelope, &work_scopes, deadline, &mut accounting)
+                    .map_err(|error| socket_lost("reading history", &error))?;
+                input_applied |= applied;
+                attribution = outcome;
                 // The admission event retains identity after the input leaves the history page.
                 if let Some(work) = admitted_work_work.as_deref() {
                     if let Some(status) = status_of_work(&work_scopes, work).filter(|status| status != "ACTIVE") {
@@ -784,6 +935,10 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
         }
         std::thread::sleep(Duration::from_millis(250));
     }
+    let mut usage = accounting.finish(&instance);
+    if end == End::Timeout {
+        usage["cost"]["complete"] = json!(false);
+    }
     // The user's acceptance commands run on the host in this workspace after a finished turn.
     // Nothing runs when the turn is not finished — an approval no headless caller can give, the caller's own
     // deadline passing, or a request the runtime *refused before it began* (a budget ceiling, a passed work
@@ -855,6 +1010,16 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
 /// rather than read as free.
 fn add_attempt_usage(usage: &mut Json, payload: &Json) {
     usage["requests"] = json!(usage["requests"].as_u64().unwrap_or(0) + 1);
+    if !usage["cost"].is_object() {
+        usage["cost"] = json!({"currency":"USD","known_estimated_usd":0.0,"unpriced_attempts":0,"complete":true});
+    }
+    if let Some(amount) = payload["cost"]["estimated_usd"].as_f64() {
+        usage["cost"]["known_estimated_usd"] =
+            json!(usage["cost"]["known_estimated_usd"].as_f64().unwrap_or(0.0) + amount);
+    } else {
+        usage["cost"]["unpriced_attempts"] = json!(usage["cost"]["unpriced_attempts"].as_u64().unwrap_or(0) + 1);
+        usage["cost"]["complete"] = json!(false);
+    }
     let reported = &payload["usage"];
     if reported.is_object() {
         for key in [
@@ -1071,6 +1236,14 @@ fn print_usage(report: &Json) {
         String::new()
     };
     println!("tokens: {prompt} prompt + {completion} completion over {requests} request(s){cache}{note}");
+    let cost = &usage["cost"];
+    let known = cost["known_estimated_usd"].as_f64().unwrap_or(0.0);
+    if cost["complete"] == json!(true) {
+        println!("estimated cost: USD {known:.6}");
+    } else {
+        let missing = cost["unpriced_attempts"].as_u64().unwrap_or(requests);
+        println!("estimated cost: incomplete (USD {known:.6} known; {missing} unpriced attempt(s))");
+    }
 }
 
 /// Human-readable check verdicts on stdout (the verdict is product output); a
@@ -1265,6 +1438,51 @@ mod tests {
             matches!(Attribution::read("answer",&json!({"work_scopes":[{"id":"g1","status":"SUCCEEDED"}]}),&history),Attribution::Settled(status,work) if status=="SUCCEEDED" && work=="g1")
         );
         assert_eq!(End::NeedsInput.exit_code(true), 3);
+    }
+
+    #[test]
+    fn maintenance_connections_limit_legacy_wire_to_checkpoint_and_shutdown() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+        for (version, maintenance, accepted) in [(1, true, true), (2, true, true), (3, true, false), (1, false, false)]
+        {
+            let dir = std::env::temp_dir().join(format!("ta-maint-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir(&dir).unwrap();
+            let socket = dir.join("daemon.sock");
+            let listener = UnixListener::bind(&socket).unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                writeln!(stream, "{}", json!({"server":"teamagents-daemon","protocol_version":version})).unwrap();
+                if accepted {
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    for method in ["checkpoint", "shutdown"] {
+                        let mut line = String::new();
+                        reader.read_line(&mut line).unwrap();
+                        let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                        assert_eq!(request["method"], method);
+                        assert_eq!(request["protocol_version"], version);
+                        writeln!(
+                            stream,
+                            "{}",
+                            json!({"request_id":request["request_id"],"ok":true,
+                            "result":{"snapshot":{},"watermark":0}})
+                        )
+                        .unwrap();
+                    }
+                }
+            });
+            let client =
+                if maintenance { super::Client::connect_maintenance(&socket) } else { super::Client::connect(&socket) };
+            assert_eq!(client.is_ok(), accepted);
+            if let Ok(mut client) = client {
+                assert!(client.command("x", "submit_input", json!({})).is_err());
+                assert!(client.call("events", json!({})).is_err());
+                assert_eq!(client.call("checkpoint", json!({})).unwrap()["watermark"], 0);
+                client.call("shutdown", json!({})).unwrap();
+            }
+            server.join().unwrap();
+            std::fs::remove_dir_all(dir).unwrap();
+        }
     }
 
     #[test]

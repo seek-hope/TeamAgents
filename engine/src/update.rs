@@ -14,7 +14,7 @@ use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
 use sha2::{Digest, Sha256};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::os::unix::fs::{symlink, OpenOptionsExt, PermissionsExt};
 use std::os::unix::io::AsRawFd;
 use std::path::{Component, Path, PathBuf};
@@ -23,7 +23,6 @@ use std::time::{Duration, Instant};
 pub const DEFAULT_INSTALL_ROOT: &str = "~/.local/lib/teamagents";
 pub const DEFAULT_BIN_DIR: &str = "~/.local/bin";
 pub const DEFAULT_REPO: &str = "seek-hope/TeamAgents";
-pub const PROTOCOL_VERSION: u64 = 1;
 
 fn now() -> f64 {
     teamagents_core::models::now()
@@ -598,8 +597,18 @@ fn binary_version(binary: &Path) -> Option<String> {
     if !output.status.success() {
         return None;
     }
-    let text = String::from_utf8_lossy(&output.stdout);
-    text.split_whitespace().last().map(|value| value.trim().to_string())
+    let text = std::str::from_utf8(&output.stdout).ok()?.trim();
+    let version = if text.starts_with('{') {
+        let value: Json = serde_json::from_str(text).ok()?;
+        value.get("version")?.as_str()?.to_string()
+    } else {
+        text.strip_prefix("teamagents ")?.trim().to_string()
+    };
+    // The CLI reports JSON; older releases used a plain product/version line. Neither may supply a path.
+    (version.len() <= 128
+        && version.as_bytes().first().is_some_and(u8::is_ascii_digit)
+        && version.bytes().all(|byte| byte.is_ascii_alphanumeric() || b".-+_".contains(&byte)))
+    .then_some(version)
 }
 
 const MAX_RELEASE_METADATA_BYTES: u64 = 1024 * 1024;
@@ -899,38 +908,16 @@ pub fn health_json(state_root: &Path) -> Result<Json, String> {
               "format": format, "schema": schema}))
 }
 
-fn daemon_running(state_root: &Path) -> bool {
-    std::os::unix::net::UnixStream::connect(state_root.join("daemon.sock")).is_ok()
+fn daemon_running(state_root: &Path) -> Result<bool, String> {
+    socket_has_live_peer(&state_root.join("daemon.sock"))
 }
 
 fn daemon_check(socket: &Path) -> Result<Json, String> {
-    let stream = std::os::unix::net::UnixStream::connect(socket)
-        .map_err(|e| format!("cannot connect to {}: {e}", socket.display()))?;
-    stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
-    let mut reader = BufReader::new(stream.try_clone().map_err(|e| format!("socket clone: {e}"))?);
-    let mut writer = stream;
-    let mut greeting = String::new();
-    reader.read_line(&mut greeting).map_err(|e| format!("cannot read the greeting: {e}"))?;
-    let greeting: Json = serde_json::from_str(greeting.trim()).map_err(|e| format!("bad greeting: {e}"))?;
-    if greeting["protocol_version"].as_u64() != Some(PROTOCOL_VERSION) {
-        return Err(format!(
-            "the daemon speaks protocol {:?}, this updater speaks {PROTOCOL_VERSION}",
-            greeting["protocol_version"]
-        ));
+    let result = crate::v2::exec::Client::connect_maintenance(socket)?.call("checkpoint", json!({}))?;
+    if !result["snapshot"].is_object() || result["watermark"].as_i64().is_none_or(|value| value < 0) {
+        return Err("daemon health reply is not a checkpoint".into());
     }
-    let request = json!({"protocol_version": PROTOCOL_VERSION, "request_id": "update-health",
-                         "method": "checkpoint", "params": {}});
-    writer
-        .write_all(format!("{request}\n").as_bytes())
-        .map_err(|e| format!("cannot ask the daemon for a checkpoint: {e}"))?;
-    writer.flush().ok();
-    let mut line = String::new();
-    reader.read_line(&mut line).map_err(|e| format!("cannot read the checkpoint: {e}"))?;
-    let response: Json = serde_json::from_str(line.trim()).map_err(|e| format!("bad checkpoint: {e}"))?;
-    if response.get("error").is_some_and(|error| !error.is_null()) {
-        return Err(format!("the daemon refused the health check: {}", response["error"]));
-    }
-    Ok(response)
+    Ok(result)
 }
 
 fn daemon_boot(state_root: &Path) -> Json {
@@ -1006,6 +993,16 @@ pub fn validate_request(target: &str, reason: &str, follow_up: &str) -> Result<(
     Ok(())
 }
 
+fn socket_has_live_peer(socket: &Path) -> Result<bool, String> {
+    match std::os::unix::net::UnixStream::connect(socket) {
+        Ok(_) => Ok(true),
+        Err(error) if matches!(error.kind(), std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound) => {
+            Ok(false)
+        }
+        Err(error) => Err(format!("cannot determine whether {} has a listener: {error}", socket.display())),
+    }
+}
+
 fn start_daemon(layout: &Layout, state_root: &Path) -> Result<(), String> {
     let binary = layout.current_binary();
     if !binary.is_file() {
@@ -1047,35 +1044,101 @@ fn start_daemon(layout: &Layout, state_root: &Path) -> Result<(), String> {
     let mut child = command.spawn().map_err(|e| format!("cannot start the new daemon: {e}"))?;
     let socket = state_root.join("daemon.sock");
     let deadline = Instant::now() + Duration::from_secs(30);
-    while Instant::now() < deadline {
-        if socket.exists() {
-            if let Err(error) = daemon_check(&socket) {
-                return Err(format!("the new daemon is not healthy: {error}"));
+    let result = (|| {
+        while Instant::now() < deadline {
+            match child.try_wait() {
+                Ok(Some(status)) if !status.success() => {
+                    let text = std::fs::read_to_string(&log_path).unwrap_or_default();
+                    let tail: String =
+                        text.lines().rev().take(8).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
+                    return Err(format!("the new daemon exited while starting ({status}): {tail}"));
+                }
+                _ => {}
             }
-            return Ok(());
-        }
-        match child.try_wait() {
-            Ok(Some(status)) if !status.success() => {
-                let text = std::fs::read_to_string(&log_path).unwrap_or_default();
-                let tail: String =
-                    text.lines().rev().take(8).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
-                return Err(format!("the new daemon exited while starting ({status}): {tail}"));
+            // A stale pathname can outlive a failed child. The daemon owns socket cleanup under its
+            // coordinator lock; unlinking here could race its bind/listen or a replacement listener.
+            if socket_has_live_peer(&socket)? {
+                match daemon_check(&socket) {
+                    Ok(_) => return Ok(()),
+                    Err(error) if socket_has_live_peer(&socket)? => {
+                        return Err(format!("the new daemon is not healthy: {error}"));
+                    }
+                    Err(_) => {}
+                }
             }
-            _ => {}
+            std::thread::sleep(Duration::from_millis(200));
         }
-        std::thread::sleep(Duration::from_millis(200));
+        Err(format!("the new daemon did not open {}", socket.display()))
+    })();
+    if result.is_err() {
+        // This handle identifies the child we launched; do not leave a failed startup running behind rollback.
+        let _ = child.kill();
+        let _ = child.wait();
     }
-    Err(format!("the new daemon did not open {}", socket.display()))
+    result
 }
 
-fn rollback_install(layout: &Layout, state_root: &Path, was_running: bool) -> Result<(), String> {
-    let previous = layout.rollback()?;
-    if was_running {
-        let _ = crate::cli::daemon_stop_quiet(state_root);
-        start_daemon(layout, state_root)?;
+fn rollback_install(layout: &Layout, state_root: &Path, restart: bool, starting: Option<&str>) -> Result<(), String> {
+    if restart && crate::cli::daemon_stop_quiet(state_root) != 0 {
+        return Err("the daemon refused to stop during rollback recovery".into());
     }
-    let _ = previous;
-    Ok(())
+    let starting = Path::new(starting.ok_or("there is no previous version to restore")?);
+    if !complete_version_dir(starting) {
+        return Err(format!("starting version {} is incomplete", starting.display()));
+    }
+    let failed = layout.current_dir();
+    // Bin links already name root/current. Restore that pointer even if repairing an unrelated
+    // bin link caused the switch failure; retrying all bin writes would prevent daemon recovery.
+    atomic_symlink(&path_relative(starting, &layout.root), &layout.current_link())?;
+    let mut errors = Vec::new();
+    if let Some(failed) = failed.filter(|dir| dir != starting) {
+        if let Err(error) = atomic_symlink(&path_relative(&failed, &layout.root), &layout.previous_link()) {
+            errors.push(error);
+        }
+    }
+    if restart {
+        if let Err(error) = start_daemon(layout, state_root) {
+            errors.push(error);
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
+fn recover_failed_update(
+    layout: &Layout,
+    state_root: &Path,
+    restart: bool,
+    journal: &mut UpdateJournal,
+    mut state: UpdateState,
+    target_error: String,
+) -> String {
+    state.status = "rolling_back".into();
+    state.error = Some(target_error.clone());
+    // Recording failure must not prevent restoration. Preserve journal errors alongside both launch errors.
+    let intent_error = journal.append("rolling_back", state.clone()).err();
+    let message = match rollback_install(layout, state_root, restart, state.previous_dir.as_deref()) {
+        Ok(()) => {
+            state.status = "rolled_back".into();
+            format!("target failed: {target_error}; restored the starting version")
+        }
+        Err(error) => {
+            state.status = "failed".into();
+            format!("target failed: {target_error}; recovery failed: {error}")
+        }
+    };
+    let mut message = message;
+    if let Some(error) = intent_error {
+        message.push_str(&format!("; could not record recovery intent: {error}"));
+    }
+    state.error = Some(message.clone());
+    if let Err(error) = journal.append("rollback_failed", state) {
+        message.push_str(&format!("; could not record failure: {error}"));
+    }
+    message
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1235,6 +1298,10 @@ pub fn apply(layout: &Layout, options: &ApplyOptions) -> Result<Json, String> {
         target: Some(options.target.clone().unwrap_or_else(|| staged.version.clone())),
         digest: Some(staged.digest.clone()),
         from_version: from_version.clone(),
+        previous_dir: layout
+            .current_dir()
+            .map(|path| path.into_os_string().into_string().map_err(|_| "starting version path is not valid UTF-8"))
+            .transpose()?,
         to_version: Some(staged.version.clone()),
         request_id: options.request.as_ref().map(|request| request.id.clone()),
         actor: if options.request.is_some() { "agent+user".into() } else { "user".into() },
@@ -1244,8 +1311,9 @@ pub fn apply(layout: &Layout, options: &ApplyOptions) -> Result<Json, String> {
     };
     journal.append("staged", state.clone())?;
     crash_point(&options.crash_at, "staged")?;
-    let was_running = daemon_running(&options.state_root);
-    if options.restart && was_running {
+    let was_running = daemon_running(&options.state_root)?;
+    let should_restart = options.restart && was_running;
+    if should_restart {
         state.status = "stopping".into();
         journal.append("stopping", state.clone())?;
         crash_point(&options.crash_at, "stopping")?;
@@ -1257,39 +1325,37 @@ pub fn apply(layout: &Layout, options: &ApplyOptions) -> Result<Json, String> {
         }
     }
     state.status = "switching".into();
-    journal.append("switching", state.clone())?;
+    if let Err(error) = journal.append("switching", state.clone()) {
+        return Err(recover_failed_update(layout, &options.state_root, should_restart, &mut journal, state, error));
+    }
     crash_point(&options.crash_at, "switching")?;
-    layout.switch_to(&staged.dir)?;
+    if let Err(error) = layout.switch_to(&staged.dir) {
+        return Err(recover_failed_update(layout, &options.state_root, should_restart, &mut journal, state, error));
+    }
     state.status = "switched".into();
-    journal.append("switched", state.clone())?;
+    if let Err(error) = journal.append("switched", state.clone()) {
+        return Err(recover_failed_update(layout, &options.state_root, should_restart, &mut journal, state, error));
+    }
     crash_point(&options.crash_at, "switched")?;
     let health = health_json(&options.state_root);
     if let Err(error) = health {
-        state.status = "rolling_back".into();
-        state.error = Some(error.clone());
-        journal.append("rolling_back", state.clone())?;
-        rollback_install(layout, &options.state_root, was_running)?;
-        state.status = "rolled_back".into();
-        journal.append("rolled_back", state)?;
-        return Err(error);
+        return Err(recover_failed_update(layout, &options.state_root, should_restart, &mut journal, state, error));
     }
-    if was_running {
+    if should_restart {
         state.status = "starting".into();
-        journal.append("starting", state.clone())?;
+        if let Err(error) = journal.append("starting", state.clone()) {
+            return Err(recover_failed_update(layout, &options.state_root, should_restart, &mut journal, state, error));
+        }
         crash_point(&options.crash_at, "starting")?;
         if let Err(error) = start_daemon(layout, &options.state_root) {
-            state.status = "rolling_back".into();
-            state.error = Some(error.clone());
-            journal.append("rolling_back", state.clone())?;
-            rollback_install(layout, &options.state_root, was_running)?;
-            state.status = "rolled_back".into();
-            journal.append("rolled_back", state)?;
-            return Err(error);
+            return Err(recover_failed_update(layout, &options.state_root, should_restart, &mut journal, state, error));
         }
     }
     state.status = "healthy".into();
     state.error = None;
-    journal.append("healthy", state.clone())?;
+    if let Err(error) = journal.append("healthy", state.clone()) {
+        return Err(recover_failed_update(layout, &options.state_root, should_restart, &mut journal, state, error));
+    }
     layout.prune(3);
     if let Some(request) = &options.request {
         if let Err(error) = submit_follow_up(layout, request) {
@@ -1308,16 +1374,27 @@ pub fn rollback(layout: &Layout, state_root: &Path, restart: bool) -> Result<Jso
     layout.ensure()?;
     let mut journal = UpdateJournal::open_locked(&layout.journal_path())?;
     journal.settle(layout)?;
-    let was_running = daemon_running(state_root);
+    health_json(state_root)?;
+    let mut state = journal.state().clone();
+    state.previous_dir = layout
+        .current_dir()
+        .map(|path| path.into_os_string().into_string().map_err(|_| "starting version path is not valid UTF-8"))
+        .transpose()?;
+    let was_running = daemon_running(state_root)?;
     if restart && was_running && crate::cli::daemon_stop_quiet(state_root) != 0 {
         return Err("the daemon refused to stop; the rollback was not applied".into());
     }
-    let target = layout.rollback()?;
-    health_json(state_root)?;
+    let target = match layout.rollback() {
+        Ok(target) => target,
+        Err(error) => {
+            return Err(recover_failed_update(layout, state_root, restart && was_running, &mut journal, state, error))
+        }
+    };
     if was_running && restart {
-        start_daemon(layout, state_root)?;
+        if let Err(error) = start_daemon(layout, state_root) {
+            return Err(recover_failed_update(layout, state_root, true, &mut journal, state, error));
+        }
     }
-    let mut state = journal.state().clone();
     state.status = "rolled_back".into();
     state.error = None;
     state.updated_at = now_string();
@@ -1341,7 +1418,7 @@ pub fn status_json(layout: &Layout, state_root: Option<&Path>) -> Result<Json, S
         "bin_dir": layout.bin_dir,
         "current": current_info,
         "previous": previous_info,
-        "daemon_running": state_root.is_some_and(daemon_running),
+        "daemon_running": state_root.map(daemon_running).transpose()?.unwrap_or(false),
         "state": journal.state(),
         "entries": journal.entries()?,
     }))
@@ -1576,6 +1653,7 @@ fn cli_help() -> &'static str {
        --bin-dir DIR       directory holding the teamagents symlinks (default ~/.local/bin)\n\
        --state-root DIR    session whose daemon is stopped/restarted\n\
        --no-restart        switch the binaries without restarting a running daemon\n\
+       --repo OWNER/REPO   GitHub repository for release lookup\n\
        --json              machine-readable output\n"
 }
 
@@ -1658,6 +1736,92 @@ mod tests {
             request: None,
             crash_at: crash_at.map(str::to_string),
         }
+    }
+
+    #[test]
+    fn socket_probes_preserve_stale_and_uncertain_paths() {
+        let temp = Temp::new("socket-probe");
+        let path = temp.path().join("daemon.sock");
+        assert!(!socket_has_live_peer(&path).unwrap());
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        assert!(socket_has_live_peer(&path).unwrap());
+        drop(listener);
+        assert!(!socket_has_live_peer(&path).unwrap());
+        assert!(path.exists(), "startup polling must leave cleanup to the daemon");
+        std::fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink("daemon.sock", &path).unwrap();
+        assert!(socket_has_live_peer(&path).is_err(), "a symlink loop does not establish absence");
+        assert!(std::fs::symlink_metadata(&path).unwrap().file_type().is_symlink());
+    }
+
+    #[test]
+    fn failed_switch_and_reapply_restore_the_actual_starting_directory() {
+        for mode in ["same-release", "bin-link"] {
+            let temp = Temp::new(mode);
+            let layout = layout(temp.path());
+            let state = temp.path().join("state");
+            let first = archive(temp.path(), "1.2.3");
+            let second = archive(temp.path(), "1.2.4");
+            apply(&layout, &options(state.clone(), "1.2.3", first, None)).unwrap();
+            if mode == "same-release" {
+                apply(&layout, &options(state.clone(), "1.2.4", second.clone(), None)).unwrap();
+                std::fs::create_dir_all(&state).unwrap();
+                std::fs::write(state.join("session.sqlite"), "invalid database").unwrap();
+            } else {
+                let link = layout.bin_dir.join("teamagents-tui");
+                std::fs::remove_file(&link).unwrap();
+                std::fs::create_dir(&link).unwrap();
+            }
+            let starting = layout.current_dir();
+            let error = apply(&layout, &options(state, "1.2.4", second, None)).unwrap_err();
+            assert_eq!(layout.current_dir(), starting, "{mode}: {error}");
+            let journal = UpdateJournal::open_read(&layout.journal_path()).unwrap();
+            assert_eq!(journal.state().status, "rolled_back", "{mode}: {error}");
+            assert!(error.contains("target failed:"), "{error}");
+        }
+    }
+
+    #[test]
+    fn apply_health_failure_records_recovery_and_journal_failures() {
+        for has_previous in [false, true] {
+            let temp = Temp::new("health-recovery");
+            let layout = layout(temp.path());
+            let state = temp.path().join("state");
+            if has_previous {
+                let first = archive(temp.path(), "1.2.3");
+                apply(&layout, &options(state.clone(), "1.2.3", first, None)).unwrap();
+            }
+            std::fs::create_dir_all(&state).unwrap();
+            std::fs::write(state.join("session.sqlite"), "invalid database").unwrap();
+            let second = archive(temp.path(), "1.2.4");
+            let error = apply(&layout, &options(state.clone(), "1.2.4", second, None)).unwrap_err();
+            let journal = UpdateJournal::open_read(&layout.journal_path()).unwrap();
+            assert!(error.contains("target failed:"), "{error}");
+            assert_eq!(journal.state().error.as_deref(), Some(error.as_str()));
+            if has_previous {
+                assert_eq!(journal.state().status, "rolled_back");
+                assert_eq!(layout.current_version().as_deref(), Some("1.2.3"));
+            } else {
+                assert_eq!(journal.state().status, "failed");
+                assert!(error.contains("recovery failed:") && error.contains("no previous version"), "{error}");
+            }
+        }
+        let temp = Temp::new("failed-journal");
+        let layout = layout(temp.path());
+        layout.ensure().unwrap();
+        let mut journal = UpdateJournal::open_locked(&layout.journal_path()).unwrap();
+        // A directory at the journal pathname makes append fail without filesystem privilege assumptions.
+        std::fs::create_dir(layout.journal_path()).unwrap();
+        let error = recover_failed_update(
+            &layout,
+            temp.path(),
+            false,
+            &mut journal,
+            UpdateState::default(),
+            "fixture target error".into(),
+        );
+        assert!(error.contains("target failed: fixture target error"), "{error}");
+        assert!(error.contains("recovery failed:") && error.contains("could not record failure:"), "{error}");
     }
 
     #[test]

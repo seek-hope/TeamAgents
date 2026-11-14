@@ -146,7 +146,7 @@ def park(socket: pathlib.Path, instance: str, reason: str) -> str:
     """Park an instance through the daemon protocol, the way the TUI does.
 
     There is no CLI verb for it (user-side pause/resume is a TUI action), so the probe speaks the
-    documented socket protocol (`protocol_version` 1) directly.
+    documented socket protocol (`protocol_version` 2) directly.
     """
     import socket as socket_module
 
@@ -159,7 +159,7 @@ def park(socket: pathlib.Path, instance: str, reason: str) -> str:
         stream.write(
             json.dumps(
                 {
-                    "protocol_version": 1,
+                    "protocol_version": 2,
                     "request_id": "probe-park",
                     "command_id": "probe-park",
                     "method": "set_lifecycle",

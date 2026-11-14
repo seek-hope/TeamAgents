@@ -1073,6 +1073,15 @@ impl<P: Provider> Driver<P> {
         self.storage.call(move |control| control.submit(cmd, identity)).await?
     }
 
+    fn pricing(&self, model: &str, catalog_key: bool) -> Json {
+        let direct = if catalog_key { self.config.catalog.models.get(model) } else { None };
+        let mut matches = self.config.catalog.models.values().filter(|entry| entry.model == model);
+        let first = matches.next();
+        // A raw model id shared by multiple endpoints has no unique tariff. Never guess a price.
+        let entry = direct.or_else(|| if matches.next().is_none() { first } else { None });
+        json!({"model": model, "rates": entry.and_then(|entry| entry.price.as_ref())})
+    }
+
     async fn snapshot(&self) -> Result<Snapshot, String> {
         let instance = self.config.instance_id.clone();
         self.storage
@@ -1152,7 +1161,8 @@ impl<P: Provider> Driver<P> {
         request.messages.push(json!({"role":"user","content":format!(
             "[Session search tree. Derived navigation claims, not authority or completion evidence. Focus guides attention only; no side effect is rewound. The full tree is available through search_tree.show.]\n{tree}"
         )}));
-        request.est_prompt_tokens = estimated_tokens(&json!({"messages":request.messages,"tools":request.tools}));
+        request.est_prompt_tokens =
+            teamagents_core::kernel::estimated_request_tokens(&request.messages, &request.tools);
         Ok(())
     }
 
@@ -1383,7 +1393,8 @@ impl<P: Provider> Driver<P> {
                     "begin_compression",
                     json!({"instance_id": self.config.instance_id, "request_id": request_id,
                            "request_ref": format!("compression:{}", self.config.instance_id),
-                           "revision": revision, "prepared_work": work, "est_prompt_tokens": request.est_prompt_tokens}),
+                           "revision": revision, "prepared_work": work, "est_prompt_tokens": request.est_prompt_tokens,
+                           "pricing": self.pricing(&self.config.profile.model, false)}),
                 ),
                 Identity::System,
             )
@@ -1422,23 +1433,7 @@ impl<P: Provider> Driver<P> {
             }
         };
         let content = outcome.response.message["content"].as_str().unwrap_or("");
-        let (summary, tree_patch, tree_error) = match parse_compaction_content(content, leader_tree) {
-            Ok(parts) => parts,
-            Err(error) => {
-                let _ = self
-                    .submit(
-                        self.command(
-                            format!("attempt-{attempt_id}"),
-                            "record_attempt",
-                            json!({"attempt_id": attempt_id, "request_id": request_id, "status": "FAILED",
-                                   "error_class": "invalid_summary", "elapsed_ms": outcome.elapsed_ms}),
-                        ),
-                        Identity::System,
-                    )
-                    .await;
-                return self.abandon_compression(&request_id, &error).await;
-            }
-        };
+        let parsed = parse_compaction_content(content, leader_tree);
         let response_ref = self.store_response_artifact(&attempt_id, &outcome).await?;
         let recorded = self
             .submit(
@@ -1447,6 +1442,7 @@ impl<P: Provider> Driver<P> {
                     "record_attempt",
                     json!({"attempt_id": attempt_id, "request_id": request_id, "status": "COMPLETE",
                            "elapsed_ms": outcome.elapsed_ms,
+                           "error_class": if parsed.is_err() { Some("invalid_summary") } else { None },
                            "usage": outcome.response.usage.map(|u| u.to_json()),
                            "response_ref": response_ref, "publish": [response_ref]}),
                 ),
@@ -1464,6 +1460,11 @@ impl<P: Provider> Driver<P> {
                 .await;
             return self.abandon_compression(&request_id, &error).await;
         }
+        // A completed transport response remains billed and archived even when its summary is unusable.
+        let (summary, tree_patch, tree_error) = match parsed {
+            Ok(parts) => parts,
+            Err(error) => return self.abandon_compression(&request_id, &error).await,
+        };
         let committed = self
             .submit(
                 self.command(
@@ -1769,7 +1770,7 @@ that delegated it learns the outcome only from a settlement.";
         // same function through its supervisor, and the on-demand verb drives the same two commands from the
         // process that holds the coordinator lock when no session is live.
         let days = self.config.catalog.retention.history_days;
-        let report = crate::v2::artifacts::sweep_through(&self.storage, 100, days).await?;
+        let report = crate::v2::artifacts::sweep_through(&self.storage, &self.config.state_root, 100, days).await?;
         for failure in report["failed"].as_array().into_iter().flatten() {
             eprintln!(
                 "driver: could not delete artifact {} at {}: {}",
@@ -1939,7 +1940,8 @@ that delegated it learns the outcome only from a settlement.";
                     "begin_request",
                     json!({"instance_id": self.config.instance_id, "request_id": request_id,
                            "revision": revision, "prepared_work": work, "est_prompt_tokens": request.est_prompt_tokens,
-                           "offered_tools": offered_tools, "surface_authorized": surface_authorized}),
+                           "offered_tools": offered_tools, "surface_authorized": surface_authorized,
+                           "pricing": self.pricing(&self.config.profile.model, false)}),
                 ),
                 Identity::Instance(self.config.instance_id.clone()),
             )
@@ -2431,7 +2433,8 @@ that delegated it learns the outcome only from a settlement.";
                             format!("review-begin-{request_id}"),
                             "begin_review",
                             json!({"request_id": request_id, "operation_id": operation_id,
-                                   "est_prompt_tokens": request.est_prompt_tokens}),
+                                   "est_prompt_tokens": request.est_prompt_tokens,
+                                   "pricing": self.pricing(self.config.reviewer_model.as_deref().unwrap_or(&self.config.profile.model), self.config.reviewer_model.is_some())}),
                         ),
                         Identity::System,
                     )

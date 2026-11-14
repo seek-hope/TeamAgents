@@ -6,7 +6,7 @@ TeamAgents is a Rust-native, local-first agent runtime. A Leader works with the 
 to other instances, and persists execution, approvals, context, costs and evidence in one authoritative SQLite
 store per session. The TUI and headless clients share the same daemon and phase machine.
 
-The current format is **database schema 9**, **socket protocol 1** and **work policy 1**.
+The current format is **database schema 9**, **socket protocol 2** and **work policy 1**.
 
 ## Current capabilities
 
@@ -133,7 +133,7 @@ See [the architecture guide](docs/ARCHITECTURE.md) for state machines and data r
 
 ## Current evidence
 
-The current local gate has **777 Rust tests** (core 191, engine 481, TUI 105) and `make check` exit 0.
+The full local gate passed **814 Rust tests** (core 197, engine 509, TUI 108).
 Formal material contains **393 configurations across 48 modules**:
 
 - **65 positive configurations in 62 traversals**;
@@ -161,8 +161,9 @@ make pty
 These results do not establish full Rust/SQLite refinement, whole-system composition, wide exhaustive
 completion or Policy B source-bound equivalence. Live probes (`make probe-offline`, `make probe-models`)
 exercise the four wire protocols, heterogeneous providers, search/fetch, images, reviewer hardening,
-compaction/search-tree updates, isolated clean-host upgrade/rollback, loopback SSH and Alacritty locally;
-broader external OAuth services, public hosts, multi-distribution clean hosts, wider terminal matrices,
+compaction/search-tree updates, loopback SSH and Alacritty locally. Separate isolated probes passed public
+SSH/GNU screen reconnect and install/upgrade/rollback on an existing Debian 12 host, using earlier pinned builds.
+External OAuth services, freshly provisioned hosts, multi-distribution acceptance, wider terminal matrices,
 large-scale long-horizon benchmarks and full priced-cost comparisons remain open. The separate wide
 configuration is not claimed complete.
 

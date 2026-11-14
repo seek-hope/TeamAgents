@@ -765,11 +765,18 @@ fn daemon_stop_with(root: &Path, announce: bool) -> Result<(), ()> {
         }
         return Ok(());
     }
-    let mut client = match crate::v2::exec::Client::connect(&socket) {
+    let mut client = match crate::v2::exec::Client::connect_maintenance(&socket) {
         Ok(client) => client,
         Err(error) => {
-            // a socket nobody listens on is a crashed daemon's leftover (§9): a client that starts a daemon
-            // replaces it, and a stop has nothing to stop
+            // Only a refused/removed socket proves there is no listener. A failed handshake may be a live
+            // incompatible daemon; claiming it stopped would let an updater switch underneath that process.
+            let absent = std::os::unix::net::UnixStream::connect(&socket).err().is_some_and(|error| {
+                matches!(error.kind(), std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound)
+            });
+            if !absent {
+                eprintln!("cannot stop the daemon for {}: {error}", root.display());
+                return Err(());
+            }
             if announce {
                 println!(
                     "nothing is listening on {} ({error}); a crashed daemon's socket is replaced by the next client that starts one",

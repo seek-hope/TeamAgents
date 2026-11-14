@@ -21,6 +21,23 @@ str_enum!(WorkspacePolicy, "snake_case", Shared, Isolated, GitWorktree);
 
 pub type Json = serde_json::Value;
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PriceRates {
+    /// Required when price is configured. USD per million uncached input tokens.
+    pub input_usd_per_million: f64,
+    /// Required when price is configured. USD per million output tokens.
+    pub output_usd_per_million: f64,
+    /// USD per million cache-read tokens; missing means unknown when reads occur.
+    #[serde(default)]
+    pub cache_read_usd_per_million: Option<f64>,
+    /// USD per million cache-write tokens; missing means unknown when writes occur.
+    #[serde(default)]
+    pub cache_write_usd_per_million: Option<f64>,
+    /// Required tariff source and date, never fetched or guessed at runtime.
+    pub source: String,
+}
+
 /// The built-in reasoning-effort order (D-476). A `[models.<key>]` entry may declare a subset in
 /// `efforts`; the TUI menu uses that list, while the CLI keeps an explicit override outside it.
 pub const DEFAULT_EFFORTS: [&str; 6] = ["minimal", "low", "medium", "high", "xhigh", "max"];
@@ -64,6 +81,9 @@ pub struct ModelProfile {
     /// column; None = unknown, shown as "not configured").
     #[serde(default)]
     pub context_window: Option<u64>,
+    /// Optional USD-per-million tariff with a user-supplied source/date. Frozen per request; estimates only.
+    #[serde(default)]
+    pub price: Option<PriceRates>,
     /// Codex members only: layer `$CODEX_HOME/<name>.config.toml` by running
     /// `codex --profile <name> app-server`. **Not implemented in this release**
     /// (DESIGN Q12 excludes an external Codex adaptation): no code path reads it,

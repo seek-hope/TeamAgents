@@ -1,23 +1,24 @@
-# The daemon protocol (`/v1`)
+# The daemon protocol (`/v2`)
 
 The session is a daemon behind one Unix socket (`<state root>/daemon.sock`), and everything else is a client of
 it: the TUI, `teamagents exec`, the CLI verbs (`instances`, `tasks`, `approvals`, `authority`) and every probe
-under `tools/dogfood/`. DESIGN.md calls it "one JSON-lines protocol (`/v1`)" and states its guarantees
+under `tools/dogfood/`. The design's JSON-lines protocol guarantees
 (handshake, `command_id` dedup, the event watermark); this document lists what it actually carries, generated from
 the two dispatchers in the code. The [visual architecture](ARCHITECTURE.md) relates these methods to state,
-transactions and recovery. Database schema 9, socket protocol 1 and work policy 1 are separate versions. Schema 8
+transactions and recovery. Database schema 9, socket protocol 2 and work policy 1 are separate versions. Schema 8
 removed the goal vocabulary; schema 9 adds the session exploration-tree revisions, head and Leader role (D-504).
 
-**Framing.** One JSON object per line, UTF-8, no other framing. The daemon speaks first: a greeting carrying
-`server`, `protocol_version` (currently `1`), `session_id`, `state_root`, `permissions` and `workspace` — a client
+**Framing.** One JSON object per line, UTF-8, at most 32 MiB including the newline. Oversized or incomplete
+requests close the connection; oversized replies return a bounded error. The daemon speaks first: a greeting carrying
+`server`, `protocol_version` (currently `2`), `session_id`, `state_root`, `permissions` and `workspace` — a client
 that joins a running session learns the truth there instead of assuming the settings it asked for took effect
 (D-41/D-57). Every request repeats `protocol_version`; a different version is refused.
 
 **Requests.**
 
 ```json
-{"protocol_version": 1, "request_id": "r-1", "method": "checkpoint", "params": {}}
-{"protocol_version": 1, "request_id": "r-2", "command_id": "c-1", "method": "submit_input", "params": {"instance_id": "i-leader", "envelope_id": "e-1", "text": "…"}}
+{"protocol_version": 2, "request_id": "r-1", "method": "checkpoint", "params": {}}
+{"protocol_version": 2, "request_id": "r-2", "command_id": "c-1", "method": "submit_input", "params": {"instance_id": "i-leader", "envelope_id": "e-1", "text": "…"}}
 ```
 
 `request_id` is echoed in the reply. `command_id` is required for every mutating control command and is how
@@ -44,10 +45,32 @@ without losing or repeating an input (D-452). The read checks stored UTF-8 byte 
 parsing payloads. If the first remaining payload alone exceeds 4 MiB, it returns an error naming its envelope
 id and revision for explicit edit/cancel; it never silently skips, truncates or mutates that input.
 
-`events` currently reads the watermark, then all events after `since`, without one encompassing read
-transaction or a server-side page limit. Returned events may therefore exceed the sampled watermark. Clients
-deduplicate by sequence. `resync_required` currently stays false; do not infer a completed reclaimed-cursor
-recovery implementation from the field name.
+`events` reads the head and a contiguous page in one read transaction. `since` is the last delivered sequence;
+`limit` defaults to 256 and accepts 1..1000. Optional `until` fixes the end of a drain so new writers cannot keep
+it open indefinitely. The page has a 4 MiB serialized-event budget. `watermark` acknowledges only the last
+returned event (or the unchanged `since`); `head_watermark` is the sampled log head, and `has_more` indicates
+more events through `until`. Never acknowledge `head_watermark` as delivered. A retention gap returns no events,
+an unchanged cursor and `resync_required=true`. The TUI explicitly adopts a fresh checkpoint and reloads history;
+exec reports incomplete outcome/usage rather than skipping events. An oversized first event returns the same
+explicit resync shape with `resync_reason="oversized_event"` and `blocked_sequence`; no event is acknowledged.
+Routine snapshot refreshes and socket reconnects do not advance delivery cursors. A failed TUI history refresh
+remains pending independently of socket connectivity and retries on the periodic refresh.
+
+`history` accepts `limit` (default 200, 1..1000) and optional `before={epoch,idx}`. It selects newest entries
+before that position, returns them chronologically and supplies `next_before` when older entries remain. Each
+page has a 4 MiB serialized-entry budget; an oversized first entry is an explicit error directing the caller to
+session export. Headless attribution traverses older pages with decreasing cursors and bounded memory, and
+surfaces history errors explicitly. `surfaces.limit` also accepts only 1..1000; negative SQL limits cannot disable the bound.
+Protocol 1 clients are refused because they interpret the event watermark differently. Upgrade engine and TUI
+together and restart the daemon; the database schema is unchanged. Maintenance clients are the narrow exception:
+they may negotiate protocol 1 or 2 to send only `checkpoint` or `shutdown`, without a `command_id`. They do not
+read legacy event streams, submit work or accept future protocol versions. A connection failure is not proof of
+daemon termination unless the socket is missing or refuses a new connection.
+
+MCP's negotiated `2025-06-18` revision is independent of this socket protocol, schema 9 and work policy 1.
+The CLI and this documented JSON-lines boundary are the integration interfaces. Pin direct Rust library users
+to an exact source revision; there is no separately versioned SDK or extension host. Configured MCP bindings,
+Skills and hooks remain the supported integration mechanisms.
 
 **Work diagnostics (D-461).** Checkpoint instance rows add diagnosis; snapshot.tasks contains only
 unsettled tasks. The tasks read still includes terminal tasks. Each task has diagnosis and assignee_activity:
@@ -84,7 +107,7 @@ checkpoint claims, recovery count and reason. Frozen request context, original i
 billing attribution remain separate. Ordinary clients submit input; they do not manage internal scheduling
 reasons. `work_checkpoint` is a sole model control action, not a permission grant. Process-stop observations
 are runtime-only and separate from immutable operation outcomes. Schema v7 prevents older writers from
-ignoring these states; the socket protocol version remains 1.
+ignoring these states; the work policy version is independent of socket protocol 2.
 
 **Commands** sent over the socket execute as `Identity::User` in a single control transaction. Internal callers
 may use other trusted identities, and some listed methods are runtime-only. `Identity passed` indicates whether
@@ -97,17 +120,17 @@ policy on its own. See the handler and control wrapper for scope, revision, gran
 
 | Method | Parameters | Reply keys | Answered at |
 |---|---|---|---|
-| `previews` | — | `previews` | `engine/src/v2/daemon.rs:701` |
-| `checkpoint` | — | `snapshot`, `watermark` | `engine/src/v2/daemon.rs:707` |
-| `events` | `since` | `events`, `resync_required`, `watermark` | `engine/src/v2/daemon.rs:714` |
-| `search_tree` | — | — | `engine/src/v2/daemon.rs:723` |
-| `history` | `instance_id`, `limit` | `entries`, `envelope_id`, `epoch`, `idx`, `instance_id`, `kind`, `message`, `work_work_id`, `workspace` | `engine/src/v2/daemon.rs:731` |
-| `surfaces` | `instance_id`, `limit` | `epoch`, `instance_id`, `kind`, `offered_tools`, `request_id`, `status`, `surface_authorized`, `surfaces`, `work_id` | `engine/src/v2/daemon.rs:765` |
-| `inputs` | — | `envelope_id`, `epoch`, `inputs`, `instance_id`, `next_after`, `payload`, `revision`, `sequence` | `engine/src/v2/daemon.rs:797` |
-| `tasks` | — | `tasks` | `engine/src/v2/daemon.rs:848` |
-| `approvals` | — | `approvals`, `id`, `operation_id`, `preview`, `tool` | `engine/src/v2/daemon.rs:857` |
-| `work_scopes` | — | `attached_instances`, `deadline`, `id`, `known_usage`, `limits`, `status`, `summary`, `unknown_usage`, `work_scopes` | `engine/src/v2/daemon.rs:886` |
-| `grants` | — | `action`, `capability_requests`, `delegable`, `grants`, `id`, `issuer`, `parent_grant_id`, `requester`, `resource_scope`, `revision`, `revoked`, `status`, `subject`, `task_id` | `engine/src/v2/daemon.rs:933` |
+| `previews` | — | `previews` | `engine/src/v2/daemon.rs:788` |
+| `checkpoint` | — | `snapshot`, `watermark` | `engine/src/v2/daemon.rs:794` |
+| `events` | — | — | `engine/src/v2/daemon.rs:801` |
+| `search_tree` | — | — | `engine/src/v2/daemon.rs:805` |
+| `history` | `before`, `instance_id` | `entries`, `envelope_id`, `epoch`, `idx`, `instance_id`, `kind`, `message`, `next_before`, `work_work_id`, `workspace` | `engine/src/v2/daemon.rs:813` |
+| `surfaces` | `instance_id` | `epoch`, `instance_id`, `kind`, `offered_tools`, `request_id`, `status`, `surface_authorized`, `surfaces`, `work_id` | `engine/src/v2/daemon.rs:895` |
+| `inputs` | — | `envelope_id`, `epoch`, `inputs`, `instance_id`, `next_after`, `payload`, `revision`, `sequence` | `engine/src/v2/daemon.rs:927` |
+| `tasks` | — | `tasks` | `engine/src/v2/daemon.rs:978` |
+| `approvals` | — | `approvals`, `id`, `operation_id`, `preview`, `tool` | `engine/src/v2/daemon.rs:987` |
+| `work_scopes` | — | `attached_instances`, `deadline`, `id`, `known_usage`, `limits`, `status`, `summary`, `unknown_usage`, `work_scopes` | `engine/src/v2/daemon.rs:1016` |
+| `grants` | — | `action`, `capability_requests`, `delegable`, `grants`, `id`, `issuer`, `parent_grant_id`, `requester`, `resource_scope`, `revision`, `revoked`, `status`, `subject`, `task_id` | `engine/src/v2/daemon.rs:1070` |
 
 ### Commands (executed by the control plane)
 
@@ -140,9 +163,9 @@ policy on its own. See the handler and control wrapper for scope, revision, gran
 | `submit_input` | `after`, `checks`, `envelope_id`, `instance_id`, `text` | yes | `core/src/v2/control.rs:302` |
 | `edit_input` | `envelope_id`, `instance_id`, `revision`, `text` | yes | `core/src/v2/control.rs:303` |
 | `cancel_input` | `envelope_id`, `instance_id`, `revision`, `text` | yes | `core/src/v2/control.rs:304` |
-| `begin_request` | `est_prompt_tokens`, `instance_id`, `offered_tools`, `prepared_work`, `request_id`, `request_ref`, `revision`, `surface_authorized` | yes | `core/src/v2/control.rs:305` |
+| `begin_request` | `est_prompt_tokens`, `instance_id`, `offered_tools`, `prepared_work`, `pricing`, `request_id`, `request_ref`, `revision`, `surface_authorized` | yes | `core/src/v2/control.rs:305` |
 | `record_attempt` | `attempt_id`, `elapsed_ms`, `error_class`, `request_id`, `response_ref`, `status`, `stream`, `unknown_usage`, `usage` | no | `core/src/v2/control.rs:306` |
-| `begin_compression` | `est_prompt_tokens`, `instance_id`, `prepared_work`, `request_id`, `request_ref`, `revision` | yes | `core/src/v2/control.rs:307` |
+| `begin_compression` | `est_prompt_tokens`, `instance_id`, `prepared_work`, `pricing`, `request_id`, `request_ref`, `revision` | yes | `core/src/v2/control.rs:307` |
 | `compress_context` | `attempt_id`, `instance_id`, `keep_ids`, `request_id`, `search_tree`, `search_tree_error`, `summary` | yes | `core/src/v2/control.rs:308` |
 | `fail_compression` | `reason`, `request_id` | no | `core/src/v2/control.rs:309` |
 | `import_response` | `checkpoint`, `completion`, `decision_id`, `entry`, `grant_revision`, `intents`, `notes`, `request_id`, `wait` | yes | `core/src/v2/control.rs:310` |
@@ -152,7 +175,7 @@ policy on its own. See the handler and control wrapper for scope, revision, gran
 | `cancel_operation` | `operation_id`, `reason` | no | `core/src/v2/control.rs:314` |
 | `approve` | `approval_id`, `expires_at` | yes | `core/src/v2/control.rs:315` |
 | `deny` | `approval_id` | yes | `core/src/v2/control.rs:316` |
-| `begin_review` | `est_prompt_tokens`, `operation_id`, `request_id` | yes | `core/src/v2/control.rs:317` |
+| `begin_review` | `est_prompt_tokens`, `operation_id`, `pricing`, `request_id` | yes | `core/src/v2/control.rs:317` |
 | `record_review_attempt` | `request_id`, `status`, `unknown_usage`, `usage` | yes | `core/src/v2/control.rs:318` |
 | `review_decision` | `approval_id`, `operation_id`, `outcome`, `rationale`, `review_request_id`, `reviewer_model`, `risk_level`, `user_authorization` | yes | `core/src/v2/control.rs:319` |
 | `fail_request` | `park`, `reason`, `request_id` | no | `core/src/v2/control.rs:320` |
@@ -191,6 +214,7 @@ work projections, are outside this scan; consult their linked source contracts a
 | `run_scheduler` | `id`, `instance_id` |
 | `serve_client` | `server`, `protocol_version`, `session_id`, `state_root`, `permissions`, `workspace` |
 | `serve_client` | `request_id`, `ok`, `error` |
+| `serve_client` | `request_id`, `ok`, `error` |
 | `handle` | `request_id`, `ok`, `result` |
 | `handle` | `request_id`, `ok`, `error` |
 | `handle` | — |
@@ -200,13 +224,15 @@ work projections, are outside this scan; consult their linked source contracts a
 | `read_snapshot` | `status`, `known_usage`, `summary`, `unknown_usage`, `limits`, `deadline` |
 | `read_snapshot` | `id`, `state` |
 | `read_snapshot` | `instances`, `tasks`, `work`, `input_delivery`, `work_policy_version`, `mcp`, `sessions`, `models` |
+| `read_events` | `events`, `watermark`, `head_watermark`, `has_more`, `resync_required`, `resync_reason`, `blocked_sequence` |
 | `read_events` | `sequence`, `kind`, `scope`, `payload` |
+| `read_events` | `events`, `watermark`, `head_watermark`, `has_more`, `resync_required` |
 | `apply_session_work_limits` | — |
 | `previews` arm | `previews` |
 | `checkpoint` arm | `snapshot`, `watermark` |
-| `events` arm | `events`, `watermark`, `resync_required` |
 | `history` arm | `epoch`, `idx`, `kind`, `envelope_id`, `workspace`, `work_work_id`, `message` |
-| `history` arm | `instance_id`, `entries` |
+| `history` arm | `epoch`, `idx` |
+| `history` arm | `instance_id`, `entries`, `next_before` |
 | `surfaces` arm | `request_id`, `instance_id`, `epoch`, `work_id`, `kind`, `status`, `offered_tools`, `surface_authorized` |
 | `surfaces` arm | `surfaces` |
 | `inputs` arm | `envelope_id`, `sequence`, `epoch`, `payload`, `revision` |

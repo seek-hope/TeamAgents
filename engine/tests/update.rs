@@ -350,101 +350,109 @@ fn update_json_with_a_live_daemon_prints_only_valid_json_on_stdout() {
     use std::os::unix::fs::PermissionsExt;
     use std::process::Command;
 
-    let root = common::TempRoot::new("update-live-json");
-    let install = root.join("install");
-    let bin = root.join("bin");
-    let state = root.join("state");
-    let ws = root.join("ws");
-    let cfg = root.join("cfg");
-    std::fs::create_dir_all(&ws).unwrap();
-    std::fs::create_dir_all(cfg.join("teamagents")).unwrap();
-    std::fs::write(
+    for restart in [true, false] {
+        let root = common::TempRoot::new("update-live-json");
+        let install = root.join("install");
+        let bin = root.join("bin");
+        let state = root.join("state");
+        let ws = root.join("ws");
+        let cfg = root.join("cfg");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::create_dir_all(cfg.join("teamagents")).unwrap();
+        std::fs::write(
         cfg.join("teamagents/config.toml"),
         "[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\napi_key_env = \"TA_TEST_KEY\"\nbase_url = \"http://127.0.0.1:1/v1\"\n",
     )
     .unwrap();
 
-    let cli = env!("CARGO_BIN_EXE_teamagents");
-    let release = root.join("release-9.9.9");
-    let package = "teamagents-9.9.9-x86_64-unknown-linux-musl";
-    let dir = release.join(package);
-    std::fs::create_dir_all(&dir).unwrap();
-    let cli_wrapper = dir.join("teamagents");
-    std::fs::write(
+        let cli = env!("CARGO_BIN_EXE_teamagents");
+        let release = root.join("release-9.9.9");
+        let package = "teamagents-9.9.9-x86_64-unknown-linux-musl";
+        let dir = release.join(package);
+        std::fs::create_dir_all(&dir).unwrap();
+        let cli_wrapper = dir.join("teamagents");
+        std::fs::write(
         &cli_wrapper,
         format!(
-            "#!/bin/sh\nif [ \"$1\" = \"version\" ]; then echo \"teamagents 9.9.9\"; exit 0; fi\nexec {cli} \"$@\"\n"
+            "#!/bin/sh\nif [ \"$1\" = \"version\" ]; then echo \"teamagents 9.9.9\"; exit 0; fi\nif [ \"$1\" = \"daemon\" ]; then touch {:?}; fi\nexec {cli} \"$@\"\n", root.join("replacement-started")
         ),
     )
     .unwrap();
-    std::fs::set_permissions(&cli_wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let tui_wrapper = dir.join("teamagents-tui");
-    std::fs::write(&tui_wrapper, "#!/bin/sh\nexit 0\n").unwrap();
-    std::fs::set_permissions(&tui_wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let archive = release.join(format!("{package}.tar.gz"));
-    assert!(Command::new("tar")
-        .arg("-czf")
-        .arg(&archive)
-        .arg("-C")
-        .arg(&release)
-        .arg(package)
-        .status()
-        .unwrap()
-        .success());
-    let digest = String::from_utf8(Command::new("sha256sum").arg(&archive).output().unwrap().stdout).unwrap();
-    let digest = digest.split_whitespace().next().unwrap();
-    std::fs::write(
-        release.join("SHA256SUMS"),
-        format!("{digest}  {}\n", archive.file_name().unwrap().to_string_lossy()),
-    )
-    .unwrap();
-
-    let mut daemon = Command::new(cli)
-        .args(["daemon", "--state-root"])
-        .arg(&state)
-        .arg("--cwd")
-        .arg(&ws)
-        .env("XDG_CONFIG_HOME", &cfg)
-        .env("XDG_STATE_HOME", root.join("xdg_state"))
-        .env("TA_TEST_KEY", "dummy")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
+        std::fs::set_permissions(&cli_wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let tui_wrapper = dir.join("teamagents-tui");
+        std::fs::write(&tui_wrapper, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&tui_wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let archive = release.join(format!("{package}.tar.gz"));
+        assert!(Command::new("tar")
+            .arg("-czf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(&release)
+            .arg(package)
+            .status()
+            .unwrap()
+            .success());
+        let digest = String::from_utf8(Command::new("sha256sum").arg(&archive).output().unwrap().stdout).unwrap();
+        let digest = digest.split_whitespace().next().unwrap();
+        std::fs::write(
+            release.join("SHA256SUMS"),
+            format!("{digest}  {}\n", archive.file_name().unwrap().to_string_lossy()),
+        )
         .unwrap();
-    let sock = state.join("daemon.sock");
-    for _ in 0..100 {
-        if sock.exists() {
-            break;
+
+        let mut daemon = Command::new(cli)
+            .args(["daemon", "--state-root"])
+            .arg(&state)
+            .arg("--cwd")
+            .arg(&ws)
+            .env("XDG_CONFIG_HOME", &cfg)
+            .env("XDG_STATE_HOME", root.join("xdg_state"))
+            .env("TA_TEST_KEY", "dummy")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let sock = state.join("daemon.sock");
+        for _ in 0..100 {
+            if sock.exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
         }
-        std::thread::sleep(std::time::Duration::from_millis(25));
-    }
-    assert!(sock.exists(), "daemon socket must start");
+        assert!(sock.exists(), "daemon socket must start");
 
-    let applied = Command::new(cli)
-        .args(["update", "--to", "9.9.9", "--archive"])
-        .arg(&archive)
-        .arg("--install-root")
-        .arg(&install)
-        .arg("--bin-dir")
-        .arg(&bin)
-        .arg("--state-root")
-        .arg(&state)
-        .arg("--json")
-        .env("XDG_CONFIG_HOME", &cfg)
-        .env("XDG_STATE_HOME", root.join("xdg_state"))
-        .env("TA_TEST_KEY", "dummy")
-        .output()
-        .unwrap();
-    let _ = Command::new(cli).args(["daemon", "--stop", "--state-root"]).arg(&state).output();
-    let _ = daemon.wait();
-    assert!(
-        applied.status.success(),
-        "stdout={} stderr={}",
-        String::from_utf8_lossy(&applied.stdout),
-        String::from_utf8_lossy(&applied.stderr)
-    );
-    let report: Json = serde_json::from_slice(&applied.stdout).expect("update --json stdout must be pure JSON");
-    assert_eq!(report["ok"], json!(true));
-    assert_eq!(report["restarted"], json!(true));
-    assert_eq!(report["version"], json!("9.9.9"));
+        let applied = Command::new(cli)
+            .args(["update", "--to", "9.9.9", "--archive"])
+            .arg(&archive)
+            .arg("--install-root")
+            .arg(&install)
+            .arg("--bin-dir")
+            .arg(&bin)
+            .arg("--state-root")
+            .arg(&state)
+            .args(if restart { vec![] } else { vec!["--no-restart"] })
+            .arg("--json")
+            .env("XDG_CONFIG_HOME", &cfg)
+            .env("XDG_STATE_HOME", root.join("xdg_state"))
+            .env("TA_TEST_KEY", "dummy")
+            .output()
+            .unwrap();
+        let original_alive = daemon.try_wait().unwrap().is_none();
+        let _ = Command::new(cli).args(["daemon", "--stop", "--state-root"]).arg(&state).output();
+        let _ = daemon.wait();
+        assert!(
+            applied.status.success(),
+            "stdout={} stderr={}",
+            String::from_utf8_lossy(&applied.stdout),
+            String::from_utf8_lossy(&applied.stderr)
+        );
+        let report: Json = serde_json::from_slice(&applied.stdout).expect("update --json stdout must be pure JSON");
+        assert_eq!(report["ok"], json!(true));
+        assert_eq!(report["restarted"], json!(restart));
+        assert_eq!(root.join("replacement-started").exists(), restart);
+        if !restart {
+            assert!(original_alive, "--no-restart must preserve the running process");
+        }
+        assert_eq!(report["version"], json!("9.9.9"));
+    }
 }

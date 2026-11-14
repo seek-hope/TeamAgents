@@ -576,6 +576,17 @@ impl Harness {
             }
         }
 
+        // Operation receipts retain full outputs independently of compacted context and owner release.
+        for row in self.rows(
+            "SELECT o.operation_id,json_extract(o.receipt_json,'$.output_ref') FROM operations o
+             LEFT JOIN artifacts a ON a.id=json_extract(o.receipt_json,'$.output_ref')
+             WHERE json_extract(o.receipt_json,'$.output_ref') IS NOT NULL
+               AND (a.id IS NULL OR a.completeness!='LIVE')",
+            &[],
+        ) {
+            reports.push(format!("ReferencedOutputIsLive: operation {} lost artifact {}", row[0], row[1]));
+        }
+
         // A28: command receipts are stable (a stored receipt for a command id is never
         // rewritten), and a replay step must not move state at all (the three table sizes stay put)
         let commands = self.rows("SELECT command_id, result_json FROM commands ORDER BY command_id", &[]);
@@ -1179,7 +1190,8 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                     command_id: String::new(),
                     method: "complete_operation".into(),
                     params: json!({"operation_id": operation, "status": "SUCCEEDED",
-                                   "receipt": {"operation_id": operation, "ok": true, "content": "{\"output\":\"ok\"}"}}),
+                                   "receipt": {"operation_id": operation, "ok": true, "content": "{\"output\":\"ok\"}",
+                                               "output_ref":live_artifacts.first()}}),
                 },
                 identity: Identity::System,
             })
@@ -1724,6 +1736,31 @@ fn the_invariant_checker_detects_broken_states() {
         reported.iter().any(|line| line.contains("NoStaleActiveWork")),
         "the stale pointer must be reported: {reported:?}"
     );
+
+    let mut harness = Harness::new("broken-output-reference");
+    let db_path = harness.path.to_string_lossy().to_string();
+    harness
+        .ctl
+        .connection()
+        .execute(
+            "INSERT INTO artifacts(id,session_id,digest,size,kind,owner_scope,storage_ref,completeness,created)
+         VALUES('output','s1','test',1,'blob','operation',?1,'LIVE',0)",
+            [db_path],
+        )
+        .unwrap();
+    harness
+        .ctl
+        .connection()
+        .execute(
+            "INSERT INTO operations(operation_id,decision_id,tool_index,epoch,args_hash,status,receipt_json)
+         VALUES('op','decision',0,0,'hash','SUCCEEDED',?1)",
+            [json!({"output_ref":"output"}).to_string()],
+        )
+        .unwrap();
+    assert!(harness.violations().is_empty());
+    harness.ctl.connection().execute("DELETE FROM artifacts WHERE id='output'", []).unwrap();
+    let reported = harness.violations();
+    assert!(reported.iter().any(|line| line.contains("ReferencedOutputIsLive")), "{reported:?}");
 
     // D-507: a malformed persisted tree is detected by the executable checker.
     let mut harness = Harness::new("broken-search-tree");

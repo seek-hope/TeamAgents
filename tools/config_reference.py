@@ -47,6 +47,7 @@ spec.loader.exec_module(config_keys)
 TABLES = {
     "UserConfig": "top level",
     "ModelProfile": "[models.<name>]",
+    "PriceRates": "[models.<name>.price]",
     "ToolBinding": "[tools.<name>]",
     "Retention": "[retention]",
     "Hooks": "[hooks]",
@@ -152,7 +153,8 @@ def section():
         else:
             read_by = f"nothing: {known}" if known else "**nothing**"
         meaning = comment.replace("|", "\\|") or "—"
-        absent = default_for(kind, named.get(fn))
+        absent = ("required when price is configured" if struct == "PriceRates" and not kind.startswith("Option")
+                  else default_for(kind, named.get(fn)))
         lines.append(f"| `{key}` | `{kind}` | {absent} | {read_by} | {meaning} |")
     return "\n".join(lines).lstrip("\n"), unresolved
 

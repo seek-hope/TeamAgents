@@ -11,10 +11,12 @@
 (* + stored result: a replay returns the stored receipt, a divergent replay is *)
 (* refused).                                                                  *)
 (*                                                                          *)
-(* This version never reclaims events (daemon.rs header: "Events are never     *)
-(* reclaimed in this first version"), so resync_required is always false - the *)
-(* model expresses that with a `pruned` variable that no ordinary step sets,   *)
-(* and states "the watermark never moves past the log" as an invariant.        *)
+(* This model projects the retained-log path and explicit checkpoint adoption. *)
+(* Runtime retention is modeled separately by V2Retention; reclaimed cursors   *)
+(* and routine UI snapshot refresh are checked by executable socket tests.     *)
+(* NoResyncInThisVersion is a historical name for this projection's exclusion,  *)
+(* not a claim that production never reclaims events. Fetch serves any bounded *)
+(* prefix, including a page shorter than the current log.                      *)
 (*                                                                          *)
 (* Counterfactual constants (D-219): each one TRUE is a plausible mistake — or *)
 (* the feature the claim says this version does not have — and turns a claim   *)
@@ -61,7 +63,7 @@ CONSTANTS Clients,     \* client slots, e.g. {"c1"}
 
 ASSUME Clients # {} /\ Commands # {} /\ Versions # {} /\ MaxLog > 0
 
-Wire == 1              \* PROTOCOL_VERSION of the daemon
+Wire == 2              \* PROTOCOL_VERSION of the daemon
 Payloads == {1, 2}     \* two distinguishable payloads per command id
 noreceipt == 0         \* sentinel: the command never produced a receipt
 
@@ -74,7 +76,7 @@ VARIABLES
   snapshot,     \* client -> the version its snapshot is consistent with
   cursor,       \* client -> the event watermark the client holds
   view,         \* client -> the version the client has applied
-  pruned,       \* whether the log lost events (v1: never)
+  pruned,       \* whether this retained-log projection lost events
   drift,        \* monitor: commands whose stored receipt changed (must stay {})
   shrank,       \* monitor: the log ever shrunk (must stay FALSE)
   serving,      \* the daemon is up and accepting requests (D-248)
@@ -202,21 +204,24 @@ Checkpoint(c) ==
 \* batch can *break*, which is what the two counterfactuals do (measured: before
 \* them, gap-free `events(since)` was a property of the arithmetic, not a claim the
 \* model could refute).
-Fetch(c) ==
+FetchPage(c, last) ==
+  /\ last \in cursor[c]..logLength
   /\ cursor[c] <= logLength
   /\ ~pruned
-  /\ cursor' = [cursor EXCEPT ![c] = logLength]
-  /\ view' = [view EXCEPT ![c] = logLength]
+  /\ cursor' = [cursor EXCEPT ![c] = last]
+  /\ view' = [view EXCEPT ![c] = last]
   /\ served' = [served EXCEPT ![c] =
-        (served[c] \cup (cursor[c] + 1) .. logLength)
-          \ (IF SkipAnEvent /\ cursor[c] < logLength THEN {cursor[c] + 1} ELSE {})]
-  /\ servedCount' = [servedCount EXCEPT ![c] = servedCount[c] + (logLength - cursor[c])
-                       - (IF SkipAnEvent /\ cursor[c] < logLength THEN 1 ELSE 0)
-                       + (IF DeliverTwice /\ cursor[c] < logLength THEN 1 ELSE 0)]
+        (served[c] \cup (cursor[c] + 1) .. last)
+          \ (IF SkipAnEvent /\ cursor[c] < last THEN {cursor[c] + 1} ELSE {})]
+  /\ servedCount' = [servedCount EXCEPT ![c] = servedCount[c] + (last - cursor[c])
+                       - (IF SkipAnEvent /\ cursor[c] < last THEN 1 ELSE 0)
+                       + (IF DeliverTwice /\ cursor[c] < last THEN 1 ELSE 0)]
   /\ shrank' = shrank
   /\ drift' = drift
   /\ UNCHANGED lifecycle
   /\ UNCHANGED <<logLength, applied, receipt, payloadOf, versionOf, snapshot, pruned>>
+
+Fetch(c) == \E last \in cursor[c]..logLength : FetchPage(c, last)
 
 Stutter == UNCHANGED monVars
 

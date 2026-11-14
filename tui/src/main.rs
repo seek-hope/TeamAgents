@@ -204,6 +204,7 @@ fn v2_sync_checkpoint(client: &mut DaemonClient, app: &mut V2App) {
 }
 
 fn v2_refresh_history(client: &mut DaemonClient, app: &mut V2App) {
+    app.history_dirty = true;
     let Some(instance) = app.active_instance().map(|i| i.id.clone()) else { return };
     match client.call("history", json!({"instance_id": instance, "limit": 400})) {
         Ok(result) => app.apply_history(result),
@@ -497,8 +498,8 @@ fn run_v2(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, mut client
         }
         if last_slow.elapsed() >= Duration::from_secs(1) {
             last_slow = Instant::now();
-            if app.disconnected {
-                // reconnect: a fresh checkpoint re-syncs snapshot + watermark
+            if app.disconnected || app.history_dirty {
+                // Refresh debt survives successful checkpoint/event polls after a history read failed.
                 v2_sync_checkpoint(&mut client, &mut app);
                 if !app.disconnected {
                     v2_refresh_history(&mut client, &mut app);

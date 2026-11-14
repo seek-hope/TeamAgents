@@ -217,7 +217,15 @@ fn open(db: &Path, writable: bool) -> Result<teamagents_core::v2::Control, (i32,
 /// on-demand verb cannot use this transport: no session is live, so *it* holds that lock and owns the store,
 /// and drives the same two commands through `collect_once`. There is one algorithm here; what differs is who
 /// owns the writer, which is exactly what the lock decides.
-pub async fn sweep_through(storage: &super::storage::Storage, limit: i64, days: u64) -> Result<Json, String> {
+pub async fn sweep_through(
+    storage: &super::storage::Storage,
+    state_root: &Path,
+    limit: i64,
+    days: u64,
+) -> Result<Json, String> {
+    if state_root.join("EVIDENCE").exists() {
+        return Ok(json!({"collected":[],"freed_bytes":0,"failed":[],"skipped":"evidence"}));
+    }
     // D-436: an owner that has finished holds nothing — but only once the artifact is *ordinary history*, i.e.
     // older than the `[retention] history_days` window, the same window that sweeps the events referencing it.
     // With `history_days = 0` (the default) nothing is released and this sweep is byte-for-byte what it was
@@ -254,7 +262,7 @@ pub async fn sweep_through(storage: &super::storage::Storage, limit: i64, days: 
             }
         })
         .await??;
-    let ids: Vec<String> = claimed["claimed"]
+    let ids: Vec<String> = claimed["pending"]
         .as_array()
         .into_iter()
         .flatten()
@@ -323,6 +331,10 @@ fn sweep(
     bytes: i64,
     days: u64,
 ) -> Result<Json, (i32, String)> {
+    if state_root.join("EVIDENCE").exists() {
+        return Ok(json!({"state_root":state_root.to_string_lossy(),"count":rows.len(),"bytes":bytes,
+            "collected":[],"freed_bytes":0,"failed":[],"skipped":"evidence"}));
+    }
     let mut claimed_all: Vec<String> = Vec::new();
     let mut freed = 0u64;
     let mut failed: Vec<Json> = Vec::new();
@@ -354,7 +366,7 @@ fn sweep(
                 teamagents_core::v2::Identity::System,
             )
             .map_err(|error| (1, format!("artifacts gc: the session refused the claim: {error}")))?;
-        let ids: Vec<String> = claimed["claimed"]
+        let ids: Vec<String> = claimed["pending"]
             .as_array()
             .into_iter()
             .flatten()
@@ -402,6 +414,9 @@ fn sweep(
 }
 
 fn print_report(options: &ArtifactsOptions, report: &Json) {
+    if report["skipped"] == "evidence" && !options.json_out {
+        println!("evidence root: artifact collection skipped");
+    }
     if options.json_out {
         println!("{}", serde_json::to_string(report).unwrap_or_else(|_| "{}".into()));
         return;
@@ -434,9 +449,74 @@ fn print_report(options: &ArtifactsOptions, report: &Json) {
             row["completeness"].as_str().unwrap_or(""),
             match row["owner_ref"].as_str() {
                 Some(owner) => format!("owned by {owner}"),
-                None => "unreferenced".to_string(),
+                None => "no owner hold".to_string(),
             },
             if row["bytes_present"] == json!(true) { "" } else { "  (bytes missing)" },
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use teamagents_core::v2::{Command, Control, Identity};
+
+    async fn collect(root: &Path, storage: Option<&super::super::storage::Storage>) -> Json {
+        if let Some(storage) = storage {
+            sweep_through(storage, root, 100, 30).await.unwrap()
+        } else {
+            execute(&ArtifactsOptions {
+                state_root: root.to_path_buf(),
+                command: ArtifactsCommand::Gc,
+                json_out: true,
+                history_days: 30,
+            })
+            .unwrap()
+        }
+    }
+
+    #[tokio::test]
+    async fn both_collectors_retry_failed_deletions_and_preserve_evidence() {
+        for online in [false, true] {
+            let root = std::env::temp_dir().join(format!("ta-gc-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&root).unwrap();
+            let path = root.join("output");
+            std::fs::create_dir(&path).unwrap(); // remove_file must fail, without relying on Unix permissions.
+            let db = root.join("session.sqlite");
+            let mut control = Control::open(&db, "s", true).unwrap();
+            for (id, method, params) in [
+                (
+                    "stage",
+                    "artifact_stage",
+                    json!({"id":"out","digest":"test","size":7,"storage_ref":path.to_str().unwrap()}),
+                ),
+                ("publish", "artifact_publish", json!({"id":"out"})),
+            ] {
+                control
+                    .submit(Command { command_id: id.into(), method: method.into(), params }, Identity::System)
+                    .unwrap();
+            }
+            drop(control);
+            let storage = online.then(|| super::super::storage::Storage::open(&db, "s", false, 8).unwrap());
+            let marker = root.join("EVIDENCE");
+            std::fs::write(&marker, "").unwrap();
+            assert_eq!(collect(&root, storage.as_ref()).await["skipped"], "evidence");
+            std::fs::remove_file(&marker).unwrap();
+            let failed = collect(&root, storage.as_ref()).await;
+            assert_eq!(failed["failed"].as_array().unwrap().len(), 1);
+            std::fs::remove_dir(&path).unwrap();
+            std::fs::write(&path, b"payload").unwrap();
+            std::fs::write(&marker, "").unwrap();
+            assert_eq!(collect(&root, storage.as_ref()).await["skipped"], "evidence");
+            assert_eq!(std::fs::read(&path).unwrap(), b"payload");
+            std::fs::remove_file(&marker).unwrap();
+            let retried = collect(&root, storage.as_ref()).await;
+            assert_eq!(retried["collected"], json!(["out"]));
+            assert_eq!(retried["freed_bytes"], 7);
+            assert!(!path.exists());
+            assert_eq!(collect(&root, storage.as_ref()).await["collected"], json!([]));
+            drop(storage);
+            std::fs::remove_dir_all(root).unwrap();
+        }
     }
 }

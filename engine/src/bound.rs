@@ -29,6 +29,7 @@ pub struct BoundTool {
 
 pub struct BoundTools {
     pub tools: Vec<BoundTool>,
+    pub(crate) services: std::collections::BTreeMap<String, Arc<McpClient>>,
 }
 
 /// Bindings the product implements natively: binding one of these *is* the
@@ -80,16 +81,26 @@ impl BoundTools {
         }
 
         let mut clients: Vec<Arc<McpClient>> = vec![];
+        let mut services = std::collections::BTreeMap::new();
         for (name, binding) in selected {
             match binding.kind.as_str() {
                 // web tools are served by the member's tool executor (web_search/web_fetch)
                 "web_search" | "web_fetch" => {}
                 "mcp" => match load_service(name.as_str(), &binding, root) {
                     Ok((client, mut service_tools)) => {
-                        if service_tools.is_empty() {
+                        if service_tools.is_empty() && !client.supports("resources") {
                             client.close();
                         } else {
-                            clients.push(client);
+                            let namespace = binding.mcp_server.clone().unwrap_or_else(|| name.clone());
+                            if services.contains_key(&namespace) {
+                                client.close();
+                                for client in &clients {
+                                    client.close();
+                                }
+                                return Err(format!("duplicate MCP service name {namespace:?}"));
+                            }
+                            clients.push(client.clone());
+                            services.insert(namespace, client);
                         }
                         tools.append(&mut service_tools);
                     }
@@ -114,7 +125,7 @@ impl BoundTools {
                 }
             }
         }
-        Ok(BoundTools { tools })
+        Ok(BoundTools { tools, services })
     }
 
     pub fn names(&self) -> HashSet<&str> {
@@ -137,12 +148,7 @@ impl BoundTools {
 
     fn call_resource(&self, args: &Json) -> Result<Json, String> {
         let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("");
-        let mut services = std::collections::BTreeMap::new();
-        for tool in &self.tools {
-            if let Some((client, _)) = &tool.remote {
-                services.entry(tool.namespace.clone()).or_insert_with(|| client.clone());
-            }
-        }
+        let mut services = self.services.clone();
         if services.is_empty() {
             return Err("mcp_resource needs a bound MCP service".into());
         }
@@ -185,7 +191,7 @@ impl BoundTools {
                 })
             })
             .collect();
-        if !self.tools.is_empty() {
+        if !self.services.is_empty() {
             schemas.push(json!({
                 "name": "mcp_resource",
                 "description": "List or read resources from a bound MCP service (binding is the authorization). Use action list with an optional cursor, or action read with a non-empty uri. service is required only when multiple services are bound.",
@@ -209,10 +215,8 @@ impl BoundTools {
     }
 
     pub fn close(&self) {
-        for tool in &self.tools {
-            if let Some((client, _)) = &tool.remote {
-                client.close();
-            }
+        for client in self.services.values() {
+            client.close();
         }
     }
 }
@@ -305,25 +309,32 @@ fn load_service(name: &str, binding: &ToolBinding, root: &Path) -> Result<(Arc<M
                     None,
                 ),
                 (None, true) => {
+                    // Login records the exact resource string from this binding; do not normalize it into
+                    // another audience here (including path, query or trailing slash changes).
+                    let expected_resource = crate::mcp_auth::params(binding)?.resource;
                     let store = crate::mcp_auth::Store::at(&crate::mcp_auth::Store::default_path());
-                    let token = store.access_token(name).map_err(|error| format!("binding {name:?}: {error}"))?;
+                    let token = store
+                        .access_token_for(
+                            name,
+                            &expected_resource,
+                            std::time::Duration::from_secs(binding.startup_timeout_s.unwrap_or(60)),
+                        )
+                        .map_err(|error| format!("binding {name:?}: {error}"))?;
                     let service = name.to_string();
-                    let refresher = std::sync::Arc::new(move || store.access_token(&service));
+                    let refresher: crate::mcp::TokenRefresh = std::sync::Arc::new(move |timeout| {
+                        store.refresh_access_token_for(&service, &expected_resource, timeout)
+                    });
                     (token, Some(refresher))
                 }
                 (None, false) => (None, None),
             };
-            let client = McpClient::connect_http(
+            McpClient::connect_http_auth(
                 &url,
                 token,
+                refresh,
                 binding.startup_timeout_s.unwrap_or(60),
                 binding.tool_timeout_s.unwrap_or(120),
-            )?;
-            // the mid-session half: a token that expires while the session runs is refreshed once on a 401
-            if let Some(refresher) = refresh {
-                client.set_token_refresh(refresher);
-            }
-            client
+            )?
         }
         "sse" => {
             return Err(format!(
@@ -337,7 +348,8 @@ fn load_service(name: &str, binding: &ToolBinding, root: &Path) -> Result<(Arc<M
     let service = binding.mcp_server.clone().unwrap_or_else(|| name.to_string());
     let allowed: HashSet<&str> = binding.tool_names.iter().map(|s| s.as_str()).collect();
     let mut out = vec![];
-    let listed = match client.tools() {
+    let listing = if client.supports("resources") && !client.supports("tools") { Ok(vec![]) } else { client.tools() };
+    let listed = match listing {
         Ok(tools) => tools,
         Err(error) => {
             client.close();
@@ -437,6 +449,83 @@ for line in sys.stdin:
         // naming a service that the catalog does not define is still refused
         assert!(BoundTools::load_in(&catalog, &["ghost".to_string()], &root).is_err());
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn resource_only_and_paged_services_keep_their_declared_contract() {
+        let root = std::env::temp_dir().join(format!("ta-mcp-contract-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let script = r#"
+import json, os, sys, time
+mode=sys.argv[1]
+page=0
+open(mode+'.pid','w').write(str(os.getpid()))
+for line in sys.stdin:
+    request=json.loads(line)
+    if 'id' not in request: continue
+    if request.get('method') is None:
+        assert request['id']=='server-roots'
+        open(mode+'.roots','w').write('answered')
+        continue
+    method=request['method']
+    if method=='initialize':
+        result={'protocolVersion':'2099-01-01' if mode=='future' else '2025-06-18',
+                'capabilities':{'resources':{}} if mode in ('resources','future') else {'tools':{}}}
+    elif method=='tools/list':
+        assert mode!='resources', 'resource-only servers have no tools/list'
+        if mode=='slow':
+            time.sleep(0.4)
+            page+=1
+            result={'tools':[], 'nextCursor':str(page)}
+        elif mode=='loop': result={'tools':[], 'nextCursor':'same'}
+        elif request.get('params',{}).get('cursor')=='page-2': result={'tools':[{'name':'second'}]}
+        else: result={'tools':[{'name':'first'}], 'nextCursor':'page-2'}
+    elif method=='resources/list': result={'resources':[{'uri':'memo://one'}], 'nextCursor':'next'}
+    elif method=='resources/read': result={'contents':[{'uri':'memo://one','text':'one'}]}
+    else: raise AssertionError(method)
+    print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':result}),flush=True)
+    if method=='initialize': print(json.dumps({'jsonrpc':'2.0','id':'server-roots','method':'roots/list'}),flush=True)
+"#;
+        for mode in ["resources", "pages", "loop", "future", "slow"] {
+            let mut catalog = UserConfig::default();
+            catalog.tools.insert(
+                "probe".into(),
+                binding(json!({"kind":"mcp","command":"/usr/bin/python3",
+                "args":["-u","-c",script,mode],"required":true,"startup_timeout_s":if mode=="slow" {1} else {3}})),
+            );
+            let began = std::time::Instant::now();
+            let loaded = BoundTools::load_in(&catalog, &[], &root);
+            if matches!(mode, "loop" | "future" | "slow") {
+                let error = loaded.err().expect("invalid peer must fail");
+                let expected = match mode {
+                    "loop" => "repeated a cursor",
+                    "future" => "unsupported MCP protocolVersion",
+                    _ => "timed out",
+                };
+                assert!(error.contains(expected), "{error}");
+                if mode == "slow" {
+                    assert!(began.elapsed() < std::time::Duration::from_secs(5));
+                }
+            } else {
+                let bound = loaded.unwrap();
+                if mode == "resources" {
+                    assert!(bound.tools.is_empty());
+                    assert!(bound.schemas().iter().any(|schema| schema["name"] == "mcp_resource"));
+                    let page = bound.call("mcp_resource", &json!({"action":"list"})).unwrap().unwrap();
+                    assert_eq!(page["result"]["nextCursor"], "next");
+                    let read =
+                        bound.call("mcp_resource", &json!({"action":"read","uri":"memo://one"})).unwrap().unwrap();
+                    assert_eq!(read["result"]["contents"][0]["text"], "one");
+                } else {
+                    assert_eq!(bound.names(), HashSet::from(["probe_first", "probe_second"]));
+                }
+                assert!(root.join(format!("{mode}.roots")).exists(), "string request ID was not answered");
+                bound.close();
+            }
+            let pid = std::fs::read_to_string(root.join(format!("{mode}.pid"))).unwrap();
+            assert!(!Path::new(&format!("/proc/{pid}")).exists(), "{mode} leaked its service");
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

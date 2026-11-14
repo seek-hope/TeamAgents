@@ -70,6 +70,26 @@ rollback; retain a pre-upgrade backup if rollback matters.
 `teamagents update` provides a versioned transaction with health-check rollback and a journal. The exact command
 shapes are documented by `teamagents update --help`.
 
+Normal clients use socket protocol 2. The current updater can inspect and stop protocol-1 and protocol-2
+daemons through the unchanged checkpoint/shutdown envelopes; ordinary operations still require protocol 2.
+A live incompatible listener is an error, not a successful stop. The current updater also reads the JSON
+`version` field emitted by the real CLI.
+
+An older updater may report `staged binary reports "}", expected ...` or reject the newer daemon protocol.
+Use the verified new archive's extracted CLI to run the transition with the same installation paths:
+
+```bash
+/path/to/extracted/teamagents update --to 0.2.0 --archive /path/to/release.tar.gz \
+  --install-root /path/to/versioned-install --bin-dir /path/to/bin --state-root /path/to/session-state
+```
+
+Keep the archive's original release filename and adjacent `SHA256SUMS`. `--rollback` switches to the previous
+binary set; if a newly started daemon fails health checks, the transaction attempts to restore the preceding set.
+If that restoration also fails, the error and journal retain both failures. `--no-restart` switches the binaries
+while preserving the running daemon. The configuration and session history remain in their existing paths.
+The database-schema limitation above still
+applies, and old installed updater code does not gain new compatibility from downloading an archive alone.
+
 Use a separate versioned installation root, `--bin-dir` and `--state-root` for isolated rehearsal. Agent update requests are disabled by
 default; when enabled, they still require a concrete user approval and cannot be authorized by the automatic
 reviewer. Publication is a separate operation.

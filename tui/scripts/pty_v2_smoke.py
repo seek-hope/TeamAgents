@@ -86,7 +86,7 @@ class FakeDaemon:
     def serve_conn(self, conn):
         try:
             f = conn.makefile("rwb")
-            f.write((json.dumps({"server": "teamagents-daemon", "protocol_version": 1,
+            f.write((json.dumps({"server": "teamagents-daemon", "protocol_version": 2,
                                  "session_id": "s-test", "state_root": "/tmp/fake-root"}) + "\n").encode())
             f.flush()
             for raw in f:
@@ -130,7 +130,8 @@ class FakeDaemon:
                 elif method == "events":
                     since = params.get("since", 0)
                     out = {"events": [e for e in self.events if e["sequence"] > since],
-                           "watermark": self.sequence, "resync_required": False}
+                           "watermark": self.sequence, "head_watermark": self.sequence,
+                           "has_more": False, "resync_required": False}
                 elif method == "set_lifecycle" and frame.get("command_id"):
                     target = params.get("instance_id", "")
                     lifecycle = params.get("lifecycle", "")

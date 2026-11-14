@@ -307,7 +307,7 @@ fn main() -> Fallible<()> {
     }
     let report = json!({
         "probe": "r2-p5-load",
-        "date": "2026-09-24",
+        "timestamp_unix_s": teamagents_core::models::now(),
         "path": "core::v2 Control (production entry) + core::kernel prepare_request",
         "synthetic": {"steps": steps, "payload_bytes_per_step": payload_bytes, "payload_bytes_total": payload_total,
                       "synthetic_units": payload_total / 5, "real_tokenizer": false,

@@ -1,33 +1,11 @@
 #!/usr/bin/env python3
-"""The artifact census, the on-demand sweep, and what the sweep can actually reach (D-253).
+"""Exercise artifact reference protection, owner release and on-demand collection.
 
-DESIGN §4.4 schedules artifact collection and history retention "separately" and protects "live references and
-evaluation evidence"; this build scheduled collection at a *driver's boot* only (D-191), which ACCEPTANCE's
-known gap recorded: a state root whose last driver never boots again keeps its `DELETING` rows and their bytes,
-and "a cadence — an interval, or a maintenance verb to run on demand — is the user's call". `teamagents
-artifacts [list|gc]` is that on-demand half. This probe runs it against a real session and measures four things:
+A local scripted provider publishes a large Shell result. Aging its finished owner's hold must not delete the
+bytes retained by the operation receipt or consumed context. A separately seeded unreferenced fixture verifies
+that collection can still free eligible bytes. Live-session coordinator exclusion is checked independently.
+No credentials or external network are used.
 
-1. **the census** — a real session's artifacts with their kind, size, completeness, owning fact and whether the
-   bytes are really on disk (a fact that was invisible before this verb);
-2. **the lock discipline** — with the session live, `gc` refuses, names the coordinator that holds the state
-   root and the lever to stop it (`teamagents daemon --stop`, D-248);
-3. **the sweep with no session** — after the daemon is stopped, `gc` runs, reports what it claimed, freed and
-   skipped, and leaves the catalog consistent;
-4. **what it cannot reach, with the number that says so** — every artifact a real session stages carries an
-   owner (`driver.rs`: a model response's request, a tool output's operation). **Since D-436 the sweep releases a
-   hold whose owner has finished**, so the census after a sweep shows no owner; what still keeps the bytes is the
-   *reference* (the event that points at the artifact), and whether that may expire with `[retention] history_days`
-   is the policy question D-253 records. Before D-436 nothing ever cleared the owner, and this probe measured the
-   catalog size before and after the sweep and prints the unchanged number. `V2Artifact.tla` says the same
-   structurally (a LIVE, unreferenced artifact exists there only under the counterfactual `GcIgnoresHolders`),
-   which is why the probe asserts the *finding* instead of pretending the sweep collected something. Whether
-   those bytes should expire with `[retention] history_days` (they are "ordinary history" in §9's words) or
-   under their own knob is a policy the user has not stated.
-
-No credential and no network: a local chat-completions server answers the first turn with a `shell` call whose
-output is large enough to become an artifact, and the turn after the tool result with a `finish`.
-
-    python3 tools/dogfood/artifacts.py
     python3 tools/dogfood/artifacts.py --state-dir /tmp/ta-artifacts
 """
 import argparse
@@ -136,7 +114,7 @@ def main() -> int:
     threading.Thread(target=server.serve_forever, daemon=True).start()
     (root / "config/teamagents/config.toml").write_text(config(server.server_address[1]))
     env = {"XDG_CONFIG_HOME": str(root / "config"), "XDG_STATE_HOME": str(root / "state"),
-           "PATH": os.environ.get("PATH", "/usr/bin:/bin"), KEY_VAR: "not-a-key", "HOME": str(root)}
+           "PATH": os.environ.get("PATH", "/usr/bin:/bin"), KEY_VAR: "not-a-key", "HOME": os.environ["HOME"]}
     atexit.register(leak_guard.stop_daemons, state_root)
     failures: list[str] = []
 
@@ -185,10 +163,16 @@ def main() -> int:
           f"freed={swept.get('freed_bytes')} catalog_bytes={swept.get('bytes')} (before: {before})")
     if code != 0:
         failures.append(f"the sweep must run with no session: {code} {err!r}")
-    if not swept.get("collected"):
-        failures.append("a finished owner's aged artifact was not collected: the D-436 release did not happen")
-    if not swept.get("freed_bytes"):
-        failures.append(f"nothing was freed although an artifact was collected: {swept}")
+    if swept.get("collected") or swept.get("freed_bytes"):
+        failures.append(f"retained operation/request references lost their artifacts: {swept}")
+    connection = sqlite3.connect(str(state_root / "session.sqlite"))
+    output_refs = connection.execute("""SELECT json_extract(o.receipt_json,'$.output_ref'),a.id,c.payload_ref
+        FROM operations o LEFT JOIN artifacts a ON a.id=json_extract(o.receipt_json,'$.output_ref')
+        LEFT JOIN context_entries c ON c.envelope_id=o.operation_id
+        WHERE json_extract(o.receipt_json,'$.output_ref') IS NOT NULL""").fetchall()
+    connection.close()
+    if not output_refs or any(reference != artifact or reference != context for reference, artifact, context in output_refs):
+        failures.append(f"full output references were not preserved in receipts and context: {output_refs}")
     # D-436: the sweep released the finished owners' holds and took what nothing referenced any more. What stays
     # is what a *reference* still points at — and whether such a reference may expire with `[retention]
     # history_days` is the rest of D-253's policy question, not this decision's.
@@ -205,6 +189,23 @@ def main() -> int:
           f"(released holds + the references that keep the rest is the D-436 rule)")
     if taken != len(swept.get("collected") or []):
         failures.append(f"the census does not agree with the sweep: {taken} vs {swept.get('collected')}")
+
+    if len(left) != len(rows):
+        failures.append("a retained artifact lost its bytes")
+    # A genuinely unreferenced fixture must still be collectable; no retained reference is removed to arrange it.
+    orphan = state_root / "artifacts" / "probe-orphan"
+    orphan.parent.mkdir(parents=True, exist_ok=True)
+    orphan.write_bytes(b"orphan")
+    connection = sqlite3.connect(str(state_root / "session.sqlite"))
+    session = connection.execute("SELECT session_id FROM artifacts LIMIT 1").fetchone()[0]
+    connection.execute("""INSERT INTO artifacts(id,session_id,digest,size,kind,owner_scope,storage_ref,completeness,created)
+        VALUES('probe-orphan',?,'probe',6,'blob','session',?,'LIVE',0)""", (session, str(orphan)))
+    connection.commit()
+    connection.close()
+    code, orphan_sweep, err = artifacts(state_root, env, "gc")
+    if code != 0 or orphan_sweep.get("collected") != ["probe-orphan"] or orphan.exists():
+        failures.append(f"unreferenced fixture was not collected: {orphan_sweep} {err}")
+    print(f"7b. unreferenced fixture: collected={orphan_sweep.get('collected')}")
 
     leak_guard.stop_daemons(state_root)
     left = (len(leak_guard.daemon_pids(root)), len(leak_guard.runner_pids(root)))

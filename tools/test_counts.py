@@ -15,7 +15,8 @@ prose or a `#[cfg]`-gated test cannot skew the number. The gate runs inside `mak
 there anyway — and *not* in `make hygiene`, whose audits must work on a tree that has not been built.
 
 The *date* on that line is deliberately not the script's business: "checked on <date>" means the ledger was
-reviewed, which is a human claim, so `--write` touches the numbers only.
+reviewed, which is a human claim, so `--write` touches the numbers only. A source-inventory line is also
+accepted: counting tests must not require claiming that the enclosing gate passed before it has finished.
 
 **D-221 added the other two places the same numbers are stated.** The ledger is the one held to the suites, but
 it is not the only document a reader trusts with them: `.github/release-notes.md` is the release body (the
@@ -41,7 +42,7 @@ import sys
 REPO = pathlib.Path(__file__).resolve().parents[1]
 LEDGER = REPO / "docs" / "ACCEPTANCE.md"
 CRATES = ("core", "engine", "tui")
-BASELINE = re.compile(r"`make check` is green \(core (\d+) / engine (\d+) / tui (\d+) test targets\)")
+BASELINE = re.compile(r"(?:Current source inventory: |`make check` is green \()core (\d+) / engine (\d+) / tui (\d+) test targets")
 # The documents that state the same three numbers and are held to the ledger's: the published release body and
 # the repository's own instruction file. A document that drops the sentence fails too — deleting a statement is
 # how the check would otherwise go quiet — and `--write` updates all of them at once.
@@ -73,7 +74,8 @@ def stale_statements(path, wanted):
         for match in COUNTS.finditer(line):
             stated = f"core {match.group(1)} / engine {match.group(2)} / tui {match.group(3)}"
             if stated != wanted and not marked_as_history(line, match.start()):
-                findings.append(f"{path.relative_to(REPO)}:{number} states {stated}, the suites have "
+                name = path.relative_to(REPO) if path.is_relative_to(REPO) else path
+                findings.append(f"{name}:{number} states {stated}, the suites have "
                                 f"{wanted}, and the clause before it does not phrase it as history \"were … "
                                 f"when …\" (D-313): update it, or write the old value in the past tense")
     return findings
@@ -110,7 +112,7 @@ def main(argv):
     counts = counted()
     if match is None:
         print(
-            f"FAIL: {ledger.name} has no '`make check` is green (core N / engine N / tui N test targets)' "
+            f"FAIL: {ledger.name} has no source inventory or green-gate line with core N / engine N / tui N test targets; "
             "baseline line; if the sentence changed on purpose, update this audit with it"
         )
         return 1
@@ -119,8 +121,10 @@ def main(argv):
         wanted = f"core {counts['core']} / engine {counts['engine']} / tui {counts['tui']}"
         changed = []
         if documented != counts:
-            line = (f"`make check` is green (core {counts['core']} / engine {counts['engine']} / "
-                    f"tui {counts['tui']} test targets)")
+            line = match.group(0)
+            for index in reversed(range(3)):
+                start, end = match.span(index + 1)
+                line = line[:start - match.start()] + str(counts[CRATES[index]]) + line[end - match.start():]
             ledger.write_text(text[:match.start()] + line + text[match.end():])
             changed.append(f"{LEDGER.name}: {documented} -> {counts}")
         for path in statements:

@@ -491,6 +491,7 @@ async fn heterogeneous_instances_run_different_protocols_in_one_session() {
             generation_options: Default::default(),
             efforts: Vec::new(),
             context_window: Some(1_000_000),
+            price: None,
             codex_profile: None,
         },
     );
@@ -508,6 +509,7 @@ async fn heterogeneous_instances_run_different_protocols_in_one_session() {
             generation_options: Default::default(),
             efforts: Vec::new(),
             context_window: Some(200_000),
+            price: None,
             codex_profile: None,
         },
     );

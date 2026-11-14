@@ -10,14 +10,14 @@ finite model into full acceptance. See [ACCEPTANCE.md](ACCEPTANCE.md) for scenar
 | Phase machine and recovery | `engine/src/v2/driver.rs`, supervisor and runner suites; known-result reuse and `OUTCOME_UNKNOWN` | Real crash timing and remote effects remain environmental |
 | Work scopes and admission | Budget/deadline/admission/acceptance, internal successor work, bounded continuation and `core/src/v2/control/work_tests.rs` | Heuristics do not prove task impossibility or general success |
 | Required checks and completion | `V2Checks`, required-check repair and completion evidence | A green command alone does not establish the whole deliverable |
-| Automatic approval review | Strict assessment, current-user/policy context, matching completed review, self-update refusal and reservation/usage recovery | Lexical denial is not complete Shell parsing; live reviewer judgement and novel prompt-injection resistance are unmeasured |
+| Automatic approval review | Strict assessment, current-user/policy context, matching completed review, self-update refusal and reservation/usage recovery | 14 DeepSeek Flash cases passed; lexical denial is not complete Shell parsing and broader independent judgement remains unmeasured |
 | Grants and delegation | Parent narrowing/cascade, task-scoped non-delegable children, `V2Grants`, `V2Authority`, `V2Capabilities` | Arbitrary actor/command/identity composition is not exhaustively proved |
 | Private history and messaging | `V2History`, `V2Inbox`, scoped messages and `read_history_is_user_or_self_only` | Host processes are not confined by the logical boundary |
 | Workspace policies | `engine/src/workspace.rs`; shared, isolated and worktree lifecycle with dirty-work refusal and `V2Workspace` | No global lock or proof about escaped/remote effects |
 | Native model requests | Provider adapters, native windows, per-member profiles, stable cache prefix and provider telemetry | Real-service availability, cost and full protocol behavior are not established by fakes |
 | Provider framing and retries | `V2StreamBoundary`, bounded bodies, visible-text retry rules and stall tests | Provider scheduling/fairness and all wire variants are not proved |
 | Compaction and history | `V2Compress`, long-context restart tests, originals/readback and lazy input revisions | Summary quality and full performance at latest source are not claimed |
-| Session exploration tree | `core/src/v2/control/search_tree.rs`, `V2SearchTree`, CLI/daemon/export tests and ordered-pair witnesses | Tree usefulness, semantic completeness and reduced lostness are not measured |
+| Session exploration tree | `core/src/v2/control/search_tree.rs`, `V2SearchTree`, CLI/daemon/export tests and ordered-pair witnesses | Small branch-recovery and native-window compaction trials passed; semantic completeness and user lostness remain unestablished |
 | Ordered tree patches | Shared state conversion for single and two operations; atomic rejection, replay, 23 controls and 11 witnesses | Arbitrary operation sequences are not enumerated by TLA |
 | Text and output safety | Unicode/control tests with normalized JSON and escaped terminal rendering, including bidi/isolate controls | No arbitrary byte-string parser proof; JSON uses valid Unicode strings |
 | SQLite fault handling | Revision/head/event failure injection and savepoint tests, migration conflict rollback and random-walk invariants | Not a complete SQLite refinement or power-loss proof |
@@ -28,12 +28,12 @@ finite model into full acceptance. See [ACCEPTANCE.md](ACCEPTANCE.md) for scenar
 | Editing and attachments | Shared message/queue editing, `@PATH`, immutable snapshots and original-input revisions | Symlinks and out-of-workspace files are refused; no arbitrary path acceptance |
 | Markdown, code and media | Complete Markdown, bounded grammar highlighting, Mermaid/SVG/DOT/local images and source fallback | Remote resources and every diagram format are not promised |
 | Sessions and export | Registry, history/search/fork/archive/restore/delete, consistent streaming export and `session_export_tests.rs` | Fork needs a stopped source and fresh execution evidence; no message-level branch execution |
-| Installation and updates | Versioned install, update journal, health-check rollback, `tools/install_check.py` and `tools/release_rehearsal.py` | Clean-host two-version upgrade/rollback and current public-artifact acceptance remain open |
+| Installation and updates | Versioned install, update journal, health-check rollback, `tools/install_check.py` and `tools/release_rehearsal.py` | Same-host isolated upgrade/rollback passed; genuinely clean machines and current public-artifact acceptance remain open |
 | Development tools | `tools/` contains current build, document, probe, formal and diagnostic utilities | `tools/tmp/` is ignored scratch, not committed evidence |
 
 ## Current evidence totals
 
-- Rust tests: **777** (core 191, engine 481, TUI 105).
+- Rust tests: **814** (core 197, engine 509, TUI 108); full local gate passed.
 - Positive TLA inputs: **65 configurations in 62 traversals**.
 - Negative controls: **327**, each required to refute its named claim.
 - Normal-path witnesses: **79**, which demonstrate reachability rather than safety.
@@ -45,8 +45,8 @@ Search-tree evidence includes ordered pair transitions, 23 controls covering eve
 
 ## Current open obligations
 
-- Matched real-model task success, intervention and priced-cost comparisons.
-- Live-model exploration-tree usefulness and reduced lostness.
+- Broader matched task success, intervention and priced-cost comparisons beyond the 8 paired trials.
+- General exploration-tree usefulness and reduced user lostness beyond the local branch-recovery trials.
 - Wider provider/OAuth/public-host/graphical-terminal/clean-host acceptance.
 - Wide exhaustive completion, full Rust/SQLite refinement, whole-system composition and Policy B source-bound
   bidirectional fair-trace equivalence.

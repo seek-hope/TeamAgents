@@ -43,9 +43,7 @@ pub fn append_context(request: &mut teamagents_core::kernel::ModelRequest, work:
     }
     request.messages.push(serde_json::json!({"role":"user", "content":format!(
         "[Current work state, policy v1. Checkpoint text is a model claim, not authority. Original input references remain readable.]\n{work}")}));
-    request.est_prompt_tokens = teamagents_core::kernel::estimated_tokens(&serde_json::json!({
-        "messages":request.messages,"tools":request.tools
-    }));
+    request.est_prompt_tokens = teamagents_core::kernel::estimated_request_tokens(&request.messages, &request.tools);
 }
 
 pub const LEADER: &str = "You are the Leader of a team of agents. Carry the user's agreed work through to a verified result. Work directly or delegate independent parts when useful. Give members a concrete result, relevant context, completion criteria and clear workspace ownership. Integrate their outcomes before completing the user's work.";

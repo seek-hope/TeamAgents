@@ -37,6 +37,47 @@ mod tests {
     }
 
     #[test]
+    fn token_estimates_match_serialized_reference_for_arbitrary_text_and_images() {
+        fn reference(value: &serde_json::Value) -> u64 {
+            fn masked(value: &serde_json::Value, images: &mut u64) -> serde_json::Value {
+                match value {
+                    serde_json::Value::String(text) if text.starts_with("data:image/") => {
+                        *images += 1;
+                        json!("[image]")
+                    }
+                    serde_json::Value::Array(items) => items.iter().map(|v| masked(v, images)).collect(),
+                    serde_json::Value::Object(map) => map.iter().map(|(k, v)| (k.clone(), masked(v, images))).collect(),
+                    other => other.clone(),
+                }
+            }
+            let mut images = 0;
+            let text = masked(value, &mut images).to_string();
+            (text.bytes().filter(u8::is_ascii).count().div_ceil(4) + text.chars().filter(|c| !c.is_ascii()).count())
+                as u64
+                + images * IMAGE_TOKEN_ALLOWANCE
+        }
+        let mut seed = 0x531942u64;
+        for index in 0..1024 {
+            let mut text = String::new();
+            for _ in 0..index % 83 {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                text.push(char::from_u32((seed % 0x110000) as u32).unwrap_or('\u{fffd}'));
+            }
+            let messages = vec![
+                json!({"role":"user","content":[text,"\n\t\r\u{0000}\"\\",
+                {"url":format!("data:image/png;base64,{}","x".repeat(index%512)),"empty":{},"list":[],"n":-42.25}]}),
+                json!(null),
+            ];
+            let tools = vec![json!({"data:image/not-a-payload-key":text,"bool":true,"n":u64::MAX})];
+            let value = json!({"messages":messages,"tools":tools});
+            assert_eq!(estimated_tokens(&value), reference(&value));
+            assert_eq!(estimated_request_tokens(&messages, &tools), reference(&value));
+        }
+    }
+
+    #[test]
     fn prepare_request_builds_system_plus_entries_and_builtins() {
         let kernel = kernel();
         let entries = vec![

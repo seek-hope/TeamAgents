@@ -56,7 +56,7 @@ def protocol(socket_path: pathlib.Path, method: str, params: dict, command_id: s
     connection.connect(str(socket_path))
     stream = connection.makefile("rw")
     stream.readline()  # greeting
-    request = {"protocol_version": 1, "request_id": f"probe-{uuid.uuid4()}", "method": method, "params": params}
+    request = {"protocol_version": 2, "request_id": f"probe-{uuid.uuid4()}", "method": method, "params": params}
     if command_id:
         request["command_id"] = command_id
     stream.write(json.dumps(request) + "\n")

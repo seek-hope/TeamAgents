@@ -16,6 +16,7 @@ use std::time::Duration;
 type Pending = Mutex<HashMap<u64, Sender<Result<Json, String>>>>;
 
 const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
+const PROTOCOL_REVISION: &str = "2025-06-18";
 
 /// Read one bounded UTF-8/JSON line without letting a peer grow the allocation indefinitely.
 fn read_bounded_line<R: BufRead>(reader: &mut R, limit: usize) -> std::io::Result<Option<String>> {
@@ -76,6 +77,7 @@ pub struct McpClient {
     /// The member's workspace, answered to `roots/list` requests. The caller sets
     /// it after connecting (the transport itself does not know the member root).
     workspace: Arc<Mutex<Option<std::path::PathBuf>>>,
+    capabilities: Mutex<Json>,
 }
 
 /// How an HTTP MCP client authenticates (D-412): the bearer token it is using now, plus — for a binding that
@@ -83,7 +85,7 @@ pub struct McpClient {
 /// resolution already refreshes an expired token; this is the mid-session safety net, not the primary path.
 /// The one callback an OAuth binding uses when the server answers 401: mint a fresh token, or `Ok(None)` when
 /// there is nothing to mint from. Named so the type in `HttpAuth` stays readable (D-412).
-pub type TokenRefresh = Arc<dyn Fn() -> Result<Option<String>, String> + Send + Sync>;
+pub type TokenRefresh = Arc<dyn Fn(Duration) -> Result<Option<String>, String> + Send + Sync>;
 
 pub struct HttpAuth {
     token: Mutex<Option<String>>,
@@ -109,10 +111,10 @@ impl HttpAuth {
 
     /// Run the refresher once and adopt what it returns. `Ok(None)` and a missing refresher both mean "no new
     /// credential", which the caller reports as a refusal rather than retrying forever.
-    fn refresh(&self) -> Result<Option<String>, String> {
+    fn refresh(&self, timeout: Duration) -> Result<Option<String>, String> {
         let refresher = self.refresh.lock().unwrap().clone();
         let Some(refresher) = refresher else { return Ok(None) };
-        let fresh = refresher()?;
+        let fresh = refresher(timeout)?;
         if let Some(token) = &fresh {
             *self.token.lock().unwrap() = Some(token.clone());
         }
@@ -193,6 +195,7 @@ impl McpClient {
             tool_ms: tool_timeout_s.max(1).saturating_mul(1000),
             closed: AtomicBool::new(false),
             workspace,
+            capabilities: Mutex::new(json!({})),
         });
         // The reader owns only pending replies, so dropping the final client
         // can reap the server even when it never closes stdout. It also answers
@@ -202,14 +205,16 @@ impl McpClient {
             let mut reader = BufReader::new(stdout);
             while let Ok(Some(line)) = read_bounded_line(&mut reader, MAX_MESSAGE_BYTES) {
                 let Ok(message) = serde_json::from_str::<Json>(&line) else { continue };
-                let Some(id) = message.get("id").and_then(|v| v.as_u64()) else { continue };
+                let Some(id) = message.get("id").filter(|id| id.is_string() || id.is_number()) else { continue };
                 // a request has a method; a reply to one of ours does not
                 if let Some(method) = message.get("method").and_then(|v| v.as_str()) {
-                    if let Some(reply) = server_request_reply(id, method, workspace.lock().unwrap().as_deref()) {
+                    if let Some(reply) = server_request_reply(id.clone(), method, workspace.lock().unwrap().as_deref())
+                    {
                         let _ = write_line(&stdin, &reply);
                     }
                     continue;
                 }
+                let Some(id) = id.as_u64() else { continue };
                 let slot = pending.lock().unwrap().remove(&id);
                 if let Some(tx) = slot {
                     let result = match message.get("error") {
@@ -225,15 +230,15 @@ impl McpClient {
             }
         });
         // A failed handshake must kill+wait the server before returning Err.
-        if let Err(e) = client.call(
-            "initialize",
-            json!({
-                "protocolVersion": "2025-06-18",
-                "capabilities": {"roots": {}},
-                "clientInfo": {"name": "teamagents", "version": env!("CARGO_PKG_VERSION")},
-            }),
-            client.startup_ms,
-        ) {
+        if let Err(e) = client
+            .call(
+                "initialize",
+                json!({"protocolVersion":PROTOCOL_REVISION,"capabilities":{"roots":{}},
+                "clientInfo":{"name":"teamagents","version":env!("CARGO_PKG_VERSION")}}),
+                client.startup_ms,
+            )
+            .and_then(|reply| client.accept_initialize(&reply))
+        {
             client.close();
             return Err(format!("MCP host initialization failed: {e}"));
         }
@@ -247,9 +252,10 @@ impl McpClient {
     /// Streamable HTTP transport (MCP 2025-06-18): every client message is a
     /// POST; the reply is one JSON document or an SSE stream of `data:` frames.
     /// `token` is read from the environment by the caller, never from config.
-    pub fn connect_http(
+    pub(crate) fn connect_http_auth(
         url: &str,
         token: Option<String>,
+        refresh: Option<TokenRefresh>,
         startup_timeout_s: u64,
         tool_timeout_s: u64,
     ) -> Result<Arc<Self>, String> {
@@ -262,10 +268,14 @@ impl McpClient {
         {
             return Err("MCP HTTP endpoint must be http(s), without credentials or a fragment".into());
         }
+        let auth = HttpAuth::bearer(token);
+        if let Some(refresh) = refresh {
+            auth.set_refresh(refresh);
+        }
         let client = Arc::new(Self {
             transport: Transport::Http {
                 url: url.to_string(),
-                auth: HttpAuth::bearer(token),
+                auth,
                 session: Arc::new(Mutex::new(None)),
                 protocol: Arc::new(Mutex::new(None)),
                 stream: Mutex::new(None),
@@ -275,26 +285,39 @@ impl McpClient {
             tool_ms: tool_timeout_s.max(1).saturating_mul(1000),
             closed: AtomicBool::new(false),
             workspace: Arc::new(Mutex::new(None)),
+            capabilities: Mutex::new(json!({})),
         });
         let initialized = client.call(
             "initialize",
             json!({
-                "protocolVersion": "2025-06-18",
+                "protocolVersion": PROTOCOL_REVISION,
                 "capabilities": {"roots": {}},
                 "clientInfo": {"name": "teamagents", "version": env!("CARGO_PKG_VERSION")},
             }),
             client.startup_ms,
         )?;
-        let version = initialized["protocolVersion"]
-            .as_str()
-            .filter(|v| !v.is_empty())
-            .ok_or("MCP initialize response has no protocolVersion")?;
+        client.accept_initialize(&initialized)?;
         if let Transport::Http { protocol, .. } = &client.transport {
-            *protocol.lock().unwrap() = Some(version.to_string());
+            *protocol.lock().unwrap() = Some(PROTOCOL_REVISION.to_string());
         }
         client.notify("notifications/initialized", json!({}))?;
         client.open_push_stream();
         Ok(client)
+    }
+
+    fn accept_initialize(&self, reply: &Json) -> Result<(), String> {
+        if reply["protocolVersion"].as_str() != Some(PROTOCOL_REVISION) {
+            return Err(format!(
+                "unsupported MCP protocolVersion {}; supported: {PROTOCOL_REVISION}",
+                reply["protocolVersion"]
+            ));
+        }
+        *self.capabilities.lock().unwrap() = reply.get("capabilities").cloned().unwrap_or_else(|| json!({}));
+        Ok(())
+    }
+
+    pub(crate) fn supports(&self, capability: &str) -> bool {
+        self.capabilities.lock().unwrap()[capability].is_object()
     }
 
     /// The server may push messages over a GET SSE stream (notifications,
@@ -338,20 +361,21 @@ impl McpClient {
         *stream.lock().unwrap() = Some(PushStream { stop, join: Some(join) });
     }
 
-    /// Install the refresher an OAuth binding uses when the server answers 401 (D-412). Safe to call after
-    /// `connect_http`: a token resolved at load time covers the handshake, and this covers the rest of the session.
-    pub fn set_token_refresh(&self, refresh: TokenRefresh) {
-        if let Transport::Http { auth, .. } = &self.transport {
-            auth.set_refresh(refresh);
-        }
-    }
-
     /// The member's workspace, used to answer `roots/list`.
     pub fn set_workspace(&self, root: &Path) {
         *self.workspace.lock().unwrap() = Some(root.to_path_buf());
     }
 
     pub fn call(&self, method: &str, params: Json, timeout_ms: u64) -> Result<Json, String> {
+        self.call_until(method, params, std::time::Instant::now() + Duration::from_millis(timeout_ms))
+    }
+
+    fn call_until(&self, method: &str, params: Json, deadline: std::time::Instant) -> Result<Json, String> {
+        let timeout_ms =
+            deadline.saturating_duration_since(std::time::Instant::now()).as_millis().min(u64::MAX as u128) as u64;
+        if timeout_ms == 0 {
+            return Err(format!("MCP {method} timed out"));
+        }
         if self.closed.load(Ordering::SeqCst) {
             return Err("MCP client is closed".into());
         }
@@ -388,10 +412,21 @@ impl McpClient {
                 if matches!(attempt, Err(HttpFailure::Unauthorized)) {
                     // the server refused the credential: refresh once (an OAuth binding has the material; a
                     // static one has nothing to refresh with) and retry this request, never a side effect
-                    let fresh = auth.refresh()?;
+                    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                    if remaining.is_zero() {
+                        return Err("MCP request timed out before credential refresh".into());
+                    }
+                    let fresh = auth.refresh(remaining)?;
                     attempt = match fresh {
                         Some(token) => {
-                            http_roundtrip(url, Some(&token), session, version.as_deref(), &body, timeout_ms)
+                            let retry_ms = deadline
+                                .saturating_duration_since(std::time::Instant::now())
+                                .as_millis()
+                                .min(u64::MAX as u128) as u64;
+                            if retry_ms == 0 {
+                                return Err("MCP request timed out during credential refresh".into());
+                            }
+                            http_roundtrip(url, Some(&token), session, version.as_deref(), &body, retry_ms)
                         }
                         None => Err(HttpFailure::Other(unauthorized_message())),
                     };
@@ -425,8 +460,35 @@ impl McpClient {
 
     /// tools/list → (name, description, inputSchema) rows.
     pub fn tools(&self) -> Result<Vec<Json>, String> {
-        let reply = self.call("tools/list", json!({}), self.startup_ms)?;
-        Ok(reply.get("tools").and_then(|v| v.as_array()).cloned().unwrap_or_default())
+        let mut all = Vec::new();
+        let mut cursor = None;
+        let mut seen = std::collections::HashSet::new();
+        let mut bytes = 0usize;
+        let deadline = std::time::Instant::now() + Duration::from_millis(self.startup_ms);
+        for _ in 0..100 {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return Err("MCP tools/list timed out".into());
+            }
+            let params = cursor.as_ref().map_or_else(|| json!({}), |value| json!({"cursor":value}));
+            let reply = self.call_until("tools/list", params, deadline)?;
+            bytes = bytes.saturating_add(serde_json::to_vec(&reply).map_err(|error| error.to_string())?.len());
+            if bytes > MAX_MESSAGE_BYTES {
+                return Err("MCP tool catalogue exceeds the size limit".into());
+            }
+            all.extend(reply["tools"].as_array().ok_or("MCP tools/list has no tools array")?.iter().cloned());
+            match reply.get("nextCursor").filter(|value| !value.is_null()) {
+                None => return Ok(all),
+                Some(value) => {
+                    let next = value.as_str().filter(|value| !value.is_empty()).ok_or("invalid MCP tools cursor")?;
+                    if !seen.insert(next.to_string()) {
+                        return Err("MCP tools/list repeated a cursor".into());
+                    }
+                    cursor = Some(next.to_string());
+                }
+            }
+        }
+        Err("MCP tools/list exceeded 100 pages".into())
     }
 
     /// resources/list → the first or next resource page.
@@ -601,8 +663,8 @@ fn read_push_stream(reader: Box<dyn std::io::Read + Send + Sync + 'static>, repl
         };
         frame.clear();
         let method = message.get("method").and_then(|v| v.as_str()).unwrap_or("");
-        if let Some(id) = message.get("id").and_then(Json::as_u64) {
-            if let Some(body) = server_request_reply(id, method, workspace.lock().unwrap().as_deref()) {
+        if let Some(id) = message.get("id").filter(|id| id.is_string() || id.is_number()) {
+            if let Some(body) = server_request_reply(id.clone(), method, workspace.lock().unwrap().as_deref()) {
                 if let Err(error) = http_roundtrip(
                     &url,
                     token.as_deref(),
@@ -622,7 +684,11 @@ fn read_push_stream(reader: Box<dyn std::io::Read + Send + Sync + 'static>, repl
 
 /// Reply to a server-initiated request. `roots` is the one capability this client
 /// exposes; anything else is declined so the server never waits for an answer.
-fn server_request_reply(id: u64, method: &str, workspace: Option<&Path>) -> Option<Json> {
+fn server_request_reply(id: impl Into<Json>, method: &str, workspace: Option<&Path>) -> Option<Json> {
+    let id = id.into();
+    if !id.is_string() && !id.is_number() {
+        return None;
+    }
     match method {
         "roots/list" => {
             let roots = match workspace {
@@ -824,6 +890,9 @@ for line in sys.stdin:
 
     #[test]
     fn roots_list_is_answered_and_other_requests_are_declined() {
+        let string_id = server_request_reply("server-request", "roots/list", None).unwrap();
+        assert_eq!(string_id["id"], "server-request");
+        assert!(server_request_reply(Json::Null, "roots/list", None).is_none());
         let reply = server_request_reply(7, "roots/list", Some(Path::new("/tmp/member/work"))).unwrap();
         assert_eq!(reply["id"], 7);
         assert_eq!(reply["result"]["roots"][0]["uri"], "file:///tmp/member/work");
@@ -849,6 +918,76 @@ for line in sys.stdin:
         let error = read_bounded_line(&mut oversized, MAX_MESSAGE_BYTES).unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
         assert!(error.to_string().contains("exceeds"));
+    }
+
+    #[test]
+    fn http_auth_refresh_and_retry_consume_one_deadline() {
+        for exhaust_refresh in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let endpoint = format!("http://{}/mcp", listener.local_addr().unwrap());
+            let server = std::thread::spawn(move || {
+                let count = if exhaust_refresh { 1 } else { 2 };
+                for attempt in 0..count {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let mut length = 0;
+                    loop {
+                        let mut line = String::new();
+                        reader.read_line(&mut line).unwrap();
+                        if line == "\r\n" {
+                            break;
+                        }
+                        if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                            length = value.trim().parse().unwrap();
+                        }
+                    }
+                    let mut body = vec![0; length];
+                    reader.read_exact(&mut body).unwrap();
+                    if attempt == 0 {
+                        write!(stream, "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                            .unwrap();
+                    } else {
+                        std::thread::sleep(Duration::from_millis(650));
+                        let request: Json = serde_json::from_slice(&body).unwrap();
+                        let body = json!({"jsonrpc":"2.0","id":request["id"],"result":{"ok":true}}).to_string();
+                        let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+                    }
+                }
+                listener
+            });
+            let auth = HttpAuth::bearer(Some("expired".into()));
+            auth.set_refresh(Arc::new(move |remaining| {
+                assert!(remaining <= Duration::from_secs(1));
+                std::thread::sleep(if exhaust_refresh {
+                    remaining + Duration::from_millis(20)
+                } else {
+                    Duration::from_millis(650)
+                });
+                Ok(Some("refreshed".into()))
+            }));
+            let client = McpClient {
+                transport: Transport::Http {
+                    url: endpoint,
+                    auth,
+                    session: Arc::new(Mutex::new(None)),
+                    protocol: Arc::new(Mutex::new(None)),
+                    stream: Mutex::new(None),
+                },
+                next_id: AtomicU64::new(1),
+                startup_ms: 1000,
+                tool_ms: 1000,
+                closed: AtomicBool::new(false),
+                workspace: Arc::new(Mutex::new(None)),
+                capabilities: Mutex::new(json!({})),
+            };
+            let error = client.call("probe", json!({}), 1000).unwrap_err();
+            assert!(error.contains("timed out") || error.contains("timeout"), "{error}");
+            // In the exhausted-refresh case no retry may be sent, even if a custom callback returned late.
+            let listener = server.join().unwrap();
+            listener.set_nonblocking(true).unwrap();
+            assert_eq!(listener.accept().unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
+        }
     }
 
     #[test]
@@ -936,7 +1075,7 @@ for line in sys.stdin:
                 stream.flush().unwrap();
             }
         });
-        let client = McpClient::connect_http(&endpoint, None, 2_000, 2_000).unwrap();
+        let client = McpClient::connect_http_auth(&endpoint, None, None, 2_000, 2_000).unwrap();
         let listed = client.resources(None).unwrap();
         assert_eq!(listed["resources"][0]["uri"], "memo://public");
         let read = client.read_resource("memo://public").unwrap();
@@ -948,7 +1087,7 @@ for line in sys.stdin:
     #[test]
     fn http_rejects_credentials_and_never_follows_redirects() {
         for endpoint in ["file:///tmp/mcp", "http://user:secret@localhost/mcp", "http://localhost/mcp#fragment"] {
-            assert!(McpClient::connect_http(endpoint, None, 1, 1).is_err());
+            assert!(McpClient::connect_http_auth(endpoint, None, None, 1, 1).is_err());
         }
         let redirected = TcpListener::bind("127.0.0.1:0").unwrap();
         redirected.set_nonblocking(true).unwrap();
@@ -982,7 +1121,7 @@ for line in sys.stdin:
             .unwrap();
             stream.flush().unwrap();
         });
-        let error = McpClient::connect_http(&endpoint, Some("private-token".into()), 1, 1).err().unwrap();
+        let error = McpClient::connect_http_auth(&endpoint, Some("private-token".into()), None, 1, 1).err().unwrap();
         server.join().unwrap();
         assert!(error.contains("redirect"), "{error}");
         assert_eq!(redirected.accept().unwrap_err().kind(), std::io::ErrorKind::WouldBlock);

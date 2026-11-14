@@ -2319,9 +2319,9 @@ impl V2Toolkit {
     ///
     /// D-374: bound MCP tools are **not** advertised individually any more. They are reached through the one
     /// `codemode` tool, so a script can chain and filter them and only its own output enters the context. When
-    /// no MCP tool is bound the list is empty and `codemode` is not offered.
+    /// no MCP tool or resource service is bound the list is empty and `codemode` is not offered.
     pub(crate) fn mcp_schemas(&self) -> Vec<Json> {
-        if self.bound.tools.is_empty() {
+        if self.bound.tools.is_empty() && self.bound.services.is_empty() {
             return vec![];
         }
         vec![json!({"type": "function", "function": crate::codemode::schema(&self.bound)})]

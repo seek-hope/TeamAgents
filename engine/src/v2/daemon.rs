@@ -8,10 +8,9 @@
 //! connection so a slow client never blocks the writer.
 //!
 //! Reconnect contract (§9): `checkpoint` returns the session snapshot and
-//! its event watermark from one read transaction; `events` serves
-//! everything after a watermark. Events are never reclaimed in this first
-//! version, so a pruned watermark cannot occur — the `resync_required`
-//! flag is the upgrade path once retention lands.
+//! its event watermark from one read transaction; `events` serves bounded pages.
+//! A delivery cursor acknowledges only returned events. A reclaimed range requires
+//! an explicit fresh checkpoint; it is never silently skipped.
 
 use super::supervisor::{SupervisorConfig, SupervisorHandle};
 use serde_json::{json, Value as Json};
@@ -19,11 +18,11 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use teamagents_core::models::DEFAULT_EFFORTS;
-use teamagents_core::v2::{Command, Control};
+use teamagents_core::v2::{wire, Command, Control};
 
 /// Wire version of this protocol; the greeting advertises it and every
 /// request must repeat it (§9 handshake: incompatible versions refuse).
-pub const PROTOCOL_VERSION: u64 = 1;
+pub const PROTOCOL_VERSION: u64 = wire::VERSION;
 
 pub struct DaemonConfig<P, F> {
     /// The supervised session (session_db/session_id/state_root inside).
@@ -170,7 +169,7 @@ where
     // is swept before any client sees it and a second daemon for this root cannot sweep twice. It drives the
     // collector *through that supervisor's own single writer* — the lock and the writer are the same handle —
     // never by opening a second `Control` beside them, which is what the lock exists to prevent. One sweep.
-    match crate::v2::artifacts::sweep_through(supervisor.storage(), 1000, history_days).await {
+    match crate::v2::artifacts::sweep_through(supervisor.storage(), &state_root, 1000, history_days).await {
         Ok(report) => {
             let collected = report["collected"].as_array().map(Vec::len).unwrap_or(0);
             if collected > 0 {
@@ -368,7 +367,7 @@ async fn serve_client(
     facts: &SessionFacts,
     shutdown: Arc<AtomicBool>,
 ) -> Result<(), String> {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
     let (read, mut write) = stream.into_split();
     // greeting first: version, session and state root let the client refuse
     // an old server, a different root or an incompatible build (§9)
@@ -376,8 +375,21 @@ async fn serve_client(
                           "session_id": facts.session_id, "state_root": facts.state_root,
                           "permissions": facts.permissions, "workspace": facts.workspace});
     write.write_all(format!("{greeting}\n").as_bytes()).await.map_err(|e| format!("greeting: {e}"))?;
-    let mut lines = tokio::io::BufReader::new(read).lines();
-    while let Ok(Some(line)) = lines.next_line().await {
+    let mut reader = tokio::io::BufReader::new(read);
+    loop {
+        let mut bytes = Vec::new();
+        let size = (&mut reader)
+            .take(wire::MAX_FRAME_BYTES as u64 + 1)
+            .read_until(b'\n', &mut bytes)
+            .await
+            .map_err(|e| format!("daemon request: {e}"))?;
+        if size == 0 {
+            break;
+        }
+        if size > wire::MAX_FRAME_BYTES || bytes.last() != Some(&b'\n') {
+            return Err("daemon request exceeds 32 MiB or is incomplete".into());
+        }
+        let line = String::from_utf8(bytes).map_err(|e| format!("daemon request UTF-8: {e}"))?;
         if line.trim().is_empty() {
             continue;
         }
@@ -385,7 +397,12 @@ async fn serve_client(
             Ok(request) => handle(&request, &supervisor, session_db, facts).await,
             Err(e) => json!({"request_id": Json::Null, "ok": false, "error": format!("bad request JSON: {e}")}),
         };
-        if write.write_all(format!("{reply}\n").as_bytes()).await.is_err() {
+        let encoded = wire::encode_frame(&reply).unwrap_or_else(|_| {
+            wire::encode_frame(&json!({"request_id":reply["request_id"], "ok":false,
+                "error":"daemon reply exceeds 32 MiB; request a smaller page"}))
+            .unwrap_or_default()
+        });
+        if encoded.is_empty() || write.write_all(&encoded).await.is_err() {
             return Ok(()); // client went away
         }
         // D-248: `shutdown` is answered *before* the daemon stops — the flag is set here, after the reply is on the
@@ -633,23 +650,93 @@ fn read_snapshot(conn: &rusqlite::Connection, mcp: &Json, sessions: &Json, model
         "models": models}))
 }
 
-fn read_events(conn: &rusqlite::Connection, since: i64) -> Result<Vec<Json>, String> {
-    let mut stmt = conn
-        .prepare("SELECT sequence, kind, scope, payload_json FROM events WHERE sequence > ?1 ORDER BY sequence")
+fn read_events(conn: &rusqlite::Connection, params: &Json) -> Result<Json, String> {
+    let since = params.get("since").map_or(Ok(0), |v| v.as_i64().ok_or("events.since must be an integer"))?;
+    let limit = page_limit(params, wire::EVENT_PAGE_ROWS)?;
+    if since < 0 {
+        return Err("events.since must be >= 0".into());
+    }
+    let tx = conn.unchecked_transaction().map_err(|e| format!("events tx: {e}"))?;
+    let current = watermark(&tx)?;
+    let until = params.get("until").map_or(Ok(current), |v| v.as_i64().ok_or("events.until must be an integer"))?;
+    if until < since {
+        return Err("events.until must be >= since".into());
+    }
+    let end = until.min(current);
+    let oversized = |sequence| {
+        json!({"events":[],"watermark":since,"head_watermark":current,
+        "has_more":false,"resync_required":true,"resync_reason":"oversized_event","blocked_sequence":sequence})
+    };
+    let mut stmt = tx
+        .prepare(
+            "SELECT sequence, kind, scope,
+                    CASE WHEN length(CAST(COALESCE(payload_json,'null') AS BLOB)) <= ?3 THEN COALESCE(payload_json,'null') END
+                  FROM events WHERE session_id=(SELECT session_id FROM events LIMIT 1)
+                    AND sequence > ?1 AND sequence <= ?2 ORDER BY sequence LIMIT ?4",
+        )
         .map_err(|e| format!("events prepare: {e}"))?;
-    let rows = stmt
-        .query_map([since], |row| {
-            Ok(json!({"sequence": row.get::<_, i64>(0)?, "kind": row.get::<_, String>(1)?,
-                      "scope": row.get::<_, String>(2)?,
-                      "payload": serde_json::from_str::<Json>(&row.get::<_, String>(3)?).unwrap_or(Json::Null)}))
-        })
+    let mut rows = stmt
+        .query(rusqlite::params![since, end, wire::EVENT_PAGE_BYTES as i64, limit])
         .map_err(|e| format!("events query: {e}"))?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("events collect: {e}"))
+    let mut events = Vec::new();
+    let mut cursor = since;
+    let mut bytes = 0;
+    let mut reclaimed = since > current;
+    while let Some(row) = rows.next().map_err(|e| format!("events row: {e}"))? {
+        let sequence: i64 = row.get(0).map_err(|e| e.to_string())?;
+        if cursor.checked_add(1) != Some(sequence) {
+            reclaimed = true;
+            break;
+        }
+        let payload: Option<String> = row.get(3).map_err(|e| e.to_string())?;
+        let Some(payload) = payload else {
+            if !events.is_empty() {
+                break;
+            }
+            return Ok(oversized(sequence));
+        };
+        let event = json!({"sequence": sequence, "kind":row.get::<_, String>(1).map_err(|e| e.to_string())?,
+            "scope":row.get::<_, String>(2).map_err(|e| e.to_string())?,
+            "payload":serde_json::from_str::<Json>(&payload).map_err(|e| format!("event {sequence}: {e}"))?});
+        let size = serde_json::to_vec(&event).map_err(|e| e.to_string())?.len() + 1;
+        if size > wire::EVENT_PAGE_BYTES - bytes {
+            if events.is_empty() {
+                return Ok(oversized(sequence));
+            }
+            break;
+        }
+        bytes += size;
+        cursor = sequence;
+        events.push(event);
+    }
+    // A gap after the final surviving row is a retention gap too.
+    if events.is_empty() && since < end {
+        reclaimed = true;
+    }
+    if reclaimed {
+        events.clear();
+        cursor = since;
+    }
+    Ok(json!({"events":events, "watermark":cursor, "head_watermark":current,
+        "has_more":!reclaimed && cursor < end, "resync_required":reclaimed}))
+}
+
+fn page_limit(params: &Json, default: i64) -> Result<i64, String> {
+    let limit = params.get("limit").map_or(Ok(default), |v| v.as_i64().ok_or("limit must be an integer"))?;
+    if !(1..=wire::MAX_PAGE_ROWS).contains(&limit) {
+        return Err("limit must be between 1 and 1000".into());
+    }
+    Ok(limit)
 }
 
 fn watermark(conn: &rusqlite::Connection) -> Result<i64, String> {
-    conn.query_row("SELECT COALESCE(MAX(sequence), 0) FROM events", [], |row| row.get(0))
-        .map_err(|e| format!("watermark: {e}"))
+    // A session store holds one event stream; constrain the leading key so MAX and pages use its index.
+    conn.query_row(
+        "SELECT COALESCE(MAX(sequence), 0) FROM events WHERE session_id=(SELECT session_id FROM events LIMIT 1)",
+        [],
+        |row| row.get(0),
+    )
+    .map_err(|e| format!("watermark: {e}"))
 }
 
 /// D-268: a work a *client* opens is bounded the way the bootstrap bounds its own (D-64: "`[limits]` in the user
@@ -712,13 +799,8 @@ fn read_method(
             Ok(json!({"snapshot": snapshot, "watermark": watermark}))
         }
         "events" => {
-            let since = params.get("since").and_then(|v| v.as_i64()).unwrap_or(0);
-            if since < 0 {
-                return Err("events.since must be >= 0".into());
-            }
-            let current = watermark(conn)?;
-            let events = read_events(conn, since)?;
-            Ok(json!({"events": events, "watermark": current, "resync_required": false}))
+            // Head and delivered page are read from the same SQLite snapshot.
+            read_events(conn, params)
         }
         "search_tree" => {
             let session: String = conn
@@ -733,7 +815,14 @@ fn read_method(
             if instance.is_empty() {
                 return Err("history.instance_id required".into());
             }
-            let limit = params.get("limit").and_then(|v| v.as_i64()).unwrap_or(200).clamp(1, 1000);
+            let limit = page_limit(params, 200)?;
+            let before = params.get("before");
+            let before_epoch = before
+                .map(|v| v["epoch"].as_i64().filter(|v| *v >= 0).ok_or("history.before.epoch must be >= 0"))
+                .transpose()?;
+            let before_idx = before
+                .map(|v| v["idx"].as_i64().filter(|v| *v >= 0).ok_or("history.before.idx must be >= 0"))
+                .transpose()?;
             // Newest first, then reversed: the page is the newest `limit`
             // entries, in chronological (epoch, idx) order. The envelope id rides
             // along (D-72) because it is the only exact name for "the entry this
@@ -741,30 +830,71 @@ fn read_method(
             // turn's outcome for its own cannot do that by matching text.
             let mut stmt = conn
                 .prepare(
-                    "SELECT c.epoch, c.idx, c.kind, c.message_json, c.envelope_id, i.workspace_ref, NULLIF(w.work_id,'')
+                    "SELECT c.epoch, c.idx, c.kind,
+                        CASE WHEN length(CAST(COALESCE(c.message_json,'null') AS BLOB)) <= ?5 THEN COALESCE(c.message_json,'null') END,
+                        c.envelope_id, i.workspace_ref, NULLIF(w.work_id,'')
                      FROM context_entries c LEFT JOIN instances i ON i.id = c.instance_id
                      LEFT JOIN work_inputs w ON w.instance_id=c.instance_id AND w.epoch=c.epoch AND w.envelope_id=c.envelope_id
-                     WHERE c.instance_id = ?1 ORDER BY c.epoch DESC, c.idx DESC LIMIT ?2",
+                     WHERE c.instance_id = ?1 AND (?3 IS NULL OR (c.epoch,c.idx) < (?3,?4))
+                     ORDER BY c.epoch DESC, c.idx DESC LIMIT ?2",
                 )
                 .map_err(|e| format!("history prepare: {e}"))?;
-            let rows = stmt
-                .query_map(rusqlite::params![instance, limit], |row| {
-                    Ok(json!({"epoch": row.get::<_, i64>(0)?, "idx": row.get::<_, i64>(1)?,
-                              "kind": row.get::<_, String>(2)?, "envelope_id": row.get::<_, Option<String>>(4)?,
-                              "workspace": row.get::<_, Option<String>>(5)?, "work_work_id": row.get::<_, Option<String>>(6)?,
-                              "message": serde_json::from_str::<Json>(&row.get::<_, String>(3)?).unwrap_or(Json::Null)}))
-                })
+            let mut rows = stmt
+                .query(rusqlite::params![instance, limit + 1, before_epoch, before_idx, wire::EVENT_PAGE_BYTES as i64])
                 .map_err(|e| format!("history query: {e}"))?;
-            let mut entries: Vec<Json> = rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("history: {e}"))?;
-            entries.reverse(); // chronological order
-            Ok(json!({"instance_id": instance, "entries": entries}))
+            let mut entries = Vec::new();
+            let mut bytes = 0;
+            let mut more = false;
+            while let Some(row) = rows.next().map_err(|e| format!("history row: {e}"))? {
+                if entries.len() >= limit as usize {
+                    more = true;
+                    break;
+                }
+                let epoch: i64 = row.get(0).map_err(|e| e.to_string())?;
+                let idx: i64 = row.get(1).map_err(|e| e.to_string())?;
+                let message: Option<String> = row.get(3).map_err(|e| e.to_string())?;
+                let Some(message) = message else {
+                    if !entries.is_empty() {
+                        more = true;
+                        break;
+                    }
+                    return Err(format!(
+                        "history entry {epoch}:{idx} exceeds the 4 MiB page budget; use session export"
+                    ));
+                };
+                let entry = json!({"epoch":epoch,"idx":idx,
+                    "kind":row.get::<_,String>(2).map_err(|e| e.to_string())?,
+                    "envelope_id":row.get::<_,Option<String>>(4).map_err(|e| e.to_string())?,
+                    "workspace":row.get::<_,Option<String>>(5).map_err(|e| e.to_string())?,
+                    "work_work_id":row.get::<_,Option<String>>(6).map_err(|e| e.to_string())?,
+                    "message":serde_json::from_str::<Json>(&message).map_err(|e| format!("history entry {epoch}:{idx}: {e}"))?});
+                let size = serde_json::to_vec(&entry).map_err(|e| e.to_string())?.len() + 1;
+                if size > wire::EVENT_PAGE_BYTES - bytes {
+                    if entries.is_empty() {
+                        return Err(format!(
+                            "history entry {epoch}:{idx} exceeds the 4 MiB page budget; use session export"
+                        ));
+                    }
+                    more = true;
+                    break;
+                }
+                bytes += size;
+                entries.push(entry);
+            }
+            let next_before = if more {
+                entries.last().map(|entry| json!({"epoch":entry["epoch"],"idx":entry["idx"]})).unwrap_or(Json::Null)
+            } else {
+                Json::Null
+            };
+            entries.reverse(); // chronological order within the selected page
+            Ok(json!({"instance_id": instance, "entries": entries, "next_before":next_before}))
         }
         // D-349: the per-request surface record — the tool *names* each model request was offered and whether
         // the surface check authorized that set. A request that ran before the record existed reads `null`
         // (its row was migrated, not invented): the reader can tell "not recorded" from "recorded empty".
         "surfaces" => {
             let instance = params.get("instance_id").and_then(|v| v.as_str());
-            let limit = params.get("limit").and_then(|v| v.as_i64()).unwrap_or(200);
+            let limit = page_limit(params, 200)?;
             let mut stmt = conn
                 .prepare(
                     "SELECT request_id, instance_id, epoch, work_id, kind, status, offered_tools, surface_authorized
@@ -884,6 +1014,8 @@ fn read_method(
         // next work needs the list — which one is active, which have settled, and what limits each carries —
         // and nothing else in the protocol exposed it.
         "work_scopes" => {
+            let snapshot = conn.unchecked_transaction().map_err(|e| format!("work scopes snapshot: {e}"))?;
+            let conn = &*snapshot;
             let mut stmt = conn
                 .prepare(
                     "SELECT g.id, g.status, g.deadline, g.limits_json, g.known_usage_json, g.unknown_usage,
@@ -920,8 +1052,13 @@ fn read_method(
                     }))
                 })
                 .map_err(|e| format!("work_scopes query: {e}"))?;
-            let work_scopes: Vec<Json> =
+            let mut work_scopes: Vec<Json> =
                 rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("work_scopes rows: {e}"))?;
+            let mut costs = teamagents_core::v2::pricing::work_costs(conn)?;
+            for work in &mut work_scopes {
+                work["cost"] =
+                    costs.remove(work["id"].as_str().unwrap_or("")).ok_or("work cost missing from snapshot")?;
+            }
             Ok(json!({"work_scopes": work_scopes}))
         }
         // The grant view is what the user's authority surface reads and the

@@ -50,7 +50,7 @@ position. `input_queued` records delivery rather than model or task completion.
 
 The default model profile is `leader_main`; edit `config.toml` rather than expecting `init` to merge new keys.
 The default config path is `${XDG_CONFIG_HOME:-$HOME/.config}/teamagents/config.toml`.
-it contributes nothing until you opt in; project trust is explicit. Its permissions,
+The product reads repository-local configuration under an explicit trust rule; it contributes nothing until you opt in. Its permissions,
 hooks, checks, limits, retention and update policy never silently override user configuration.
 See [CONFIG.md](CONFIG.md) for every field and [INSTALL.md](INSTALL.md) for storage locations.
 
@@ -70,6 +70,35 @@ ceiling, work continues until the user stops it.
 
 `pre_tool` can veto a native tool call and `notify` can report lifecycle/tool events. Hooks run with the user's
 authority; project configuration cannot silently install permissions, checks, retention or update policy.
+
+### 2.4 Optional model cost estimates
+
+Set `[models.<name>.price]` with `input_usd_per_million`, `output_usd_per_million` and a `source`
+(provider tariff URL or label plus date). Optional `cache_read_usd_per_million` and
+`cache_write_usd_per_million` price cached input separately. Input totals include cache reads/writes; these
+categories are subtracted before charging uncached input, so tokens are never charged twice.
+
+Prices use USD only, are user supplied, and are frozen at request registration for turns, compression and
+Reviewer calls. They are estimates, not provider invoices: discounts, taxes, image-specific charges and
+variable cache-duration tariffs require an appropriate tariff and are not inferred. Ambiguous raw model IDs
+shared by several profiles are left unpriced. Missing prices, required cache rates or usage stay unknown.
+Historical rows are never retroactively priced after a configuration change. Token limits remain independent;
+there is no monetary spending cap.
+
+`exec` prints the known estimate and any unpriced attempt count. Its `usage.cost` has `currency`,
+`known_estimated_usd`, `unpriced_attempts` and `complete`. Request registration positions select Leader and
+compression calls between this input and its outcome. New member calls in the same billing work during that
+interval also count; Reviewer calls follow their originating operation. Earlier requests and other works do
+not enter the subtotal merely because their receipts arrive during the run. Batched inputs and overlapping
+follow-ups can share calls, so summing overlapping exec reports is not a unique session bill. Open calls,
+unreceipted closed calls and uncertain cancellation prevent a complete-cost claim. The client caps accounting
+at 10,000 registrations and a 16 MiB bookkeeping budget. Exceeding either bound returns an explicit error
+with incomplete outcome/usage; session export retains the authoritative records for audit.
+The older `usage.unpriced_attempts` counts missing **token usage**, independently of missing monetary prices.
+The daemon `work_scopes` read exposes each work's `cost`, including later-attributed admission calls,
+`pending_requests` and `usage_without_receipt` (for example, inherited usage without local tariff receipts).
+A partial known subtotal is never labelled a complete cost. Session exports preserve request tariffs and
+attempt estimates for audit.
 
 ## 3. Conversation and editing
 
@@ -152,12 +181,38 @@ produce tool effects. Provider-reported usage is recorded; unknown usage stays u
 ## 8. Tools, MCP and Skills
 
 Files are workspace-confined. Shell and acceptance commands run on the host with explicit cwd, execution mode,
-exit/signal, duration and output references. Host execution is not OS confinement.
+exit/signal, duration and output references. Host execution is not OS confinement. Large outputs remain
+protected while stored operation receipts or context reference them, even after their owner finishes. Automatic
+and offline artifact collection retry failed unlinks and skip `EVIDENCE` roots. Retaining history can therefore
+retain its referenced bytes beyond an owner's lifetime; no automatic reference-expiry policy is selected.
 
-MCP supports stdio and streamable HTTP, with the same operation, budget, cancellation and receipt paths.
-`codemode` composes bound tools in restricted JavaScript without ambient filesystem, network or timers.
-`mcp_resource` lists/reads resources and requires explicit service selection if multiple bindings are ambiguous.
-`teamagents mcp list` inspects configured services. OAuth login/logout uses `teamagents mcp login|logout`.
+MCP negotiates revision **2025-06-18** over stdio and streamable HTTP, with the same operation, budget,
+cancellation and receipt paths. A peer returning another revision fails explicitly. `codemode` composes bound
+tools in restricted JavaScript without ambient filesystem, network or timers. `tools.mcp_resource` lists/reads
+resources, including services with no selected tools; specify `service` when multiple bindings are ambiguous.
+Tool discovery follows cursors within one startup-timeout budget, at most 100 pages and 16 MiB total response
+bytes. Resource listing returns the server's cursor for the caller to follow.
+
+`teamagents mcp list` inspects configured services. OAuth login/logout uses `teamagents mcp login|logout`;
+a server 401 can refresh an unexpired token, including during initialization, without another browser login.
+Credentials are bound to the exact resource URL saved at login. Changing that URL requires another login;
+selection and refresh check the same locked record. Refresh and retry share the request deadline, including
+credential-lock waits. Codemode exposes normalized JavaScript identifiers while preserving remote tool names.
+This covers PKCE/public-client flows and local interoperability tests. External authenticated services,
+challenge-directed discovery and resumable SSE reconnects are not established by those tests.
+
+For a bound service named `example`, a codemode call can read its public resource:
+
+```javascript
+const page = await tools.mcp_resource({action: "list", service: "example"});
+text(page);
+const resource = await tools.mcp_resource({action: "read", service: "example", uri: "memo://public"});
+text(resource);
+```
+
+The repository's `fake-mcp-server` test binary supplies this URI; `engine/tests/v2_mcp.rs` exercises it through
+the production driver, including a binding that filters out every ordinary tool. Real service URIs come from
+that service's resource list.
 
 Skills are read on demand and cannot grant authority. `skill` searches/reads configured roots; relative skills
 work from the current workspace. Repository instructions and project trust do not silently widen permissions.

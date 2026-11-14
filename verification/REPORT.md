@@ -6,13 +6,25 @@ are in [DEVELOPMENT.md](../docs/DEVELOPMENT.md).
 
 ## 0. Gate status (re-run 2026-11-14 at `3274d1fa`)
 
-The current targets verified all **65** configurations in **62** traversals, refuted all **327** negative controls,
-reached all **79** normal-path witnesses, and passed all **9** Kani harnesses. The latest complete local replay
-used the current source and exited 0 for every target. Kani reported `Complete - 9 successfully verified harnesses, 0 failures, 9 total`.
+The heading retains the last committed verification pin. The subsequent uncommitted source also completed
+a full finite replay; its new commit pin remains pending delivery.
+
+The current finite replay verified all **65** configurations in **62** traversals, refuted all **327** negative controls,
+reached all **79** normal-path witnesses, and passed all **9** Kani harnesses. The sequential chain
+exited 0; every positive run reports exit 0 with no error, and its recorded model/configuration hashes match
+the current files. Kani reported `Complete - 9 successfully verified harnesses, 0 failures, 9 total`.
 
 `verification/tla/V2SearchTree.tla` has SHA-256
 `b2d814d597ddb5f9382ca712e6431a1bf3d67ab7b21ce2f44137c5cae39a2c12`.
-The complete `make check` gate also passes with **777 Rust tests**: core 191, engine 481 and TUI 105.
+The committed baseline `3274d1fa` passed `make check` with **777 Rust tests**: core 191, engine 481 and TUI 105.
+The latest full local gate passed **814 Rust tests** (core 197, engine 509, TUI 108), including protocol paging,
+tariffs, retention, MCP, updater, continuous-input accounting and bounded-buffer regressions. All 18 offline
+probes and the final release/install rehearsal passed; the archive also passed isolated Debian upgrade/rollback.
+The changed `V2Daemon.tla`, included in the complete replay, separately passed two positive configurations in one exhaustive traversal:
+135,750 distinct / 1,858,231 generated states. Its SHA-256 is
+`7ed94d6097d51f9519aa7a9e821c657b27cdbb79b18575b969c00b9dc66e3907`.
+Its arbitrary-prefix page abstraction does not model production retention, oversized-event resync,
+TUI history-refresh retry or request/input cost attribution.
 
 The catalogue contains **393 configurations across 48 modules**: 65 positive configurations, 327 controls and
 one separate wide configuration. Positive inputs share a traversal only when their model, specification and
@@ -74,8 +86,9 @@ arbitrary-input TLA enumeration.
 3. **Scheduler and environment fairness.** Provider scheduling, process-group behavior, escaped descendants,
    remote effects, filesystem races and power-loss timing remain outside the finite model.
 4. **Implementation detail outside the model.** Complete provider/JSON-RPC parsing and retry classification,
-   arbitrary JSON/text domains, SQL execution, every schema migration, MCP framing/correlation and all UI/render
-   paths are not formally proved by the bounded modules.
+   arbitrary JSON/text domains, SQL execution, every schema migration and all UI/render paths are not formally
+   proved by the bounded modules. MCP framing/correlation has executable local regression coverage but not a
+   formal proof or external interoperability matrix.
 5. **Tree semantics and model quality.** The model checks control transitions, not whether a model produced a
    useful or complete exploration tree, whether it reduced user lostness, or whether a summary is correct.
 6. **Live acceptance.** Real provider/native-protocol, OAuth, public-host, graphical-terminal, clean-host

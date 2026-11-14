@@ -6,7 +6,7 @@ TeamAgents 是一个 Rust 原生、本地优先的智能体运行时。Leader �
 实例，并在每个会话的权威 SQLite 存储中持久化执行状态、审批、上下文、用量和证据。TUI 与无界面客户端
 共享同一个 daemon 和阶段机。
 
-当前格式为 **数据库 schema 9**、**socket protocol 1** 和 **work policy 1**。
+当前格式为 **数据库 schema 9**、**socket protocol 2** 和 **work policy 1**。
 
 ## 当前能力
 
@@ -124,7 +124,7 @@ daemon + supervisor + 每个实例的 driver
 
 ## 当前证据
 
-当前本地门禁包含 **777 项 Rust 测试**（core 191、engine 481、TUI 105），`make check` 退出 0。
+最新完整本地门禁已通过 **814 项 Rust 测试**（core 197、engine 509、TUI 108）。
 形式化材料包含 **48 个模块、393 个配置**：
 
 - **65 个正向配置，62 次遍历**；
@@ -150,8 +150,9 @@ make pty
 
 这些结果不证明完整的 Rust/SQLite refinement、全系统组合、wide exhaustive 完成或 Policy B 的源代码绑定
 等价性。本地实时探针（`make probe-offline`、`make probe-models`）已覆盖四种线协议、异构 provider、
-search/fetch、图片输入、reviewer 对抗用例、1M 原生窗口 compaction 与探索树更新、隔离 clean-host 安装/升级/回滚、
-本地环回 SSH 与 Alacritty；更广泛的外部 OAuth 服务、公网主机、多发行版 clean-host、图形终端矩阵、
+search/fetch、图片输入、reviewer 对抗用例、1M 原生窗口 compaction 与探索树更新、本地环回 SSH 与 Alacritty。
+另行隔离测试已验证公网 SSH/GNU screen 重连，以及既有 Debian 12 主机上的安装、升级和回滚，使用的是已记录哈希的较早构建。
+外部 OAuth 服务、全新主机、多发行版验收、更广泛的图形终端矩阵、
 大规模长任务评测以及完整的按价成本比较仍待补充。单独的 wide 配置不宣称已经完成。
 
 ## 文档

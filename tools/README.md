@@ -20,7 +20,7 @@ It contains no review reports, evaluation datasets or archived evidence.
 `make verify-model-counterexamples`, `make verify-witnesses` and `make verify-kani` run the formal checks.
 `make pty` runs the terminal matrix. See `docs/DEVELOPMENT.md` for the full commands and their boundaries.
 
-For the current tree, `citations.py` verifies that 86 relative links resolve today. It checks 95 commands, 14 distinct targets, 14 declared as checked on 2026-11-14; its other totals are recomputed and compared with the script's own docstring.
+For the current tree, `citations.py` verifies that 86 relative links resolve today. It checks 88 commands, 14 distinct targets, 14 declared as checked on 2026-11-14; its other totals are recomputed and compared with the script's own docstring.
 
 `tools/tmp/` is ignored scratch space for new local runs. It is not source, evidence of a later source revision or a
 committed artifact. A passing result always needs its actual command, source revision and exit status.

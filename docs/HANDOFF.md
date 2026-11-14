@@ -2,15 +2,17 @@
 
 ## Current baseline
 
-Current material commit: D-508 `52e96b3c`.
+Last committed source baseline: `3274d1fa`; verification pin: `9b012df9`. Recheck Git for subsequent work.
 
 The current source implements the requirements in [DESIGN.md](DESIGN.md), the rules in [DECISIONS.md](DECISIONS.md),
 and the acceptance matrix in [ACCEPTANCE.md](ACCEPTANCE.md). Current formal evidence and its limits are in
 [verification/REPORT.md](../verification/REPORT.md).
 
-Current local gate:
+Current source inventory and verification:
 
-- **777 Rust tests**: core 191, engine 481, TUI 105; `make check` exit 0.
+- **814 Rust tests**: core 197, engine 509, TUI 108; the full `make check` passed.
+  All 18 offline probes and the final release/install rehearsal passed. PTY passed on the unchanged TUI/daemon
+  code. The final archive passed isolated upgrade and rollback on the existing Debian host (see ACCEPTANCE.md).
 - **65 positive TLA configurations in 62 traversals**, **327 controls**, **79 witnesses**, **9 Kani harnesses**.
 - Catalogue: **393 configurations across 48 modules**, including the separate wide configuration.
 - PTY covers five terminal profiles and both forced graphics modes.
@@ -77,8 +79,11 @@ not rewritten as a pass.
 
 ## Open work
 
-- Live-model search-tree usefulness and reduced lostness remain unmeasured.
-- Wider provider/OAuth/public-host/graphical-terminal/clean-host and matched-Pi comparisons remain open.
+- Small live trials cover 8 paired Pi tasks, 34 reused DeepSeek Reviewer cases, multi-branch tree recovery
+  and native-window compaction. Claude matched 24/34 labels with four parser and five quota failures; do not
+  retry its exhausted paid route without a resource change. General success, tree semantics and user lostness remain open.
+- Four wire protocols have live evidence. Earlier pinned builds passed public SSH/screen reconnect and isolated
+  install/upgrade/rollback on an existing Debian 12 host; external OAuth, fresh-host and wider platform acceptance remain open.
 - Wide exhaustive completion, full Rust/SQLite refinement, whole-system composition and Policy B source-bound
   equivalence remain open.
 - Broader versioned integrations, artifact-retention policy and general long-horizon outcome measurement remain open.

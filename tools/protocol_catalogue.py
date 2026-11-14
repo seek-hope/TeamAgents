@@ -2,7 +2,7 @@
 """Keep `docs/PROTOCOL.md` equal to the daemon's dispatcher (the detector behind D-126).
 
 The Unix-socket protocol is the API: the TUI, `exec`, the CLI verbs and every probe speak it, and DESIGN.md
-describes it as "one JSON-lines protocol (`/v1`)" without listing a single method. `docs/PROTOCOL.md` is the
+describes its JSON-lines contract without listing every method. `docs/PROTOCOL.md` is the
 catalogue, generated from the two dispatch points in the code:
 
 * the read methods the daemon answers from the session database (`read_method` in `engine/src/v2/daemon.rs`,

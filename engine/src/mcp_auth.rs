@@ -138,6 +138,10 @@ impl Store {
     /// Serialize read-modify-write across the daemon and standalone MCP commands. The lock file is
     /// never truncated, and closing it releases the OS lock even if a process exits unexpectedly.
     fn lock(&self) -> Result<std::fs::File, String> {
+        self.lock_until(None)
+    }
+
+    fn lock_until(&self, deadline: Option<std::time::Instant>) -> Result<std::fs::File, String> {
         let parent = self.path.parent().ok_or("credential path has no parent")?;
         std::fs::create_dir_all(parent).map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
         let path = self.path.with_extension("json.lock");
@@ -149,12 +153,25 @@ impl Store {
             options.mode(0o600);
         }
         let handle = options.open(&path).map_err(|e| format!("cannot open {}: {e}", path.display()))?;
-        // SAFETY: handle owns a live descriptor for the duration of this call; the guard closes it on drop.
-        let result = unsafe { libc::flock(handle.as_raw_fd(), libc::LOCK_EX) };
-        if result != 0 {
-            return Err(format!("cannot lock {}: {}", path.display(), std::io::Error::last_os_error()));
+        loop {
+            if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+                return Err("MCP credential lock timed out".into());
+            }
+            let flags = libc::LOCK_EX | if deadline.is_some() { libc::LOCK_NB } else { 0 };
+            // SAFETY: handle owns a live descriptor; the guard closes it on drop.
+            if unsafe { libc::flock(handle.as_raw_fd(), flags) } == 0 {
+                return Ok(handle);
+            }
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            if error.kind() != std::io::ErrorKind::WouldBlock || deadline.is_none() {
+                return Err(format!("cannot lock {}: {error}", path.display()));
+            }
+            let remaining = deadline.unwrap().saturating_duration_since(std::time::Instant::now());
+            std::thread::sleep(remaining.min(Duration::from_millis(10)));
         }
-        Ok(handle)
     }
 
     /// Tokens, rewritten atomically and chmod 0600 before the bytes are visible under the real name.
@@ -216,15 +233,54 @@ impl Store {
     /// What a client may send right now: the stored access token, refreshed once if it is expired and the server
     /// issued a refresh token. `sign_in` is the sentence a user acts on when there is nothing usable.
     pub fn access_token(&self, service: &str) -> Result<Option<String>, String> {
-        // Keep concurrent refreshers from exchanging and overwriting the same credential twice.
-        let _guard = self.lock()?;
+        self.access_token_inner(service, None, false, HTTP_TIMEOUT)
+    }
+
+    pub(crate) fn access_token_for(
+        &self,
+        service: &str,
+        expected_resource: &str,
+        timeout: Duration,
+    ) -> Result<Option<String>, String> {
+        self.access_token_inner(service, Some(expected_resource), false, timeout)
+    }
+
+    pub(crate) fn refresh_access_token_for(
+        &self,
+        service: &str,
+        expected_resource: &str,
+        timeout: Duration,
+    ) -> Result<Option<String>, String> {
+        self.access_token_inner(service, Some(expected_resource), true, timeout)
+    }
+
+    fn access_token_inner(
+        &self,
+        service: &str,
+        expected_resource: Option<&str>,
+        rejected: bool,
+        timeout: Duration,
+    ) -> Result<Option<String>, String> {
+        let deadline = std::time::Instant::now() + timeout;
+        // Validate the resource and select/refresh the same record under one lock. A concurrent login must
+        // not replace the credential between the scope check and the token used for this request.
+        let _guard = self.lock_until(Some(deadline))?;
         let Some(tokens) = self.get(service)? else { return Ok(None) };
-        if !tokens.expired(now()) {
+        if expected_resource.is_some_and(|resource| tokens.resource.as_deref() != Some(resource)) {
+            return Err(format!(
+                "the stored credential for MCP service {service:?} is for a different resource; run `teamagents mcp login --name {service}` to sign in again"
+            ));
+        }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Err("MCP credential lookup timed out".into());
+        }
+        if !rejected && !tokens.expired(now()) {
             return Ok(Some(tokens.access_token));
         }
         match (&tokens.refresh_token, &tokens.token_endpoint) {
             (Some(refresh), Some(endpoint)) => {
-                let refreshed = refresh_tokens(endpoint, refresh, &tokens).map_err(|error| {
+                let refreshed = refresh_tokens_with_timeout(endpoint, refresh, &tokens, remaining).map_err(|error| {
                     format!("{error}; run `teamagents mcp login --name {service}` to sign in again")
                 })?;
                 let mut merged = tokens.clone();
@@ -242,7 +298,7 @@ impl Store {
                 Ok(Some(merged.access_token))
             }
             _ => Err(format!(
-                "the stored credential for MCP service {service:?} expired and carries no refresh token; run \
+                "the stored credential for MCP service {service:?} expired or was rejected and carries no refresh token; run \
                  `teamagents mcp login --name {service}` to sign in again"
             )),
         }
@@ -439,8 +495,15 @@ fn urlencode(value: &str) -> String {
 }
 
 fn post_form(endpoint: &str, pairs: &[(&str, String)]) -> Result<Value, String> {
+    post_form_with_timeout(endpoint, pairs, HTTP_TIMEOUT)
+}
+
+fn post_form_with_timeout(endpoint: &str, pairs: &[(&str, String)], timeout: Duration) -> Result<Value, String> {
+    if timeout.is_zero() {
+        return Err("OAuth token request timed out before dispatch".into());
+    }
     // A redirect must never resend a code, verifier, refresh token or client secret to another origin.
-    let agent = ureq::AgentBuilder::new().timeout(HTTP_TIMEOUT).redirects(0).build();
+    let agent = ureq::AgentBuilder::new().timeout(timeout).redirects(0).build();
     let response = agent
         .post(endpoint)
         .set("content-type", "application/x-www-form-urlencoded")
@@ -490,7 +553,12 @@ fn tokens_from_response(response: &Value, base: Tokens) -> Result<Tokens, String
 }
 
 /// Exchange a refresh token for a new access token.
-pub fn refresh_tokens(token_endpoint: &str, refresh: &str, tokens: &Tokens) -> Result<Tokens, String> {
+fn refresh_tokens_with_timeout(
+    token_endpoint: &str,
+    refresh: &str,
+    tokens: &Tokens,
+    timeout: Duration,
+) -> Result<Tokens, String> {
     let mut pairs = vec![("grant_type", "refresh_token".to_string()), ("refresh_token", refresh.to_string())];
     if let Some(client_id) = &tokens.client_id {
         pairs.push(("client_id", client_id.clone()));
@@ -503,7 +571,7 @@ pub fn refresh_tokens(token_endpoint: &str, refresh: &str, tokens: &Tokens) -> R
     if let Some(resource) = &tokens.resource {
         pairs.push(("resource", resource.clone()));
     }
-    let response = post_form(token_endpoint, &pairs)?;
+    let response = post_form_with_timeout(token_endpoint, &pairs, timeout)?;
     tokens_from_response(&response, tokens.clone())
 }
 
@@ -886,6 +954,50 @@ mod tests {
     }
 
     #[test]
+    fn resource_validation_and_lock_wait_share_the_credential_deadline() {
+        let dir = std::env::temp_dir().join(format!("ta-mcp-auth-scope-{}", uuid::Uuid::new_v4()));
+        let store = Store::at(&dir.join("mcp-auth.json"));
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let mut original = token("private-token");
+        original.resource = Some("https://old.example/mcp".into());
+        original.token_endpoint = Some(format!("http://{}/token", listener.local_addr().unwrap()));
+        store.put("svc", &original).unwrap();
+        for rejected in [false, true] {
+            let error =
+                store.access_token_inner("svc", Some("https://new.example/mcp"), rejected, HTTP_TIMEOUT).unwrap_err();
+            assert!(error.contains("different resource"), "{error}");
+            assert!(!error.contains("private-token"));
+        }
+        assert_eq!(listener.accept().unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
+        let guard = store.lock().unwrap();
+        let started = std::time::Instant::now();
+        let error =
+            store.refresh_access_token_for("svc", "https://old.example/mcp", Duration::from_millis(40)).unwrap_err();
+        assert!(error.contains("lock timed out"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(listener.accept().unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
+        // Replace the record while a reader waits. It must validate the newly selected record, not a
+        // credential checked before obtaining the lock. The network endpoint receives neither token.
+        let reader = store.clone();
+        let waiting =
+            std::thread::spawn(move || reader.access_token_for("svc", "https://old.example/mcp", HTTP_TIMEOUT));
+        let mut changed = original.clone();
+        changed.resource = Some("https://new.example/mcp".into());
+        let mut file = store.read().unwrap();
+        file.services.insert("svc".into(), changed);
+        store.write(&file).unwrap();
+        drop(guard);
+        let error = waiting.join().unwrap().unwrap_err();
+        assert!(error.contains("different resource"), "{error}");
+        assert_eq!(listener.accept().unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
+        assert!(post_form_with_timeout(original.token_endpoint.as_ref().unwrap(), &[], Duration::ZERO)
+            .unwrap_err()
+            .contains("before dispatch"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn the_token_file_is_private_and_round_trips() {
         let dir = std::env::temp_dir().join(format!("ta-mcp-auth-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1051,7 +1163,7 @@ mod tests {
             "HTTP/1.1 307 Temporary Redirect\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
         );
         let (endpoint, source_thread) = serve_once(response);
-        let error = refresh_tokens(&endpoint, "do-not-forward", &token("old")).unwrap_err();
+        let error = refresh_tokens_with_timeout(&endpoint, "do-not-forward", &token("old"), HTTP_TIMEOUT).unwrap_err();
         assert!(error.contains("not JSON"), "{error}");
         source_thread.join().unwrap();
         assert!(!target_thread.join().unwrap(), "the redirect target received the credential form");

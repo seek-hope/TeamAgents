@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 /// Must match engine v2::daemon::PROTOCOL_VERSION.
-pub const PROTOCOL_VERSION: u64 = 1;
+pub const PROTOCOL_VERSION: u64 = crate::wire::VERSION;
 
 pub struct DaemonClient {
     socket: PathBuf,
@@ -20,6 +20,7 @@ pub struct DaemonClient {
     pub state_root: String,
     /// Highest event sequence delivered to the UI; reconnect resumes after it.
     watermark: i64,
+    needs_checkpoint: bool,
     /// Set when the last I/O failed; the next call reconnects first (§9).
     pub disconnected: bool,
     next_request: u64,
@@ -42,6 +43,7 @@ impl DaemonClient {
             session_id: greeting["session_id"].as_str().unwrap_or("").to_string(),
             state_root: greeting["state_root"].as_str().unwrap_or("").to_string(),
             watermark: 0,
+            needs_checkpoint: true,
             disconnected: false,
             next_request: 0,
         })
@@ -102,7 +104,8 @@ impl DaemonClient {
     fn roundtrip(&mut self, frame: &Json, request_id: &str) -> Result<Result<Json, String>, String> {
         let conn = self.conn.as_mut().ok_or("not connected")?;
         let deadline = Instant::now() + IO_TIMEOUT;
-        write_frame(&mut conn.writer, format!("{frame}\n").as_bytes(), deadline)?;
+        let bytes = crate::wire::encode_frame(frame)?;
+        write_frame(&mut conn.writer, &bytes, deadline)?;
         let line = read_frame(&mut conn.reader, deadline)?;
         let reply: Json = serde_json::from_str(&line).map_err(|e| format!("daemon reply JSON: {e}"))?;
         if reply["request_id"].as_str() != Some(request_id) {
@@ -115,25 +118,27 @@ impl DaemonClient {
         }
     }
 
-    /// Snapshot + watermark from one consistent read (§9 reconnect entry).
+    /// A snapshot refresh never acknowledges unread events. Initial connection and
+    /// explicit retention resync adopt its consistent watermark.
     pub fn checkpoint(&mut self) -> Result<(Json, i64), String> {
         let result = self.call("checkpoint", json!({}))?;
         let watermark = result["watermark"].as_i64().ok_or("checkpoint.watermark missing")?;
-        self.watermark = self.watermark.max(watermark);
-        Ok((result["snapshot"].clone(), watermark))
+        if self.needs_checkpoint {
+            self.watermark = watermark;
+            self.needs_checkpoint = false;
+        }
+        Ok((result["snapshot"].clone(), self.watermark))
     }
 
     /// Events after the delivered watermark; updates the delivered position.
     pub fn poll_events(&mut self) -> Result<Vec<Json>, String> {
         let result = self.call("events", json!({"since": self.watermark}))?;
         if result["resync_required"].as_bool().unwrap_or(false) {
-            return Err("event watermark was reclaimed; take a fresh checkpoint".into());
+            self.needs_checkpoint = true;
         }
-        let events = result["events"].as_array().cloned().unwrap_or_default();
-        if let Some(watermark) = result["watermark"].as_i64() {
-            self.watermark = self.watermark.max(watermark);
-        }
-        Ok(events)
+        let (cursor, _) = crate::wire::event_cursor(&result, self.watermark)?;
+        self.watermark = cursor;
+        Ok(result["events"].as_array().cloned().unwrap_or_default())
     }
 
     /// Current watermark (for tests and status views).
@@ -178,6 +183,9 @@ fn read_frame(reader: &mut BufReader<UnixStream>, deadline: Instant) -> Result<S
         }
         let end = bytes.iter().position(|byte| *byte == b'\n');
         let count = end.map_or(bytes.len(), |index| index + 1);
+        if line.len().saturating_add(count) > crate::wire::MAX_FRAME_BYTES {
+            return Err("daemon frame exceeds 32 MiB".into());
+        }
         line.extend_from_slice(&bytes[..count]);
         reader.consume(count);
         if end.is_some() {
@@ -343,6 +351,48 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_refresh_does_not_skip_pages_and_retention_resync_is_explicit() {
+        let page = |start, head, more| {
+            json!({"ok":true,"result":{
+            "events":[{"sequence":start,"kind":"note"}], "watermark":start,
+            "head_watermark":head, "has_more":more, "resync_required":false}})
+        };
+        let daemon = fake_daemon(
+            "pages",
+            PROTOCOL_VERSION,
+            vec![
+                json!({"ok":true,"result":{"snapshot":{},"watermark":3}}),
+                page(4, 6, true),
+                json!({"ok":true,"result":{"snapshot":{},"watermark":6}}),
+                page(5, 6, true),
+                page(6, 6, false),
+                json!({"ok":true,"result":{"events":[],"watermark":6,"head_watermark":9,
+                "has_more":false,"resync_required":true}}),
+                json!({"ok":true,"result":{"snapshot":{},"watermark":9}}),
+                page(10, 10, false),
+                json!({"ok":true,"result":{"events":[],"watermark":10,"head_watermark":12,
+                    "has_more":false,"resync_required":true,"resync_reason":"oversized_event","blocked_sequence":11}}),
+                json!({"ok":true,"result":{"snapshot":{},"watermark":12}}),
+                page(13, 13, false),
+            ],
+        );
+        let mut client = DaemonClient::connect(&daemon.socket).unwrap();
+        assert_eq!(client.checkpoint().unwrap().1, 3);
+        assert_eq!(client.poll_events().unwrap()[0]["sequence"], 4);
+        assert_eq!(client.checkpoint().unwrap().1, 4, "refresh must not acknowledge pages 5 and 6");
+        assert_eq!(client.poll_events().unwrap()[0]["sequence"], 5);
+        assert_eq!(client.poll_events().unwrap()[0]["sequence"], 6);
+        assert!(client.poll_events().unwrap_err().contains("reclaimed"));
+        assert_eq!(client.watermark(), 6);
+        assert_eq!(client.checkpoint().unwrap().1, 9);
+        assert_eq!(client.poll_events().unwrap()[0]["sequence"], 10);
+        assert!(client.poll_events().unwrap_err().contains("4 MiB"));
+        assert_eq!(client.watermark(), 10, "a refused oversized event is not delivered");
+        assert_eq!(client.checkpoint().unwrap().1, 12, "explicit resync adopts the checkpoint");
+        assert_eq!(client.poll_events().unwrap()[0]["sequence"], 13);
+    }
+
+    #[test]
     fn lost_connection_marks_disconnected_and_reconnect_resumes() {
         let daemon = fake_daemon(
             "reconnect",
@@ -361,7 +411,7 @@ mod tests {
             "reconnect2",
             PROTOCOL_VERSION,
             vec![
-                json!({"ok": true, "result": {"events": [{"sequence": 4, "kind": "note"}], "watermark": 4, "resync_required": false}}),
+                json!({"ok": true, "result": {"events": [{"sequence": 4, "kind": "note"}], "watermark": 4, "head_watermark": 4, "has_more": false, "resync_required": false}}),
             ],
         );
         client.socket = daemon2.socket.clone();

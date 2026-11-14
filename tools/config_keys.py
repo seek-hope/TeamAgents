@@ -54,7 +54,7 @@ import re
 import sys
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
-CONFIG_STRUCTS = ("UserConfig", "ModelProfile", "ToolBinding", "Retention", "Hooks", "WorkLimits", "CheckSpec")
+CONFIG_STRUCTS = ("UserConfig", "ModelProfile", "PriceRates", "ToolBinding", "Retention", "Hooks", "WorkLimits", "CheckSpec")
 # declaration, parsing/merging/validation, the doctor surface and the argv parser: none of them *use* a key
 PLUMBING = {"core/src/models.rs", "engine/src/config.rs", "engine/src/cli.rs", "engine/src/main.rs"}
 

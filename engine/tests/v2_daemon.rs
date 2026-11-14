@@ -114,6 +114,8 @@ fn finish_call(summary: &str) -> Json {
 }
 
 mod common;
+#[path = "cases/event_pages.rs"]
+mod event_pages;
 #[path = "cases/inputs.rs"]
 mod inputs;
 
@@ -222,7 +224,7 @@ impl Client {
 }
 
 /// Poll events after `since` until the work completes; returns (status, watermark).
-async fn wait_work(client: &mut Client, since: i64) -> (String, i64) {
+async fn wait_work(client: &mut Client, mut since: i64) -> (String, i64) {
     for _ in 0..600 {
         let reply = client.call("events", json!({"since": since})).await;
         assert_eq!(reply["ok"], json!(true), "{reply}");
@@ -234,6 +236,7 @@ async fn wait_work(client: &mut Client, since: i64) -> (String, i64) {
                 reply["result"]["watermark"].as_i64().unwrap(),
             );
         }
+        since = reply["result"]["watermark"].as_i64().unwrap();
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     panic!("work not completed within 15s");

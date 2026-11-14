@@ -1282,6 +1282,14 @@ fn drain_inbox(tx: &Connection, session_id: &str, params: &Json, identity: &Iden
         tx.execute("UPDATE envelopes SET state = 'APPLIED' WHERE id = ?1", [&id])
             .map_err(|e| format!("apply envelope {id}: {e}"))?;
         if kind == "user_input" {
+            event(
+                tx,
+                session_id,
+                "input",
+                instance_id,
+                &json!({"envelope_id":id,"applied":true,
+                "epoch":epoch,"context_head":context_head(tx, instance_id)?}),
+            )?;
             work::admit_input(tx, session_id, instance_id, &id)?;
             supersede_input_waits(tx, instance_id)?;
         } else {
@@ -2267,6 +2275,7 @@ fn submit_input(tx: &Connection, session_id: &str, params: &Json, identity: &Ide
                          "phase": phase, "instance_revision": revision}));
     }
     let applied = append_context(tx, instance_id, epoch, "user", &message, Some(envelope_id), &json!([]))?;
+    let input_head = context_head(tx, instance_id)?;
     if applied {
         work::admit_input(tx, session_id, instance_id, envelope_id)?;
         tx.execute("UPDATE instances SET revision=revision+1 WHERE id=?1", [instance_id])
@@ -2279,7 +2288,14 @@ fn submit_input(tx: &Connection, session_id: &str, params: &Json, identity: &Ide
         supersede_input_waits(tx, instance_id)?;
     }
     publish_list(tx, session_id, params)?;
-    event(tx, session_id, "input", instance_id, &json!({"envelope_id": envelope_id, "applied": applied}))?;
+    event(
+        tx,
+        session_id,
+        "input",
+        instance_id,
+        &json!({"envelope_id": envelope_id, "applied": applied,
+        "epoch":epoch,"context_head":input_head}),
+    )?;
     Ok(json!({"envelope_id": envelope_id, "applied": applied, "instance_revision": load_instance(tx,instance_id)?.4}))
 }
 
@@ -2523,6 +2539,11 @@ fn append_entry(
     Ok(id)
 }
 
+fn context_head(tx: &Connection, instance: &str) -> Result<i64, String> {
+    tx.query_row("SELECT context_head FROM instances WHERE id=?1", [instance], |row| row.get(0))
+        .map_err(|e| format!("context position: {e}"))
+}
+
 /// READY → MODEL_PENDING with the fixed request and budget reservation (§3).
 /// The revision check is the single-executor guarantee (§6.1).
 fn begin_request(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
@@ -2591,6 +2612,7 @@ fn begin_request(tx: &Connection, session_id: &str, params: &Json, identity: &Id
         rusqlite::params![request_id, instance_id, epoch, work_id, request_ref, est, offered, authorized],
     )
     .map_err(|e| format!("begin_request {request_id}: {e}"))?;
+    super::pricing::freeze(tx, request_id, &params["pricing"])?;
     tx.execute(
         "UPDATE instances SET phase = 'MODEL_PENDING', active_request_id = ?1, revision = revision + 1 WHERE id = ?2",
         rusqlite::params![request_id, instance_id],
@@ -2598,7 +2620,14 @@ fn begin_request(tx: &Connection, session_id: &str, params: &Json, identity: &Id
     .map_err(|e| format!("begin_request phase: {e}"))?;
     let _ = identity;
     publish_list(tx, session_id, params)?;
-    event(tx, session_id, "request_began", instance_id, &json!({"request_id": request_id}))?;
+    event(
+        tx,
+        session_id,
+        "request_began",
+        instance_id,
+        &json!({"request_id": request_id,
+        "epoch":epoch,"context_head":context_head(tx, instance_id)?,"work_id":work_id}),
+    )?;
     Ok(json!({"request_id": request_id, "phase": "MODEL_PENDING", "epoch": epoch}))
 }
 
@@ -2750,9 +2779,10 @@ fn record_attempt(tx: &Connection, session_id: &str, params: &Json) -> Result<Js
     if request_status != "PENDING" {
         return Err(format!("request {request_id} is {request_status}; attempts for closed requests are refused"));
     }
+    let cost = super::pricing::attempt_cost(tx, request_id, &usage)?;
     tx.execute(
-        "INSERT INTO attempts (attempt_id, request_id, status, error_class, response_ref, usage_json, elapsed_ms, created)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO attempts (attempt_id, request_id, status, error_class, response_ref, usage_json, elapsed_ms, created, cost_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         rusqlite::params![
             attempt_id,
             request_id,
@@ -2761,7 +2791,8 @@ fn record_attempt(tx: &Connection, session_id: &str, params: &Json) -> Result<Js
             response_ref,
             usage.to_string(),
             elapsed,
-            crate::models::now()
+            crate::models::now(),
+            cost.to_string()
         ],
     )
     .map_err(|e| format!("record_attempt {attempt_id}: {e}"))?;
@@ -2805,7 +2836,7 @@ fn record_attempt(tx: &Connection, session_id: &str, params: &Json) -> Result<Js
         "attempt_recorded",
         request_id,
         &json!({"attempt_id": attempt_id, "status": status, "selected": selected, "stream": stream,
-                "usage": if usage.is_null() { Json::Null } else { usage.clone() }}),
+                "cost": cost, "usage": if usage.is_null() { Json::Null } else { usage.clone() }}),
     )?;
     Ok(json!({"attempt_id": attempt_id, "selected": selected}))
 }
@@ -2866,13 +2897,15 @@ fn begin_compression(tx: &Connection, session_id: &str, params: &Json, identity:
         rusqlite::params![request_id, instance_id, epoch, work_id, request_ref, est, REQUEST_KIND_COMPRESSION],
     )
     .map_err(|e| format!("begin_compression {request_id}: {e}"))?;
+    super::pricing::freeze(tx, request_id, &params["pricing"])?;
     let _ = identity;
     event(
         tx,
         session_id,
         "compression_began",
         instance_id,
-        &json!({"request_id": request_id, "work_id": work_id, "est_prompt_tokens": est}),
+        &json!({"request_id": request_id, "work_id": work_id, "est_prompt_tokens": est,
+            "epoch":epoch,"context_head":context_head(tx, instance_id)?}),
     )?;
     Ok(json!({"request_id": request_id, "work_id": work_id, "epoch": epoch, "kind": REQUEST_KIND_COMPRESSION}))
 }
@@ -3739,6 +3772,19 @@ fn complete_operation(tx: &Connection, session_id: &str, params: &Json) -> Resul
     }
     expire_pending_approvals(tx, operation_id)?;
     publish_list(tx, session_id, params)?;
+    if let Some(reference) = receipt.get("output_ref").filter(|value| !value.is_null()) {
+        let id = reference.as_str().ok_or("operation output_ref must be an artifact id")?;
+        let live: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM artifacts WHERE id=?1 AND session_id=?2 AND completeness='LIVE')",
+                rusqlite::params![id, session_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("operation artifact reference: {error}"))?;
+        if !live {
+            return Err(format!("operation output artifact {id} is not LIVE in this session"));
+        }
+    }
     let open = consume_if_closed(tx, session_id, &decision_id)?;
     event(tx, session_id, "operation_completed", operation_id, &json!({"status": status}))?;
     let woken = wake_satisfied(tx, session_id)?;
@@ -3861,6 +3907,13 @@ fn consume_if_closed(tx: &Connection, session_id: &str, decision_id: &str) -> Re
             Some(&operation_id),
             &json!([operation_id]),
         )?;
+        if let Some(id) = receipt["output_ref"].as_str() {
+            tx.execute(
+                "UPDATE context_entries SET payload_ref=?1 WHERE instance_id=?2 AND epoch=?3 AND envelope_id=?4",
+                rusqlite::params![id, instance, epoch, operation_id],
+            )
+            .map_err(|error| format!("tool output reference: {error}"))?;
+        }
     }
     tx.execute(
         "UPDATE instances SET phase = 'READY', revision = revision + 1 WHERE id = ?1 AND phase = 'TOOLS_PENDING' AND context_epoch = ?2",
@@ -4111,20 +4164,21 @@ fn begin_review(tx: &Connection, session_id: &str, params: &Json, identity: &Ide
     let request_id = params["request_id"].as_str().ok_or("begin_review.request_id required")?;
     let operation_id = params["operation_id"].as_str().ok_or("begin_review.operation_id required")?;
     let est = params["est_prompt_tokens"].as_i64().ok_or("begin_review.est_prompt_tokens required")?;
-    let (instance_id, epoch, operation_work, operation_status, approval_status): (
+    let (instance_id, epoch, operation_work, operation_status, approval_status, parent_request_id): (
         String,
         i64,
         Option<String>,
         String,
         String,
+        String,
     ) = tx
         .query_row(
-            "SELECT r.instance_id,o.epoch,o.work_id,o.status,a.status FROM operations o
+            "SELECT r.instance_id,o.epoch,o.work_id,o.status,a.status,r.request_id FROM operations o
              JOIN decisions d ON d.decision_id=o.decision_id JOIN model_requests r ON r.request_id=d.request_id
              JOIN instances i ON i.id=r.instance_id JOIN approvals a ON a.operation_id=o.operation_id
              WHERE o.operation_id=?1 AND i.session_id=?2",
             rusqlite::params![operation_id, session_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
         )
         .map_err(|e| format!("begin_review operation {operation_id}: {e}"))?;
     if operation_status != "PREPARED" || approval_status != "PENDING" {
@@ -4197,13 +4251,14 @@ fn begin_review(tx: &Connection, session_id: &str, params: &Json, identity: &Ide
         rusqlite::params![request_id, instance_id, epoch, work_id, operation_id, est],
     )
     .map_err(|e| format!("begin_review {request_id}: {e}"))?;
+    super::pricing::freeze(tx, request_id, &params["pricing"])?;
     event(
         tx,
         session_id,
         "review_began",
         &instance_id,
         &json!({"request_id": request_id, "operation_id": operation_id, "work_id": work_id,
-                "est_prompt_tokens": est}),
+                "est_prompt_tokens": est,"parent_request_id":parent_request_id}),
     )?;
     Ok(json!({"request_id": request_id, "work_id": work_id, "operation_id": operation_id,
               "kind": "review", "epoch": epoch}))
@@ -5443,7 +5498,9 @@ fn artifact_gc_claim(tx: &Connection, session_id: &str, params: &Json) -> Result
         let mut stmt = tx
             .prepare(
                 "SELECT id FROM artifacts
-                 WHERE session_id = ?1 AND completeness = 'LIVE' AND owner_ref IS NULL
+                 WHERE session_id = ?1 AND completeness IN ('LIVE','DELETING') AND owner_ref IS NULL
+                   AND id NOT IN (SELECT json_extract(receipt_json,'$.output_ref') FROM operations
+                                  WHERE json_extract(receipt_json,'$.output_ref') IS NOT NULL)
                    AND id NOT IN (SELECT payload_ref FROM context_entries WHERE payload_ref IS NOT NULL)
                    AND id NOT IN (SELECT request_ref FROM model_requests)
                    AND id NOT IN (SELECT response_ref FROM attempts WHERE response_ref IS NOT NULL)
@@ -5457,12 +5514,17 @@ fn artifact_gc_claim(tx: &Connection, session_id: &str, params: &Json) -> Result
             .map_err(|e| format!("gc query: {e}"))?;
         rows.collect::<Result<Vec<String>, _>>().map_err(|e| format!("gc collect: {e}"))?
     };
+    let mut claimed = Vec::new();
     for id in &candidates {
-        tx.execute("UPDATE artifacts SET completeness = 'DELETING' WHERE id = ?1 AND completeness = 'LIVE'", [id])
+        let changed = tx
+            .execute("UPDATE artifacts SET completeness = 'DELETING' WHERE id = ?1 AND completeness = 'LIVE'", [id])
             .map_err(|e| format!("gc claim {id}: {e}"))?;
+        if changed == 1 {
+            claimed.push(id.clone());
+        }
     }
-    event(tx, session_id, "artifacts_gc_claimed", "", &json!({"claimed": candidates.len()}))?;
-    Ok(json!({"claimed": candidates}))
+    event(tx, session_id, "artifacts_gc_claimed", "", &json!({"claimed": claimed.len()}))?;
+    Ok(json!({"claimed": claimed, "pending": candidates}))
 }
 
 /// Release an owner's hold once its subject is spent (D-436).
@@ -5759,6 +5821,8 @@ fn artifact_collect(tx: &Connection, session_id: &str, params: &Json) -> Result<
     let referenced: i64 = tx
         .query_row(
             "SELECT COUNT(*) FROM artifacts WHERE id = ?1 AND (owner_ref IS NOT NULL
+               OR id IN (SELECT json_extract(receipt_json,'$.output_ref') FROM operations
+                         WHERE json_extract(receipt_json,'$.output_ref') IS NOT NULL)
                OR id IN (SELECT payload_ref FROM context_entries WHERE payload_ref IS NOT NULL)
                OR id IN (SELECT request_ref FROM model_requests)
                OR id IN (SELECT response_ref FROM attempts WHERE response_ref IS NOT NULL)
@@ -6381,12 +6445,29 @@ mod tests {
         assert!(err.contains("stale executor"), "{err}");
         let ok = ctl
             .submit(
-                cmd("b-1", "begin_request", json!({"instance_id": "i1", "request_id": "r1", "revision": 0})),
+                cmd(
+                    "b-1",
+                    "begin_request",
+                    json!({"instance_id": "i1", "request_id": "r1", "revision": 0,
+                    "epoch":99,"context_head":9999,"work_id":"forged-owner"}),
+                ),
                 Identity::Instance("i1".into()),
             )
             .expect("begin");
         assert_eq!(ok["phase"], json!("MODEL_PENDING"));
         assert_eq!(phase_of(&ctl, "i1"), "MODEL_PENDING");
+        let recorded: String = ctl
+            .connection()
+            .query_row(
+                "SELECT payload_json FROM events WHERE kind='request_began' ORDER BY sequence DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let recorded: Json = serde_json::from_str(&recorded).unwrap();
+        assert_eq!(recorded["epoch"], 0);
+        assert_eq!(recorded["context_head"], 0);
+        assert_eq!(recorded["work_id"], Json::Null, "request ownership is derived from transaction state");
         // a second dispatch while MODEL_PENDING is refused
         let err = ctl
             .submit(
@@ -6736,14 +6817,96 @@ mod tests {
         // the released-and-unreferenced one is claimable, the referenced one is not: the release changes the
         // *owner* hold only, the reference clauses still decide
         assert_eq!(claimed["claimed"], json!(["art-req-done"]), "a referenced artifact is not claimable");
-        // …and once nothing references it, the ordinary claim takes it — which is the point: `history_days` can
-        // now free bytes, because the reference it swept was the only thing left holding them
+        // A retained operation receipt protects old roots whose context entry lacks payload_ref.
         ctl.connection().execute("DELETE FROM context_entries WHERE payload_ref = 'art-op-done'", []).unwrap();
+        ctl.connection()
+            .execute(
+                "UPDATE operations SET receipt_json=?1 WHERE operation_id='op-done'",
+                [json!({"output_ref":"art-op-done"}).to_string()],
+            )
+            .unwrap();
+        let held = ctl.submit(cmd("gc-receipt", "artifact_gc_claim", json!({})), Identity::System).unwrap();
+        assert_eq!(held["claimed"], json!([]));
+        // Also preserve bytes claimed by an earlier build before it recognized receipt references.
+        ctl.connection().execute("UPDATE artifacts SET completeness='DELETING' WHERE id='art-op-done'", []).unwrap();
+        let pending = ctl.submit(cmd("gc-old-claim", "artifact_gc_claim", json!({})), Identity::System).unwrap();
+        assert!(!pending["pending"].as_array().unwrap().contains(&json!("art-op-done")));
+        let error = ctl
+            .submit(cmd("gc-held-collect", "artifact_collect", json!({"id":"art-op-done"})), Identity::System)
+            .unwrap_err();
+        assert!(error.contains("still referenced"), "{error}");
+        // Arrange an actually unreferenced artifact; the fixture removes its reference explicitly.
+        ctl.connection().execute("UPDATE operations SET receipt_json=NULL WHERE operation_id='op-done'", []).unwrap();
+        ctl.connection().execute("UPDATE artifacts SET completeness='LIVE' WHERE id='art-op-done'", []).unwrap();
         let claimed =
             ctl.submit(cmd("gc-2", "artifact_gc_claim", json!({"limit": 10})), Identity::System).expect("claim");
         assert_eq!(claimed["claimed"], json!(["art-op-done"]));
         // a second release finds nothing new: the hold is already gone
         assert_eq!(released(&mut ctl, "rel-2", 30), Vec::<String>::new());
+        cleanup(&path);
+    }
+
+    #[test]
+    fn operation_output_references_publish_atomically_and_survive_consumption() {
+        let (mut ctl, path) = control("output-reference");
+        create_instance(&mut ctl, "i1");
+        let request = begin_and_complete(&mut ctl, "o1", "i1", 0);
+        ctl.submit(
+            cmd(
+                "import",
+                "import_response",
+                json!({"request_id":request,"decision_id":"d1",
+            "entry":{"role":"assistant","content":"run"},
+            "intents":[{"index":0,"call_id":"call","name":"shell","args":{"command":"echo ok"}}]}),
+            ),
+            Identity::System,
+        )
+        .unwrap();
+        ctl.submit(
+            cmd("stage", "artifact_stage", json!({"id":"out","digest":"sha256:test","storage_ref":"/tmp/test-output"})),
+            Identity::System,
+        )
+        .unwrap();
+        ctl.submit(cmd("publish", "artifact_publish", json!({"id":"out"})), Identity::System).unwrap();
+        ctl.submit(cmd("claim", "artifact_gc_claim", json!({})), Identity::System).unwrap();
+        for (n, reference) in [json!("out"), json!("missing"), json!(12)].into_iter().enumerate() {
+            let error = ctl
+                .submit(
+                    cmd(
+                        &format!("invalid-{n}"),
+                        "complete_operation",
+                        json!({"operation_id":"d1:0","status":"SUCCEEDED",
+                "receipt":{"content":"head","output_ref":reference}}),
+                    ),
+                    Identity::System,
+                )
+                .unwrap_err();
+            assert!(error.contains("artifact"), "{error}");
+            let status: String = ctl
+                .connection()
+                .query_row("SELECT status FROM operations WHERE operation_id='d1:0'", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(status, "PREPARED");
+        }
+        // Return the test artifact to staging to exercise the atomic publication path.
+        ctl.connection().execute("UPDATE artifacts SET completeness='STAGING' WHERE id='out'", []).unwrap();
+        ctl.submit(
+            cmd(
+                "complete",
+                "complete_operation",
+                json!({"operation_id":"d1:0","status":"SUCCEEDED",
+            "receipt":{"content":"head","output_ref":"out"},"publish":["out"]}),
+            ),
+            Identity::System,
+        )
+        .unwrap();
+        let reference: String = ctl
+            .connection()
+            .query_row("SELECT payload_ref FROM context_entries WHERE envelope_id='d1:0'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(reference, "out");
+        let gc = ctl.submit(cmd("protected", "artifact_gc_claim", json!({})), Identity::System).unwrap();
+        assert_eq!(gc["pending"], json!([]));
         cleanup(&path);
     }
 
@@ -6792,6 +6955,7 @@ mod tests {
         // re-claim finds nothing new
         let again = ctl.submit(cmd("gc-2", "artifact_gc_claim", json!({})), Identity::System).expect("gc again");
         assert_eq!(again["claimed"], json!([]));
+        assert_eq!(again["pending"], json!(["art-live"]), "a failed deletion remains eligible for retry");
         // D-191: the collector's second half. Collecting is refused for anything the claim did not take — a
         // STAGING row, a referenced LIVE row — and for a row that is already gone.
         let err = ctl
@@ -7071,7 +7235,10 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        let begin = |request: &str, estimate: i64| json!({"request_id": request, "operation_id": "d-x:0", "est_prompt_tokens": estimate});
+        let begin = |request: &str, estimate: i64| {
+            json!({"request_id": request, "operation_id": "d-x:0", "est_prompt_tokens": estimate,
+            "pricing":{"model":"review-fixture","rates":{"input_usd_per_million":2.0,"output_usd_per_million":8.0,"source":"review test tariff"}}})
+        };
         assert!(ctl.submit(cmd("review-user", "begin_review", begin("review-user", 1)), Identity::User).is_err());
         let first = ctl.submit(cmd("begin-review-1", "begin_review", begin("review-1", 10)), Identity::System).unwrap();
         assert_eq!(first["work_id"], json!("g1"));
@@ -7091,7 +7258,7 @@ mod tests {
             cmd(
                 "record-review-1",
                 "record_review_attempt",
-                json!({"request_id": "review-1", "attempt_id": "review-1/a1", "status": "COMPLETE",
+                json!({"request_id": "review-1", "attempt_id": "review-1/a1", "status": "FAILED",
                        "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}}),
             ),
             Identity::System,
@@ -7143,6 +7310,117 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM model_requests WHERE request_id='review-over'", [], |row| row.get(0))
             .unwrap();
         assert_eq!(registered, 0, "a refused review never calls the model or registers a request");
+        let costs = crate::v2::pricing::work_costs(ctl.connection()).unwrap();
+        assert_eq!(costs["g1"]["complete"], false);
+        assert_eq!(costs["g1"]["usage_without_receipt"], false, "failed reviews retain their known receipt usage");
+        assert_eq!(costs["g1"]["unpriced_attempts"], 2, "the unpriced turn and lost review both remain visible");
+        assert!((costs["g1"]["known_estimated_usd"].as_f64().unwrap() - 0.000048).abs() < 1e-12);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn closed_unreceipted_requests_never_look_free() {
+        let (mut ctl, path) = control("closed-cost");
+        for (n, method) in ["begin_request", "begin_compression"].into_iter().enumerate() {
+            let instance = format!("i{n}");
+            let work = format!("g{n}");
+            let request = format!("request-{n}");
+            create_instance(&mut ctl, &instance);
+            ctl.submit(
+                cmd(&format!("work-{n}"), "create_work", json!({"id":work,"instance_id":instance})),
+                Identity::User,
+            )
+            .unwrap();
+            let revision = revision_of(&ctl, &instance);
+            ctl.submit(
+                cmd(
+                    &format!("begin-{n}"),
+                    method,
+                    json!({"instance_id":instance,"request_id":request,
+                "revision":revision,"est_prompt_tokens":1}),
+                ),
+                Identity::System,
+            )
+            .unwrap();
+            ctl.submit(cmd(&format!("cancel-{n}"), "cancel_request", json!({"request_id":request})), Identity::User)
+                .unwrap();
+            let costs = crate::v2::pricing::work_costs(ctl.connection()).unwrap();
+            assert_eq!(costs[&work]["pending_requests"], 0);
+            assert_eq!(costs[&work]["attempts"], 0);
+            assert_eq!(costs[&work]["complete"], false, "{method} lost its receipt: {}", costs[&work]);
+            assert_eq!(costs[&work]["usage_without_receipt"], true);
+        }
+        drop(ctl);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn pricing_receipts_freeze_tariffs_survive_reopen_and_count_unknown_calls() {
+        let (mut ctl, path) = control("frozen-pricing");
+        create_instance(&mut ctl, "i1");
+        ctl.submit(cmd("cost-work", "create_work", json!({"id":"g1","instance_id":"i1"})), Identity::User).unwrap();
+        let pricing = json!({"model":"fixture","rates":{"input_usd_per_million":2.0,"output_usd_per_million":8.0,
+            "cache_read_usd_per_million":0.2,"cache_write_usd_per_million":3.0,"source":"fixture tariff 2026-11-14"}});
+        for (n, method) in ["begin_request", "begin_compression"].into_iter().enumerate() {
+            let request = format!("priced-{n}");
+            let revision = revision_of(&ctl, "i1");
+            ctl.submit(
+                cmd(
+                    &request,
+                    method,
+                    json!({"instance_id":"i1","request_id":request,"revision":revision,
+                "pricing":pricing,"est_prompt_tokens":1000}),
+                ),
+                Identity::Instance("i1".into()),
+            )
+            .unwrap();
+            let attempt = cmd(
+                &format!("cost-a-{n}"),
+                "record_attempt",
+                json!({"request_id":request,
+                "attempt_id":format!("a-{n}"),"status":"COMPLETE",
+                "pricing":{"model":"changed","rates":null},
+                "usage":{"prompt_tokens":1000,"completion_tokens":100,"total_tokens":1100,
+                         "cache_hit_tokens":400,"cache_write_tokens":200}}),
+            );
+            ctl.submit(attempt.clone(), Identity::System).unwrap();
+            ctl.submit(attempt, Identity::System).unwrap();
+        }
+        ctl.submit(
+            cmd(
+                "unknown-cost",
+                "record_attempt",
+                json!({"request_id":"priced-0",
+            "attempt_id":"unknown-cost","status":"LOST","unknown_usage":true}),
+            ),
+            Identity::System,
+        )
+        .unwrap();
+        drop(ctl);
+        let ctl = Control::open(&path, "s1", false).unwrap();
+        let costs = crate::v2::pricing::work_costs(ctl.connection()).unwrap();
+        assert_eq!(costs["g1"]["attempts"], 3);
+        assert_eq!(costs["g1"]["unpriced_attempts"], 1);
+        assert_eq!(costs["g1"]["complete"], false);
+        assert!((costs["g1"]["known_estimated_usd"].as_f64().unwrap() - 0.00456).abs() < 1e-12);
+        let receipt: String = ctl
+            .connection()
+            .query_row("SELECT cost_json FROM attempts WHERE attempt_id='a-0'", [], |r| r.get(0))
+            .unwrap();
+        let receipt: Json = serde_json::from_str(&receipt).unwrap();
+        assert_eq!(receipt["rates"]["source"], "fixture tariff 2026-11-14");
+        // An old schema-9 store gets nullable receipts, never invented historical prices.
+        ctl.connection()
+            .execute_batch(
+                "ALTER TABLE attempts DROP COLUMN cost_json; ALTER TABLE model_requests DROP COLUMN pricing_json",
+            )
+            .unwrap();
+        drop(ctl);
+        let ctl = Control::open(&path, "s1", false).unwrap();
+        let costs = crate::v2::pricing::work_costs(ctl.connection()).unwrap();
+        assert_eq!(costs["g1"]["unpriced_attempts"], 3);
+        assert_eq!(costs["g1"]["known_estimated_usd"], 0.0);
+        drop(ctl);
         cleanup(&path);
     }
 

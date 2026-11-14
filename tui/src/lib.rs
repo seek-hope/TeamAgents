@@ -19,6 +19,9 @@ pub mod v2app;
 pub mod v2ui;
 pub mod viewport;
 pub mod wrap;
+// Share the wire contract without linking the storage/runtime into the presentation crate.
+#[path = "../../core/src/v2/wire.rs"]
+pub mod wire;
 
 /// Epoch seconds, the unit the daemon reports deadlines in. A small module-level
 /// helper so the status line and its test agree on what "now" means.

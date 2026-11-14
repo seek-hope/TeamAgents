@@ -308,7 +308,7 @@ fn failed_deletion_keeps_history_and_refuses_path_aliases_and_workspaces() {
         writeln!(
             stream,
             "{}",
-            json!({"server": "teamagents-daemon", "protocol_version": 1,
+            json!({"server": "teamagents-daemon", "protocol_version": 2,
             "session_id": "s-main", "state_root": socket.parent().unwrap()})
         )
         .unwrap();

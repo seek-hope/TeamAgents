@@ -273,30 +273,76 @@ pub fn args_hash(args: &Json) -> String {
 /// instead — the same order as one high-detail tile — which is the deliberate approximation (D-392).
 pub const IMAGE_TOKEN_ALLOWANCE: u64 = 1_100;
 
-/// `value` with every `data:image/` payload replaced by a short marker, and the number of images seen (D-392).
-/// The prefix, not a length, decides: a one-pixel PNG is as much an image as a photograph, and the length rule is
-/// exactly what the allowance replaces. Cloning is fine here: the estimate is already O(size) over a body that is
-/// about to be serialized anyway, and masking keeps every existing number identical when there is no image.
-fn mask_image_payloads(value: &Json, images: &mut u64) -> Json {
-    match value {
-        Json::String(text) if text.starts_with("data:image/") => {
-            *images += 1;
-            Json::String("[image]".into())
+/// Count the same compact JSON representation without cloning a masked value or retaining its serialized bytes.
+#[derive(Default)]
+struct TokenCounter {
+    ascii: u64,
+    non_ascii: u64,
+    images: u64,
+}
+
+impl std::io::Write for TokenCounter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        for byte in bytes {
+            if byte.is_ascii() {
+                self.ascii += 1;
+            } else if byte & 0xc0 != 0x80 {
+                // Each UTF-8 leading byte represents one scalar, even if serializer writes split a code point.
+                self.non_ascii += 1;
+            }
         }
-        Json::Array(items) => Json::Array(items.iter().map(|item| mask_image_payloads(item, images)).collect()),
-        Json::Object(map) => {
-            Json::Object(map.iter().map(|(key, item)| (key.clone(), mask_image_payloads(item, images))).collect())
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl TokenCounter {
+    fn serialized(&mut self, value: &impl serde::Serialize) {
+        // JSON values/strings serialize infallibly into this counting sink.
+        serde_json::to_writer(self, value).expect("JSON token counting cannot fail");
+    }
+    fn array(&mut self, items: &[Json]) {
+        self.ascii += 2 + items.len().saturating_sub(1) as u64;
+        for item in items {
+            self.value(item);
         }
-        other => other.clone(),
+    }
+    fn value(&mut self, value: &Json) {
+        match value {
+            Json::String(text) if text.starts_with("data:image/") => {
+                self.images += 1;
+                self.serialized(&"[image]");
+            }
+            Json::Array(items) => self.array(items),
+            Json::Object(map) => {
+                self.ascii += 2 + map.len().saturating_sub(1) as u64 + map.len() as u64;
+                for (key, item) in map {
+                    self.serialized(key);
+                    self.value(item);
+                }
+            }
+            other => self.serialized(other),
+        }
+    }
+    fn finish(self) -> u64 {
+        self.ascii.div_ceil(4) + self.non_ascii + self.images * IMAGE_TOKEN_ALLOWANCE
     }
 }
 
 pub fn estimated_tokens(value: &Json) -> u64 {
-    let mut images = 0;
-    let masked = mask_image_payloads(value, &mut images);
-    let text = masked.to_string();
-    let ascii = text.bytes().filter(u8::is_ascii).count();
-    (ascii.div_ceil(4) + text.chars().filter(|c| !c.is_ascii()).count()) as u64 + images * IMAGE_TOKEN_ALLOWANCE
+    let mut count = TokenCounter::default();
+    count.value(value);
+    count.finish()
+}
+
+/// Equivalent to estimating the messages/tools JSON object, while borrowing its large arrays.
+pub fn estimated_request_tokens(messages: &[Json], tools: &[Json]) -> u64 {
+    let mut count = TokenCounter { ascii: b"{\"messages\":,\"tools\":}".len() as u64, ..Default::default() };
+    count.array(messages);
+    count.array(tools);
+    count.finish()
 }
 
 /// Per-call model-facing output cap (same policy as the legacy loop). D-426 lets a session lower it

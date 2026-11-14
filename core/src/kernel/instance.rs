@@ -100,7 +100,7 @@ impl KernelInstance {
         messages.extend(wire);
         let mut tools = self.profile.tools.clone();
         tools.extend(builtin_tool_schemas());
-        let est = estimated_tokens(&json!({"messages": messages, "tools": tools}));
+        let est = estimated_request_tokens(&messages, &tools);
         (
             ModelRequest {
                 request_id: request_id.to_string(),
@@ -287,10 +287,11 @@ pub fn finish_status_problem(args: &Json) -> Option<String> {
 /// stored context is not modified. Ceiling: this also covers a call whose receipt
 /// was lost for another reason, where the model reads that no result follows
 /// instead of the turn dying on a rejected request.
-fn pair_tool_results(messages: &[Json]) -> Vec<Json> {
-    let mut out: Vec<Json> = Vec::with_capacity(messages.len());
-    let mut placed = vec![false; messages.len()];
-    for (index, message) in messages.iter().enumerate() {
+fn pair_tool_results(entries: &[ContextEntry]) -> Vec<Json> {
+    let mut out: Vec<Json> = Vec::with_capacity(entries.len());
+    let mut placed = vec![false; entries.len()];
+    for (index, entry) in entries.iter().enumerate() {
+        let message = &entry.message;
         if placed[index] {
             continue;
         }
@@ -309,8 +310,9 @@ fn pair_tool_results(messages: &[Json]) -> Vec<Json> {
         // DeepSeek rejected the request (400, a real session). Claiming the
         // first unplaced answer for each id keeps every answer with its own call.
         let mut pending: Vec<&str> = ids.clone();
-        for (later, candidate) in messages.iter().enumerate().skip(index + 1) {
-            if placed[later] || candidate["role"] != json!("tool") {
+        for (later, entry) in entries.iter().enumerate().skip(index + 1) {
+            let candidate = &entry.message;
+            if placed[later] || candidate["role"].as_str() != Some("tool") {
                 continue;
             }
             let Some(id) = candidate["tool_call_id"].as_str() else { continue };
@@ -318,6 +320,9 @@ fn pair_tool_results(messages: &[Json]) -> Vec<Json> {
             out.push(candidate.clone());
             placed[later] = true;
             pending.remove(at);
+            if pending.is_empty() {
+                break;
+            }
         }
         for id in pending {
             out.push(json!({"role": "tool", "tool_call_id": id,
@@ -343,13 +348,12 @@ fn materialize(
     frozen: Option<&HashSet<String>>,
 ) -> (Vec<Json>, Option<HashSet<String>>) {
     let output_cap = output_chars.unwrap_or(TOOL_OUTPUT_CAP).max(1);
-    let stored: Vec<Json> = entries.iter().map(|entry| entry.message.clone()).collect();
-    let messages = pair_tool_results(&stored);
+    let messages = pair_tool_results(entries);
     let last_assistant = messages.iter().rposition(|m| m["role"] == "assistant").unwrap_or(0);
     // The first readback recipe is the stable one: a later readback of the same
     // tool call must not rewrite the hint on an earlier masked message, or the
     // provider sees a changed prefix even though no new context arrived.
-    let mut readbacks: HashMap<&str, Json> = HashMap::new();
+    let mut readbacks: HashMap<String, Json> = HashMap::new();
     for call in messages
         .iter()
         .filter(|message| message["role"] == "assistant")
@@ -370,13 +374,13 @@ fn materialize(
             .filter(|(key, _)| matches!(key.as_str(), "tool_call_id" | "offset" | "limit"))
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect();
-        readbacks.entry(id).or_insert(Json::Object(recipe));
+        readbacks.entry(id.to_owned()).or_insert(Json::Object(recipe));
     }
     let read_hint = |id: &str| match readbacks.get(id) {
         Some(recipe) => format!("call {READBACK_TOOL} with {recipe}"),
         None => format!("call {READBACK_TOOL} with tool_call_id={id:?}"),
     };
-    let mut out = messages.to_vec();
+    let mut out = messages;
     for message in &mut out {
         if message["role"] == "tool" {
             if let Some(content) = message["content"].as_str() {

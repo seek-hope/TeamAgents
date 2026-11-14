@@ -151,7 +151,22 @@ fn stream(
         write_text(writer, "# Session export\n\n## Snapshot\n\n")?;
         emit(writer, format, &metadata)?;
     }
+    let pricing_column =
+        if scalar("SELECT COUNT(*) FROM pragma_table_info('model_requests') WHERE name='pricing_json'")? > 0 {
+            "pricing_json"
+        } else {
+            "NULL"
+        };
+    let cost_column = if scalar("SELECT COUNT(*) FROM pragma_table_info('attempts') WHERE name='cost_json'")? > 0 {
+        "cost_json"
+    } else {
+        "NULL"
+    };
+    let requests_sql = format!("SELECT rowid,json_object('request_id',request_id,'instance_id',instance_id,'work_id',work_id,'kind',kind,'status',status,'pricing_raw',{pricing_column}) FROM model_requests WHERE rowid>?1 ORDER BY rowid LIMIT ?2");
+    let attempts_sql = format!("SELECT rowid,json_object('attempt_id',attempt_id,'request_id',request_id,'status',status,'token_usage_raw',usage_json,'cost_raw',{cost_column}) FROM attempts WHERE rowid>?1 ORDER BY rowid LIMIT ?2");
     for (table, title, sql) in [
+        ("model_requests","Model request tariffs",requests_sql.as_str()),
+        ("attempts","Attempt usage and cost estimates",attempts_sql.as_str()),
         ("instances","Members","SELECT rowid, json_object('id',id,'session_id',session_id,'workspace',workspace_ref,'lifecycle',lifecycle,'phase',phase) FROM instances WHERE rowid > ?1 ORDER BY rowid LIMIT ?2"),
         ("context_entries","History","SELECT rowid, json_object('id',id,'instance_id',instance_id,'epoch',epoch,'idx',idx,'kind',kind,'message_raw',message_json,'payload_ref',payload_ref,'envelope_id',envelope_id,'refs_raw',refs_json,'created',created,'compressed_by',compressed_by) FROM context_entries WHERE rowid > ?1 ORDER BY rowid LIMIT ?2"),
         ("envelopes","Inputs","SELECT rowid, json_object('id',id,'session_id',session_id,'sender',sender,'recipient',recipient,'epoch',epoch,'sequence',sequence,'state',state,'payload_raw',payload_json,'payload_ref',payload_ref) FROM envelopes WHERE rowid > ?1 AND kind='user_input' ORDER BY rowid LIMIT ?2"),
@@ -181,7 +196,7 @@ fn stream(
                     if raw.len()>MAX_RECORD { return Err(format!("export {table} record {after} exceeds 16 MiB")); }
                     let mut value:Json=serde_json::from_str(raw).map_err(|e|e.to_string())?;
                     value["cursor"]=json!(after);
-                    for (raw, parsed) in [("message_raw","message"),("payload_raw","payload"),("refs_raw","refs"),
+                    for (raw, parsed) in [("pricing_raw","pricing"),("cost_raw","cost"),("token_usage_raw","usage"),("message_raw","message"),("payload_raw","payload"),("refs_raw","refs"),
                         ("limits_raw","limits"),("usage_raw","known_usage"),("checkpoint_raw","checkpoint"),("policy_raw","policy"),("projection_raw","projection"),
                         ("tree_raw","tree"),("patch_raw","patch")] {
                         if let Some(source)=value.get(raw).cloned() {

@@ -1,5 +1,5 @@
-> Current source validation: core 191 / engine 481 / tui 105, plus 65 positive TLA configurations in 62
-> traversals, 327 controls, 79 witnesses and 9 Kani harnesses. `make check` is green. This document describes
+> Current source validation: core 197 / engine 509 / tui 108, plus 65 positive TLA configurations in 62
+> traversals, 327 controls, 79 witnesses and 9 Kani harnesses. The latest `make check` passed. This document describes
 > current source, not an earlier release archive.
 
 ## Current source highlights
@@ -25,18 +25,19 @@
 
 ## Current evidence
 
-The local gate contains **777 Rust tests** (core 191, engine 481, TUI 105). Formal material contains **393
+The full local gate passed **814 Rust tests** (core 197, engine 509, TUI 108). Formal material contains **393
 configurations across 48 modules**: **65 positive configurations in 62 traversals**, **327 negative controls**,
 **79 normal-path witnesses** and **9 Kani harnesses**. Search-tree coverage includes ordered pair transitions,
 23 controls covering every non-`TypeOK` tree claim and 11 witnesses. Witnesses demonstrate reachability only.
 
-PTY covers five terminal profiles and both forced graphics modes, plus `make probe-offline` (18/18) and
-`make probe-models` (23/23). These are local scripted, finite-model and targeted real-model checks, not
+Earlier pinned builds passed five PTY terminal profiles and both forced graphics modes,
+`make probe-offline` (18/18) and `make probe-models` (23/23). These are local scripted, finite-model and targeted real-model checks, not
 blanket multi-host or full-benchmark acceptance.
 
 ## Current boundaries
 
 Wide exhaustive completion, full Rust/SQLite refinement, whole-system composition and Policy B source-bound
-equivalence remain open. External OAuth services, public remote hosts, multi-distribution clean-host matrices
-and large-scale long-horizon comparisons remain open. No installed runtime replacement or public release is
+equivalence remain open. Earlier pinned builds passed public SSH/screen reconnect and isolated installation,
+upgrade and rollback on an existing Debian 12 host. External OAuth services, freshly provisioned hosts,
+multi-distribution matrices and large-scale long-horizon comparisons remain open. No installed runtime replacement or public release is
 implied by this document.

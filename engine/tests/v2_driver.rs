@@ -2300,6 +2300,32 @@ async fn invalid_tree_patch_does_not_block_compaction_or_the_turn() {
     handle.shutdown().await.expect("shutdown");
 }
 
+#[tokio::test]
+async fn tariffs_do_not_confuse_wire_names_with_catalog_keys() {
+    let root = root("tariff-alias");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let mut config = root.config(ScriptedProvider { script: Mutex::new(vec![Step::Message(reply("done"))].into()) });
+    config.profile.model = "shared".into();
+    for (key, price) in [("cheap", 2.0), ("shared", 99.0)] {
+        config.catalog.models.insert(
+            key.into(),
+            serde_json::from_value(json!({
+            "provider":"fixture","model":"shared","price":{"input_usd_per_million":price,
+            "output_usd_per_million":price,"source":"fixture tariff"}}))
+            .unwrap(),
+        );
+    }
+    let handle = start(config).await.unwrap();
+    handle.input("read the source").await.unwrap();
+    let event = wait_event(&handle, "attempt_recorded", 5_000).await;
+    assert_eq!(event["payload"]["cost"]["status"], "missing_rates", "{}", event);
+    assert!(
+        event["payload"]["cost"]["rates"].is_null(),
+        "a resolved wire name cannot select a same-named catalogue key"
+    );
+    handle.shutdown().await.unwrap();
+}
+
 /// R22/A20: a failed summary is a lost optimization, never a failed turn —
 /// the turn proceeds uncompressed, the reservation is released, and three
 /// consecutive failures stop the attempts (D-28 breaker).
@@ -2311,7 +2337,7 @@ async fn failed_summaries_fall_back_uncompressed_and_break_after_three() {
     let bulk = format!("the long specification {}", "padding ".repeat(4_000));
     let script = vec![
         Step::Message(reply("first answer")),
-        Step::Error("summarizer unavailable"),
+        Step::Message(reply("")), // a complete paid response with an invalid summary
         Step::Message(reply("second answer")),
         Step::Error("summarizer unavailable"),
         Step::Message(reply("third answer")),
@@ -2338,8 +2364,8 @@ async fn failed_summaries_fall_back_uncompressed_and_break_after_three() {
     assert_eq!(count("compression_began"), 3);
     assert_eq!(count("compression_failed"), 3);
     assert_eq!(count("context_compressed"), 0);
-    // every turn after the failures still ran, uncompressed and unbilled for
-    // the failed summaries: the last request is an ordinary turn request
+    // every turn after the failures still ran uncompressed. The invalid summary's
+    // reported usage is billed even though its content never commits.
     let requests = recorded(&log);
     assert_eq!(requests.len(), 8, "4 turns + 3 failed summaries + 1 breaker-skipped turn");
     let last = requests.last().unwrap();
@@ -2357,6 +2383,19 @@ async fn failed_summaries_fall_back_uncompressed_and_break_after_three() {
         .query_row("SELECT COUNT(*) FROM model_requests WHERE kind = 'compression'", [], |row| row.get(0))
         .unwrap();
     assert_eq!(open, 3, "exactly the three attempted summaries are recorded");
+    let (usage, response): (String, Option<String>) = control
+        .connection()
+        .query_row("SELECT usage_json,response_ref FROM attempts WHERE error_class='invalid_summary'", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(serde_json::from_str::<Json>(&usage).unwrap()["total_tokens"], 5);
+    assert!(response.is_some(), "the rejected summary retains its transport receipt");
+    let known: i64 = control
+        .connection()
+        .query_row("SELECT json_extract(known_usage_json,'$.total') FROM work_scopes LIMIT 1", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(known, 30, "five turns plus the paid but invalid summary");
     handle.shutdown().await.expect("shutdown");
 }
 

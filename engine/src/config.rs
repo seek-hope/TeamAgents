@@ -366,6 +366,9 @@ fn validate_profiles(catalog: &UserConfig) -> Result<(), String> {
         // D-247: the retry budget is applied per instance now, so a value the build cannot serve is refused at
         // load rather than clamped: a negative count has no meaning, and silently reading it as zero would make
         // the key look applied while changing nothing (D-75's rule).
+        if let Some(price) = &profile.price {
+            price.validate().map_err(|e| format!("models.{key}.price: {e}"))?;
+        }
         if profile.max_retries < 0 {
             return Err(format!(
                 "models.{key}.max_retries = {}: the retry budget is a whole number of retries, 0 or more \
@@ -1044,6 +1047,24 @@ command = "test -s README.md"
         // and removing what is not there is a refusal, not a rewrite
         assert!(remove_tool_binding(&path, "stats").is_err());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn model_prices_require_explicit_valid_tariffs_and_sources() {
+        let base = "[models.m]\nprovider='fixture'\nmodel='m'\n[models.m.price]\n";
+        let valid = "input_usd_per_million=2.0\noutput_usd_per_million=8.0\nsource='vendor tariff, 2026-11-14'\n";
+        let cfg = parse_user_config(&format!("{base}{valid}")).unwrap();
+        assert_eq!(cfg.models["m"].price.as_ref().unwrap().input_usd_per_million, 2.0);
+        for bad in [
+            valid.replace("2.0", "-1.0"),
+            valid.replace("2.0", "nan"),
+            valid.replace("2.0", "inf"),
+            valid.replace("vendor tariff, 2026-11-14", ""),
+            valid.replace("input_usd_per_million", "input_usd_typo"),
+            valid.replace("output_usd_per_million=8.0\n", ""),
+        ] {
+            assert!(parse_user_config(&format!("{base}{bad}")).is_err(), "{bad}");
+        }
     }
 
     #[test]

@@ -113,6 +113,167 @@ impl Drop for Scratch {
     }
 }
 
+#[test]
+fn updater_reads_the_real_cli_json_version() {
+    let root = Scratch::new("update-json-version");
+    let bin = root.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_teamagents"), bin.join("teamagents")).unwrap();
+    let layout = teamagents_engine::update::Layout::discover(Some(root.join("install")), Some(bin)).unwrap();
+    assert_eq!(layout.current_version().as_deref(), Some(teamagents_engine::VERSION));
+}
+
+#[test]
+fn failed_rollback_restores_the_running_version() {
+    use serde_json::json;
+    use std::io::{BufRead, Write};
+    use std::os::unix::fs::PermissionsExt;
+    for scenario in ["exit", "stale-socket", "recovery-fails"] {
+        let root = Scratch::new(&format!("update-unhealthy-rollback-{scenario}"));
+        let config = root.join("config");
+        std::fs::create_dir_all(config.join("teamagents")).unwrap();
+        let config_text="[models.leader_main]\nprovider='openai'\nmodel='test'\napi_key_env='TA_ROLLBACK_KEY'\nbase_url='http://127.0.0.1:1/v1'\n";
+        std::fs::write(config.join("teamagents/config.toml"), config_text).unwrap();
+        let layout =
+            teamagents_engine::update::Layout::discover(Some(root.join("install")), Some(root.join("bin"))).unwrap();
+        layout.ensure().unwrap();
+        let good = layout.versions_dir().join("healthy");
+        let bad = layout.versions_dir().join("unhealthy");
+        for dir in [&good, &bad] {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(
+                dir.join("manifest.json"),
+                json!({"version":"0.2.0","digest":"fixture",
+            "installed_at":0,"files":["teamagents"]})
+                .to_string(),
+            )
+            .unwrap();
+        }
+        let cli = env!("CARGO_BIN_EXE_teamagents");
+        std::fs::write(good.join("teamagents"), format!(
+        "#!/usr/bin/python3\nimport os, sys, time\nif {}: sys.exit(43)\ntime.sleep(0.5)\nos.execv({cli:?}, [{cli:?}] + sys.argv[1:])\n",
+        if scenario == "recovery-fails" { "True" } else { "False" }
+    )).unwrap();
+        std::fs::set_permissions(good.join("teamagents"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let bad_script = if scenario == "stale-socket" {
+            r#"#!/usr/bin/python3
+import json, os, pathlib, socket, sys
+root = pathlib.Path(sys.argv[sys.argv.index('--state-root') + 1])
+(root / 'bad-pid').write_text(str(os.getpid()))
+s = socket.socket(socket.AF_UNIX)
+s.bind(str(root / 'daemon.sock'))
+s.listen()
+while True:
+    c, _ = s.accept()
+    try:
+        c.sendall(b'{"server":"teamagents-daemon","protocol_version":2}\n')
+        line = c.makefile('rb').readline()
+        if line:
+            r = json.loads(line)
+            c.sendall((json.dumps({'ok':True,'request_id':r['request_id'],'result':{}}) + '\n').encode())
+    except (BrokenPipeError, ConnectionResetError): pass
+    finally: c.close()
+"#
+        } else {
+            "#!/bin/sh\nexit 42\n"
+        };
+        std::fs::write(bad.join("teamagents"), bad_script).unwrap();
+        std::fs::set_permissions(bad.join("teamagents"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        layout.switch_to(&bad).unwrap();
+        layout.switch_to(&good).unwrap();
+        let state = root.join("session");
+        // Every failure path stops a replacement daemon as well as the original child.
+        struct StopDaemon(std::path::PathBuf);
+        impl Drop for StopDaemon {
+            fn drop(&mut self) {
+                stop_detached_daemon(&self.0);
+            }
+        }
+        let _cleanup = StopDaemon(state.clone());
+        let command = || {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_teamagents"));
+            command
+                .env("XDG_CONFIG_HOME", &config)
+                .env("XDG_STATE_HOME", root.join("state"))
+                .env("TA_ROLLBACK_KEY", "test-only")
+                .current_dir(&root);
+            command
+        };
+        let mut daemon = Daemon(
+            command()
+                .args(["daemon", "--state-root"])
+                .arg(&state)
+                .arg("--cwd")
+                .arg(&root)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let socket = state.join("daemon.sock");
+        for _ in 0..500 {
+            if socket.exists() {
+                break;
+            }
+            assert!(daemon.0.try_wait().unwrap().is_none());
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(socket.exists(), "initial daemon must serve before rollback");
+        let output = command()
+            .args(["update", "--rollback", "--install-root"])
+            .arg(&layout.root)
+            .arg("--bin-dir")
+            .arg(&layout.bin_dir)
+            .arg("--state-root")
+            .arg(&state)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        assert_eq!(layout.current_dir(), Some(good.clone()));
+        let error = String::from_utf8_lossy(&output.stderr);
+        let journal = teamagents_engine::update::UpdateJournal::open_read(&layout.journal_path()).unwrap();
+        let recorded = journal.state().error.as_deref().unwrap();
+        assert!(recorded.contains("target failed:"), "{recorded}");
+        if scenario == "recovery-fails" {
+            assert_eq!(journal.state().status, "failed");
+            assert!(recorded.contains("exit status: 42"), "{recorded}");
+            assert!(recorded.contains("recovery failed:") && recorded.contains("exit status: 43"), "{recorded}");
+            assert!(error.contains("target failed:") && error.contains("recovery failed:"), "{error}");
+            continue;
+        }
+        assert_eq!(journal.state().status, "rolled_back");
+        if scenario == "stale-socket" {
+            assert!(recorded.contains("not a checkpoint"), "{recorded}");
+            let pid = std::fs::read_to_string(state.join("bad-pid")).unwrap();
+            assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists(), "failed owned child must be reaped");
+        }
+        let mut connection = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+        connection.set_read_timeout(Some(std::time::Duration::from_secs(3))).unwrap();
+        let mut reader = std::io::BufReader::new(connection.try_clone().unwrap());
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        writeln!(
+            connection,
+            "{}",
+            json!({"protocol_version":2,"request_id":"health","method":"checkpoint","params":{}})
+        )
+        .unwrap();
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        let reply: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(reply["ok"], true);
+        assert!(reply["result"]["snapshot"].is_object());
+        assert_eq!(std::fs::read_to_string(config.join("teamagents/config.toml")).unwrap(), config_text);
+        stop_detached_daemon(&state);
+        // A bad database must be rejected before either version pointer changes.
+        let invalid = root.join("invalid-state");
+        std::fs::create_dir_all(&invalid).unwrap();
+        std::fs::write(invalid.join("session.sqlite"), "not a database").unwrap();
+        assert!(teamagents_engine::update::rollback(&layout, &invalid, false).is_err());
+        assert_eq!(layout.current_dir(), Some(good));
+    }
+}
+
 /// A daemon the test started, stopped on every exit path including a panic:
 /// a leaked daemon would keep running (and hold a coordinator lock) for the
 /// rest of the suite.
@@ -2001,7 +2162,7 @@ fn the_daemon_grants_the_leader_the_team_authority() {
             .write_all(
                 format!(
                     "{}\n",
-                    serde_json::json!({"protocol_version": 1, "request_id": "g1", "method": "grants", "params": {}})
+                    serde_json::json!({"protocol_version": 2, "request_id": "g1", "method": "grants", "params": {}})
                 )
                 .as_bytes(),
             )
@@ -2085,7 +2246,7 @@ fn an_unbootable_instance_parks_itself_and_the_session_survives() {
             .write_all(
                 format!(
                     "{}\n",
-                    serde_json::json!({"protocol_version": 1, "request_id": id, "command_id": id,
+                    serde_json::json!({"protocol_version": 2, "request_id": id, "command_id": id,
                                        "method": method, "params": params})
                 )
                 .as_bytes(),
@@ -2172,7 +2333,7 @@ impl Rpc {
     fn roundtrip(&mut self, method: &str, params: serde_json::Value, command_id: Option<&str>) -> serde_json::Value {
         use std::io::{BufRead, Write};
         self.counter += 1;
-        let mut frame = serde_json::json!({"protocol_version": 1, "request_id": format!("r{}", self.counter),
+        let mut frame = serde_json::json!({"protocol_version": 2, "request_id": format!("r{}", self.counter),
                                            "method": method, "params": params});
         if let Some(command_id) = command_id {
             frame["command_id"] = serde_json::json!(command_id);
@@ -2970,17 +3131,70 @@ fn a_work_that_cannot_accept_work_is_not_presented_as_in_force() {
         // several (D-266).
         assert_eq!(
             keys,
-            ["attached_instances", "deadline", "id", "known_usage", "limits", "status", "summary", "unknown_usage"],
-            "the work row's shape is unchanged apart from D-431's summary: {row}"
+            [
+                "attached_instances",
+                "cost",
+                "deadline",
+                "id",
+                "known_usage",
+                "limits",
+                "status",
+                "summary",
+                "unknown_usage"
+            ],
+            "the work row includes its summary and explicit monetary estimate: {row}"
         );
+        assert_eq!(row["cost"]["currency"], "USD");
+        if row["known_usage"]["total"].as_u64().unwrap_or(0) > 0 {
+            assert_eq!(row["cost"]["complete"], false, "seeded usage has no tariff receipt: {row}");
+        }
     }
 }
 
-/// `[limits]` in the user config bounds every work the session creates (D-64): the
-/// usage ceiling travels on the work's `limits` and the deadline is an absolute
-/// timestamp the bootstrap derives from the configured minutes. The daemon really
-/// applies them: a tiny ceiling parks the leader with the budget as the reason
-/// instead of letting the session run.
+#[test]
+fn daemon_stop_refuses_a_live_incompatible_listener() {
+    use std::io::Write;
+    use std::os::unix::net::UnixListener;
+    let root = Scratch::new("stop-incompatible");
+    std::fs::create_dir_all(root.join("")).unwrap();
+    let socket = root.join("daemon.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let server = std::thread::spawn(move || {
+        let accept = || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                match listener.accept() {
+                    Ok(pair) => return pair,
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock && std::time::Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(std::time::Duration::from_millis(10))
+                    }
+                    Err(error) => panic!("stop probe connection: {error}"),
+                }
+            }
+        };
+        let (mut stream, _) = accept();
+        writeln!(stream, "{{\"server\":\"teamagents-daemon\",\"protocol_version\":99}}").unwrap();
+        drop(stream);
+        // The second connection establishes that the endpoint is still listening.
+        let _probe = accept();
+    });
+    let output = Command::new(env!("CARGO_BIN_EXE_teamagents"))
+        .args(["daemon", "--stop", "--state-root"])
+        .arg(root.join(""))
+        .env("XDG_CONFIG_HOME", root.join("config"))
+        .env("XDG_STATE_HOME", root.join("state"))
+        .output()
+        .unwrap();
+    server.join().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("incompatible daemon greeting"));
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("nothing is listening"));
+}
+
+/// `[limits]` in the user config bounds every work the session creates (D-64): a tiny ceiling parks it.
 #[test]
 fn configured_limits_reach_the_work_and_really_bound_the_session() {
     let root = Scratch::new("limits");

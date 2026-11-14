@@ -178,7 +178,7 @@ fn metas(tools: &BoundTools) -> Vec<Meta> {
             namespace: tool.namespace.clone(),
         })
         .collect();
-    if !meta.is_empty() {
+    if !tools.services.is_empty() {
         meta.push(Meta {
             ident: "mcp_resource".into(),
             real: "mcp_resource".into(),
@@ -276,8 +276,8 @@ globalThis.tools = new Proxy({{}}, {{
   get: (_target, property) => {{
     const key = String(property);
     const real = Object.prototype.hasOwnProperty.call(__names, key) ? __names[key] : key;
-    // D-404: refuse an unknown name here, with the catalogue in hand, instead of letting the host answer
-    if (!__catalogue.some((entry) => entry.name === real)) {{
+    /// The model-visible normalized name is checked first; the host receives the original remote name.
+    if (!__catalogue.some((entry) => entry.name === key)) {{
       throw new Error(__unknownTool(key));
     }}
     return (args) => {{
@@ -423,7 +423,7 @@ pub fn run(source: &str, context: Codemode) -> Outcome {
     if context.aborted {
         return kind(Kind::Aborted, "codemode: the turn was interrupted before the script ran".into());
     }
-    if context.tools.tools.is_empty() {
+    if context.tools.tools.is_empty() && context.tools.services.is_empty() {
         return kind(Kind::Script, "codemode is not available: no MCP tool is bound to this member".into());
     }
     let (body, options) = match parse_source(source) {
@@ -629,6 +629,7 @@ mod tests {
 
     fn fake_tools() -> Arc<BoundTools> {
         Arc::new(BoundTools {
+            services: Default::default(),
             tools: vec![
                 tool(
                     "echo",
@@ -689,6 +690,47 @@ mod tests {
         assert!(error.contains("echo"), "the offered tools are named: {error}");
         assert!(error.contains("ALL_TOOLS"), "{error}");
         assert!(nowhere.calls.is_empty(), "nothing was called: {:?}", nowhere.calls);
+    }
+
+    #[test]
+    fn a_normalized_tool_name_reaches_its_original_host_name() {
+        let script = r#"
+import json, sys
+for line in sys.stdin:
+    r = json.loads(line)
+    if 'id' not in r: continue
+    if r['method'] == 'initialize': result = {'protocolVersion':'2025-06-18'}
+    elif r['method'] == 'tools/list': result = {'tools':[{'name':'big-list','inputSchema':{'type':'object'}}]}
+    else:
+        assert r['params']['name'] == 'big-list'
+        result = {'content':[{'type':'text','text':'remote result'}]}
+    print(json.dumps({'jsonrpc':'2.0','id':r['id'],'result':result}), flush=True)
+"#;
+        let mut catalog = teamagents_core::models::UserConfig::default();
+        catalog.tools.insert(
+            "svc".into(),
+            serde_json::from_value(json!({
+                "kind":"mcp", "command":"/usr/bin/python3", "args":["-u","-c",script], "required":true
+            }))
+            .unwrap(),
+        );
+        let tools = Arc::new(BoundTools::load(&catalog, &["svc".into()]).unwrap());
+        let outcome = run(
+            "return await tools.svc_big_list({});",
+            Codemode {
+                tools: tools.clone(),
+                store: store(),
+                veto: None,
+                timeout_ms: DEFAULT_TIMEOUT_MS,
+                aborted: false,
+            },
+        );
+        tools.close();
+        assert_eq!(outcome.kind, Kind::Completed, "{:?}", outcome.error);
+        assert!(outcome.output.contains("remote result"), "{}", outcome.output);
+        assert_eq!(outcome.calls.len(), 1);
+        assert_eq!(outcome.calls[0].name, "svc_big-list");
+        assert_eq!(outcome.calls[0].status, "ok");
     }
 
     #[test]

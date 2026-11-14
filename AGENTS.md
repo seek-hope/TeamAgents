@@ -46,9 +46,10 @@ make verify-witnesses
 make verify-kani
 ```
 
-Current baseline (2026-11-14): **777 Rust tests** (core 191 / engine 481 / tui 105), **65 positive TLA configurations in 62
+Current source inventory (2026-11-15): **814 Rust tests** (core 197 / engine 509 / tui 108), **65 positive TLA configurations in 62
 traversals**, **327 controls**, **79 witnesses**, **9 Kani harnesses**, and **393 configurations across 48
-modules**. `make check`, `make pty`, `make probe-offline` (18/18) and `make probe-models` (23/23) are green.
+modules**. The full runtime gate, 18 offline probes and isolated release/install rehearsal passed. PTY passed
+on the unchanged TUI/daemon code; the 23 live probes apply to their earlier pinned source.
 Formal results and abstraction limits are in `verification/REPORT.md`. A green local run is not a
 public-host or clean-machine acceptance result.
 

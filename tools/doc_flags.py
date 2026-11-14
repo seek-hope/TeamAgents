@@ -61,6 +61,8 @@ import sys
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 CLI_SOURCE = REPO / "engine/src/main.rs"
+UPDATE_SOURCE = REPO / "engine/src/update.rs"
+PARSER_SOURCES = (CLI_SOURCE, UPDATE_SOURCE)
 EXEC_SOURCE = REPO / "engine/src/v2/exec.rs"
 DOCS = ["README.md", "docs/USER-GUIDE.md", "docs/INSTALL.md"]
 # (D-235) The headless exit codes are a product contract in prose (the README's sentence, the user guide's table)
@@ -109,7 +111,12 @@ def served_flags() -> set:
     lines = CLI_SOURCE.read_text().splitlines()
     start = next(i for i, line in enumerate(lines) if line.startswith("const HELP"))
     end = next(i for i in range(start, len(lines)) if lines[i].rstrip().endswith('";'))
-    return set(FLAG.findall("\n".join(lines[start:end])))
+    flags = set(FLAG.findall("\n".join(lines[start:end])))
+    # The updater owns its parser and subcommand help; it is not part of the top-level HELP literal.
+    update_help = re.search(r"fn cli_help\(\) -> &'static str \{(.*?)\n\}", UPDATE_SOURCE.read_text(), re.S)
+    if update_help is None:
+        raise SystemExit("cannot locate the updater's cli_help; flag coverage would be incomplete")
+    return flags | set(FLAG.findall(update_help.group(1)))
 
 
 def served_verbs() -> tuple:
@@ -140,20 +147,22 @@ def served_verbs() -> tuple:
 def accepted_flags() -> set:
     """Flags the parser *accepts*: match-arm patterns, including the ones whose guard wraps onto later lines."""
     accepted = set()
-    for line in CLI_SOURCE.read_text().splitlines():
-        if "=>" in line:
-            accepted |= set(FLAG.findall(line.split("=>")[0]))
-        elif ARM_LINE.match(line.strip()):
-            accepted |= set(FLAG.findall(line))
+    for source in PARSER_SOURCES:
+        for line in source.read_text().split("#[cfg(test)]", 1)[0].splitlines():
+            if "=>" in line:
+                accepted |= set(FLAG.findall(line.split("=>")[0]))
+            elif ARM_LINE.match(line.strip()):
+                accepted |= set(FLAG.findall(line))
     return accepted
 
 
 def named_flags() -> set:
     """Flags the file names outside an arm pattern: refusal messages, doc comments, the help text."""
     named = set()
-    for line in CLI_SOURCE.read_text().splitlines():
-        if "=>" not in line and not ARM_LINE.match(line.strip()):
-            named |= set(FLAG.findall(line))
+    for source in PARSER_SOURCES:
+        for line in source.read_text().split("#[cfg(test)]", 1)[0].splitlines():
+            if "=>" not in line and not ARM_LINE.match(line.strip()):
+                named |= set(FLAG.findall(line))
     return named
 
 
@@ -218,7 +227,7 @@ def main() -> int:
     accepted, named = accepted_flags(), named_flags()
     silent = sorted(accepted - served - named)
     for flag in silent:
-        findings.append(f"engine/src/main.rs: the parser accepts {flag}, and neither the help text nor any "
+        findings.append(f"the CLI parsers accept {flag}, and neither the help text nor any "
                         f"refusal message names it")
     print(f"{scanned} flag mentions in {', '.join(DOCS)}; the CLI's help lists {len(served)} flags and "
           f"{len(TOOL_FLAGS)} belong to the toolchain")

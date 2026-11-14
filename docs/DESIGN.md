@@ -211,8 +211,10 @@ never self-update.
 
 The daemon speaks JSON lines over a per-user Unix socket. Requests carry `protocol_version`, `request_id`,
 `method`, `params`, and business `command_id`. Events carry session, sequence, kind and visible payload reference.
-A reconnect reads a consistent checkpoint/watermark before consuming newer events. Streaming previews are
-transient and never authoritative facts.
+Protocol 2 uses bounded event pages with a delivered cursor separate from the sampled log head. Initial
+connection or explicit retention resync adopts a consistent checkpoint; ordinary refresh and reconnect preserve
+unread events. Frames are at most 32 MiB; event/history pages have 4 MiB byte budgets and bounded row counts.
+Streaming previews are transient and never authoritative facts.
 
 The TUI has one Leader conversation, elevated prompts, grouped operations, quiet model chrome, Markdown and
 media rendering. Approval input ownership is preserved. `/tree` shows the session exploration tree; natural
@@ -224,7 +226,7 @@ business stores.
 `tools/` contains executable development and verification utilities, generated-document checkers and current
 product probes. `tools/tmp/` is ignored scratch for new local runs, not source or committed evidence.
 
-The current local gate has 777 Rust tests. Formal material has 393 configurations across 48 modules: 65 positive
+The current source has 814 Rust tests. Formal material has 393 configurations across 48 modules: 65 positive
 configurations, 327 controls and one separate wide configuration, evaluated in 62 positive traversals. There
 are 79 normal-path witnesses and 9 Kani harnesses. Witnesses demonstrate reachability only.
 

@@ -430,31 +430,36 @@ async fn mcp_tool_round_trips_through_the_same_receipt_contract() {
 #[tokio::test]
 async fn mcp_resources_list_and_read_through_the_bound_service() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
-    let root = root("resources");
-    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
-    let script = r#"
+    for filtered in [false, true] {
+        let root = root("resources");
+        std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+        let script = r#"
 const rows = await tools.mcp_resource({action: "list"});
 const doc = await tools.mcp_resource({action: "read", uri: "memo://public"});
 text(JSON.stringify([rows, doc]));
 "#;
-    let provider = ScriptedProvider::new(vec![
-        tool_call("c1", "codemode", json!({"code": script})),
-        finish_call("read the public resource"),
-    ]);
-    let seen = provider.seen();
-    let mut config = root.config(provider);
-    config.catalog = echo_catalog(env!("CARGO_BIN_EXE_fake-mcp-server"));
-    config.bindings = vec!["echo_service".into()];
-    let handle = start(config).await.expect("start");
-    handle.input("list and read the public resource").await.expect("input");
-    assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
-    let advertised = seen.0.lock().unwrap().clone();
-    assert!(advertised[0].iter().any(|name| name == "codemode"), "advertised: {advertised:?}");
-    let results = tool_results(&root);
-    assert!(results.iter().any(|body| body.contains("public memo")), "{results:?}");
-    assert!(results.iter().any(|body| body.contains("public memo text")), "{results:?}");
-    assert!(results.iter().any(|body| body.contains("echo")), "the result names its bound service: {results:?}");
-    handle.shutdown().await.expect("shutdown");
+        let provider = ScriptedProvider::new(vec![
+            tool_call("c1", "codemode", json!({"code": script})),
+            finish_call("read the public resource"),
+        ]);
+        let seen = provider.seen();
+        let mut config = root.config(provider);
+        config.catalog = echo_catalog(env!("CARGO_BIN_EXE_fake-mcp-server"));
+        if filtered {
+            config.catalog.tools.get_mut("echo_service").unwrap().tool_names = vec!["absent".into()];
+        }
+        config.bindings = vec!["echo_service".into()];
+        let handle = start(config).await.expect("start");
+        handle.input("list and read the public resource").await.expect("input");
+        assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
+        let advertised = seen.0.lock().unwrap().clone();
+        assert!(advertised[0].iter().any(|name| name == "codemode"), "advertised: {advertised:?}");
+        let results = tool_results(&root);
+        assert!(results.iter().any(|body| body.contains("public memo")), "{results:?}");
+        assert!(results.iter().any(|body| body.contains("public memo text")), "{results:?}");
+        assert!(results.iter().any(|body| body.contains("echo")), "the result names its bound service: {results:?}");
+        handle.shutdown().await.expect("shutdown");
+    }
 }
 
 #[tokio::test]

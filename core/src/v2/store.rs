@@ -545,9 +545,14 @@ fn column_present(conn: &Connection, table: &str, column: &str) -> Result<bool, 
 /// schema-version change. A34's rule is about *interpreting* state, and a nullable column reinterprets nothing;
 /// rows written before it keep their inline result and are compacted by the retention sweep.
 fn ensure_columns(conn: &Connection) -> Result<(), String> {
-    for (table, column) in
-        [("commands", "result_digest"), ("operations", "quiescence_json"), ("operations", "dispatch_wait_json")]
-    {
+    // Nullable pricing receipts are additive: old rows are explicitly unpriced, never retroactively valued.
+    for (table, column) in [
+        ("commands", "result_digest"),
+        ("operations", "quiescence_json"),
+        ("operations", "dispatch_wait_json"),
+        ("model_requests", "pricing_json"),
+        ("attempts", "cost_json"),
+    ] {
         if !column_present(conn, table, column)? {
             conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} TEXT"))
                 .map_err(|e| format!("add {table}.{column}: {e}"))?;

@@ -452,6 +452,33 @@ fn an_expired_credential_is_refreshed_without_asking_the_user_again() {
     let (code, out, err) = run(&root, &["mcp", "list"]);
     assert_eq!(code, Some(0), "{out}{err}");
     assert_eq!(state.lock().unwrap().refresh_calls, refreshes, "a fresh token was refreshed again");
+    // A revoked token can still claim an hour of remaining lifetime. The initialization 401 must force
+    // one real exchange, with the refresher installed before the first HTTP request.
+    state.lock().unwrap().valid_tokens.clear();
+    let exchanges = state.lock().unwrap().code_exchanges;
+    let (code, out, err) = run(&root, &["mcp", "list"]);
+    assert_eq!(code, Some(0), "{out}{err}");
+    assert!(out.contains("probe_ping"), "rejected unexpired token was reused: {out}{err}");
+    assert_eq!(state.lock().unwrap().refresh_calls, refreshes + 1);
+    assert_eq!(state.lock().unwrap().code_exchanges, exchanges, "refresh reopened interactive authorization");
+}
+
+#[test]
+fn changing_a_binding_resource_never_forwards_its_saved_credential() {
+    let root = TempRoot::new("mcp-oauth-resource");
+    let (port, state) = start_server();
+    write_config(&root, port, "");
+    let (code, out, err) = login(&root);
+    assert_eq!(code, Some(0), "{out}{err}");
+    let other = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    other.set_nonblocking(true).unwrap();
+    write_config(&root, other.local_addr().unwrap().port(), "");
+    let (code, out, err) = run(&root, &["mcp", "list"]);
+    assert_eq!(code, Some(1), "{out}{err}");
+    assert!(out.contains("different resource"), "{out}{err}");
+    assert!(!out.contains("access-"), "{out}");
+    assert_eq!(other.accept().unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
+    assert_eq!(state.lock().unwrap().refresh_calls, 0);
 }
 
 #[test]

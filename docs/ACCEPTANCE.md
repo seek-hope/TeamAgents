@@ -6,7 +6,9 @@ This file records current behavior and reproducible evidence, not historical acc
 ✅ means the named local path has automated evidence. 🔶 means implementation exists but the stated external,
 empirical or full-system obligation remains open. No icon is a proof of every release condition.
 
-`make check` is green (core 191 / engine 481 / tui 105 test targets).
+Current source validation: core 197 / engine 509 / tui 108 test targets; the full gate passed.
+All 18 offline probes and the final release/install rehearsal passed. PTY passed on the unchanged TUI/daemon
+code before the final continuous-input accounting fix and buffer bound.
 Current formal gate: **65 positive configurations in 62 traversals**, **327 controls**, **79 witnesses** and
 **9 Kani harnesses**, all exit 0. The catalogue contains 393 configurations across 48 modules, including the
 separate wide configuration. PTY covers five terminal profiles and both forced graphics modes; this is not a
@@ -67,7 +69,7 @@ complete graphical-terminal or OS matrix.
 | A25 | MCP over stdio and streamable HTTP | `engine/tests/v2_mcp.rs`, `engine/tests/mcp_oauth.rs`, resource list/read and ambiguity rejection; external OAuth matrix remains open |
 | A26 | Skills permissions: content cannot mint authority | `V2SkillAuthority`, `skill_read_without_shell`, relative-Skill and revocation tests |
 | A27 | Heterogeneous providers and mixed models in one team | Provider adapter/fake-service and heterogeneous-supervisor tests; real-provider cooperation is not established by fakes |
-| A28 | Disconnect, slow client, reconnect and watermark recovery | `V2Daemon`, `V2Concurrency`, `tui/tests/reconnect.rs`; event API pagination and common reply bounds remain limited |
+| A28 | Disconnect, slow client, reconnect and watermark recovery | `V2Daemon`, bounded protocol pages, persistent history-refresh retry and explicit oversized-event resync; wider client/network coverage remains open |
 | A29 | Session isolation with shared project/workspace options | Workspace policies, retirement guards and `V2Workspace`; file sharing does not imply private-history sharing |
 | A30 | Artifact persistence, publication, release and garbage collection | `V2Artifact`, `V2ExportSnapshot`, staging/live/deleting states and export tests |
 | A31 | Disk full / persistence-write failure | `disk_full_is_classified_at_the_submit_boundary`, storage-backpressure supervision and no new side effects after latch |
@@ -90,23 +92,49 @@ Model-dependent probes are `crash.py`, `unknown_outcome.py`, `cancel.py`, `lifec
 `tui.py`, `team_ring.py`, `providers.py` and `protocols.py`. They require separately bounded credentials and do
 not form a statistical acceptance result. `ssh_pty.py` is an explicit isolated-loopback environment probe.
 
+## Scoped external and live receipts
+
+The final archive, including the accounting, updater and client fixes, has SHA-256
+`951947815346f195fbf7a91091cf1089b9d55093498b69faf3f819a2384f223d`; its CLI has SHA-256
+`ae6aa27af25799e7f42fbe67c4e503d34c77bd593580f39687417a69d7ef526e`.
+On an existing Debian 12 host, isolated managed upgrade, explicit rollback, re-upgrade and an injected exit-42
+startup failure followed by automatic rollback passed. Healthy checkpoints, unchanged configuration and all six
+saved history entries were checked after each transition. The failed upgrade's exit 1 was expected; the enclosing
+probe exited 0 and stopped its daemon; the scoped daemon/screen cleanup audit was empty. This compares two
+distinct 0.2.0 builds, not different database schemas
+or a freshly provisioned distribution matrix. Public SSH/GNU screen draft preservation and clean reattachment
+passed separately on an earlier pinned build.
+
+The portable Reviewer probe's fixed-case DeepSeek rerun matched 34/34 labels with no operational errors at the
+reported native 1,048,576-token window. It records source, executable and input hashes; the same cases were used
+in V4, so this adds reproducibility, not independent holdout coverage. Earlier Claude parser/quota failures remain
+part of the evidence below. No operation described by these assessment cases was executed.
+
 ## Current open obligations
 
 - The project config is read, since D-244, only through explicit project trust; repository-local hooks, checks,
   limits, retention and update policy remain user-only.
 - An 8-run paired `deepseek-flash` comparison at native 1M window passed 8/8 hidden checks with 0 false claims
   on both TeamAgents and Pi; broader held-out SWE-scale benchmarks remain open.
-- Hardened `reviewer.rs` (`hard_deny` + untrusted delimiters) passed 14/14 benign/adversarial/injection cases on
-  `deepseek-flash`, and multi-branch `search_tree` resume plus cold-tree 1M compaction passed locally; broader
-  multi-model reviewer judgement, semantic tree completeness and larger empirical lostness studies remain open.
+- Hardened `reviewer.rs` (`hard_deny` + untrusted delimiters) passed **34/34** cases on `deepseek-flash` after
+  the literal read-only search correction (V4, reused fixed cases, not a fresh holdout); the earlier 22-case run had one deterministic quoted-publication false
+  refusal. Claude V3 matched 24/34 expected labels, with four strict-output parser failures and five HTTP 402 quota
+  failures, not correct decisions. No dangerous allow was observed among completed assessments; this is not broad
+  safety proof. Multi-model/SWE-scale adversarial coverage, semantic tree completeness and larger empirical
+  lostness studies remain open.
 - All four wire protocols (`deepseek`, `chat/completions`, `anthropic`, `responses`), heterogeneous
-  `deepseek` + `anthropic`, search/fetch, `deepseek-flash` images, loopback SSH, Alacritty and isolated
-  clean-host install/upgrade/rollback passed locally; external OAuth services, public hosts and broader
-  terminal/OS distribution matrices remain open.
+  `deepseek` + `anthropic`, search/fetch, `deepseek-flash` images, loopback SSH, public SSH/GNU screen reconnect,
+  Alacritty and isolated existing-Debian install/upgrade/rollback passed locally; external OAuth services, clean
+  hosts and broader terminal/OS distribution matrices remain open.
 - The wide exhaustive configuration (2,029,647 states verified by simulation only), full Rust/SQLite refinement,
   whole-system composition, arbitrary-string capability algebra and Policy B source-bound bidirectional
   fair-trace equivalence remain open.
 - Scheduler/provider fairness, process/remote effects, filesystem races and real power-loss timing remain
   environmental obligations.
-- Broader versioned MCP auth/SDK/client/extension contracts, artifact-retention policy and general integration
-  coverage remain open.
+- MCP resource list/read, resource-only and filtered-tool bindings, paged catalogues, protocol revision refusal,
+  string request IDs, OAuth initialization refresh and local credential isolation pass. The supported revision is
+  `2025-06-18`; external OAuth, SDK/client extension matrices, resumable push streams and broader integration
+  contracts remain open.
+- Artifact collection protects operation receipt and context references after owner release, retries failed
+  deletion and skips `EVIDENCE`; no new reference-expiry policy is selected. Artifact lifetime under all future
+  retention policies and general integration coverage remain open.

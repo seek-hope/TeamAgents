@@ -8,8 +8,8 @@
 #   protocol = "deepseek"    -> same as chat/completions, plus mapping xhigh to max
 # base_url + model decide which service is reached; for a subscription, write the public model name.
 
-# Retention: today `teamagents doctor` only reports this section; automatic cleanup is not
-# implemented yet, so nothing is deleted unless you delete it yourself.
+# Retention: history cleanup preserves live/pending records; archived session cleanup is explicit
+# through sessions prune. Referenced artifact bytes are not automatically reclaimed.
 # [retention]
 # archived_days = 30     # delete archived sessions untouched for N days
 # history_days = 30      # drop applied deliveries and old events after N days (pending ones are kept)
@@ -37,6 +37,15 @@ max_retries = 2
 generation_options = { reasoning_effort = "high" }    # default effort; max takes ~240s per simple turn
 # efforts = ["low", "medium", "high"]                 # optional Ctrl+M menu values for this model;
 #                                                      # absent means minimal/low/medium/high/xhigh/max
+
+# Optional estimates, with EXAMPLE prices only: replace every rate and source with your actual tariff.
+# Missing rates/usage remain unknown; these rates do not create a monetary spending limit.
+# [models.leader_main.price]
+# input_usd_per_million = 2.0
+# output_usd_per_million = 8.0
+# cache_read_usd_per_million = 0.2
+# cache_write_usd_per_million = 3.0
+# source = "Example only; replace with provider tariff URL and date"
 
 # --- other service samples (enable on demand; each maps a logical name to a real endpoint)
 # [models.research_kimi]

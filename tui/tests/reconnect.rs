@@ -13,7 +13,7 @@ use std::sync::mpsc::{channel, Sender};
 use std::thread;
 use teamagents_tui::daemon_client::DaemonClient;
 
-const GREETING: &str = r#"{"server":"teamagents-daemon","protocol_version":1,"session_id":"s-main","state_root":"/tmp/x","permissions":"full_auto","workspace":"/tmp"}"#;
+const GREETING: &str = r#"{"server":"teamagents-daemon","protocol_version":2,"session_id":"s-main","state_root":"/tmp/x","permissions":"full_auto","workspace":"/tmp"}"#;
 
 /// Bind `socket`, accept one client, answer its first request, then die with the listener.
 fn serve_once(socket: PathBuf, ready: Sender<()>) {
@@ -37,6 +37,24 @@ fn serve_once(socket: PathBuf, ready: Sender<()>) {
     }
     // keep the connection open until the client has read the reply, then drop listener and stream
     let _ = UnixStream::connect(&socket);
+}
+
+#[test]
+fn successful_reconnect_keeps_a_failed_history_refresh_pending() {
+    let mut app = teamagents_tui::v2app::V2App::new("s-main");
+    app.apply_history(json!({"entries":[]}));
+    assert!(!app.history_dirty);
+    assert!(app.apply_events(&[json!({"sequence":4,"kind":"response_imported","payload":{}})]).history);
+    app.mark_disconnected("history read failed after the event was acknowledged");
+    app.apply_checkpoint(json!({}), 4);
+    app.mark_connected();
+    assert!(!app.disconnected, "the socket has recovered");
+    assert!(!app.apply_events(&[]).history, "there is no second event to trigger the lost refresh");
+    assert!(app.history_dirty, "the periodic refresh must still retry the conversation read");
+    app.apply_history(json!({"entries":[]}));
+    assert!(!app.history_dirty);
+    app.apply_history(json!({"entries":"malformed"}));
+    assert!(app.history_dirty, "a malformed reply cannot settle the pending refresh");
 }
 
 #[test]

@@ -248,6 +248,8 @@ pub struct V2App {
     pub completion: crate::completion::Completion,
     pub attachments: crate::attachments::Attachments,
     pub disconnected: bool,
+    /// A successful socket call does not repair a previously failed conversation refresh.
+    pub history_dirty: bool,
     /// Scroll offset in wrapped lines from the bottom (0 = following).
     pub chat_scroll: usize,
     pub watermark: i64,
@@ -291,6 +293,7 @@ impl V2App {
             completion: crate::completion::Completion::default(),
             attachments: crate::attachments::Attachments::default(),
             disconnected: false,
+            history_dirty: true,
             chat_scroll: 0,
             watermark: 0,
             quit: false,
@@ -466,6 +469,11 @@ impl V2App {
     /// History of the active instance: the authoritative conversation (§9 —
     /// only renders previews). System notes stay layered on top, newest last.
     pub fn apply_history(&mut self, history: Json) {
+        if !history["entries"].is_array() {
+            self.mark_disconnected("history.entries missing");
+            return;
+        }
+        self.history_dirty = false;
         for row in history["entries"].as_array().into_iter().flatten() {
             if let Some(envelope) = row["envelope_id"].as_str() {
                 self.update_input_receipt(
@@ -665,6 +673,7 @@ impl V2App {
                 _ => {}
             }
         }
+        self.history_dirty |= refresh.history;
         refresh
     }
 
@@ -708,6 +717,7 @@ impl V2App {
     }
 
     pub fn mark_disconnected(&mut self, error: &str) {
+        self.history_dirty = true;
         if !self.disconnected {
             self.disconnected = true;
             self.note_error(format!("disconnected from the daemon ({error}), reconnecting..."));
