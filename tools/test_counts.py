@@ -32,6 +32,10 @@ N / tui N` in the ledger and the statements is checked now, and one that differs
 line marks it as history in the past tense ("were"/"was"/"when"/"before"/"then"/"previously") — the
 repository's convention is to keep the old value as history rather than to delete it, which is what the row does.
 A *date* does not excuse a stale triple: a sentence can carry today's date and still present yesterday's count.
+
+Current totals and alternate punctuation are also checked through explicit HEADLINES patterns. Each known
+statement must occur exactly once; updates change only captured numbers, preserving dates, gate claims and
+historical reports. Explicit --ledger/--statement controls keep their existing limited document scope.
 """
 import argparse
 import pathlib
@@ -51,6 +55,21 @@ COUNTS = re.compile(r"core (\d+) / engine (\d+) / tui (\d+)")
 # A triple that is not the suites' current numbers is allowed only where its line says so: a date,
 # or a word that marks it as history (see the docstring's D-313 note).
 HISTORY = re.compile(r"\bwere\b|\bwas\b|\bwhen\b|\bbefore\b|\bthen\b|\bpreviously\b")
+TOTAL = r"(?P<total>\d+)"
+TRIPLE = r"core (?P<core>\d+)[^\d\n]+engine (?P<engine>\d+)[^\d\n]+tui (?P<tui>\d+)"
+HEADLINES = (
+    ("README.md", r"^The full local gate passed \*\*" + TOTAL + r" Rust tests\*\* \(" + TRIPLE + r"\)"),
+    ("README.zh-CN.md", r"^\S+ \*\*" + TOTAL + r" [^*\n]*Rust[^*\n]*\*\*[^\d\n]*" + TRIPLE),
+    ("AGENTS.md", r"^Current source inventory \([^\n)]*\): \*\*" + TOTAL + r" Rust tests\*\* \(" + TRIPLE + r"\)"),
+    (".github/release-notes.md", r"^The full local gate passed \*\*" + TOTAL + r" Rust tests\*\* \(" + TRIPLE + r"\)"),
+    ("docs/HANDOFF.md", r"^- \*\*" + TOTAL + r" Rust tests\*\*: " + TRIPLE),
+    ("docs/CAPABILITIES.md", r"^- Rust tests: \*\*" + TOTAL + r"\*\* \(" + TRIPLE + r"\)"),
+    ("docs/DESIGN.md", r"^The current source has " + TOTAL + r" Rust tests"),
+    ("docs/DEVELOPMENT.md", r"^Current ledger: \*\*" + TRIPLE + r" = " + TOTAL + r" tests\*\*"),
+    ("docs/ARCHITECTURE.md", r"^plus " + TOTAL + r" Rust tests"),
+    ("docs/DECISIONS.md", r"^- Current source contains " + TOTAL + r" Rust tests: " + TRIPLE),
+    ("docs/PRODUCT-COMPARISON.md", r"^- \*\*" + TOTAL + r" Rust tests\*\*"),
+)
 
 
 def marked_as_history(line, start):
@@ -81,6 +100,32 @@ def stale_statements(path, wanted):
     return findings
 
 
+def current_headlines(root, counts, write=False):
+    """Audit explicit current statements without rewriting historical receipts or surrounding prose."""
+    wanted = {**counts, "total": sum(counts.values())}
+    findings, changed = [], []
+    for relative, pattern in HEADLINES:
+        path = root / relative
+        text = path.read_text()
+        matches = list(re.finditer(pattern, text, re.MULTILINE | re.IGNORECASE))
+        if len(matches) != 1:
+            findings.append(f"{relative}: expected one current test-count statement, found {len(matches)}")
+            continue
+        match = matches[0]
+        replacements = []
+        for field, value in match.groupdict().items():
+            if int(value) != wanted[field]:
+                replacements.append((*match.span(field), str(wanted[field])))
+                if not write:
+                    findings.append(f"{relative}: current {field} count is {value}, the suites have {wanted[field]}")
+        if write and replacements:
+            for start, end, value in sorted(replacements, reverse=True):
+                text = text[:start] + value + text[end:]
+            path.write_text(text)
+            changed.append(f"{relative}: updated current counts")
+    return findings, changed
+
+
 def counted() -> dict:
     """`{crate: tests}` from the crates' own test lists (exact, and no test body runs)."""
     counts = {}
@@ -107,6 +152,7 @@ def main(argv):
     args = parser.parse_args(argv)
     ledger = pathlib.Path(args.ledger)
     statements = [pathlib.Path(p) for p in args.statement] or list(STATEMENTS)
+    check_headlines = ledger.resolve() == LEDGER.resolve() and not args.statement
     text = ledger.read_text()
     match = BASELINE.search(text)
     counts = counted()
@@ -135,6 +181,13 @@ def main(argv):
             if updated != other:
                 path.write_text(updated)
                 changed.append(f"{path.name}: updated to {wanted}")
+        if check_headlines:
+            findings, headline_changes = current_headlines(REPO, counts, write=True)
+            changed.extend(headline_changes)
+            if findings:
+                for finding in findings:
+                    print(f"FAIL: {finding}")
+                return 1
         print("; ".join(changed) if changed else f"the counts are current everywhere: {wanted}")
         return 0
     findings = [
@@ -156,6 +209,9 @@ def main(argv):
                             "file are read as the baseline too (D-221)")
     for path in [ledger, *statements]:
         findings.extend(stale_statements(path, wanted))
+    if check_headlines:
+        headline_findings, _ = current_headlines(REPO, counts)
+        findings.extend(headline_findings)
     if findings:
         for finding in findings:
             print(f"FAIL: {finding}")

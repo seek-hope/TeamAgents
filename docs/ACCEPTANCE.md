@@ -7,8 +7,9 @@ This file records current behavior and reproducible evidence, not historical acc
 empirical or full-system obligation remains open. No icon is a proof of every release condition.
 
 Current source inventory: core 198 / engine 510 / tui 108 test targets; the full gate passed.
-Earlier pinned builds passed all 18 offline probes and the release/install rehearsal. PTY passed on the unchanged TUI/daemon
-code before the final continuous-input accounting fix and buffer bound.
+The `0eb4ee98` runtime passed all 18 offline probes, the release/install rehearsal and fresh Debian/Ubuntu VM
+acceptance below. PTY passed on the unchanged TUI/daemon code before the final continuous-input accounting fix
+and buffer bound.
 Current formal gate: **65 positive configurations in 62 traversals**, **327 controls**, **79 witnesses** and
 **9 Kani harnesses**, all exit 0. The catalogue contains 393 configurations across 48 modules, including the
 separate wide configuration. PTY covers five terminal profiles and both forced graphics modes; this is not a
@@ -94,16 +95,37 @@ not form a statistical acceptance result. `ssh_pty.py` is an explicit isolated-l
 
 ## Scoped external and live receipts
 
-The last accepted archive, including the accounting, updater and client fixes, has SHA-256
-`951947815346f195fbf7a91091cf1089b9d55093498b69faf3f819a2384f223d`; its CLI has SHA-256
-`ae6aa27af25799e7f42fbe67c4e503d34c77bd593580f39687417a69d7ef526e`.
-It predates D-517's compaction entry metadata correction and D-518's argument validation. On an existing Debian 12 host, isolated managed
-upgrade, explicit rollback, re-upgrade and an injected exit-42 startup failure followed by automatic rollback passed. Healthy checkpoints, unchanged configuration and all six
-saved history entries were checked after each transition. The failed upgrade's exit 1 was expected; the enclosing
-probe exited 0 and stopped its daemon; the scoped daemon/screen cleanup audit was empty. This compares two
-distinct 0.2.0 builds, not different database schemas
-or a freshly provisioned distribution matrix. Public SSH/GNU screen draft preservation and clean reattachment
-passed separately on an earlier pinned build.
+The current candidate was built from `0eb4ee98` and includes D-517/D-518. Its x86_64 Linux musl archive has SHA-256
+`568ddb813efd124c9e401e0df75f9f779bd7796c37cf3a1df478f947716d6d3d`; its CLI has SHA-256
+`2666b881f1401341cbd620941991e315e234724791bab2e2f168fd5dba61b838`. All 18 offline probes passed (154.0 seconds),
+and the release rehearsal built both binaries, checked the package and preserved configuration across repeated init.
+
+Two fresh official cloud-image KVM guests passed ordinary-user installation and real Shell execution:
+
+| Guest | Observed kernel | Result |
+|---|---|---|
+| Debian GNU/Linux 12 | `6.1.0-54-cloud-amd64`, x86_64 | Install, argument rejection, upgrade and recovery passed |
+| Ubuntu 22.04.5 LTS | `5.15.0-203-generic`, x86_64 | Install, argument rejection, upgrade and recovery passed |
+
+Each guest had a new cloud-init identity, a private overlay, no host filesystem mount and a scripted loopback
+provider. Malformed `ls` arguments produced a failed, not-started receipt; a valid `_invalid_arguments` property
+succeeded in the same batch. That rejection workflow intentionally ended FAILED/exit 1. A separate real Shell
+workflow ended SUCCEEDED. Managed upgrade, explicit rollback, re-upgrade and an injected exit-42 startup failure
+followed by automatic rollback preserved configuration bytes and all six original history entries. The injected
+upgrade returned the expected exit 1; both enclosing sequences exited 0. Scoped native-process scans were empty,
+both guests shut down with QEMU exit 0, and base-image hashes stayed unchanged. Official HTTPS checksum files
+matched the images; detached signatures were not checked.
+
+These transitions used two distinct 0.2.0 builds with schema 9/protocol 2. They do not establish schema migration,
+physical-host behavior, broader architectures, live-provider quality or absence of arbitrary escaped descendants.
+The package remains a local candidate. Raw reports, input manifests, fixture sources and shutdown receipts are
+retained under `tools/tmp/fresh-vm-debian-evidence/` and `tools/tmp/fresh-vm-ubuntu-evidence/`. Private keys,
+seeds and disks remain outside the repository.
+
+The earlier accepted archive has SHA-256 `951947815346f195fbf7a91091cf1089b9d55093498b69faf3f819a2384f223d`,
+with CLI SHA-256 `ae6aa27af25799e7f42fbe67c4e503d34c77bd593580f39687417a69d7ef526e`. It predates D-517/D-518,
+served as both guests' upgrade baseline, and was the runtime used in all three repository-comparison cohorts.
+Existing-Debian upgrade/rollback and public SSH/GNU screen results retain their separately pinned builds.
 
 The portable Reviewer probe's fixed-case DeepSeek rerun matched 34/34 labels with no operational errors at the
 reported native 1,048,576-token window. It records source, executable and input hashes; the same cases were used
@@ -130,8 +152,9 @@ part of the evidence below. No operation described by these assessment cases was
   lostness studies remain open.
 - All four wire protocols (`deepseek`, `chat/completions`, `anthropic`, `responses`), heterogeneous
   `deepseek` + `anthropic`, search/fetch, `deepseek-flash` images, loopback SSH, public SSH/GNU screen reconnect,
-  Alacritty and isolated existing-Debian install/upgrade/rollback passed locally; external OAuth services, clean
-  hosts and broader terminal/OS distribution matrices remain open.
+  Alacritty and isolated existing-Debian install/upgrade/rollback passed locally. The current candidate also
+  passed fresh Debian/Ubuntu VM checks; external OAuth services, physical hosts and broader terminal/OS
+  distribution matrices remain open.
 - The wide exhaustive configuration (2,029,647 states verified by simulation only), full Rust/SQLite refinement,
   whole-system composition, arbitrary-string capability algebra and Policy B source-bound bidirectional
   fair-trace equivalence remain open.

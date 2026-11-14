@@ -134,7 +134,7 @@ evaluation evidence.
 
 ### Current verification boundary
 
-- Current source contains 814 Rust tests: core 197, engine 509 and TUI 108.
+- Current source contains 816 Rust tests: core 198, engine 510 and TUI 108.
 - Formal material has 393 configurations across 48 modules: 65 positive configurations, 327 negative controls
   and one separate wide configuration. Positive inputs share 62 traversals only when model/spec/domain match.
 - There are 79 normal-path witnesses and 9 Kani harnesses. Witnesses demonstrate reachability, not safety.
@@ -142,6 +142,16 @@ evaluation evidence.
   claim and 11 witnesses. `TypeOK` remains a type-level claim, not a behavioral completeness proof.
 - These results do not establish full Rust/SQLite refinement, whole-system composition, Policy B source-bound
   equivalence, wide exhaustive completion, arbitrary-input TLA coverage or live-model navigation quality.
+
+## D-519 Audit current test-count totals and alternate formats (2026-11-15)
+
+The test-count gate now checks every registered current total and component triple across the public and
+development documentation, using Cargo test lists as its source. A required statement that is missing or
+ambiguous fails the check. `--write` changes captured numeric fields only; dates, passing-gate claims and
+historical source receipts remain separate. Explicit copied-ledger/statement controls retain their limited
+scope. This closes a reproduced gap where a correct canonical triple let stale current totals pass. Controls
+cover stale totals, numeric-only updates, historical preservation and missing/duplicate statements. No Rust
+behavior, artifact version or formal input changes.
 
 ## D-518 Refuse malformed tool arguments before dispatch (2026-11-15)
 

@@ -17,9 +17,11 @@ Implemented behavior is summarized in [CAPABILITIES.md](CAPABILITIES.md); accept
 - The product reads repository-local configuration after explicit trust; user permissions, hooks, checks,
   limits, retention and update policy remain under user configuration. This is current behavior, not open work.
 - Current development and verification tools under `tools/`.
-- **814 Rust tests** (full local gate passed), 65 positive TLA configurations in
+- **816 Rust tests** (full local gate passed), 65 positive TLA configurations in
   62 traversals, 327 controls, 79 witnesses and 9 Kani harnesses. PTY covers five terminal profiles and both
-  forced graphics modes, plus `make probe-offline` (18/18) and `make probe-models` (23/23).
+  forced graphics modes, plus `make probe-offline` (18/18 on `0eb4ee98`) and `make probe-models` (23/23 on its
+  earlier pinned source). The current candidate also passed fresh Debian/Ubuntu VM installation and same-schema
+  upgrade/rollback with scripted loopback providers.
 
 ## Open work
 
@@ -32,10 +34,10 @@ The later repository cohorts below use the delivered runtime containing it.
 |---|---|---|
 | P0 | Matched Pi / alternative-harness comparison | Older trials and two infrastructure-confounded cohorts remain separate. With matched Cargo configuration, Pi passed 2/2 hidden suites, single Leaders 0/2, and one-member teams 1/2; both teams hit the deadline and both single Leaders incorrectly reported success. Broader tasks and reliable team completion remain open |
 | P1 | Reviewer and model judgement quality | DeepSeek V4: 34/34 on reused fixed cases after correcting literal read-only search handling; Claude V3: 24/34 correct labels, with four parser failures and five 402 quota failures. No dangerous allow observed among completed cases; broader quality remains open |
-| P1 | Provider and environment acceptance | All 4 wire protocols (`deepseek`, `chat/completions`, `anthropic`, `responses`), heterogeneous `deepseek`+`anthropic`, search/fetch, `deepseek-flash` images, loopback/public SSH reconnect and Alacritty passed locally; external OAuth services, clean hosts and broader terminal/OS matrices remain open |
+| P1 | Provider and environment acceptance | All 4 wire protocols (`deepseek`, `chat/completions`, `anthropic`, `responses`), heterogeneous `deepseek`+`anthropic`, search/fetch, `deepseek-flash` images, loopback/public SSH reconnect and Alacritty passed locally; fresh Debian/Ubuntu VM install/update checks also passed with scripted providers; external OAuth, physical hosts and broader terminal/OS matrices remain open |
 | P1 | Exploration-tree usefulness | Verified multi-branch abandonment, focus, zero dead-end re-reads on resume, and cold-tree 1M compaction on `deepseek-flash`; larger multi-session empirical lostness studies remain open |
 | P2 | Integration contracts | MCP revision `2025-06-18`, resource-only and paged catalogues, string IDs and local OAuth refresh pass; external OAuth, SDK/client/extension matrices and resumable push streams remain open |
-| P2 | Distribution acceptance | Local `make release-rehearsal`, isolated existing-Debian install, managed upgrade, explicit rollback and injected failed-startup rollback passed; a genuinely clean multi-machine host matrix remains open |
+| P2 | Distribution acceptance | Local `make release-rehearsal`, existing-Debian checks and fresh Debian 12/Ubuntu 22.04.5 KVM install, managed upgrade, explicit rollback and failed-startup rollback passed. These use two same-schema 0.2.0 builds; physical hosts, broader distributions/architectures and schema transitions remain open |
 | P2 | Formal completion | Wide exhaustive search, full Rust/SQLite refinement, whole-system composition and Policy B source-bound bidirectional fair-trace equivalence |
 | P2 | Environmental semantics | Scheduler/provider fairness, filesystem races, escaped descendants, remote effects and real power-loss behavior |
 | P2 | Retention and integration policy | Artifact lifetime versus history retention, broader dependency ecosystems and general long-horizon outcomes |
@@ -47,7 +49,8 @@ commits. Four hidden tests were frozen before calls; the original helper failed 
 Pi 1.5.2, a single TeamAgents Leader, and a Leader with exactly one member each received two independent runs.
 All used DeepSeek Flash, its native 1,048,576-token window, high reasoning and an 8,192-token output limit.
 Each run had 600 seconds, at most 100 requests and a conservative three-million-token reservation budget.
-Prices were unavailable. The TeamAgents executable is the accepted archive identified in ACCEPTANCE.md.
+Prices were unavailable. All three cohorts used the earlier TeamAgents executable with SHA-256
+`ae6aa27af25799e7f42fbe67c4e503d34c77bd593580f39687417a69d7ef526e`, before D-517/D-518.
 
 The first cohort completed all six runs:
 

@@ -43,11 +43,15 @@ finite model into full acceptance. See [ACCEPTANCE.md](ACCEPTANCE.md) for scenar
 Search-tree evidence includes ordered pair transitions, 23 controls covering every non-`TypeOK` tree claim and
 11 witnesses. `TypeOK` is tracked separately in [verification/COVERAGE.md](../verification/COVERAGE.md).
 
+The `0eb4ee98` candidate passed all 18 offline probes and release rehearsal, plus ordinary-user install,
+malformed-argument rejection and same-schema upgrade/rollback in fresh Debian 12 and Ubuntu 22.04.5 KVM guests.
+Those VM runs used scripted loopback providers; ACCEPTANCE.md records the artifact hashes and exact scope.
+
 ## Current open obligations
 
 - Broader matched task success, intervention and priced-cost comparisons beyond the 8 paired trials.
 - General exploration-tree usefulness and reduced user lostness beyond the local branch-recovery trials.
-- Wider provider/OAuth/public-host/graphical-terminal/clean-host acceptance.
+- Wider provider/OAuth/public-host/graphical-terminal acceptance, physical hosts and more distributions/architectures.
 - Wide exhaustive completion, full Rust/SQLite refinement, whole-system composition and Policy B source-bound
   bidirectional fair-trace equivalence.
 - Provider/scheduler fairness, filesystem races, escaped descendants and remote effects.

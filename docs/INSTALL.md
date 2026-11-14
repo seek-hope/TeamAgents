@@ -94,8 +94,12 @@ Use a separate versioned installation root, `--bin-dir` and `--state-root` for i
 default; when enabled, they still require a concrete user approval and cannot be authorized by the automatic
 reviewer. Publication is a separate operation.
 
-A local `make release-rehearsal` builds and checks an archive and performs an isolated install/init smoke. It is
-not a clean-host, real-service or public-release acceptance result.
+A local `make release-rehearsal` builds and checks an archive and performs an isolated install/init smoke.
+Separate fresh-VM checks passed for the `0eb4ee98` candidate on Debian 12 (Linux 6.1) and Ubuntu 22.04.5 (Linux
+5.15), using ordinary users and scripted loopback providers. They covered two distinct 0.2.0 builds with schema
+9/protocol 2: install, repeated init, real Shell, upgrade, explicit rollback and failed-startup recovery with
+configuration and history preservation. ACCEPTANCE.md pins the archive and receipts. This evidence does not
+cover schema migration, physical hosts, other architectures or live services, and does not publish the package.
 
 ## 5. Uninstall
 

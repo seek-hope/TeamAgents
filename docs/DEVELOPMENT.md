@@ -28,8 +28,10 @@ python3 tools/citations.py
 make language-check
 ```
 
-Current ledger: **core 197 / engine 509 / TUI 108 = 814 tests**. `tools/test_counts.py` checks that the source
-suites and documented counts agree. A source count is not a passing test receipt; see ACCEPTANCE.md for gate status.
+Current ledger: **core 198 / engine 510 / TUI 108 = 816 tests**. `tools/test_counts.py` checks that the source
+suites and all registered current totals/triples agree (D-519). Its `--write` mode changes captured numbers only;
+keep dates, passing-gate claims and historical receipts accurate separately. Update its `HEADLINES` patterns if
+a current statement changes format. A source count is not a passing test receipt; see ACCEPTANCE.md for gate status.
 
 ## 2. Formal verification
 

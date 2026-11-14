@@ -48,11 +48,12 @@ make verify-kani
 
 Current source inventory (2026-11-15): **816 Rust tests** (core 198 / engine 510 / tui 108), **65 positive TLA configurations in 62
 traversals**, **327 controls**, **79 witnesses**, **9 Kani harnesses**, and **393 configurations across 48
-modules**. The current full runtime gate passed. Earlier pinned builds passed 18 offline probes and isolated
-release/install rehearsal. PTY passed
-on the unchanged TUI/daemon code; the 23 live probes apply to their earlier pinned source.
-Formal results and abstraction limits are in `verification/REPORT.md`. A green local run is not a
-public-host or clean-machine acceptance result.
+modules**. The `0eb4ee98` runtime passed the full local gate, 18 offline probes and isolated release/install
+rehearsal. Its candidate passed ordinary-user install, argument rejection and same-schema upgrade/rollback in
+fresh Debian 12 and Ubuntu 22.04.5 KVM guests. PTY passed on the unchanged TUI/daemon code; the 23 live probes
+apply to their earlier pinned source. D-519 checks current documentation totals and triples against Cargo lists.
+Formal results and abstraction limits are in `verification/REPORT.md`; exact package/VM scope is in
+`docs/ACCEPTANCE.md`. VM checks do not establish physical-host, live-provider or public-release acceptance.
 
 Real-model evaluation must use the model's native context window and record it with its source. A synthetic small
 window is for scripted regression only.

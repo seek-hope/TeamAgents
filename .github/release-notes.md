@@ -30,14 +30,15 @@ configurations across 48 modules**: **65 positive configurations in 62 traversal
 **79 normal-path witnesses** and **9 Kani harnesses**. Search-tree coverage includes ordered pair transitions,
 23 controls covering every non-`TypeOK` tree claim and 11 witnesses. Witnesses demonstrate reachability only.
 
-Earlier pinned builds passed five PTY terminal profiles and both forced graphics modes,
-`make probe-offline` (18/18) and `make probe-models` (23/23). These are local scripted, finite-model and targeted real-model checks, not
-blanket multi-host or full-benchmark acceptance.
+The `0eb4ee98` runtime passed `make probe-offline` (18/18), release rehearsal and fresh Debian 12/Ubuntu 22.04.5
+KVM checks for ordinary-user installation, malformed-argument rejection, same-schema upgrade/rollback and
+failed-startup recovery. Those guests used scripted loopback providers. Earlier pinned builds passed five PTY
+terminal profiles, both forced graphics modes and `make probe-models` (23/23). These are scoped checks.
 
 ## Current boundaries
 
 Wide exhaustive completion, full Rust/SQLite refinement, whole-system composition and Policy B source-bound
 equivalence remain open. Earlier pinned builds passed public SSH/screen reconnect and isolated installation,
-upgrade and rollback on an existing Debian 12 host. External OAuth services, freshly provisioned hosts,
-multi-distribution matrices and large-scale long-horizon comparisons remain open. No installed runtime replacement or public release is
-implied by this document.
+upgrade and rollback on an existing Debian 12 host. External OAuth services, physical hosts, broader distribution
+and architecture matrices, schema-transition acceptance and large-scale long-horizon comparisons remain open.
+No normal host installation replacement or public release is implied by this document.

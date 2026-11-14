@@ -2,10 +2,10 @@
 
 ## Current baseline
 
-Last completed delivery baseline: `b0a1091c` (D-509 through D-516). Subsequent CI fixes preserve the audited
-acceptance heading and give the large-history fixture a bounded 30-second budget (`8ec15d91`); its CI passed
-all three jobs. D-517 supplies stored entry identities to compaction; D-518 refuses malformed ordinary tool
-arguments before approval/execution. Neither has a new accepted release archive. Recheck Git for subsequent work.
+Runtime source baseline: `0eb4ee98` (D-518), including D-517's stored compaction entry identities and refusal of
+malformed ordinary tool arguments before approval/execution. Its local gate, package rehearsal, offline probes
+and fresh Debian/Ubuntu VM acceptance passed. Earlier `c2adc991` CI passed all three jobs. D-519 also audits
+current test-count totals and alternate formats across the documentation. Recheck Git and CI for subsequent work.
 
 The current source implements the requirements in [DESIGN.md](DESIGN.md), the rules in [DECISIONS.md](DECISIONS.md),
 and the acceptance matrix in [ACCEPTANCE.md](ACCEPTANCE.md). Current formal evidence and its limits are in
@@ -14,9 +14,10 @@ and the acceptance matrix in [ACCEPTANCE.md](ACCEPTANCE.md). Current formal evid
 Current source inventory and verification:
 
 - **816 Rust tests**: core 198, engine 510, TUI 108; the full `make check` passed.
-  Earlier pinned builds passed all 18 offline probes and the release/install rehearsal. PTY passed on the unchanged TUI/daemon
-  code. The last accepted archive predates D-517/D-518 and passed isolated upgrade and rollback on the existing
-  Debian host (see ACCEPTANCE.md).
+  The runtime baseline passed all 18 offline probes and the release/install rehearsal. The candidate archive
+  includes D-517/D-518 and passed installation, malformed-argument rejection, upgrade, explicit rollback and
+  failed-startup recovery in fresh Debian 12 and Ubuntu 22.04.5 KVM guests (see ACCEPTANCE.md). PTY passed on
+  the unchanged TUI/daemon code.
 - **65 positive TLA configurations in 62 traversals**, **327 controls**, **79 witnesses**, **9 Kani harnesses**.
 - Catalogue: **393 configurations across 48 modules**, including the separate wide configuration.
 - PTY covers five terminal profiles and both forced graphics modes.
@@ -94,7 +95,8 @@ not rewritten as a pass.
   failures. Do not retry its exhausted route without a resource change. Multi-branch recovery and native-window
   compaction have scoped evidence; general success, tree semantics and user lostness remain open.
 - Four wire protocols have live evidence. Earlier pinned builds passed public SSH/screen reconnect and isolated
-  install/upgrade/rollback on an existing Debian 12 host; external OAuth, fresh-host and wider platform acceptance remain open.
+  install/upgrade/rollback on an existing Debian 12 host. The current candidate also passed fresh Debian/Ubuntu
+  VM checks with scripted loopback providers. External OAuth, physical hosts and wider platform acceptance remain open.
 - Wide exhaustive completion, full Rust/SQLite refinement, whole-system composition and Policy B source-bound
   equivalence remain open.
 - Broader versioned integrations, artifact-retention policy and general long-horizon outcome measurement remain open.

@@ -20,6 +20,10 @@ It contains no review reports, evaluation datasets or archived evidence.
 `make verify-model-counterexamples`, `make verify-witnesses` and `make verify-kani` run the formal checks.
 `make pty` runs the terminal matrix. See `docs/DEVELOPMENT.md` for the full commands and their boundaries.
 
+`test_counts.py` holds the canonical ledger and registered current totals/triples to Cargo test lists. Its
+`--write` mode changes numeric fields only; a missing or ambiguous current statement fails. Historical receipts
+keep their original counts, and dates and passing-gate claims require separate evidence.
+
 For the current tree, `citations.py` verifies that 87 relative links resolve today. It checks 88 commands, 14 distinct targets, 14 declared as checked on 2026-11-14; its other totals are recomputed and compared with the script's own docstring.
 
 `tools/tmp/` is ignored scratch space for new local runs. It is not source, evidence of a later source revision or a
