@@ -6,7 +6,7 @@ This file records current behavior and reproducible evidence, not historical acc
 ✅ means the named local path has automated evidence. 🔶 means implementation exists but the stated external,
 empirical or full-system obligation remains open. No icon is a proof of every release condition.
 
-Current source validation: core 197 / engine 509 / tui 108 test targets; the full gate passed.
+Current source inventory: core 197 / engine 509 / tui 108 test targets; the full gate passed.
 All 18 offline probes and the final release/install rehearsal passed. PTY passed on the unchanged TUI/daemon
 code before the final continuous-input accounting fix and buffer bound.
 Current formal gate: **65 positive configurations in 62 traversals**, **327 controls**, **79 witnesses** and
