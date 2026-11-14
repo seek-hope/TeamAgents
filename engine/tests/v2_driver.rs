@@ -2197,6 +2197,26 @@ async fn leader_compaction_advances_the_session_search_tree() {
     assert!(request_text(&requests[2]).contains("Compare parser designs"));
     assert!(request_text(&requests[2]).contains("Session search tree"));
     let mut control = second_control(&root);
+    let source_ids: Vec<String> = {
+        let mut statement = control
+            .connection()
+            .prepare(
+                "SELECT id FROM context_entries WHERE instance_id='i-main'
+                 AND json_extract(message_json,'$.content') IN (?1,?2,?3)",
+            )
+            .unwrap();
+        let rows =
+            statement.query_map(rusqlite::params![bulk, "first answer", "now compare them"], |row| row.get(0)).unwrap();
+        rows.collect::<Result<_, _>>().unwrap()
+    };
+    assert_eq!(source_ids.len(), 3, "covered user/assistant entries and the retained input");
+    let compaction_prompt = request_text(&requests[1]);
+    for id in source_ids {
+        assert!(
+            compaction_prompt.contains(&serde_json::to_string(&id).unwrap()),
+            "the compactor must receive the actual source entry id {id} before it can cite it"
+        );
+    }
     let tree = control
         .submit(cmd("read-tree", "read_search_tree", json!({})), teamagents_core::v2::Identity::User)
         .expect("tree");

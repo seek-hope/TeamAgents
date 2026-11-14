@@ -154,9 +154,10 @@ obstacles and next steps, and carry source references and a focus. The tree is d
 verified fact, authority, completion evidence or an alternate execution checkpoint.
 
 Only the persisted Leader writes it. Leader compaction advances the previous cumulative tree through newly
-visible Leader entries, including the retained recent turn. Subsequent Leader prompts receive a bounded
-focus/unresolved projection. `/tree`, `teamagents search_tree [--json]`, daemon reads and export share one
-projection.
+visible Leader entries, including the retained recent turn. Compaction entry blocks include their stored IDs;
+existing input caps still apply. Source references are bounded model-written strings whose targets and meaning
+are not verified by tree validation. Subsequent Leader prompts receive a bounded focus/unresolved projection.
+`/tree`, `teamagents search_tree [--json]`, daemon reads and export share one projection.
 
 Patches use the ordinary durable operation ledger and a base revision. Add/update/move/merge/focus are atomic;
 ordered operations validate against the preceding result and roll back as a unit. Merge unions references,

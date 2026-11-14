@@ -61,7 +61,7 @@ complete graphical-terminal or OS matrix.
 | A17 | Artifacts change after a check | Stale-input completion refusal and `tools/dogfood/stale_check.py`; external service rechecks remain environmental |
 | A18 | Multi-instance usage budget | Shared work reservations, known/unknown settlement and `budget_gate_reserves_settles_and_releases` |
 | A19 | Truncated stream and connection loss | `V2StreamBoundary`, provider stream limits and transport tests; no invisible-text replay after emission |
-| A20 | Context compaction, original-history preservation and restart | `control::compression_*`, long-context restart tests, `V2Compress`, `V2SearchTree` and ordered-pair coverage |
+| A20 | Context compaction, original-history preservation and restart | `control::compression_*`, long-context restart and source-ID capture tests, `V2Compress`, `V2SearchTree` and ordered-pair coverage |
 | A21 | The user adjusts an instance directly | `v2_daemon::the_intervention_cli_cancels_a_task_and_pauses_and_resumes_an_instance`, TUI and instance controls |
 | A22 | Wait/deadlock diagnosis with ALL/ANY conditions and external paths | `V2Wait`, `engine/src/v2/diagnostics.rs`, blocked-wait reports; not an arbitrary wait-graph proof |
 | A23 | Deferred facts, wait registration, sweeps and wakeup races | Durable wait conditions, same-transaction wakeups and `V2Wait`/`V2Retention` |
@@ -94,11 +94,11 @@ not form a statistical acceptance result. `ssh_pty.py` is an explicit isolated-l
 
 ## Scoped external and live receipts
 
-The final archive, including the accounting, updater and client fixes, has SHA-256
+The last accepted archive, including the accounting, updater and client fixes, has SHA-256
 `951947815346f195fbf7a91091cf1089b9d55093498b69faf3f819a2384f223d`; its CLI has SHA-256
 `ae6aa27af25799e7f42fbe67c4e503d34c77bd593580f39687417a69d7ef526e`.
-On an existing Debian 12 host, isolated managed upgrade, explicit rollback, re-upgrade and an injected exit-42
-startup failure followed by automatic rollback passed. Healthy checkpoints, unchanged configuration and all six
+It predates D-517's compaction entry metadata correction. On an existing Debian 12 host, isolated managed
+upgrade, explicit rollback, re-upgrade and an injected exit-42 startup failure followed by automatic rollback passed. Healthy checkpoints, unchanged configuration and all six
 saved history entries were checked after each transition. The failed upgrade's exit 1 was expected; the enclosing
 probe exited 0 and stopped its daemon; the scoped daemon/screen cleanup audit was empty. This compares two
 distinct 0.2.0 builds, not different database schemas
@@ -114,8 +114,14 @@ part of the evidence below. No operation described by these assessment cases was
 
 - The project config is read, since D-244, only through explicit project trust; repository-local hooks, checks,
   limits, retention and update policy remain user-only.
-- An 8-run paired `deepseek-flash` comparison at native 1M window passed 8/8 hidden checks with 0 false claims
-  on both TeamAgents and Pi; broader held-out SWE-scale benchmarks remain open.
+- The older 8-run paired `deepseek-flash` comparison at native 1M passed 8/8 hidden checks on both clients.
+  A newer known-repository regression passed 2/2 hidden suites with Pi and 0/2 each with a single Leader and
+  a one-member team; its Cargo caches were unequal, so timings are not matched evidence. A second cohort
+  stopped on temporary-disk exhaustion before grading its first run. A third cohort matched Cargo settings:
+  Pi passed 2/2, single Leaders 0/2 and teams 1/2; both teams timed out, and both single Leaders incorrectly
+  reported success. Independent updater checks passed all 83 agent-added tests across the completed cohorts.
+  Full results and limits belong in [PRODUCT-COMPARISON.md](PRODUCT-COMPARISON.md); broader held-out SWE-scale
+  benchmarks remain open.
 - Hardened `reviewer.rs` (`hard_deny` + untrusted delimiters) passed **34/34** cases on `deepseek-flash` after
   the literal read-only search correction (V4, reused fixed cases, not a fresh holdout); the earlier 22-case run had one deterministic quoted-publication false
   refusal. Claude V3 matched 24/34 expected labels, with four strict-output parser failures and five HTTP 402 quota

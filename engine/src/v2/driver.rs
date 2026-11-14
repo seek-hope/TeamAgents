@@ -1303,7 +1303,8 @@ impl<P: Provider> Driver<P> {
             if let Some(id) = message["tool_call_id"].as_str() {
                 content = format!("[tool_call_id={id}] {content}");
             }
-            blob.push_str(&format!("{role}: {content}\n\n"));
+            // Stored IDs let the compactor cite entries without reconstructing their identities.
+            blob.push_str(&format!("[context_entry_id={}]\n{role}: {content}\n\n", json!(entry.id)));
         }
         blob
     }

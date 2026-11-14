@@ -2,7 +2,10 @@
 
 ## Current baseline
 
-Last completed source baseline: `b0a1091c` (D-509 through D-516). Recheck Git for subsequent work.
+Last completed delivery baseline: `b0a1091c` (D-509 through D-516). Subsequent CI fixes preserve the audited
+acceptance heading and give the large-history fixture a bounded 30-second budget (`8ec15d91`); its CI passed
+all three jobs. D-517 supplies stored entry identities to compaction and passed the full local gate, but has
+no new accepted release archive. Recheck Git for subsequent work.
 
 The current source implements the requirements in [DESIGN.md](DESIGN.md), the rules in [DECISIONS.md](DECISIONS.md),
 and the acceptance matrix in [ACCEPTANCE.md](ACCEPTANCE.md). Current formal evidence and its limits are in
@@ -12,7 +15,8 @@ Current source inventory and verification:
 
 - **814 Rust tests**: core 197, engine 509, TUI 108; the full `make check` passed.
   All 18 offline probes and the final release/install rehearsal passed. PTY passed on the unchanged TUI/daemon
-  code. The final archive passed isolated upgrade and rollback on the existing Debian host (see ACCEPTANCE.md).
+  code. The last accepted archive predates D-517 and passed isolated upgrade and rollback on the existing
+  Debian host (see ACCEPTANCE.md).
 - **65 positive TLA configurations in 62 traversals**, **327 controls**, **79 witnesses**, **9 Kani harnesses**.
 - Catalogue: **393 configurations across 48 modules**, including the separate wide configuration.
 - PTY covers five terminal profiles and both forced graphics modes.
@@ -79,9 +83,14 @@ not rewritten as a pass.
 
 ## Open work
 
-- Small live trials cover 8 paired Pi tasks, 34 reused DeepSeek Reviewer cases, multi-branch tree recovery
-  and native-window compaction. Claude matched 24/34 labels with four parser and five quota failures; do not
-  retry its exhausted paid route without a resource change. General success, tree semantics and user lostness remain open.
+- Small live trials cover the older 8 paired Pi tasks, a six-run repository pilot with unequal Cargo caches,
+  an interrupted disk-full cohort, and a completed six-run comparison with matched build configuration. In the
+  matched cohort, Pi passed 2/2 hidden suites, single Leaders 0/2 and teams 1/2; both teams timed out and both
+  single Leaders incorrectly reported success. All 83 agent-added tests across the first and third cohorts
+  passed independent updater checks. PRODUCT-COMPARISON.md records the distinct evidence and limits.
+- DeepSeek Reviewer evidence covers 34 reused cases; Claude matched 24/34 labels with four parser and five quota
+  failures. Do not retry its exhausted route without a resource change. Multi-branch recovery and native-window
+  compaction have scoped evidence; general success, tree semantics and user lostness remain open.
 - Four wire protocols have live evidence. Earlier pinned builds passed public SSH/screen reconnect and isolated
   install/upgrade/rollback on an existing Debian 12 host; external OAuth, fresh-host and wider platform acceptance remain open.
 - Wide exhaustive completion, full Rust/SQLite refinement, whole-system composition and Policy B source-bound

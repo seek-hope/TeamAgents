@@ -143,6 +143,16 @@ evaluation evidence.
 - These results do not establish full Rust/SQLite refinement, whole-system composition, Policy B source-bound
   equivalence, wide exhaustive completion, arbitrary-input TLA coverage or live-model navigation quality.
 
+## D-517 Supply stored entry identities to compaction (2026-11-15)
+
+Compaction entry blocks include the JSON-quoted stored entry ID alongside role and content, before the existing
+input caps apply. The same serializer covers the summarized prefix and the Leader's retained recent entries.
+The compactor can therefore copy supplied identities into navigation references instead of reconstructing them.
+A captured-request regression compares the available IDs with actual covered user/assistant and retained input
+rows in SQLite. Source references remain optional, bounded model-written strings; tree validation does not
+resolve their targets or verify their meaning. This supplies missing input for D-504, without adding automatic
+reminders, stricter reference requirements, authority or a claim of improved live navigation quality.
+
 ## D-516 Preserve input ownership and recover client refresh failures (2026-11-14)
 
 Control registration events freeze the instance epoch, context head and billing work; user-input application
