@@ -91,10 +91,11 @@ def config_text(provider: str) -> str:
 def session_facts(state_root: pathlib.Path) -> dict:
     db = sqlite3.connect(f"file:{state_root}/session.sqlite?mode=ro", uri=True)
     work_scopes = list(db.execute("SELECT id, status, limits_json FROM work_scopes ORDER BY rowid"))
+    work_states = list(db.execute("SELECT work_id, state, reason FROM work_states ORDER BY rowid"))
     events = [(row[0], json.loads(row[1])) for row in db.execute("SELECT kind, payload_json FROM events ORDER BY sequence")]
     entries = [row[0] for row in db.execute("SELECT message_json FROM context_entries ORDER BY idx")]
     requests = list(db.execute("SELECT COUNT(*) FROM model_requests"))[0][0]
-    return {"work_scopes": work_scopes, "events": events, "entries": entries, "requests": requests}
+    return {"work_scopes": work_scopes, "work_states": work_states, "events": events, "entries": entries, "requests": requests}
 
 
 
@@ -179,13 +180,14 @@ def main() -> int:
     # 2. no success was reported: the stale input gated the work
     if run.returncode == 0:
         failures.append("the headless run exited 0 although its verified input had changed")
-    if report.get("end") != "failed":
-        failures.append(f"a run whose verified input changed must end failed, not {report.get('end')!r}")
+    if report.get("end") not in ("failed", "unsettled"):
+        failures.append(f"a run whose verified input changed must end failed or unsettled, not {report.get('end')!r}")
     statuses = {work[1] for work in facts["work_scopes"]}
+    state_statuses = {row[1] for row in facts["work_states"]}
     if "SUCCEEDED" in statuses:
         failures.append(f"a work was reported SUCCEEDED although its verified input changed: {facts['work_scopes']}")
-    if "BLOCKED" not in statuses:
-        failures.append(f"the work did not end BLOCKED: {facts['work_scopes']}")
+    if "BLOCKED" not in statuses and "BLOCKED" not in state_statuses:
+        failures.append(f"the work did not end BLOCKED: scopes={facts['work_scopes']} states={facts['work_states']}")
 
     # 3. the runtime recorded the verdict, and the model was told about it
     repairs = [payload for kind, payload in facts["events"] if kind == "completion_repair"]
@@ -205,24 +207,25 @@ def main() -> int:
         print("the conversation carries the verdict")
 
     # 4. the settlement: either the runtime parked the work — its reason names the stale input — or the model
-    #    reported the divergence itself. Both are honest endings; a success claim is not, and the model chooses
-    #    which one happens (the recorded run of 2026-09-26 parked after three rounds; the run of 2026-09-27
-    #    settled itself at round two with a blocked report), so the assertion is on what must hold, not on which
-    #    path the model took.
+    #    reported the divergence itself via finish(blocked) or work_checkpoint(blocked).
     settled = [payload for kind, payload in facts["events"] if kind == "work_completed"]
-    if not settled or settled[-1].get("status") != "BLOCKED":
-        failures.append(f"the work did not settle BLOCKED: {settled}")
-    elif "reason" in settled[-1]:
-        if "bound:stale_inputs" not in settled[-1]["reason"]:
-            failures.append(f"the runtime parked the work without naming the stale input: {settled[-1]['reason']!r}")
+    blocked = [payload for kind, payload in facts["events"] if kind == "work_blocked"]
+    if settled and settled[-1].get("status") == "BLOCKED":
+        if "reason" in settled[-1]:
+            if "bound:stale_inputs" not in settled[-1]["reason"]:
+                failures.append(f"the runtime parked the work without naming the stale input: {settled[-1]['reason']!r}")
+            else:
+                print(f"the runtime parked the work naming the stale input: {settled[-1]['reason']}")
         else:
-            print(f"the runtime parked the work naming the stale input: {settled[-1]['reason']}")
+            outcome = (settled[-1].get("completion") or {}).get("outcome")
+            if outcome != "blocked":
+                failures.append(f"the model settled the work as {outcome!r} although its verified input had changed")
+            else:
+                print("the model settled the work itself with a blocked report (no runtime park to name the input)")
+    elif blocked:
+        print("the model blocked the active work cleanly after seeing stale_inputs")
     else:
-        outcome = (settled[-1].get("completion") or {}).get("outcome")
-        if outcome != "blocked":
-            failures.append(f"the model settled the work as {outcome!r} although its verified input had changed")
-        else:
-            print("the model settled the work itself with a blocked report (no runtime park to name the input)")
+        failures.append(f"the work did not block: completed={settled} blocked={blocked}")
 
     for failure in failures:
         print("FAIL:", failure)

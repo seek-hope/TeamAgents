@@ -2627,3 +2627,55 @@ async fn a_shutdown_does_not_wait_out_a_retry_backoff() {
     let elapsed = started.elapsed();
     assert!(elapsed < Duration::from_secs(5), "a 30 s provider backoff must not hold the shutdown ({elapsed:?})");
 }
+
+/// Even when `deadline` and `required_checks` are active at boot, an idle session
+/// with no user input or pending task must not emit a deadline note or check briefing
+/// and start an unrequested model turn.
+#[tokio::test]
+async fn empty_session_does_not_fire_deadline_warning_or_check_briefing_before_input() {
+    let root = root("idle-notes");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let mut control = second_control(&root);
+    control
+        .submit(
+            cmd(
+                "mk-i",
+                "create_instance",
+                json!({"id": "i-main", "workspace_ref": root.dir.join("ws").to_string_lossy()}),
+            ),
+            teamagents_core::v2::Identity::User,
+        )
+        .expect("instance");
+    let soon = teamagents_core::models::now() + 30.0;
+    control
+        .submit(
+            cmd(
+                "mk-g",
+                "create_work",
+                json!({
+                    "id": "work-s-idle",
+                    "instance_id": "i-main",
+                    "deadline": soon,
+                    "limits": {"required_checks": [{"id": "ok", "command": "true", "timeout": 30}]}
+                }),
+            ),
+            teamagents_core::v2::Identity::User,
+        )
+        .expect("work");
+    drop(control);
+
+    let (provider, seen) = recording(vec![Step::Message(reply("answered after input"))]);
+    let handle = start(root.config_with(provider)).await.expect("start");
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert_eq!(recorded(&seen).len(), 0, "an idle session must not call the model before user input");
+    let early = handle.events(0).await.unwrap();
+    assert!(!early.iter().any(|e| e["kind"] == json!("work_deadline_warning")));
+    assert!(!early.iter().any(|e| e["kind"] == json!("work_checks_briefed")));
+
+    handle.input("start now").await.expect("input");
+    wait_event(&handle, "response_imported", 15_000).await;
+    let after = handle.events(0).await.unwrap();
+    assert!(after.iter().any(|e| e["kind"] == json!("work_deadline_warning")));
+    assert!(after.iter().any(|e| e["kind"] == json!("work_checks_briefed")));
+    handle.shutdown().await.expect("shutdown");
+}

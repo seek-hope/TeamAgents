@@ -895,15 +895,19 @@ fn evidence_problem(tx: &Connection, k: &WorkKey, evidence: &Json) -> Result<Opt
         return Ok(Some("Completion evidence exceeds 128 references"));
     }
     for reference in refs.iter().filter_map(Json::as_str) {
-        let (kind, id) = if let Some(id) = reference.strip_prefix("operation:") {
-            ("operation", id)
-        } else if let Some(id) = reference.strip_prefix("tool:") {
-            ("tool", id)
-        } else if let Some(id) = reference.strip_prefix("task:") {
-            ("task", id)
+        let (kind, rest) = if let Some(rest) = reference.strip_prefix("operation:") {
+            ("operation", rest)
+        } else if let Some(rest) = reference.strip_prefix("tool:") {
+            ("tool", rest)
+        } else if let Some(rest) = reference.strip_prefix("task:") {
+            ("task", rest)
         } else {
             continue;
         };
+        let id = rest.trim_start().split(|c: char| c.is_whitespace() || matches!(c, ',' | ';')).next().unwrap_or("");
+        if id.is_empty() {
+            return Ok(Some("A cited execution or task reference is not a successful outcome in this work"));
+        }
         let valid:bool=if kind=="task" {
             tx.query_row("SELECT EXISTS(SELECT 1 FROM tasks WHERE id=?1 AND work_id=?2 AND requester=?3 AND status='SUCCEEDED')",
                 rusqlite::params![id,k.0,k.1],|r|r.get(0))

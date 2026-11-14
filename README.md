@@ -133,7 +133,7 @@ See [the architecture guide](docs/ARCHITECTURE.md) for state machines and data r
 
 ## Current evidence
 
-The current local gate has **773 Rust tests** (core 190, engine 478, TUI 105) and `make check` exit 0.
+The current local gate has **777 Rust tests** (core 191, engine 481, TUI 105) and `make check` exit 0.
 Formal material contains **393 configurations across 48 modules**:
 
 - **65 positive configurations in 62 traversals**;
@@ -159,11 +159,12 @@ make pty
 ## Current limits
 
 These results do not establish full Rust/SQLite refinement, whole-system composition, wide exhaustive
-completion or Policy B source-bound equivalence. They do not measure live-model tree quality, reduced lostness,
-reviewer judgement, general long-horizon success or priced cost.
-
-Wider real-provider, OAuth, public-host, graphical-terminal, clean-host install/update/rollback and matched-Pi
-outcome comparisons remain open. The separate wide configuration is not claimed complete.
+completion or Policy B source-bound equivalence. Live probes (`make probe-offline`, `make probe-models`)
+exercise the four wire protocols, heterogeneous providers, search/fetch, images, reviewer hardening,
+compaction/search-tree updates, isolated clean-host upgrade/rollback, loopback SSH and Alacritty locally;
+broader external OAuth services, public hosts, multi-distribution clean hosts, wider terminal matrices,
+large-scale long-horizon benchmarks and full priced-cost comparisons remain open. The separate wide
+configuration is not claimed complete.
 
 ## Documentation
 

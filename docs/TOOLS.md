@@ -41,7 +41,7 @@ Finish the current work exactly once. Must be the only tool call in this respons
 |---|---|---|---|
 | `status` | `string` | yes | — |
 | `summary` | `string` | yes | What was done and the final answer. |
-| `evidence` | `array` | no | References proving the claims (files, commands, receipts). |
+| `evidence` | `array` | no | References proving the claims (include exact tool:CALL_ID, operation:OPERATION_ID or task:TASK_ID receipts for tool/delegated work, alongside files or commands). |
 | `unverified` | `array` | no | Claims that could not be verified. |
 
 ### `read_history`
@@ -157,7 +157,7 @@ View or reorganize the session-level exploration tree. Use action=show to read i
 |---|---|---|---|
 | `action` | `string` | yes | — |
 | `base_revision` | `integer` | no | Required for apply; read it from the current tree. |
-| `operations` | `array` | no | Atomic patch: add {op,parent_id,node}; update {op,id,...fields}; move {op,id,parent_id}; merge {op,from_id,into_id,optional summary}; focus {op,id}. Node kinds: question/hypothesis/attempt/finding/decision/obstacle/next_step. Statuses: active/open/resolved/blocked/abandoned. |
+| `operations` | `array` | no | Atomic patch: add {op,parent_id,node:{title,summary?,kind?,status?,source_refs?}}; update {op,id,title?,summary?,kind?,status?,source_refs?}; move {op,id,parent_id}; merge {op,from_id,into_id,summary?}; focus {op,id}. Node kinds: question/hypothesis/attempt/finding/decision/obstacle/next_step. Statuses: active/open/resolved/blocked/abandoned. |
 
 ### `ls`
 

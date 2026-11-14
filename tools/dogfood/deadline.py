@@ -51,7 +51,10 @@ generation_options = { reasoning_effort = "high" }
 deadline_minutes = 1
 """
 
-FIRST = "Say the single word ok."
+FIRST = (
+    "Call `work_checkpoint` with `action` set to `ask_user` and `question` set to "
+    "`Ready for your follow-up instruction?` so this work pauses for my next message. Do not call `finish`."
+)
 SECOND = "Say the single word again."
 
 
@@ -128,9 +131,9 @@ def main() -> int:
         facts = session(state_root)
         work = facts["work_scopes"][0] if facts["work_scopes"] else None
         elapsed = round(time.time() - started, 1)
-        if first.returncode != 0:
+        if first.returncode not in (0, 3):
             print(f"1. first turn: exit={first.returncode} end={report.get('end')} ({elapsed}s)")
-            failures.append(f"the first turn should succeed, got {first.returncode}: {report}")
+            failures.append(f"the first turn should succeed or pause for input, got {first.returncode}: {report}")
             break
         if work is None or work[2] is None:
             print(f"1. first turn: exit=0 end={report.get('end')} ({elapsed}s), work={work}")

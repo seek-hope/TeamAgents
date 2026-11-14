@@ -12,7 +12,7 @@ used the current source and exited 0 for every target. Kani reported `Complete -
 
 `verification/tla/V2SearchTree.tla` has SHA-256
 `b2d814d597ddb5f9382ca712e6431a1bf3d67ab7b21ce2f44137c5cae39a2c12`.
-The complete `make check` gate also passes with **773 Rust tests**: core 190, engine 478 and TUI 105.
+The complete `make check` gate also passes with **777 Rust tests**: core 191, engine 481 and TUI 105.
 
 The catalogue contains **393 configurations across 48 modules**: 65 positive configurations, 327 controls and
 one separate wide configuration. Positive inputs share a traversal only when their model, specification and

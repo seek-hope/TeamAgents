@@ -32,7 +32,7 @@ the log is still a supported way to observe it (and the probes that do assert on
 | `approval_denied` | `approval_id` | `operation_id` | `core/src/v2/control.rs:4087` | `tui/src/v2app.rs`, `tui/tests/minimal.rs` |
 | `approval_granted` | `approval_id` | `approval_id` | `core/src/v2/control.rs:4049`, `core/src/v2/control.rs:4322` | `tui/src/v2app.rs` |
 | `approval_requested` | `operation_id` | `approval_id` | `core/src/v2/control.rs:3971` | `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `engine/tests/update.rs`, `engine/tests/v2_daemon.rs`, `engine/tests/v2_driver.rs` |
-| `approval_reviewed` | `approval_id` | `operation_id`, `outcome`, `review` | `core/src/v2/control.rs:4089`, `core/src/v2/control.rs:4323` | `engine/tests/v2_driver.rs` |
+| `approval_reviewed` | `approval_id` | `operation_id`, `outcome`, `review` | `core/src/v2/control.rs:4089`, `core/src/v2/control.rs:4323` | `engine/tests/v2_driver.rs`, `core/tests/v2_invariants.rs` |
 | `artifact_abandoned` | `id` | `artifact_id` | `core/src/v2/control.rs:5378` | observability only |
 | `artifact_collected` | `id` | `artifact_id` | `core/src/v2/control.rs:5779` | observability only |
 | `artifact_owners_released` | `""` | `released` | `core/src/v2/control.rs:5532` | observability only |
@@ -91,7 +91,7 @@ the log is still a supported way to observe it (and the probes that do assert on
 | `wait_satisfied` | `&instance_id` | `wait_id` | `core/src/v2/control.rs:3446` | `tui/src/v2app.rs`, `tui/tests/minimal.rs`, `engine/tests/v2_driver.rs` |
 | `work_admission_refused` | `instance` | `reason` | `core/src/v2/control/work.rs:27` | observability only |
 | `work_attention` | `instance` | `reason`, `waits` | `core/src/v2/control/work.rs:843` | observability only |
-| `work_blocked` | `instance` / `work_id` | `detached`, `reason`, `status`, `work_id` | `core/src/v2/control.rs:4939`, `core/src/v2/control/work.rs:1067`, `core/src/v2/control/work.rs:434` | `tui/src/v2app.rs`, `tui/tests/minimal.rs`, `tui/tests/v2app_tests.rs`, `engine/src/v2/diagnostics.rs`, `engine/tests/cases/autonomy.rs`, `engine/tests/v2_driver.rs` |
+| `work_blocked` | `instance` / `work_id` | `detached`, `reason`, `status`, `work_id` | `core/src/v2/control.rs:4939`, `core/src/v2/control/work.rs:1071`, `core/src/v2/control/work.rs:434` | `tui/src/v2app.rs`, `tui/tests/minimal.rs`, `tui/tests/v2app_tests.rs`, `engine/src/v2/diagnostics.rs`, `engine/tests/cases/autonomy.rs`, `engine/tests/v2_driver.rs` |
 | `work_cancelled` | `work_id` | `released`, `work_id` | `core/src/v2/control.rs:5207` | observability only |
 | `work_checkpoint` | `instance` | `action`, `decision_id`, `work_id` | `core/src/v2/control/work.rs:600` | `engine/tests/cases/autonomy.rs`, `engine/tests/v2_daemon.rs`, `engine/tests/v2_driver.rs` |
 | `work_checks_briefed` | `work_id` | `checks` | `core/src/v2/control.rs:5019` | `engine/tests/v2_driver.rs` |

@@ -28,7 +28,7 @@ python3 tools/citations.py
 make language-check
 ```
 
-Current ledger: **core 190 / engine 478 / TUI 105 = 773 tests**. `tools/test_counts.py` checks that the source
+Current ledger: **core 191 / engine 481 / TUI 105 = 777 tests**. `tools/test_counts.py` checks that the source
 suites and documented counts agree.
 
 ## 2. Formal verification

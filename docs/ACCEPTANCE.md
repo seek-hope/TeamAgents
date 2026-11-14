@@ -6,7 +6,7 @@ This file records current behavior and reproducible evidence, not historical acc
 ✅ means the named local path has automated evidence. 🔶 means implementation exists but the stated external,
 empirical or full-system obligation remains open. No icon is a proof of every release condition.
 
-`make check` is green (core 190 / engine 478 / tui 105 test targets).
+`make check` is green (core 191 / engine 481 / tui 105 test targets).
 Current formal gate: **65 positive configurations in 62 traversals**, **327 controls**, **79 witnesses** and
 **9 Kani harnesses**, all exit 0. The catalogue contains 393 configurations across 48 modules, including the
 separate wide configuration. PTY covers five terminal profiles and both forced graphics modes; this is not a
@@ -94,14 +94,18 @@ not form a statistical acceptance result. `ssh_pty.py` is an explicit isolated-l
 
 - The project config is read, since D-244, only through explicit project trust; repository-local hooks, checks,
   limits, retention and update policy remain user-only.
-- General matched held-out task success, intervention and priced-cost comparisons, including a matched Pi
-  evaluation, are not established.
-- Live-model exploration-tree quality, semantic completeness, reduced lostness, reviewer judgement and
-  prompt-injection resistance remain unmeasured.
-- Wider real-provider/native-protocol, Search/Fetch, image, MCP OAuth, public-host, graphical-terminal and
-  clean-host install/update/rollback acceptance remains open.
-- The wide exhaustive configuration, full Rust/SQLite refinement, whole-system composition, arbitrary-string
-  capability algebra and Policy B source-bound bidirectional fair-trace equivalence remain open.
+- An 8-run paired `deepseek-flash` comparison at native 1M window passed 8/8 hidden checks with 0 false claims
+  on both TeamAgents and Pi; broader held-out SWE-scale benchmarks remain open.
+- Hardened `reviewer.rs` (`hard_deny` + untrusted delimiters) passed 14/14 benign/adversarial/injection cases on
+  `deepseek-flash`, and multi-branch `search_tree` resume plus cold-tree 1M compaction passed locally; broader
+  multi-model reviewer judgement, semantic tree completeness and larger empirical lostness studies remain open.
+- All four wire protocols (`deepseek`, `chat/completions`, `anthropic`, `responses`), heterogeneous
+  `deepseek` + `anthropic`, search/fetch, `deepseek-flash` images, loopback SSH, Alacritty and isolated
+  clean-host install/upgrade/rollback passed locally; external OAuth services, public hosts and broader
+  terminal/OS distribution matrices remain open.
+- The wide exhaustive configuration (2,029,647 states verified by simulation only), full Rust/SQLite refinement,
+  whole-system composition, arbitrary-string capability algebra and Policy B source-bound bidirectional
+  fair-trace equivalence remain open.
 - Scheduler/provider fairness, process/remote effects, filesystem races and real power-loss timing remain
   environmental obligations.
 - Broader versioned MCP auth/SDK/client/extension contracts, artifact-retention policy and general integration

@@ -102,7 +102,7 @@ the only accepted value. The removed `mcp_network` and check-level `network` set
 | `oauth_scopes` | `Vec<String>` | empty | `engine/src/mcp_auth.rs` | Scopes to request; unset means whatever the authorization server advertises. |
 | `startup_timeout_s` | `Option<u64>` | unset (the reader applies its own) | `engine/src/bound.rs` | initialize/tools/list timeout in seconds (default 60). |
 | `tool_timeout_s` | `Option<u64>` | unset (the reader applies its own) | `engine/src/bound.rs` | tools/call timeout in seconds (default 120). |
-| `env` | `HashMap<String, String>` | empty | `engine/src/bound.rs`, `engine/src/environment.rs` … (9 files) | Binding-specific environment/options. MCP expands ${VAR}; Exa search accepts search_type (default auto). |
+| `env` | `HashMap<String, String>` | empty | `engine/src/bound.rs`, `engine/src/environment.rs` … (10 files) | Binding-specific environment/options. MCP expands ${VAR}; Exa search accepts search_type (default auto). |
 | `tool_names` | `Vec<String>` | empty | `engine/src/bound.rs` | — |
 
 ### `top level`

@@ -2707,3 +2707,49 @@ async fn the_streaming_headless_mode_prints_the_events_then_the_report() {
     assert!(err.contains("--json") && err.contains("--stream-json"), "{err}");
     handle.shutdown().await.expect("shutdown");
 }
+
+#[tokio::test]
+async fn terminating_an_enrolled_inflight_run_reports_failed_not_unsettled() {
+    let root = root("autonomy-terminate-end");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let scripts = HashMap::from([(
+        "i-leader".to_string(),
+        vec![json!({"__slow_ms__": 30_000, "role": "assistant", "content": "late"})],
+    )]);
+    let mut cfg = config(&root, scripts);
+    cfg.supervisor.work_limits = json!({"autonomous_work": true});
+    let handle = serve(cfg).await.unwrap();
+    let socket = root.dir.join("state/daemon.sock");
+    let workspace = root.dir.join("ws");
+
+    let run_task = tokio::spawn(headless(exec_options(
+        &socket,
+        &workspace,
+        "Work on this task.",
+        vec!["touch should-not-run".to_string()],
+    )));
+    let mut client = Client::connect(&socket).await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while std::time::Instant::now() < deadline {
+        let cp = client.call("checkpoint", json!({})).await;
+        let phase = cp["result"]["snapshot"]["instances"][0]["phase"].as_str().unwrap_or("");
+        if phase == "MODEL_PENDING" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let term = client
+        .command("term-inflight", "set_lifecycle", json!({"instance_id": "i-leader", "lifecycle": "TERMINATED"}))
+        .await;
+    assert_eq!(term["ok"], json!(true), "{term}");
+
+    let run = tokio::time::timeout(Duration::from_secs(15), run_task)
+        .await
+        .expect("terminated run finishes promptly")
+        .expect("join run");
+    assert_eq!(run.end, End::Failed, "termination is failed, not unsettled: {}", run.report);
+    assert_eq!(run.end.exit_code(run.checks_ok), 1);
+    assert!(run.report["failure"].as_str().is_some_and(|s| s.contains("is terminated")), "{}", run.report);
+    assert!(!workspace.join("should-not-run").exists(), "terminated turn must not run acceptance checks");
+    handle.shutdown().await.expect("shutdown");
+}

@@ -1740,3 +1740,344 @@ fn the_invariant_checker_detects_broken_states() {
         "the malformed tree must be reported: {reported:?}"
     );
 }
+
+#[test]
+fn enrolled_work_review_and_profile_invariants_hold_over_random_walks() {
+    let mut configured = false;
+    let mut admitted_work = false;
+    let mut checkpoint_asked = false;
+    let mut review_allowed = false;
+    let mut review_denied = false;
+    let mut profile_switched = false;
+    let mut midturn_switch_refused = false;
+    let mut inconsistent_review_refused = false;
+
+    for walk in 0..16u64 {
+        let mut harness = Harness::new("enrolled-walk");
+        harness.rng = 0x517CC1B727220A95 ^ (walk.wrapping_mul(0x9E3779B97F4A7C15) | 1);
+        let id = harness.id();
+        harness
+            .ctl
+            .submit(
+                Command {
+                    command_id: id,
+                    method: "create_instance".into(),
+                    params: json!({"id":"i1","is_leader":true,"profile":{"model":"m-init","context_window":100000}}),
+                },
+                Identity::User,
+            )
+            .unwrap();
+        let id = harness.id();
+        harness
+            .ctl
+            .submit(
+                Command {
+                    command_id: id,
+                    method: "configure_work".into(),
+                    params: json!({"leader_id":"i1","limits":{"max_total_tokens":500}}),
+                },
+                Identity::User,
+            )
+            .unwrap();
+        let id = harness.id();
+        harness
+            .ctl
+            .submit(
+                Command {
+                    command_id: id,
+                    method: "issue_grant".into(),
+                    params: json!({"subject":"i1","action":"shell","resource_scope":"workspace"}),
+                },
+                Identity::User,
+            )
+            .unwrap();
+        configured = true;
+        harness.check("init-enrolled");
+
+        for step_idx in 0..32 {
+            let phase = harness
+                .rows("SELECT phase FROM instances WHERE id='i1'", &[])
+                .first()
+                .map(|r| r[0].clone())
+                .unwrap_or_default();
+            let rev: i64 = harness
+                .rows("SELECT revision FROM instances WHERE id='i1'", &[])
+                .first()
+                .and_then(|r| r[0].parse().ok())
+                .unwrap_or(0);
+            let pending_admission = !harness
+                .rows("SELECT envelope_id FROM work_inputs WHERE instance_id='i1' AND state='PENDING'", &[])
+                .is_empty();
+            let active_work = harness
+                .rows("SELECT active_work_id FROM instances WHERE id='i1' AND active_work_id IS NOT NULL", &[])
+                .first()
+                .map(|r| r[0].clone());
+            let work_state = harness
+                .rows("SELECT state FROM work_states WHERE instance_id='i1' AND work_id!=''", &[])
+                .first()
+                .map(|r| r[0].clone())
+                .unwrap_or_default();
+            let pending_req = harness
+                .rows(
+                    "SELECT request_id, selected_attempt_id FROM model_requests WHERE instance_id='i1' AND kind='turn' AND status='PENDING'",
+                    &[],
+                )
+                .first()
+                .cloned();
+            let pending_approval = harness
+                .rows("SELECT id, operation_id FROM approvals WHERE status='PENDING' LIMIT 1", &[])
+                .first()
+                .cloned();
+            let prepared_op = harness
+                .rows(
+                    "SELECT o.operation_id FROM operations o WHERE o.status='PREPARED' AND NOT EXISTS (SELECT 1 FROM approvals a WHERE a.operation_id=o.operation_id AND a.status='PENDING') LIMIT 1",
+                    &[],
+                )
+                .first()
+                .map(|r| r[0].clone());
+            let pending_review = harness
+                .rows("SELECT request_id FROM model_requests WHERE kind='review' AND status='PENDING' LIMIT 1", &[])
+                .first()
+                .map(|r| r[0].clone());
+            let done_review = pending_approval.as_ref().and_then(|row| {
+                harness
+                    .rows(
+                        "SELECT r.request_id FROM model_requests r WHERE r.kind='review' AND r.status='COMPLETE' AND r.request_ref=?1 LIMIT 1",
+                        &[&row[1]],
+                    )
+                    .first()
+                    .map(|r| r[0].clone())
+            });
+            let running_op = harness
+                .rows(
+                    "SELECT operation_id FROM operations WHERE status IN ('DISPATCH_COMMITTED','RUNNING') LIMIT 1",
+                    &[],
+                )
+                .first()
+                .map(|r| r[0].clone());
+
+            let mut candidates: Vec<Step> = Vec::new();
+            if (active_work.is_none() && !pending_admission) || work_state == "NEEDS_INPUT" {
+                candidates.push(Step {
+                    label: "submit_input".into(),
+                    command: Command {
+                        command_id: String::new(),
+                        method: "submit_input".into(),
+                        params: json!({"instance_id":"i1","envelope_id":format!("env-{walk}-{step_idx}"),"text":"do work"}),
+                    },
+                    identity: Identity::User,
+                });
+            }
+            if phase == "READY" {
+                candidates.push(Step {
+                    label: "drain_inbox".into(),
+                    command: Command {
+                        command_id: String::new(),
+                        method: "drain_inbox".into(),
+                        params: json!({"instance_id":"i1"}),
+                    },
+                    identity: Identity::Instance("i1".into()),
+                });
+            }
+            if phase == "READY" && active_work.is_some() {
+                candidates.push(Step {
+                    label: "set_instance_profile".into(),
+                    command: Command {
+                        command_id: String::new(),
+                        method: "set_instance_profile".into(),
+                        params: json!({"instance_id":"i1","model":format!("m-{step_idx}"),"effort":"low"}),
+                    },
+                    identity: Identity::User,
+                });
+            }
+            if matches!(phase.as_str(), "MODEL_PENDING" | "TOOLS_PENDING" | "COMPLETION_PENDING") {
+                candidates.push(Step {
+                    label: "!set_instance_profile_midturn".into(),
+                    command: Command {
+                        command_id: String::new(),
+                        method: "set_instance_profile".into(),
+                        params: json!({"instance_id":"i1","model":"m-bad"}),
+                    },
+                    identity: Identity::User,
+                });
+            }
+            if phase == "READY" && ((active_work.is_some() && work_state != "NEEDS_INPUT") || pending_admission) {
+                candidates.push(Step {
+                    label: "begin_request".into(),
+                    command: Command {
+                        command_id: String::new(),
+                        method: "begin_request".into(),
+                        params: json!({"instance_id":"i1","request_id":format!("req-{walk}-{step_idx}"),"revision":rev,"est_prompt_tokens":10}),
+                    },
+                    identity: Identity::Instance("i1".into()),
+                });
+            }
+            if let Some(ref pr) = pending_req {
+                if pr[1].is_empty() {
+                    let req_id = pr[0].clone();
+                    candidates.push(Step {
+                        label: "record_attempt".into(),
+                        command: Command {
+                            command_id: String::new(),
+                            method: "record_attempt".into(),
+                            params: json!({"request_id":req_id,"attempt_id":format!("{req_id}/a1"),"status":"COMPLETE","usage":{"prompt_tokens":4,"completion_tokens":3,"total_tokens":7}}),
+                        },
+                        identity: Identity::System,
+                    });
+                } else {
+                    let req_id = pr[0].clone();
+                    let kind = (harness.next_rand() % 3) as usize;
+                    let params = if pending_admission {
+                        json!({"request_id":req_id,"decision_id":format!("d-{req_id}"),"entry":{"role":"assistant","content":""},"checkpoint":{"action":"start_work","objective":"solve"}})
+                    } else if kind == 0 || !checkpoint_asked {
+                        json!({"request_id":req_id,"decision_id":format!("d-{req_id}"),"entry":{"role":"assistant","content":""},"checkpoint":{"action":"ask_user","question":"confirm?"}})
+                    } else if kind == 1 || (!review_allowed || !review_denied) {
+                        json!({"request_id":req_id,"decision_id":format!("d-{req_id}"),"entry":{"role":"assistant","content":""},"intents":[{"index":0,"call_id":format!("c-{step_idx}"),"name":"shell","args":{"command":"ls"}}]})
+                    } else {
+                        json!({"request_id":req_id,"decision_id":format!("d-{req_id}"),"entry":{"role":"assistant","content":""},"completion":{"outcome":"success","summary":"done"}})
+                    };
+                    candidates.push(Step {
+                        label: "import_response".into(),
+                        command: Command { command_id: String::new(), method: "import_response".into(), params },
+                        identity: Identity::System,
+                    });
+                }
+            }
+            if phase == "TOOLS_PENDING" {
+                if let Some(op) = prepared_op {
+                    let approved = !harness
+                        .rows("SELECT id FROM approvals WHERE operation_id=?1 AND status='APPROVED'", &[&op])
+                        .is_empty();
+                    let grant_rev: i64 = harness
+                        .rows("SELECT grant_revision FROM operations WHERE operation_id=?1", &[&op])
+                        .first()
+                        .and_then(|r| r[0].parse().ok())
+                        .unwrap_or(0);
+                    candidates.push(Step {
+                        label: if approved { "dispatch_approved" } else { "dispatch_park" }.into(),
+                        command: Command {
+                            command_id: String::new(),
+                            method: "dispatch_operation".into(),
+                            params: json!({"operation_id":op,"approval_required":!approved,"permission_revision":grant_rev}),
+                        },
+                        identity: Identity::System,
+                    });
+                }
+                if let Some(op) = running_op {
+                    candidates.push(Step {
+                        label: "complete_operation".into(),
+                        command: Command {
+                            command_id: String::new(),
+                            method: "complete_operation".into(),
+                            params: json!({"operation_id":op,"status":"SUCCEEDED","receipt":{"operation_id":op,"ok":true}}),
+                        },
+                        identity: Identity::System,
+                    });
+                }
+            }
+            if let Some(row) = pending_approval {
+                let (approval_id, op_id) = (row[0].clone(), row[1].clone());
+                if let Some(req_id) = pending_review {
+                    candidates.push(Step {
+                        label: "record_review_attempt".into(),
+                        command: Command {
+                            command_id: String::new(),
+                            method: "record_review_attempt".into(),
+                            params: json!({"request_id":req_id,"attempt_id":format!("{req_id}/1"),"status":"COMPLETE","usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8},"unknown_usage":false}),
+                        },
+                        identity: Identity::System,
+                    });
+                } else if let Some(review_req_id) = done_review {
+                    if !inconsistent_review_refused {
+                        candidates.push(Step {
+                            label: "!review_inconsistent".into(),
+                            command: Command {
+                                command_id: String::new(),
+                                method: "review_decision".into(),
+                                params: json!({"approval_id":approval_id,"operation_id":op_id,"review_request_id":review_req_id,"outcome":"allow","risk_level":"high","user_authorization":"unknown","rationale":"bad","reviewer_model":"m"}),
+                            },
+                            identity: Identity::System,
+                        });
+                    }
+                    let allow = walk % 2 == 0;
+                    candidates.push(Step {
+                        label: if allow { "review_allow" } else { "review_deny" }.into(),
+                        command: Command {
+                            command_id: String::new(),
+                            method: "review_decision".into(),
+                            params: json!({"approval_id":approval_id,"operation_id":op_id,"review_request_id":review_req_id,"outcome":if allow {"allow"} else {"deny"},"risk_level":if allow {"low"} else {"high"},"user_authorization":if allow {"high"} else {"unknown"},"rationale":"checked","reviewer_model":"m"}),
+                        },
+                        identity: Identity::System,
+                    });
+                } else {
+                    candidates.push(Step {
+                        label: "begin_review".into(),
+                        command: Command {
+                            command_id: String::new(),
+                            method: "begin_review".into(),
+                            params: json!({"request_id":format!("rev-{walk}-{step_idx}"),"operation_id":op_id,"est_prompt_tokens":8}),
+                        },
+                        identity: Identity::System,
+                    });
+                }
+            }
+            if phase == "COMPLETION_PENDING" {
+                if let Some(w) = active_work {
+                    candidates.push(Step {
+                        label: "complete_work".into(),
+                        command: Command {
+                            command_id: String::new(),
+                            method: "complete_work".into(),
+                            params: json!({"instance_id":"i1","work_id":w}),
+                        },
+                        identity: Identity::System,
+                    });
+                }
+            }
+
+            if candidates.is_empty() {
+                break;
+            }
+            let pick_idx = (harness.next_rand() % candidates.len() as u64) as usize;
+            let step = candidates.swap_remove(pick_idx);
+            let lbl = step.label.clone();
+            let res = harness.run_step(step);
+            if lbl == "set_instance_profile" && res.is_ok() {
+                profile_switched = true;
+            }
+            if lbl == "!set_instance_profile_midturn" && res.is_err() {
+                midturn_switch_refused = true;
+            }
+            if lbl == "!review_inconsistent" && res.is_err() {
+                inconsistent_review_refused = true;
+            }
+            if lbl == "review_allow" && res.is_ok() {
+                review_allowed = true;
+            }
+            if lbl == "review_deny" && res.is_ok() {
+                review_denied = true;
+            }
+            if !harness.rows("SELECT id FROM work_scopes", &[]).is_empty() {
+                admitted_work = true;
+            }
+            if !harness.rows("SELECT state FROM work_states WHERE state='NEEDS_INPUT'", &[]).is_empty() {
+                checkpoint_asked = true;
+            }
+            let overlap = harness.rows(
+                "SELECT a.request_id FROM model_requests a JOIN model_requests b ON a.instance_id=b.instance_id WHERE a.kind='review' AND a.status='PENDING' AND b.kind='turn' AND b.status='PENDING'",
+                &[],
+            );
+            assert!(overlap.is_empty(), "pending review overlapped active turn request: {overlap:?}");
+            let unreviewed_allow = harness.rows(
+                "SELECT e.sequence FROM events e WHERE e.kind='approval_reviewed' AND json_extract(e.payload_json,'$.outcome')='allow' AND NOT EXISTS (SELECT 1 FROM model_requests r WHERE r.kind='review' AND r.status='COMPLETE' AND r.request_ref=json_extract(e.payload_json,'$.operation_id'))",
+                &[],
+            );
+            assert!(unreviewed_allow.is_empty(), "auto-allow without completed review: {unreviewed_allow:?}");
+            harness.check(&lbl);
+        }
+    }
+    assert!(configured && admitted_work, "enrolled work admission was not exercised");
+    assert!(checkpoint_asked, "ask_user checkpoint was not exercised");
+    assert!(profile_switched && midturn_switch_refused, "profile switch boundary was not exercised");
+    assert!(review_allowed && review_denied && inconsistent_review_refused, "review lifecycle was not exercised");
+}

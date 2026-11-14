@@ -744,19 +744,39 @@ pub fn version() -> i32 {
 ///   that *starts* a daemon is what replaces it);
 /// * a daemon answered and is still serving after the wait → 1, naming what is left.
 pub fn daemon_stop(state_root: Option<PathBuf>) -> i32 {
-    let root = state_root.unwrap_or_else(crate::v2_root);
+    match daemon_stop_with(&state_root.unwrap_or_else(crate::v2_root), true) {
+        Ok(()) => 0,
+        Err(()) => 1,
+    }
+}
+
+pub(crate) fn daemon_stop_quiet(state_root: &Path) -> i32 {
+    match daemon_stop_with(state_root, false) {
+        Ok(()) => 0,
+        Err(()) => 1,
+    }
+}
+
+fn daemon_stop_with(root: &Path, announce: bool) -> Result<(), ()> {
     let socket = root.join("daemon.sock");
     if !socket.exists() {
-        println!("no daemon is running for {}", root.display());
-        return 0;
+        if announce {
+            println!("no daemon is running for {}", root.display());
+        }
+        return Ok(());
     }
     let mut client = match crate::v2::exec::Client::connect(&socket) {
         Ok(client) => client,
         Err(error) => {
             // a socket nobody listens on is a crashed daemon's leftover (§9): a client that starts a daemon
             // replaces it, and a stop has nothing to stop
-            println!("nothing is listening on {} ({error}); a crashed daemon's socket is replaced by the next client that starts one", socket.display());
-            return 0;
+            if announce {
+                println!(
+                    "nothing is listening on {} ({error}); a crashed daemon's socket is replaced by the next client that starts one",
+                    socket.display()
+                );
+            }
+            return Ok(());
         }
     };
     match client.call("shutdown", json!({})) {
@@ -770,18 +790,20 @@ pub fn daemon_stop(state_root: Option<PathBuf>) -> i32 {
                     "the daemon for {} answered the stop but its socket is still there after 5 s",
                     root.display()
                 );
-                return 1;
+                return Err(());
             }
-            println!(
-                "stopped the session for {} (committed state is kept; the next client starts a fresh daemon)",
-                root.display()
-            );
+            if announce {
+                println!(
+                    "stopped the session for {} (committed state is kept; the next client starts a fresh daemon)",
+                    root.display()
+                );
+            }
             let _ = result;
-            0
+            Ok(())
         }
         Err(error) => {
             eprintln!("the daemon for {} refused to stop: {error}", root.display());
-            1
+            Err(())
         }
     }
 }

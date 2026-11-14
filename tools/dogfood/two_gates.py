@@ -125,7 +125,7 @@ def main() -> int:
     env_base = dict(os.environ)
     failures: list[str] = []
 
-    # 1. the runtime gate blocks the work, the client's check still passes
+    # 1. the runtime gate blocks the work (either via block_work or D-418/D-487 honest blocked concession)
     run, report, facts = run_scenario("runtime-fails", base / "a", "exit 1", "test -f hello.txt", env_base)
     print(f"1. runtime gate fails, client check passes: exit={run.returncode} end={report.get('end')} "
           f"work={report.get('work_status')} ({facts['elapsed']}s)")
@@ -133,21 +133,31 @@ def main() -> int:
     print(f"   client verdicts: {[(v.get('command'), v.get('ok')) for v in verdicts]}")
     if run.returncode != 1:
         failures.append(f"a blocked work must exit 1, got {run.returncode}")
-    if report.get("work_status") != "BLOCKED":
-        failures.append(f"the work should be BLOCKED, got {report.get('work_status')!r}")
-    if len(verdicts) != 1 or verdicts[0].get("ok") is not True:
-        failures.append(f"the client check should still run and pass: {verdicts}")
+    if report.get("end") not in ("failed", "unsettled"):
+        failures.append(f"a blocked work must end failed or unsettled, got {report.get('end')!r}")
+    if report.get("end") == "failed":
+        if report.get("work_status") != "BLOCKED":
+            failures.append(f"the work should be BLOCKED, got {report.get('work_status')!r}")
+        if len(verdicts) != 1 or verdicts[0].get("ok") is not True:
+            failures.append(f"the client check should still run and pass: {verdicts}")
+        if not (base / "a/root/verification.json").is_file():
+            failures.append("the client's ledger was not written for the finished turn")
+    else:
+        # Under D-487, `exec` does not run `--check` on an unfinished (`unsettled`) blocked turn.
+        if verdicts:
+            failures.append(f"an unsettled blocked turn must not run post-completion client checks: {verdicts}")
     named = [failure.get("check_id", "") for payload in facts["repairs"]
              for failure in json.loads(payload).get("failures", [])]
-    if "runtime-gate" not in named:
-        failures.append(f"the repair ledger does not name the runtime check: {named}")
-    else:
+    if "runtime-gate" in named:
         print(f"   the repair ledger names the runtime check ({len(named)} round(s) reported)")
-    statuses = [json.loads(payload).get("status", "") for payload in facts["completions"]]
+    elif facts["completions"]:
+        print("   the model conceded BLOCKED after inspecting the D-418 check briefing")
+    else:
+        failures.append(f"neither the repair ledger nor a blocked concession recorded runtime-gate: {named}")
+    statuses = [json.loads(payload).get("status") or ("BLOCKED" if "reason" in json.loads(payload) else "")
+                for payload in facts["completions"]]
     if "BLOCKED" not in statuses:
         failures.append(f"the completion event does not say BLOCKED: {statuses}")
-    if not (base / "a/root/verification.json").is_file():
-        failures.append("the client's ledger was not written for the finished turn")
     if not any("runtime-gate" in entry for entry in facts["entries"]):
         failures.append("the model was never told about the runtime check's failure")
 

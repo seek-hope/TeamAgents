@@ -10,7 +10,7 @@ and the acceptance matrix in [ACCEPTANCE.md](ACCEPTANCE.md). Current formal evid
 
 Current local gate:
 
-- **773 Rust tests**: core 190, engine 478, TUI 105; `make check` exit 0.
+- **777 Rust tests**: core 191, engine 481, TUI 105; `make check` exit 0.
 - **65 positive TLA configurations in 62 traversals**, **327 controls**, **79 witnesses**, **9 Kani harnesses**.
 - Catalogue: **393 configurations across 48 modules**, including the separate wide configuration.
 - PTY covers five terminal profiles and both forced graphics modes.

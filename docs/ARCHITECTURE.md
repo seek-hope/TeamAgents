@@ -158,7 +158,7 @@ drivers, fake providers, runner processes and random control walks. Kani covers 
 vocabulary proofs. PTY checks terminal behavior.
 
 Current totals are 65 positive configurations in 62 traversals, 327 controls, 79 witnesses and 9 Kani harnesses,
-plus 773 Rust tests. Search-tree coverage includes ordered pairs, 23 controls covering every non-`TypeOK` tree
+plus 777 Rust tests. Search-tree coverage includes ordered pairs, 23 controls covering every non-`TypeOK` tree
 claim and 11 witnesses. Witnesses demonstrate reachability only.
 
 These results do not establish full Rust/SQLite refinement, whole-system composition, wide exhaustive completion

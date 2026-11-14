@@ -105,6 +105,7 @@ def main() -> int:
     (root / "config/teamagents").mkdir(parents=True)
     (root / "config/teamagents/config.toml").write_text("skills_paths = []\n\n" + MODELS[args.provider])
     state_root = root / "root"
+    atexit.register(leak_guard.stop_daemons, state_root)
     env = {**os.environ, "XDG_CONFIG_HOME": str(root / "config"), "XDG_STATE_HOME": str(root / "state")}
     failures: list[str] = []
 

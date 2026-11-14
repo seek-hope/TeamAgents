@@ -227,7 +227,8 @@ Conversation to compact:
 const SEARCH_TREE_SUMMARY_SUFFIX: &str = "
 Also maintain the session-level exploration tree through the latest supplied entry, including the retained tail. Return ONLY one JSON object with exactly these fields:\n\
 {\"summary\":\"the structured summary above\",\"tree\":{\"base_revision\":N,\"operations\":[...]}}.\n\
-The previous cumulative tree follows below. Preserve its node ids and meaning with add/update/move/merge/focus operations; omission never deletes a node. Use merge for true duplicates, mark abandoned branches instead of hiding evidence, and attach relevant context entry ids/tool_call_ids as source_refs. Keep hypotheses, findings and decisions distinct. Do not invent evidence, node ids or a new base_revision. An empty operations array is valid when the tree is already accurate.\n\
+Operations: add {\"op\":\"add\",\"parent_id\":\"...\",\"node\":{\"title\":\"...\",\"summary\":\"...\",\"kind\":\"...\",\"status\":\"...\",\"source_refs\":[...]}}, update {\"op\":\"update\",\"id\":\"...\",\"title\"?,\"summary\"?,\"kind\"?,\"status\"?,\"source_refs\"?}, move {\"op\":\"move\",\"id\":\"...\",\"parent_id\":\"...\"}, merge {\"op\":\"merge\",\"from_id\":\"...\",\"into_id\":\"...\",\"summary\"?}, focus {\"op\":\"focus\",\"id\":\"...\"}. Kinds: question/hypothesis/attempt/finding/decision/obstacle/next_step. Statuses: active/open/resolved/blocked/abandoned.\n\
+The previous cumulative tree follows below. Preserve its node ids and meaning; omission never deletes a node. Use merge for true duplicates, mark abandoned branches instead of hiding evidence, and attach relevant context entry ids/tool_call_ids as source_refs. Keep hypotheses, findings and decisions distinct. Do not invent evidence, node ids or a new base_revision. An empty operations array is valid when the tree is already accurate.\n\
 Previous session tree:\n";
 
 fn parse_compaction_content(content: &str, leader: bool) -> Result<(String, Option<Json>, Option<String>), String> {
@@ -1840,11 +1841,6 @@ that delegated it learns the outcome only from a settlement.";
         } else {
             snapshot
         };
-        // D-410: before the request is built, a work whose deadline is close gets its one wrap-up note, so the
-        // model can settle or report with time to spare instead of being cut mid-edit.
-        self.warn_before_deadline(snapshot).await?;
-        // D-418: and the criterion itself, before the model plans the turn rather than when it claims to be done.
-        self.brief_checks(snapshot).await?;
         // A turn opens for *unaddressed* work only: content that arrived since the
         // last request (the drain above applied it) or a task this instance has not
         // started yet. A task it already addressed is not a reason to ask again —
@@ -1878,6 +1874,10 @@ that delegated it learns the outcome only from a settlement.";
         if !super::readiness::opens_work_turn(false, tail_is_addressed, pending_task, &work) {
             return Ok(false);
         }
+        // D-410 / D-418: only once a turn is actually opening, inject the one wrap-up deadline note
+        // and required-check briefing so an idle/empty session never fabricates a turn before user input.
+        self.warn_before_deadline(snapshot).await?;
+        self.brief_checks(snapshot).await?;
         let mut entries = self.context_entries(snapshot).await?;
         self.expand_images(&mut entries)?;
         // adopt assigned work: the turn that addresses a PENDING task also

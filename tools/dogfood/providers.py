@@ -62,12 +62,37 @@ generation_options = { reasoning_effort = "low" }
 context_window = 262144
 """
 
+CONFIG_ORCA = """# Two-provider dogfood (A27): the Leader on DeepSeek Flash, one worker on Claude Sonnet 4.6 (Anthropic wire).
+# Each model keeps its native context window (D-36).
+skills_paths = []
+
+[models.leader_main]
+provider = "deepseek"
+protocol = "deepseek"
+model = "deepseek-flash"
+api_key_env = "DEEPSEEK_API_KEY"
+context_window = 1000000
+timeout = 180
+max_retries = 2
+generation_options = { reasoning_effort = "high" }
+
+[models.worker_claude]
+provider = "anthropic"
+protocol = "anthropic"
+model = "anthropic/claude-sonnet-4.6"
+base_url = "https://api.orcarouter.ai"
+api_key_env = "ORCA_API_KEY"
+timeout = 180
+max_retries = 2
+context_window = 1000000
+"""
+
 PROMPT = """Work with a teammate on this task.
 
-1. Spawn one worker with `model` set to `worker_kimi` (that key is in the catalog) and instructions
+1. Spawn one worker with `model` set to `{worker_key}` (that key is in the catalog) and instructions
    "write the file the task asks for".
 2. Delegate one task to that worker: write the file answer.txt in the shared workspace whose content is
-   exactly the line `kimi wrote this`.
+   exactly the line `{expected_line}`.
 3. Wait for the task to settle, then report what the worker said and whether the file is there."""
 
 
@@ -149,9 +174,20 @@ def main() -> int:
         return self_check()
     if not BIN.is_file():
         raise SystemExit(f"{BIN} is missing; build it first (make build)")
-    for key in ("DEEPSEEK_API_KEY", "KIMI_API_KEY"):
-        if not os.environ.get(key, "").strip():
-            raise SystemExit(f"{key} is not set in this environment")
+    if not os.environ.get("DEEPSEEK_API_KEY", "").strip():
+        raise SystemExit("DEEPSEEK_API_KEY is not set in this environment")
+    if os.environ.get("KIMI_API_KEY", "").strip():
+        config_text = CONFIG
+        worker_key = "worker_kimi"
+        expected_model = "k3-256k"
+        expected_line = "kimi wrote this"
+    elif os.environ.get("ORCA_API_KEY", "").strip():
+        config_text = CONFIG_ORCA
+        worker_key = "worker_claude"
+        expected_model = "anthropic/claude-sonnet-4.6"
+        expected_line = "claude wrote this"
+    else:
+        raise SystemExit("KIMI_API_KEY or ORCA_API_KEY is not set in this environment")
 
     root = pathlib.Path(args.state_dir or "/tmp/ta-providers")
     # The default scratch is not state anyone keeps: remove it at exit, or one copy per run
@@ -163,7 +199,7 @@ def main() -> int:
     shutil.rmtree(root, ignore_errors=True)
     workspace.mkdir(parents=True)
     (root / "config/teamagents").mkdir(parents=True)
-    (root / "config/teamagents/config.toml").write_text(CONFIG)
+    (root / "config/teamagents/config.toml").write_text(config_text)
     state_root = root / "root"
     atexit.register(stop_daemon, root)
     env = {**os.environ, "XDG_CONFIG_HOME": str(root / "config"), "XDG_STATE_HOME": str(root / "state")}
@@ -172,7 +208,8 @@ def main() -> int:
     started = time.time()
     run = subprocess.run(
         [str(BIN), "exec", "--state-root", str(state_root), "--full-auto", "--json",
-         "--timeout", str(args.timeout), "--cwd", str(workspace), PROMPT],
+         "--timeout", str(args.timeout), "--cwd", str(workspace),
+         PROMPT.format(worker_key=worker_key, expected_line=expected_line)],
         capture_output=True, text=True, env=env,
     )
     elapsed = round(time.time() - started, 1)
@@ -196,8 +233,8 @@ def main() -> int:
     if models.get("i-leader") != "deepseek-flash":
         failures.append(f"the leader is not recorded on its configured model: {models}")
     workers = {model for instance, model in models.items() if instance != "i-leader"}
-    if workers != {"k3-256k"}:
-        failures.append(f"the worker did not run the Kimi entry: {models}")
+    if workers != {expected_model}:
+        failures.append(f"the worker did not run the {expected_model} entry: {models}")
 
     # 2. the delegation exchanged a task assignment and a task start
     for kind in ("task_delegated", "task_started"):
@@ -206,7 +243,7 @@ def main() -> int:
 
     # 3. the artifact is the contract
     answer = (workspace / "answer.txt")
-    artifact_ok = answer.is_file() and answer.read_text().strip() == "kimi wrote this"
+    artifact_ok = answer.is_file() and answer.read_text().strip() == expected_line
     if artifact_ok:
         print("answer.txt present with the expected content")
     else:

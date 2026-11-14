@@ -100,7 +100,7 @@ def check(provider: str, root: pathlib.Path, timeout: int, failures: list[str]) 
     run, report, elapsed = exec_turn(state_root, workspace, env, FOLLOW_UP, timeout)
     print(f"provider={provider} turn 2: exit={run.returncode} elapsed={elapsed}s "
           f"end={report.get('end')} reply={report.get('reply')!r}")
-    if run.returncode != 0 or report.get("end") != "reply":
+    if run.returncode != 0 or report.get("end") not in ("reply", "completed") or "TWO" not in (report.get("reply") or ""):
         failures.append(f"{provider}: the turn after a settlement failed "
                         f"({run.returncode}, {report.get('end')}, {report.get('failure')!r})")
 

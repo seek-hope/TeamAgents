@@ -224,7 +224,7 @@ business stores.
 `tools/` contains executable development and verification utilities, generated-document checkers and current
 product probes. `tools/tmp/` is ignored scratch for new local runs, not source or committed evidence.
 
-The current local gate has 773 Rust tests. Formal material has 393 configurations across 48 modules: 65 positive
+The current local gate has 777 Rust tests. Formal material has 393 configurations across 48 modules: 65 positive
 configurations, 327 controls and one separate wide configuration, evaluated in 62 positive traversals. There
 are 79 normal-path witnesses and 9 Kani harnesses. Witnesses demonstrate reachability only.
 

@@ -52,11 +52,12 @@ generation_options = { reasoning_effort = "high" }
 """
 
 FIRST = """Spawn one worker, and delegate this task to it: say in one sentence whether you can run shell
-commands in the shared workspace right now, and which tools you have for that. Report the worker's answer
-to me, then wait for my next message — do not finish or settle the work yet."""
+commands in the shared workspace right now, and which tools you have for that. Wait for the worker's task
+result and report the worker's answer in your `finish` summary."""
 
-SECOND = """I have granted that worker shell access to the shared workspace. Ask the same worker to run the
-shell command `printf granted > {proof}` in that workspace and report the command's output."""
+SECOND = """I have granted that worker shell access to the shared workspace. Start work if needed and ask the
+same existing worker to run the shell command `printf granted > {proof}` in that workspace, wait for its
+task result, and report the command's output in your `finish` summary."""
 
 
 def call(bin_args: list[str], env: dict, cwd: pathlib.Path | None = None) -> subprocess.CompletedProcess:

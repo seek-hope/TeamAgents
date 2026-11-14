@@ -331,7 +331,7 @@ pub fn builtin_tool_schemas() -> Vec<Json> {
                     "properties": {
                         "status": {"type": "string", "enum": ["success", "blocked", "failed"]},
                         "summary": {"type": "string", "description": "What was done and the final answer."},
-                        "evidence": {"type": "array", "items": {"type": "string"}, "description": "References proving the claims (files, commands, receipts)."},
+                        "evidence": {"type": "array", "items": {"type": "string"}, "description": "References proving the claims (include exact tool:CALL_ID, operation:OPERATION_ID or task:TASK_ID receipts for tool/delegated work, alongside files or commands)."},
                         "unverified": {"type": "array", "items": {"type": "string"}, "description": "Claims that could not be verified."}
                     },
                     "required": ["status", "summary"]
@@ -370,7 +370,7 @@ pub fn search_tree_tool_schema() -> Json {
                 "properties":{
                     "action":{"type":"string","enum":["show","apply"]},
                     "base_revision":{"type":"integer","minimum":0,"description":"Required for apply; read it from the current tree."},
-                    "operations":{"type":"array","maxItems":32,"description":"Atomic patch: add {op,parent_id,node}; update {op,id,...fields}; move {op,id,parent_id}; merge {op,from_id,into_id,optional summary}; focus {op,id}. Node kinds: question/hypothesis/attempt/finding/decision/obstacle/next_step. Statuses: active/open/resolved/blocked/abandoned.","items":{"type":"object"}}
+                    "operations":{"type":"array","maxItems":32,"description":"Atomic patch: add {op,parent_id,node:{title,summary?,kind?,status?,source_refs?}}; update {op,id,title?,summary?,kind?,status?,source_refs?}; move {op,id,parent_id}; merge {op,from_id,into_id,summary?}; focus {op,id}. Node kinds: question/hypothesis/attempt/finding/decision/obstacle/next_step. Statuses: active/open/resolved/blocked/abandoned.","items":{"type":"object"}}
                 },
                 "required":["action"],
                 "additionalProperties":false

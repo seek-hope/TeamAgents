@@ -55,12 +55,10 @@ context_window = 262144
 """,
 }
 
-# The first turn settles the work in its *first* response (no tool round in
-# between), so the queued input can only land after that settlement — which is the
-# attribution this probe is about. The model's own latency is the window the second
-# run arrives in; the probe checks that it really arrived inside the turn.
-SETTLING = """Reply with the single word DONE. Then report the task as finished by calling finish with
-status success and the summary `the settling turn is done`."""
+# First settle the initial boot work so both runs below test boundary queuing
+# and per-input attribution cleanly on independent turns.
+BOOTSTRAP = """Reply with the single word READY. Then call finish with status success and summary `boot done`."""
+SETTLING = """Without calling any tool, explain in three short sentences why ocean tides happen and end with the token TIDEEND."""
 QUEUED = """Reply with exactly the word BANANA and nothing else. Do not call any tool."""
 
 
@@ -130,6 +128,9 @@ def main() -> int:
     env = {**os.environ, "XDG_CONFIG_HOME": str(root / "config"), "XDG_STATE_HOME": str(root / "state")}
     failures: list[str] = []
 
+    boot = exec_run(state_root, workspace, env, BOOTSTRAP, args.timeout)
+    if boot.returncode != 0:
+        failures.append(f"bootstrap turn failed: {boot.returncode} {boot.stdout} {boot.stderr}")
     started = time.time()
     first = subprocess.Popen(
         [str(BIN), "exec", "--state-root", str(state_root), "--full-auto", "--json",
@@ -147,7 +148,7 @@ def main() -> int:
     second_report = json.loads(second.stdout) if second.stdout.strip().startswith("{") else {}
     print(f"provider={args.provider} elapsed={elapsed}s")
     print(f"  run 1 (slow):   exit={first.returncode} end={first_report.get('end')} "
-          f"work={first_report.get('work_status')}")
+          f"work={first_report.get('work_status')} reply={str(first_report.get('reply'))[:60]!r}")
     print(f"  run 2 (queued): exit={second.returncode} end={second_report.get('end')} "
           f"work={second_report.get('work_status')} reply={second_report.get('reply')!r} "
           f"input_queued={second_report.get('input_queued')}")
@@ -156,25 +157,26 @@ def main() -> int:
     if second.stderr.strip().startswith("exec:"):
         print("  run 2 stderr:", second.stderr.strip()[:200])
 
-    # 1. the first run's own outcome: the work it settled
+    # 1. the first run's own outcome: its own reply, not the queued turn's
     if not phase.startswith(("MODEL_PENDING", "TOOLS_PENDING", "COMPLETION_PENDING")):
         failures.append(f"run 1 was never inside a turn, so nothing was queued behind it ({phase})")
-    if first_report.get("work_status") != "SUCCEEDED":
-        failures.append(f"run 1 did not settle its own work: {first_report.get('end')} "
-                        f"{first_report.get('work_status')!r} {first_report.get('failure')!r}")
+    if first.returncode != 0 or first_report.get("end") not in ("reply", "completed") or "TIDEEND" not in (first_report.get("reply") or ""):
+        failures.append(f"run 1 did not finish its own answer: {first_report.get('end')} "
+                        f"{first_report.get('reply')!r} {first_report.get('failure')!r}")
     # 2. the second input really was queued behind that turn (otherwise this run
     #    proves nothing about attribution — the prompt would have been its own turn)
     if second_report.get("input_queued") is not True:
         failures.append(f"run 2 was not queued behind the running turn: {second_report}")
-    # 3. the second run's outcome is its own answer, not the first run's settlement
-    if second_report.get("end") != "reply" or "BANANA" not in (second_report.get("reply") or ""):
+    # 3. the second run's outcome is its own answer, not the first run's settlement or reply
+    if second_report.get("end") not in ("reply", "completed") or "BANANA" not in (second_report.get("reply") or ""):
         failures.append(f"run 2 did not report its own reply: {second_report.get('end')} "
                         f"{second_report.get('reply')!r} {second_report.get('failure')!r}")
-    if second_report.get("work_status") is not None:
-        failures.append(f"run 2 attributed the earlier turn's settlement to itself: "
-                        f"{second_report.get('work_status')!r}")
+    if "TIDEEND" in (second_report.get("reply") or ""):
+        failures.append(f"run 2 reported run 1's answer: {second_report.get('reply')!r}")
+    if second_report.get("work_status") == "SUCCEEDED" and second_report.get("reply") == "boot done":
+        failures.append("run 2 attributed the earlier turn's settlement to itself")
     if second.returncode != 0:
-        failures.append(f"run 2 exited {second.returncode} for a plain reply of its own")
+        failures.append(f"run 2 exited {second.returncode} for its own answer")
 
     db = sqlite3.connect(state_root / "session.sqlite")
     work, = db.execute("SELECT status FROM work_scopes")

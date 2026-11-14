@@ -75,7 +75,7 @@ PROMPT = "Reply with the single word TUIDONE and nothing else."
 ANSWER = "TUIDONE"
 # what the history pane paints once the daemon sends the turn's entries back
 ANSWER_NEEDLE = f"● {ANSWER}"
-INPUT_NEEDLE = "› Reply with the single word"
+INPUT_NEEDLE = "❯ Reply with the single word"
 
 
 def entries(root: pathlib.Path) -> list[dict]:

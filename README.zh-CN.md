@@ -124,7 +124,7 @@ daemon + supervisor + 每个实例的 driver
 
 ## 当前证据
 
-当前本地门禁包含 **773 项 Rust 测试**（core 190、engine 478、TUI 105），`make check` 退出 0。
+当前本地门禁包含 **777 项 Rust 测试**（core 191、engine 481、TUI 105），`make check` 退出 0。
 形式化材料包含 **48 个模块、393 个配置**：
 
 - **65 个正向配置，62 次遍历**；
@@ -149,10 +149,10 @@ make pty
 ## 当前限制
 
 这些结果不证明完整的 Rust/SQLite refinement、全系统组合、wide exhaustive 完成或 Policy B 的源代码绑定
-等价性，也不衡量真实模型生成的树质量、迷失减少程度、reviewer 判断力、通用长任务成功率或价格成本。
-
-更广泛的真实 provider、OAuth、公网主机、图形终端、clean-host 安装/升级/回滚，以及与 Pi 对齐的结果比较
-仍未完成。单独的 wide 配置不宣称已经完成。
+等价性。本地实时探针（`make probe-offline`、`make probe-models`）已覆盖四种线协议、异构 provider、
+search/fetch、图片输入、reviewer 对抗用例、1M 原生窗口 compaction 与探索树更新、隔离 clean-host 安装/升级/回滚、
+本地环回 SSH 与 Alacritty；更广泛的外部 OAuth 服务、公网主机、多发行版 clean-host、图形终端矩阵、
+大规模长任务评测以及完整的按价成本比较仍待补充。单独的 wide 配置不宣称已经完成。
 
 ## 文档
 

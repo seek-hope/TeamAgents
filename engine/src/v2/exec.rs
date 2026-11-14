@@ -737,6 +737,9 @@ pub fn execute_into(options: &ExecOptions, mut sink: EventSink) -> Result<ExecRu
         // with a turn *in flight* is deliberately not terminal (the driver finishes the current step, and a
         // resumed instance still lets the run report that turn's own outcome, D-98), and neither is a park the
         // user lifted again: `phase_now`/`lifecycle_now` are re-read every pass.
+        if refused.is_some() && matches!(attribution, Attribution::Pending | Attribution::Closed) {
+            attribution = Attribution::Pending;
+        }
         if lifecycle_now == "PARKED"
             && phase_now != "RUNNING"
             && matches!(attribution, Attribution::Pending | Attribution::Closed)

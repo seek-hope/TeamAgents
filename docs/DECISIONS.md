@@ -127,7 +127,7 @@ evaluation evidence.
 
 ### Current verification boundary
 
-- Current local regression contains 773 Rust tests: core 190, engine 478 and TUI 105.
+- Current local regression contains 777 Rust tests: core 191, engine 481 and TUI 105.
 - Formal material has 393 configurations across 48 modules: 65 positive configurations, 327 negative controls
   and one separate wide configuration. Positive inputs share 62 traversals only when model/spec/domain match.
 - There are 79 normal-path witnesses and 9 Kani harnesses. Witnesses demonstrate reachability, not safety.

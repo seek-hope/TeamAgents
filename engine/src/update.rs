@@ -1071,7 +1071,7 @@ fn start_daemon(layout: &Layout, state_root: &Path) -> Result<(), String> {
 fn rollback_install(layout: &Layout, state_root: &Path, was_running: bool) -> Result<(), String> {
     let previous = layout.rollback()?;
     if was_running {
-        let _ = crate::cli::daemon_stop(Some(state_root.to_path_buf()));
+        let _ = crate::cli::daemon_stop_quiet(state_root);
         start_daemon(layout, state_root)?;
     }
     let _ = previous;
@@ -1249,7 +1249,7 @@ pub fn apply(layout: &Layout, options: &ApplyOptions) -> Result<Json, String> {
         state.status = "stopping".into();
         journal.append("stopping", state.clone())?;
         crash_point(&options.crash_at, "stopping")?;
-        if crate::cli::daemon_stop(Some(options.state_root.clone())) != 0 {
+        if crate::cli::daemon_stop_quiet(&options.state_root) != 0 {
             state.status = "failed".into();
             state.error = Some("the daemon refused to stop; the update was not applied".into());
             journal.append("stop_refused", state)?;
@@ -1309,7 +1309,7 @@ pub fn rollback(layout: &Layout, state_root: &Path, restart: bool) -> Result<Jso
     let mut journal = UpdateJournal::open_locked(&layout.journal_path())?;
     journal.settle(layout)?;
     let was_running = daemon_running(state_root);
-    if restart && was_running && crate::cli::daemon_stop(Some(state_root.to_path_buf())) != 0 {
+    if restart && was_running && crate::cli::daemon_stop_quiet(state_root) != 0 {
         return Err("the daemon refused to stop; the rollback was not applied".into());
     }
     let target = layout.rollback()?;

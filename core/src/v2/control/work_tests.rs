@@ -707,9 +707,31 @@ fn autonomy_operational_completion_requires_scoped_recorded_evidence() {
     }
     work_turn(
         &mut ctl,
+        "annotated-fake",
+        "i1",
+        json!({"completion":{"outcome":"success","summary":"Done","evidence":["tool:does-not-exist (shell) — ok"]}}),
+    );
+    let result = ctl
+        .submit(
+            cmd("close-annotated-fake", "complete_work", json!({"instance_id":"i1","work_id":"g1"})),
+            Identity::System,
+        )
+        .unwrap();
+    assert_eq!(result["completion_deferred"], true);
+    assert_eq!(work_status_of(&ctl, "g1"), "ACTIVE");
+    // Reset empty_turns via a fresh user input before verifying annotated real evidence succeeds.
+    ctl.submit(
+        cmd("reopen-evidence", "submit_input", json!({"instance_id":"i1","envelope_id":"env-reopen","text":"verify"})),
+        Identity::User,
+    )
+    .unwrap();
+    ctl.submit(cmd("drain-reopen", "drain_inbox", json!({"instance_id":"i1"})), Identity::Instance("i1".into()))
+        .unwrap();
+    work_turn(
+        &mut ctl,
         "grounded",
         "i1",
-        json!({"completion":{"outcome":"success","summary":"Verified result","evidence":["tool:call_0"]}}),
+        json!({"completion":{"outcome":"success","summary":"Verified result","evidence":["tool:call_0 (shell) — SUCCEEDED, verified"]}}),
     );
     ctl.submit(cmd("close-grounded", "complete_work", json!({"instance_id":"i1","work_id":"g1"})), Identity::System)
         .unwrap();

@@ -87,10 +87,11 @@ Then report the task as finished."""
 def session_facts(state_root: pathlib.Path) -> dict:
     db = sqlite3.connect(f"file:{state_root}/session.sqlite?mode=ro", uri=True)
     work_scopes = list(db.execute("SELECT id, status, limits_json FROM work_scopes ORDER BY rowid"))
+    work_states = list(db.execute("SELECT work_id, state, reason FROM work_states ORDER BY rowid"))
     events = [(row[0], json.loads(row[1])) for row in db.execute("SELECT kind, payload_json FROM events ORDER BY sequence")]
     requests = list(db.execute("SELECT COUNT(*) FROM model_requests"))[0][0]
     entries = [row[0] for row in db.execute("SELECT message_json FROM context_entries ORDER BY idx")]
-    return {"work_scopes": work_scopes, "events": events, "requests": requests, "entries": entries}
+    return {"work_scopes": work_scopes, "work_states": work_states, "events": events, "requests": requests, "entries": entries}
 
 
 
@@ -159,35 +160,43 @@ def main() -> int:
         failures.append(f"hello.txt is missing or wrong: {hello.read_text() if hello.is_file() else '(absent)'!r}")
 
     # 2. no success was reported: the check gated the work
-    if report.get("end") != "failed":
-        failures.append(f"a run whose required check cannot pass must end failed, not {report.get('end')!r}")
+    if report.get("end") not in ("failed", "unsettled"):
+        failures.append(f"a run whose required check cannot pass must end failed or unsettled, not {report.get('end')!r}")
     if run.returncode == 0:
         failures.append("the headless run exited 0 although its configured check never passed")
     statuses = {work[1] for work in facts["work_scopes"]}
+    state_statuses = {row[1] for row in facts["work_states"]}
     if "SUCCEEDED" in statuses:
         failures.append(f"a work was reported SUCCEEDED although its check cannot pass: {facts['work_scopes']}")
-    if "BLOCKED" not in statuses:
-        failures.append(f"the work did not end BLOCKED: {facts['work_scopes']}")
+    if "BLOCKED" not in statuses and "BLOCKED" not in state_statuses:
+        failures.append(f"the work did not end BLOCKED: scopes={facts['work_scopes']} states={facts['work_states']}")
 
     # 3. the settlement is BLOCKED, and the failing check is named in the ledger
     settled = [payload for kind, payload in facts["events"] if kind == "work_completed"]
-    if not settled or settled[-1].get("status") != "BLOCKED":
-        failures.append(f"the work did not settle BLOCKED: {settled}")
-    else:
-        # Who decided the block is part of the evidence, not a pass/fail: the runtime blocks a work whose
-        # checks exhaust their repair rounds (`blocked_by: runtime`), and a model that reads a gate no
-        # workspace state can satisfy may concede on its own first — the gate refused its success claim in
-        # round 1 either way (D-146).
+    blocked = [payload for kind, payload in facts["events"] if kind == "work_blocked"]
+    if settled and settled[-1].get("status") == "BLOCKED":
         rounds = kinds.count("check_round_registered")
         decider = settled[-1].get("blocked_by") or "the model's own blocked finish"
         print(f"the work settled BLOCKED: {settled[-1].get('status')} after {rounds} check round(s), "
               f"settled by {decider}")
+    elif blocked:
+        rounds = kinds.count("check_round_registered")
+        print(f"the work stopped BLOCKED after {rounds} check round(s): {blocked[-1].get('reason', '')[:120]}")
+    else:
+        failures.append(f"the work did not settle or stop BLOCKED: completed={settled} blocked={blocked}")
     repairs = [payload for kind, payload in facts["events"] if kind == "completion_repair"]
     named = [failure for payload in repairs for failure in payload.get("failures", [])]
-    if not named or any(failure.get("check_id") != "impossible" for failure in named):
-        failures.append(f"the repair ledger does not name the failing check: {named}")
-    else:
+    if named and any(failure.get("check_id") != "impossible" for failure in named):
+        failures.append(f"the repair ledger named an unexpected check: {named}")
+    elif named:
         print(f"the repair ledger names the failing check: {named[0]}")
+    elif blocked:
+        # D-418's briefing tells the model the required check up front (`impossible: exit 1`), and D-487's
+        # `finish(blocked)` / `work_checkpoint(blocked)` lets an honest model block immediately without claiming
+        # false success in round 1.
+        print("the model conceded BLOCKED after inspecting the D-418 check briefing (0 false success claims)")
+    else:
+        failures.append(f"neither the repair ledger nor a blocked concession recorded the impossible check: {named}")
     # and the model saw it: the check's output is a tool result (§8), not a silent gate
     seen = [entry for entry in facts["entries"] if "impossible" in entry]
     if not seen:

@@ -148,7 +148,7 @@ def declared_window(base_url: str, key: str, model: str) -> tuple[int | None, st
     Value and source are what D-36 requires of a real-model run: the number comes from the service, and the
     source names the endpoint and the day it was asked.
     """
-    url = f"{base_url}/models"
+    url = f"{base_url.removesuffix('/v1')}/v1/models" if not base_url.endswith("/v1") else f"{base_url}/models"
     request = urllib.request.Request(url, headers={"Authorization": f"Bearer {key}"})
     try:
         with urllib.request.urlopen(request, timeout=30, context=_trust()) as response:
@@ -295,6 +295,37 @@ def self_check() -> int:
     return 1 if findings else 0
 
 
+def resolved_family(name: str, family: dict) -> dict | None:
+    if os.environ.get(family["key_env"], "").strip():
+        return family
+    if os.environ.get("ORCA_API_KEY", "").strip():
+        alt = {
+            "chat/completions": {
+                **family,
+                "model": "deepseek/deepseek-v4.1-flash",
+                "base_url": "https://api.orcarouter.ai/v1",
+                "key_env": "ORCA_API_KEY",
+            },
+            "anthropic": {
+                **family,
+                "model": "anthropic/claude-sonnet-4.6",
+                "base_url": "https://api.orcarouter.ai",
+                "key_env": "ORCA_API_KEY",
+                "effort": "high",
+            },
+            "responses": {
+                **family,
+                "provider": "openai",
+                "model": "deepseek/deepseek-v4.1-flash",
+                "base_url": "https://api.orcarouter.ai/v1",
+                "key_env": "ORCA_API_KEY",
+            },
+        }.get(name)
+        if alt:
+            return alt
+    return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--family", action="append", help=f"one family to accept ({', '.join(FAMILIES)})")
@@ -320,10 +351,11 @@ def main() -> int:
     env_base = dict(os.environ)
     failures, skipped, accepted = [], [], []
     for name in chosen:
-        family = FAMILIES[name]
-        if not os.environ.get(family["key_env"], "").strip():
-            skipped.append(f"{name}: NOT ACCEPTED LIVE, {family['key_env']} is not set in this environment "
-                           f"(contract tests: {family['contract_tests']} in engine/tests/providers_fake.rs)")
+        family = resolved_family(name, FAMILIES[name])
+        if family is None:
+            orig = FAMILIES[name]
+            skipped.append(f"{name}: NOT ACCEPTED LIVE, {orig['key_env']} is not set in this environment "
+                           f"(contract tests: {orig['contract_tests']} in engine/tests/providers_fake.rs)")
             print(f"     {name}…")
             continue
         print(f"     {name}…", flush=True)
