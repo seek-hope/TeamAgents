@@ -4,7 +4,7 @@ This report records the currently accepted finite verification evidence and its 
 earlier runs. The property/configuration mapping is in [README.md](README.md); executable reproduction commands
 are in [DEVELOPMENT.md](../docs/DEVELOPMENT.md).
 
-## 0. Gate status (re-run 2026-11-14 at `67ed037f`)
+## 0. Gate status (re-run 2026-11-14 at `3274d1fa`)
 
 The current targets verified all **65** configurations in **62** traversals, refuted all **327** negative controls,
 reached all **79** normal-path witnesses, and passed all **9** Kani harnesses. The latest complete local replay
