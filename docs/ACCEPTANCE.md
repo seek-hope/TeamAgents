@@ -131,7 +131,7 @@ ended SUCCEEDED. Daemon/runner cleanup exited 0 with no runners or provider erro
 receipts and source binding remain under `tools/tmp/aarch64-evidence/`. An earlier probe keyword error is
 preserved separately from the reproduced EINVAL failures.
 
-The latest x86_64 Linux musl candidate was packaged from `675af52e` (D-521). Archive SHA-256:
+The D-521 x86_64 Linux musl candidate was packaged from `675af52e`. Archive SHA-256:
 `80056db6b3ee9f91e9a095c27975d944d471ee0b0f4cc79256815c814236e870`; CLI SHA-256:
 `f94a1c1e10cafc6d024a4cd6fc8866b70aea37b5af6773b8c6cb80cc8c63aa3b`. The release/install rehearsal, repeated-init
 configuration preservation and the installed hash-refusal/repair workflow passed on the existing x86_64 host.
@@ -208,12 +208,13 @@ part of the evidence below. No operation described by these assessment cases was
   lostness studies remain open.
 - All four wire protocols (`deepseek`, `chat/completions`, `anthropic`, `responses`), heterogeneous
   `deepseek` + `anthropic`, search/fetch, `deepseek-flash` images, loopback SSH, public SSH/GNU screen reconnect,
-  Alacritty and isolated existing-Debian install/upgrade/rollback passed locally. The current candidate also
-  passed fresh Debian/Ubuntu VM checks; external OAuth services, physical hosts and broader terminal/OS
-  distribution matrices remain open.
-- The wide exhaustive configuration (2,029,647 states verified by simulation only), full Rust/SQLite refinement,
-  whole-system composition, arbitrary-string capability algebra and Policy B source-bound bidirectional
-  fair-trace equivalence remain open.
+  Alacritty and isolated existing-Debian install/upgrade/rollback passed on earlier pinned builds. The
+  `0eb4ee98` candidate passed fresh Debian/Ubuntu VM checks; external OAuth services, physical hosts and broader
+  terminal/OS distribution matrices remain open.
+- The wide exhaustive configuration remains incomplete after the unchanged 90-minute attempt; an earlier
+  simulation explored 2,029,647 states but was not exhaustive. Full Rust/SQLite refinement, whole-system
+  composition, arbitrary-string capability algebra and Policy B source-bound bidirectional fair-trace
+  equivalence remain open.
 - Scheduler/provider fairness, process/remote effects, filesystem races and real power-loss timing remain
   environmental obligations.
 - MCP resource list/read, resource-only and filtered-tool bindings, paged catalogues, protocol revision refusal,
