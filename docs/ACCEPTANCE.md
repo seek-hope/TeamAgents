@@ -95,14 +95,17 @@ not form a statistical acceptance result. `ssh_pty.py` is an explicit isolated-l
 
 ## Scoped external and live receipts
 
-The latest candidate was built from `ab325b59` and adds D-520's batch-edit hash validation. Its x86_64 Linux
-musl archive has SHA-256 `8a3a081a620ece31d4ab5bfa86bc2f641d505f43c0f83da1d122009cefc6817e`; its CLI has SHA-256
+The latest candidate was packaged from `63c98851`, with runtime code unchanged since `ab325b59` (D-520).
+Its x86_64 Linux musl archive has SHA-256 `fcde7164b78f4fe7a66f129656fcb409cfcfe43262590f0ca8e10bf2d5d1bd85`;
+its CLI has SHA-256
 `5e0049588efe03d9beaf4458d8b4827b005db7a3575d7a9558c025a05b13e880`. The full 817-test gate, release/install
 rehearsal and an installed-binary loopback workflow passed on the existing Linux 7.3.3 x86_64 host. A malformed
 per-edit hash produced FAILED/started=true with both files unchanged; corrected hashes then produced a successful
 batch and SUCCEEDED work. The scripted provider checked the unchanged files before issuing the repair. Daemon
 and runner cleanup exited 0, with no runners listed. Inputs and receipts are retained under
-`tools/tmp/d520-installed-evidence/`. This does not renew the older fresh-VM or live-model results.
+`tools/tmp/d520-installed-evidence-v2/`; the first archive and its separate receipt remain preserved. The second
+package includes the README's explicit older VM-build attribution. This does not renew the older fresh-VM or
+live-model results.
 
 The `0eb4ee98` candidate includes D-517/D-518 and predates D-520. Its x86_64 Linux musl archive has SHA-256
 `568ddb813efd124c9e401e0df75f9f779bd7796c37cf3a1df478f947716d6d3d`; its CLI has SHA-256
