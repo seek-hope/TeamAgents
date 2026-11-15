@@ -10,6 +10,7 @@
 //! creates a persisted `UpdateRequest` and the control plane requires the user's
 //! one-shot approval. Only the trusted runtime spawns the detached updater.
 
+use crate::v2::exec::socket_has_live_peer;
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
@@ -991,16 +992,6 @@ pub fn validate_request(target: &str, reason: &str, follow_up: &str) -> Result<(
         return Err("request_self_update.follow_up must say what to continue after the restart".into());
     }
     Ok(())
-}
-
-fn socket_has_live_peer(socket: &Path) -> Result<bool, String> {
-    match std::os::unix::net::UnixStream::connect(socket) {
-        Ok(_) => Ok(true),
-        Err(error) if matches!(error.kind(), std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound) => {
-            Ok(false)
-        }
-        Err(error) => Err(format!("cannot determine whether {} has a listener: {error}", socket.display())),
-    }
 }
 
 fn start_daemon(layout: &Layout, state_root: &Path) -> Result<(), String> {

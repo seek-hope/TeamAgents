@@ -51,6 +51,107 @@ impl Drop for Fixture {
 }
 
 #[test]
+fn deletion_with_stop_preserves_unrecognized_endpoints() {
+    use std::io::{BufRead, Write};
+    use std::os::unix::net::UnixListener;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    for named in [false, true] {
+        for mode in ["malformed", "uncertain", "shutdown-refused", "shutdown-uncertain"] {
+            let fixture = Fixture::new();
+            let mut registry = Registry::load(&fixture.root).unwrap();
+            let id = if named {
+                registry.new_session("fixture").unwrap().id
+            } else {
+                teamagents_engine::v2::sessions::DEFAULT_ID.to_string()
+            };
+            let directory = if named { registry.find(&id).unwrap().dir(&fixture.root) } else { fixture.root.clone() };
+            let db = directory.join("session.sqlite");
+            drop(teamagents_core::v2::store::open(&db, true).unwrap());
+            let before = std::fs::read(&db).unwrap();
+            let socket = directory.join("daemon.sock");
+            let stopping = Arc::new(AtomicBool::new(false));
+            let worker = if mode == "uncertain" {
+                std::os::unix::fs::symlink("daemon.sock", &socket).unwrap();
+                None
+            } else {
+                let listener = UnixListener::bind(&socket).unwrap();
+                listener.set_nonblocking(true).unwrap();
+                let stopping = Arc::clone(&stopping);
+                Some(std::thread::spawn(move || loop {
+                    match listener.accept() {
+                        Ok((mut connection, _)) => {
+                            if mode.starts_with("shutdown-") {
+                                connection.set_read_timeout(Some(std::time::Duration::from_secs(2))).unwrap();
+                                if writeln!(
+                                    connection,
+                                    "{}",
+                                    json!({"server":"teamagents-daemon","protocol_version":1})
+                                )
+                                .is_err()
+                                {
+                                    continue;
+                                }
+                                let mut request = String::new();
+                                if std::io::BufReader::new(connection.try_clone().unwrap())
+                                    .read_line(&mut request)
+                                    .unwrap_or(0)
+                                    == 0
+                                {
+                                    continue;
+                                }
+                                let request: Json = serde_json::from_str(&request).unwrap();
+                                assert_eq!(request["method"], "shutdown");
+                                assert_eq!(request["protocol_version"], 1);
+                                if mode == "shutdown-uncertain" {
+                                    // Replace the path before acknowledging shutdown, without a scheduling race.
+                                    std::fs::remove_file(&socket).unwrap();
+                                    std::os::unix::fs::symlink("daemon.sock", &socket).unwrap();
+                                    writeln!(
+                                        connection,
+                                        "{}",
+                                        json!({"request_id":request["request_id"],"ok":true,"result":{}})
+                                    )
+                                    .unwrap();
+                                } else {
+                                    writeln!(connection, "{}", json!({"request_id":request["request_id"],"ok":false,"error":"fixture refuses shutdown"})).unwrap();
+                                }
+                            } else {
+                                let _ = connection.write_all(b"invalid greeting\n");
+                            }
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            if stopping.load(Ordering::Relaxed) {
+                                break;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(1));
+                        }
+                        Err(error) => panic!("fixture listener: {error}"),
+                    }
+                }))
+            };
+            let result = session_browser::delete(&mut registry, &id, true);
+            stopping.store(true, Ordering::Relaxed);
+            if let Some(worker) = worker {
+                worker.join().unwrap();
+            }
+            let database_preserved = std::fs::read(&db).ok().as_deref() == Some(before.as_slice());
+            assert!(result.is_err(), "named={named}, mode={mode}, database_preserved={database_preserved}: {result:?}");
+            if mode == "shutdown-refused" {
+                assert!(result.unwrap_err().contains("fixture refuses shutdown"));
+            } else if mode == "shutdown-uncertain" {
+                assert!(result.unwrap_err().contains("cannot determine whether"));
+            }
+            assert_eq!(before, std::fs::read(&db).unwrap());
+            if named {
+                assert!(registry.find(&id).is_some());
+            }
+        }
+    }
+}
+
+#[test]
 fn all_history_pages_include_archived_members_and_survive_new_appends() {
     let fixture = Fixture::new();
     let mut registry = Registry::load(&fixture.root).unwrap();
@@ -304,11 +405,13 @@ fn failed_deletion_keeps_history_and_refuses_path_aliases_and_workspaces() {
     let late_in_server = late.clone();
     let server = std::thread::spawn(move || {
         use std::io::{BufRead, Write};
+        // The liveness probe connects without requiring a greeting; shutdown uses a second connection.
+        drop(listener.accept().unwrap());
         let (mut stream, _) = listener.accept().unwrap();
         writeln!(
             stream,
             "{}",
-            json!({"server": "teamagents-daemon", "protocol_version": 2,
+            json!({"server": "teamagents-daemon", "protocol_version": 1,
             "session_id": "s-main", "state_root": socket.parent().unwrap()})
         )
         .unwrap();
@@ -316,6 +419,7 @@ fn failed_deletion_keeps_history_and_refuses_path_aliases_and_workspaces() {
         std::io::BufReader::new(stream.try_clone().unwrap()).read_line(&mut request).unwrap();
         let request: Json = serde_json::from_str(&request).unwrap();
         assert_eq!(request["method"], "shutdown");
+        assert_eq!(request["protocol_version"], 1);
         std::fs::create_dir_all(&late_in_server).unwrap();
         std::fs::write(late_in_server.join("work.txt"), "unfinished work").unwrap();
         writeln!(stream, "{}", json!({"request_id": request["request_id"], "ok": true, "result": {}})).unwrap();

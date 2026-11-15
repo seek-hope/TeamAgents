@@ -94,7 +94,7 @@ the only accepted value. The removed `mcp_network` and check-level `network` set
 
 | Key | Type | Absent | Read by | Meaning |
 |---|---|---|---|---|
-| `kind` | `String` | empty | `core/src/kernel/mod.rs`, `core/src/v2/control/search_tree.rs` … (34 files) | — |
+| `kind` | `String` | empty | `core/src/kernel/mod.rs`, `core/src/v2/control/search_tree.rs` … (35 files) | — |
 | `required` | `bool` | false | `core/src/kernel/mod.rs`, `engine/src/bound.rs` … (5 files) | — |
 | `provider` | `Option<String>` | unset (the reader applies its own) | `engine/src/providers/mod.rs`, `engine/src/search.rs` … (6 files) | Web provider: DeepSeek for search/fetch, Exa for search only (D-482). |
 | `api_key_env` | `Option<String>` | unset (the reader applies its own) | `engine/src/providers/mod.rs`, `engine/src/search.rs` … (3 files) | — |

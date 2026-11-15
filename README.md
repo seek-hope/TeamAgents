@@ -133,7 +133,7 @@ See [the architecture guide](docs/ARCHITECTURE.md) for state machines and data r
 
 ## Current evidence
 
-The full local gate passed **817 Rust tests** (core 198, engine 511, TUI 108).
+The full local gate passed **819 Rust tests** (core 198, engine 513, TUI 108).
 Formal material contains **393 configurations across 48 modules**:
 
 - **65 positive configurations in 62 traversals**;

@@ -6,7 +6,7 @@ This file records current behavior and reproducible evidence, not historical acc
 ✅ means the named local path has automated evidence. 🔶 means implementation exists but the stated external,
 empirical or full-system obligation remains open. No icon is a proof of every release condition.
 
-Current source inventory: core 198 / engine 511 / tui 108 test targets; the full gate passed.
+Current source inventory: core 198 / engine 513 / tui 108 test targets; the full gate passed.
 The `0eb4ee98` runtime passed all 18 offline probes, the release/install rehearsal and fresh Debian/Ubuntu VM
 acceptance below. PTY passed on the unchanged TUI/daemon code before the final continuous-input accounting fix
 and buffer bound.
@@ -75,7 +75,7 @@ complete graphical-terminal or OS matrix.
 | A30 | Artifact persistence, publication, release and garbage collection | `V2Artifact`, `V2ExportSnapshot`, staging/live/deleting states and export tests |
 | A31 | Disk full / persistence-write failure | `disk_full_is_classified_at_the_submit_boundary`, storage-backpressure supervision and no new side effects after latch |
 | A32 | Large-history, storage, rendering and slow-reader behavior | Lazy input revisions, bounded idle reads, viewport allocation checks and load-probe entry; latest full performance figures are not claimed |
-| A33 | Second daemon, coordinator exclusion and lock recovery | `second_daemon_is_refused_and_shutdown_releases_the_lock`, `V2Coordinator`, named-session archive guards |
+| A33 | Second daemon, coordinator exclusion and lock recovery | `second_daemon_is_refused_and_shutdown_releases_the_lock`, `V2Coordinator`, D-522 listener/uncertainty guards and explicit-stop refusal checks |
 | A34 | Foreign or wrong-version state-store refusal | `open_refuses_unstamped_foreign_and_wrong_version`, `open_migrates_v8_to_the_session_search_tree`, conflict rollback and `V2Store` |
 | A35 | Work deadline | `work_deadline_refuses_new_requests_and_dispatches`, deadline park and cancel/release behavior |
 | A36 | Store/session lifecycle, search/export and guarded cleanup | `engine/tests/session_browser.rs`, `session_export_tests.rs`, session CLI, `tools/install_check.py`, current schema 9 and `tools/` relocation |
@@ -95,6 +95,15 @@ not form a statistical acceptance result. `ssh_pty.py` is an explicit isolated-l
 
 ## Scoped external and live receipts
 
+D-522 preserves sessions when endpoint absence is unproven. A real CLI call in an owned synthetic fixture
+previously pruned an archive despite an open malformed-greeting listener and held coordinator lock. The
+repaired call retains the row and marker. Two Rust regressions cover 20 lifecycle conditions and eight
+default/named stop-safety conditions, including legacy greetings, invalid greetings, uncertain paths,
+stale/missing sockets, explicit shutdown rejection and uncertainty after acknowledgement. Existing protocol-1 shutdown and late-workspace
+checks pass. These are local endpoint/SQLite checks; they do not establish full startup/filesystem-race safety
+or a connection deadline for a full socket backlog. Inputs and receipts are retained under
+`tools/tmp/session-liveness-evidence/`.
+
 D-521 corrects target-ABI file-open flags. On AArch64, the old x86 `O_DIRECTORY` literal selected `O_DIRECT`,
 causing seven of the existing 26 tool regressions to fail with EINVAL. All 26 pass after using the existing
 `libc` constants; the full local 817-test gate also passed. The CLI and TUI cross-build for AArch64 GNU.
@@ -104,7 +113,22 @@ The local GNU binaries use the cross-toolchain sysroot (CLI symbols through GLIB
 they are not portable ARM release artifacts. Before/after logs and build provenance are retained under
 `tools/tmp/aarch64-evidence/`. The earlier `fde93f53` delivery passed all three of its CI jobs.
 
-The latest candidate was packaged from `63c98851`, with runtime code unchanged since `ab325b59` (D-520).
+The fixed AArch64 GNU CLI at `675af52e` also passed the scripted daemon/headless workflow: malformed
+hashes failed with started=true and unchanged files, then matching hashes edited both files and the work
+ended SUCCEEDED. Daemon/runner cleanup exited 0 with no runners or provider errors. Its CLI SHA-256 is
+`91ad24842529e2189c4a36d2c63838e02c3dcc20af6aa0cce658f6cade431b24`; the exact inputs, before/after operation
+receipts and source binding remain under `tools/tmp/aarch64-evidence/`. An earlier probe keyword error is
+preserved separately from the reproduced EINVAL failures.
+
+The latest x86_64 Linux musl candidate was packaged from `675af52e` (D-521). Archive SHA-256:
+`80056db6b3ee9f91e9a095c27975d944d471ee0b0f4cc79256815c814236e870`; CLI SHA-256:
+`f94a1c1e10cafc6d024a4cd6fc8866b70aea37b5af6773b8c6cb80cc8c63aa3b`. The release/install rehearsal, repeated-init
+configuration preservation and the installed hash-refusal/repair workflow passed on the existing x86_64 host.
+All 16 packaged Markdown files match the package source. Inputs and receipts are retained under
+`tools/tmp/d521-installed-evidence/`. This remains a local candidate and does not renew fresh-VM, native ARM,
+live-provider or public-release acceptance. The 446 retained formal inputs remain byte-identical.
+
+The D-520 candidate was packaged from `63c98851`, with runtime code unchanged since `ab325b59`.
 Its x86_64 Linux musl archive has SHA-256 `fcde7164b78f4fe7a66f129656fcb409cfcfe43262590f0ca8e10bf2d5d1bd85`;
 its CLI has SHA-256
 `5e0049588efe03d9beaf4458d8b4827b005db7a3575d7a9558c025a05b13e880`. The full 817-test gate, release/install

@@ -33,7 +33,7 @@ finite model into full acceptance. See [ACCEPTANCE.md](ACCEPTANCE.md) for scenar
 
 ## Current evidence totals
 
-- Rust tests: **817** (core 198, engine 511, TUI 108); full local gate passed.
+- Rust tests: **819** (core 198, engine 513, TUI 108); full local gate passed.
 - Positive TLA inputs: **65 configurations in 62 traversals**.
 - Negative controls: **327**, each required to refute its named claim.
 - Normal-path witnesses: **79**, which demonstrate reachability rather than safety.

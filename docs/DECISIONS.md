@@ -134,7 +134,7 @@ evaluation evidence.
 
 ### Current verification boundary
 
-- Current source contains 817 Rust tests: core 198, engine 511 and TUI 108.
+- Current source contains 819 Rust tests: core 198, engine 513 and TUI 108.
 - Formal material has 393 configurations across 48 modules: 65 positive configurations, 327 negative controls
   and one separate wide configuration. Positive inputs share 62 traversals only when model/spec/domain match.
 - There are 79 normal-path witnesses and 9 Kani harnesses. Witnesses demonstrate reachability, not safety.
@@ -142,6 +142,20 @@ evaluation evidence.
   claim and 11 witnesses. `TypeOK` remains a type-level claim, not a behavioral completeness proof.
 - These results do not establish full Rust/SQLite refinement, whole-system composition, Policy B source-bound
   equivalence, wide exhaustive completion, arbitrary-input TLA coverage or live-model navigation quality.
+
+## D-522 Keep sessions when endpoint absence is unproven (2026-11-15)
+
+Session archive/restore/delete/prune now share the updater's transport-level liveness probe. A successful
+connection protects the session regardless of its greeting; only missing or refused sockets establish absence.
+Other connection errors refuse mutation or retain a prune candidate with a reason, and the display hint is
+conservative. Explicit deletion with stop uses the protocol-1/2 maintenance connection and propagates greeting
+and shutdown failures. The same conservative probe verifies absence after a successful shutdown reply;
+filesystem lookup errors cannot turn that acknowledgement into permission to delete. A CLI fixture
+reproduced deletion of an archive while an invalid-greeting listener and
+its coordinator lock were still held; the repaired CLI keeps its row and files. Twenty lifecycle conditions
+and eight default/named stop-safety conditions are covered by two Rust regressions, with a protocol-1 shutdown
+fixture retaining its late-workspace checks. The shared probe preserves the updater's behavior. This repair
+does not close startup or check-to-use filesystem races, or bound a synchronous connect on a full backlog.
 
 ## D-521 Use target-ABI file-open flags (2026-11-15)
 

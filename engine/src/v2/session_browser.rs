@@ -156,17 +156,13 @@ fn protect_workspaces(dir: &Path) -> Result<(), String> {
 
 fn stop_daemon(dir: &Path) -> Result<(), String> {
     let socket = dir.join("daemon.sock");
-    if !socket.exists() {
+    if !super::exec::socket_has_live_peer(&socket)? {
         return Ok(());
     }
-    let mut client = match super::exec::Client::connect(&socket) {
-        Ok(client) => client,
-        // A stale socket is safe only if we can subsequently take the coordinator lock.
-        Err(_) => return Ok(()),
-    };
+    let mut client = super::exec::Client::connect_maintenance(&socket)?;
     client.call("shutdown", json!({}))?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while socket.exists() {
+    while super::exec::socket_has_live_peer(&socket)? {
         if std::time::Instant::now() >= deadline {
             return Err("session shutdown did not finish within 5 seconds; history was kept".into());
         }

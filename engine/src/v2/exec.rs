@@ -214,6 +214,18 @@ impl Client {
     }
 }
 
+/// Only missing or refused sockets establish absence; protocol errors cannot prove a peer stopped.
+pub(crate) fn socket_has_live_peer(socket: &Path) -> Result<bool, String> {
+    // ponytail: a full listen backlog can block; use bounded nonblocking connect to close that limit.
+    match UnixStream::connect(socket) {
+        Ok(_) => Ok(true),
+        Err(error) if matches!(error.kind(), std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound) => {
+            Ok(false)
+        }
+        Err(error) => Err(format!("cannot determine whether {} has a listener: {error}", socket.display())),
+    }
+}
+
 fn handshake(socket: &Path, maintenance: bool) -> Result<(Conn, Json), String> {
     // D-166: a state root that is a *file* makes every path under it meaningless, and the OS answer for the
     // connect below is `Not a directory (os error 20)`, which names neither the flag nor the fix. Every client

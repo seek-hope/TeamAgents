@@ -2,10 +2,19 @@
 
 ## Current baseline
 
-D-521 uses target-ABI file-open constants, fixing AArch64 EINVAL failures without changing x86 flag values.
+D-522 protects session archive/restore/delete/prune when an endpoint is listening or absence is uncertain.
+Explicit stop propagates failures and uses the protocol-1/2 maintenance connection. Twenty lifecycle and
+eight stop-safety conditions, the old-version shutdown fixture and the real CLI prune probe pass locally;
+startup/filesystem races and a full-listen-backlog deadline remain outside this repair.
+
+The `675af52e` runtime (D-521) uses target-ABI file-open constants to fix AArch64 EINVAL
+failures without changing x86 flag values. Its musl release/install rehearsal and installed hash workflow
+passed; the AArch64 GNU daemon/headless workflow also passed under user emulation.
 The full local 817-test gate and all 26 tool tests under AArch64 GNU user emulation passed. The shared
 `make test-aarch64` target has a separate CI job; native ARM hardware/kernel and package acceptance remain open.
-The previous `fde93f53` delivery passed all three of its CI jobs. The `ab325b59` runtime (D-520) passed its
+The full formal chain was re-run against `675af52e`, including all 455 material-file bindings; the separate
+90-minute wide attempt timed out and remains incomplete. The previous `fde93f53` delivery passed all three
+of its CI jobs. The `ab325b59` runtime (D-520) passed its
 release/install rehearsal and installed hash-refusal/repair workflow. Fresh Debian/Ubuntu VM acceptance and
 18 offline probes remain pinned to `0eb4ee98`. D-519 audits current documentation totals. Recheck Git and CI
 for subsequent work; exact package and experiment identities are in ACCEPTANCE.md.
@@ -16,9 +25,9 @@ and the acceptance matrix in [ACCEPTANCE.md](ACCEPTANCE.md). Current formal evid
 
 Current source inventory and verification:
 
-- **817 Rust tests**: core 198, engine 511, TUI 108; the full `make check` passed.
-  D-521 also passes the 26-tool AArch64 GNU emulation subset. The `ab325b59` runtime passed the
-  release/install rehearsal and an installed batch-edit refusal/repair check.
+- **819 Rust tests**: core 198, engine 513, TUI 108; the full `make check` passed.
+  D-521 also passes the 26-tool AArch64 GNU emulation subset and a scripted daemon/headless workflow.
+  Its x86_64 musl package passed release/install rehearsal and installed batch-edit refusal/repair checks.
   The earlier `0eb4ee98` archive passed 18 offline probes and fresh Debian/Ubuntu VM installation, malformed-
   argument rejection, upgrade, rollback and failed-startup recovery (see ACCEPTANCE.md). PTY passed on the
   unchanged TUI/daemon code.

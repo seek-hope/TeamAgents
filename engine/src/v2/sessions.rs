@@ -430,16 +430,18 @@ impl Registry {
                 continue;
             }
             let dir = entry.dir(&self.home);
-            if is_live(&dir) {
-                keep.push((
-                    entry.id.clone(),
-                    format!(
-                        "kept: a daemon is still serving {} — stop it first with `teamagents --state-root {} daemon \
-                         --stop`",
-                        dir.display(),
-                        dir.display()
-                    ),
-                ));
+            let reason = match super::exec::socket_has_live_peer(&dir.join("daemon.sock")) {
+                Ok(false) => None,
+                Ok(true) => Some(format!(
+                    "kept: a daemon is still serving {} — stop it first with `teamagents --state-root {} daemon \
+                     --stop`",
+                    dir.display(),
+                    dir.display()
+                )),
+                Err(error) => Some(format!("kept: {error}")),
+            };
+            if let Some(reason) = reason {
+                keep.push((entry.id.clone(), reason));
                 continue;
             }
             if crate::config::state_root_marked_as_evidence(&dir) {
@@ -594,7 +596,7 @@ pub fn search(home: &Path, query: &str, limit: usize) -> Result<(Vec<Json>, Vec<
 /// Refuse a filesystem move or removal while a daemon is serving the session. The socket is the address (the
 /// same rule `daemon --stop` uses), so no pid is recorded, guessed or reused.
 pub fn refuse_if_live(dir: &Path, id: &str) -> Result<(), String> {
-    if !is_live(dir) {
+    if !super::exec::socket_has_live_peer(&dir.join("daemon.sock"))? {
         return Ok(());
     }
     Err(format!(
@@ -627,10 +629,9 @@ fn directory_bytes(dir: &Path) -> u64 {
         .sum()
 }
 
-/// Whether a daemon is answering this session's socket. Connecting only reads the greeting.
+/// Conservative display hint: an uncertain endpoint is not reported as stopped.
 pub fn is_live(dir: &Path) -> bool {
-    let socket = dir.join("daemon.sock");
-    socket.exists() && crate::v2::exec::Client::connect(&socket).is_ok()
+    super::exec::socket_has_live_peer(&dir.join("daemon.sock")).unwrap_or(true)
 }
 
 /// Filesystem-only facts for `sessions list`: nothing here opens another session's database.
@@ -808,6 +809,87 @@ mod tests {
         std::fs::write(scratch.path().join(REGISTRY_FILE), r#"{"version":99,"sessions":[]}"#).unwrap();
         let error = Registry::load(scratch.path()).unwrap_err();
         assert!(error.contains("version 99"), "{error}");
+    }
+
+    #[test]
+    fn lifecycle_changes_preserve_listening_and_uncertain_sessions() {
+        use std::io::Write;
+        use std::os::unix::net::UnixListener;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        for operation in ["archive", "restore", "delete", "prune"] {
+            for mode in ["legacy", "malformed", "uncertain", "stale", "missing"] {
+                let scratch = Scratch::new("liveness");
+                let mut registry = Registry::load(scratch.path()).unwrap();
+                let entry = registry.new_session("fixture").unwrap();
+                if operation != "archive" {
+                    registry.archive(&entry.id).unwrap();
+                }
+                let directory = registry.find(&entry.id).unwrap().dir(scratch.path());
+                let marker = directory.join("marker.txt");
+                std::fs::write(&marker, b"keep this fixture").unwrap();
+                let socket = directory.join("daemon.sock");
+                let stopping = Arc::new(AtomicBool::new(false));
+                let worker = if matches!(mode, "legacy" | "malformed") {
+                    let listener = UnixListener::bind(&socket).unwrap();
+                    listener.set_nonblocking(true).unwrap();
+                    let stopping = Arc::clone(&stopping);
+                    let greeting: &[u8] = if mode == "legacy" {
+                        b"{\"server\":\"teamagents-daemon\",\"protocol_version\":1}\n"
+                    } else {
+                        b"invalid greeting\n"
+                    };
+                    Some(std::thread::spawn(move || loop {
+                        match listener.accept() {
+                            Ok((mut connection, _)) => {
+                                let _ = connection.write_all(greeting);
+                            }
+                            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                                if stopping.load(Ordering::Relaxed) {
+                                    break;
+                                }
+                                std::thread::sleep(std::time::Duration::from_millis(1));
+                            }
+                            Err(error) => panic!("fixture listener: {error}"),
+                        }
+                    }))
+                } else {
+                    if mode == "uncertain" {
+                        std::os::unix::fs::symlink("daemon.sock", &socket).unwrap();
+                    } else if mode == "stale" {
+                        drop(UnixListener::bind(&socket).unwrap());
+                    }
+                    None
+                };
+                let live = facts(&directory)["live"].as_bool().unwrap();
+                let result = match operation {
+                    "archive" => registry.archive(&entry.id).map(|_| true),
+                    "restore" => registry.restore(&entry.id).map(|_| true),
+                    "delete" => registry.delete(&entry.id).map(|_| true),
+                    "prune" => registry.prune(0, false).map(|report| !report.removed.is_empty()),
+                    _ => unreachable!(),
+                };
+                stopping.store(true, Ordering::Relaxed);
+                if let Some(worker) = worker {
+                    worker.join().unwrap();
+                }
+                let protected = matches!(mode, "legacy" | "malformed" | "uncertain");
+                assert_eq!(live, protected, "{operation}/{mode}: endpoint liveness");
+                if protected {
+                    assert!(!matches!(result, Ok(true)), "{operation}/{mode}: {result:?}");
+                    assert_eq!(std::fs::read(&marker).unwrap(), b"keep this fixture");
+                    assert!(registry.find(&entry.id).is_some());
+                    if operation == "prune" {
+                        assert_eq!(result, Ok(false));
+                    } else {
+                        assert!(result.is_err());
+                    }
+                } else {
+                    assert_eq!(result, Ok(true), "{operation}/{mode}");
+                }
+            }
+        }
     }
 
     #[test]

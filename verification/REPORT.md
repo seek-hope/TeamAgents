@@ -1,13 +1,16 @@
 # Current formal verification report
 
-This report records the currently accepted finite verification evidence and its limits. It is not a history of
-earlier runs. The property/configuration mapping is in [README.md](README.md); executable reproduction commands
+This report records the currently accepted finite verification evidence and its limits. Earlier runtime
+receipts retain their original source bindings. The property/configuration mapping is in [README.md](README.md); executable reproduction commands
 are in [DEVELOPMENT.md](../docs/DEVELOPMENT.md).
 
-## 0. Gate status (re-run 2026-11-14 at `b0a1091c`)
+## 0. Gate status (re-run 2026-11-15 at `675af52e`)
 
-The finite replay preceded this delivery commit. All 446 recorded formal-input hashes were rechecked on
-2026-11-15 and match this baseline; runtime gates were refreshed after the final accounting/client fixes.
+D-521 changed the Makefile, which the source-provenance gate treats as formal material. The complete formal
+chain was re-run: all 455 material files, including the Makefile and Kani source subjects, match `675af52e`.
+The 446 earlier formal inputs are unchanged. Replay inputs, logs and result manifests remain under
+`tools/tmp/d521-formal-tmp/`. The positive traversals took 1804.3 seconds; this is a local replay duration,
+not a performance comparison. The historical runtime receipt below remains bound to `b0a1091c`.
 
 The current finite replay verified all **65** configurations in **62** traversals, refuted all **327** negative controls,
 reached all **79** normal-path witnesses, and passed all **9** Kani harnesses. The sequential chain
@@ -83,6 +86,12 @@ arbitrary-input TLA enumeration.
 2. **Wide and canonical allocation.** The separate wide configuration is not claimed complete. Policy B
    canonical allocation is not adopted; a source-bound bidirectional fair-trace equivalence, including actual
    actions, enabledness, occurrence, fairness, properties/witnesses and exact source binding, is not complete.
+   The unchanged wide configuration was attempted again with eight workers, an 8 GiB heap and a 90-minute
+   deadline, without symmetry, canonical allocation or state constraints. It stopped at the deadline after
+   5401.0 seconds (TLC exit 143, verdict checker exit 1); all pinned inputs remained unchanged. Its last
+   progress line reported 61,542,521 distinct states and 45,249,691 queued states. This is incomplete
+   exploration, not a successful verification. Inputs, checkpoints and receipts remain under
+   `tools/tmp/wide-fde93f53-20261115/`.
 3. **Scheduler and environment fairness.** Provider scheduling, process-group behavior, escaped descendants,
    remote effects, filesystem races and power-loss timing remain outside the finite model.
 4. **Implementation detail outside the model.** Complete provider/JSON-RPC parsing and retry classification,
