@@ -24,7 +24,7 @@ It contains no review reports, evaluation datasets or archived evidence.
 `--write` mode changes numeric fields only; a missing or ambiguous current statement fails. Historical receipts
 keep their original counts, and dates and passing-gate claims require separate evidence.
 
-For the current tree, `citations.py` verifies that 87 relative links resolve today. It checks 88 commands, 14 distinct targets, 14 declared as checked on 2026-11-14; its other totals are recomputed and compared with the script's own docstring.
+For the current tree, `citations.py` verifies that 87 relative links resolve today. It checks 93 commands, 15 distinct targets, 15 declared as checked on 2026-11-15; its other totals are recomputed and compared with the script's own docstring.
 
 `tools/tmp/` is ignored scratch space for new local runs. It is not source, evidence of a later source revision or a
 committed artifact. A passing result always needs its actual command, source revision and exit status.

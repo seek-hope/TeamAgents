@@ -24,7 +24,7 @@ ifeq ($(HOME),/tmp)
   endif
 endif
 
-.PHONY: help check deny fmt fmt-check lint test build pty probe-offline probe-models hygiene language-check \
+.PHONY: help check deny fmt fmt-check lint test test-aarch64 build pty probe-offline probe-models hygiene language-check \
         verify-tools verify-model verify-model-all \
         verify-model-counterexamples verify-witnesses verify-model-wide verify-model-sim verify-kani release-rehearsal
 
@@ -41,6 +41,7 @@ help:
 	@echo 'make fmt-check  the formatting check alone (what make check runs)'
 	@echo 'make lint      Clippy on all targets, warnings as errors'
 	@echo 'make test      the three crate suites under the leak guard, plus the ledger check'
+	@echo 'make test-aarch64  file/tool regressions under AArch64 GNU user emulation (cross GCC, Rust target, QEMU)'
 	@echo 'make hygiene   the audits and the generated-document checks (make check runs it too)'
 	@echo 'make verify-tools  fetch the pinned TLC jar (the verify targets do this themselves)'
 	@echo 'make verify-model  the bounded control-plane configuration in TLC'
@@ -78,9 +79,26 @@ lint:
 test: build
 	@set -eu; guard=$$(mktemp); trap 'rm -f "$$guard"' EXIT HUP INT TERM; \
 		python3 tools/leak_guard.py snapshot "$$guard"; \
-		for crate in $(CRATES); do cargo test $(CARGO_FLAGS) --manifest-path $$crate/Cargo.toml; done; \
-		python3 tools/leak_guard.py audit "$$guard"; \
+		status=0; for crate in $(CRATES); do \
+			cargo test $(CARGO_FLAGS) --manifest-path $$crate/Cargo.toml || { status=$$?; break; }; \
+		done; \
+		audit=0; python3 tools/leak_guard.py audit "$$guard" || audit=$$?; \
+		[ "$$status" -eq 0 ] || exit "$$status"; \
+		[ "$$audit" -eq 0 ] || exit "$$audit"; \
 		python3 tools/test_counts.py
+
+# Cross-ABI regression coverage; this does not install or claim native ARM platform support.
+test-aarch64:
+	@set -eu; guard=$$(mktemp); trap 'rm -f "$$guard"' EXIT HUP INT TERM; \
+		python3 tools/leak_guard.py snapshot "$$guard"; \
+		status=0; CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc \
+		CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+		CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER='qemu-aarch64 -L /usr/aarch64-linux-gnu' \
+		cargo test $(CARGO_FLAGS) --release --jobs 4 --target aarch64-unknown-linux-gnu \
+			--manifest-path engine/Cargo.toml --lib tools::tests:: || status=$$?; \
+		audit=0; python3 tools/leak_guard.py audit "$$guard" || audit=$$?; \
+		[ "$$status" -eq 0 ] || exit "$$status"; \
+		exit "$$audit"
 
 build:
 	cargo build $(CARGO_FLAGS) --manifest-path engine/Cargo.toml --bin teamagents

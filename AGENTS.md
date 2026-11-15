@@ -48,7 +48,10 @@ make verify-kani
 
 Current source inventory (2026-11-15): **817 Rust tests** (core 198 / engine 511 / tui 108), **65 positive TLA configurations in 62
 traversals**, **327 controls**, **79 witnesses**, **9 Kani harnesses**, and **393 configurations across 48
-modules**. The `ab325b59` runtime passed the full local gate, release/install rehearsal and an installed
+modules**. D-521 fixes target-ABI file-open flags; its full local gate and 26-tool AArch64 GNU emulation
+subset passed. `make test-aarch64` shares that subset with its dedicated CI job. This is not native ARM
+hardware/kernel or ARM-package acceptance. The preceding `fde93f53` delivery passed all three CI jobs.
+The `ab325b59` runtime passed the full local gate, release/install rehearsal and an installed
 batch-edit hash-refusal/repair workflow. The earlier `0eb4ee98` build passed 18 offline probes and release/install
 rehearsal, plus ordinary-user install, argument rejection and same-schema upgrade/rollback in
 fresh Debian 12 and Ubuntu 22.04.5 KVM guests. PTY passed on the unchanged TUI/daemon code; the 23 live probes

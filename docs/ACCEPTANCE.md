@@ -95,6 +95,15 @@ not form a statistical acceptance result. `ssh_pty.py` is an explicit isolated-l
 
 ## Scoped external and live receipts
 
+D-521 corrects target-ABI file-open flags. On AArch64, the old x86 `O_DIRECTORY` literal selected `O_DIRECT`,
+causing seven of the existing 26 tool regressions to fail with EINVAL. All 26 pass after using the existing
+`libc` constants; the full local 817-test gate also passed. The CLI and TUI cross-build for AArch64 GNU.
+`make test-aarch64` and its separate CI job retain the regression subset with an explicit QEMU runner.
+These are user-emulation checks on the existing x86_64 Linux kernel, not native ARM or package acceptance.
+The local GNU binaries use the cross-toolchain sysroot (CLI symbols through GLIBC 2.44, TUI through 2.43);
+they are not portable ARM release artifacts. Before/after logs and build provenance are retained under
+`tools/tmp/aarch64-evidence/`. The earlier `fde93f53` delivery passed all three of its CI jobs.
+
 The latest candidate was packaged from `63c98851`, with runtime code unchanged since `ab325b59` (D-520).
 Its x86_64 Linux musl archive has SHA-256 `fcde7164b78f4fe7a66f129656fcb409cfcfe43262590f0ca8e10bf2d5d1bd85`;
 its CLI has SHA-256

@@ -33,6 +33,21 @@ suites and all registered current totals/triples agree (D-519). Its `--write` mo
 keep dates, passing-gate claims and historical receipts accurate separately. Update its `HEADLINES` patterns if
 a current statement changes format. A source count is not a passing test receipt; see ACCEPTANCE.md for gate status.
 
+The file/tool subset also runs on the AArch64 GNU ABI through QEMU user emulation:
+
+```bash
+make test-aarch64
+```
+
+This optional local target is a separate CI job. It needs the pinned Rust toolchain's
+`aarch64-unknown-linux-gnu` target, `aarch64-linux-gnu-gcc`, `qemu-aarch64` and the
+`/usr/aarch64-linux-gnu` sysroot (Ubuntu packages `gcc-aarch64-linux-gnu` and `qemu-user`). It runs the existing
+26 tool tests in the release profile, with four build jobs and an explicit QEMU runner, under the leak guard.
+Both test targets audit leaks even after a failed test command; either a test failure or an audit failure
+fails the target.
+Use `CARGO_FLAGS=--locked` when dependencies need downloading. This checks target-ABI behavior; it is not a
+native ARM host/kernel or a distribution-package test. The public release target remains x86_64 Linux musl.
+
 ## 2. Formal verification
 
 ```bash

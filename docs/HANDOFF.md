@@ -2,11 +2,13 @@
 
 ## Current baseline
 
-Runtime source baseline: `ab325b59` (D-520), including strict batch-edit hash preconditions. Its full local gate,
-release/install rehearsal and installed-binary hash-refusal/repair workflow passed. The earlier `0eb4ee98` build
-passed the 18 offline probes and fresh Debian/Ubuntu VM acceptance; those results remain pinned to that build.
-Earlier `c2adc991` CI passed all three jobs. D-519 audits current test-count totals and alternate formats across
-the documentation. Recheck Git and CI for subsequent work.
+D-521 uses target-ABI file-open constants, fixing AArch64 EINVAL failures without changing x86 flag values.
+The full local 817-test gate and all 26 tool tests under AArch64 GNU user emulation passed. The shared
+`make test-aarch64` target has a separate CI job; native ARM hardware/kernel and package acceptance remain open.
+The previous `fde93f53` delivery passed all three of its CI jobs. The `ab325b59` runtime (D-520) passed its
+release/install rehearsal and installed hash-refusal/repair workflow. Fresh Debian/Ubuntu VM acceptance and
+18 offline probes remain pinned to `0eb4ee98`. D-519 audits current documentation totals. Recheck Git and CI
+for subsequent work; exact package and experiment identities are in ACCEPTANCE.md.
 
 The current source implements the requirements in [DESIGN.md](DESIGN.md), the rules in [DECISIONS.md](DECISIONS.md),
 and the acceptance matrix in [ACCEPTANCE.md](ACCEPTANCE.md). Current formal evidence and its limits are in
@@ -15,7 +17,8 @@ and the acceptance matrix in [ACCEPTANCE.md](ACCEPTANCE.md). Current formal evid
 Current source inventory and verification:
 
 - **817 Rust tests**: core 198, engine 511, TUI 108; the full `make check` passed.
-  The runtime baseline passed the release/install rehearsal and an installed batch-edit refusal/repair check.
+  D-521 also passes the 26-tool AArch64 GNU emulation subset. The `ab325b59` runtime passed the
+  release/install rehearsal and an installed batch-edit refusal/repair check.
   The earlier `0eb4ee98` archive passed 18 offline probes and fresh Debian/Ubuntu VM installation, malformed-
   argument rejection, upgrade, rollback and failed-startup recovery (see ACCEPTANCE.md). PTY passed on the
   unchanged TUI/daemon code.
@@ -98,8 +101,9 @@ not rewritten as a pass.
   failures. Do not retry its exhausted route without a resource change. Multi-branch recovery and native-window
   compaction have scoped evidence; general success, tree semantics and user lostness remain open.
 - Four wire protocols have live evidence. Earlier pinned builds passed public SSH/screen reconnect and isolated
-  install/upgrade/rollback on an existing Debian 12 host. The current candidate also passed fresh Debian/Ubuntu
-  VM checks with scripted loopback providers. External OAuth, physical hosts and wider platform acceptance remain open.
+  install/upgrade/rollback on an existing Debian 12 host. The `0eb4ee98` candidate passed fresh Debian/Ubuntu
+  VM checks with scripted loopback providers. D-521 adds scoped AArch64 GNU user-emulation coverage; external
+  OAuth, physical hosts, ARM kernels and wider platform acceptance remain open.
 - Wide exhaustive completion, full Rust/SQLite refinement, whole-system composition and Policy B source-bound
   equivalence remain open.
 - Broader versioned integrations, artifact-retention policy and general long-horizon outcome measurement remain open.

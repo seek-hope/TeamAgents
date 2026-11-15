@@ -143,6 +143,18 @@ evaluation evidence.
 - These results do not establish full Rust/SQLite refinement, whole-system composition, Policy B source-bound
   equivalence, wide exhaustive completion, arbitrary-input TLA coverage or live-model navigation quality.
 
+## D-521 Use target-ABI file-open flags (2026-11-15)
+
+Native file access uses the existing `libc` dependency for `O_DIRECTORY` and `O_NONBLOCK`.
+The former x86 directory literal is `O_DIRECT` on AArch64: it made parent-directory opens fail with EINVAL,
+including valid reads, edits and image loads. Existing tool regressions reproduced seven failures out of 26
+under AArch64 GNU user emulation; all 26 pass with the target constants. The same subset has a shared
+`make test-aarch64` entry point and a dedicated CI job using cross GCC and QEMU. Both test targets now run
+the leak audit even after a failed test command, while either failure still fails the target. Isolated command
+controls cover test/audit success and failure combinations. Directory pinning, path
+checks, hashes, batch commit/rollback and authority rules are unchanged. This adds ABI regression coverage,
+not native ARM hardware, ARM-kernel, distribution-package or full-platform acceptance.
+
 ## D-520 Validate supplied batch-edit hash preconditions (2026-11-15)
 
 Batch editing uses the same expected-hash validator as single-file editing and writing. Every supplied per-edit

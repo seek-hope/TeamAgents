@@ -47,6 +47,23 @@ jobs:
       - name: Check patch whitespace
         run: git log --check --format= -1
 
+  test-aarch64:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Read the pinned toolchain version
+        id: rust-version
+        run: echo "version=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ steps.rust-version.outputs.version }}
+          targets: aarch64-unknown-linux-gnu
+      - name: Install the cross compiler and user emulator
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu qemu-user
+      - name: File and tool regressions on the AArch64 ABI
+        run: make test-aarch64 CARGO_FLAGS=--locked
+
   # The formal-verification gate. TLA+ and Kani need Java and a download the Cargo job does not, and they are
   # far slower than the fast suite, so they run as their own jobs. A green run here means every protocol model
   # passed and every negative control was refuted — the two halves `make verify-model-*` enforces; a control

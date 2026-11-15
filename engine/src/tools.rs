@@ -63,9 +63,6 @@ fn prune_artifacts(dir: &Path, budget: u64) -> usize {
     removed
 }
 const PAGE_BYTES: usize = 32_000;
-// Linux flags: this executor already relies on /proc/self/fd.
-const O_NONBLOCK: i32 = 0x800;
-const O_DIRECTORY: i32 = 0x10000;
 // ponytail: serialize native mutations in this process; use per-path locks if
 // unrelated writes contend. Shell/external editors still need hash checks.
 static FILE_WRITES: Mutex<()> = Mutex::new(());
@@ -169,7 +166,7 @@ pub(crate) fn open_member_file(root: &Path, path: &Path) -> Result<std::fs::File
         .join(path.file_name().ok_or("file path required")?);
     // A FIFO can block in open itself, before metadata or cancellation checks.
     let file =
-        std::fs::OpenOptions::new().read(true).custom_flags(O_NONBLOCK).open(&leaf).map_err(|e| e.to_string())?;
+        std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK).open(&leaf).map_err(|e| e.to_string())?;
     check_member_fd(&root, &file)?;
     if !file.metadata().map_err(|e| e.to_string())?.is_file() {
         return Err("not a regular file".into());
@@ -190,7 +187,7 @@ fn member_parent(root: &Path, path: &Path, create: bool) -> Result<std::fs::File
     let relative = path.strip_prefix(&root).map_err(|_| "path escapes workspace")?;
     relative.file_name().ok_or("file path required")?;
     let open_dir = |path: &Path| {
-        std::fs::OpenOptions::new().read(true).custom_flags(O_DIRECTORY).open(path).map_err(|e| e.to_string())
+        std::fs::OpenOptions::new().read(true).custom_flags(libc::O_DIRECTORY).open(path).map_err(|e| e.to_string())
     };
     let mut parent = open_dir(&root)?;
     check_member_fd(&root, &parent)?;

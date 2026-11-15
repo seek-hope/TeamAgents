@@ -12,6 +12,8 @@ Implemented behavior is summarized in [CAPABILITIES.md](CAPABILITIES.md); accept
 - Files, host Shell, Web tools, Skills, MCP resources and restricted codemode. MCP revision `2025-06-18` is
   checked for stdio/streamable HTTP, resource-only bindings are retained, and catalogue pagination is bounded.
   Batch file edits reject malformed supplied hash preconditions without changing any file (D-520).
+  File-open flags use the target ABI; all 26 tool regressions pass under AArch64 GNU user emulation (D-521),
+  with a shared Make/CI entry point. Native ARM hardware/kernel and ARM-package acceptance remain open.
 - One Leader TUI with sessions, editing, approvals, media and `/tree` access.
 - One session-level exploration tree with revisioned atomic patches, compaction integration, CLI/daemon/export
   projections and ordered-pair verification.
