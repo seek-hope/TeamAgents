@@ -163,7 +163,7 @@ completion or Policy B source-bound equivalence. Live probes (`make probe-offlin
 exercise the four wire protocols, heterogeneous providers, search/fetch, images, reviewer hardening,
 compaction/search-tree updates, loopback SSH and Alacritty locally. Separate isolated probes passed public
 SSH/GNU screen reconnect and install/upgrade/rollback on an existing Debian 12 host, using earlier pinned builds.
-The current candidate also passed ordinary-user installation, malformed-argument rejection, same-schema
+The `0eb4ee98` candidate also passed ordinary-user installation, malformed-argument rejection, same-schema
 upgrade/rollback and failed-startup recovery in fresh Debian 12 and Ubuntu 22.04.5 KVM guests, using scripted
 loopback providers. External OAuth services, physical hosts, broader distribution/architecture and terminal
 matrices, large-scale long-horizon benchmarks and full priced-cost comparisons remain open. The separate wide

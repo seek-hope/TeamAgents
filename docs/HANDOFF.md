@@ -2,11 +2,11 @@
 
 ## Current baseline
 
-Current source also includes D-520's strict batch-edit hash preconditions. The last accepted package was built
-from `0eb4ee98` (D-518), including D-517's compaction entry identities and malformed-argument refusal; it predates
-D-520. Its local gate, package rehearsal, offline probes and fresh Debian/Ubuntu VM acceptance passed. Earlier
-`c2adc991` CI passed all three jobs. D-519 audits current test-count totals and alternate formats across the
-documentation. Recheck Git and CI for subsequent work.
+Runtime source baseline: `ab325b59` (D-520), including strict batch-edit hash preconditions. Its full local gate,
+release/install rehearsal and installed-binary hash-refusal/repair workflow passed. The earlier `0eb4ee98` build
+passed the 18 offline probes and fresh Debian/Ubuntu VM acceptance; those results remain pinned to that build.
+Earlier `c2adc991` CI passed all three jobs. D-519 audits current test-count totals and alternate formats across
+the documentation. Recheck Git and CI for subsequent work.
 
 The current source implements the requirements in [DESIGN.md](DESIGN.md), the rules in [DECISIONS.md](DECISIONS.md),
 and the acceptance matrix in [ACCEPTANCE.md](ACCEPTANCE.md). Current formal evidence and its limits are in
@@ -15,10 +15,10 @@ and the acceptance matrix in [ACCEPTANCE.md](ACCEPTANCE.md). Current formal evid
 Current source inventory and verification:
 
 - **817 Rust tests**: core 198, engine 511, TUI 108; the full `make check` passed.
-  The runtime baseline passed all 18 offline probes and the release/install rehearsal. The candidate archive
-  includes D-517/D-518 and passed installation, malformed-argument rejection, upgrade, explicit rollback and
-  failed-startup recovery in fresh Debian 12 and Ubuntu 22.04.5 KVM guests (see ACCEPTANCE.md). PTY passed on
-  the unchanged TUI/daemon code.
+  The runtime baseline passed the release/install rehearsal and an installed batch-edit refusal/repair check.
+  The earlier `0eb4ee98` archive passed 18 offline probes and fresh Debian/Ubuntu VM installation, malformed-
+  argument rejection, upgrade, rollback and failed-startup recovery (see ACCEPTANCE.md). PTY passed on the
+  unchanged TUI/daemon code.
 - **65 positive TLA configurations in 62 traversals**, **327 controls**, **79 witnesses**, **9 Kani harnesses**.
 - Catalogue: **393 configurations across 48 modules**, including the separate wide configuration.
 - PTY covers five terminal profiles and both forced graphics modes.

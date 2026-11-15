@@ -48,8 +48,9 @@ make verify-kani
 
 Current source inventory (2026-11-15): **817 Rust tests** (core 198 / engine 511 / tui 108), **65 positive TLA configurations in 62
 traversals**, **327 controls**, **79 witnesses**, **9 Kani harnesses**, and **393 configurations across 48
-modules**. The `0eb4ee98` runtime passed the full local gate, 18 offline probes and isolated release/install
-rehearsal. Its candidate passed ordinary-user install, argument rejection and same-schema upgrade/rollback in
+modules**. The `ab325b59` runtime passed the full local gate, release/install rehearsal and an installed
+batch-edit hash-refusal/repair workflow. The earlier `0eb4ee98` build passed 18 offline probes and release/install
+rehearsal, plus ordinary-user install, argument rejection and same-schema upgrade/rollback in
 fresh Debian 12 and Ubuntu 22.04.5 KVM guests. PTY passed on the unchanged TUI/daemon code; the 23 live probes
 apply to their earlier pinned source. D-519 checks current documentation totals and triples against Cargo lists.
 Formal results and abstraction limits are in `verification/REPORT.md`; exact package/VM scope is in

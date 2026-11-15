@@ -43,7 +43,8 @@ finite model into full acceptance. See [ACCEPTANCE.md](ACCEPTANCE.md) for scenar
 Search-tree evidence includes ordered pair transitions, 23 controls covering every non-`TypeOK` tree claim and
 11 witnesses. `TypeOK` is tracked separately in [verification/COVERAGE.md](../verification/COVERAGE.md).
 
-The `0eb4ee98` candidate passed all 18 offline probes and release rehearsal, plus ordinary-user install,
+The `ab325b59` package passed release/install rehearsal and an installed batch-edit refusal/repair workflow.
+The earlier `0eb4ee98` candidate passed all 18 offline probes and release rehearsal, plus ordinary-user install,
 malformed-argument rejection and same-schema upgrade/rollback in fresh Debian 12 and Ubuntu 22.04.5 KVM guests.
 Those VM runs used scripted loopback providers; ACCEPTANCE.md records the artifact hashes and exact scope.
 

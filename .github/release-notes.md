@@ -20,7 +20,8 @@
 - Host Shell, acceptance commands and local MCP with explicit capability checks. Ordinary Shell requires no
   per-call approval; self-update approval remains. Retired sandbox settings are rejected.
 - File tools, persistent Shell state, DeepSeek/Exa search, DeepSeek fetch, Skills, stdio/HTTP MCP resources and
-  restricted JavaScript codemode. Hooks can report events or veto native tool calls.
+  restricted JavaScript codemode. Batch file edits reject malformed supplied hash preconditions without
+  modifying files. Hooks can report events or veto native tool calls.
 - Current executable development and verification tools under `tools/`.
 
 ## Current evidence
@@ -30,7 +31,8 @@ configurations across 48 modules**: **65 positive configurations in 62 traversal
 **79 normal-path witnesses** and **9 Kani harnesses**. Search-tree coverage includes ordered pair transitions,
 23 controls covering every non-`TypeOK` tree claim and 11 witnesses. Witnesses demonstrate reachability only.
 
-The `0eb4ee98` runtime passed `make probe-offline` (18/18), release rehearsal and fresh Debian 12/Ubuntu 22.04.5
+The `ab325b59` package passed release/install rehearsal and an installed batch-edit refusal/repair workflow
+with a scripted loopback provider. The earlier `0eb4ee98` runtime passed `make probe-offline` (18/18), release rehearsal and fresh Debian 12/Ubuntu 22.04.5
 KVM checks for ordinary-user installation, malformed-argument rejection, same-schema upgrade/rollback and
 failed-startup recovery. Those guests used scripted loopback providers. Earlier pinned builds passed five PTY
 terminal profiles, both forced graphics modes and `make probe-models` (23/23). These are scoped checks.

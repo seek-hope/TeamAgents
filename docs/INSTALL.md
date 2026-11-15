@@ -95,6 +95,8 @@ default; when enabled, they still require a concrete user approval and cannot be
 reviewer. Publication is a separate operation.
 
 A local `make release-rehearsal` builds and checks an archive and performs an isolated install/init smoke.
+The `ab325b59` package also passed an installed batch-edit hash-refusal/repair workflow on the existing local
+x86_64 Linux host with a scripted provider.
 Separate fresh-VM checks passed for the `0eb4ee98` candidate on Debian 12 (Linux 6.1) and Ubuntu 22.04.5 (Linux
 5.15), using ordinary users and scripted loopback providers. They covered two distinct 0.2.0 builds with schema
 9/protocol 2: install, repeated init, real Shell, upgrade, explicit rollback and failed-startup recovery with

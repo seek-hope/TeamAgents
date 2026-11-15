@@ -21,8 +21,9 @@ Implemented behavior is summarized in [CAPABILITIES.md](CAPABILITIES.md); accept
 - **817 Rust tests** (full local gate passed), 65 positive TLA configurations in
   62 traversals, 327 controls, 79 witnesses and 9 Kani harnesses. PTY covers five terminal profiles and both
   forced graphics modes, plus `make probe-offline` (18/18 on `0eb4ee98`) and `make probe-models` (23/23 on its
-  earlier pinned source). The current candidate also passed fresh Debian/Ubuntu VM installation and same-schema
-  upgrade/rollback with scripted loopback providers.
+  earlier pinned source). That `0eb4ee98` candidate also passed fresh Debian/Ubuntu VM installation and same-schema
+  upgrade/rollback with scripted loopback providers. The newer `ab325b59` package passed release/install rehearsal
+  and an installed batch-edit hash-refusal/repair workflow.
 
 ## Open work
 
