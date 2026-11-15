@@ -2,10 +2,13 @@
 
 ## Current baseline
 
-D-522 protects session archive/restore/delete/prune when an endpoint is listening or absence is uncertain.
+Runtime source baseline: `a6b5555a` (D-522). It protects session archive/restore/delete/prune when an endpoint
+is listening or absence is uncertain.
 Explicit stop propagates failures and uses the protocol-1/2 maintenance connection. Twenty lifecycle and
 eight stop-safety conditions, the old-version shutdown fixture and the real CLI prune probe pass locally;
-startup/filesystem races and a full-listen-backlog deadline remain outside this repair.
+startup/filesystem races and a full-listen-backlog deadline remain outside this repair. Its full 819-test gate,
+PTY matrix, 18 offline probes and musl release/install rehearsal passed. The installed package also passed
+batch-edit refusal/repair and session-preservation checks; exact artifact identities are in ACCEPTANCE.md.
 
 The `675af52e` runtime (D-521) uses target-ABI file-open constants to fix AArch64 EINVAL
 failures without changing x86 flag values. Its musl release/install rehearsal and installed hash workflow
@@ -16,7 +19,7 @@ The full formal chain was re-run against `675af52e`, including all 455 material-
 90-minute wide attempt timed out and remains incomplete. The previous `fde93f53` delivery passed all three
 of its CI jobs. The `ab325b59` runtime (D-520) passed its
 release/install rehearsal and installed hash-refusal/repair workflow. Fresh Debian/Ubuntu VM acceptance and
-18 offline probes remain pinned to `0eb4ee98`. D-519 audits current documentation totals. Recheck Git and CI
+their associated offline receipt remain pinned to `0eb4ee98`. D-519 audits current documentation totals. Recheck Git and CI
 for subsequent work; exact package and experiment identities are in ACCEPTANCE.md.
 
 The current source implements the requirements in [DESIGN.md](DESIGN.md), the rules in [DECISIONS.md](DECISIONS.md),
@@ -27,10 +30,10 @@ Current source inventory and verification:
 
 - **819 Rust tests**: core 198, engine 513, TUI 108; the full `make check` passed.
   D-521 also passes the 26-tool AArch64 GNU emulation subset and a scripted daemon/headless workflow.
-  Its x86_64 musl package passed release/install rehearsal and installed batch-edit refusal/repair checks.
+  D-522 passed the current PTY matrix, 18 offline probes, musl release/install and installed workflow/session
+  preservation checks; D-521's architecture evidence remains bound to its own source.
   The earlier `0eb4ee98` archive passed 18 offline probes and fresh Debian/Ubuntu VM installation, malformed-
-  argument rejection, upgrade, rollback and failed-startup recovery (see ACCEPTANCE.md). PTY passed on the
-  unchanged TUI/daemon code.
+  argument rejection, upgrade, rollback and failed-startup recovery (see ACCEPTANCE.md).
 - **65 positive TLA configurations in 62 traversals**, **327 controls**, **79 witnesses**, **9 Kani harnesses**.
 - Catalogue: **393 configurations across 48 modules**, including the separate wide configuration.
 - PTY covers five terminal profiles and both forced graphics modes.

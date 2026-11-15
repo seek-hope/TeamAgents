@@ -7,9 +7,9 @@ This file records current behavior and reproducible evidence, not historical acc
 empirical or full-system obligation remains open. No icon is a proof of every release condition.
 
 Current source inventory: core 198 / engine 513 / tui 108 test targets; the full gate passed.
-The `0eb4ee98` runtime passed all 18 offline probes, the release/install rehearsal and fresh Debian/Ubuntu VM
-acceptance below. PTY passed on the unchanged TUI/daemon code before the final continuous-input accounting fix
-and buffer bound.
+The `a6b5555a` runtime passed all 18 offline probes (154.3 seconds), all PTY profiles/graphics modes and
+the release/install rehearsal. Its installed package passed the scripted batch-edit workflow and session
+preservation probe below. Fresh Debian/Ubuntu VM acceptance remains pinned to `0eb4ee98`.
 Current formal gate: **65 positive configurations in 62 traversals**, **327 controls**, **79 witnesses** and
 **9 Kani harnesses**, all exit 0. The catalogue contains 393 configurations across 48 modules, including the
 separate wide configuration. PTY covers five terminal profiles and both forced graphics modes; this is not a
@@ -103,6 +103,17 @@ stale/missing sockets, explicit shutdown rejection and uncertainty after acknowl
 checks pass. These are local endpoint/SQLite checks; they do not establish full startup/filesystem-race safety
 or a connection deadline for a full socket backlog. Inputs and receipts are retained under
 `tools/tmp/session-liveness-evidence/`.
+
+The `a6b5555a` x86_64 Linux musl archive has SHA-256
+`3567c44433878194b34e5bd3471e9d109a7a0a1ad00795e123dba916d065da8f`; its CLI has SHA-256
+`ac43e46501dc951b42c87e835c3780e77f3a95cf225f995695b9be36b7b3ad38`. It passed isolated installation,
+repeated-init configuration preservation, batch-hash refusal before a successful repair, and a CLI prune
+check that retains the registry/marker while a malformed listener and coordinator lock are held. The scripted
+work completed with `SUCCEEDED`; daemon/runner cleanup succeeded and the listener thread stopped. All 16
+packaged Markdown files match that source. The first follow-up attempt failed before installation because
+the default rehearsal had removed its temporary archive; a separate `--keep` rehearsal supplied this artifact.
+Both attempts and exact inputs remain under `tools/tmp/d522-installed-evidence/`. This is local scripted
+acceptance, not a new VM/live-provider result, normal-host installation replacement or public release.
 
 D-521 corrects target-ABI file-open flags. On AArch64, the old x86 `O_DIRECTORY` literal selected `O_DIRECT`,
 causing seven of the existing 26 tool regressions to fail with EINVAL. All 26 pass after using the existing

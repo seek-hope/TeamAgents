@@ -48,15 +48,17 @@ make verify-kani
 
 Current source inventory (2026-11-15): **819 Rust tests** (core 198 / engine 513 / tui 108), **65 positive TLA configurations in 62
 traversals**, **327 controls**, **79 witnesses**, **9 Kani harnesses**, and **393 configurations across 48
-modules**. D-522 retains sessions when endpoints are listening or absence is uncertain, and propagates
-explicit-stop failures; its scope excludes startup/filesystem races and full-backlog connection deadlines.
+modules**. D-522 (`a6b5555a`) retains sessions when endpoints are listening or absence is uncertain, and
+propagates explicit-stop failures. Its full local gate, PTY matrix, 18 offline probes, musl rehearsal and
+installed workflow/session-preservation checks passed. Its scope excludes startup/filesystem races and
+full-backlog connection deadlines.
 D-521 (`675af52e`) fixes target-ABI file-open flags; its full local gate, 26-tool AArch64 GNU
 emulation subset and scripted workflow passed, as did its x86_64 musl release/install and installed workflow. `make test-aarch64` shares that subset with its dedicated CI job. This is not native ARM
 hardware/kernel or ARM-package acceptance. The preceding `fde93f53` delivery passed all three CI jobs.
 The `ab325b59` runtime passed the full local gate, release/install rehearsal and an installed
 batch-edit hash-refusal/repair workflow. The earlier `0eb4ee98` build passed 18 offline probes and release/install
 rehearsal, plus ordinary-user install, argument rejection and same-schema upgrade/rollback in
-fresh Debian 12 and Ubuntu 22.04.5 KVM guests. PTY passed on the unchanged TUI/daemon code; the 23 live probes
+fresh Debian 12 and Ubuntu 22.04.5 KVM guests. The 23 live probes
 apply to their earlier pinned source. D-519 checks current documentation totals and triples against Cargo lists.
 Formal results and abstraction limits are in `verification/REPORT.md`; exact package/VM scope is in
 `docs/ACCEPTANCE.md`. VM checks do not establish physical-host, live-provider or public-release acceptance.
