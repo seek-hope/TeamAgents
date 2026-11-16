@@ -6,19 +6,21 @@ The project is a standalone Rust control plane, runtime and team TUI. Read [DESI
 Q1–Q19/A01–A36 baseline, [DECISIONS.md](DECISIONS.md) for current contracts and [ACCEPTANCE.md](ACCEPTANCE.md)
 for exact source-bound evidence. Git retains implementation and experiment history; do not recreate a changelog here.
 
-Installed runtime: `d96d7c8a`. The recorded delivery CI at `6767b32c` passed all four jobs. Current source
-adds workspace-based recent-session selection (D-526); its local regression coverage is recorded below.
-Source changes do not rebuild the installed runtime or automatically renew that CI result; inspect Git before
-relying on any baseline. Current-host packaging/installation and scripted checks pass; no user session was started or
-resumed during installation. The ordinary state tree then contained no session database, so no existing-database
-migration/preservation result is claimed. The current local formal replay passes with its input-content
-fingerprint recorded in [verification/REPORT.md](../verification/REPORT.md).
+Installed CLI source: `0e9a212b` (D-526); the unchanged installed TUI remains from `d96d7c8a`. The current
+source passes the full local gate and workspace-session PTY probe. The musl CLI also passes isolated workspace
+selection and cold-reopen probes before and after installation, plus the installed session-switching PTY probe.
+Replacement was atomic with a private backup; the existing user daemon was neither stopped nor restarted, and
+ordinary configuration/session files were not written. This is not a database migration or live-model result.
+The last complete package baseline is `d96d7c8a`; delivery CI at `6767b32c` passed all four jobs but does not
+cover D-526. The current local formal replay retains its unchanged input-content fingerprint in
+[verification/REPORT.md](../verification/REPORT.md).
 
 - **841 Rust tests**: core 198, engine 526, TUI 117.
 - **63 positive TLA configurations in 60 traversals**, **323 controls**, **79 witnesses**, **9 Kani harnesses**.
 - Catalogue: **387 configurations across 47 modules**, including an incomplete wide configuration.
-- Source and installed PTY matrices cover five terminal profiles and both forced graphics modes; 18 offline
-  probes, installed scripted profile/retry/tool/fetch checks and a separate live Fetch API check pass.
+- The package-baseline source and installed PTY matrices cover five terminal profiles and both forced graphics
+  modes; 18 offline probes, scripted profile/retry/tool/fetch and a separate live Fetch API check passed there.
+  Current D-526 source and installed probes additionally cover workspace selection and real-terminal switching.
 - AArch64 coverage is the 26-tool GNU user-emulation subset, not native ARM/kernel/package acceptance.
 
 These checks do not establish real-model task quality, full real-service acceptance or native-runtime refinement.

@@ -7,10 +7,12 @@ This file records current behavior and reproducible evidence, not historical acc
 empirical or full-system obligation remains open. No icon is a proof of every release condition.
 
 Current source inventory: core 198 / engine 526 / tui 117 test targets; the full gate passed.
-Installed runtime source: `d96d7c8acf54b951030140f076540cbb730f88ab`. Delivery CI at
+Installed CLI source: `0e9a212b84a2edefb5b7963e13869c5efe9653ec`; the unchanged installed TUI remains from
+`d96d7c8acf54b951030140f076540cbb730f88ab`, the last complete package baseline. Delivery CI at
 `6767b32c4a35fb71c476ca7fb81858d127ba4905` passed `test`, `test-aarch64`, `formal-tla` and `formal-kani`:
 [run 43812934865](https://github.com/seek-hope/TeamAgents/actions/runs/43812934865).
-The 26 AArch64 tool tests run under GNU user emulation, not native ARM. Current-host checks cover all 18
+That CI does not cover D-526. The 26 AArch64 tool tests run under GNU user emulation, not native ARM.
+Package-baseline checks cover all 18
 offline probes, source/installed PTY matrices, x86_64 musl release/install, scripted profile/fetch behavior
 and a separate real Fetch API request. These bindings identify the tested source; subsequent edits do not
 inherit a new CI pass or installation result merely by preserving the counts.
@@ -91,8 +93,13 @@ complete graphical-terminal or OS matrix.
 D-526 local source coverage adds current-directory session selection, successful-open recency, absolute path
 persistence, cold restart in the saved workspace, unavailable-candidate isolation and concurrent creation.
 `engine/tests/session_workspace.rs` uses isolated state and an unavailable local model endpoint;
-`tools/dogfood/tui_sessions.py` verifies workspace changes and per-session drafts in a real PTY. This coverage
-does not renew the installed package or CI bindings above.
+`tools/dogfood/tui_sessions.py` verifies workspace changes and per-session drafts in a real PTY. The full
+local gate passes 841 Rust tests. The musl CLI passes isolated A/B/A selection, cross-directory cold reopen,
+creation-time binding and most-recent-open checks before and after installation; the installed session-switching
+PTY probe passes too. Its SHA-256 is `3f1ee956d0e63062325ed39a1a54ab85641ef2b53bb8f87636cfd6b9e0cf3c3b`.
+The CLI was replaced atomically after a private backup. The existing daemon retained its PID/start identity,
+the TUI binary was unchanged, and ordinary configuration/session files were not written. No real model was
+called by these binary/PTY probes. This does not renew the complete package or CI bindings above.
 
 The project config is read under explicit user trust (D-244). Loader regressions and
 `tools/dogfood/project_config.py` cover trusted/untrusted repositories and refusal of project self-authorization.
@@ -106,7 +113,7 @@ Cross-provider switching and ambiguous profiles sharing a wire model identity re
 Team-interface regressions cover split-transcript media and real-terminal member-history failure/retry. Navigation keeps Leader input, interruption and profile targeting; member history, previews and media stay separate from
 the Leader transcript. Tiny/narrow/wide layouts, mouse selection, retained drafts, approval ownership, task
 outcomes and bounded attachment-local activity are covered. The five-profile PTY matrix and forced graphics
-modes pass, including simultaneous Leader/member media and hidden-task polling controls. The installed-source 837-test
+modes pass, including simultaneous Leader/member media and hidden-task polling controls. The package-baseline 837-test
 local gate and all 18 offline probes pass on 2026-11-16; the real-daemon panel probe preserves a draft while
 inspecting a member and observing task cancellation. This establishes scripted behavior, not measured usability
 or live team quality.
@@ -124,13 +131,10 @@ installed run fetched GitHub through the real DeepSeek Fetch API and returned 40
 owned daemons/runners. Neither run used a real model. These checks cover this host, not fresh-host or ARM-package
 acceptance.
 
-The archive SHA-256 is `c59e71935621454911beb6c3aad9ed342fbb3b36455878ee5b9dd82fb0431e7f`;
-the CLI is `d47d96262479de23aa26719dbe5643618f559395d6db6bb2c2153f0ea8edd8d9`, and the TUI is
-`47a45e21a2437fbbcf8f614325977af2edab884528eec5514b22aa8d5b78183c`. The ordinary installation now matches
-these binaries. A fresh private backup preceded replacement; configuration and state files remained unchanged.
-No ordinary TeamAgents process was present and no user session was started or resumed. The ordinary state tree
-contained no session database at that point, so no existing-database preservation or migration result is claimed.
-The version remains 0.2.0; source and artifact hashes distinguish this installation from earlier builds.
+The complete package archive SHA-256 is `c59e71935621454911beb6c3aad9ed342fbb3b36455878ee5b9dd82fb0431e7f`;
+its CLI is `d47d96262479de23aa26719dbe5643618f559395d6db6bb2c2153f0ea8edd8d9`, and its TUI is
+`47a45e21a2437fbbcf8f614325977af2edab884528eec5514b22aa8d5b78183c`. That TUI remains installed; the installed
+CLI is the D-526 binary identified above. The version remains 0.2.0. No new public release was published.
 
 ## Current probe inventory
 
