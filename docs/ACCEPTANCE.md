@@ -101,6 +101,22 @@ DNS previously blocked GitHub fetches locally and now permits independently veri
 Private literals and mixed private answers remain refused. A live GitHub fetch returns 4096 bytes under a
 4096-byte limit. Broader proxy environments and provider-side destination/redirect enforcement remain open.
 
+The `d96d7c8a` runtime passed a retained x86_64 Linux musl release/install rehearsal and the installed five-profile
+PTY matrix with both forced graphics modes. The installed CLI completed a scripted profile/retry/tool/fetch
+workflow: all five requests, including the retry, used the resolved wire model and selected effort; the retry
+body stayed unchanged, public fetch used its canonical URL, and metadata-address fetch was refused. A separate
+installed run fetched GitHub through the real DeepSeek Fetch API and returned 4096 bytes. Both runs stopped their
+owned daemons/runners. Neither run used a real model. These checks cover this host, not fresh-host or ARM-package
+acceptance.
+
+The archive SHA-256 is `c59e71935621454911beb6c3aad9ed342fbb3b36455878ee5b9dd82fb0431e7f`;
+the CLI is `d47d96262479de23aa26719dbe5643618f559395d6db6bb2c2153f0ea8edd8d9`, and the TUI is
+`47a45e21a2437fbbcf8f614325977af2edab884528eec5514b22aa8d5b78183c`. The ordinary installation now matches
+these binaries. A fresh private backup preceded replacement; configuration and state files remained unchanged.
+No ordinary TeamAgents process was present and no user session was started or resumed. The ordinary state tree
+contained no session database at that point, so no existing-database preservation or migration result is claimed.
+The version remains 0.2.0; source and artifact hashes distinguish this installation from earlier builds.
+
 ## Current probe inventory
 
 Offline probes are `boundary.py`, `budget.py`, `truncation.py`, `max_retries.py`, `project_config.py`,

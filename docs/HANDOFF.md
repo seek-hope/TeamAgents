@@ -2,7 +2,7 @@
 
 ## Current baseline
 
-D-523–D-525 are the current repairs. D-523 resolves named profiles before request preparation and
+Runtime source baseline: `d96d7c8a` (D-523–D-525). D-523 resolves named profiles before request preparation and
 recovery, preserving first-request effort and unchanged cached retries. D-524 adds a Herdr-inspired member
 sidebar, inspection/history, tasks and activity while keeping input, interrupt and profile controls on Leader.
 All fifteen slash commands share the same completion/guidance registry. D-525 verifies public fetch destinations
@@ -11,8 +11,12 @@ behind fake-IP DNS and enforces UTF-8 byte limits; search providers already work
 The full 837-test local gate, the five-profile PTY/graphics matrix (including split-pane media and hidden-view
 polling), and all 18 offline probes pass. The isolated executable workflow also covers selected effort before
 the first request, frozen retries, tool follow-ups, canonical public fetch and private-address refusal.
-Package and installation validation are pending. The host still runs D-522; the user's open TUI and parked
-session have not been modified or resumed. Preserve its draft when updating the installation.
+The retained x86_64 musl package passes its release/install rehearsal and installed PTY matrix. Its installed
+CLI passes the scripted profile/fetch workflow and a separate live GitHub fetch through the current host's DNS
+and DeepSeek Fetch API; these are not real-model quality trials. The ordinary CLI/TUI installation now matches
+this runtime, with a fresh private backup and unchanged configuration/state files. No ordinary TeamAgents
+processes were present at installation, and no session was started or resumed. No session database was present
+in the ordinary state tree, so this is not an ordinary existing-database preservation or migration claim.
 Cross-provider hot switching, ambiguous wire identities and provider-side fetch redirect enforcement remain open.
 
 Previous runtime source baseline: `a6b5555a` (D-522). It protects session archive/restore/delete/prune when an endpoint

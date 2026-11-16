@@ -167,8 +167,8 @@ The existing fetch byte limit now clips at a UTF-8 boundary, fixing an observed 
 Eight new DNS/fetch tests, all 26 tool tests, all nine search tests and engine Clippy pass. Local live probes
 confirm both search providers and successful GitHub fetching behind fake-IP; literal fake-IP, loopback and
 metadata controls remain refused. These probes establish this host's current transparent proxy environment,
-not arbitrary explicit-proxy configurations or a new provider-wide acceptance campaign. Package and installed
-binary validation will accompany the current TUI delivery.
+not arbitrary explicit-proxy configurations or a new provider-wide acceptance campaign. The packaged runtime
+and ordinary installation also pass scoped checks, including a live public fetch on this host.
 
 ## D-524 Make team state directly observable in the TUI (2026-11-16)
 

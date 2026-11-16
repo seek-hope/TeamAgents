@@ -49,8 +49,10 @@ make verify-kani
 Current source inventory (2026-11-16): **837 Rust tests** (core 198 / engine 522 / tui 117), **65 positive TLA configurations in 62
 traversals**, **327 controls**, **79 witnesses**, **9 Kani harnesses**, and **393 configurations across 48
 modules**. D-523–D-525 fix selected-profile resolution, expose team observation panes and verify public fetch
-hosts behind fake-IP DNS. Their full local gate, PTY/graphics matrix and 18 offline probes passed; packaging and
-installation validation are pending. D-522 (`a6b5555a`) retains sessions when endpoints are listening or absence is uncertain, and
+hosts behind fake-IP DNS. Their full local gate, PTY/graphics matrix and 18 offline probes passed. Packaging and
+installation checks also passed on `d96d7c8a`, including the installed terminal matrix and a live public fetch.
+The ordinary installation matches that runtime; no user session was started or resumed.
+D-522 (`a6b5555a`) retains sessions when endpoints are listening or absence is uncertain, and
 propagates explicit-stop failures. Its full local gate, PTY matrix, 18 offline probes, musl rehearsal and
 installed workflow/session-preservation checks passed. Its scope excludes startup/filesystem races and
 full-backlog connection deadlines.
