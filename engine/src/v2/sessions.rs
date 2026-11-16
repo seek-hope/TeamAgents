@@ -2,10 +2,10 @@
 //! session. "One session per state root" — the coordinator-lock rule of A33/`V2Coordinator` — is untouched:
 //! each named session *is* its own state root, so several sessions run side by side without sharing a lock.
 //!
-//! The default session is the base directory itself (`<base>/session.sqlite`), exactly where a session has
-//! always lived, so a user with an existing state root keeps it: `teamagents` with no flags still runs the
-//! default session. `sessions new` creates `<base>/sessions/<id>/` and records it in `<base>/sessions.json`;
-//! `--session <id>` resolves a record to its directory. The registry is the only new persistent file, and it is
+//! The default session is the base directory itself (`<base>/session.sqlite`), accessible through
+//! `--session default`. Ordinary TUI/exec startup selects the most recently opened session in the launch
+//! workspace (D-526). `sessions new` creates `<base>/sessions/<id>/` and records it in `<base>/sessions.json`;
+//! `--session <id>` resolves a record to its directory. The registry is
 //! validated on load in both directions: two ids may not name one path, a path may not escape the base, and a
 //! file this build does not understand is refused rather than guessed (`V2Sessions.tla` states these rules).
 //!

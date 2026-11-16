@@ -6,14 +6,15 @@ The project is a standalone Rust control plane, runtime and team TUI. Read [DESI
 Q1–Q19/A01–A36 baseline, [DECISIONS.md](DECISIONS.md) for current contracts and [ACCEPTANCE.md](ACCEPTANCE.md)
 for exact source-bound evidence. Git retains implementation and experiment history; do not recreate a changelog here.
 
-Current runtime: `d96d7c8a`. The recorded delivery CI at `6767b32c` passed all four jobs. Repository housekeeping
-changes do not rebuild the installed runtime or automatically renew that CI result; inspect Git before relying
-on any baseline. Current-host packaging/installation and scripted checks pass; no user session was started or
+Installed runtime: `d96d7c8a`. The recorded delivery CI at `6767b32c` passed all four jobs. Current source
+adds workspace-based recent-session selection (D-526); its local regression coverage is recorded below.
+Source changes do not rebuild the installed runtime or automatically renew that CI result; inspect Git before
+relying on any baseline. Current-host packaging/installation and scripted checks pass; no user session was started or
 resumed during installation. The ordinary state tree then contained no session database, so no existing-database
 migration/preservation result is claimed. The current local formal replay passes with its input-content
 fingerprint recorded in [verification/REPORT.md](../verification/REPORT.md).
 
-- **837 Rust tests**: core 198, engine 522, TUI 117.
+- **841 Rust tests**: core 198, engine 526, TUI 117.
 - **63 positive TLA configurations in 60 traversals**, **323 controls**, **79 witnesses**, **9 Kani harnesses**.
 - Catalogue: **387 configurations across 47 modules**, including an incomplete wide configuration.
 - Source and installed PTY matrices cover five terminal profiles and both forced graphics modes; 18 offline
@@ -49,6 +50,12 @@ These checks do not establish real-model task quality, full real-service accepta
 - Cancelling a task does not prove its process stopped. Instance termination is user-only and needs separate
   stop evidence before shared-workspace takeover.
 - One daemon serves each session. TUI and exec resume from the event watermark and share the same runtime.
+- Ordinary TUI/exec startup restores the most recently opened session in the canonical launch workspace,
+  creating one if absent. Explicit session/root selection and TUI switches retain the saved workspace. Cold
+  starts load project configuration from that workspace. Successful opens update recency; reads do not.
+  Unusable automatic candidates produce a note and are skipped; explicit opens retain actionable failures.
+  `engine/tests/session_workspace.rs` covers selection, restart, path persistence, recency and concurrent creation;
+  `tools/dogfood/tui_sessions.py` checks real-terminal workspace switching with retained drafts.
 - Shell, acceptance commands and local MCP run on the host with capability checks, not OS confinement.
 - One session-level exploration tree accompanies Leader compaction. It is model-maintained navigation, not
   authority, completion evidence or an alternate history. Member-private history is excluded.

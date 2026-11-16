@@ -6,8 +6,8 @@ This file records current behavior and reproducible evidence, not historical acc
 ✅ means the named local path has automated evidence. 🔶 means implementation exists but the stated external,
 empirical or full-system obligation remains open. No icon is a proof of every release condition.
 
-Current source inventory: core 198 / engine 522 / tui 117 test targets; the full gate passed.
-Runtime source: `d96d7c8acf54b951030140f076540cbb730f88ab`. Delivery CI at
+Current source inventory: core 198 / engine 526 / tui 117 test targets; the full gate passed.
+Installed runtime source: `d96d7c8acf54b951030140f076540cbb730f88ab`. Delivery CI at
 `6767b32c4a35fb71c476ca7fb81858d127ba4905` passed `test`, `test-aarch64`, `formal-tla` and `formal-kani`:
 [run 43812934865](https://github.com/seek-hope/TeamAgents/actions/runs/43812934865).
 The 26 AArch64 tool tests run under GNU user emulation, not native ARM. Current-host checks cover all 18
@@ -84,9 +84,15 @@ complete graphical-terminal or OS matrix.
 | A33 | Second daemon, coordinator exclusion and lock recovery | `second_daemon_is_refused_and_shutdown_releases_the_lock`, `V2Coordinator`, D-522 listener/uncertainty guards and explicit-stop refusal checks |
 | A34 | Foreign or wrong-version state-store refusal | `open_refuses_unstamped_foreign_and_wrong_version`, `open_migrates_v8_to_the_session_search_tree`, conflict rollback and `V2Store` |
 | A35 | Work deadline | `work_deadline_refuses_new_requests_and_dispatches`, deadline park and cancel/release behavior |
-| A36 | Store/session lifecycle, search/export and guarded cleanup | `engine/tests/session_browser.rs`, `session_export_tests.rs`, session CLI, `tools/install_check.py`, current schema 9 and maintained development tools |
+| A36 | Store/session lifecycle, search/export and guarded cleanup | `engine/tests/session_browser.rs`, `engine/tests/session_workspace.rs`, `session_export_tests.rs`, session CLI, `tools/install_check.py`, current schema 9 and maintained development tools |
 
 ## Current runtime and installation evidence
+
+D-526 local source coverage adds current-directory session selection, successful-open recency, absolute path
+persistence, cold restart in the saved workspace, unavailable-candidate isolation and concurrent creation.
+`engine/tests/session_workspace.rs` uses isolated state and an unavailable local model endpoint;
+`tools/dogfood/tui_sessions.py` verifies workspace changes and per-session drafts in a real PTY. This coverage
+does not renew the installed package or CI bindings above.
 
 The project config is read under explicit user trust (D-244). Loader regressions and
 `tools/dogfood/project_config.py` cover trusted/untrusted repositories and refusal of project self-authorization.
@@ -100,7 +106,7 @@ Cross-provider switching and ambiguous profiles sharing a wire model identity re
 Team-interface regressions cover split-transcript media and real-terminal member-history failure/retry. Navigation keeps Leader input, interruption and profile targeting; member history, previews and media stay separate from
 the Leader transcript. Tiny/narrow/wide layouts, mouse selection, retained drafts, approval ownership, task
 outcomes and bounded attachment-local activity are covered. The five-profile PTY matrix and forced graphics
-modes pass, including simultaneous Leader/member media and hidden-task polling controls. The full 837-test
+modes pass, including simultaneous Leader/member media and hidden-task polling controls. The installed-source 837-test
 local gate and all 18 offline probes pass on 2026-11-16; the real-daemon panel probe preserves a draft while
 inspecting a member and observing task cancellation. This establishes scripted behavior, not measured usability
 or live team quality.

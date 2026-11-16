@@ -97,7 +97,7 @@ teamagents or exec) and exit 0 done, 1 the session refused it, 2 usage. authorit
 spawned worker gets shell@workspace (§5.1) and how a capability is taken back; approvals\n\
 answers the decision that made exec exit 3; instances and tasks are the user-side\n\
 interventions of §5.4 (pause/resume/terminate, cancel a task) without starting the TUI.\n\
-sessions manages the named sessions under one state root; `--session ID` attaches the TUI, exec or daemon to\n\none of them (the default session is the state root itself). A named session is its own state root, so several\n\nrun side by side. Archive refuses a running session; delete --stop --yes stops it before deleting its history.\n\
+sessions manages named sessions. Without --session or --state-root, TUI/exec restores the most recently\nopened session in --cwd (or the launch directory), creating one if absent. --session ID uses that session's\nsaved workspace; --state-root pins an exact session root. --session default names the base root itself.\nArchive refuses a running session; delete --stop --yes stops it before deleting its history.\n\
 runners works on a state root rather than a session — it asks each leftover jobs-runner\n\
 process to retire, which is what a state root carries after its session is gone; a runner\n\
 whose command is still running refuses, so this never takes work away.\n\
@@ -951,9 +951,9 @@ fn tui_search_roots(exe: Option<&std::path::Path>) -> Vec<PathBuf> {
     exe.map(|exe| exe.ancestors().map(Path::to_path_buf).collect()).unwrap_or_default()
 }
 
-/// Default entry: one daemon per user owns the session; the TUI is a thin
-/// client of its socket (§9). The daemon is started detached when no socket is
-/// live, so quitting the TUI never stops the session.
+/// Each session has one daemon; the TUI is a thin client of its socket (§9).
+/// Ordinary startup selects the most recently opened session in the launch workspace.
+/// The daemon is detached, so quitting the TUI never stops the session.
 fn run_tui(args: &Args) -> i32 {
     let binary = match find_tui_binary() {
         Ok(binary) => binary,
@@ -962,7 +962,13 @@ fn run_tui(args: &Args) -> i32 {
             return 1;
         }
     };
-    let state_root = args.state_root.clone().map(PathBuf::from).unwrap_or_else(teamagents_engine::v2_root);
+    let state_root = match startup_root(args) {
+        Ok(root) => root,
+        Err(error) => {
+            eprintln!("{error}");
+            return 1;
+        }
+    };
     let socket = match ensure_daemon(DaemonRequest {
         state_root: &state_root,
         model: args.model.clone(),
@@ -979,6 +985,10 @@ fn run_tui(args: &Args) -> i32 {
             return 1;
         }
     };
+    if let Err(error) = teamagents_engine::v2::session_workspace::opened(&state_root, &socket) {
+        eprintln!("cannot record the opened session: {error}");
+        return 1;
+    }
     let mut command = std::process::Command::new(&binary);
     command.arg("--daemon").arg(&socket);
     command.arg("--state-root").arg(&state_root);
@@ -1008,7 +1018,13 @@ fn run_exec(args: &Args) -> i32 {
             return 2;
         }
     };
-    let state_root = args.state_root.clone().map(PathBuf::from).unwrap_or_else(teamagents_engine::v2_root);
+    let state_root = match startup_root(args) {
+        Ok(root) => root,
+        Err(error) => {
+            eprintln!("{error}");
+            return 2;
+        }
+    };
     let socket = match ensure_daemon(DaemonRequest {
         state_root: &state_root,
         model: args.model.clone(),
@@ -1025,6 +1041,10 @@ fn run_exec(args: &Args) -> i32 {
             return 2;
         }
     };
+    if let Err(error) = teamagents_engine::v2::session_workspace::opened(&state_root, &socket) {
+        eprintln!("cannot record the opened session: {error}");
+        return 2;
+    }
     // the acceptance checks are the user's own commands and run where the user
     // is working: --cwd when given, otherwise this process's directory
     let workspace = args
@@ -1620,8 +1640,53 @@ fn run_work(args: &Args) -> i32 {
 /// Resolve `--session ID` to the named session's directory, so every entry point that already takes
 /// `--state-root` works unchanged (D-364). The state root given on the command line is the *base* here: it is
 /// the directory holding `sessions.json`. `sessions` commands take `--id`, not `--session`.
+/// Called after startup argument/TUI validation, so rejected invocations create no session.
+fn startup_root(args: &Args) -> Result<PathBuf, String> {
+    if let Some(root) = &args.state_root {
+        return Ok(PathBuf::from(root));
+    }
+    teamagents_engine::v2::session_workspace::select(
+        &teamagents_engine::v2_root(),
+        Path::new(args.cwd.as_deref().unwrap_or(".")),
+        true,
+    )?
+    .ok_or_else(|| "workspace selection returned no session".into())
+}
+
 fn resolve_session(args: &mut Args) -> Result<(), String> {
-    let Some(id) = args.session.clone() else { return Ok(()) };
+    let Some(id) = args.session.clone() else {
+        let observes = matches!(
+            args.command.as_deref(),
+            Some(
+                "status"
+                    | "history"
+                    | "search_tree"
+                    | "instances"
+                    | "tasks"
+                    | "work_scopes"
+                    | "inputs"
+                    | "approvals"
+                    | "authority"
+                    | "runners"
+                    | "surface"
+                    | "artifacts"
+                    | "automations"
+            )
+        ) || (args.daemon_stop && args.cwd.is_none() && args.model.is_none() && !args.full_auto);
+        if args.state_root.is_none() && observes {
+            let workspace = Path::new(args.cwd.as_deref().unwrap_or("."));
+            let home = teamagents_engine::v2_root();
+            if let Some(dir) = teamagents_engine::v2::session_workspace::select(&home, workspace, false)? {
+                args.state_root = Some(dir.to_string_lossy().into_owned());
+            } else if home.join("session.sqlite").exists() {
+                return Err(format!(
+                    "no session in {}; open teamagents here, or select --session ID",
+                    workspace.display()
+                ));
+            }
+        }
+        return Ok(());
+    };
     if args.command.as_deref() == Some("sessions") {
         return Err("--session attaches to a session; `sessions` commands take --id".into());
     }
@@ -1904,25 +1969,15 @@ fn run_sessions(args: &Args) -> i32 {
                     registry.restore(id)?;
                 }
                 let dir = registry.resolve(id)?;
-                let (mut model, workspace) = teamagents_engine::v2::session_browser::resume_settings(&dir)?;
-                if !teamagents_engine::v2::sessions::is_live(&dir) {
-                    let (catalog, _) = teamagents_engine::config::load_user_config_for(
-                        workspace.as_deref().unwrap_or(Path::new(".")),
-                    )?;
-                    model = model.map(|name| {
-                        teamagents_engine::providers::resolve_model(&catalog, &name)
-                            .map(|(key, _)| key.clone())
-                            .unwrap_or(name)
-                    });
-                }
                 let (socket, _) = ensure_daemon(DaemonRequest {
                     state_root: &dir,
-                    model,
+                    model: None,
                     full_auto: false,
-                    cwd: workspace.as_deref(),
+                    cwd: None,
                     overrides: &[],
                 })?;
                 let client = teamagents_engine::v2::exec::Client::connect(&socket)?;
+                teamagents_engine::v2::session_workspace::touch(&registry, &dir, Path::new(&client.session_workspace))?;
                 Ok::<_, String>(serde_json::json!({"id": id, "socket": socket, "state_root": client.state_root}))
             })();
             match opened {
@@ -1976,7 +2031,14 @@ fn run_sessions(args: &Args) -> i32 {
             }
             0
         }
-        "new" => match registry.new_session(args.session_name.as_deref().unwrap_or("")) {
+        "new" => match (|| {
+            let workspace = teamagents_engine::v2::session_workspace::canonical_workspace(Path::new(
+                args.cwd.as_deref().unwrap_or("."),
+            ))?;
+            let entry = registry.new_session(args.session_name.as_deref().unwrap_or(""))?;
+            teamagents_engine::v2::session_workspace::bind(&entry.dir(&home), &workspace)?;
+            Ok::<_, String>(entry)
+        })() {
             Ok(entry) => {
                 if args.exec_json {
                     let report = serde_json::json!({"state_root": home.to_string_lossy(), "id": entry.id,
@@ -2573,7 +2635,7 @@ fn run_artifacts(args: &Args) -> i32 {
 /// session, which was started earlier (D-41). Silence here was how a documented
 /// flag became a no-op that nobody noticed.
 fn note_session_settings(socket: &Path, full_auto: bool, cwd: Option<&str>, started: bool) {
-    if started || (!full_auto && cwd.is_none()) {
+    if !full_auto && cwd.is_none() {
         return;
     }
     let greeting = std::os::unix::net::UnixStream::connect(socket)
@@ -2586,7 +2648,7 @@ fn note_session_settings(socket: &Path, full_auto: bool, cwd: Option<&str>, star
         })
         .unwrap_or(serde_json::Value::Null);
     let described = |key: &str| greeting[key].as_str().unwrap_or("unknown").to_string();
-    if full_auto {
+    if full_auto && !started {
         eprintln!(
             "note: a session is already running for this state root in {} mode, so --full-auto did not apply. \
              Stop that daemon first (SIGTERM its pid — `ps -eo pid,args | grep \"[t]eamagents daemon\"` names \
@@ -2601,7 +2663,7 @@ fn note_session_settings(socket: &Path, full_auto: bool, cwd: Option<&str>, star
         if !same {
             eprintln!(
                 "note: that session works in {live}, so --cwd {requested} did not apply. \
-                 Stop that daemon or use another --state-root to work in {requested}."
+                 Use another --state-root or `sessions new --cwd {requested}` to work in {requested}."
             );
         }
     }
@@ -2669,8 +2731,14 @@ fn ensure_daemon(request: DaemonRequest<'_>) -> Result<(PathBuf, bool), String> 
         }
         let _ = std::fs::remove_file(&socket);
     }
+    std::fs::create_dir_all(state_root).map_err(|e| cli::state_root_uncreatable(state_root, &e))?;
+    let (_, saved_workspace) = teamagents_engine::v2::session_browser::resume_settings(state_root)?;
+    if let Some(saved) = &saved_workspace {
+        cli::require_workspace_dir(saved)?;
+    }
+    let cwd = saved_workspace.as_deref().or(cwd);
+    // The daemon resolves saved model names against the saved workspace's catalogue.
     let exe = std::env::current_exe().map_err(|e| format!("current exe: {e}"))?;
-    let model = model.or_else(|| default_model_key(cwd));
     let mut command = if which_binary("setsid").is_some() {
         let mut command = std::process::Command::new("setsid");
         command.arg(&exe);
@@ -2696,7 +2764,6 @@ fn ensure_daemon(request: DaemonRequest<'_>) -> Result<(PathBuf, bool), String> 
     }
     // A detached daemon has no terminal to complain on: its banner, its startup
     // failure and anything it logs later land in <state root>/daemon.log.
-    std::fs::create_dir_all(state_root).map_err(|e| cli::state_root_uncreatable(state_root, &e))?;
     let log_path = state_root.join("daemon.log");
     let log = std::fs::OpenOptions::new()
         .create(true)
@@ -2749,26 +2816,6 @@ fn tail_from(path: &std::path::Path, from: u64, cap: usize) -> String {
         return String::from("the daemon wrote nothing");
     }
     text.trim().to_string()
-}
-
-/// The leader's model key when the caller did not choose one: the documented default, else the only configured
-/// key — read through the same loader the daemon uses (D-244), so the client and the session cannot disagree
-/// about the catalog a repository-local config contributes.
-fn default_model_key(cwd: Option<&std::path::Path>) -> Option<String> {
-    let cwd = match cwd {
-        Some(path) => std::path::PathBuf::from(path),
-        None => std::env::current_dir().ok()?,
-    };
-    let catalog = teamagents_engine::config::load_user_config_for(&cwd).ok()?.0;
-    if catalog.models.contains_key("leader_main") {
-        return Some("leader_main".to_string());
-    }
-    let mut keys: Vec<String> = catalog.models.keys().cloned().collect();
-    keys.sort();
-    match keys.len() {
-        1 => keys.pop(),
-        _ => None,
-    }
 }
 
 fn which_binary(name: &str) -> Option<PathBuf> {

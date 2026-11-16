@@ -54,6 +54,7 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
 | Profile selection | Resolve profiles before preparation/recovery; cached retries stay unchanged | D-523 |
 | Team interface | Member observation is separate from Leader action ownership | D-524 |
 | Public fetch | Fake-IP hostnames require public-address verification; content caps count UTF-8 bytes | D-525 |
+| Workspace sessions | Ordinary startup restores the most recently opened session in the launch workspace, creating one if absent | D-526 |
 
 ## Authority and runtime
 
@@ -163,6 +164,20 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
 
 ## Interface, sessions and updates
 
+- Without `--session` or `--state-root`, TUI/exec selects the nonarchived session most recently opened in the
+  canonical launch directory (`--cwd` when supplied), creating a named session if none matches (D-526).
+  Explicit roots/IDs and TUI switches retain the selected session's workspace. Session-dependent CLI reads and
+  controls select the same recent session without creating one or changing recency; direct daemon startup
+  retains its explicit/default root semantics. `sessions new` binds the creation directory without starting work.
+- Successful client opens advance a strictly ordered timestamp in `session.workspace.json` under the registry
+  lock. History/list/search, failed opens and background work do not. Existing Leader rows override this hint;
+  records without an open timestamp use creation order as a deterministic fallback. Archived sessions are
+  excluded until explicitly restored/opened. Unusable automatic candidates emit a note and are skipped;
+  invalid recency hints cannot block unrelated sessions. Explicit opens report the selected session's errors.
+  Fresh workspace and daemon identities are absolute; every cold
+  start loads configuration from the saved workspace. Relative legacy Leader paths are refused rather than
+  reinterpreted against the reopening directory. Exec acceptance checks retain their explicit client cwd rule.
+
 - One daemon owns each session; the TUI is not a second execution engine. Protocol 2 separates delivered cursors
   from snapshot/log heads. Pages have row/byte budgets, fixed-end drains and explicit retention resync. Ordinary
   refresh never acknowledges unread events; oversized events require explicit resync. Headless completion drains
@@ -202,7 +217,7 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
   credentials, active jobs or external backups as repository housekeeping.
 - Source counts come from Cargo lists. Every registered current total/triple must match; missing/ambiguous
   statements fail. Numeric regeneration does not establish a passing gate, install or formal result.
-- Current source contains 837 Rust tests: core 198, engine 522 and TUI 117.
+- Current source contains 841 Rust tests: core 198, engine 526 and TUI 117.
 - Formal material has 387 configurations across 47 modules: 63 positive configurations in 60 traversals,
   323 controls and one separate wide configuration; 79 witnesses and 9 Kani harnesses. Shared traversals require
   identical model/specification/domain. Witnesses establish reachability, not safety. The report binds verified

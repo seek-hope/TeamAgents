@@ -258,6 +258,18 @@ cannot settle a new assignment.
 
 The default state root is `${XDG_STATE_HOME:-$HOME/.local/state}/teamagents/v2`.
 
+Run `teamagents` or `teamagents exec` from a project directory to restore its most recently opened, nonarchived
+session. If none exists, a new session uses that directory. `--cwd DIR` selects a different workspace; paths
+are stored as absolute paths. Successful opens and switches update recency; listing or reading history does not.
+Session-dependent commands such as `status`, `tasks` and `daemon --stop` select the same recent session.
+
+Use `--session ID` or `--state-root PATH` to select an exact session regardless of the launch directory. It keeps
+its saved workspace, including after a daemon restart; `--cwd` does not relocate an existing session.
+`teamagents sessions new --cwd DIR` creates a session bound to DIR without starting work; open its returned ID
+to use it. `--session default` explicitly opens the session stored directly in the base directory. Direct
+`daemon` startup uses its explicit/default state root. Exec acceptance checks still run in the caller's
+`--cwd` or current directory. A legacy relative Leader workspace is refused because its original base is unknown.
+
 Ctrl+S or `/sessions` opens the session browser. It supports paged history, search, rename, archive, restore,
 fork and confirmed deletion. Opening another session replaces the client only after a successful handshake and
 state sync. Drafts remain scoped to their state roots.

@@ -19,13 +19,13 @@ and the argv parser counts as plumbing (a *flag* that is only parsed for a remov
 `--history-days`, is therefore reported here as unserved — which is what it is).
 
 **D-237 added the shipped default profile's key.** That key is one fact in three layers: the code prefers it by
-name (`default_model_key` asks the catalog for `contains_key("…")`), `init` writes the config that
+name (`daemon_boot` asks the catalog for `contains_key("…")`), `init` writes the config that
 `engine/src/config.rs` includes as `INITIAL_CONFIG` (`examples/config.minimal.toml`), and the documents tell a
 user which key it is (the README's `--model` row, the user guide's configuration example, the install guide's
 first-configuration section, and the full `examples/config.toml` the guides point at). Measured 2026-09-27:
 nothing compared the three, so renaming the profile in the template would leave the code preferring a key that
 ships nowhere and four statements naming a key the shipped config does not declare. The audit now reads the
-preferred key out of `default_model_key`, parses the template's `[models.*]` keys, checks that `INITIAL_CONFIG`
+preferred key out of `daemon_boot`, parses the template's `[models.*]` keys, checks that `INITIAL_CONFIG`
 really is included from that template (so the rule cannot quietly stop reading), and requires the key to be in
 the template *and* in every statement. **Controls**: `--doc examples/config.minimal.toml=<copy without the key>`
 reports the template half; `--doc README.md=<copy with the key renamed>` reports the statement half.
@@ -44,7 +44,7 @@ Ceiling: only the *key* is compared — the model name, the context window and t
 sentences carry are prose; the statement list is fixed, so a *new* document that names the key is not swept in
 (`docs/TOOLS.md` names it too and is left out deliberately: it is generated, and its writer's catalogue already
 reads the tool that says it); the comparison is name-based, so a preference reached through a differently named
-accessor in `default_model_key` would be missed; and the masked bucket is curated too — the search cannot tell a
+accessor in `daemon_boot` would be missed; and the masked bucket is curated too — the search cannot tell a
 same-named foreign field from a reader by itself, so a *new* key of that shape is reported as served until it is
 recorded here.
 """
@@ -144,11 +144,11 @@ def named_keys(text: str) -> set[str]:
 DOCS = ["README.md", "docs/USER-GUIDE.md", "docs/INSTALL.md"]
 
 # (D-237) The shipped default profile's key, one fact in three layers (see the docstring).
-# D-244 gave the function the session's cwd (the catalog is the merged one now), so the shape check takes any
-# parameter list: what it holds is still one `contains_key("…")` test and one `return Some("…")`.
-CODE_FN = re.compile(r"fn default_model_key\([^)]*\)[^{]*\{(.*?)\n\}", re.S)
+# D-526 resolves the preference after restoring the session workspace in daemon_boot.
+# Compare the guarded key with its returned key; this audit does not prove catalogue load ordering.
+CODE_FN = re.compile(r"fn daemon_boot\([^)]*\)[^{]*\{(.*?)\n\}", re.S)
 CODE_PREF = re.compile(r'contains_key\("([^"]+)"\)')
-CODE_RETURN = re.compile(r'return Some\("([^"]+)"\.to_string\(\)\)')
+CODE_RETURN = re.compile(r'None if catalog\.models\.contains_key\("[^"]+"\)\s*=>\s*"([^"]+)"\.into\(\)')
 INITIAL_SOURCE = REPO / "engine/src/config.rs"
 INITIAL_INCLUDE = 'include_str!("../../examples/config.minimal.toml")'
 TEMPLATE = REPO / "examples/config.minimal.toml"
@@ -209,7 +209,7 @@ def main() -> int:
         return (pathlib.Path(overrides[rel]) if rel in overrides else (REPO / rel)).read_text(errors="replace")
 
     # D-237: the default profile's key, from the code's preference to the template and the documents
-    code = read("engine/src/main.rs")
+    code = read("engine/src/cli.rs")
     initial = read(str(INITIAL_SOURCE.relative_to(REPO)))
     body = CODE_FN.search(code)
     preferred = CODE_PREF.search(body.group(1)) if body else None
@@ -221,16 +221,15 @@ def main() -> int:
         drift.append(f"{INITIAL_SOURCE.relative_to(REPO)}: `INITIAL_CONFIG` is no longer included from "
                      f"{template_rel}, so this audit is holding the documents to a config nothing ships")
     if body is None:
-        drift.append("engine/src/main.rs: `default_model_key()` is gone, so the default profile's key cannot be "
+        drift.append("engine/src/cli.rs: `daemon_boot()` is gone, so the default profile's key cannot be "
                      "read — teach this audit where the preference moved")
     elif preferred is None or returned is None:
-        drift.append("engine/src/main.rs: `default_model_key()` no longer reads as one `contains_key(\"…\")` test "
-                     "and one `return Some(\"…\")`, so the preferred key cannot be read — teach this audit the new "
-                     "shape")
+        drift.append("engine/src/cli.rs: `daemon_boot()` no longer has a literal guarded catalogue preference; "
+                     "teach this audit the new shape")
     else:
         key = preferred.group(1)
         if returned.group(1) != key:
-            drift.append(f"engine/src/main.rs: `default_model_key()` tests `contains_key({key!r})` but returns "
+            drift.append(f"engine/src/cli.rs: `daemon_boot()` tests `contains_key({key!r})` but returns "
                          f"{returned.group(1)!r}: the preference and the returned key disagree")
         if key not in shipped:
             drift.append(f"the code prefers the model key {key!r} and {template_rel} declares {sorted(shipped)}: "

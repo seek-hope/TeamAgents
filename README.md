@@ -110,8 +110,10 @@ teamagents mcp list
 teamagents version
 ```
 
-Use the same `--state-root` or `--session` when reconnecting to a session. Cancelling a task does not prove that
-its process stopped; instance termination and shared-workspace takeover use separate stop evidence.
+Run `teamagents` from a directory to restore its most recently opened session, or create one if none exists.
+`--cwd DIR` selects another workspace. `--session ID`, `--state-root PATH` and switching through `/sessions`
+select an exact session and keep its saved workspace. Cancelling a task does not prove that its process stopped;
+instance termination and shared-workspace takeover use separate stop evidence.
 
 ## Architecture
 
@@ -137,7 +139,7 @@ See [the architecture guide](docs/ARCHITECTURE.md) for state machines and data r
 
 ## Current evidence
 
-The full local gate passed **837 Rust tests** (core 198, engine 522, TUI 117).
+The full local gate passed **841 Rust tests** (core 198, engine 526, TUI 117).
 Formal material contains **387 configurations across 47 modules**:
 
 - **63 positive configurations in 60 traversals**;

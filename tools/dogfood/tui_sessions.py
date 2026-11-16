@@ -29,6 +29,8 @@ def main():
         config.mkdir(parents=True)
         workspace = root / "workspace"
         workspace.mkdir()
+        other_workspace = root / "other"
+        other_workspace.mkdir()
         (config / "config.toml").write_text('skills_paths = []\n[models.leader_main]\nprovider = "openai"\nmodel = "test"\napi_key_env = "TA_SESSION_UI_KEY"\nbase_url = "http://127.0.0.1:1/v1"\ncontext_window = 128000\n')
         env = {**os.environ, "XDG_CONFIG_HOME": str(root / "config"), "XDG_STATE_HOME": str(root / "state"),
                "TA_SESSION_UI_KEY": "no-model-called", "TEAMAGENTS_TUI": str(TUI)}
@@ -58,7 +60,7 @@ def main():
             return pid, fd, Screen(120, 40)
 
         try:
-            first = json.loads(cli("sessions", "new", "--name", "First", "--json"))
+            first = json.loads(cli("sessions", "new", "--name", "First", "--cwd", str(other_workspace), "--json"))
             archive = json.loads(cli("sessions", "new", "--name", "Archived", "--json"))
             first_root = pathlib.Path(first["path"])
             archive_root = pathlib.Path(archive["path"])
@@ -115,13 +117,14 @@ def main():
             send(b"\x1b")
             wait("draft-default")
             with sqlite3.connect(first_root / "session.sqlite") as db:
-                db.execute("UPDATE instances SET workspace_ref=? WHERE id='i-leader'", (str(workspace),))
+                db.execute("UPDATE instances SET workspace_ref=? WHERE id='i-leader'", (str(other_workspace),))
             send(b"\x13")
             wait("Default history 1")
             send(b"\x1b[B")
             wait("First entry 251")
             send(b"\r")
             wait("Message")
+            wait(str(other_workspace))
             assert "draft-default" not in pump(), "drafts may not travel into another session"
             send(b"draft-first\x13")
             wait("First entry 251")
@@ -129,6 +132,7 @@ def main():
             wait("Default history 1")
             send(b"\r")
             wait("draft-default")
+            wait(str(workspace))
             # Return to First once: the exact unsent draft comes back.
             send(b"\x13")
             wait("Default history 1")
@@ -136,6 +140,7 @@ def main():
             wait("First entry 251")
             send(b"\r")
             wait("draft-first")
+            wait(str(other_workspace))
             send(b"\x13")
             wait("First entry 251")
             send(b"\x1b[H")
@@ -184,7 +189,7 @@ def main():
             exited()
             assert not (base / "session.sqlite").exists()
             assert pathlib.Path(kept["path"]).exists()
-            print("session TUI: paged idle/archive history, failed switch, per-session drafts, explicit confirmation, failed deletion, other/current/default deletion: ok")
+            print("session TUI: distinct workspace switching, paged idle/archive history, failed switch, per-session drafts, explicit confirmation, failed deletion, other/current/default deletion: ok")
         finally:
             for child, descriptor in children.items():
                 try:

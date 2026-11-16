@@ -363,6 +363,8 @@ fn deleting_a_live_default_requires_confirmation_and_preserves_its_siblings() {
     assert_eq!(report["deleted"], true);
     assert!(!fixture.root.join("session.sqlite").exists());
     assert!(!fixture.root.join("daemon.sock").exists());
+    assert!(!fixture.root.join("session.workspace.json").exists());
+    assert!(!fixture.root.join("daemon.boot.json").exists());
     assert_eq!(std::fs::read_to_string(fixture.root.join("memory.jsonl")).unwrap(), "shared memory");
     assert!(fixture.root.join("keep.txt").exists());
     let id = named["id"].as_str().unwrap();

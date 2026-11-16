@@ -51,8 +51,9 @@ pub fn history(registry: &Registry, id: &str, before: Option<i64>, limit: u64) -
 
 /// Reopen using the stored Leader's workspace/model, without silently adopting the other session's settings.
 pub fn resume_settings(dir: &Path) -> Result<(Option<String>, Option<PathBuf>), String> {
+    let pending = || super::session_workspace::metadata(dir).map(|record| (None, record.map(|r| r.workspace)));
     if !dir.join("session.sqlite").exists() {
-        return Ok((None, None));
+        return pending();
     }
     let conn = teamagents_core::v2::store::open_read_only(&dir.join("session.sqlite"))?;
     use rusqlite::OptionalExtension;
@@ -63,10 +64,17 @@ pub fn resume_settings(dir: &Path) -> Result<(Option<String>, Option<PathBuf>), 
         .optional()
         .map_err(|e| format!("session settings: {e}"))?;
     let Some((workspace, profile)) = row else {
-        return Ok((None, None));
+        return pending();
     };
+    if !Path::new(&workspace).is_absolute() {
+        return Err(format!(
+            "session {} has a relative saved workspace {workspace:?}; its original directory cannot be recovered \
+             safely. Create a new session with `sessions new --cwd DIR` and keep this history",
+            dir.display()
+        ));
+    }
     let profile: Json = serde_json::from_str(&profile).map_err(|e| format!("session profile: {e}"))?;
-    Ok((profile["model"].as_str().map(str::to_string), (!workspace.is_empty()).then(|| PathBuf::from(workspace))))
+    Ok((profile["model"].as_str().map(str::to_string), Some(PathBuf::from(workspace))))
 }
 
 /// Explicit deletion, unlike age-based pruning. The CLI owns the base registry lock throughout this call.
@@ -110,6 +118,8 @@ pub fn delete(registry: &mut Registry, id: &str, stop: bool) -> Result<PathBuf, 
         "session.sqlite-shm",
         "daemon.sock",
         "daemon.log",
+        "daemon.boot.json",
+        super::session_workspace::FILE,
         "instances",
         "jobs",
         "artifacts",

@@ -101,8 +101,9 @@ teamagents mcp list
 teamagents version
 ```
 
-重新连接会话时请使用相同的 `--state-root` 或 `--session`。取消任务并不能证明进程已经停止；实例终止
-和共享工作区接管使用独立的停止证据。
+在某个目录运行 `teamagents`，会恢复该目录最近打开的会话，没有则新建。`--cwd DIR` 可指定其他工作区。
+`--session ID`、`--state-root PATH` 或 `/sessions` 切换会选择具体会话，并使用它保存的工作区。取消任务
+并不能证明进程已经停止；实例终止和共享工作区接管使用独立的停止证据。
 
 ## 架构
 
@@ -127,7 +128,7 @@ daemon + supervisor + 每个实例的 driver
 
 ## 当前证据
 
-最新完整本地门禁已通过 **837 项 Rust 测试**（core 198、engine 522、TUI 117）。
+最新完整本地门禁已通过 **841 项 Rust 测试**（core 198、engine 526、TUI 117）。
 形式化材料包含 **47 个模块、387 个配置**：
 
 - **63 个正向配置，60 次遍历**；

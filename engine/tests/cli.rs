@@ -3257,9 +3257,8 @@ fn configured_limits_reach_the_work_and_really_bound_the_session() {
     let db = state.join("session.sqlite");
     let mut row = None;
     for _ in 0..400 {
-        if let Ok(control) = teamagents_core::v2::Control::open(&db, "test", false) {
-            row = control
-                .connection()
+        if let Ok(connection) = teamagents_core::v2::store::open_read_only(&db) {
+            row = connection
                 .query_row("SELECT limits_json, deadline FROM work_scopes LIMIT 1", [], |row| {
                     Ok((row.get::<_, String>(0)?, row.get::<_, Option<f64>>(1)?))
                 })

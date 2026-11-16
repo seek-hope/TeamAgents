@@ -233,7 +233,7 @@ JSON export are read-only projections, not second business stores.
 `tools/` contains executable development and verification utilities, generated-document checkers and current
 product probes. `tools/tmp/` is ignored scratch for new local runs, not source or committed evidence.
 
-The current source has 837 Rust tests. Formal material has 387 configurations across 47 modules: 63 positive
+The current source has 841 Rust tests. Formal material has 387 configurations across 47 modules: 63 positive
 configurations, 323 controls and one separate wide configuration, evaluated in 60 positive traversals. There
 are 79 normal-path witnesses and 9 Kani harnesses. Witnesses demonstrate reachability only.
 

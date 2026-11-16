@@ -1032,18 +1032,28 @@ fn daemon_boot(
     // D-244: the workspace is resolved *first*, because the repository-local config belongs to the directory the
     // session works in — and the merge's decision goes into the daemon's own log (a detached daemon has no
     // terminal), which `doctor` shows in the same words for a user who never reads that file.
-    let workspace = match cwd {
-        Some(dir) => PathBuf::from(dir),
-        None => std::env::current_dir().map_err(|e| e.to_string())?,
-    };
-    require_workspace_dir(&workspace)?;
+    let state_root = state_root.map(PathBuf::from).unwrap_or_else(crate::v2_root);
+    require_state_root_dir(&state_root)?;
+    require_state_paths_kind(&state_root)?;
+    std::fs::create_dir_all(&state_root).map_err(|error| state_root_uncreatable(&state_root, &error))?;
+    if let Some(requested) = cwd.as_deref() {
+        require_workspace_dir(Path::new(requested))?;
+    }
+    let (saved_model, saved_workspace) = crate::v2::session_browser::resume_settings(&state_root)?;
+    let workspace = saved_workspace.unwrap_or_else(|| PathBuf::from(cwd.as_deref().unwrap_or(".")));
+    let workspace = crate::v2::session_workspace::canonical_workspace(&workspace)?;
     // D-428: the command line's `-c` overrides enter the same load the daemon's config comes from
     let (catalog, project) = load_user_config_for_with(&workspace, overrides)?;
     report_project_merge(&project);
     let mut available: Vec<String> = catalog.models.keys().cloned().collect();
     available.sort();
+    let model = model.or_else(|| {
+        saved_model
+            .map(|name| crate::providers::resolve_model(&catalog, &name).map(|(key, _)| key.clone()).unwrap_or(name))
+    });
     let model_key = match model {
         Some(key) => key,
+        None if catalog.models.contains_key("leader_main") => "leader_main".into(),
         None if available.len() == 1 => available[0].clone(),
         // an empty catalog is a first run, not a missing flag: name the step that
         // creates one instead of leaving the user with "(available: )" (D-73)
@@ -1067,10 +1077,8 @@ fn daemon_boot(
     }
     // preflight: credentials/protocol resolve at boot, not mid-session (§7)
     crate::providers::build_for_model(&catalog, &model_key)?;
-    // one stable root (and socket) per user: init/doctor/daemon/TUI must agree
-    // on where the session lives, or the default entry cannot find the daemon
-    let state_root = state_root.map(PathBuf::from).unwrap_or_else(crate::v2_root);
-    require_state_root_dir(&state_root)?;
+    // Publish absolute identities even when the client supplied a relative state root.
+    let state_root = state_root.canonicalize().map_err(|error| state_root_uncreatable(&state_root, &error))?;
     let permissions = "full_auto".to_string();
     // D-453: a restart must preserve the arguments this daemon was started with.
     // The record holds no credentials; only the workspace, model key, mode and

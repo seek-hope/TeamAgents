@@ -94,7 +94,7 @@ accepted value. Unsupported `mcp_network` and check-level `network` settings are
 
 | Key | Type | Absent | Read by | Meaning |
 |---|---|---|---|---|
-| `kind` | `String` | empty | `core/src/kernel/mod.rs`, `core/src/v2/control/search_tree.rs` … (37 files) | — |
+| `kind` | `String` | empty | `core/src/kernel/mod.rs`, `core/src/v2/control/search_tree.rs` … (38 files) | — |
 | `required` | `bool` | false | `core/src/kernel/mod.rs`, `engine/src/bound.rs` … (5 files) | — |
 | `provider` | `Option<String>` | unset (the reader applies its own) | `engine/src/providers/mod.rs`, `engine/src/search.rs` … (6 files) | Web provider: DeepSeek for search/fetch, Exa for search only (D-482). |
 | `api_key_env` | `Option<String>` | unset (the reader applies its own) | `engine/src/providers/mod.rs`, `engine/src/search.rs` … (3 files) | — |
@@ -145,7 +145,7 @@ accepted value. Unsupported `mcp_network` and check-level `network` settings are
 
 | Key | Type | Absent | Read by | Meaning |
 |---|---|---|---|---|
-| `id` | `String` | empty | `core/src/kernel/instance.rs`, `core/src/v2/control/search_tree.rs` … (42 files) | Stable id, used in failures, receipts and repair feedback. |
+| `id` | `String` | empty | `core/src/kernel/instance.rs`, `core/src/v2/control/search_tree.rs` … (43 files) | Stable id, used in failures, receipts and repair feedback. |
 | `command` | `String` | empty | `core/src/v2/control/work_tests.rs`, `core/src/v2/control.rs` … (19 files) | The command, executed through the same shell tool the model uses. |
 | `timeout` | `Option<u64>` | unset (the reader applies its own) | `core/src/v2/control.rs`, `engine/src/mcp.rs` … (12 files) | Seconds; absent means the shell tool's own default. |
 | `inputs` | `Vec<String>` | empty | `core/src/v2/control.rs`, `engine/src/v2/driver.rs` … (3 files) | Workspace-relative inputs the check reads. |
