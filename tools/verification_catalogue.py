@@ -1,85 +1,20 @@
 #!/usr/bin/env python3
-"""The formal-verification material, against the targets that drive it and the report that counts it (D-185).
+"""Check the current formal catalogue, executable targets and source provenance.
 
-`verification/tla/` holds forty-eight TLA+ modules and three-hundred-and-ninety-three configurations — and **these numbers are
-checked against the directory by this script's own rule**, because the sentence that said "forty" was the
-kind of count nothing looked at (the module count in this line and the two the report states are all
-compared with what the tree holds); `verification/REPORT.md`
-states what runs ("all **16** configurations report `No error has been found`", "all **30** negative
-controls are refuted") and every property is mapped to its spec in `verification/README.md`. What no audit looked at is
-whether the material and the Makefile still agree: a `.cfg` added without a line in a `verify-model*` target is
-verification material nothing runs, a target naming a `.cfg` or `.tla` that was renamed fails only when
-somebody spends the four minutes the target costs, and the report's counts can drift from the lists they
-describe.
+`verification/tla/` holds forty-seven TLA+ modules and three-hundred-and-eighty-seven configurations.
+The audit checks these counts, every configuration/module mapping, positive claims,
+named refuting controls, type exceptions, changing monitors, documented coverage,
+pinned TLC version and Kani harness counts. The report's material fingerprint must
+match the current input paths and bytes, including compiled Rust subjects.
 
-    python3 tools/verification_catalogue.py
-    python3 tools/verification_catalogue.py --makefile PATH --report PATH   # the control, on copies
-
-What it checks, all against the `verify-model*` recipes: every `.cfg` and `.tla` a recipe names exists; every
-`MC*.cfg` in the directory is named by some target (nothing unrunnable), and every `V2*.tla` module is the
-spec of some target (no model outside the checked set); and the two counts the report states for
-`verify-model-all` and `verify-model-counterexamples` equal the sizes of those lists. The counts are compared
-with the report's own sentences rather than with a generated file, so a list that grows must edit the report.
-`verification/README.md` is the property-by-spec mapping the report points a reader at, so every configuration
-and every module on disk must be described there too: a new model enters the checked set with a paragraph
-about what it models.
-
-**D-212 added the two halves of one question about the checked set.** Every configuration a `verify-model*` recipe
-runs must be mapped to its module *explicitly* by that recipe (a `case` arm, a `cfg:spec` pair or a single-spec
-target): the small configurations ride a `case` whose default arm would silently run the wrong module, and
-`MC_artifact.cfg` was doing exactly that. And every name a module marks between its `invariants --` and
-`properties --` comment markers must be listed by some configuration that runs the module, because a marked claim
-that nothing lists is a claim nothing checks — `V2Compress`' `RequestClosesOnce` was one (it holds, measured, but
-nothing would have noticed if it did not). The convention the second half implies: a claim that composes others is
-listed itself and its components beside it (V2Grants' four `TypeOK*`, V2Store's `RefusalIsSilent`), so each marked
-name is visibly checked.
-
-**D-220 added the rule that every module has to be *refutable*.** A module that no counterexample configuration
-**D-222 added the rule that the mapping has to name every claim.** The report sends a reader to
-`verification/README.md` for what a module proves, and ten of the 148 marked claims were absent from it (measured
-2026-09-27): all four of `V2Retention`'s substantive claims (the rule itself, and the three state halves),
-`V2Grants`' four `TypeOK*` components and `V2Wait`'s `SatisfiedHoldsConditions`/`AnswerImpliesResolved`. Every
-one is named in the mapping now, and a claim the mapping never mentions fails this audit — the reader's half of
-the same question D-212 asked about configurations.
-
-**D-220 added the rule that every module has to be *refutable*.** A module that no counterexample configuration
-runs is a set of claims nothing refutes — the same gap as a claim nothing lists, one level up. V2Artifact,
-V2Wait and V2Grants were the last three modules without one (measured 2026-09-27), and V2Wait's own refutation
-had existed before the fix: the verification fix ledger records finding V-W1's counterexample
-against `MC_wait_contract.cfg`, "renamed since to `MC_wait.cfg`", so the pre-fix shape became the positive
-configuration and the refutation went with it — exactly what had happened to V2Task's V-G1 (D-218). All three
-now carry a counterfactual constant and a control, and this audit fails a `V2*.tla` that is the spec of no
-`cfg:spec` pair.
-
-**D-219 added the rule that a claim has to be *able* to fail.** A variable no action ever changes is a constant
-of the model, so every claim over it is trivially true or trivially false. Six of them were carrying claims:
-V2Compress' `lost` and `uncovered` (a summary deleting its originals, coverage lifting), V2Daemon's `pruned`,
-`drift` and `shrank` (reclaiming events, rewriting a receipt, rolling the log back) and V2Checks' `rewound` (a
-round counter that goes backwards). Every monitor had been written for a bug and never wired to a step that could
-perform it, so `NoEntryIsEverLost`, `CoverageNeverLifted`, `NoResyncInThisVersion`, `ReceiptsAreStable`,
-`LogMonotone` and `RoundsAreMonotone` could not fail. `--tla DIR` reads a copy of the directory, which is how the
-control is run: a copy with one monitor's writer removed reports it by name. The class reached past the monitors:
-V2Compress' `RequestClosesOnce` was a disjunction whose two disjuncts covered `RequestState`, so `TypeOK` entailed
-it — the transition property it names was not modelled at all.
-
-**D-202 added the provenance the counts rest on.** The report opens with `## 0. Gate status (re-run <date> at
-`<commit>`)`, and the counts below it describe the material *as of that commit* — but nothing held the two
-against each other. Measured 2026-09-27: the heading named `f521fd4f`, a commit that predates
-`verification/tla/MC_retention.cfg` (D-192), while the same section counted "the twelfth … the retention rule":
-the stated re-run could not have produced the numbers it reported. So the named commit must exist, and it must
-be at or after the newest commit that changed the material a re-run covers — `verification/tla`,
-`verification/kani`, and every file the harness crate compiles in with `#[path]` (`lib.rs` pulls in
-`core/src/kernel/types.rs`, so the proof's subject is material too).
-
-Ceiling: this is a *catalogue* audit — it says nothing about whether TLC would pass a configuration, only that
-the material is driven and counted. The states, the times and the property names in the report are measurements
-of a run, and re-running the targets is what keeps them honest. It also does not require the named commit to be
-today's `HEAD` (a gate status re-run later at the same commit is fine, and prose edits must not force a re-run),
-and it cannot see a model whose abstraction drifted from the code it describes — that is what the
-spec-to-code test in `make check` is for.
+Use --self-check for mutation controls, --write-coverage to regenerate the claim
+ledger, and --makefile/--report/--mapping/--tla for isolated audit fixtures.
+This is catalogue/provenance validation, not a replacement for TLC/Kani execution,
+semantic correspondence, refinement or empirical acceptance.
 """
 import argparse
 import contextlib
+import hashlib
 import io
 import shutil
 import tempfile
@@ -107,7 +42,8 @@ MARKER = re.compile(r"^\s*\\\*[ \t]*-+[ \t]*(invariants|properties)\b", re.M)
 DEFN = re.compile(r"^([A-Z][A-Za-z0-9_]*)\s*==", re.M)
 SPEC = re.compile(r"\b(V2[A-Za-z0-9_]*\.tla)\b")
 PATH_ATTR = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
-RERUN = re.compile(r"Gate status \(re-run (\d{4}-\d{2}-\d{2}) at `([0-9a-f]{7,40})`\)")
+RERUN = re.compile(r"Gate status \(re-run (\d{4}-\d{2}-\d{2})\)")
+FINGERPRINT = re.compile(r"^Material SHA-256: `([0-9a-f]{64})`\.$", re.M)
 # (D-462) The one claim a counterexample configuration is shown to refute, and the ledger of the rest.
 EXPECTS = re.compile(r"^\\\* expects: ([A-Za-z_][A-Za-z0-9_]*)\s*$", re.M)
 LEDGER = re.compile(r"^\|\s*`(V2[A-Za-z0-9_]*)`\s*\|\s*`([A-Za-z_][A-Za-z0-9_]*)`\s*\|\s*([^|]*?)\s*\|\s*$", re.M)
@@ -116,23 +52,38 @@ LEDGER = re.compile(r"^\|\s*`(V2[A-Za-z0-9_]*)`\s*\|\s*`([A-Za-z_][A-Za-z0-9_]*)
 TYPE_LEDGER = re.compile(r"^\|\s*`(V2[A-Za-z0-9_]*)`\s*\|\s*`([A-Za-z_][A-Za-z0-9_]*)`\s*\|\s*$", re.M)
 
 
-def git(*args: str) -> tuple[int, str]:
-    """`(exit code, stdout)` for a git command in this repository."""
-    done = subprocess.run(["git", *args], cwd=REPO, capture_output=True, text=True)
-    return done.returncode, done.stdout.strip()
-
-
 def material_paths() -> list[str]:
-    """What a re-run has to cover: the TLA material, the harness crate, and the sources it compiles.
-
-    The harness crate is `#[path]`-based: it compiles this repository's own file instead of a copy, so the
-    proof's subject belongs in the set a stale re-run heading is measured against.
-    """
+    """Gate inputs, including repository sources compiled by the Kani harnesses."""
     paths = list(MATERIAL)
     for source in sorted((REPO / KANI_SRC).rglob("*.rs")):
         for relative in PATH_ATTR.findall(source.read_text(encoding="utf-8")):
             paths.append(str((source.parent / relative).resolve().relative_to(REPO)))
     return paths
+
+
+def material_files() -> list[str]:
+    output = subprocess.check_output(
+        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", *material_paths()],
+        cwd=REPO, text=True)
+    return sorted({name for name in output.split("\0") if name and (REPO / name).is_file()})
+
+
+def material_digest(root: pathlib.Path, paths: list[str]) -> str:
+    """Hash sorted UTF-8 paths, NUL separators and raw SHA-256 file digests."""
+    digest = hashlib.sha256()
+    for name in sorted(set(paths)):
+        digest.update(name.encode("utf-8") + b"\0")
+        digest.update(hashlib.sha256((root / name).read_bytes()).digest())
+    return digest.hexdigest()
+
+
+def source_error(report: str, actual: str) -> str | None:
+    stated = FINGERPRINT.findall(report)
+    if len(stated) != 1:
+        return "expected exactly one Material SHA-256 fingerprint"
+    if stated[0] != actual:
+        return "formal material differs from the verified fingerprint; re-run the changed inputs before updating it"
+    return None
 
 
 # Counts are spelled out in the prose, so the rule reads words: "fourteen", "forty-seven". A count above
@@ -193,7 +144,24 @@ def configuration_claims(text: str, section: str) -> set[str]:
 
 
 def self_check() -> int:
-    """Remove positive/negative claim listings on copies; both omissions must fail."""
+    """Exercise changed source bindings and missing positive/negative claims."""
+    with tempfile.TemporaryDirectory(prefix="teamagents-source-control-") as scratch:
+        root = pathlib.Path(scratch)
+        (root / "a").write_text("original\n")
+        (root / "b").write_text("other\n")
+        paths = ["a", "b"]
+        original = material_digest(root, paths)
+        report = f"Material SHA-256: `{original}`.\n"
+        assert not source_error(report, material_digest(root, paths[::-1]))
+        assert source_error("", original) and source_error(report * 2, original)
+        assert source_error(report, material_digest(root, ["a"]))
+        (root / "a").write_text("changed\n")
+        assert source_error(report, material_digest(root, paths))
+        (root / "a").write_text("original\n")
+        (root / "c").write_text("new\n")
+        assert source_error(report, material_digest(root, paths + ["c"]))
+        (root / "b").rename(root / "renamed")
+        assert source_error(report, material_digest(root, ["a", "renamed"]))
     if main([]) != 0:
         return 1
     probes = [
@@ -215,13 +183,14 @@ def self_check() -> int:
                 status = main(["--tla", str(copied)])
             if status == 0 or expected not in output.getvalue():
                 raise AssertionError(f"{filename} missing-claim control did not fail as intended: {output.getvalue()}")
-    print("positive-coverage and expected-claim controls passed")
+    print("source-fingerprint, positive-coverage and expected-claim controls passed")
     return 0
 
 
 def main(argv) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--self-check", action="store_true", help="audit then run missing-claim controls on copies")
+    parser.add_argument("--self-check", action="store_true", help="audit source binding and missing-claim controls")
+    parser.add_argument("--source-hash", action="store_true", help="print the current gate-input fingerprint")
     parser.add_argument("--makefile", default="Makefile")
     parser.add_argument("--report", default="verification/REPORT.md")
     parser.add_argument("--mapping", default="verification/README.md")
@@ -230,6 +199,9 @@ def main(argv) -> int:
     parser.add_argument("--tla", default=TLA,
                         help="the TLA+ directory to read (a copy is the control)")
     args = parser.parse_args(argv)
+    if args.source_hash:
+        print(material_digest(REPO, material_files()))
+        return 0
     if args.self_check:
         return self_check()
     tla = args.tla
@@ -290,8 +262,7 @@ def main(argv) -> int:
     # are `#[kani::proof]` functions in the crate the target builds.
     harnesses = sum(len(re.findall(r"^\s*#\[kani::proof\]", path.read_text(encoding="utf-8"), re.M))
                     for path in (REPO / KANI_SRC).rglob("*.rs"))
-    # D-444: old gate sections are dated receipts, not claims about today's
-    # harness count. Compare the current gate only; absence must still fail.
+    # Only the current gate section carries the accepted harness count.
     gate = RERUN.search(report)
     current = re.split(r"(?m)^## ", report[gate.end():], maxsplit=1)[0] if gate else ""
     quoted = re.findall(r"Complete - (\d+) successfully verified harnesses, 0 failures, (\d+) total", current)
@@ -309,31 +280,13 @@ def main(argv) -> int:
                             "what it did")
     if quoted and all(int(v) == harnesses for v, _ in quoted):
         notes.append(f"verify-kani: {harnesses} harness(es), as the report says")
-    # (D-202) The re-run heading names the commit the gate status was measured at; a commit older than the
-    # material it reports on is a provenance claim the tree contradicts.
-    rerun = RERUN.search(report)
-    if rerun is None:
-        findings.append(f"{args.report} no longer opens with `Gate status (re-run <date> at `<commit>`)`, so its "
-                        "provenance cannot be held against the material")
+    if RERUN.search(report) is None:
+        findings.append(f"{args.report} needs a dated `Gate status (re-run <date>)` heading")
+    binding_error = source_error(report, material_digest(REPO, material_files()))
+    if binding_error:
+        findings.append(f"{args.report}: {binding_error}")
     else:
-        date, commit = rerun.groups()
-        material = material_paths()
-        if git("cat-file", "-e", f"{commit}^{{commit}}")[0] != 0:
-            findings.append(f"{args.report} names the re-run commit `{commit}`, which is not a commit in this "
-                            "repository")
-        else:
-            code, newest = git("log", "-1", "--format=%H", "--", *material)
-            if code != 0 or not newest:
-                findings.append(f"no commit touches {', '.join(material)}, so the re-run heading has nothing to "
-                                "be measured against")
-            elif git("merge-base", "--is-ancestor", newest, commit)[0] != 0:
-                findings.append(
-                    f"{args.report} says the gates were re-run at `{commit}` ({date}), but `{newest[:12]}` "
-                    f"changed {', '.join(material)} after it: the stated re-run predates the material it reports "
-                    "on — re-run the targets and update the heading")
-            else:
-                notes.append(f"the re-run heading names `{commit}`, at or after the newest change to the "
-                             f"verification material (`{newest[:12]}`)")
+        notes.append("formal material paths and content match the verified fingerprint")
     # (D-212, D-215) Where a configuration's module comes from: the `case` blocks that map them — one shared block
     # the recipes expand, or a copy inside a recipe — and the explicit `cfg:spec` pairs the counterexample target
     # walks. Every block must name *every* configuration in the directory, and every source must agree about a

@@ -45,27 +45,13 @@ make verify-model-counterexamples
 make verify-witnesses
 make verify-kani
 ```
-
-Current source inventory (2026-11-16): **837 Rust tests** (core 198 / engine 522 / tui 117), **65 positive TLA configurations in 62
-traversals**, **327 controls**, **79 witnesses**, **9 Kani harnesses**, and **393 configurations across 48
-modules**. D-523–D-525 fix selected-profile resolution, expose team observation panes and verify public fetch
-hosts behind fake-IP DNS. Their full local gate, PTY/graphics matrix and 18 offline probes passed. Packaging and
-installation checks also passed on `d96d7c8a`, including the installed terminal matrix and a live public fetch.
-The ordinary installation matches that runtime; no user session was started or resumed.
-D-522 (`a6b5555a`) retains sessions when endpoints are listening or absence is uncertain, and
-propagates explicit-stop failures. Its full local gate, PTY matrix, 18 offline probes, musl rehearsal and
-installed workflow/session-preservation checks passed. Its scope excludes startup/filesystem races and
-full-backlog connection deadlines.
-D-521 (`675af52e`) fixes target-ABI file-open flags; its full local gate, 26-tool AArch64 GNU
-emulation subset and scripted workflow passed, as did its x86_64 musl release/install and installed workflow. `make test-aarch64` shares that subset with its dedicated CI job. This is not native ARM
-hardware/kernel or ARM-package acceptance. The preceding `fde93f53` delivery passed all three CI jobs.
-The `ab325b59` runtime passed the full local gate, release/install rehearsal and an installed
-batch-edit hash-refusal/repair workflow. The earlier `0eb4ee98` build passed 18 offline probes and release/install
-rehearsal, plus ordinary-user install, argument rejection and same-schema upgrade/rollback in
-fresh Debian 12 and Ubuntu 22.04.5 KVM guests. The 23 live probes
-apply to their earlier pinned source. D-519 checks current documentation totals and triples against Cargo lists.
-Formal results and abstraction limits are in `verification/REPORT.md`; exact package/VM scope is in
-`docs/ACCEPTANCE.md`. VM checks do not establish physical-host, live-provider or public-release acceptance.
+Current source inventory (2026-11-16): **837 Rust tests** (core 198 / engine 522 / tui 117), **63 positive TLA configurations in 60
+traversals**, **323 controls**, **79 witnesses**, **9 Kani harnesses**, and **387 configurations across 47
+modules**. Current acceptance covers the full local gate, source/installed PTY matrices, 18 offline probes,
+x86_64 musl release/install and scripted profile/fetch checks, plus a separate live Fetch API check.
+The shared `make test-aarch64` target covers 26 tool tests under GNU user emulation, not native ARM acceptance.
+Exact source/CI/package bindings and remaining obligations are in `docs/ACCEPTANCE.md`; formal scope is in
+`verification/REPORT.md`. Inventory regeneration does not renew test, install or formal evidence.
 
 Real-model evaluation must use the model's native context window and record it with its source. A synthetic small
 window is for scripted regression only.

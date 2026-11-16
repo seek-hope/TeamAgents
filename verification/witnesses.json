@@ -1,8 +1,5 @@
 {
   "schema": 1,
-  "historical": {
-    "V2Isolation": "D-480 retired OS sandbox execution; retained models describe historical internal consistency."
-  },
   "cases": [
     {
       "id": "control_effect",

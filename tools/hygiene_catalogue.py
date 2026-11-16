@@ -1,32 +1,11 @@
 #!/usr/bin/env python3
-"""The scripts `make check` runs, against the page that walks through them (the detector behind D-184/D-194).
+"""Keep current development tools and their documented entry points aligned.
 
-Every documented surface here has a catalogue audit — the events, the protocol, the tools, the config keys, the
-CLI flags, the TUI keys — and the audits themselves were the one surface nobody did. `docs/DEVELOPMENT.md` is
-the page a contributor reads to learn what `make check` does; it walked through eleven of hygiene's twenty-two
-audits and stopped, so ten (D-130's `dead_code`, D-134's `readme_zh`, D-135/136's `doc_flags`, D-137's
-`requirement_trace`, D-145's `eval_manifests`, D-182's `eval_surface`, `exec_report`, `tui_keys`, `env_knobs`,
-`project_config_claim`) ran without the page ever naming them (measured 2026-09-27). Nothing noticed, because
-a script the page does not mention cannot fail a citation: the page is prose.
-
-    python3 tools/hygiene_catalogue.py
-    python3 tools/hygiene_catalogue.py --makefile PATH --doc PATH   # the control, on copies
-
-The rule is the one the page's own sentences make: for the two targets it walks through (`check`'s `hygiene`
-and `test`), every script a recipe invokes with `python3` must be named in `docs/DEVELOPMENT.md`. A walked
-target that has disappeared is a finding rather than a silent pass. As a note — never a failure — the audit
-prints the `tools/*.py` the page names that no target runs: those are the probe and evaluation entry points,
-which are meant to be run by hand.
-
-**D-194 added the other half, and it is the half D-193 was found by.** The rule above says every script a
-target *runs* is documented; nothing said every audit script is *run*. `tools/config_keys.py` — the detector
-behind four findings (D-75's three keys and D-102's `instruction_files`) — was run by no target at all, and the
-page's own listing of hand-run scripts did not mention it either; only a person reading the directory could see
-it. So every root-level `tools/*.py` must now be either invoked by some make target or listed in `HAND_RUN`
-with its reason, and a `HAND_RUN` entry that a target *does* run is a finding too, so an exemption cannot
-outlive its reason. The two deeper levels were already covered where they live: `tools/dogfood/*.py` by
-`probes.py --self-check`, which fails on a file in neither set nor `NOT_PROBES` (D-155), and external evaluation data
-is frozen material whose driver is run by hand by design.
+Every Python script invoked by the hygiene/test recipes must be named in
+DEVELOPMENT.md. Every root-level tools/*.py must run from a Make target or have
+an explicit HAND_RUN reason; stale or contradictory exemptions fail.
+Probe-directory coverage is checked by dogfood/probes.py --self-check.
+Use --makefile and --doc for isolated audit fixtures.
 """
 import argparse
 import pathlib
@@ -43,10 +22,9 @@ INVOCATION = re.compile(r"python3\s+([^\s;|)'\"]+\.py)")
 HAND_RUN = {
     "tools/host_cleanup.py": "reads the host's own process table (D-189): container PID namespaces can hide "
                              "processes and the probe changes nothing, so there is no gate result to check",
-    "tools/install_check.py": "downloads the published release and installs it (A36): network and an external "
-                               "artifact, run by hand and dated in the acceptance row",
-    "tools/runner_cost.py": "a one-off cost meter (D-153) whose numbers A12 records; it measures a process, it "
-                             "does not assert a product property",
+    "tools/install_check.py": "downloads and installs a published release (A36); requires network access and "
+                               "explicit artifact/source-bound acceptance",
+    "tools/runner_cost.py": "measures process CPU and elapsed time without asserting an acceptance threshold",
 }
 
 

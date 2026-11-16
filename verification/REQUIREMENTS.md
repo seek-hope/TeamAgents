@@ -7,8 +7,7 @@ properties plus concrete bridge tests; tests are not refinement proofs. **Extern
 or environmental evidence. **Constraint** is a design/scope decision. No entry asserts full-system
 correctness. Every current model also has an executable normal-path witness, but one witness is not
 exhaustive action coverage. The checker validates IDs, named claims and source anchors; it does not
-prove the semantic correspondence of prose to a model. Historical sandbox material does not support
-current host execution.
+prove the semantic correspondence of prose to a model. Host execution is not OS confinement.
 
 | Requirement | Class | Checked scope and formal evidence | Concrete evidence | Remaining boundary |
 |---|---|---|---|---|
@@ -29,7 +28,7 @@ current host execution.
 | Q15 | partial | Unknown effects are not replayed and recovery is bounded. `V2ExecutionChain::UnknownIsNeverReplayed` (`MC_executionchain.cfg`); `V2Work::RecoveryRemainsBounded` (`MC_work.cfg`) | test: `engine/tests/jobs_runner.rs`; test: `engine/tests/cases/autonomy.rs` | Host/remote stop observations and complete journal/DB failure composition are not proved. |
 | Q16 | external | Single-agent nonregression and multi-agent benefit require frozen matched evaluation. | evaluation: `docs/PRODUCT-COMPARISON.md` | No bounded protocol model proves comparative task success. |
 | Q17 | external | Pilot cost estimation is measured. | evaluation: `docs/PRODUCT-COMPARISON.md` | No statistical significance or cost forecast follows from formal gates. |
-| Q18 | partial | Foreign stores are refused and accepted stores are stamped. `V2Store::AcceptedMeansStamped` (`MC_store.cfg`) | test: `engine/tests/cli.rs`; test: `core/tests/v2_invariants.rs::spec_invariants_hold_over_short_command_sequences` | All historical schema migrations and configuration versions are not proved. |
+| Q18 | partial | Foreign stores are refused and accepted stores are stamped. `V2Store::AcceptedMeansStamped` (`MC_store.cfg`) | test: `engine/tests/cli.rs`; test: `core/tests/v2_invariants.rs::spec_invariants_hold_over_short_command_sequences` | Arbitrary schema migrations and configuration versions are not proved. |
 | Q19 | partial | Explicit retention guards before deletion. `V2Prune::NothingThatShouldStayLeaves` (`MC_prune.cfg`) | test: `engine/tests/session_browser.rs`; test: `engine/tests/cli.rs` | Machine-wide cleanup and credential/evidence preservation require inventory and real filesystem checks. |
 | A01 | partial | Selected complete responses and checked completion. `V2Control::SelectionIsComplete` (`MC.cfg`); `V2Checks::NoUnverifiedSuccess` (`MC_checks.cfg`) | test: `engine/tests/v2_driver.rs` | Every basic tool and actual deliverable quality are not proved by this slice. |
 | A02 | partial | No duplicate application of a delivered envelope. `V2Inbox::AtMostOncePerEnvelope` (`MC_inbox.cfg`) | test: `core/tests/v2_invariants.rs::spec_invariants_hold_over_short_command_sequences`; test: `engine/tests/v2_driver.rs` | A full three-node ring and every grant/delivery permutation are not composed. |
@@ -44,7 +43,7 @@ current host execution.
 | A11 | partial | Separate runner/control recovery cannot blindly restart unknown work. `V2Jobs::AtMostOneExecutor` (`MC_jobs.cfg`); `V2ExecutionChain::UnknownIsNeverReplayed` (`MC_executionchain.cfg`) | test: `engine/tests/jobs_runner.rs`; test: `engine/tests/v2_supervisor.rs` | All physical crash timings are not a completed DB/filesystem refinement proof. |
 | A12 | partial | Normal service preservation and UI detachment. `V2JobSupervision::NormalServicesArePreserved` (`MC_jobsupervision.cfg`); `V2Tui::ExitOnlyDetaches` (`MC_tui.cfg`) | test: `engine/tests/cases/jobs_robustness.rs`; test: `engine/tests/jobs_runner.rs` | Real process group lifetime and host scheduling remain empirical. |
 | A13 | partial | Terminal receipt stability and observed completion before a late timeout tick. `V2ExecutionChain::TerminalReceiptIsImmutable` (`MC_executionchain.cfg`); `V2JobSupervision::NormalServicesArePreserved` (`MC_jobsupervision.cfg`) | test: `engine/tests/cases/jobs_robustness.rs`; test: `core/tests/v2_invariants.rs::spec_invariants_hold_over_short_command_sequences` | Cancellation does not imply escaped or remote effects stopped. |
-| A14 | external | Host execution and rejection of retired sandbox settings. | test: `engine/tests/v2_mcp.rs`; test: `engine/src/config.rs` | V2Isolation is historical and cannot establish a current sandbox guarantee. |
+| A14 | external | Host execution and rejection of retired sandbox settings. | test: `engine/tests/v2_mcp.rs`; test: `engine/src/config.rs` | Host execution is not OS confinement; process and remote effects require separate evidence. |
 | A15 | external | Target-environment diagnostics and recorded identity. | test: `engine/tests/cli.rs`; test: `engine/tests/cases/autonomy.rs` | Environment identity is an observation, not a proof that all external dependencies are equivalent. |
 | A16 | partial | Failed/unverified required checks cannot produce success. `V2Checks::NoUnverifiedSuccess` (`MC_checks.cfg`) | test: `engine/tests/v2_driver.rs`; test: `engine/tests/cases/autonomy.rs` | Check commands and deliverable content are outside finite symbolic outcomes. |
 | A17 | partial | Verified candidate cannot be upgraded by the check phase. `V2Checks::NoUnverifiedSuccess` (`MC_checks.cfg`) | test: `engine/tests/v2_driver.rs` | Arbitrary artifact dependency changes and complete content-version validation are not proved. |
@@ -74,7 +73,7 @@ current host execution.
 - Actor/command dispatch coverage is not a proof over every daemon method and every identity.
 - MCP JSON-RPC correlation, transport reconnection and complete framing remain implementation tests.
 - Bootstrap/schema migrations, fork/retention/export composition and automation admission across
-  all work states are not completely composed. The new export model checks a read snapshot and publication only.
+  all work states are not completely composed. The export model checks a read snapshot and publication only.
 - Wait diagnosis is based on impossible conditions and available external paths, not a graph-cycle
   detector; absence of a timer is not proof of deadlock. The complete diagnostic implementation is not proved.
 - The wider central configuration and arbitrary-string capability proofs require separate completed

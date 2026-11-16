@@ -1,42 +1,11 @@
 #!/usr/bin/env python3
-"""Where every document lives and who it is for (D-443).
+"""Check documentation ownership, links and entry-point reachability.
 
-The repository's documents are held to a web of audits — citations, the decision log's shape, the requirement
-trace, the generated references — but nothing said which of them are for a *user*, which for a *developer* and
-which are the evidence trail, nor which document is the one that introduces each of the others. A document
-mapped by nobody is a document nobody reads, and a fact with two homes drifts (the shape D-133 and D-203 gave
-the single-fact checks). This audit is that map, mechanically:
-
-    python3 tools/doc_inventory.py [--list]
-
-Every tracked markdown file outside the two documented language exceptions — `README.zh-CN.md` (a translation
-`tools/readme_zh.py` holds to `README.md`) and the frozen material under `tools/eval/` — must be:
-
-* **listed exactly once** by a `<!-- maps: PATH reader=ROLE -->` line in some document, where `ROLE` is one of
-  `user`, `developer`, `agent` or `evidence` — the reader is declared on a line this audit reads. The five
-  **entry points** below need no listing (they are where a reader starts) and neither do the exemptions;
-* **linked** by the map that lists it, with a relative Markdown link, so the listing is somewhere a reader can
-  actually follow it from; and
-* **reachable** from an entry point through relative links: `README.md`, `AGENTS.md`, `docs/DEVELOPMENT.md`,
-  `verification/README.md`, `tools/README.md`.
-
-| Finding | What it means |
-|---|---|
-| `orphan` | reachable from no entry point: nobody following the documents arrives at it |
-| `unlisted` | reachable, but no map lists it: nothing says who it is for |
-| `two maps` | two documents list it: it has two homes, and they will disagree |
-| `unlinked` | its map lists it but does not link it: a listing a reader cannot follow |
-| `reader` | a listing whose role is not one of the four |
-| `unknown` | a listing for a path that is not a tracked document |
-
-Each of the first four has its own control in `--self-check`, which runs the same analysis over a synthetic
-tree: a clean one, an orphan, a listing without a valid reader, a file listed by two maps and a listing whose
-map does not link it.
-
-Ceilings, stated because they are the rule's design and not a shortcut: the audit checks *shape*, so it can say
-a document has a declared reader and one home, never that the reader is the right one or that the document is
-worth its lines; it reads Markdown links only, so a route a reader finds through the GitHub UI is invisible to
-it; and `--list` prints the map for review rather than judging it.
+Every tracked Markdown document has one declaring map and a reader role, except
+explicit entry points, the Chinese translation and workflow release notes.
+Maps must link their subjects, use a supported role and name an existing document.
+Use --list to inspect ownership and --self-check for synthetic broken-map controls.
+This validates navigation structure, not prose quality or semantic completeness.
 """
 import argparse
 import collections

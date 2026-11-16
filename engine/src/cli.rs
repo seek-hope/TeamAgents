@@ -275,8 +275,7 @@ pub fn doctor(state_root: Option<PathBuf>, overrides: &[String]) -> i32 {
         }
         Err(e) => check(&mut results, "user config", false, e.clone()),
     }
-    // R27/A36: the v2 state root must be identifiable and usable; the legacy
-    // layout is only reported (its cleanup belongs to the archived plan's §14/R28)
+    // A36: identify and validate the state root; report legacy layouts without deleting them.
     let v2_root = state_root.unwrap_or_else(crate::v2_root);
     // D-479: inspect a live daemon without starting one or applying the newly read configuration.
     if v2_root.join("daemon.sock").exists() {

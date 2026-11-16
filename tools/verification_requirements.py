@@ -64,8 +64,7 @@ def render(records):
              "or environmental evidence. **Constraint** is a design/scope decision. No entry asserts full-system",
              "correctness. Every current model also has an executable normal-path witness, but one witness is not",
              "exhaustive action coverage. The checker validates IDs, named claims and source anchors; it does not",
-             "prove the semantic correspondence of prose to a model. Historical sandbox material does not support",
-             "current host execution.", "",
+             "prove the semantic correspondence of prose to a model. Host execution is not OS confinement.", "",
              "| Requirement | Class | Checked scope and formal evidence | Concrete evidence | Remaining boundary |",
              "|---|---|---|---|---|"]
     for row in records:
@@ -78,7 +77,7 @@ def render(records):
               "- Actor/command dispatch coverage is not a proof over every daemon method and every identity.",
               "- MCP JSON-RPC correlation, transport reconnection and complete framing remain implementation tests.",
               "- Bootstrap/schema migrations, fork/retention/export composition and automation admission across",
-              "  all work states are not completely composed. The new export model checks a read snapshot and publication only.",
+              "  all work states are not completely composed. The export model checks a read snapshot and publication only.",
               "- Wait diagnosis is based on impossible conditions and available external paths, not a graph-cycle",
               "  detector; absence of a timer is not proof of deadlock. The complete diagnostic implementation is not proved.",
               "- The wider central configuration and arbitrary-string capability proofs require separate completed",

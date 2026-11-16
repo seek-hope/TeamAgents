@@ -74,16 +74,13 @@ def witness_error(output, status):
     return None
 
 
-def check_inventory(document):
+def check_inventory(document, modules=None):
     covered = {case["module"] for case in document["cases"]}
-    historical = document.get("historical", {})
-    if set(historical) != {"V2Isolation"} or covered & historical.keys():
-        raise ValueError("only the D-480 isolation model is historical; current modules require witnesses")
-    if any(not reason.strip() for reason in historical.values()):
-        raise ValueError("historical modules need an explicit reason")
-    modules = {path.stem for path in TLA.glob("V2*.tla")}
-    missing = modules - covered - historical.keys()
-    extra = (covered | historical.keys()) - modules
+    if "historical" in document:
+        raise ValueError("historical model exemptions are not supported; every module needs a witness")
+    modules = modules if modules is not None else {path.stem for path in TLA.glob("V2*.tla")}
+    missing = modules - covered
+    extra = covered - modules
     if missing or extra:
         raise ValueError(f"witness inventory mismatch: missing={sorted(missing)}, unknown={sorted(extra)}")
 
@@ -147,7 +144,15 @@ def self_check():
     for bad in [trace.replace(CLAIM, "Other"), trace.replace("State 2:", ""),
                 trace + "Warning: incomplete\n", trace + "Error: evaluation failed\n"]:
         assert witness_error(bad, 12)
-    print("reachability verdict controls passed")
+    check_inventory({"cases": [{"module": "Current"}]}, {"Current"})
+    for invalid in [{"cases": []}, {"cases": [{"module": "Unknown"}]},
+                    {"cases": [{"module": "Current"}], "historical": {"Missing": "old model"}}]:
+        try:
+            check_inventory(invalid, {"Current"})
+        except ValueError:
+            continue
+        raise AssertionError("missing, unknown or exempted witness module was accepted")
+    print("reachability verdict and current-module inventory controls passed")
 
 
 def fixture_check(jar):

@@ -1,130 +1,108 @@
 #!/usr/bin/env python3
-"""`D-<n>` citations that resolve to nothing in the current decision log (the detector behind D-170).
+"""Check the current-rule index and Markdown rule references.
 
-`docs/DECISIONS.md` is the index of what is binding, so a document that cites `D-61` is pointing a reader at a
-rule and at the entry that records why it holds. Nothing checked those pointers: `citations.py` resolves code
-names and paths, `decisions_log.py` checks the log's own shape, and a citation to a decision that is not in the
-log — because it belonged to an earlier implementation, or because it was renumbered, or because the number was
-simply mis-remembered — reads exactly like a citation that works.
-
-    python3 tools/decision_citations.py [--list] [--only PATH]
-
-Two indexes define what a citation may point at:
-
-* every `## D-<n> <title>` heading in `docs/DECISIONS.md` — the live decisions;
-* the origin column of that file's **"Earlier rules that still apply"** table — the earlier (v1) decisions that
-  still bind and are deliberately *not* re-stated as entries. Those two sets are the whole index; a reader who
-  looks up a number in the log finds either its entry or its row.
-
-Every `D-<n>` in the tracked markdown must resolve to one of them, unless its own *paragraph* marks it as
-history (a marker word: v1, earlier, removed, archive, history, gone, no longer) — that is how a documented
-removal, like "restoring the v1 D-32 contract", stays legal without pretending the entry still exists.
-
-`--list` prints the index; `--only PATH` checks one file instead of the tracked tree, which is how the control
-is run (a synthetic file with a bogus number must produce exactly one finding).
-
-Limits, deliberately stated: the earlier-rules index is read as "every `D-<n>` inside that table", so a number
-mentioned in a rule's *text* counts as indexed (quieter, never wrong about the numbers that do resolve); the
-marker is looked for in the whole blank-line-separated paragraph that carries the citation, so a long paragraph
-that says "earlier" somewhere is forgiven (quieter again); the scan is a plain regex over markdown, so a number
-split across a line break is invisible; and the frozen
-external evaluation material is out of scope for this decision-link audit.
+Only IDs explicitly declared in the Rule IDs column of docs/DECISIONS.md define rules.
+Every definition needs a topic and current contract; duplicate IDs, an empty/missing index,
+and unresolved citations fail. Historical marker words never excuse unresolved references.
+This checks reference integrity, not the semantic completeness of a contract.
 """
+import argparse
 import pathlib
 import re
 import subprocess
-import sys
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
-LOG = REPO / "docs" / "DECISIONS.md"
-INDEX_HEADING = "## Earlier rules that still apply"
-EXCLUDED = ("tools/tmp/",)
-HEADING = re.compile(r"^## D-(\d+) ", re.M)
+LOG = "docs/DECISIONS.md"
+HEADING = "## Current rule index"
 NUMBER = re.compile(r"\bD-(\d+)\b")
-# a citation whose own line says the decision is history is a record, not a broken pointer
-HISTORY_MARKERS = ("v1", "earlier", "removed", "archive", "history", "gone", "no longer", "pre-v2")
 
 
-def index():
-    """(headings, earlier) — the numbers the log itself defines."""
-    text = LOG.read_text(errors="replace")
-    headings = {int(m.group(1)) for m in HEADING.finditer(text)}
-    start = text.find(INDEX_HEADING)
-    earlier = set()
-    if start >= 0:
-        end = text.find("\n## ", start + len(INDEX_HEADING))
-        section = text[start:end if end > 0 else len(text)]
-        earlier = {int(m.group(1)) for m in NUMBER.finditer(section)}
-    return headings, earlier
+def index(text):
+    """Return explicitly defined IDs and structural findings."""
+    problems, defined = [], set()
+    if text.splitlines().count(HEADING) != 1:
+        return defined, ["expected exactly one current-rule index"]
+    section = text.split(HEADING, 1)[1].split("\n## ", 1)[0]
+    rows = [line.strip() for line in section.splitlines() if line.strip().startswith("|")]
+    if len(rows) < 3 or rows[0] != "| Topic | Current contract | Rule IDs |" or rows[1] != "|---|---|---|":
+        problems.append("expected a nonempty Topic / Current contract / Rule IDs table")
+    for row in rows[2:]:
+        cells = [cell.strip() for cell in row.strip("|").split("|")]
+        if len(cells) != 3 or not all(cells):
+            problems.append(f"incomplete current-rule row: {row}")
+            continue
+        ids = cells[2].split(", ")
+        if any(re.fullmatch(r"D-\d+", value) is None for value in ids):
+            problems.append(f"malformed rule IDs: {cells[2]}")
+            continue
+        for value in ids:
+            number = int(value[2:])
+            if number in defined:
+                problems.append(f"duplicate rule ID: {value}")
+            defined.add(number)
+    if not defined:
+        problems.append("no current rules defined")
+    return defined, problems
 
 
-def tracked():
-    out = subprocess.run(["git", "ls-files", "--cached", "--others", "--exclude-standard"],
-                         cwd=REPO, capture_output=True, text=True, check=True).stdout
-    return [path for path in out.split("\n") if path.endswith(".md") and not path.startswith(EXCLUDED)]
+def findings(text, defined):
+    return [(line, match.group(0))
+            for line, value in enumerate(text.splitlines(), 1)
+            for match in NUMBER.finditer(value) if int(match.group(1)) not in defined]
 
 
-def findings(paths, headings, earlier):
-    """[(path, line, number, text)] for every citation that resolves to nothing."""
-    known = headings | earlier
-    out = []
+def self_check():
+    clean = HEADING + "\n\n| Topic | Current contract | Rule IDs |\n|---|---|---|\n| State | Atomic writes | D-1, D-2 |\n"
+    defined, problems = index(clean)
+    assert defined == {1, 2} and not problems
+    assert not findings("D-1 and D-2", defined)
+    assert findings("History remains readable; D-99 applies.", defined) == [(1, "D-99")]
+    for invalid in ["", HEADING, clean.replace("Atomic writes", ""),
+                    clean + "| Other | Current rule | D-1 |\n",
+                    clean.replace("D-1, D-2", "D-1 through D-2"), clean + HEADING]:
+        assert index(invalid)[1], invalid
+    misleading = clean.replace("Atomic writes", "D-99 is not a definition")
+    assert 99 not in index(misleading)[0]
+    print("current-rule audit controls passed")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--only", action="append", help="check this Markdown file instead of the tracked tree")
+    parser.add_argument("--list", action="store_true", help="list defined rule IDs")
+    parser.add_argument("--self-check", action="store_true", help="exercise structural and citation controls")
+    args = parser.parse_args()
+    if args.self_check:
+        self_check()
+        return 0
+    defined, problems = index((REPO / LOG).read_text())
+    for problem in problems:
+        print(f"{LOG}: {problem}")
+    if problems:
+        return 1
+    if args.list:
+        print(", ".join(f"D-{number}" for number in sorted(defined)))
+        return 0
+    paths = args.only
+    if paths is None:
+        paths = subprocess.check_output(
+            ["git", "ls-files", "--cached", "--others", "--exclude-standard"], cwd=REPO, text=True).splitlines()
+        paths = sorted({p for p in paths if p.endswith(".md") and not p.startswith("tools/tmp/")})
+    checked = failures = 0
     for path in paths:
         file = REPO / path
         if not file.is_file():
+            if args.only:
+                print(f"{path}: missing input")
+                failures += 1
             continue
-        for number, line, text, paragraph in scan(file.read_text(errors="replace")):
-            if number in known:
-                continue
-            if any(marker in paragraph.lower() for marker in HISTORY_MARKERS):
-                continue
-            out.append((path, number, line, text))
-    return out
-
-
-def scan(text):
-    """[(number, line, stripped line, paragraph)] for every `D-<n>` in `text`.
-
-    The paragraph is the blank-line-separated block the line belongs to: a citation's history marker is usually
-    in the sentence that introduces it, not on the line the number happens to land on.
-    """
-    lines = text.split("\n")
-    blocks = []          # (first 1-based line, last 1-based line, text) per paragraph
-    start = None
-    for index, raw in enumerate(lines + [""], 1):
-        blank = not raw.strip()
-        if blank and start is not None:
-            blocks.append((start, index - 1, "\n".join(lines[start - 1:index - 1])))
-            start = None
-        elif not blank and start is None:
-            start = index
-    paragraph_of = {}
-    for first, last, body in blocks:
-        for number in range(first, last + 1):
-            paragraph_of[number] = body
-    for line, raw in enumerate(lines, 1):
-        for match in NUMBER.finditer(raw):
-            yield int(match.group(1)), line, raw.strip(), paragraph_of.get(line, raw)
-
-
-def main(argv):
-    only = [argv[i + 1] for i, arg in enumerate(argv) if arg == "--only" and i + 1 < len(argv)]
-    headings, earlier = index()
-    if "--list" in argv:
-        print(f"live decisions ({len(headings)}): {', '.join(f'D-{n}' for n in sorted(headings))}")
-        print(f"earlier rules still in force ({len(earlier)}): {', '.join(f'D-{n}' for n in sorted(earlier))}")
-        return 0
-    paths = only or tracked()
-    found = findings(paths, headings, earlier)
-    for path, number, line, text in found:
-        print(f"{path}:{line}: D-{number} is in no heading and no \"Earlier rules\" row of docs/DECISIONS.md")
-        print(f"    {text[:120]}")
-    checked = sum(1 for path in paths if (REPO / path).is_file())
-    print(
-        f"{checked} markdown file(s), {len(headings)} live decisions and {len(earlier)} earlier rules indexed: "
-        f"{len(found)} unexplained citation(s)"
-    )
-    return 1 if found else 0
+        checked += 1
+        for line, name in findings(file.read_text(), defined):
+            print(f"{path}:{line}: {name} has no current contract in {LOG}")
+            failures += 1
+    print(f"{checked} Markdown files, {len(defined)} current rule IDs, {failures} unresolved references")
+    return int(bool(failures))
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    raise SystemExit(main())

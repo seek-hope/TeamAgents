@@ -1,60 +1,11 @@
 #!/usr/bin/env python3
-"""One fact, checked against every document that states it: is the project config read? (D-133)
+"""Check project-configuration wiring, trust claims and documented storage paths.
 
-The product reads the **user** config only. `config::load_user_config_for`, the loader that merges a
-repository-local `<cwd>/.teamagents/config.toml` under the trust rules, is implemented and unit-tested, but
-nothing outside its own tests calls it — the daemon, TUI and `exec` all go through `load_user_config` with
-`user_config_path()`. Three documents said the merge was live anyway (the config reference, the MCP bullet of
-the user guide and one acceptance row), and they drifted for the honest reason that the loader *exists*: a
-reader who sees the function, its tests and D-74's design note has every reason to believe it runs.
-
-So the fact is computed here from the code — does `load_user_config_for` have a production caller (a mention
-in `core|engine|tui/src` outside a `#[cfg(test)] mod`)? — and the documents have to agree with it:
-
-* while it has none, each sentence of `UNWIRED_CLAIMS` must be **present** and each sentence of `WIRED_CLAIMS`
-  **absent**;
-* the lists flip with the fact, so the script fails until the sentences are rewritten together. That is the
-  point: the claim is one fact with several statements, not several opinions.
-
-    python3 tools/project_config_claim.py
-
-**D-244 flipped them**, and the flip is what the design was for: the loader became the product's path (the
-daemon, `doctor` and the client all load through it) under one gate — `[permissions] trust_project = true` in the
-user's own config, with `[permissions]` itself, `hooks`, `checks`, `retention` and `limits` never coming from a
-repository. The four negative sentences are now this audit's blacklist (`WIRED_ONLY_PHRASES` was folded into
-`WIRED_CLAIMS`: each document must state the live behaviour in words the list carries), and the wiring was
-measured over a real session rather than inferred from the call graph —
-`tools/dogfood/project_config.py` reads the offered-surface witness twice, refused and trusted, and a third time
-for a project that tries to grant itself the flag.
-
-**D-236 added the sibling fact in the same files.** The *user* config's path is stated in five places — the
-README, the user guide, the config reference, the install guide and `install.sh`, which **writes** the very file
-the product reads — and the code builds it as `xdg_config_home().join(APP).join("config.toml")`. The audit now
-derives `<APP>/config.toml` from that function (and reports if its shape changes, so the rule cannot quietly stop
-reading), requires every one of those five statements to name it, and requires the line that names it to say which
-directory it sits in (`XDG_CONFIG_HOME` or the `~/.config` default). A rename would otherwise leave the installer
-writing a config nothing reads. Controls: `--doc` on a README copy with the path renamed reports the missing path,
-and one with the directory half dropped reports that half.
-
-**D-238 added the other path the product builds.** D-236's sibling one directory over: the *state root*. The code
-builds `<xdg_state_home>/<APP>/v2` (`engine/src/lib.rs::v2_root()` joins a version segment onto `state_dir()`,
-which joins `APP` onto `xdg_state_home()`), and four places tell a user where a session's state lives — the
-README's `--state-root` row, the user guide's state-root section (twice), the Chinese README's translated row,
-and the install guide's uninstall note, which names the app directory one level up. The audit derives the tail
-and the directory half (`XDG_STATE_HOME`, or the `~/.local/state` default) from those functions, *reports* when
-either stops reading, and requires each statement to name the tail with one of the two directory names on the
-same line. **Controls**: `--doc README.md=<copy with `v2` renamed>` reports the missing path, one with
-`XDG_STATE_HOME` swapped for `XDG_CONFIG_HOME` reports the half, `--doc docs/INSTALL.md=<copy without the state
-line>` reports the app directory, and `--doc engine/src/lib.rs=<copy without the join>` reports that the path
-cannot be derived.
-
-Ceiling: the negative half is a fixed sentence list and the positive half a blacklist of the three wordings
-that were wrong, so a *new* wording that claims the merge is live without matching one of them is not caught —
-review has to keep that list in step with the prose. The two paths (D-236, D-238) compare the tail verbatim and
-the directory half by the presence of one of two names on the line, so a document may state a path with a
-different home variable and pass; and their file lists are fixed, so a *new* document that states either path is
-not swept in (the Chinese README is in the state-root list because a path is not translated, and the acceptance
-ledger's dated migration sentence is deliberately not held).
+The loader must have production callers consistent with the documented trust
+boundary. User configuration and state paths are derived from Rust functions
+and compared with the guides and installer. --doc PATH=FILE supplies isolated
+path-check fixtures. Call-site and phrase matching do not prove every loading
+path or trust decision; loader tests and the project-config probe cover those.
 """
 import argparse
 import pathlib
@@ -85,7 +36,7 @@ UNWIRED_CLAIMS = [
 WIRED_CLAIMS = [
     ("docs/CONFIG.md", "is read by the product now", "the config reference's trust rule"),
     ("docs/USER-GUIDE.md", "it contributes nothing until you opt in", "the user guide's §2"),
-    ("docs/ACCEPTANCE.md", "The project config is read, since D-244", "the known-gap entry"),
+    ("docs/ACCEPTANCE.md", "The project config is read under explicit user trust", "the current configuration contract"),
     ("docs/PRODUCT-COMPARISON.md", "reads repository-local configuration", "the comparison's config row"),
 ]
 

@@ -5,8 +5,8 @@ it: the TUI, `teamagents exec`, the CLI verbs (`instances`, `tasks`, `approvals`
 under `tools/dogfood/`. The design's JSON-lines protocol guarantees
 (handshake, `command_id` dedup, the event watermark); this document lists what it actually carries, generated from
 the two dispatchers in the code. The [visual architecture](ARCHITECTURE.md) relates these methods to state,
-transactions and recovery. Database schema 9, socket protocol 2 and work policy 1 are separate versions. Schema 8
-removed the goal vocabulary; schema 9 adds the session exploration-tree revisions, head and Leader role (D-504).
+transactions and recovery. Database schema 9, socket protocol 2 and work policy 1 are separate versions.
+The schema includes work scopes and the session exploration-tree revisions, head and Leader role (D-504).
 
 **Framing.** One JSON object per line, UTF-8, at most 32 MiB including the newline. Oversized or incomplete
 requests close the connection; oversized replies return a bounded error. The daemon speaks first: a greeting carrying

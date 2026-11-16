@@ -8,7 +8,7 @@ It contains no review reports, evaluation datasets or archived evidence.
 | Area | Contents |
 |---|---|
 | Build and document checks | `build_references.py`, `hygiene_catalogue.py`, `doc_inventory.py`, `citations.py`, `markdown_tables.py` |
-| Decisions and requirements | `decisions_log.py`, `decision_queue.py`, `decision_citations.py`, `requirement_trace.py` |
+| Decisions and requirements | `decision_citations.py`, `requirement_trace.py` |
 | User-facing contracts | `project_config_claim.py`, `release_artifact.py`, `readme_zh.py`, `doc_flags.py`, `exec_report.py`, `tui_keys.py`, `env_knobs.py` |
 | Generated references | `config_keys.py`, `config_reference.py`, `command_params.py`, `flag_fields.py`, `event_catalogue.py`, `protocol_catalogue.py`, `tool_catalogue.py` |
 | Source and test quality | `dead_code.py`, `silent_skips.py`, `leak_guard.py`, `test_counts.py` |
@@ -21,10 +21,13 @@ It contains no review reports, evaluation datasets or archived evidence.
 `make pty` runs the terminal matrix. See `docs/DEVELOPMENT.md` for the full commands and their boundaries.
 
 `test_counts.py` holds the canonical ledger and registered current totals/triples to Cargo test lists. Its
-`--write` mode changes numeric fields only; a missing or ambiguous current statement fails. Historical receipts
-keep their original counts, and dates and passing-gate claims require separate evidence.
+`--write` mode changes numeric fields only; missing or ambiguous current statements fail. Passing-gate claims
+require separate evidence bound to the actual command, source revision and exit status.
 
-For the current tree, `citations.py` verifies that 87 relative links resolve today. It checks 93 commands, 15 distinct targets, 15 declared as checked on 2026-11-15; its other totals are recomputed and compared with the script's own docstring.
+`citations.py` checks source references, relative links, Make targets and section references against the current
+tree, without historical-marker exemptions. It computes coverage counts at execution time.
+`verification_catalogue.py` checks the formal report against a fingerprint of the current input paths and bytes;
+its source-binding controls reject changed, added, removed or renamed material.
 
 `tools/tmp/` is ignored scratch space for new local runs. It is not source, evidence of a later source revision or a
 committed artifact. A passing result always needs its actual command, source revision and exit status.

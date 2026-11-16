@@ -15,8 +15,8 @@ make verify-kani
 The first run may download the pinned **TLC v1.7.1** jar; its SHA-256 is pinned in `Makefile`. Keep generated states and manual probes under `tools/tmp/`.
 Do not treat simulation, a timeout, a witness or a green exit without semantic checks as proof.
 
-Current inventory: **393 configurations across 48 modules**: **65 positive configurations in 62 traversals**,
-**327 controls**, and one separate wide configuration. There are **79 witnesses** and **9 Kani harnesses**.
+Current inventory: **387 configurations across 47 modules**: **63 positive configurations in 60 traversals**,
+**323 controls**, and one separate wide configuration. There are **79 witnesses** and **9 Kani harnesses**.
 Witnesses demonstrate reachability only. The wide configuration is not claimed complete, and Policy B canonical
 allocation is not adopted.
 
@@ -66,7 +66,7 @@ module the method's rule is checked in; the property-by-property anchors above s
 | `cancel_task` | `V2Task.tla` |
 | `read_history` | `V2History.tla` |
 | `read_search_tree` | `V2SearchTree.tla`: D-506 User/Leader authority, read-only behavior and stale reporting; daemon/CLI presentation remains code-tested |
-| `apply_search_tree` | `V2SearchTree.tla`: D-506 current-revision admission, replay stability, structural guards, merge refs and history; arbitrary text, multi-op patch order and SQLite execution remain code-tested |
+| `apply_search_tree` | `V2SearchTree.tla`: D-506 current-revision admission, replay stability, structural guards, merge refs, history and ordered-pair atomicity; arbitrary text, general-length patch ordering and SQLite execution remain code-tested |
 | `fire_timer` | `V2Wait.tla` |
 | `blocked_report` | `V2Wait.tla` |
 | `submit_input` | `V2Control.tla` (the inbound boundary); `V2InputQueue.tla` (verified snapshots, original revision and at-most-once consumption) |
@@ -243,14 +243,6 @@ Marked claims: `AtMostOncePerEnvelope`, `BoundedInbox`, `DrainIsOwned`, `LogIsIn
 Configurations: `MC_inputqueue.cfg`, `MC_inputqueue_original.cfg`, `MC_inputqueue_replay.cfg`, `MC_inputqueue_revision.cfg`, `MC_inputqueue_settled.cfg`, `MC_inputqueue_snapshot.cfg`, `MC_inputqueue_unverified.cfg`.
 
 Marked claims: `AtMostOnceDelivery`, `OriginalRetained`, `PendingRevisionOnly`, `SnapshotDelivery`, `TypeOK`, `VerifiedAdmission`.
-
-### `V2Isolation.tla`
-
-Configurations: `MC_isolation.cfg`, `MC_isolation_fallback.cfg`, `MC_isolation_ssh.cfg`, `MC_isolation_ssh_fallback.cfg`, `MC_isolation_ssh_unreachable.cfg`, `MC_isolation_unavailable.cfg`.
-
-Marked claims: `RunsOnlyUnderTheConfiguredBackend`, `TypeOK`, `UnavailableBackendNeverRuns`.
-
-This is abstract isolation material only; it supplies no current host-sandbox guarantee.
 
 ### `V2JobSupervision.tla`
 

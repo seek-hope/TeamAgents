@@ -1,37 +1,27 @@
 # Current formal verification report
 
-This report records the currently accepted finite verification evidence and its limits. Earlier runtime
-receipts retain their original source bindings. The property/configuration mapping is in [README.md](README.md); executable reproduction commands
-are in [DEVELOPMENT.md](../docs/DEVELOPMENT.md).
+This report records accepted finite verification evidence and its limits. Property/configuration mappings are
+in [README.md](README.md); reproduction commands are in [DEVELOPMENT.md](../docs/DEVELOPMENT.md).
 
-## 0. Gate status (re-run 2026-11-15 at `675af52e`)
+## 0. Gate status (re-run 2026-11-16)
 
-D-521 changed the Makefile, which the source-provenance gate treats as formal material. The complete formal
-chain was re-run: all 455 material files, including the Makefile and Kani source subjects, match `675af52e`.
-The 446 earlier formal inputs are unchanged. Replay inputs, logs and result manifests remain under
-`tools/tmp/d521-formal-tmp/`. The positive traversals took 1804.3 seconds; this is a local replay duration,
-not a performance comparison. The historical runtime receipt below remains bound to `b0a1091c`.
+Material SHA-256: `f320651f4145819b99aab584e816c4a5da30614743e0d0a38003c9cfac2ce68f`.
 
-The current finite replay verified all **65** configurations in **62** traversals, refuted all **327** negative controls,
-reached all **79** normal-path witnesses, and passed all **9** Kani harnesses. The sequential chain
-exited 0; every positive run reports exit 0 with no error, and its recorded model/configuration hashes match
-the current files. Kani reported `Complete - 9 successfully verified harnesses, 0 failures, 9 total`.
+The current finite replay verified all **63** configurations in **60** traversals,
+refuted all **323** negative controls, reached all **79** normal-path witnesses and passed all **9** Kani harnesses.
+Each Make target exited 0,
+and its input hashes remained unchanged throughout execution. Kani reported
+`Complete - 9 successfully verified harnesses, 0 failures, 9 total`.
 
-`verification/tla/V2SearchTree.tla` has SHA-256
-`b2d814d597ddb5f9382ca712e6431a1bf3d67ab7b21ce2f44137c5cae39a2c12`.
-The source baseline `b0a1091c` passed `make check` with **814 Rust tests**: core 197, engine 509 and TUI 108.
-These include protocol paging, tariffs, retention, MCP, updater, continuous-input accounting and bounded-buffer
-regressions. All 18 offline
-probes and the final release/install rehearsal passed; the archive also passed isolated Debian upgrade/rollback.
-The changed `V2Daemon.tla`, included in the complete replay, separately passed two positive configurations in one exhaustive traversal:
-135,750 distinct / 1,858,231 generated states. Its SHA-256 is
-`7ed94d6097d51f9519aa7a9e821c657b27cdbb79b18575b969c00b9dc66e3907`.
-Its arbitrary-prefix page abstraction does not model production retention, oversized-event resync,
-TUI history-refresh retry or request/input cost attribution.
+The fingerprint binds the current model/configuration files, verification drivers, Makefile and compiled Kani
+subjects. `tools/verification_catalogue.py --source-hash` recomputes it; changing the fingerprint alone does not
+renew acceptance. Current replay inputs, logs and actual target exits are retained under
+`tools/tmp/current-verification/`. This is a finite model result, not native-runtime refinement.
 
-The catalogue contains **393 configurations across 48 modules**: 65 positive configurations, 327 controls and
-one separate wide configuration. Positive inputs share a traversal only when their model, specification and
-domains match; the 65/62 distinction is intentional.
+The catalogue contains **387 configurations across 47 modules**, including one separate incomplete wide
+configuration. Positive inputs share a traversal only when their model, specification and domains match;
+the 63/60 distinction is intentional. The daemon model's arbitrary-prefix page abstraction does not cover
+production retention, oversized-event resync, TUI refresh retry or request/input cost attribution.
 
 ## 1. Current search-tree model
 
@@ -74,8 +64,8 @@ The following are implementation checks rather than TLA enumeration:
   revision-history checks after each command, including a deliberately corrupted-tree negative control.
 - CLI, daemon and export projections of the same session tree.
 
-The original 24-step control-plane exploration is retained before the two explicit tree steps, so tree coverage
-does not displace existing approval coverage. These tests use real SQLite and scripted providers, not a claim of
+The control-plane exploration includes 24 business transitions and two explicit tree steps, retaining both
+approval and tree coverage. These tests use real SQLite and scripted providers, not a claim of
 arbitrary-input TLA enumeration.
 
 ## 3. What remains unproven or unmeasured
@@ -86,12 +76,6 @@ arbitrary-input TLA enumeration.
 2. **Wide and canonical allocation.** The separate wide configuration is not claimed complete. Policy B
    canonical allocation is not adopted; a source-bound bidirectional fair-trace equivalence, including actual
    actions, enabledness, occurrence, fairness, properties/witnesses and exact source binding, is not complete.
-   The unchanged wide configuration was attempted again with eight workers, an 8 GiB heap and a 90-minute
-   deadline, without symmetry, canonical allocation or state constraints. It stopped at the deadline after
-   5401.0 seconds (TLC exit 143, verdict checker exit 1); all pinned inputs remained unchanged. Its last
-   progress line reported 61,542,521 distinct states and 45,249,691 queued states. This is incomplete
-   exploration, not a successful verification. Inputs, checkpoints and receipts remain under
-   `tools/tmp/wide-fde93f53-20261115/`.
 3. **Scheduler and environment fairness.** Provider scheduling, process-group behavior, escaped descendants,
    remote effects, filesystem races and power-loss timing remain outside the finite model.
 4. **Implementation detail outside the model.** Complete provider/JSON-RPC parsing and retry classification,

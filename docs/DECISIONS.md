@@ -1,406 +1,216 @@
 # Current implementation decisions
 
-This file records only the rules currently in force and the latest confirmed change. It is not a decision history.
-The design baseline is [DESIGN.md](DESIGN.md), acceptance evidence is in [ACCEPTANCE.md](ACCEPTANCE.md), and
-verification boundaries are in [verification/REPORT.md](../verification/REPORT.md).
+This file records the rules currently in force, not their change history. Stable rule IDs identify current
+contracts and may be cited from source or documentation; they do not require keeping superseded implementations
+or experiment reports. The baseline is [DESIGN.md](DESIGN.md), acceptance is in [ACCEPTANCE.md](ACCEPTANCE.md),
+and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
 
-## Earlier rules that still apply
+## Current rule index
 
-This table records only current contracts and their identifiers. It contains no earlier behavior, run result or
-evaluation evidence.
-
-| Topic | Current contract | Origin |
+| Topic | Current contract | Rule IDs |
 |---|---|---|
-| Custom providers | Compatible services are configured through model profiles | D-40 |
-| Daemon identity | A client learns session/workspace identity from the running daemon | D-41, D-57 |
-| Headless outcomes | A run reports its own outcome and does not infer it from prior events | D-49, D-72 |
+| Providers | Compatible services use configured profiles | D-40 |
+| Daemon identity | Clients learn authoritative session/workspace identity from the daemon | D-41, D-57 |
+| Headless outcomes | Each run reports its own outcome and attributed usage | D-49, D-72, D-516 |
 | No ambient Shell | Spawned instances need explicit scoped grants | D-61 |
-| MCP | Bound services use the shared authority, budget, cancellation and receipt paths | D-74 |
-| Retired external profile | The retired external execution profile is refused | D-75 |
-| Web bindings | Search/fetch tools exist only when configured and authorized | D-79, D-168 |
-| Instruction files | Explicit instruction sources are read at the configured boundary | D-102, D-246 |
-| State paths | State-root kind and path validation applies before writes | D-229 |
-| Skills roots | Skills live in configured roots and load on demand | D-232 |
-| Defaults | Current defaults remain explicit | D-239 |
-| Retry budget | Transport retry counts are bounded per instance | D-240, D-247 |
-| Budget ceiling | Usage ceilings refuse new requests rather than silently exceeding them | D-287 |
-| Verification | Independent verification follows producer/verifier authority and evidence boundaries | D-393, D-395 |
+| MCP | Bound tools/resources share authority, budgets and receipts; discovery/authentication are bounded | D-74, D-513 |
+| Unsupported configuration | External execution profiles and sandbox settings are explicitly refused | D-75, D-161, D-480 |
+| Web bindings | Search/fetch require configuration and authorization | D-79, D-168, D-482 |
+| Instruction files | Explicit sources load at the configured boundary | D-102, D-246 |
+| State paths | State-root kind and path validation precedes writes | D-229 |
+| Skills | Configured roots are validated and content loads on demand | D-232 |
+| Defaults | Defaults remain explicit | D-239 |
+| Retries | Transport retries are bounded per instance | D-240, D-247 |
+| Repository config | Explicit project trust is required; policy remains user-only | D-244, D-434 |
+| Budget ceiling | Usage ceilings refuse requests rather than silently exceeding limits | D-287 |
+| Formal scope | Claims require a checked root and control, or a declared type/status exception | D-362, D-462 |
+| Images | Requests follow the model's declared image capability | D-392 |
+| Verification | Independent checks respect producer/verifier authority | D-393, D-395 |
+| Deadline warning | One warning per live work, before its deadline | D-410 |
+| OAuth | HTTP services use explicit login and resource-bound credentials | D-412 |
 | Tool timeouts | Model-picked and configured timeouts remain bounded | D-414, D-415 |
-| Context limits | Tool-output and retained-context caps preserve bounded requests | D-426 |
-| Repository config | Repository-local config is discovered only through explicit trust | D-244, D-434 |
-| Input pages | Input reads enforce row and byte budgets without silent mutation | D-452 |
-| Update | Governed update requires an exact artifact and user approval | D-453 |
-| Delegation | Only explicitly delegable grants can produce attenuated task-scoped children | D-455 |
-| Reviewer | Automatic review is strict, scoped and cannot approve self-update | D-458 |
-| Prompt cache | The L1 frontier is stable between compactions and telemetry is provider-reported | D-459 |
-| Diagnostics | Read-only diagnosis uses the same readiness rule as execution | D-461 |
-| Formal coverage | Claims need a checked root, a refuting control or an explicit type/status exception | D-462 |
-| Reasoning effort | Effort selection falls back to the nearest declared lower level | D-476 |
-| Environment/input | Environment and pending-input observations preserve identity and revision | D-479 |
-| Durable work | Work persists across turns, compaction and restart with bounded continuation | D-487 |
-| Images | Image support follows the model's declared capability | D-392 |
-| Search tree | One revisioned session exploration tree accompanies compaction | D-504 |
+| Check briefing | Required checks are stated once per live turn | D-418 |
+| Context limits | Tool-output and retained-context caps bound requests | D-426 |
+| Retention | Explicit pruning windows and reference protection govern collection | D-435, D-436, D-512 |
+| Input pages | Row/byte budgets do not silently mutate inputs | D-452 |
+| Update | Exact artifacts and user approval are required; rollback preserves recovery errors | D-453, D-514 |
+| Delegation | Only delegable grants produce attenuated task-scoped children | D-455 |
+| Reviewer | Strict scoped review cannot approve self-update; literal searches remain reviewable | D-458, D-515 |
+| Prompt cache | The L1 frontier is stable between compactions; telemetry is provider-reported | D-459 |
+| Diagnostics | Read-only diagnosis uses execution's readiness rules | D-461 |
+| Reasoning effort | Selection falls back to the nearest declared lower level | D-476 |
+| Environment/input | Observations preserve identity and revision | D-479 |
+| Durable work | Bounded continuation persists across turns, compaction and restart | D-487 |
+| Search tree | One revisioned session tree; atomic ordered patches and supplied source-entry IDs | D-504, D-506, D-517 |
+| Repository contents | Keep current implementation, documentation and runnable tools; Git retains history | D-508 |
+| Daemon pagination | Bounded pages preserve delivery cursors and explicit resync | D-509 |
+| Tariffs | Frozen optional prices report unknown usage/cost explicitly | D-510 |
+| Request construction | Borrowed estimation preserves wire content and token-count semantics | D-511 |
+| Tool arguments | Malformed calls fail before approval/dispatch; valid sentinel-key data remains valid | D-518 |
+| Source inventory | Cargo lists determine current counts, not passing-gate claims | D-519 |
+| File edits | Supplied hash preconditions validate before staging or writes | D-520 |
+| Target ABI | File-open flags use target constants; cross-emulation is not native acceptance | D-521 |
+| Session safety | Listening or uncertain endpoints prevent destructive lifecycle actions | D-522 |
+| Profile selection | Resolve profiles before preparation/recovery; cached retries stay unchanged | D-523 |
+| Team interface | Member observation is separate from Leader action ownership | D-524 |
+| Public fetch | Fake-IP hostnames require public-address verification; content caps count UTF-8 bytes | D-525 |
 
-## Current rules
+## Authority and runtime
 
-### Authority and runtime
+- `core/src/v2/control.rs::Control::submit` is the single team-transaction entry. Identity, operation IDs,
+  permission revisions and event sequence numbers come from control state, not model/client claims.
+- Each session has one SQLite store with WAL and `synchronous=FULL`. Engine writes serialize through a bounded
+  single-writer worker; model/tool waits happen outside transactions. The schema is 9 with explicit migration.
+- Persisted phase and location drive execution. Known results are reused; unknown effects become
+  `OUTCOME_UNKNOWN` and are never replayed on a guess.
+- Instance termination is user-only, distinct from interrupt, cancellation, pause, detachment and shutdown.
+  Cancelling a task does not prove that its process or remote effect stopped.
+- Grants only narrow their parent, and parent revocation cascades. Instructions, tool results, model checkpoints
+  and tree nodes cannot grant authority. Ordinary Shell, acceptance commands and local MCP run on the host;
+  logical permissions are not OS confinement. Unsupported sandbox/external execution settings are refused.
+- Self-update needs concrete user approval. Automatic review assesses only the matching operation with strict
+  complete JSON and bounded current-user/policy context. Genuine user requests remain authorization evidence;
+  arguments and claimed prior approvals grant none. Credential/runtime access and privilege escalation retain
+  deterministic guards. Restricted literal searches may reach model review; executable shell composition,
+  redirects, expansions and unsupported syntax remain conservatively refused.
+- Malformed JSON, non-object arguments and non-string argument encodings fail before approval/dispatch with
+  failed, not-started receipts. Raw calls and known usage remain recorded. `_invalid_arguments` is valid data;
+  caller-written parse metadata is ignored. PREPARED intents use stored source calls where available, while
+  dispatched recovery retains result/unknown-outcome rules. This is not complete per-tool schema validation.
 
-- `core/src/v2/control.rs::Control::submit` is the single team-transaction entry point. Identity, operation ids,
-  permission revisions and event sequence numbers come from the control plane, not from model or client fields.
-- Each session has one authoritative SQLite store with WAL and `synchronous=FULL`. Engine writers serialize
-  through the bounded single-writer worker. Model and tool waits happen outside transactions.
-- Execution state is driven by the phase machine and persisted location. Known results are reused; unknown
-  effects are marked unknown and are never replayed on a guess.
-- User-only instance termination remains distinct from interrupt, task cancellation, pause, detachment and
-  daemon shutdown. Cancelling a task does not prove that its process or remote effect stopped.
-- Capability grants can only narrow their parent. Revoking a parent revokes derived grants. A model checkpoint,
-  repository instruction, tool result or tree node cannot grant authority.
-- Ordinary Shell, acceptance commands and local MCP run on the host. This is not OS confinement; same-user
-  processes can access whatever their OS permissions allow. Retired sandbox settings are rejected.
-- Self-update requires a concrete user approval. An automatic reviewer can assess only a matching operation,
-  with strict evidence and bounded current-user/policy context; it cannot approve self-update. Quoted genuine
-  user requests remain authorization evidence; operation arguments and claimed prior approvals do not. The
-  deterministic refusal layer recognizes publishing commands, credential/runtime access and privilege escalation;
-  literal read-only searches for those words remain model-reviewable, while shell syntax that can execute or
-  redirect is still refused conservatively.
+## Work, accounting and collaboration
 
-### Work and collaboration
+- Work scopes own budget, deadline, admission and acceptance. Work states/tasks own continuation, delegation
+  and attribution; sessions own history and isolation. There is no separate goal entity.
+- Work continues across turns, compaction and restart. Progress prose is not completion. Unproductive recovery
+  is bounded; blocked, failed and cancelled outcomes are not successes. Required checks must pass, but a green
+  command alone does not prove the whole deliverable.
+- Members have no ambient Shell grant. Delegation uses explicit task/result paths and scoped grants.
+- The user may read/address any instance. An instance reads only its own private history; shared projections
+  must not leak another member's context. Shared, isolated and Git-worktree policies are supported. Retirement
+  refuses uncommitted/unmerged work; shared-workspace takeover requires independent stop evidence.
+- Request registration freezes optional USD-per-million input/output/cache tariffs with source/date. Attempt
+  costs use provider-reported categories. Missing usage/prices/receipts and ambiguous profile lookup never mean
+  zero. Known usage from failed review and invalid compaction is retained; failed summaries remain failed.
+  Work/headless reports expose known subtotals and incompleteness, and exports retain tariffs/receipts. These
+  are estimates, not invoices or monetary admission limits.
+- Input/request attribution uses control-assigned epoch, head, billing work and Reviewer-parent positions.
+  Headless accounting includes calls between application and the applicable outcome, newly registered member
+  calls in that work and their reviews. Prior/unrelated calls are excluded. Overlapping inputs may share costs;
+  these are not exclusive causal allocations. Pending/missing evidence and uncertain cancellation stay incomplete.
+- Accounting retains compact receipts, capped at 10,000 registrations and 16 MiB. Overflow reports incomplete
+  outcome/usage rather than silently dropping evidence. Outcome events trigger attribution even when a later
+  input is active. Older-history cursors strictly decrease; read errors are infrastructure errors, not timeouts.
 
-- Work scopes own budget, deadline, admission and acceptance. Work states and tasks own continuation,
-  delegation and attribution. Sessions own history and isolation. There is no separate goal entity.
-- Work continues across turns, compaction and restart. Progress prose is not completion. Empty or repeated
-  unproductive recovery is bounded; blocked, failed and cancelled outcomes are not successes.
-- User-defined required checks must pass. A green command alone does not prove the whole deliverable.
-- Delegation uses explicit task/result paths and scoped grants. Members have no ambient Shell grant.
-- The user may read any instance's history and address any member. An instance may read only its own private
-  history; shared projections must not become a side channel into another member's private context.
-- Workspace policy is shared, isolated or Git worktree. Workspace retirement refuses uncommitted or unmerged
-  work. Shared-workspace takeover requires separate stop evidence rather than assuming cancellation stopped it.
+## Context, profiles and exploration tree
 
-### Context, models and exploration tree
+- Real-model evaluation uses each profile's native context window with recorded provenance. Synthetic small
+  windows are for scripted regressions only.
+- Persisted profiles reload after the post-drain snapshot, before preparation, compaction and reservation.
+  Catalogue keys resolve to wire names, defaults and normalized effort; revision checks reject stale preparation.
+  Recovery uses the same resolution, but cached retry bodies remain unchanged. General cross-provider hot
+  switching and ambiguous catalogue entries sharing a wire identity remain open.
+- Materialization preserves wire messages/tool-result pairing. Bounded compact-JSON estimation preserves
+  aggregate ASCII rounding, Unicode scalars, escaping and image allowances without duplicating input arrays.
+- Compaction preserves the original request, revisions, acceptance criteria, open questions and receipt
+  references. Covered entries remain readable. Summarized and retained entries carry JSON-quoted stored IDs
+  before input caps. Optional source references are model-written navigation, not validated semantic evidence.
+- One session-level exploration tree accompanies Leader compaction. It is not per-instance state, authoritative
+  history, completion evidence, capability authority or a way to rewind side effects. Only the persisted Leader
+  writes the shared tree; member-private history is excluded.
+- Reads are User/Leader operations. Atomic add/update/move/merge/focus patches require current base revision and
+  stable operation identity. Matching replay does not grow history and reconstructs control-assigned `added_ids`.
+- Ordered operations see prior results; any invalid successor rolls back the entire patch. Limits are 96 nodes,
+  32 operations per patch and 32 levels. Omitted nodes survive; revisions and abandoned branches remain readable.
+- Freshness compares `(instance, epoch, entry)`, including empty epochs. Invalid/stale compaction patches emit
+  `search_tree_update_failed`; the summary and turn continue. `/tree`, CLI, daemon and export expose the same tree.
+  Human output escapes terminal, line-break and bidi/isolate controls; JSON retains normalized content.
 
-- Model requests use each profile's declared native context window. A smaller synthetic window is allowed only
-  for scripted regression tests, never as evidence for a real-model evaluation.
-- Compaction preserves the original request, user revisions, acceptance criteria, open questions and receipt
-  references. Covered entries remain retrievable in stored history.
-- There is one session-level exploration tree. It is model-maintained navigation, not per-instance state,
-  authoritative history, completion evidence, capability authority or a way to rewind side effects.
-- Only the persisted Leader writes the shared tree. Leader compaction advances it from the previous cumulative
-  tree and newly visible Leader entries through the retained recent tail. Member-private history is excluded.
-- Tree reads are User/Leader operations. Atomic patches support add, update, move, merge and focus, with a
-  current base revision and stable operation identity. A matching replay does not grow history and reconstructs
-  control-assigned `added_ids` when needed.
-- Ordered operations validate against the preceding operation's result. Any invalid successor rolls back the
-  entire patch. Tree nodes, text and references are bounded: at most 96 nodes, 32 operations per patch and 32
-  levels. Omitted nodes survive; abandoned branches and old revisions remain inspectable.
-- Freshness compares the complete `(instance, epoch, entry)` watermark, including empty epochs. Invalid or
-  stale compaction patches emit `search_tree_update_failed`; the summary and user's turn still continue.
-- `/tree`, `teamagents search_tree [--json]`, daemon reads and session export expose the same projection.
-  Human output escapes terminal controls, embedded line breaks, Unicode line separators and bidi/isolate
-  formatting controls; stored JSON retains the normalized content.
+## Tools, providers and integrations
 
-### Providers, integrations and security
+- File access uses target `libc` constants for directory/nonblocking opens. Supplied `expected_sha256` values
+  must be 64-character hexadecimal strings; malformed values fail a whole batch before staging/writes. Hashes
+  remain optional and case-insensitive for both batch forms. Tool-body hash failure is distinct from predispatch
+  argument refusal. Path pinning, authority, atomic commit and rollback rules remain binding.
+- Chat Completions, DeepSeek, Responses and Anthropic adapters coexist. Profile changes apply at the next
+  request, never retroactively. Logical requests and transport attempts are distinct; a complete late response
+  may be selected once, while partial/unselected responses cannot create tool effects. Retry, stream framing,
+  stall and response-size limits are explicit. Timeout does not establish absence of side effects.
+- The URL guard canonicalizes HTTP(S), rejects credentials/internal hosts/non-public literals and checks all
+  local DNS answers. Fake-IP hostname answers in `198.18.0.0/15` require public A/AAAA verification through
+  Cloudflare HTTPS DNS, with Google fallback. Both families must finish; known private answers stop fallback.
+  Empty/malformed/failed verification never authorizes fetching. Fake-IP literals and mixed private answers
+  stay blocked. TLS remains enabled, redirects are disabled for DNS requests and no provider credentials are sent.
+- DNS verification shares a ten-second deadline and 64 KiB body cap. At most eight uncancellable OS lookup
+  workers may linger. A resolver may consume the whole deadline. Fetch content is clipped at a UTF-8 byte
+  boundary. Provider-side DNS, redirects, later rebinding and broader proxy environments remain external obligations.
+- MCP negotiates exactly `2025-06-18` over stdio/streamable HTTP. Bound resource-only/filtered services remain
+  available through normal authorization/hooks. Discovery shares one deadline, 100 pages and 16 MiB aggregate
+  response budget; malformed/repeated cursors fail. JSON-RPC string/numeric IDs are preserved. Codemode checks
+  normalized catalogue names and dispatches original remote names; ambiguous resource reads are refused.
+- HTTP refresh is installed before initialization; a 401 forces refresh. Refresh, credential-lock waiting and
+  retry consume the same remaining budget. Stored credentials match the exact login resource; validation,
+  selection and refresh share a lock. Writes are atomic. Full external OAuth/MCP conformance and stream
+  resumability remain open.
+- A nonnull operation `output_ref` names a same-session LIVE artifact published atomically with the receipt.
+  Receipt/context references protect bytes after owner release. DELETING artifacts reject new references;
+  referenced deleting rows are excluded from collection. Eligible pending deletions retry without duplicate
+  claims. Online/offline collectors skip `EVIDENCE` roots. No destructive reference-expiry policy is selected.
+- Skills/instructions load on demand and cannot grant capabilities. Hooks may veto calls or report events;
+  repository config needs explicit trust and cannot override user-only hooks/checks/limits/retention/update policy.
+  Dependency advisories and unknown sources fail CI. Credentials stay in environment or machine stores, never
+  repository source, prompts, events or logs.
 
-- Chat Completions, DeepSeek, Responses and Anthropic adapters can coexist in one session. A member's model
-  and reasoning effort apply at its next request, not retroactively to an in-flight request.
-- Provider attempts separate logical request ids from transport attempt ids. A complete late response can be
-  selected once; partial or unselected responses never create tool effects.
-- Stream framing, visible-text boundaries, retry ownership, stall detection and response-size limits are
-  explicit. A timeout is not evidence that no side effect occurred.
-- MCP supports revision `2025-06-18` over stdio and streamable HTTP, bound through the same authorization,
-  budget, cancellation and receipt paths. Resource list/read retains resource-only services and rejects
-  ambiguous multi-service reads. Tool discovery is bounded across pages and rejects repeated cursors.
-- Both artifact collectors protect retained context and operation-output references, retry failed deletion
-  claims and skip `EVIDENCE` roots. Releasing an owner does not expire retained output bytes.
-- Skills and repository instructions are read on demand and cannot grant capabilities. Hooks may veto native
-  tool calls or report events; project-trusted configuration cannot silently widen authority.
-- Dependency advisories and unknown sources fail CI. Credentials remain in environment variables or the
-  machine's own stores and never enter source, prompts, events or logs.
-- OAuth/MCP/update inputs are bounded, and credential writes are locked and atomic.
+## Interface, sessions and updates
 
-### Interface and session management
+- One daemon owns each session; the TUI is not a second execution engine. Protocol 2 separates delivered cursors
+  from snapshot/log heads. Pages have row/byte budgets, fixed-end drains and explicit retention resync. Ordinary
+  refresh never acknowledges unread events; oversized events require explicit resync. Headless completion drains
+  through its sampled head. Frames are bounded at 32 MiB; history pages expose an older-page cursor and byte cap.
+- The Herdr-inspired TUI has a member sidebar, Leader conversation, responsive inspection, tasks and recent
+  activity. It is an independent Rust projection, not an embedded multiplexer or inferred terminal-state runner.
+  Selection never redirects composer, interrupt or profile controls. Drafts, attachments and approval ownership
+  survive navigation. Separate member history cannot enter Leader context or the shared tree.
+- Member history retains at most 400 entries; activity retains 200 observed summaries and is not a complete
+  event history. Reads run only for visible content, failed reads retain refresh debt, focus stays visible after
+  resize/command receipts, and image metadata/cache retention spans every viewport in a frame. Task outcomes
+  remain distinct from process-stop evidence; missing usage and unknown effects remain explicit.
+- F6 cycles composer/team/inspection focus; Alt+1 through Alt+4 select Chat/Tasks/Activity/Inspect. Enter submits,
+  Shift+Enter inserts a newline, Ctrl+C interrupts, Ctrl+Q detaches, Ctrl+S opens sessions, Ctrl+P pending inputs
+  and Ctrl+M model/effort selection. All fifteen slash commands share one registry. Completion edits the draft;
+  a separate Enter executes it.
+- Session search/fork/rename/archive/restore/delete preserve authoritative history. Fork needs a stopped source
+  and fresh execution evidence. Listening endpoints are protected regardless of greeting; only missing/refused
+  sockets establish absence. Other errors retain/refuse. Explicit stop propagates failures and rechecks absence
+  after acknowledgement. Startup/check-to-use races and full-backlog connection deadlines remain open.
+- Maintenance accepts protocols 1/2 for checkpoint/shutdown only; normal clients require 2. Update health needs
+  a valid checkpoint. Version discovery accepts the CLI JSON string or strict legacy label, not path-like values.
+  A verified extracted binary can bootstrap a transition when an installed updater cannot handle it.
+- Rollback validates the database before switching; binary rollback does not undo migration. Failed startup
+  terminates/reaps only its own child, restores the actual starting version and retains target/recovery/journal
+  errors. Uncertain liveness never permits socket unlinking; coordinator-owned cleanup remains authoritative.
+  `--no-restart` leaves an existing daemon alone. Recovery restores `current` even if another link is obstructed;
+  same-release apply does not restore stale `previous`. Failed recovery records `failed`, successful restoration
+  `rolled_back`; switch/post-stop journal failures enter the same recovery path.
+- Export streams history/revisions/references from one read snapshot, never overwrites a destination and retains
+  explicit provenance.
 
-- One daemon per session owns the JSON-lines Unix-socket protocol. TUI and headless clients resume from the
-  event watermark; no second execution engine runs inside the TUI.
-- The TUI has a Herdr-inspired team sidebar, Leader conversation, responsive inspection pane, tasks and recent
-  activity. Member history is a separate User-visible read; selecting a member never redirects the composer,
-  interrupt or profile controls. Markdown/code/media rendering and conditional approvals remain supported.
-- Enter submits; Shift+Enter inserts a newline. Ctrl+C interrupts the model request, Ctrl+Q detaches,
-  Ctrl+S opens sessions, Ctrl+P opens pending inputs, Ctrl+M opens model/effort selection, and `/tree` opens
-  the session exploration tree.
-- Named sessions support history, search, fork, rename, archive, restore and guarded deletion. A fork requires
-  a stopped source daemon and fresh execution evidence. Binary rollback alone does not undo a schema migration.
-- Local export streams stored history, revisions and references from one read snapshot. It never overwrites an
-  existing destination and preserves explicit provenance.
+## Repository and verification
 
-### Current verification boundary
-
+- Keep current source, documentation and runnable development/verification tools. Delete superseded reports,
+  one-off historical scripts and stopped scratch; Git retains tracked history. Do not remove user state,
+  credentials, active jobs or external backups as repository housekeeping.
+- Source counts come from Cargo lists. Every registered current total/triple must match; missing/ambiguous
+  statements fail. Numeric regeneration does not establish a passing gate, install or formal result.
 - Current source contains 837 Rust tests: core 198, engine 522 and TUI 117.
-- Formal material has 393 configurations across 48 modules: 65 positive configurations, 327 negative controls
-  and one separate wide configuration. Positive inputs share 62 traversals only when model/spec/domain match.
-- There are 79 normal-path witnesses and 9 Kani harnesses. Witnesses demonstrate reachability, not safety.
-- Search-tree verification includes ordered pair transitions, 23 controls covering every non-`TypeOK` tree
-  claim and 11 witnesses. `TypeOK` remains a type-level claim, not a behavioral completeness proof.
-- These results do not establish full Rust/SQLite refinement, whole-system composition, Policy B source-bound
-  equivalence, wide exhaustive completion, arbitrary-input TLA coverage or live-model navigation quality.
-
-## D-525 Verify public fetch destinations behind Fake-IP DNS (2026-11-16)
-
-A compatibility check against `my-pi-tools` commit `3e3d765` reproduced the local mismatch: DeepSeek and Exa
-search both worked, but fetching a GitHub URL failed because system DNS returned `198.18.0.61`. A synthetic
-routing address does not establish the destination's real address. The public-destination policy is unchanged.
-
-The Rust URL guard now canonicalizes HTTP(S) URLs, rejects embedded credentials, internal hostnames and
-non-public literals, and checks all local DNS answers. A hostname with `198.18.0.0/15` answers is verified
-through Cloudflare HTTPS DNS, with Google as a fallback. Mixed real-private local answers stop immediately.
-Both A and AAAA queries must finish before accepting public answers from a resolver. Any known non-public
-answer stops fallback; empty, malformed or unsuccessful verification never authorizes a fetch. Direct fake-IP
-literals stay blocked. HTTPS certificate checks remain enabled; DNS queries carry no provider credentials.
-
-DNS verification shares a ten-second deadline and bounds response bodies to 64 KiB. OS lookups cannot be
-cancelled, so at most eight resolver workers may linger after their caller times out. A first resolver that
-consumes the full deadline leaves no time for fallback. Provider-side resolution and redirect validation remain
-external obligations; local verification does not prove protection against later rebinding at the provider.
-The existing fetch byte limit now clips at a UTF-8 boundary, fixing an observed 4096-byte request returning
-4161 bytes. Search providers, binding authority and dependencies are unchanged.
-
-Eight new DNS/fetch tests, all 26 tool tests, all nine search tests and engine Clippy pass. Local live probes
-confirm both search providers and successful GitHub fetching behind fake-IP; literal fake-IP, loopback and
-metadata controls remain refused. These probes establish this host's current transparent proxy environment,
-not arbitrary explicit-proxy configurations or a new provider-wide acceptance campaign. The packaged runtime
-and ordinary installation also pass scoped checks, including a live public fetch on this host.
-
-## D-524 Make team state directly observable in the TUI (2026-11-16)
-
-The user's request to replace the minimal Grok-derived presentation with a Herdr-based team interface updates
-Q6 and the interface baseline. The reference is `herdrdev/herdr` at
-`ee5bfb5041bb3e4a49d591c72308aae3c81ecdde` (Apache-2.0): member sidebar, focused panes and compact status.
-TeamAgents implements its own Rust projection over the existing daemon; it does not embed Herdr's terminal
-multiplexer, terminal-state inference or agent execution. No reference source or assets are copied.
-
-Wide terminals show the Leader and selected member inspection together. Tasks, recent observed activity,
-member diagnostics and bounded member history have direct navigation; small terminals use one content pane.
-Selection is navigation only. The composer, model menu and interrupt retain their Leader target, drafts survive
-navigation, and member reads cannot add content to a model context or the session tree. Historical task outcomes
-remain distinct from process-stop evidence; missing usage and unknown effects remain explicit. Member/task
-reads run only for visible content, and failed reads retain refresh debt. Focus stays on visible content when
-resizing or receiving command receipts. Shared image layout/cache retention covers all viewports in a frame,
-including simultaneous Leader/member media and return from hidden views.
-
-## D-523 Resolve selected profiles before preparation and complete slash discovery (2026-11-16)
-
-The driver reloads the persisted profile after the post-drain snapshot and before request preparation,
-compaction and budget reservation. Catalog keys resolve to API model names with generation defaults and
-normalized effort; the existing revision check rejects stale preparation. Recovery retains the same resolution
-before reconstructing a request, while cached requests remain unchanged across retries. A real session exposed
-`leader_main` reaching DeepSeek after one successful request. The scripted regression covers the first request,
-a transient retry, a successful listing, its continuation and a later effort-only change; restart coverage
-retains the selected effort and unknown-usage accounting. This does not establish cross-provider hot-switching
-or disambiguate catalog entries sharing a wire name.
-
-Slash completion and unknown-command guidance share the complete registered command list, including `/model`
-and `/edit`; D-524 extends the registry with team navigation. Completion only edits the draft; a separate Enter
-executes the command. Existing TUI
-regressions check the complete rendered menu, filtering, model-menu opening and constrained terminal sizes.
-
-## D-522 Keep sessions when endpoint absence is unproven (2026-11-15)
-
-Session archive/restore/delete/prune now share the updater's transport-level liveness probe. A successful
-connection protects the session regardless of its greeting; only missing or refused sockets establish absence.
-Other connection errors refuse mutation or retain a prune candidate with a reason, and the display hint is
-conservative. Explicit deletion with stop uses the protocol-1/2 maintenance connection and propagates greeting
-and shutdown failures. The same conservative probe verifies absence after a successful shutdown reply;
-filesystem lookup errors cannot turn that acknowledgement into permission to delete. A CLI fixture
-reproduced deletion of an archive while an invalid-greeting listener and
-its coordinator lock were still held; the repaired CLI keeps its row and files. Twenty lifecycle conditions
-and eight default/named stop-safety conditions are covered by two Rust regressions, with a protocol-1 shutdown
-fixture retaining its late-workspace checks. The shared probe preserves the updater's behavior. This repair
-does not close startup or check-to-use filesystem races, or bound a synchronous connect on a full backlog.
-
-## D-521 Use target-ABI file-open flags (2026-11-15)
-
-Native file access uses the existing `libc` dependency for `O_DIRECTORY` and `O_NONBLOCK`.
-The former x86 directory literal is `O_DIRECT` on AArch64: it made parent-directory opens fail with EINVAL,
-including valid reads, edits and image loads. Existing tool regressions reproduced seven failures out of 26
-under AArch64 GNU user emulation; all 26 pass with the target constants. The same subset has a shared
-`make test-aarch64` entry point and a dedicated CI job using cross GCC and QEMU. Both test targets now run
-the leak audit even after a failed test command, while either failure still fails the target. Isolated command
-controls cover test/audit success and failure combinations. Directory pinning, path
-checks, hashes, batch commit/rollback and authority rules are unchanged. This adds ABI regression coverage,
-not native ARM hardware, ARM-kernel, distribution-package or full-platform acceptance.
-
-## D-520 Validate supplied batch-edit hash preconditions (2026-11-15)
-
-Batch editing uses the same expected-hash validator as single-file editing and writing. Every supplied per-edit
-`expected_sha256` must be a 64-character hexadecimal string; null, other JSON types and malformed strings fail
-the whole batch before file staging or writes. Hashes remain optional and comparisons remain case-insensitive.
-This applies to the advertised batch form of `edit_file` and the existing `edit_files` alias. Real-file
-regressions reproduce the old ignored-null write and verify that a malformed later edit leaves both files
-unchanged, while valid and omitted hashes still work. Existing permission, conflict, atomic-commit and recovery
-rules remain in force.
-
-## D-519 Audit current test-count totals and alternate formats (2026-11-15)
-
-The test-count gate now checks every registered current total and component triple across the public and
-development documentation, using Cargo test lists as its source. A required statement that is missing or
-ambiguous fails the check. `--write` changes captured numeric fields only; dates, passing-gate claims and
-historical source receipts remain separate. Explicit copied-ledger/statement controls retain their limited
-scope. This closes a reproduced gap where a correct canonical triple let stale current totals pass. Controls
-cover stale totals, numeric-only updates, historical preservation and missing/duplicate statements. No Rust
-behavior, artifact version or formal input changes.
-
-## D-518 Refuse malformed tool arguments before dispatch (2026-11-15)
-
-Ordinary tool intents retain a control-derived parse error when the original call supplies malformed JSON,
-a non-object value or a non-string argument encoding. Dispatch refuses these intents before approval or
-execution; the driver records a failed, not-started receipt and the model can correct the call. The original
-response and known usage remain recorded. A valid argument object may contain `_invalid_arguments`; that
-field alone is not an error signal. Caller-written parse metadata is ignored. Older PREPARED sentinel-shaped
-intents are checked against their stored original call when it is available. Already-dispatched recovery
-keeps its earlier result/unknown-outcome rules. Regression coverage includes default-argument tools, parallel
-reads, valid sentinel data, reopening and refusal before approval. This does not add complete per-tool schema
-validation or change wait/checkpoint handling.
-
-## D-517 Supply stored entry identities to compaction (2026-11-15)
-
-Compaction entry blocks include the JSON-quoted stored entry ID alongside role and content, before the existing
-input caps apply. The same serializer covers the summarized prefix and the Leader's retained recent entries.
-The compactor can therefore copy supplied identities into navigation references instead of reconstructing them.
-A captured-request regression compares the available IDs with actual covered user/assistant and retained input
-rows in SQLite. Source references remain optional, bounded model-written strings; tree validation does not
-resolve their targets or verify their meaning. This supplies missing input for D-504, without adding automatic
-reminders, stricter reference requirements, authority or a claim of improved live navigation quality.
-
-## D-516 Preserve input ownership and recover client refresh failures (2026-11-14)
-
-Control registration events freeze the instance epoch, context head and billing work; user-input application
-events identify the exact position for both immediate and queued delivery. Reviewer registration identifies
-the operation's originating request. These fields come from transaction state, never client ownership claims.
-Headless accounting selects Leader/compression requests between the input and its first applicable outcome,
-member requests newly registered in the same billing work during that interval, and reviews of selected
-requests. Prior requests and other works are excluded even when their attempts arrive later. Batched inputs
-and overlapping follow-ups can share calls; this reporting does not allocate exclusive causal costs or change
-the authoritative work ledger. Pending requests, missing receipts and uncertain cancellation remain incomplete.
-The collector retains compact receipt data, not streamed text or complete tool histories. It caps retained
-accounting at 10,000 registrations and a 16 MiB bookkeeping budget; overflow reports incomplete outcome/usage
-instead of dropping evidence. Outcome events trigger history attribution even if a later input already has
-the Leader busy, so continuous input cannot hide an earlier answer or extend its accounting interval.
-
-History attribution follows older pages with strictly decreasing cursors and retains only the input identity
-and one candidate outcome. Read errors are infrastructure failures, not timeouts. A timeout cannot claim
-complete cost. TUI history refresh remains pending after transient failure even if other socket calls succeed.
-An oversized event returns an explicit resync result without acknowledging it; ordinary checkpoint refresh
-still preserves unread cursors. These are executable regression claims, outside the bounded daemon model.
-
-## D-515 Keep literal publication searches reviewable (2026-11-14)
-
-A restricted literal `rg`/`grep` command with explicit pattern and paths may pass the deterministic publishing
-keyword check so the Reviewer can assess it. This does not auto-allow the operation. Credential, runtime,
-privilege and self-update guards still apply. Shell composition, redirects, expansions, preprocessing and
-unsupported syntax retain conservative refusal. Genuine user requests remain authorization evidence when
-quoted; arguments and claimed prior approvals grant none. Strict complete Reviewer JSON is still required.
-
-The DeepSeek V4 rerun matched 34/34 fixed labels after this correction. It reused the development and earlier
-holdout cases and is regression evidence, not an independent holdout. Claude V3 matched 24/34 labels: one
-benign deterministic refusal, four strict-parser errors and five HTTP 402 quota failures account for the rest.
-Those operational failures are not correct refusals; the unavailable paid route was not retried.
-
-The portable Rust Reviewer probe records fixed input hashes, compiled source and executable hashes, native-window
-provenance, per-case usage/errors and honest completion counts. It never executes proposed operations; dry runs
-make no provider calls. Transport/timeout failures stop the remaining calls for that profile, and existing
-output files cannot be overwritten. A separate DeepSeek rerun through this probe also matched the same 34/34
-fixed labels. No frozen evaluation dataset or historical receipt is required by the source gates.
-
-## D-514 Keep maintenance and update compatible with actual CLI contracts (2026-11-14)
-
-Normal clients require socket protocol 2. A maintenance connection accepts protocols 1 and 2 only for checkpoint
-and shutdown, without a command id; other methods and future versions are refused. A failed greeting is not
-proof that a daemon stopped: only a refused or missing socket permits that conclusion. Update health requires a
-valid checkpoint. Binary version discovery reads the CLI's JSON `version` field and retains the older plain
-`teamagents VERSION` format, refusing invalid path-like labels. Old installed updater code cannot acquire these
-fixes automatically; an extracted, verified new binary can perform the managed transition explicitly.
-
-Explicit rollback validates the database before switching. Failed startup terminates and reaps only the child
-it launched, then attempts to restore the starting version. Target, recovery and journal failures remain in the
-returned diagnostic; a failed recovery records `failed`, while a successful restoration records `rolled_back`.
-Startup polling leaves stale-socket cleanup to the daemon under its coordinator lock; uncertain connection
-errors do not authorize unlinking. `--no-restart` leaves the running daemon alone during apply. Each update or
-rollback captures its actual starting directory. Recovery restores `current` directly even if an unrelated bin
-link is obstructed, and a same-release reapply does not restore a stale `previous` target. Switch and post-stop
-journal failures enter the same recovery path; secondary link/journal errors remain visible.
-
-## D-513 Retain MCP resources and bound discovery and authentication (2026-11-14)
-
-The negotiated MCP revision is exactly `2025-06-18`; missing or different revisions fail explicitly. Bound
-services survive independently of selected tool rows, including resource-only peers and configurations that
-filter out every tool. Codemode advertises and executes their resource operations through the existing binding
-and hook checks. Tool discovery follows cursors with one total discovery deadline, at most 100 pages and a
-16 MiB aggregate response budget; malformed or repeated cursors fail. Server requests preserve string or numeric
-JSON-RPC IDs. HTTP authentication installs the refresh callback before initialization, and a 401 forces token
-refresh even when the recorded expiry is still in the future. Refresh requests inherit the remaining discovery
-budget, and the retry recomputes what remains after refresh. Stored OAuth credentials must match the exact
-resource string recorded by login; validation, selection and refresh share one credential lock. Waiting for
-that lock consumes the operation budget. Codemode validates the normalized catalogue name and dispatches the
-original remote name. Credential locking and atomic writes remain. These checks do not establish full MCP conformance, external OAuth
-interoperability or stream resumability.
-
-## D-512 Preserve referenced artifacts and retry eligible collection (2026-11-14)
-
-An operation's nonnull `output_ref` must name a LIVE artifact in the same session, published atomically with its
-receipt. Consuming the receipt copies the reference into context. Both claim and collection also inspect stored
-operation receipts, protecting old roots whose context entry omitted the reference. Owner release alone never
-makes those bytes collectible. New references cannot attach to DELETING artifacts. A sweep returns newly
-`claimed` ids and all eligible `pending` deletions, so a failed or interrupted unlink can retry without a duplicate
-claim event. Referenced old DELETING rows are excluded before touching bytes. Online and offline collectors skip
-`EVIDENCE` roots, including pending deletion retries. This restores existing reference protection; it introduces
-no destructive expiry policy and cannot restore bytes already deleted by an older collector.
-
-## D-511 Reduce request construction overhead without changing the request (2026-11-14)
-
-Kernel materialization clones each wire message once and stops looking for tool results when every required
-answer has been placed. Token estimation counts the identical compact JSON representation through a bounded
-counting sink, preserving aggregate ASCII rounding, Unicode scalars, escaping and image allowances. The
-messages/tools estimator borrows the existing arrays. Tools, prompts, masking policy, admission and native
-context windows are unchanged. Serialized-reference checks cover generated Unicode/control text and images;
-a source comparison against the preceding implementation covers text, tool-heavy, missing/repeated-result and
-image requests. These changes reduce local construction work, not provider token use or task-quality criteria.
-
-## D-510 Freeze optional model tariffs and report incomplete cost (2026-11-14)
-
-The user's remaining-work instruction includes configurable monetary accounting. Model profiles may supply a
-USD-per-million tariff with explicit input/output rates, optional cache read/write rates and a source/date.
-Request registration freezes that tariff for normal, compression and Reviewer calls; attempt receipts calculate
-cost from the frozen rates and provider-reported categories. Nullable additive schema-9 columns preserve old
-rows as unpriced. Missing usage, missing rates and ambiguous model-profile lookup never imply zero cost.
-Work totals include attributed admission requests and expose pending requests and usage without local receipts.
-The headless report exposes the known subtotal and completeness, and exports retain tariffs and attempt costs.
-Known usage from failed Reviewer calls and semantically invalid summaries remains receipted. Invalid summaries
-still fail compression while preserving the paid transport response and raw artifact. Closed requests without
-a receipt cannot appear free. Only explicitly selected catalogue keys bypass wire-name ambiguity checks.
-These are user-configured estimates, not invoices or monetary admission limits; token admission is unchanged.
-
-## D-509 Bound daemon pages and preserve delivery cursors (2026-11-14)
-
-The user selected actionable remaining work, including large-history limits, cost measurement and external
-acceptance. Socket protocol 2 separates delivered event positions from snapshot/log heads. Event pages have
-row and byte limits, fixed-end drains and explicit reclaimed-range resync. Initial/resync checkpoint adoption
-is separate from ordinary refresh, so unread events are not acknowledged. Headless completion drains all pages
-through its sampled head before reporting usage or a terminal outcome. Incompatible protocol 1 clients fail
-explicitly; schema 9 and work policy 1 are unchanged. Socket frames are bounded at 32 MiB, and history pages
-have a byte budget and an older-page cursor. The existing repository-trust and artifact ownership policies remain
-binding. A local directory-isolated installation is not a new-machine acceptance result.
-
-## D-508 Keep only current project state and tools (2026-11-13)
-
-The tree contains the current Rust implementation, current documentation and executable development/verification
-tools. `review/` has been removed; required utilities are under `tools/`. No review reports, evaluation datasets
-or archived evidence are required by the current source or its gates. Current documents describe only current
-behavior, current evidence and open obligations.
-
-Current search-tree coverage includes one session tree, ordered two-operation patches, 23 controls covering every
-non-`TypeOK` tree claim and 11 witnesses. Implementation checks additionally cover multi-operation ID ordering,
-arbitrary Unicode and terminal controls, compact JSON variants, real SQLite revision/head/event rollback,
-schema-migration conflict refusal and random control-walk tree invariants. The original 24-step executable
-control-plane walk is retained before explicit tree read/write steps, so tree coverage does not displace approval
-coverage. These remain bounded checks, not arbitrary-input TLA enumeration, full refinement or live-model
-navigation-quality evidence.
+- Formal material has 387 configurations across 47 modules: 63 positive configurations in 60 traversals,
+  323 controls and one separate wide configuration; 79 witnesses and 9 Kani harnesses. Shared traversals require
+  identical model/specification/domain. Witnesses establish reachability, not safety. The report binds verified
+  input paths and bytes with a fingerprint; recomputing it does not replace executing the relevant gates.
+- Search-tree coverage includes ordered pairs, 23 controls for every non-`TypeOK` claim and 11 witnesses.
+  Executable tests cover Unicode/JSON, SQLite rollback, migration refusal and control walks without displacing
+  approval coverage. `TypeOK` is a type claim, not behavioral completeness.
+- `make test-aarch64` runs the 26-tool GNU user-emulation subset. Test targets audit leaks even after test
+  failure, and either failure fails the target. Emulation is not native ARM/kernel/package acceptance.
+- Full Rust/SQLite refinement, whole-system composition, wide exhaustive completion, Policy B source-bound
+  bidirectional fair-trace equivalence and arbitrary-input/live-model quality claims remain unestablished.

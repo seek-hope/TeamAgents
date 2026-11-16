@@ -167,7 +167,7 @@ verify-model: verify-tools
 # configuration that fell through the `*)` default would silently run the wrong module (the rule
 # `tools/verification_catalogue.py` enforces). The control families are matched by prefix, after the
 # exact arms, because shell `case` takes the first match.
-CFG_CASE = case $$cfg in MC.cfg|MC_control*) echo V2Control.tla;; MC_profileswitch*) echo V2ProfileSwitch.tla;; MC_skillauthority*) echo V2SkillAuthority.tla;; MC_exportsnapshot*) echo V2ExportSnapshot.tla;; MC_streamboundary*) echo V2StreamBoundary.tla;; MC_executionchain*) echo V2ExecutionChain.tla;; MC_artifact*) echo V2Artifact.tla;; MC_wait*) echo V2Wait.tla;; MC_task*) echo V2Task.tla;; MC_approval*) echo V2Approval.tla;; MC_compress*) echo V2Compress.tla;; MC_daemon*) echo V2Daemon.tla;; MC_checks*) echo V2Checks.tla;; MC_trust*) echo V2Trust.tla;; MC_projecttrust*) echo V2ProjectTrust.tla;; MC_prune*) echo V2Prune.tla;; MC_tui*) echo V2Tui.tla;; MC_presentation*) echo V2Presentation.tla;; MC_inputqueue*) echo V2InputQueue.tla;; MC_displayworker*) echo V2DisplayWorker.tla;; MC_prompt*) echo V2Prompt.tla;; MC_retry*) echo V2Retry.tla;; MC_grants*) echo V2Grants.tla;; MC_capabilities*) echo V2Capabilities.tla;; MC_authority*) echo V2Authority.tla;; MC_store*) echo V2Store.tla;; MC_retention*) echo V2Retention.tla;; MC_history*) echo V2History.tla;; MC_sessionui*) echo V2SessionUi.tla;; MC_sessions*) echo V2Sessions.tla;; MC_schedule*) echo V2Schedule.tla;; MC_isolation*) echo V2Isolation.tla;; MC_codemode*) echo V2Codemode.tla;; MC_images*) echo V2Images.tla;; MC_memory*) echo V2Memory.tla;; MC_update*) echo V2Update.tla;; MC_oauth*) echo V2Oauth.tla;; MC_jobsupervision*) echo V2JobSupervision.tla;; MC_jobs.cfg|MC_jobs_*) echo V2Jobs.tla;; MC_inbox*) echo V2Inbox.tla;; MC_diskfull*) echo V2DiskFull.tla;; MC_discovery*) echo V2Discovery.tla;; MC_coordinator*) echo V2Coordinator.tla;; MC_work.cfg|MC_work_*) echo V2Work.tla;; MC_search_tree*) echo V2SearchTree.tla;; MC_review*) echo V2Review.tla;; MC_workspace*) echo V2Workspace.tla;; MC_concurrency*) echo V2Concurrency.tla;; MC_control*) echo V2Control.tla;; MC_wide.cfg) echo V2Control.tla;; *) echo V2Artifact.tla;; esac
+CFG_CASE = case $$cfg in MC.cfg|MC_control*) echo V2Control.tla;; MC_profileswitch*) echo V2ProfileSwitch.tla;; MC_skillauthority*) echo V2SkillAuthority.tla;; MC_exportsnapshot*) echo V2ExportSnapshot.tla;; MC_streamboundary*) echo V2StreamBoundary.tla;; MC_executionchain*) echo V2ExecutionChain.tla;; MC_artifact*) echo V2Artifact.tla;; MC_wait*) echo V2Wait.tla;; MC_task*) echo V2Task.tla;; MC_approval*) echo V2Approval.tla;; MC_compress*) echo V2Compress.tla;; MC_daemon*) echo V2Daemon.tla;; MC_checks*) echo V2Checks.tla;; MC_trust*) echo V2Trust.tla;; MC_projecttrust*) echo V2ProjectTrust.tla;; MC_prune*) echo V2Prune.tla;; MC_tui*) echo V2Tui.tla;; MC_presentation*) echo V2Presentation.tla;; MC_inputqueue*) echo V2InputQueue.tla;; MC_displayworker*) echo V2DisplayWorker.tla;; MC_prompt*) echo V2Prompt.tla;; MC_retry*) echo V2Retry.tla;; MC_grants*) echo V2Grants.tla;; MC_capabilities*) echo V2Capabilities.tla;; MC_authority*) echo V2Authority.tla;; MC_store*) echo V2Store.tla;; MC_retention*) echo V2Retention.tla;; MC_history*) echo V2History.tla;; MC_sessionui*) echo V2SessionUi.tla;; MC_sessions*) echo V2Sessions.tla;; MC_schedule*) echo V2Schedule.tla;; MC_codemode*) echo V2Codemode.tla;; MC_images*) echo V2Images.tla;; MC_memory*) echo V2Memory.tla;; MC_update*) echo V2Update.tla;; MC_oauth*) echo V2Oauth.tla;; MC_jobsupervision*) echo V2JobSupervision.tla;; MC_jobs.cfg|MC_jobs_*) echo V2Jobs.tla;; MC_inbox*) echo V2Inbox.tla;; MC_diskfull*) echo V2DiskFull.tla;; MC_discovery*) echo V2Discovery.tla;; MC_coordinator*) echo V2Coordinator.tla;; MC_work.cfg|MC_work_*) echo V2Work.tla;; MC_search_tree*) echo V2SearchTree.tla;; MC_review*) echo V2Review.tla;; MC_workspace*) echo V2Workspace.tla;; MC_concurrency*) echo V2Concurrency.tla;; MC_control*) echo V2Control.tla;; MC_wide.cfg) echo V2Control.tla;; *) echo V2Artifact.tla;; esac
 
 # (D-293) TLC's meta directory is `states/` under the spec's directory, suffixed with the *run's timestamp*, and
 # `FileUtil.makeMetaDir` asserts that directory does not already exist (`!dir.exists()`, then `mkdirs()`): a
@@ -181,11 +181,11 @@ TLA_METADIR ?= $(CURDIR)/tools/tmp/tla
 # complete graph, avoiding repeated partial-graph work as reachable paths grow.
 # The larger configuration remains a separate verify-model-wide run. Identical
 # model/spec/domain configurations share one traversal with their claim union;
-# original configs remain the catalogue and witness inputs (65 configs, 62 runs).
+# original configs remain the catalogue and witness inputs (63 configs, 60 runs).
 verify-model-all: verify-tools
 	@python3 tools/verification_batches.py --self-check
 	@python3 tools/verification_batches.py --check-fixtures --jar "$(TLA_TOOLS_DIR)/tla2tools.jar"
-	@cd verification/tla && pairs=""; for cfg in MC.cfg MC_control_two.cfg MC_control_attempts.cfg MC_control_decisions.cfg MC_control_warn.cfg MC_executionchain.cfg MC_streamboundary.cfg MC_profileswitch.cfg MC_skillauthority.cfg MC_exportsnapshot.cfg MC_work.cfg MC_review.cfg MC_search_tree.cfg MC_search_tree_add.cfg MC_search_tree_update.cfg MC_search_tree_move.cfg MC_search_tree_merge.cfg MC_search_tree_pair.cfg MC_oauth.cfg MC_artifact.cfg MC_wait.cfg MC_wait_deferred.cfg MC_task.cfg MC_task_two.cfg MC_approval.cfg MC_compress.cfg MC_daemon.cfg MC_daemon_stop.cfg MC_checks.cfg MC_checks_briefing.cfg MC_checks_independent.cfg MC_memory.cfg MC_grants.cfg MC_grants_task.cfg MC_capabilities.cfg MC_authority.cfg MC_store.cfg MC_retention.cfg MC_history.cfg MC_sessions.cfg MC_schedule.cfg MC_isolation.cfg MC_isolation_ssh.cfg MC_codemode.cfg MC_images.cfg MC_images_blind_model.cfg MC_update.cfg MC_jobs.cfg MC_jobsupervision.cfg MC_inbox.cfg MC_diskfull.cfg MC_discovery.cfg MC_coordinator.cfg MC_trust.cfg MC_prompt.cfg MC_retry.cfg MC_workspace.cfg MC_concurrency.cfg MC_projecttrust.cfg MC_prune.cfg MC_tui.cfg MC_sessionui.cfg MC_presentation.cfg MC_inputqueue.cfg MC_displayworker.cfg; do \
+	@cd verification/tla && pairs=""; for cfg in MC.cfg MC_control_two.cfg MC_control_attempts.cfg MC_control_decisions.cfg MC_control_warn.cfg MC_executionchain.cfg MC_streamboundary.cfg MC_profileswitch.cfg MC_skillauthority.cfg MC_exportsnapshot.cfg MC_work.cfg MC_review.cfg MC_search_tree.cfg MC_search_tree_add.cfg MC_search_tree_update.cfg MC_search_tree_move.cfg MC_search_tree_merge.cfg MC_search_tree_pair.cfg MC_oauth.cfg MC_artifact.cfg MC_wait.cfg MC_wait_deferred.cfg MC_task.cfg MC_task_two.cfg MC_approval.cfg MC_compress.cfg MC_daemon.cfg MC_daemon_stop.cfg MC_checks.cfg MC_checks_briefing.cfg MC_checks_independent.cfg MC_memory.cfg MC_grants.cfg MC_grants_task.cfg MC_capabilities.cfg MC_authority.cfg MC_store.cfg MC_retention.cfg MC_history.cfg MC_sessions.cfg MC_schedule.cfg MC_codemode.cfg MC_images.cfg MC_images_blind_model.cfg MC_update.cfg MC_jobs.cfg MC_jobsupervision.cfg MC_inbox.cfg MC_diskfull.cfg MC_discovery.cfg MC_coordinator.cfg MC_trust.cfg MC_prompt.cfg MC_retry.cfg MC_workspace.cfg MC_concurrency.cfg MC_projecttrust.cfg MC_prune.cfg MC_tui.cfg MC_sessionui.cfg MC_presentation.cfg MC_inputqueue.cfg MC_displayworker.cfg; do \
 		pairs="$$pairs $$cfg:$$( $(CFG_CASE) )"; \
 	done; \
 	python3 ../../tools/verification_batches.py --jar "$(TLA_TOOLS_DIR)/tla2tools.jar" $$pairs
@@ -248,8 +248,6 @@ verify-model-counterexamples: verify-tools
 		MC_sessions_archive_default.cfg:V2Sessions.tla MC_sessions_archive_while_held.cfg:V2Sessions.tla \
 		MC_schedule_duplicate.cfg:V2Schedule.tla MC_schedule_overlap.cfg:V2Schedule.tla \
 		MC_schedule_disabled.cfg:V2Schedule.tla MC_schedule_early.cfg:V2Schedule.tla \
-		MC_isolation_fallback.cfg:V2Isolation.tla MC_isolation_unavailable.cfg:V2Isolation.tla \
-		MC_isolation_ssh_unreachable.cfg:V2Isolation.tla MC_isolation_ssh_fallback.cfg:V2Isolation.tla \
 		MC_codemode_leak.cfg:V2Codemode.tla MC_codemode_veto.cfg:V2Codemode.tla MC_codemode_silent.cfg:V2Codemode.tla \
 		MC_jobs_guess_notrun.cfg:V2Jobs.tla MC_jobs_double_go.cfg:V2Jobs.tla \
 		MC_jobs_late_go.cfg:V2Jobs.tla MC_jobs_spawn_first.cfg:V2Jobs.tla \
@@ -383,10 +381,8 @@ language-check:
 		exit 1; \
 	fi
 
-# Repository shape rule: `docs/DECISIONS.md` is the binding record, so its shape is checked (D-107):
-# one heading per entry, newest-first, each with a body. `tools/decisions_log.py` states the rules.
-# The documentation's citations are the evidence ledger's commands (D-110): a `crate::test` or a path that
-# names nothing in the tree fails `make check`; the removed-item tables in DECISIONS.md are notes, not errors.
+# Current-rule IDs, executable citations and generated references must resolve against this tree.
+# The rule index is a current contract, not a chronological decision log.
 # A command payload field nothing reads is dropped silently (D-123 was one: `error_class`); the caller's
 # fields and the command layer's reads are compared per method (D-124).
 # `docs/EVENTS.md` is generated from the event call sites, so a new kind or a renamed payload key must be
@@ -411,9 +407,8 @@ hygiene: language-check
 	python3 tools/hygiene_catalogue.py
 	python3 tools/flag_fields.py
 	python3 tools/config_keys.py
-	python3 tools/decisions_log.py
-	python3 tools/decision_queue.py
 	python3 tools/citations.py
+	python3 tools/decision_citations.py --self-check
 	python3 tools/decision_citations.py
 	python3 tools/silent_skips.py
 	python3 tools/command_params.py

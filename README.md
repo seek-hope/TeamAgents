@@ -138,10 +138,10 @@ See [the architecture guide](docs/ARCHITECTURE.md) for state machines and data r
 ## Current evidence
 
 The full local gate passed **837 Rust tests** (core 198, engine 522, TUI 117).
-Formal material contains **393 configurations across 48 modules**:
+Formal material contains **387 configurations across 47 modules**:
 
-- **65 positive configurations in 62 traversals**;
-- **327 negative controls** refuted;
+- **63 positive configurations in 60 traversals**;
+- **323 negative controls** refuted;
 - **79 normal-path witnesses** reached;
 - **9 Kani harnesses** passed.
 
@@ -162,16 +162,15 @@ make pty
 
 ## Current limits
 
-These results do not establish full Rust/SQLite refinement, whole-system composition, wide exhaustive
-completion or Policy B source-bound equivalence. Live probes (`make probe-offline`, `make probe-models`)
-exercise the four wire protocols, heterogeneous providers, search/fetch, images, reviewer hardening,
-compaction/search-tree updates, loopback SSH and Alacritty locally. Separate isolated probes passed public
-SSH/GNU screen reconnect and install/upgrade/rollback on an existing Debian 12 host, using earlier pinned builds.
-The `0eb4ee98` candidate also passed ordinary-user installation, malformed-argument rejection, same-schema
-upgrade/rollback and failed-startup recovery in fresh Debian 12 and Ubuntu 22.04.5 KVM guests, using scripted
-loopback providers. External OAuth services, physical hosts, broader distribution/architecture and terminal
-matrices, large-scale long-horizon benchmarks and full priced-cost comparisons remain open. The separate wide
-configuration is not claimed complete.
+The installed x86_64 Linux musl runtime passed source/installed PTY matrices, 18 offline probes and scripted
+profile/fetch checks. A separate real Fetch API check passed. These are not real-model task-quality trials.
+Exact runtime, package and CI bindings are in [ACCEPTANCE.md](docs/ACCEPTANCE.md).
+
+Full Rust/SQLite refinement, whole-system composition, wide exhaustive completion and Policy B source-bound
+equivalence remain open. Current real-model quality, independent Reviewer evaluation, tree usefulness, external
+OAuth, public hosts/graphical terminals, clean-host installation/update/rollback, schema transitions, native ARM
+and broader distributions need separate acceptance. General long-horizon and matched priced-cost comparisons
+remain open. Runnable checks include `make probe-offline` and separately authorized `make probe-models`.
 
 ## Documentation
 

@@ -1,5 +1,5 @@
-> Current source validation: core 198 / engine 522 / tui 117, plus 65 positive TLA configurations in 62
-> traversals, 327 controls, 79 witnesses and 9 Kani harnesses. The latest `make check` passed. This document describes
+> Current source validation: core 198 / engine 522 / tui 117, plus 63 positive TLA configurations in 60
+> traversals, 323 controls, 79 witnesses and 9 Kani harnesses. The latest `make check` passed. This document describes
 > current source, not an earlier release archive.
 
 ## Current source highlights
@@ -28,7 +28,7 @@
 - File tools, persistent Shell state, DeepSeek/Exa search, DeepSeek fetch, Skills, stdio/HTTP MCP resources and
   restricted JavaScript codemode. Batch file edits reject malformed supplied hash preconditions without
   modifying files. Hooks can report events or veto native tool calls.
-- Target-ABI file-open flags fix AArch64 EINVAL failures; the file/tool regression subset runs under GNU
+- File-open flags follow the target ABI; the file/tool regression subset runs under GNU
   user emulation in a dedicated CI job. This does not add an ARM release package.
 - Session lifecycle actions preserve listening or uncertain endpoints even when their greetings fail, and
   explicit stop propagates failure. Legacy protocol shutdown remains supported.
@@ -36,23 +36,20 @@
 
 ## Current evidence
 
-The full local gate passed **837 Rust tests** (core 198, engine 522, TUI 117). Formal material contains **393
-configurations across 48 modules**: **65 positive configurations in 62 traversals**, **327 negative controls**,
+The full local gate passed **837 Rust tests** (core 198, engine 522, TUI 117). Formal material contains **387
+configurations across 47 modules**: **63 positive configurations in 60 traversals**, **323 negative controls**,
 **79 normal-path witnesses** and **9 Kani harnesses**. Search-tree coverage includes ordered pair transitions,
 23 controls covering every non-`TypeOK` tree claim and 11 witnesses. Witnesses demonstrate reachability only.
 
-The `a6b5555a` package passed release/install rehearsal, an installed batch-edit refusal/repair workflow
-with a scripted loopback provider, and a session-prune preservation check. That runtime also passed the
-PTY matrix as it existed at `a6b5555a` and all 18 offline probes. D-521's AArch64 GNU user-emulation checks remain bound to
-`675af52e`; they are not native ARM acceptance. The earlier `0eb4ee98` runtime passed `make probe-offline` (18/18), release rehearsal and fresh Debian 12/Ubuntu 22.04.5
-KVM checks for ordinary-user installation, malformed-argument rejection, same-schema upgrade/rollback and
-failed-startup recovery. Those guests used scripted loopback providers. Earlier pinned builds passed five PTY
-terminal profiles, both forced graphics modes and `make probe-models` (23/23). These are scoped checks.
+The current x86_64 Linux musl runtime passed release/install rehearsal, source/installed PTY matrices,
+18 offline probes and scripted profile/retry/tool/fetch checks. A separate real Fetch API check passed.
+The four delivery CI jobs passed; exact source/package bindings are in `docs/ACCEPTANCE.md`.
+AArch64 coverage is 26 tool regressions under GNU user emulation, not native ARM or an ARM release package.
 
 ## Current boundaries
 
 Wide exhaustive completion, full Rust/SQLite refinement, whole-system composition and Policy B source-bound
-equivalence remain open. Earlier pinned builds passed public SSH/screen reconnect and isolated installation,
-upgrade and rollback on an existing Debian 12 host. External OAuth services, physical hosts, broader distribution
-and architecture matrices, schema-transition acceptance and large-scale long-horizon comparisons remain open.
-No normal host installation replacement or public release is implied by this document.
+equivalence remain open. Real-model outcome quality, external OAuth, public hosts/graphical terminals,
+clean-host install/update/rollback, schema transitions, native ARM, broader distributions and matched
+long-horizon/priced-cost comparisons need separate acceptance. No installation replacement or public release
+is implied by this document.

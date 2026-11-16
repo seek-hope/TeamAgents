@@ -429,7 +429,7 @@
           "symbol": "spec_invariants_hold_over_short_command_sequences"
         }
       ],
-      "remaining": "All historical schema migrations and configuration versions are not proved."
+      "remaining": "Arbitrary schema migrations and configuration versions are not proved."
     },
     {
       "id": "Q19",
@@ -797,7 +797,7 @@
           "path": "engine/src/config.rs"
         }
       ],
-      "remaining": "V2Isolation is historical and cannot establish a current sandbox guarantee."
+      "remaining": "Host execution is not OS confinement; process and remote effects require separate evidence."
     },
     {
       "id": "A15",

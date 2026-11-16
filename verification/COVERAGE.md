@@ -52,7 +52,6 @@ a row here is not a `TypeOK*` claim.
 | `V2Images` | `TypeOK` |
 | `V2Inbox` | `TypeOK` |
 | `V2InputQueue` | `TypeOK` |
-| `V2Isolation` | `TypeOK` |
 | `V2JobSupervision` | `TypeOK` |
 | `V2Jobs` | `TypeOK` |
 | `V2Memory` | `TypeOK` |

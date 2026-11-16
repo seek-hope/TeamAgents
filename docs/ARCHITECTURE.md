@@ -160,7 +160,7 @@ Finite TLA+ models cover protocol slices, including `V2SearchTree`. Executable R
 drivers, fake providers, runner processes and random control walks. Kani covers selected arithmetic and capability
 vocabulary proofs. PTY checks terminal behavior.
 
-Current totals are 65 positive configurations in 62 traversals, 327 controls, 79 witnesses and 9 Kani harnesses,
+Current totals are 63 positive configurations in 60 traversals, 323 controls, 79 witnesses and 9 Kani harnesses,
 plus 837 Rust tests. Search-tree coverage includes ordered pairs, 23 controls covering every non-`TypeOK` tree
 claim and 11 witnesses. Witnesses demonstrate reachability only.
 

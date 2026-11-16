@@ -25,7 +25,7 @@ Three rules decide whether a key is applied:
 * **A key — or a *value* — this build does not serve is refused, or named by `doctor` before a session can start.**
   At load, with a pointer here (`unknown key … docs/CONFIG.md lists every key this build serves`): at the top
   level, inside every table and inside each `[models.*]`/`[tools.*]` entry — `protocol` must be one this build can
-  dispatch (an *empty* one is the historical chat/completions default), `kind` one it can bind, and
+  dispatch (an *empty* one selects the chat/completions default), `kind` one it can bind, and
   `mcp_execution` one it can honor. In a `doctor` row instead, when the value is one a *session* would fail on
   later and the user can still fix it: `mcp_transport` and a mistyped MCP command (D-74's "where the user can
   still fix it without reading a daemon log"). A typo is a config error, never a silent default. For example,
@@ -56,9 +56,9 @@ operation review.
 | `trust_project`, `trusted_projects` | Whether a repository-local config contributes models/tools/skills/instructions, and for exactly which canonical roots (D-244, D-434). |
 | `approvals_reviewer`, `reviewer_model` | `user` (the default) or `auto_review`, and the optional model the reviewer uses (D-458). |
 
-D-480 removed the sandbox backends. Legacy `permissions.sandbox` and `sandbox_*` settings are rejected;
-remove them explicitly to select automatic host execution. Local MCP defaults to `mcp_execution = "host"`,
-the only accepted value. The removed `mcp_network` and check-level `network` settings are also rejected.
+Execution is host-only (D-480). Unsupported `permissions.sandbox` and `sandbox_*` settings are rejected;
+remove them explicitly to select host execution. Local MCP defaults to `mcp_execution = "host"`, the only
+accepted value. Unsupported `mcp_network` and check-level `network` settings are also rejected.
 
 <!-- generated: begin -->
 

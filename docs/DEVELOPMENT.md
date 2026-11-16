@@ -30,7 +30,7 @@ make language-check
 
 Current ledger: **core 198 / engine 522 / TUI 117 = 837 tests**. `tools/test_counts.py` checks that the source
 suites and all registered current totals/triples agree (D-519). Its `--write` mode changes captured numbers only;
-keep dates, passing-gate claims and historical receipts accurate separately. Update its `HEADLINES` patterns if
+keep dates and source-bound passing-gate claims accurate separately. Update its `HEADLINES` patterns if
 a current statement changes format. A source count is not a passing test receipt; see ACCEPTANCE.md for gate status.
 
 The file/tool subset also runs on the AArch64 GNU ABI through QEMU user emulation:
@@ -61,13 +61,19 @@ The first formal run may download the pinned **TLC v1.7.1** jar; its SHA-256 is 
 `TLA_METADIR` defaults to `tools/tmp/tla`; use a separate
 scratch directory for manual probes. Do not point TLC at `verification/tla/states` or commit generated states.
 
-Current material: **393 configurations across 48 modules**, comprising **65 positive configurations in 62
-traversals**, **327 negative controls** and one separate wide configuration. There are **79 normal-path witnesses**
+Current material: **387 configurations across 47 modules**, comprising **63 positive configurations in 60
+traversals**, **323 negative controls** and one separate wide configuration. There are **79 normal-path witnesses**
 and **9 Kani harnesses**. Positive configurations share a traversal only when model/spec/domain match.
 
 A witness demonstrates reachability, not safety. A positive TLC root must be semantically processed with no hidden
 warning, omitted proof or abort. A skipped, timed-out or unsupported proof is not rewritten as a pass. The wide
 configuration is not claimed complete, and Policy B canonical allocation is not adopted.
+
+The report binds the current gate inputs with a path/content fingerprint.
+`python3 tools/verification_catalogue.py --source-hash` computes it from the model/configuration files,
+verification drivers, Makefile and compiled Kani subjects. Record it only after the relevant targets pass and
+their inputs remain unchanged; regenerating a fingerprint is not a verification run. The catalogue audit rejects
+added, removed, renamed or changed material until the result is renewed.
 
 `verification/tla/V2SearchTree.tla` covers single and ordered two-operation patches. Its 23 controls cover every
 non-`TypeOK` tree claim; 11 witnesses cover normal paths. Arbitrary strings, SQL details and live-model semantics
@@ -106,7 +112,7 @@ python3 tools/test_counts.py
 | Area | Current audit entry points |
 |---|---|
 | Build and document inventory | `tools/build_references.py`, `tools/hygiene_catalogue.py`, `tools/doc_inventory.py` |
-| Decisions and citations | `tools/decisions_log.py`, `tools/decision_queue.py`, `tools/decision_citations.py`, `tools/citations.py`, `tools/requirement_trace.py` |
+| Decisions and citations | `tools/decision_citations.py`, `tools/citations.py`, `tools/requirement_trace.py` |
 | User and interface documents | `tools/project_config_claim.py`, `tools/release_artifact.py`, `tools/readme_zh.py`, `tools/doc_flags.py`, `tools/exec_report.py`, `tools/tui_keys.py`, `tools/env_knobs.py`, `tools/markdown_tables.py` |
 | Configuration and control surface | `tools/config_keys.py`, `tools/flag_fields.py`, `tools/command_params.py`, `tools/config_reference.py` |
 | Generated tool/protocol references | `tools/event_catalogue.py`, `tools/protocol_catalogue.py`, `tools/tool_catalogue.py` |
@@ -211,8 +217,8 @@ Do not replace installed binaries, user daemons or sessions as part of ordinary 
 
 ## 9. Current open boundaries
 
-- Small live tree/reviewer/Pi trials and four protocol paths have evidence in the acceptance matrix; general
-  long-horizon success, independent multi-model quality and user lostness remain unestablished.
+- Real-model task quality, long-horizon success, independent multi-model judgement and navigation usability
+  require separate evaluation. Scripted workflows and live Fetch API checks do not establish them.
 - External OAuth, public hosts, wider terminals and genuinely clean machines remain separate acceptance scopes.
 - Wide exhaustive search, full Rust/SQLite refinement, whole-system composition and Policy B source-bound
   equivalence remain open.

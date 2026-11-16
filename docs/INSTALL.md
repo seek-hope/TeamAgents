@@ -95,13 +95,10 @@ default; when enabled, they still require a concrete user approval and cannot be
 reviewer. Publication is a separate operation.
 
 A local `make release-rehearsal` builds and checks an archive and performs an isolated install/init smoke.
-The `ab325b59` package also passed an installed batch-edit hash-refusal/repair workflow on the existing local
-x86_64 Linux host with a scripted provider.
-Separate fresh-VM checks passed for the `0eb4ee98` candidate on Debian 12 (Linux 6.1) and Ubuntu 22.04.5 (Linux
-5.15), using ordinary users and scripted loopback providers. They covered two distinct 0.2.0 builds with schema
-9/protocol 2: install, repeated init, real Shell, upgrade, explicit rollback and failed-startup recovery with
-configuration and history preservation. ACCEPTANCE.md pins the archive and receipts. This evidence does not
-cover schema migration, physical hosts, other architectures or live services, and does not publish the package.
+Current-host x86_64 Linux musl installation, PTY and scripted profile/fetch checks pass; a separate real
+Fetch API check passed. Exact source/package bindings are in [ACCEPTANCE.md](ACCEPTANCE.md). Clean-host
+two-version installation/update/rollback, schema transitions, physical hosts, native ARM and broader platform
+coverage require separate acceptance. These checks neither establish real-model quality nor publish a package.
 
 ## 5. Uninstall
 
