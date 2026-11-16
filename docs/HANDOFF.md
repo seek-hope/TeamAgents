@@ -2,7 +2,20 @@
 
 ## Current baseline
 
-Runtime source baseline: `a6b5555a` (D-522). It protects session archive/restore/delete/prune when an endpoint
+D-523–D-525 are the current repairs. D-523 resolves named profiles before request preparation and
+recovery, preserving first-request effort and unchanged cached retries. D-524 adds a Herdr-inspired member
+sidebar, inspection/history, tasks and activity while keeping input, interrupt and profile controls on Leader.
+All fifteen slash commands share the same completion/guidance registry. D-525 verifies public fetch destinations
+behind fake-IP DNS and enforces UTF-8 byte limits; search providers already worked on this host.
+
+The full 837-test local gate, the five-profile PTY/graphics matrix (including split-pane media and hidden-view
+polling), and all 18 offline probes pass. The isolated executable workflow also covers selected effort before
+the first request, frozen retries, tool follow-ups, canonical public fetch and private-address refusal.
+Package and installation validation are pending. The host still runs D-522; the user's open TUI and parked
+session have not been modified or resumed. Preserve its draft when updating the installation.
+Cross-provider hot switching, ambiguous wire identities and provider-side fetch redirect enforcement remain open.
+
+Previous runtime source baseline: `a6b5555a` (D-522). It protects session archive/restore/delete/prune when an endpoint
 is listening or absence is uncertain.
 Explicit stop propagates failures and uses the protocol-1/2 maintenance connection. Twenty lifecycle and
 eight stop-safety conditions, the old-version shutdown fixture and the real CLI prune probe pass locally;
@@ -28,7 +41,7 @@ and the acceptance matrix in [ACCEPTANCE.md](ACCEPTANCE.md). Current formal evid
 
 Current source inventory and verification:
 
-- **819 Rust tests**: core 198, engine 513, TUI 108; the full `make check` passed.
+- **837 Rust tests**: core 198, engine 522, TUI 117; the full `make check` passed on 2026-11-16.
   D-521 also passes the 26-tool AArch64 GNU emulation subset and a scripted daemon/headless workflow.
   D-522 passed the current PTY matrix, 18 offline probes, musl release/install and installed workflow/session
   preservation checks; D-521's architecture evidence remains bound to its own source.
@@ -82,7 +95,8 @@ These are local scripted, finite-model and real-terminal results, not full real-
 | Search-tree control and replay | `core/src/v2/control/search_tree.rs` |
 | Daemon, sessions and headless execution | `engine/tests/v2_daemon.rs`, `engine/tests/session_browser.rs`, `engine/src/v2/session_export_tests.rs` |
 | Provider and runner robustness | `engine/tests/cases/provider_robustness.rs`, `engine/tests/cases/jobs_robustness.rs` |
-| TUI and terminal behavior | `tui/tests/minimal.rs`, `tui/tests/conversation.rs`, `tui/tests/parity.rs`, `make pty` |
+| TUI and terminal behavior | `tui/tests/team.rs`, `tui/tests/minimal.rs`, `tui/tests/conversation.rs`, `tui/tests/parity.rs`, `make pty` |
+| Fake-IP DNS and fetch | `engine/src/web_url.rs`, tool/search tests and D-525's scoped host probes |
 | Executable control-plane correspondence | `core/tests/v2_invariants.rs` |
 | Formal search-tree model | `verification/tla/V2SearchTree.tla` and `verification/witnesses.json` |
 | Document and tool generation | `tools/*_catalogue.py`, `tools/config_reference.py`, `tools/citations.py` |

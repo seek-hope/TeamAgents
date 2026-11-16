@@ -29,14 +29,73 @@ fn body<'a>(lines: &'a [Line<'a>]) -> Vec<&'a ratatui::text::Span<'a>> {
 
 #[test]
 fn completion_edits_only_until_an_explicit_submit_and_keeps_input_ownership() {
-    for (prefix, command) in [("/h", "/help"), ("/s", "/sessions"), ("/i", "/interrupt"), ("/q", "/quit")] {
+    for (prefix, command) in [
+        ("/h", "/help"),
+        ("/s", "/sessions"),
+        ("/i", "/interrupt"),
+        ("/q", "/quit"),
+        ("/m", "/model"),
+        ("/e", "/edit"),
+        ("/que", "/queue"),
+        ("/t", "/tree"),
+        ("/a", "/attach"),
+        ("/d", "/detach"),
+        ("/tea", "/team"),
+        ("/cha", "/chat"),
+        ("/tas", "/tasks"),
+        ("/act", "/activity"),
+        ("/insp", "/inspect"),
+    ] {
         let mut app = V2App::new("completion");
         app.composer.set_text(prefix);
         assert!(app.handle_key(key(KeyCode::Tab)).is_none());
         assert_eq!(app.composer.text(), command);
-        assert!(app.entries.is_empty() && app.browser.is_none() && !app.quit);
+        assert!(app.entries.is_empty() && app.browser.is_none() && app.profile.is_none() && !app.quit);
         assert!(app.composer.history.is_empty());
     }
+    let mut app = V2App::new("all-commands");
+    app.composer.set_text("/");
+    let commands: HashSet<_> = app.completion.candidates(&app.composer).into_iter().map(|(name, _)| name).collect();
+    assert_eq!(
+        commands,
+        HashSet::from([
+            "/help",
+            "/sessions",
+            "/interrupt",
+            "/quit",
+            "/model",
+            "/edit",
+            "/queue",
+            "/tree",
+            "/attach",
+            "/detach",
+            "/team",
+            "/chat",
+            "/tasks",
+            "/activity",
+            "/inspect",
+        ])
+    );
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal.draw(|frame| v2ui::render(frame, &mut app)).unwrap();
+    let rendered: String = terminal.backend().buffer().content().iter().map(|cell| cell.symbol()).collect();
+    for command in &commands {
+        assert!(rendered.contains(command), "the slash menu must display {command}");
+    }
+    app.composer.set_text("/unknown-command");
+    assert!(app.handle_key(key(KeyCode::Enter)).is_none());
+    for command in &commands {
+        assert!(app.entries.last().unwrap().text.contains(command), "unknown-command help must include {command}");
+    }
+    let mut app = V2App::new("model-menu");
+    app.apply_checkpoint(json!({"instances":[{"id":"i-leader", "model":"leader_main", "effort":"high"}]}), 0);
+    app.composer.set_text("/m");
+    assert!(app.handle_key(key(KeyCode::Enter)).is_none());
+    assert_eq!(app.composer.text(), "/model");
+    assert!(app.profile.is_none());
+    assert!(app.handle_key(key(KeyCode::Enter)).is_none());
+    assert!(app.profile.is_some());
+    assert!(app.composer.history.is_empty());
     let mut app = V2App::new("completion");
     app.composer.set_text("/qui");
     assert!(app.handle_key(key(KeyCode::Up)).is_none());
@@ -212,7 +271,7 @@ fn every_media_item_in_long_history_can_be_revisited_after_eviction() {
             let start = app.last_chat_lines.saturating_sub(app.last_chat_height).saturating_sub(app.chat_scroll);
             let geo = v2ui::geometry(&app, Rect::new(0, 0, 80, 24));
             let rendered = app.pictures.iter().any(|p| {
-                let absolute = start + usize::from(p.area.y - geo.chat.y) - usize::from(p.skip);
+                let absolute = start + usize::from(p.area.y - geo.chat.y - 1) - usize::from(p.skip);
                 absolute == row + 3
             });
             if rendered {

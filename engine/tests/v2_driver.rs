@@ -288,6 +288,9 @@ impl Provider for RecordingProvider {
         on_event: &mut (dyn FnMut(ProviderEvent) + Send),
     ) -> Result<AttemptOutcome, ProviderError> {
         self.seen.lock().unwrap().push(json!({
+            "request_id": request.request_id,
+            "model": request.model,
+            "options": request.options,
             "messages": request.messages,
             "tools": request.tools.len(),
             // the names too: what the model is *offered* is derived from the
@@ -625,27 +628,130 @@ async fn send_executes_through_the_control_plane_with_a_grant() {
     handle.shutdown().await.expect("shutdown");
 }
 
+fn named_profile_config(root: &Root, provider: RecordingProvider) -> DriverConfig<RecordingProvider> {
+    let mut config = root.config_with(provider);
+    config.catalog.models.insert(
+        "leader_main".into(),
+        serde_json::from_value(json!({
+            "provider":"deepseek", "protocol":"deepseek", "model":"deepseek-flash",
+            "context_window":128_000,
+            "generation_options":{"reasoning_effort":"high", "temperature":0.25, "max_tokens":8192}
+        }))
+        .unwrap(),
+    );
+    config.profile.model = "leader_main".into();
+    // Match the supervisor: the driver starts with a wire-effective profile.
+    config.profile = teamagents_engine::providers::resolve_profile(config.profile, &config.catalog);
+    config
+}
+
+#[tokio::test]
+async fn profile_selection_applies_before_the_first_request_and_survives_tool_followups() {
+    let root = root("profile-alias");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let (provider, log) = recording(vec![
+        Step::Transient("retry the same request"),
+        Step::Message(json!({"role":"assistant", "content":"", "tool_calls":[
+            {"id":"list", "type":"function", "function":{"name":"ls", "arguments":"{\"path\":\".\"}"}}
+        ]})),
+        Step::Message(reply("listed")),
+        Step::Message(reply("follow-up answered")),
+    ]);
+    let mut config = named_profile_config(&root, provider);
+    config.bindings.push("files".into());
+    let handle = start(config).await.unwrap();
+    {
+        let mut control = second_control(&root);
+        control
+            .submit(
+                cmd(
+                    "select-profile",
+                    "set_instance_profile",
+                    json!({"instance_id":"i-main", "model":"leader_main", "effort":"xhigh"}),
+                ),
+                teamagents_core::v2::Identity::User,
+            )
+            .unwrap();
+    }
+    handle.input("list the workspace").await.unwrap();
+    wait_event_count(&handle, "response_imported", 2, 5_000).await;
+    wait_phase(&handle, "READY", 5_000).await;
+    {
+        let mut control = second_control(&root);
+        control
+            .submit(
+                cmd("select-effort", "set_instance_profile", json!({"instance_id":"i-main", "effort":"low"})),
+                teamagents_core::v2::Identity::User,
+            )
+            .unwrap();
+    }
+    handle.input("answer the follow-up").await.unwrap();
+    wait_event_count(&handle, "response_imported", 3, 5_000).await;
+    let snapshot = handle.snapshot().await.unwrap();
+    handle.shutdown().await.unwrap();
+    let requests = recorded(&log);
+    assert_eq!(requests.len(), 4);
+    assert_eq!(requests[0], requests[1], "a transient retry reuses the prepared request");
+    for (index, request) in requests.iter().enumerate() {
+        assert_eq!(request["model"], "deepseek-flash", "request {index} must use the API model name");
+    }
+    for (index, request) in requests.iter().enumerate() {
+        assert_eq!(
+            request["options"]["reasoning_effort"],
+            if index < 3 { "max" } else { "low" },
+            "the first request after a selection must carry the normalized effort"
+        );
+        assert_eq!(request["options"]["temperature"], 0.25);
+        assert_eq!(request["options"]["max_tokens"], 8192);
+    }
+    assert_eq!(snapshot["instance"]["lifecycle"], "ACTIVE");
+    let control = second_control(&root);
+    let listings: i64 = control
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM operations WHERE json_extract(intent_json,'$.name')='ls' AND status='SUCCEEDED'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(listings, 1, "the tool result is consumed once");
+}
+
 #[tokio::test]
 async fn crash_before_model_response_recovers_with_honest_billing() {
-    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
     let root = root("crash-model");
     std::fs::create_dir_all(root.dir.join("ws")).unwrap();
-    // first driver: the provider hangs mid-attempt; the task is aborted
-    let hanging = ScriptedProvider { script: Mutex::new(vec![Step::Hang].into()) };
-    let handle = start(root.config(hanging)).await.expect("start");
+    let (hanging, first_log) = recording(vec![Step::Hang]);
+    let handle = start(named_profile_config(&root, hanging)).await.expect("start");
+    {
+        let mut control = second_control(&root);
+        control
+            .submit(
+                cmd(
+                    "select-before-crash",
+                    "set_instance_profile",
+                    json!({"instance_id":"i-main", "model":"leader_main", "effort":"max"}),
+                ),
+                teamagents_core::v2::Identity::User,
+            )
+            .unwrap();
+    }
     handle.input("do work").await.expect("input");
-    wait_phase(&handle, "MODEL_PENDING", 5_000).await;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    let first = wait_for_requests(&first_log, 1, 5_000).await;
     handle.crash().await;
-    // recovery: the lost attempt is recorded with unknown usage, then the
-    // request retries under the same request and completes (§6.3)
-    let recovering = ScriptedProvider { script: Mutex::new(vec![Step::Message(finish_call("recovered"))].into()) };
-    let handle = start(root.config(recovering)).await.expect("restart");
+    // Recovery reconstructs the selected profile and records the lost attempt's unknown usage.
+    let (recovering, log) = recording(vec![Step::Message(finish_call("recovered"))]);
+    let handle = start(named_profile_config(&root, recovering)).await.expect("restart");
     assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
     let snapshot = handle.snapshot().await.unwrap();
+    handle.shutdown().await.expect("shutdown");
+    let requests = recorded(&log);
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0]["request_id"], first[0]["request_id"]);
+    assert_eq!(requests[0]["model"], "deepseek-flash");
+    assert_eq!(requests[0]["options"]["reasoning_effort"], "max");
     assert_eq!(snapshot["work"]["unknown_usage"], json!(1), "the lost attempt must stay visible");
     assert_eq!(snapshot["work"]["known_usage"]["total"], json!(5), "exactly one complete attempt billed");
-    handle.shutdown().await.expect("shutdown");
 }
 
 #[tokio::test]

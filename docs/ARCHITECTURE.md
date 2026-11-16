@@ -147,9 +147,12 @@ The daemon speaks JSON lines over a per-user Unix socket. Business commands carr
 reconnect deduplication. Events carry session, sequence, kind and a visible payload reference. Reconnect starts
 from one consistent checkpoint/watermark, then reads newer events. Streaming previews are transient.
 
-The TUI has one Leader conversation with elevated prompts, grouped operations, conditional approvals and
-Markdown/code/media rendering. `/tree` exposes the session exploration tree. `teamagents search_tree [--json]`
-and session export read the same projection. No second business store or execution engine is created in the client.
+The TUI uses a Herdr-inspired member sidebar, Leader conversation and responsive inspection, task and activity
+views. `tui/src/team.rs` keeps User-visible member history separate from the Leader transcript and model context.
+Navigation never changes the recipient of input, interruption or profile selection. Visible observations use the
+existing checkpoint, tasks and history reads; failed reads retain refresh debt. Markdown/code/media, approvals
+and drafts keep explicit input ownership. `/tree`, `teamagents search_tree [--json]` and session export read the
+same exploration-tree projection. No second business store or execution engine is created in the client.
 
 ## 8. Current verification architecture
 
@@ -158,7 +161,7 @@ drivers, fake providers, runner processes and random control walks. Kani covers 
 vocabulary proofs. PTY checks terminal behavior.
 
 Current totals are 65 positive configurations in 62 traversals, 327 controls, 79 witnesses and 9 Kani harnesses,
-plus 819 Rust tests. Search-tree coverage includes ordered pairs, 23 controls covering every non-`TypeOK` tree
+plus 837 Rust tests. Search-tree coverage includes ordered pairs, 23 controls covering every non-`TypeOK` tree
 claim and 11 witnesses. Witnesses demonstrate reachability only.
 
 These results do not establish full Rust/SQLite refinement, whole-system composition, wide exhaustive completion

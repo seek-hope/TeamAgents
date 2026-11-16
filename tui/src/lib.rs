@@ -12,6 +12,7 @@ pub mod queue;
 pub mod session_client;
 pub mod sessions;
 mod subprocess;
+pub mod team;
 pub mod text;
 pub mod theme;
 pub mod transcript;

@@ -68,7 +68,7 @@ the log is still a supported way to observe it (and the probes that do assert on
 | `message_sent` | `recipient` | `correlation_id`, `envelope_id`, `sender` | `core/src/v2/control.rs:1152` | observability only |
 | `operation_cancel_requested` | `operation_id` | `reason` | `core/src/v2/control.rs:4134` | observability only |
 | `operation_cancelled` | `operation_id` | `reason` | `core/src/v2/control.rs:4129` | observability only |
-| `operation_completed` | `operation_id` | `status` | `core/src/v2/control.rs:3793` | `tui/src/v2app.rs`, `tui/tests/minimal.rs`, `tui/tests/v2app_tests.rs`, `engine/tests/v2_driver.rs`, `engine/tests/v2_mcp.rs`, `engine/tests/v2_spawn_failure.rs` |
+| `operation_completed` | `operation_id` | `status` | `core/src/v2/control.rs:3793` | `tui/src/v2app.rs`, `tui/tests/minimal.rs`, `tui/tests/team.rs`, `tui/tests/v2app_tests.rs`, `engine/tests/v2_driver.rs`, `engine/tests/v2_mcp.rs`, `engine/tests/v2_spawn_failure.rs` |
 | `operation_dispatched` | `operation_id` | `operation_id` | `core/src/v2/control.rs:4099` | `tui/src/v2app.rs`, `tui/tests/v2app_tests.rs`, `engine/tests/v2_driver.rs`, `engine/tests/v2_mcp.rs` |
 | `operation_stop_observed` | `operation` | — | `core/src/v2/control/work/takeover.rs:230` | observability only |
 | `operation_unauthorized` | `operation_id` | `reason` | `core/src/v2/control.rs:955` | observability only |

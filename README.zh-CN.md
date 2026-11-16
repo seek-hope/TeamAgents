@@ -76,10 +76,13 @@ engine/target/debug/teamagents search_tree --json
   正在运行的工具或已委派工作。`Ctrl+Q` 或 `/quit` 关闭 TUI，daemon 继续运行。
 - `Ctrl+M` 或 `/model` 打开模型与推理档位菜单。`Ctrl+P` 或 `/queue` 查看待处理输入。
   `Ctrl+S` 或 `/sessions` 打开会话历史与切换。`Ctrl+E` 使用 `VISUAL` 或 `EDITOR` 编辑草稿。
+- `F6` 在输入框、成员列表和详情面板之间切换焦点。用 `↑`/`↓` 选择成员，`Enter` 查看详情，`h` 查看历史，
+  `d` 返回详情，`Esc` 回到草稿。`Alt+1`…`Alt+4` 切换对话、任务、活动和详情页。浏览成员不会改变草稿或消息收件人；输入仍发给 Leader。
 - `Ctrl+O` 展开或折叠工具预览。`Ctrl+G` 在预览和源码之间切换。
 
 斜杠命令包括 `/help`、`/sessions`、`/interrupt`、`/quit`、`/model`、`/attach`、`/detach`、
-`/queue`、`/tree` 和 `/edit`。补全只填入命令，仍需按 Enter 才会提交。输入 `@PATH` 后按 Tab 并选择候选，
+`/queue`、`/tree`、`/edit`、`/team`、`/chat`、`/tasks`、`/activity` 和 `/inspect`。补全只填入命令，仍需按 Enter 才会提交。
+输入 `@PATH` 后按 Tab 并选择候选，
 可以暂存文件引用；文件只会随你之后发送的消息一起提交。
 
 默认状态根为 `${XDG_STATE_HOME:-$HOME/.local/state}/teamagents/v2`。
@@ -124,7 +127,7 @@ daemon + supervisor + 每个实例的 driver
 
 ## 当前证据
 
-最新完整本地门禁已通过 **819 项 Rust 测试**（core 198、engine 513、TUI 108）。
+最新完整本地门禁已通过 **837 项 Rust 测试**（core 198、engine 522、TUI 117）。
 形式化材料包含 **48 个模块、393 个配置**：
 
 - **65 个正向配置，62 次遍历**；

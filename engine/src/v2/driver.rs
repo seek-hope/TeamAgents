@@ -1876,6 +1876,9 @@ that delegated it learns the outcome only from a settlement.";
         if !super::readiness::opens_work_turn(false, tail_is_addressed, pending_task, &work) {
             return Ok(false);
         }
+        // Resolve the selected profile after the post-drain snapshot and before fixing the request.
+        // A concurrent selection bumps the revision and makes begin_request reject stale preparation.
+        self.refresh_profile().await?;
         // D-410 / D-418: only once a turn is actually opening, inject the one wrap-up deadline note
         // and required-check briefing so an idle/empty session never fabricates a turn before user input.
         self.warn_before_deadline(snapshot).await?;
@@ -1978,10 +1981,8 @@ that delegated it learns the outcome only from a settlement.";
         }
     }
 
-    /// MODEL_PENDING: transport attempts with single-owner retry, then the
-    /// atomic response import (§4.2).
-    /// D-470: reload the instance profile before each request, so a user's model/effort switch lands on the next
-    /// turn (the control plane only accepts it at a READY/WAITING boundary).
+    /// Reload the persisted selection before request preparation and recovery. Catalog keys stay local;
+    /// the kernel receives the API model name, generation defaults and normalized effort.
     async fn refresh_profile(&mut self) -> Result<(), String> {
         let instance = self.config.instance_id.clone();
         let text: Option<String> = self
@@ -1995,12 +1996,14 @@ that delegated it learns the outcome only from a settlement.";
             .await?;
         if let Some(text) = text {
             if let Ok(profile) = serde_json::from_str::<Json>(&text) {
+                let mut selected = self.config.profile.clone();
                 if let Some(model) = profile["model"].as_str().filter(|model| !model.is_empty()) {
-                    self.config.profile.model = model.to_string();
+                    selected.model = model.to_string();
                 }
                 if profile.get("options").is_some_and(Json::is_object) {
-                    self.config.profile.options = profile["options"].clone();
+                    selected.options = profile["options"].clone();
                 }
+                self.config.profile = crate::providers::resolve_profile(selected, &self.config.catalog);
             }
         }
         Ok(())

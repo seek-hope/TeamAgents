@@ -31,7 +31,10 @@ pub(crate) fn selection() -> Style {
 pub struct V2Geometry {
     pub status: Rect,
     pub chat: Rect,
-    /// Grok-style live activity row, shown only when there is something meaningful to report.
+    pub sidebar: Rect,
+    pub nav: Rect,
+    pub inspector: Rect,
+    /// Live activity row, shown when there is something meaningful to report.
     pub activity: Rect,
     /// Pending-approvals box (chat view only; height 0 when nothing pends).
     pub approvals: Rect,
@@ -43,7 +46,12 @@ pub struct V2Geometry {
 
 pub fn geometry(app: &V2App, area: Rect) -> V2Geometry {
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)]).split(area);
-    let content = rows[1];
+    let sidebar_w = if area.width >= 96 && rows[1].height >= 8 { 26 } else { 0 };
+    let mut sidebar = Rect::new(rows[1].x, rows[1].y, sidebar_w, rows[1].height);
+    let content = Rect::new(rows[1].x + sidebar_w, rows[1].y, rows[1].width.saturating_sub(sidebar_w), rows[1].height);
+    let nav_h = u16::from(content.height >= 8);
+    let nav = Rect::new(content.x, content.y, content.width, nav_h);
+    let content = Rect::new(content.x, content.y + nav_h, content.width, content.height.saturating_sub(nav_h));
     let composer_h = (app.composer.widget_height(content.width.saturating_sub(4) as usize) as u16)
         .min(content.height.saturating_sub(1));
     let approvals_h = if app.approvals.is_empty() {
@@ -70,9 +78,23 @@ pub fn geometry(app: &V2App, area: Rect) -> V2Geometry {
         Constraint::Length(composer_h),
     ])
     .split(content);
+    let mut chat = chunks[0];
+    let mut inspector = Rect::new(chat.right(), chat.y, 0, chat.height);
+    if app.team.view == crate::team::View::Conversation && area.width >= 132 && chat.height >= 8 {
+        let width = (chat.width * 2 / 5).max(36);
+        chat.width -= width;
+        inspector = Rect::new(chat.right(), chat.y, width, chat.height);
+    }
+    if sidebar_w == 0 && app.focus == Focus::Team {
+        sidebar = chat;
+        chat = Rect::new(sidebar.right(), sidebar.y, 0, sidebar.height);
+    }
     V2Geometry {
         status: rows[0],
-        chat: chunks[0],
+        chat,
+        sidebar,
+        nav,
+        inspector,
         activity: chunks[1],
         approvals: chunks[2],
         completion: chunks[3],
@@ -119,6 +141,28 @@ pub fn handle_mouse(app: &mut V2App, area: Rect, mouse: crossterm::event::MouseE
                 app.approval_sel = index;
             } else if geo.composer.contains(point) {
                 app.focus = Focus::Composer;
+            } else if geo.nav.contains(point) {
+                if let Some(view) = crate::team::nav_at(geo.nav, mouse.column) {
+                    app.team.show(view);
+                    app.focus = if view == crate::team::View::Conversation { Focus::Composer } else { Focus::Panel };
+                }
+            } else if geo.sidebar.contains(point) {
+                let (list, start, count) = crate::team::member_window(app, geo.sidebar);
+                if list.contains(point) {
+                    let index = (mouse.row - list.y) as usize / 2;
+                    if index < count {
+                        let id = app.team.rows[start + index]["id"].as_str().unwrap_or("").to_string();
+                        app.team.select(&id);
+                        if area.width < 132 {
+                            app.team.show(crate::team::View::Inspect);
+                        }
+                    }
+                }
+                app.focus = if area.width < 96 { Focus::Panel } else { Focus::Team };
+            } else if geo.inspector.contains(point)
+                || (geo.chat.contains(point) && app.team.view != crate::team::View::Conversation)
+            {
+                app.focus = Focus::Panel;
             }
         }
         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
@@ -129,6 +173,12 @@ pub fn handle_mouse(app: &mut V2App, area: Rect, mouse: crossterm::event::MouseE
                 } else {
                     app.approval_sel.saturating_add(1).min(app.approvals.len().saturating_sub(1))
                 };
+            } else if geo.sidebar.contains(point) {
+                app.team.move_selection(!up);
+            } else if geo.inspector.contains(point)
+                || (geo.chat.contains(point) && app.team.view != crate::team::View::Conversation)
+            {
+                app.team.scroll_by(!up, 3);
             } else if geo.chat.contains(point) {
                 if up {
                     app.scroll_chat(3);
@@ -143,8 +193,15 @@ pub fn handle_mouse(app: &mut V2App, area: Rect, mouse: crossterm::event::MouseE
 
 pub fn render(frame: &mut Frame, app: &mut V2App) {
     app.pictures.clear();
+    app.team.member_visible = false;
+    app.team.tasks_visible = false;
     app.graphics.begin_frame();
     app.graphics.deferred = true;
+    render_content(frame, app);
+    app.graphics.end_frame();
+}
+
+fn render_content(frame: &mut Frame, app: &mut V2App) {
     let area = frame.area();
     if area.width == 0 || area.height == 0 {
         return;
@@ -157,13 +214,24 @@ pub fn render(frame: &mut Frame, app: &mut V2App) {
         app.pictures = crate::sessions::render(frame, browser, &app.session_root, &mut app.graphics);
         return;
     }
-    let geo = geometry(app, area);
+    let mut geo = geometry(app, area);
+    if app.focus == Focus::Panel && app.team.view == crate::team::View::Conversation && geo.inspector.is_empty() {
+        app.team.show(crate::team::View::Inspect);
+        geo = geometry(app, area);
+    }
     // the palette's screen background, drawn first so every widget sits on it
     frame.render_widget(Block::default().style(Style::default().bg(BG).fg(FG)), area);
     render_status(frame, app, geo.status);
-    if geo.chat.height > 0 {
-        render_chat(frame, app, geo.chat);
+    crate::team::render_sidebar(frame, app, geo.sidebar);
+    crate::team::render_nav(frame, app, geo.nav);
+    if !geo.chat.is_empty() {
+        if app.team.view == crate::team::View::Conversation {
+            render_chat(frame, app, geo.chat);
+        } else {
+            crate::team::render_panel(frame, app, geo.chat, app.team.view == crate::team::View::Inspect);
+        }
     }
+    crate::team::render_panel(frame, app, geo.inspector, true);
     render_activity(frame, app, geo.activity);
     render_approvals(frame, app, geo.approvals);
     render_completion(frame, app, geo.completion);
@@ -230,7 +298,7 @@ fn compact_tokens(value: i64) -> String {
     format!("{text}{suffix}")
 }
 
-/// Grok Build's quiet workspace header, with TeamAgents' authoritative work usage on the right.
+/// Session identity and recorded work usage remain visible while browsing members.
 fn render_status(frame: &mut Frame, app: &V2App, area: Rect) {
     let status = app.activity_line();
     let status_style = if app.disconnected {
@@ -355,6 +423,11 @@ fn render_activity(frame: &mut Frame, app: &V2App, area: Rect) {
 }
 
 fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
+    frame.render_widget(
+        Paragraph::new(" Leader · conversation").style(Style::default().fg(ACCENT)),
+        Rect::new(area.x, area.y, area.width, area.height.min(1)),
+    );
+    let area = Rect::new(area.x, area.y + u16::from(area.height > 0), area.width, area.height.saturating_sub(1));
     let area = Rect::new(area.x + u16::from(area.width > 2), area.y, area.width.saturating_sub(2), area.height);
     let width = area.width as usize;
     let preview = app.active_preview().map(str::to_owned);
@@ -546,14 +619,18 @@ fn render_completion(frame: &mut Frame, app: &V2App, area: Rect) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-/// Main conversation prompt: Grok's quiet border, leading prompt glyph and model info
-/// integrated into the lower border. The queue editor keeps using `render_editor` below.
+/// Leader prompt with an explicit recipient, independent of member navigation.
+/// The queue editor keeps using `render_editor` below.
 fn render_composer(frame: &mut Frame, app: &V2App, area: Rect) {
     if area.height < 3 || area.width < 3 {
         return;
     }
     let focused = app.focus == Focus::Composer && app.profile.is_none() && !app.help_open;
-    let title = if app.session_name.is_empty() { " ".to_string() } else { format!(" {} ", fit(&app.session_name, 24)) };
+    let title = if app.team.selected != "i-leader" {
+        format!("Message Leader · viewing {}", fit(&app.team.selected, 24))
+    } else {
+        "Message Leader".to_string()
+    };
     let block = panel(title).border_style(border(focused));
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -718,6 +795,16 @@ fn render_help(frame: &mut Frame, app: &mut V2App, area: Rect) {
                 "Ctrl+G graphics/source · / commands · Tab complete",
                 "Ctrl+C interrupt model request; tools may continue",
                 "Ctrl+Q detach; the session keeps running",
+            ][..],
+        ),
+        (
+            "Team workspace",
+            &[
+                "F6 cycles team, inspection and composer focus",
+                "Alt+1 chat · Alt+2 tasks · Alt+3 activity · Alt+4 inspect",
+                "Team: Up/Down member · Enter inspect · h history",
+                "Inspect: d details · h member history · Esc compose",
+                "Browsing is read-only; messages and Ctrl+C target Leader",
             ][..],
         ),
         (

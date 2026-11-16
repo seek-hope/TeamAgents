@@ -2,7 +2,7 @@
 """Keep language-independent parts of the two READMEs aligned (D-134).
 
 The Chinese README is a translation, not an independent command reference. Compare the heading-level
-skeleton, in-repository links, TeamAgents verbs and flags, Ctrl chords and supported slash commands.
+skeleton, in-repository links, TeamAgents verbs and flags, keyboard shortcuts and supported slash commands.
 
     python3 tools/readme_zh.py
     python3 tools/readme_zh.py --self-check
@@ -21,8 +21,11 @@ HEADING = re.compile(r"^(#+)\s")
 LINK = re.compile(r"\]\(([^)\s]+)\)")
 VERB = re.compile(r"\bteamagents ([a-z][a-z-]*)")
 FLAG = re.compile(r"(?<![\w-])--[a-z][a-z-]*")
-CHORD = re.compile(r"Ctrl\+(?:[A-Za-z]+|←|→)")
-LOCAL_COMMAND = re.compile(r"(?<![\w/])/(?:help|sessions|interrupt|quit|model|attach|detach|queue|edit)\b")
+CHORD = re.compile(r"(?:Ctrl|Alt)\+(?:[A-Za-z]+|[0-9]+|←|→)|\bF[0-9]+\b")
+COMMANDS = re.findall(r'\(\s*"(/[a-z]+)"', (REPO / "tui/src/completion.rs").read_text().split("];", 1)[0])
+if not COMMANDS:
+    raise RuntimeError("the local command registry could not be read")
+LOCAL_COMMAND = re.compile(r"(?<![\w/])(?:" + "|".join(map(re.escape, COMMANDS)) + r")\b")
 
 # Each README links to the other translation.
 LINK_EXCEPTIONS = {"README.md", "README.zh-CN.md"}
@@ -58,7 +61,7 @@ def compare(english: str, chinese: str) -> tuple[list[str], tuple[int, ...]]:
         findings.append(f"README.zh-CN.md links {extra}, which README.md does not")
 
     en_surface, zh_surface = surface(english), surface(chinese)
-    labels = ("teamagents verb", "flag", "Ctrl chord", "slash command")
+    labels = ("teamagents verb", "flag", "keyboard shortcut", "slash command")
     for label, en_items, zh_items in zip(labels, en_surface, zh_surface):
         for missing in sorted(set(en_items) - set(zh_items)):
             findings.append(f"README.zh-CN.md is missing {label} {missing}, which README.md shows")
@@ -74,14 +77,19 @@ def main() -> int:
         findings, _ = compare("# Test\nCtrl+Q /quit /model\n", "# Test\n")
         for token in ("Ctrl+Q", "/quit", "/model"):
             assert any(token in finding for finding in findings), (token, findings)
+        for token in (*COMMANDS, "F6", "Alt+1", "Alt+4"):
+            findings, _ = compare(f"# Test\n{token}\n", "# Test\n")
+            assert any(token in finding for finding in findings), (token, findings)
         assert not compare("# Test\nCtrl+Q /quit\n", "# Test\nCtrl+Q /quit\n")[0]
         print("readme_zh self-check: heading/link/interface comparison and missing-control detection passed")
         return 0
 
     findings, counts = compare(ENGLISH.read_text(), CHINESE.read_text())
+    for command in set(COMMANDS) - set(surface(ENGLISH.read_text())[3]):
+        findings.append(f"README.md omits supported slash command {command}")
     headings, link_count, verbs, flags, chords, commands = counts
     print(f"README.md ↔ README.zh-CN.md: {headings} headings, {link_count} in-repo links, "
-          f"{verbs} verbs / {flags} flags, {chords} Ctrl chords and {commands} slash commands on each side")
+          f"{verbs} verbs / {flags} flags, {chords} keyboard shortcuts and {commands} slash commands on each side")
     for finding in findings:
         print("FAIL:", finding)
     return 1 if findings else 0

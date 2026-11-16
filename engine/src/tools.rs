@@ -1963,52 +1963,9 @@ fn shell_run_at(
     shell_outcome_at(command, workdir, timeout_s, output, shell_state, control).render(shell_state)
 }
 
-/// Host part of `rest` ("host[:port]/path..."), brackets and userinfo included.
-fn url_host(rest: &str) -> &str {
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    let authority = authority.rsplit_once('@').map(|(_, host)| host).unwrap_or(authority);
-    match authority.strip_prefix('[') {
-        Some(inner) => inner.split(']').next().unwrap_or(""),
-        None => authority.split(':').next().unwrap_or(""),
-    }
-}
-
-/// Block private/loopback/reserved/multicast targets: the not-globally-
-/// reachable blocks of the IANA special-purpose address registries.
+/// Validate public fetch destinations; synthetic DNS addresses require independent HTTPS DNS verification.
 pub fn guard_url(url: &str) -> Result<String, String> {
-    let rest = url
-        .strip_prefix("http://")
-        .or_else(|| url.strip_prefix("https://"))
-        .ok_or_else(|| format!("unsupported url {url}"))?;
-    let host = url_host(rest).to_string();
-    if host.is_empty() {
-        return Err(format!("unsupported url {url}"));
-    }
-    if host == "localhost" || host.ends_with(".localhost") {
-        return Err(format!("refusing private address for {host}"));
-    }
-    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-        if is_private_addr(ip) {
-            return Err(format!("refusing private address for {host}"));
-        }
-        return Ok(url.to_string());
-    }
-    // resolve: every address must be public
-    use std::net::ToSocketAddrs;
-    let addrs: Vec<std::net::SocketAddr> = (host.as_str(), 443u16)
-        .to_socket_addrs()
-        .or_else(|_| (host.as_str(), 80u16).to_socket_addrs())
-        .map_err(|e| format!("cannot resolve {host}: {e}"))?
-        .collect();
-    if addrs.is_empty() {
-        return Err(format!("cannot resolve {host}"));
-    }
-    for addr in addrs {
-        if is_private_addr(addr.ip()) {
-            return Err(format!("refusing private address for {host}"));
-        }
-    }
-    Ok(url.to_string())
+    crate::web_url::guard_url(url)
 }
 
 // Not-globally-reachable blocks from the IANA special-purpose registries,
@@ -2151,9 +2108,7 @@ pub fn web_fetch(
     endpoint: Option<&str>,
     api_key_env: Option<&str>,
 ) -> Result<Json, String> {
-    if !allow_private {
-        guard_url(url)?;
-    }
+    let url = if allow_private { url.to_string() } else { guard_url(url)? };
     let endpoint = endpoint.unwrap_or(DEEPSEEK_FETCH_URL);
     let key = web_credential("deepseek", api_key_env)?;
     let mut request =
@@ -2165,7 +2120,7 @@ pub fn web_fetch(
     let title = payload.get("title").and_then(|v| v.as_str()).unwrap_or("");
     let content = payload.get("content").and_then(|v| v.as_str()).unwrap_or("");
     let truncated = content.len() > max_bytes;
-    let content: String = content.chars().take(max_bytes).collect();
+    let content = &content[..content.floor_char_boundary(max_bytes.min(content.len()))];
     Ok(json!({
         "title": if title.is_empty() { url.to_string() } else { title.to_string() },
         "url": url,
@@ -3128,7 +3083,7 @@ mod tests {
         std::env::remove_var("TA_DEEPSEEK_FETCH_KEY");
         assert_eq!(result["title"], "Example");
         assert_eq!(result["content"], "# Example\n\nBody");
-        assert_eq!(result["url"], url);
+        assert_eq!(result["url"], format!("{url}/"));
 
         // the local guard still refuses a private target before any request is sent
         let err = web_fetch("http://127.0.0.1:9/", 1_000_000, false, Some(&endpoint), Some("TA_DEEPSEEK_FETCH_KEY"))

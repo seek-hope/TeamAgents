@@ -120,9 +120,11 @@ impl Document {
         let documents = [(self, 0), (tail, self.lines.len())];
         let height = area.height as usize;
         let mut lines: Vec<_> = self.lines.iter().chain(&tail.lines).skip(start).take(height).cloned().collect();
-        let layout: HashSet<&Request> =
-            documents.iter().flat_map(|(doc, _)| doc.media.iter().map(|m| &m.request)).collect();
-        graphics.sizes.retain(|request, _| layout.contains(request));
+        for media in documents.iter().flat_map(|(doc, _)| &doc.media) {
+            if let Some((_, used)) = graphics.sizes.get_mut(&media.request) {
+                *used = true;
+            }
+        }
         let visible: Vec<_> = documents
             .iter()
             .flat_map(|(doc, offset)| {
@@ -131,7 +133,7 @@ impl Document {
                 })
             })
             .collect();
-        graphics.touched = visible.iter().map(|(_, media, _)| media.request.clone()).collect();
+        graphics.touched.extend(visible.iter().map(|(_, media, _)| media.request.clone()));
         let mut pictures = Vec::new();
         for (doc, offset) in documents {
             for picture in &doc.pictures {
@@ -247,8 +249,8 @@ pub struct Graphics {
     pub revision: u64,
     worker: Option<Worker>,
     cache: Vec<Cached>,
-    // Layout metadata belongs to the current document, not the decoded-image cache.
-    sizes: HashMap<Request, usize>,
+    // Layout metadata belongs to all documents rendered in the frame, not the decoded-image cache.
+    sizes: HashMap<Request, (usize, bool)>,
     pub(crate) deferred: bool,
     touched: HashSet<Request>,
     generation: u64,
@@ -314,6 +316,12 @@ impl Graphics {
     }
     pub fn begin_frame(&mut self) {
         self.touched.clear();
+        for (_, used) in self.sizes.values_mut() {
+            *used = false;
+        }
+    }
+    pub fn end_frame(&mut self) {
+        self.sizes.retain(|_, (_, used)| *used);
     }
     pub fn poll(&mut self) -> bool {
         let mut changed = false;
@@ -322,14 +330,8 @@ impl Graphics {
                 // A discarded generation also frees queue space; retry a visible request after reload.
                 changed = true;
                 if let Some(cached) = self.cache.iter_mut().find(|c| c.request == request) {
-                    let rows = match &result {
-                        Ok(doc) => doc.lines.len(),
-                        Err(reason) => {
-                            source_fallback(&request.source, request.width, &format!("Preview unavailable: {reason}"))
-                                .len()
-                        }
-                    };
-                    self.sizes.insert(request, rows);
+                    let rows = layout_rows(&request, &result);
+                    self.sizes.insert(request, (rows, true));
                     cached.result = Some(result);
                 }
             }
@@ -358,7 +360,19 @@ impl Graphics {
                 return doc;
             }
             let mut doc = Document::text(markdown::plain(&request.source.label(), width, Style::default().fg(ACCENT)));
-            let rows = self.sizes.get(&request).copied().unwrap_or(1).max(1);
+            let rows = self
+                .sizes
+                .get(&request)
+                .map(|(rows, _)| *rows)
+                .or_else(|| {
+                    self.cache
+                        .iter()
+                        .find(|cached| cached.request == request)
+                        .and_then(|cached| cached.result.as_ref())
+                        .map(|result| layout_rows(&request, result))
+                })
+                .unwrap_or(1)
+                .max(1);
             doc.lines.push(Line::styled("Preview pending", secondary()));
             doc.lines.extend((1..rows).map(|_| Line::raw(" ")));
             doc.media.push(MediaBlock { row: 0, column: 0, rows: doc.lines.len(), width, request });
@@ -430,6 +444,13 @@ impl Graphics {
             doc.lines.extend(source_pending(&request.source, width, "Renderer busy; preview will retry"));
         }
         doc
+    }
+}
+
+fn layout_rows(request: &Request, result: &Result<Document, String>) -> usize {
+    match result {
+        Ok(doc) => doc.lines.len(),
+        Err(reason) => source_fallback(&request.source, request.width, &format!("Preview unavailable: {reason}")).len(),
     }
 }
 

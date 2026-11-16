@@ -100,7 +100,24 @@ The daemon `work_scopes` read exposes each work's `cost`, including later-attrib
 A partial known subtotal is never labelled a complete cost. Session exports preserve request tariffs and
 attempt estimates for audit.
 
-## 3. Conversation and editing
+## 3. Team workspace, conversation and editing
+
+The Herdr-inspired workspace shows members and their recorded state beside the Leader conversation. At 96
+columns the member sidebar becomes persistent; at 132 columns and sufficient height, Chat also has an inspector.
+Narrow terminals use one content pane. The composer always names its Leader recipient, even while viewing a member.
+
+- F6 cycles composer, team and inspection focus. In the team list, Up/Down selects a member and Enter opens details.
+  `h` opens read-only member history, `d` returns to details, and Esc returns to the draft. Mouse selection uses
+  the same member rows and view tabs. Navigation preserves the draft and staged attachments.
+- Alt+1 opens Chat, Alt+2 Tasks, Alt+3 Activity and Alt+4 Inspect. The task view includes recorded terminal outcomes;
+  a task result or cancellation does not establish process termination.
+- Inspect shows saved reasons, work state, next steps, waits and operations. Member history has its own scrolling,
+  streamed preview and media. Its newest 400 entries are loaded only while visible; `/sessions` offers older
+  history. Read failures keep refresh debt and a visible stale warning until a valid reply arrives.
+- Activity retains the newest 200 observed event summaries since attachment. Reconnect gaps are possible; use
+  session export for a full audit. User-visible member history never enters Leader context or the shared tree.
+
+In the composer:
 
 - Enter submits; Shift+Enter inserts a newline. Up/Down recalls input. PageUp/PageDown and the mouse wheel scroll.
 - Ctrl+Left/Right or Alt+Left/Right moves by word; Ctrl+B/F moves by character. Ctrl+W or Alt+Backspace deletes
@@ -114,8 +131,9 @@ attempt estimates for audit.
 - Ctrl+O expands/folds tool previews. Ctrl+G switches image/diagram previews and source. Graphics mode comes from
   `TEAMAGENTS_GRAPHICS=auto|kitty|blocks|off`.
 
-Local commands are `/help`, `/sessions`, `/interrupt`, `/quit`, `/model`, `/attach`, `/detach`, `/queue`, `/tree`
-and `/edit`. They never become model input.
+Local commands are `/help`, `/sessions`, `/interrupt`, `/quit`, `/model`, `/attach`, `/detach`, `/queue`, `/tree`,
+`/edit`, `/team`, `/chat`, `/tasks`, `/activity` and `/inspect`. They never become model input.
+`/team` focuses member selection; the other new view commands open the named view.
 
 ## 4. Approvals and lifecycle
 
@@ -213,6 +231,11 @@ text(resource);
 The repository's `fake-mcp-server` test binary supplies this URI; `engine/tests/v2_mcp.rs` exercises it through
 the production driver, including a binding that filters out every ordinary tool. Real service URIs come from
 that service's resource list.
+
+Web search uses the bound DeepSeek/Exa providers; fetch uses DeepSeek's Markdown endpoint. If local DNS returns
+fake-IP routing addresses in `198.18.0.0/15`, fetch verifies the hostname through Cloudflare or Google HTTPS DNS.
+Private destinations remain refused; unavailable verification returns an error rather than bypassing the guard.
+This local check does not establish how the fetch provider handles later DNS changes or redirects.
 
 Skills are read on demand and cannot grant authority. `skill` searches/reads configured roots; relative skills
 work from the current workspace. Repository instructions and project trust do not silently widen permissions.

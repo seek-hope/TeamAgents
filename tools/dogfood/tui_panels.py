@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""D-445: CLI management remains complete beside the minimal TUI.
+"""D-524: team observations alongside explicit CLI management.
 
-The historical filename is retained for existing evidence links. The old
-D-95 panel controls are now developer CLI verbs. This credential-free probe
-creates a worker, pauses/resumes it, cancels a delegated task, verifies the
-termination confirmation, and checks that the TUI stays a conversation.
+This credential-free probe checks the member inspector and task outcomes on a
+real daemon, then exercises CLI pause/resume/cancel and confirmed termination.
+Browsing retains the Leader draft and does not start a model request.
 
     python3 tools/dogfood/tui_panels.py
 """
@@ -167,12 +166,16 @@ def main() -> int:
             failures.append(f"{label}: {needle!r} never appeared on screen ({painted()[-200:]!r})")
             return False
 
-        if not wait_for("Message", 30, "minimal conversation"):
+        if not wait_for("Message", 30, "Leader composer"):
             return 1
-        os.write(fd, b"\x0e\t")
-        pump(0.5)
-        if "instances (" in painted():
-            failures.append("retired navigation still opens a panel")
+        wait_for(WORKER, 5, "team sidebar")
+        os.write(fd, b"panel-draft\x1b[17~\x1b[B\r")
+        wait_for("ASSIGNED OPEN TASKS", 5, "member inspector")
+        wait_for("panel-draft", 5, "navigation preserves the draft")
+        os.write(fd, b"\x1b")
+        pump(0.3)
+        os.write(fd, b"\x15")
+        pump(0.3)
 
         def cli(*args):
             result = call([*args, "--state-root", str(state_root)], env)
@@ -209,7 +212,10 @@ def main() -> int:
         cli("history", "--id", WORKER, "--json")
         cli("work_scopes", "--json")
         cli("authority", "--json")
-        print("  minimal TUI with CLI pause/resume/cancel/confirmed termination/status/history: exercised")
+        os.write(fd, b"/tasks\r")
+        wait_for(TASK, 5, "task list")
+        wait_for("CANCELLED", 5, "recorded cancellation")
+        print("  team inspector/tasks and CLI pause/resume/cancel/confirmed termination/status/history: exercised")
         os.write(fd, b"\x11")
         pump(0.5)
     finally:

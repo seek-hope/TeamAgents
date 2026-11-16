@@ -10,13 +10,12 @@ use std::collections::{HashMap, HashSet};
 
 use crate::text::Composer;
 
-/// The slash commands the composer understands (D-370), shown while a `/` draft is open and by `/help`.
-const SLASH_HELP: &str = "commands: /help · /edit · /sessions · /queue · /interrupt · /model · /quit";
-
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Focus {
     Composer,
     Approvals,
+    Team,
+    Panel,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -231,6 +230,7 @@ pub struct V2App {
     pub help_scroll: usize,
     pub session_id: String,
     pub instances: Vec<InstanceInfo>,
+    pub team: crate::team::Team,
     /// Read-only checkpoint observations, never instructions to the model.
     work_diagnostics: Vec<(String, Json)>,
     environment: Json,
@@ -277,6 +277,7 @@ impl V2App {
             help_scroll: 0,
             session_id: session_id.to_string(),
             instances: vec![],
+            team: crate::team::Team::default(),
             work_diagnostics: vec![],
             environment: Json::Null,
             pending_input_receipts: HashSet::new(),
@@ -331,6 +332,10 @@ impl V2App {
     /// A command's output: it survives a checkpoint refresh, unlike a `System` note, because the user asked a
     /// question and the answer must stay on screen until they scroll away from it (D-433).
     pub fn command_note(&mut self, text: impl Into<String>) {
+        self.team.show(crate::team::View::Conversation);
+        if matches!(self.focus, Focus::Team | Focus::Panel) {
+            self.focus = Focus::Composer;
+        }
         self.entries.push(ChatEntry {
             kind: ChatKind::Command,
             who: "note".into(),
@@ -377,6 +382,7 @@ impl V2App {
     /// event stream resumes from — one consistent read (§9).
     pub fn apply_checkpoint(&mut self, snapshot: Json, watermark: i64) {
         self.environment = snapshot["environment"].clone();
+        self.team.checkpoint(&snapshot);
         for row in snapshot["input_delivery"].as_array().into_iter().flatten() {
             let Some(envelope) = row["id"].as_str() else { continue };
             let state = match row["state"].as_str() {
@@ -523,7 +529,9 @@ impl V2App {
     /// Live events: conversation content stays in history (fetched on
     /// demand); events drive refreshes and UI-level system notes.
     pub fn apply_events(&mut self, events: &[Json]) -> Refresh {
-        let mut refresh = Refresh::default();
+        // Member and task diagnoses are checkpoint projections; any persisted change may invalidate them.
+        let mut refresh = Refresh { checkpoint: !events.is_empty(), ..Refresh::default() };
+        self.team.events(events);
         for event in events {
             if let Some(sequence) = event["sequence"].as_i64() {
                 self.watermark = self.watermark.max(sequence);
@@ -871,7 +879,29 @@ impl V2App {
                 _ => {}
             }
         }
+        if key.code == KeyCode::F(6) {
+            self.focus = match self.focus {
+                Focus::Composer | Focus::Approvals => Focus::Team,
+                Focus::Team => {
+                    self.team.show(crate::team::View::Inspect);
+                    Focus::Panel
+                }
+                Focus::Panel => Focus::Composer,
+            };
+            return None;
+        }
+        if key.modifiers == KeyModifiers::ALT {
+            if let KeyCode::Char(number @ '1'..='4') = key.code {
+                self.team.show(crate::team::VIEWS[number as usize - '1' as usize].0);
+                self.focus = if number == '1' { Focus::Composer } else { Focus::Panel };
+                return None;
+            }
+        }
         match self.focus {
+            Focus::Team | Focus::Panel => {
+                crate::team::key(self, key);
+                None
+            }
             Focus::Approvals => self.approval_key(key),
             Focus::Composer => self.composer_key(key),
         }
@@ -1049,6 +1079,11 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
             )),
             "/edit" => self
                 .command_note("Ctrl+E edits the current draft; type /edit after a draft to open it in VISUAL/EDITOR."),
+            "/team" => { self.focus = Focus::Team; }
+            "/chat" => self.team.show(crate::team::View::Conversation),
+            "/tasks" => { self.team.show(crate::team::View::Tasks); self.focus = Focus::Panel; }
+            "/activity" => { self.team.show(crate::team::View::Activity); self.focus = Focus::Panel; }
+            "/inspect" => { self.team.show(crate::team::View::Inspect); self.focus = Focus::Panel; }
             "/sessions" => return self.open_sessions(),
             "/queue" => return self.open_queue(),
             "/tree" => return Some(V2Effect::SearchTree),
@@ -1058,7 +1093,10 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
                 self.quit = true;
                 return Some(V2Effect::Quit);
             }
-            _ => self.command_note(format!("Unknown command {text:?}. {SLASH_HELP}. Management: teamagents --help.")),
+            _ => {
+                let commands = crate::completion::COMMANDS.iter().map(|(name, _)| *name).collect::<Vec<_>>().join(" · ");
+                self.command_note(format!("Unknown command {text:?}. commands: {commands}. Management: teamagents --help."));
+            }
         }
         None
     }
@@ -1285,7 +1323,13 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
         }
         let Some(leader) = self.active_instance() else { return "Connecting to the Leader".into() };
         if leader.lifecycle != "ACTIVE" {
-            return format!("{} · {} · teamagents instances", leader.lifecycle, leader.reason);
+            let reason = self
+                .work_diagnostics
+                .iter()
+                .find(|(id, _)| id == &leader.id)
+                .and_then(|(_, diagnostic)| diagnostic["reason"].as_str())
+                .unwrap_or(&leader.reason);
+            return format!("{} · {} · /inspect", leader.lifecycle, reason);
         }
         if let Some((_, diagnostic)) = self.work_diagnostics.iter().find(|(id, _)| id == &leader.id) {
             match diagnostic["code"].as_str() {
@@ -1349,7 +1393,7 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
         format!("{state}{usage}{deadline}{wait}")
     }
 
-    /// Concise state for the header and the Grok-style activity row. Detailed diagnostics stay
+    /// Concise state for the session header and activity row. Detailed diagnostics stay
     /// in `status_line`; ordinary busy/ready states do not repeat the work usage shown in the header.
     pub fn activity_line(&self) -> String {
         let status = self.status_line();
@@ -1368,6 +1412,12 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
         }
         if self.profile.is_some() {
             return "Enter apply · Esc cancel · Up/Down model · Left/Right effort".into();
+        }
+        if self.focus == Focus::Team {
+            return "Up/Down member · Enter inspect · h history · F6 focus · Esc compose".into();
+        }
+        if self.focus == Focus::Panel {
+            return "PgUp/PgDn scroll · d details · h history · F6 focus · Esc compose".into();
         }
         if self.focus == Focus::Approvals {
             return "a approve once · d deny · Up/Down select · Esc back".into();
@@ -1388,7 +1438,7 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
             return "Ctrl+C interrupt · Enter send · Ctrl+P queue · Ctrl+Q quit".into();
         }
         if self.composer.text().is_empty() {
-            "Enter send · ? shortcuts · Ctrl+S sessions · Ctrl+Q quit".into()
+            "Enter send · F6 team · ? shortcuts · Ctrl+S sessions · Ctrl+Q quit".into()
         } else {
             "Enter send · Ctrl+S sessions · Ctrl+E editor · Ctrl+Q quit".into()
         }

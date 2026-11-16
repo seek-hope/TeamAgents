@@ -2,8 +2,10 @@
 use crate::text::Composer;
 use crossterm::event::{KeyCode, KeyEvent};
 
-pub const COMMANDS: [(&str, &str); 8] = [
+pub const COMMANDS: [(&str, &str); 15] = [
     ("/help", "Show controls"),
+    ("/model", "Choose the Leader model and reasoning effort"),
+    ("/edit", "Edit a draft in the external editor"),
     ("/sessions", "Browse conversations"),
     ("/interrupt", "Interrupt the Leader model request"),
     ("/quit", "Detach from this session"),
@@ -11,6 +13,11 @@ pub const COMMANDS: [(&str, &str); 8] = [
     ("/tree", "Show the session exploration tree"),
     ("/attach", "Stage a file; @path + Tab also completes"),
     ("/detach", "Remove an attachment by index"),
+    ("/team", "Focus the team member sidebar"),
+    ("/chat", "Return to the Leader conversation"),
+    ("/tasks", "Inspect tasks and recorded outcomes"),
+    ("/activity", "Show recent observed team events"),
+    ("/inspect", "Inspect the selected member; h opens history"),
 ];
 
 #[derive(Default)]

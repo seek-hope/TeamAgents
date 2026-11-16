@@ -17,13 +17,18 @@ Implemented behavior is summarized in [CAPABILITIES.md](CAPABILITIES.md); accept
 - Session lifecycle actions retain listening or uncertain endpoints, independently of greeting validity;
   explicit stop propagates failures and supports the maintenance protocol (D-522). Startup/filesystem races
   and full-backlog connection deadlines remain open.
-- One Leader TUI with sessions, editing, approvals, media and `/tree` access.
+- Herdr-inspired team TUI with member state, tasks, activity and separate member-history inspection; navigation
+  preserves Leader input ownership, drafts, approvals, sessions, media and `/tree` access.
+- Named profiles resolve to wire model names and selected effort before preparation and recovery (D-523).
+  Cross-provider hot switching and ambiguous shared wire names remain open.
+- Fake-IP DNS environments use independent public-address verification for fetches (D-525). Search and fetch
+  pass on the current host; broader proxy environments and provider-side redirect enforcement remain open.
 - One session-level exploration tree with revisioned atomic patches, compaction integration, CLI/daemon/export
   projections and ordered-pair verification.
 - The product reads repository-local configuration after explicit trust; user permissions, hooks, checks,
   limits, retention and update policy remain under user configuration. This is current behavior, not open work.
 - Current development and verification tools under `tools/`.
-- **819 Rust tests** (full local gate passed), 65 positive TLA configurations in
+- **837 Rust tests** (full local gate passed), 65 positive TLA configurations in
   62 traversals, 327 controls, 79 witnesses and 9 Kani harnesses. PTY covers five terminal profiles and both
   forced graphics modes, plus `make probe-offline` (18/18 on `0eb4ee98`) and `make probe-models` (23/23 on its
   earlier pinned source). That `0eb4ee98` candidate also passed fresh Debian/Ubuntu VM installation and same-schema

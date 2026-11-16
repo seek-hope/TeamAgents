@@ -13,7 +13,7 @@ obligations are in [ACCEPTANCE.md](ACCEPTANCE.md).
 | Q3 | Scope may be re-cut; kernel and runtime come first | `core/src/kernel`, `core/src/v2` and `engine/src/v2` are the authoritative execution path |
 | Q4 | Context, messages and tool access are isolated by default | Enforce logical permissions; same-user host processes are not confined by that boundary |
 | Q5 | The Leader manages instances/connections and may delegate authority | Grants narrow only; revocation cascades; spawned instances have no ambient Shell |
-| Q6 | Minimal Leader TUI, with comprehensive management in the developer CLI | One conversation, conditional approvals, distinct interrupt/quit, optional session browser, no topology canvas |
+| Q6 | Observable team TUI inspired by Herdr, backed by the developer CLI | Member sidebar, Leader conversation, member inspection/history, tasks and activity; responsive panes and explicit input ownership |
 | Q7 | Closing the UI leaves work running and supports reconnect/intervention | Daemon lifetime is independent of the front end |
 | Q8 | The user talks to the Leader, may read/address other instances and may pause/cancel | The user has global read authority; agents remain isolated by permissions |
 | Q9 | Instances are retained and sessions are isolated by default | Instance, task, work and turn lifecycles are separate |
@@ -220,17 +220,20 @@ connection or explicit retention resync adopts a consistent checkpoint; ordinary
 unread events. Frames are at most 32 MiB; event/history pages have 4 MiB byte budgets and bounded row counts.
 Streaming previews are transient and never authoritative facts.
 
-The TUI has one Leader conversation, elevated prompts, grouped operations, quiet model chrome, Markdown and
-media rendering. Approval input ownership is preserved. `/tree` shows the session exploration tree; natural
-language requests let the Leader reorganize it. CLI and JSON export are read-only projections, not second
-business stores.
+The TUI uses a Herdr-inspired member sidebar, a Leader conversation and an inspection pane on wide terminals.
+Tasks, recent observed activity and member diagnostics/history are directly navigable; narrow terminals use
+one content pane. Browsing is read-only: the composer, interrupt and model controls still target the Leader.
+Member histories stay in a separate User-visible projection and never enter the Leader context or session tree.
+Markdown/code/media rendering, draft preservation and explicit approval input ownership remain supported.
+`/tree` shows the session exploration tree; natural language requests let the Leader reorganize it. CLI and
+JSON export are read-only projections, not second business stores.
 
 ## 10. Module organisation and dependencies
 
 `tools/` contains executable development and verification utilities, generated-document checkers and current
 product probes. `tools/tmp/` is ignored scratch for new local runs, not source or committed evidence.
 
-The current source has 819 Rust tests. Formal material has 393 configurations across 48 modules: 65 positive
+The current source has 837 Rust tests. Formal material has 393 configurations across 48 modules: 65 positive
 configurations, 327 controls and one separate wide configuration, evaluated in 62 positive traversals. There
 are 79 normal-path witnesses and 9 Kani harnesses. Witnesses demonstrate reachability only.
 

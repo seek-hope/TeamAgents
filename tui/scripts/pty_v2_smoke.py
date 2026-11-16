@@ -45,6 +45,10 @@ class FakeDaemon:
         self.events = []
         self.previews = []
         self.history = []
+        self.member_history = {"i-worker": [{"epoch": 0, "idx": 1, "kind": "assistant",
+            "message": {"content": "worker-private-pty-marker"}}]}
+        self.member_failures = 0
+        self.member_reads = 0
         self.instances = [dict(i) for i in INSTANCES]
         self.tasks = [dict(t) for t in TASKS]
         self.work_scopes = [dict(g) for g in WORK_SCOPES]
@@ -96,9 +100,18 @@ class FakeDaemon:
                 method = frame.get("method")
                 params = frame.get("params", {})
                 if method == "checkpoint":
-                    out = {"snapshot": {"instances": self.instances, "work": WORK}, "watermark": self.sequence}
+                    out = {"snapshot": {"instances": self.instances, "tasks": self.tasks, "work": WORK}, "watermark": self.sequence}
                 elif method == "history":
-                    out = {"instance_id": params.get("instance_id", ""), "entries": list(self.history)}
+                    instance = params.get("instance_id", "")
+                    if instance != "i-leader":
+                        self.member_reads += 1
+                        if self.member_failures:
+                            self.member_failures -= 1
+                            f.write(self.reply(request_id, False, "fixture member history unavailable"))
+                            f.flush()
+                            continue
+                    out = {"instance_id": instance, "entries": list(self.history if instance == "i-leader"
+                        else self.member_history.get(instance, []))}
                 elif method == "approvals":
                     out = {"approvals": list(self.approvals)}
                 elif method == "previews":
@@ -322,6 +335,27 @@ def main():
     if any(f["params"]["instance_id"] != "i-leader" for f in daemon.frames if f["method"] == "submit_input"):
         failures.append("a message was redirected away from the Leader")
 
+    # Team navigation is read-only; a failed member read retries without another event.
+    commands_before_browse = sum("command_id" in f for f in daemon.frames)
+    daemon.member_failures = 1
+    os.write(fd, b"team-draft\x1b[17~\x1b[Bh")  # F6, Down, member history
+    deadline = time.monotonic() + 6
+    while time.monotonic() < deadline and "worker-private-pty-marker" not in "\n".join(scr.lines()):
+        scr.feed(read_all(fd, 0.2).decode("utf-8", "replace"))
+    expect("worker-private-pty-marker", "independent member history")
+    expect("team-draft", "member browsing keeps draft")
+    expect("Message Leader", "member browsing keeps recipient")
+    if daemon.member_reads < 2:
+        failures.append("member history refresh did not retry its failed read")
+    os.write(fd, b"\x1b[200~hidden-member-paste\x1b[201~")
+    scr.feed(read_all(fd, 0.3).decode("utf-8", "replace"))
+    if commands_before_browse != sum("command_id" in f for f in daemon.frames):
+        failures.append("member navigation dispatched a business command")
+    os.write(fd, b"\x1b")
+    scr.feed(read_all(fd, 0.3).decode("utf-8", "replace"))
+    os.write(fd, b"\x15")
+    scr.feed(read_all(fd, 0.3).decode("utf-8", "replace"))
+
     # Approval arrival does not steal typing; focus is explicit, including paste.
     os.write(fd, b"draft-survives-resize")
     daemon.approvals = [{"id": "ap-1", "operation_id": "op-1", "tool": "shell", "preview": "make check"}]
@@ -339,14 +373,37 @@ def main():
     decisions = [f for f in daemon.frames if f["method"] == "deny"]
     if len(decisions) != 1 or decisions[0]["params"]["approval_id"] != "ap-1":
         failures.append("approval did not explicitly deny the selected id")
-    os.write(fd, b"\x1b[<0;3;34M\x1b[<0;3;34m\r")
+    os.write(fd, b"\x1b[<0;30;34M\x1b[<0;30;34m\r")
     scr.feed(read_all(fd, 1.0).decode("utf-8", "replace"))
     if not any(f["method"] == "submit_input" and f["params"]["text"] == "draft-survives-resize" for f in daemon.frames):
         failures.append("approval or resize lost or modified the draft")
 
     os.write(fd, b"/tasks\r")
     scr.feed(read_all(fd, 0.5).decode("utf-8", "replace"))
-    expect("Management: teamagents --help", "retired command guidance")
+    expect("t-smoke", "task observation")
+    expect("RUNNING", "task outcome")
+    scr = Screen(80, 30)
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 80, 0, 0))
+    os.write(fd, b"\x1b")
+    scr.feed(read_all(fd, 0.3).decode("utf-8", "replace"))
+    os.write(fd, b"\x1b[17~")
+    deadline = time.monotonic() + 6
+    while time.monotonic() < deadline and "Up/Down member" not in "\n".join(scr.lines()):
+        scr.feed(read_all(fd, 0.1).decode("utf-8", "replace"))
+    expect("Up/Down member", "narrow member list owns focus")
+    task_reads = sum(f["method"] == "tasks" for f in daemon.frames)
+    daemon.emit("task_progress", "t-smoke", {})
+    scr.feed(read_all(fd, 1.3).decode("utf-8", "replace"))
+    if task_reads != sum(f["method"] == "tasks" for f in daemon.frames):
+        failures.append("hidden task view kept polling\n" + "\n".join(scr.lines()))
+    os.write(fd, b"\x1b")
+    scr.feed(read_all(fd, 0.4).decode("utf-8", "replace"))
+    expect("t-smoke", "returning task view consumes refresh debt")
+    if task_reads >= sum(f["method"] == "tasks" for f in daemon.frames):
+        failures.append("visible task view lost refresh debt")
+    scr = Screen(140, 36)
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 36, 140, 0, 0))
+    scr.feed(read_all(fd, 0.3).decode("utf-8", "replace"))
     os.write(fd, b"\x03")
     scr.feed(read_all(fd, 0.8).decode("utf-8", "replace"))
     expect("Nothing interrupted", "interrupt receipt is read honestly")
@@ -354,11 +411,15 @@ def main():
         failures.append("Ctrl+C did not interrupt the Leader")
     if os.waitpid(pid, os.WNOHANG)[0]:
         failures.append("Ctrl+C exited the TUI")
-    forbidden = {"tasks", "grants", "work_scopes", "set_lifecycle", "cancel_task", "cancel_work"}
+    forbidden = {"grants", "work_scopes", "set_lifecycle", "cancel_task", "cancel_work", "spawn_instance", "delegate_task"}
     if any(f["method"] in forbidden for f in daemon.frames):
-        failures.append("the TUI still accesses management surfaces")
+        failures.append("observation accessed an unrelated surface or dispatched management work")
+    os.write(fd, b"\x1b")
+    scr.feed(read_all(fd, 0.3).decode("utf-8", "replace"))
 
     # D-447: Markdown, streamed prefixes, compact tool output and local expansion in a real terminal.
+    scr = Screen(140, 48)
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 48, 140, 0, 0))
     os.write(fd, b"display-draft")
     daemon.history = [
         {"kind": "assistant", "message": {"tool_calls": [{"id": "render-call", "function": {

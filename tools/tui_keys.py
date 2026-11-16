@@ -44,6 +44,7 @@ HANDLED = {
     "End": r"KeyCode::End",
     "Backspace": r"KeyCode::Backspace",
     "Delete": r"KeyCode::Delete",
+    "F6": r"KeyCode::F\(6\)",
 }
 # A chord is proved by a *window*: the handlers are nested (`if modifiers.contains(CONTROL) { match code {
 # KeyCode::Char('n') => … } }`), so requiring both on one line would report a handler that exists (measured
@@ -67,6 +68,9 @@ HANDLED["Shift+Enter"] = r"(?s)(?=.{0,400}SHIFT)(?=.{0,400}KeyCode::Enter)"
 for code in ("Left", "Right", "Backspace"):
     HANDLED[f"Alt+{code}"] = rf"KeyCode::{code} if (?:control \|\| )?alt =>"
 
+for code in "1234":
+    HANDLED[f"Alt+{code}"] = r"(?s)KeyModifiers::ALT.{0,120}KeyCode::Char\(\w+ @ '1'\.\.='4'\)"
+
 # what the interface prints and what the documents name, as canonical keys
 HINT_WORDS = {
     "enter": "Enter", "esc": "Esc", "tab": "Tab", "up": "Up", "down": "Down", "up/down": "Up",
@@ -74,7 +78,7 @@ HINT_WORDS = {
     "ctrl+o": "Ctrl+O", "ctrl+w": "Ctrl+W", "ctrl+s": "Ctrl+S", "ctrl+c": "Ctrl+C", "ctrl+d": "Ctrl+D", "ctrl+left": "Ctrl+Left",
     "ctrl+right": "Ctrl+Right", "shift+enter": "Shift+Enter",
 }
-PANEL_KEYS = {"p", "r", "t", "c", "a", "d", "y", "n"}
+PANEL_KEYS = {"p", "r", "t", "c", "a", "d", "h", "y", "n"}
 
 
 def arm(letter: str) -> str:
@@ -102,7 +106,7 @@ def chords_in(text: str) -> set:
     found = set()
     for shifted, letter in CHORD.findall(text):
         found.add(f"Ctrl+{ARROWS.get(letter.lower(), letter.upper())}")
-    for code in re.findall(r"alt\+([a-z]+|←|→)", text, re.I):
+    for code in re.findall(r"alt\+([a-z]+|[0-9]+|←|→)", text, re.I):
         found.add(f"Alt+{ARROWS.get(code.lower(), code.capitalize())}")
     if re.search(r"shift\+enter", text, re.I):
         found.add("Shift+Enter")
@@ -123,7 +127,7 @@ def hint_keys(text: str) -> set:
                 found.add(key)
         found |= chords_in(literal)
         for function in re.findall(r"\bF\d{1,2}\b", literal):
-            found.add(function)          # README: "deliberately no function keys" — one in a hint is drift
+            found.add(function)          # Function-key hints need an explicit matching handler.
         for bare in re.findall(r"(?:^|[ ·])([a-z])(?: |·$)", literal):
             if bare in PANEL_KEYS:
                 found.add(f"Key {bare}")
@@ -136,7 +140,7 @@ def documented_keys() -> dict:
     for path in DOCS:
         for number, line in enumerate(path.read_text().splitlines(), 1):
             lowered = line.lower()
-            if not any(word in lowered for word in ("ctrl+", "`enter`", "`tab`", "`esc`", "tui keys")):
+            if not any(word in lowered for word in ("ctrl+", "alt+", "f6", "`enter`", "`tab`", "`esc`", "tui keys")):
                 continue
             for word, key in HINT_WORDS.items():
                 if word.startswith("ctrl") or word.startswith("shift"):
@@ -156,10 +160,10 @@ def documented_keys() -> dict:
 def main() -> int:
     source = "\n".join((REPO / path).read_text() for path in
                        ("tui/src/v2app.rs", "tui/src/sessions.rs", "tui/src/completion.rs",
-                        "tui/src/attachments.rs", "tui/src/queue.rs", "tui/src/text.rs", "tui/src/v2ui.rs"))
+                        "tui/src/attachments.rs", "tui/src/queue.rs", "tui/src/text.rs", "tui/src/v2ui.rs", "tui/src/team.rs"))
     findings = []
     advertised = hint_keys(source)
-    for key in sorted(advertised - {"Key p", "Key r", "Key t", "Key c", "Key a", "Key d", "Key y", "Key n"}):
+    for key in sorted(key for key in advertised if not key.startswith("Key ")):
         if key not in HANDLED:
             findings.append(f"the hints advertise {key!r} and this audit does not know how to prove it")
         elif not re.search(HANDLED[key], source):

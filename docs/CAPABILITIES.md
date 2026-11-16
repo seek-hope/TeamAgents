@@ -22,9 +22,9 @@ finite model into full acceptance. See [ACCEPTANCE.md](ACCEPTANCE.md) for scenar
 | Text and output safety | Unicode/control tests with normalized JSON and escaped terminal rendering, including bidi/isolate controls | No arbitrary byte-string parser proof; JSON uses valid Unicode strings |
 | SQLite fault handling | Revision/head/event failure injection and savepoint tests, migration conflict rollback and random-walk invariants | Not a complete SQLite refinement or power-loss proof |
 | File/Shell/Skill tools | `engine/src/tools.rs`, host receipts, relative-Skill and revocation checks; real Cargo/Python/Node workflows | Host execution is not confinement; broader dependency ecosystems remain open |
-| Web search/fetch | Bound DeepSeek/Exa search and DeepSeek fetch, RRF/retry/cache and private-address tests | No fresh external-service acceptance is implied |
+| Web search/fetch | Bound DeepSeek/Exa search and DeepSeek fetch, RRF/retry/cache; fake-IP public verification and byte-bound tests | Current-host search/fetch probes pass; broader proxy environments and provider-side redirect checks remain open |
 | MCP and codemode | stdio/HTTP fake services, resource list/read, ambiguity checks, restricted JavaScript and nested veto | Versioned external OAuth/SDK/client/extension coverage remains open |
-| TUI conversation | Grok-style Leader view, Codex colors, grouped activity, conditional approvals and TestBackend/PTY checks | Not a usability benchmark or every terminal/provider combination |
+| Team TUI | Herdr-inspired member sidebar, Leader conversation, independent member history, tasks/activity, explicit approvals and TestBackend/PTY checks | Not a usability benchmark or every terminal/provider combination; activity is attachment-local |
 | Editing and attachments | Shared message/queue editing, `@PATH`, immutable snapshots and original-input revisions | Symlinks and out-of-workspace files are refused; no arbitrary path acceptance |
 | Markdown, code and media | Complete Markdown, bounded grammar highlighting, Mermaid/SVG/DOT/local images and source fallback | Remote resources and every diagram format are not promised |
 | Sessions and export | Registry, history/search/fork/archive/restore/delete, consistent streaming export and `session_export_tests.rs` | Fork needs a stopped source and fresh execution evidence; no message-level branch execution |
@@ -33,7 +33,7 @@ finite model into full acceptance. See [ACCEPTANCE.md](ACCEPTANCE.md) for scenar
 
 ## Current evidence totals
 
-- Rust tests: **819** (core 198, engine 513, TUI 108); full local gate passed.
+- Rust tests: **837** (core 198, engine 522, TUI 117); full local gate passed.
 - Positive TLA inputs: **65 configurations in 62 traversals**.
 - Negative controls: **327**, each required to refute its named claim.
 - Normal-path witnesses: **79**, which demonstrate reachability rather than safety.

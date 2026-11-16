@@ -234,7 +234,6 @@ fn missing_leader_or_connection_never_redirects_or_discards_input() {
 fn retired_commands_are_local_and_approval_arrival_does_not_steal_typing() {
     let mut app = app();
     for command in [
-        "/tasks",
         "/instances",
         "/topology",
         "/work_scopes cancel x",
@@ -272,14 +271,25 @@ fn every_size_keeps_one_nonoverlapping_conversation_and_conditional_approvals() 
                 let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
                 terminal.draw(|f| v2ui::render(f, &mut app)).unwrap();
                 let geo = v2ui::geometry(&app, area);
-                let regions = [geo.status, geo.chat, geo.activity, geo.approvals, geo.composer, geo.footer];
+                let regions = [
+                    geo.status,
+                    geo.chat,
+                    geo.sidebar,
+                    geo.nav,
+                    geo.inspector,
+                    geo.activity,
+                    geo.approvals,
+                    geo.completion,
+                    geo.composer,
+                    geo.footer,
+                ];
                 for (i, region) in regions.iter().enumerate() {
                     assert_eq!(region.intersection(area), *region);
                     for other in &regions[i + 1..] {
                         assert!(region.intersection(*other).is_empty());
                     }
                 }
-                assert_eq!(geo.chat.width, width);
+                assert_eq!(geo.chat.width + geo.inspector.width + geo.sidebar.width, width);
                 if !pending {
                     assert_eq!(geo.approvals.height, 0);
                 }

@@ -84,10 +84,14 @@ Common TUI keys:
   request, not running tools or delegated work. `Ctrl+Q` or `/quit` detaches without stopping the daemon.
 - `Ctrl+M` or `/model` opens model/effort selection. `Ctrl+P` or `/queue` opens pending input.
   `Ctrl+S` or `/sessions` opens session history and switching. `Ctrl+E` opens the external editor.
+- `F6` moves focus between the composer, team list and inspection pane. Use `Up`/`Down` to select a member,
+  `Enter` to inspect, `h` for its history and `d` for details; `Esc` returns to the draft. `Alt+1`…`Alt+4`
+  switches Chat, Tasks, Activity and Inspect. Browsing preserves the draft and keeps messages addressed to Leader.
 - `Ctrl+O` expands or folds tool previews. `Ctrl+G` switches previews and source.
 
-Slash commands are `/help`, `/sessions`, `/interrupt`, `/quit`, `/model`, `/attach`, `/detach`, `/queue`, `/tree`
-and `/edit`. Completion fills a command but submits only after a separate Enter. For file references, type
+Slash commands are `/help`, `/sessions`, `/interrupt`, `/quit`, `/model`, `/attach`, `/detach`, `/queue`, `/tree`,
+`/edit`, `/team`, `/chat`, `/tasks`, `/activity` and `/inspect`. Completion fills a command but submits only after
+a separate Enter. For file references, type
 `@PATH` and Tab, then accept a candidate; files are sent only with your message.
 
 The default state root is `${XDG_STATE_HOME:-$HOME/.local/state}/teamagents/v2`.
@@ -133,7 +137,7 @@ See [the architecture guide](docs/ARCHITECTURE.md) for state machines and data r
 
 ## Current evidence
 
-The full local gate passed **819 Rust tests** (core 198, engine 513, TUI 108).
+The full local gate passed **837 Rust tests** (core 198, engine 522, TUI 117).
 Formal material contains **393 configurations across 48 modules**:
 
 - **65 positive configurations in 62 traversals**;

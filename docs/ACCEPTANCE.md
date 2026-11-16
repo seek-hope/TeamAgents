@@ -6,7 +6,7 @@ This file records current behavior and reproducible evidence, not historical acc
 ✅ means the named local path has automated evidence. 🔶 means implementation exists but the stated external,
 empirical or full-system obligation remains open. No icon is a proof of every release condition.
 
-Current source inventory: core 198 / engine 513 / tui 108 test targets; the full gate passed.
+Current source inventory: core 198 / engine 522 / tui 117 test targets; the full gate passed.
 The `a6b5555a` runtime passed all 18 offline probes (154.3 seconds), all PTY profiles/graphics modes and
 the release/install rehearsal. Its installed package passed the scripted batch-edit workflow and session
 preservation probe below. Fresh Debian/Ubuntu VM acceptance remains pinned to `0eb4ee98`.
@@ -24,7 +24,7 @@ complete graphical-terminal or OS matrix.
 | Q3 | Kernel and runtime were delivered first | A01, A33: `core/src/kernel`, `core/src/v2`, `engine/src/v2` and the daemon/driver/supervisor path |
 | Q4 | Context, messages and tools are logically isolated by default | A03, A05, A26: scoped grants and private-history checks; same-user host execution is not an OS security boundary |
 | Q5 | The Leader manages and may delegate attenuated authority | A02, A03, A04: `issue_grant`, parent revocation, task-scoped delegation and dispatch reauthorization |
-| Q6 | Minimal Leader TUI plus comprehensive developer CLI | A21, A28, A36: `tui/src/v2app.rs`, `tui/src/v2ui.rs`, `engine/src/main.rs`, session and instance commands |
+| Q6 | Observable team TUI inspired by Herdr, backed by the developer CLI | A21, A28, A36: `tui/src/team.rs`, `tui/tests/team.rs`, shared geometry, independent member history and fixed Leader controls; CLI remains available for management |
 | Q7 | Closing the UI leaves work running and supports reconnect/intervention | A28: independent daemon, event watermark, `tui/tests/reconnect.rs`, daemon and supervisor tests |
 | Q8 | The user talks to the Leader, may read/address members and may pause/cancel | A05, A21: user identity in control, `read_history`, instance intervention and `read_history_is_user_or_self_only` |
 | Q9 | Instances are retained and sessions isolated | A24, A29, A33: session registry, lifecycle transitions, reset/fork and workspace policies |
@@ -79,6 +79,27 @@ complete graphical-terminal or OS matrix.
 | A34 | Foreign or wrong-version state-store refusal | `open_refuses_unstamped_foreign_and_wrong_version`, `open_migrates_v8_to_the_session_search_tree`, conflict rollback and `V2Store` |
 | A35 | Work deadline | `work_deadline_refuses_new_requests_and_dispatches`, deadline park and cancel/release behavior |
 | A36 | Store/session lifecycle, search/export and guarded cleanup | `engine/tests/session_browser.rs`, `session_export_tests.rs`, session CLI, `tools/install_check.py`, current schema 9 and `tools/` relocation |
+
+## Current repair evidence
+
+D-523 resolves named profiles before first-request preparation and during recovery, preserving the chosen effort
+and unchanged cached retry requests. The driver regression follows a transient failure through retry, tool use
+and subsequent model calls; the crash test reopens a named-profile request with honest unknown-usage accounting.
+Cross-provider switching and ambiguous profiles sharing a wire model identity remain open.
+
+D-524 adds eight team-interface regressions, a split-transcript media regression and real-terminal
+member-history failure/retry checks. Navigation keeps Leader input, interruption and profile targeting; member history, previews and media stay separate from
+the Leader transcript. Tiny/narrow/wide layouts, mouse selection, retained drafts, approval ownership, task
+outcomes and bounded attachment-local activity are covered. The five-profile PTY matrix and forced graphics
+modes pass, including simultaneous Leader/member media and hidden-task polling controls. The full 837-test
+local gate and all 18 offline probes pass on 2026-11-16; the real-daemon panel probe preserves a draft while
+inspecting a member and observing task cancellation. This establishes scripted behavior, not measured usability
+or live team quality.
+
+D-525 adds eight DNS/fetch regressions. Both configured search providers work on the current host; fake-IP
+DNS previously blocked GitHub fetches locally and now permits independently verified public hostnames.
+Private literals and mixed private answers remain refused. A live GitHub fetch returns 4096 bytes under a
+4096-byte limit. Broader proxy environments and provider-side destination/redirect enforcement remain open.
 
 ## Current probe inventory
 

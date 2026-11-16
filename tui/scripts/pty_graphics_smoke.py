@@ -34,10 +34,10 @@ def expected_mode() -> str:
     return "kitty" if native else "blocks"
 
 
-def png():
+def png(color=(40, 180, 240)):
     def chunk(kind, data):
         return struct.pack("!I", len(data)) + kind + data + struct.pack("!I", binascii.crc32(kind + data))
-    pixels = b"".join(b"\0" + bytes([40, 180, 240]) * 80 for _ in range(24))
+    pixels = b"".join(b"\0" + bytes(color) * 80 for _ in range(24))
     return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack("!2I5B", 80, 24, 8, 2, 0, 0, 0))
             + chunk(b"IDAT", zlib.compress(pixels)) + chunk(b"IEND", b""))
 
@@ -121,6 +121,25 @@ def run(force):
                         assert int(x) - 1 + int(fields[b"c"]) <= cols - 1, "image crosses transcript"
                 else:
                     wait(lambda s: "unsent-graphics-draft" in s and "▀" in s, "resized image and draft")
+            # Both transcripts must finish image layout in the same wide frame.
+            (root / "member.png").write_bytes(png((240, 150, 40)))
+            daemon.member_history["i-worker"] = [{"kind": "assistant", "workspace": str(root),
+                "message": {"content": "![Member chart](member.png)"}}]
+            rows, cols = 35, 160
+            fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, cols * 10, rows * 20))
+            os.kill(pid, signal.SIGWINCH)
+            drain()
+            before = len(raw)
+            os.write(fd, b"\x1b[17~\x1b[Bh\x1b1")
+            if effective == "kitty":
+                def split_placements(_):
+                    columns = [int(x) for _, x in re.findall(rb"\x1b\[(\d+);(\d+)H\x1b_Ga=p,", bytes(raw[before:]))]
+                    return any(26 < x < 107 for x in columns) and any(x > 107 for x in columns)
+                wait(split_placements, "both split-pane image placements")
+            else:
+                wait(lambda s: any("▀" in line[26:107] for line in s.splitlines())
+                     and any("▀" in line[108:] for line in s.splitlines()), "both split-pane block images")
+            assert "unsent-graphics-draft" in drain(), "member media lost the draft"
             assert not any(f.get("command_id") for f in daemon.frames), "rendering emitted a business command"
             os.write(fd, b"\x11")
             for _ in range(60):
@@ -139,7 +158,7 @@ def run(force):
                 os.kill(pid, signal.SIGTERM)
                 os.waitpid(pid, 0)
             os.close(fd)
-    print(f"graphics PTY ({label}, {TERM}): diagrams, image bytes, source toggle, draft, resize, bounds, cleanup: ok")
+    print(f"graphics PTY ({label}, {TERM}): diagrams, image bytes, source toggle, draft, resize, split panes, bounds, cleanup: ok")
 
 
 if __name__ == "__main__":

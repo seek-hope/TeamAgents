@@ -122,8 +122,9 @@ evaluation evidence.
 
 - One daemon per session owns the JSON-lines Unix-socket protocol. TUI and headless clients resume from the
   event watermark; no second execution engine runs inside the TUI.
-- The TUI has one Leader conversation with elevated prompts, grouped tool activity, conditional approvals,
-  Markdown/code/media rendering and a conditional live activity row. It has no member topology canvas.
+- The TUI has a Herdr-inspired team sidebar, Leader conversation, responsive inspection pane, tasks and recent
+  activity. Member history is a separate User-visible read; selecting a member never redirects the composer,
+  interrupt or profile controls. Markdown/code/media rendering and conditional approvals remain supported.
 - Enter submits; Shift+Enter inserts a newline. Ctrl+C interrupts the model request, Ctrl+Q detaches,
   Ctrl+S opens sessions, Ctrl+P opens pending inputs, Ctrl+M opens model/effort selection, and `/tree` opens
   the session exploration tree.
@@ -134,7 +135,7 @@ evaluation evidence.
 
 ### Current verification boundary
 
-- Current source contains 819 Rust tests: core 198, engine 513 and TUI 108.
+- Current source contains 837 Rust tests: core 198, engine 522 and TUI 117.
 - Formal material has 393 configurations across 48 modules: 65 positive configurations, 327 negative controls
   and one separate wide configuration. Positive inputs share 62 traversals only when model/spec/domain match.
 - There are 79 normal-path witnesses and 9 Kani harnesses. Witnesses demonstrate reachability, not safety.
@@ -142,6 +143,65 @@ evaluation evidence.
   claim and 11 witnesses. `TypeOK` remains a type-level claim, not a behavioral completeness proof.
 - These results do not establish full Rust/SQLite refinement, whole-system composition, Policy B source-bound
   equivalence, wide exhaustive completion, arbitrary-input TLA coverage or live-model navigation quality.
+
+## D-525 Verify public fetch destinations behind Fake-IP DNS (2026-11-16)
+
+A compatibility check against `my-pi-tools` commit `3e3d765` reproduced the local mismatch: DeepSeek and Exa
+search both worked, but fetching a GitHub URL failed because system DNS returned `198.18.0.61`. A synthetic
+routing address does not establish the destination's real address. The public-destination policy is unchanged.
+
+The Rust URL guard now canonicalizes HTTP(S) URLs, rejects embedded credentials, internal hostnames and
+non-public literals, and checks all local DNS answers. A hostname with `198.18.0.0/15` answers is verified
+through Cloudflare HTTPS DNS, with Google as a fallback. Mixed real-private local answers stop immediately.
+Both A and AAAA queries must finish before accepting public answers from a resolver. Any known non-public
+answer stops fallback; empty, malformed or unsuccessful verification never authorizes a fetch. Direct fake-IP
+literals stay blocked. HTTPS certificate checks remain enabled; DNS queries carry no provider credentials.
+
+DNS verification shares a ten-second deadline and bounds response bodies to 64 KiB. OS lookups cannot be
+cancelled, so at most eight resolver workers may linger after their caller times out. A first resolver that
+consumes the full deadline leaves no time for fallback. Provider-side resolution and redirect validation remain
+external obligations; local verification does not prove protection against later rebinding at the provider.
+The existing fetch byte limit now clips at a UTF-8 boundary, fixing an observed 4096-byte request returning
+4161 bytes. Search providers, binding authority and dependencies are unchanged.
+
+Eight new DNS/fetch tests, all 26 tool tests, all nine search tests and engine Clippy pass. Local live probes
+confirm both search providers and successful GitHub fetching behind fake-IP; literal fake-IP, loopback and
+metadata controls remain refused. These probes establish this host's current transparent proxy environment,
+not arbitrary explicit-proxy configurations or a new provider-wide acceptance campaign. Package and installed
+binary validation will accompany the current TUI delivery.
+
+## D-524 Make team state directly observable in the TUI (2026-11-16)
+
+The user's request to replace the minimal Grok-derived presentation with a Herdr-based team interface updates
+Q6 and the interface baseline. The reference is `herdrdev/herdr` at
+`ee5bfb5041bb3e4a49d591c72308aae3c81ecdde` (Apache-2.0): member sidebar, focused panes and compact status.
+TeamAgents implements its own Rust projection over the existing daemon; it does not embed Herdr's terminal
+multiplexer, terminal-state inference or agent execution. No reference source or assets are copied.
+
+Wide terminals show the Leader and selected member inspection together. Tasks, recent observed activity,
+member diagnostics and bounded member history have direct navigation; small terminals use one content pane.
+Selection is navigation only. The composer, model menu and interrupt retain their Leader target, drafts survive
+navigation, and member reads cannot add content to a model context or the session tree. Historical task outcomes
+remain distinct from process-stop evidence; missing usage and unknown effects remain explicit. Member/task
+reads run only for visible content, and failed reads retain refresh debt. Focus stays on visible content when
+resizing or receiving command receipts. Shared image layout/cache retention covers all viewports in a frame,
+including simultaneous Leader/member media and return from hidden views.
+
+## D-523 Resolve selected profiles before preparation and complete slash discovery (2026-11-16)
+
+The driver reloads the persisted profile after the post-drain snapshot and before request preparation,
+compaction and budget reservation. Catalog keys resolve to API model names with generation defaults and
+normalized effort; the existing revision check rejects stale preparation. Recovery retains the same resolution
+before reconstructing a request, while cached requests remain unchanged across retries. A real session exposed
+`leader_main` reaching DeepSeek after one successful request. The scripted regression covers the first request,
+a transient retry, a successful listing, its continuation and a later effort-only change; restart coverage
+retains the selected effort and unknown-usage accounting. This does not establish cross-provider hot-switching
+or disambiguate catalog entries sharing a wire name.
+
+Slash completion and unknown-command guidance share the complete registered command list, including `/model`
+and `/edit`; D-524 extends the registry with team navigation. Completion only edits the draft; a separate Enter
+executes the command. Existing TUI
+regressions check the complete rendered menu, filtering, model-menu opening and constrained terminal sizes.
 
 ## D-522 Keep sessions when endpoint absence is unproven (2026-11-15)
 

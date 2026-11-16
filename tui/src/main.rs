@@ -212,6 +212,32 @@ fn v2_refresh_history(client: &mut DaemonClient, app: &mut V2App) {
     }
 }
 
+fn v2_refresh_observations(client: &mut DaemonClient, app: &mut V2App, retry: bool) -> bool {
+    if app.browser.is_some() || app.queue.is_some() || app.profile.is_some() || app.help_open {
+        return false;
+    }
+    let mut changed = false;
+    if app.team.tasks_visible && app.team.tasks_dirty && (retry || app.team.tasks_error.is_none()) {
+        match client.call("tasks", json!({})) {
+            Ok(reply) => app.team.apply_tasks(&reply),
+            Err(error) => app.team.tasks_error = Some(error),
+        }
+        changed = true;
+    }
+    if app.team.member_visible {
+        if let Some(member) = &mut app.team.member {
+            if member.dirty && (retry || member.error.is_none()) {
+                match client.call("history", json!({"instance_id":member.id, "limit":400})) {
+                    Ok(reply) => member.apply(&reply),
+                    Err(error) => member.fail(error),
+                }
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
 fn v2_refresh_approvals(client: &mut DaemonClient, app: &mut V2App) {
     match client.call("approvals", json!({})) {
         Ok(result) => app.apply_approvals(result),
@@ -451,6 +477,7 @@ fn run_v2(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, mut client
             v2_refresh_history(&mut client, &mut app);
             dirty = true;
         }
+        dirty |= v2_refresh_observations(&mut client, &mut app, false);
         if app.disconnected != last_disconnected {
             last_disconnected = app.disconnected;
             dirty = true;
@@ -458,10 +485,10 @@ fn run_v2(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, mut client
         if last_event_poll.elapsed() >= Duration::from_millis(150) {
             last_event_poll = Instant::now();
             // §9: the model's streaming preview is a transient read, not an event. Repaint only when it changes.
-            let before = app.active_preview().map(str::to_string);
+            let before = app.previews.clone();
             if let Ok(result) = client.call("previews", serde_json::json!({})) {
                 app.apply_previews(&result["previews"]);
-                if app.active_preview() != before.as_deref() {
+                if app.previews != before {
                     dirty = true;
                 }
             }
@@ -490,7 +517,7 @@ fn run_v2(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, mut client
         }
         if last_animation.elapsed() >= Duration::from_millis(125) {
             last_animation = Instant::now();
-            // Grok's activity spinner is repaint-only and never manufactures a runtime fact.
+            // Activity animation is repaint-only and never manufactures a runtime fact.
             // Idle Ready sessions keep the previous low-frequency event/redraw schedule.
             if app.disconnected || !app.activity_line().starts_with("Ready") {
                 dirty = true;
@@ -498,6 +525,7 @@ fn run_v2(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, mut client
         }
         if last_slow.elapsed() >= Duration::from_secs(1) {
             last_slow = Instant::now();
+            dirty |= v2_refresh_observations(&mut client, &mut app, true);
             if app.disconnected || app.history_dirty {
                 // Refresh debt survives successful checkpoint/event polls after a history read failed.
                 v2_sync_checkpoint(&mut client, &mut app);

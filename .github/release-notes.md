@@ -1,4 +1,4 @@
-> Current source validation: core 198 / engine 513 / tui 108, plus 65 positive TLA configurations in 62
+> Current source validation: core 198 / engine 522 / tui 117, plus 65 positive TLA configurations in 62
 > traversals, 327 controls, 79 witnesses and 9 Kani harnesses. The latest `make check` passed. This document describes
 > current source, not an earlier release archive.
 
@@ -11,6 +11,12 @@
 - One session-level exploration tree with revisioned nodes, source references, focus, Leader-only writes and
   ordered atomic patches. `/tree` and `teamagents search_tree [--json]` expose it; member-private history is not
   included.
+- Herdr-inspired team workspace with member state, saved blockers, tasks, activity and separate member history.
+  Responsive panes preserve drafts and approval focus; all message and profile controls still target Leader.
+- Named profiles resolve before model preparation and recovery, preventing catalog aliases from reaching the
+  API and applying the selected effort to the first request. All fifteen local slash commands are discoverable.
+- Fetch verifies public hostnames independently when local DNS returns fake-IP routing addresses, while
+  retaining private-destination refusal. Returned text respects its UTF-8 byte limit.
 - One daemon per session. TUI and `teamagents exec` share its Unix-socket JSON protocol and resume from the event
   watermark.
 - Governed teams through `spawn`, `delegate`, `send` and `wait`, with shared, isolated and Git-worktree
@@ -30,7 +36,7 @@
 
 ## Current evidence
 
-The full local gate passed **819 Rust tests** (core 198, engine 513, TUI 108). Formal material contains **393
+The full local gate passed **837 Rust tests** (core 198, engine 522, TUI 117). Formal material contains **393
 configurations across 48 modules**: **65 positive configurations in 62 traversals**, **327 negative controls**,
 **79 normal-path witnesses** and **9 Kani harnesses**. Search-tree coverage includes ordered pair transitions,
 23 controls covering every non-`TypeOK` tree claim and 11 witnesses. Witnesses demonstrate reachability only.
