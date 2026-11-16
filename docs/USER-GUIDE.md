@@ -13,6 +13,12 @@ teamagents doctor environment        # read-only host tool discovery
 teamagents                           # open or join the TUI session
 ```
 
+Use `teamagents --help` for the overview, `teamagents sessions --help` for a command family, and
+`teamagents sessions delete --help` for its exact options. Options from another subcommand are refused before
+state is accessed. In particular, `--dry-run` belongs to session pruning; session deletion has no preview mode.
+MCP process arguments preserve dash-leading values, for example `mcp add --name service --command python3 --arg -u`.
+Update actions are exclusive; combining status, check, rollback or application fails explicitly.
+
 ### 1.1 Headless runs (`teamagents exec`)
 
 One daemon owns one session. `teamagents` starts it if needed and attaches the TUI. Exiting the TUI does not stop
@@ -24,6 +30,9 @@ teamagents exec --json --timeout 180 "Summarize the current project state"
 
 `exec` returns 0 for a completed/replied run, 1 for failure or unfinished work, 2 for usage/infrastructure,
 3 for approval required and 124 for client timeout. Timeout is not proof that no side effect occurred.
+Use `exec -- --json` to send the literal text `--json`; everything after `--` is an operand.
+`--check CMD` runs an external check after the run, while `--accept ID=CMD` supplies a runtime completion gate.
+`--json` prints a final report; `--stream-json` prints incremental JSONL events followed by the report.
 
 ### 1.2 The JSON reports
 
@@ -53,6 +62,8 @@ The default config path is `${XDG_CONFIG_HOME:-$HOME/.config}/teamagents/config.
 The product reads repository-local configuration under an explicit trust rule; it contributes nothing until you opt in. Its permissions,
 hooks, checks, limits, retention and update policy never silently override user configuration.
 See [CONFIG.md](CONFIG.md) for every field and [INSTALL.md](INSTALL.md) for storage locations.
+Startup `-c key=value` overrides include user-only permission settings. A running daemon keeps its configuration;
+joining clients report unapplied model/config settings. Use `instances model` to change an existing profile.
 
 ### 2.1 Acceptance checks (`[[checks]]`)
 
@@ -123,7 +134,8 @@ In the composer:
 - Ctrl+Left/Right or Alt+Left/Right moves by word; Ctrl+B/F moves by character. Ctrl+W or Alt+Backspace deletes
   a word. Ctrl+U/K deletes to line start/end, and Ctrl+Y restores the last deletion.
 - Ctrl+E opens the current draft in `VISUAL`, falling back to `EDITOR`. Saving with exit 0 replaces the draft;
-  cancellation, nonzero exit or read failure restores it.
+  cancellation, nonzero exit or read failure restores it. `/edit [TEXT]` opens the editor with optional exact
+  text; `/edit` alone starts an empty draft. Text or paths ending in `/edit` have no special meaning.
 - `/help` shows current controls, environment and diagnostics. `?` on an empty draft opens the shortcut overlay.
 - Slash completion edits only the draft. An explicit second Enter executes the completed command.
 - `/attach PATH` stages a workspace file; `/detach INDEX` removes one. `@PATH` followed by Tab offers workspace
@@ -138,7 +150,10 @@ Local commands are `/help`, `/sessions`, `/interrupt`, `/quit`, `/model`, `/atta
 ## 4. Approvals and lifecycle
 
 Ctrl+A focuses pending approvals. `a` approves once, `d` denies, and `Esc` returns to the draft. Approval arrival
-does not steal typing focus. An approval binds one operation, argument hash and permission revision.
+does not steal typing focus. Selection follows the approval ID across refreshes; if that approval disappears,
+focus returns to the draft. Decision keys require a plain press. Repeat events cannot confirm approvals, apply
+profiles or switch modes. Ctrl+M and Ctrl+Enter both toggle the model menu; plain Enter applies the selection.
+An approval binds one operation, argument hash and permission revision.
 
 Ctrl+C or `/interrupt` cancels the Leader's in-flight model request. Running tools and delegated work continue.
 Ctrl+Q or `/quit` detaches the TUI while the daemon continues. A paused or refused leader does not silently accept
@@ -270,8 +285,9 @@ to use it. `--session default` explicitly opens the session stored directly in t
 `daemon` startup uses its explicit/default state root. Exec acceptance checks still run in the caller's
 `--cwd` or current directory. A legacy relative Leader workspace is refused because its original base is unknown.
 
-Ctrl+S or `/sessions` opens the session browser. It supports paged history, search, rename, archive, restore,
-fork and confirmed deletion. Opening another session replaces the client only after a successful handshake and
+Ctrl+S or `/sessions` opens the session browser for paged history, search, switching and confirmed deletion.
+Rename, archive, restore and fork use the `sessions` CLI subcommands. Opening another session replaces the
+client only after a successful handshake and
 state sync. Drafts remain scoped to their state roots.
 
 Ctrl+P or `/queue` shows pending Leader inputs. Enter edits, Delete asks to cancel, and Esc returns. Pending

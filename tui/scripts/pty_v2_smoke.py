@@ -385,7 +385,12 @@ def main():
     scr = Screen(80, 30)
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 80, 0, 0))
     os.write(fd, b"\x1b")
-    scr.feed(read_all(fd, 0.3).decode("utf-8", "replace"))
+    # Wait for Esc to reach the composer before sending another escape-prefixed
+    # key: a fixed delay can coalesce Esc/F6 while the UI is still redrawing.
+    deadline = time.monotonic() + 6
+    while time.monotonic() < deadline and "Enter send" not in scr.lines()[-1]:
+        scr.feed(read_all(fd, 0.1).decode("utf-8", "replace"))
+    expect("Enter send", "narrow composer focus before F6")
     os.write(fd, b"\x1b[17~")
     deadline = time.monotonic() + 6
     while time.monotonic() < deadline and "Up/Down member" not in "\n".join(scr.lines()):

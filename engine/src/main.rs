@@ -10,100 +10,28 @@ use std::{
 };
 use teamagents_engine::{cli, tools};
 
-const HELP: &str = "TeamAgents: work with a Leader in your terminal\n\n\
-usage: teamagents [--cwd DIR] [--state-root PATH] [--session ID] [--model KEY] [--full-auto] [-c key=value]…\n\
-  -c key=value                        override a config key for this invocation (repeatable; docs/CONFIG.md lists them)\n\
-  teamagents                          TUI attached to your daemon (starts one if needed)\n\
-  teamagents exec [--json|--stream-json] [--timeout SEC] [--check CMD] [--accept ID=CMD] [--] \"…\"   one headless input\n\
-  teamagents status [--json]                  session checkpoint, model, usage, limits and MCP state\n\
-  teamagents history [--id INSTANCE] [--limit N] [--json]  newest 1..1000 stored entries (default 400, Leader)\n\
-  teamagents search_tree [--json]             show the session-level exploration tree\n\
-  teamagents authority [list] [--json]          the session's grants and pending capability requests\n\
-  teamagents authority grant --subject ID --action A --scope S [--parent G] [--delegable]\n\
-  teamagents authority revoke --grant ID        revoke that grant and everything derived from it\n\
-  teamagents authority requests [--json]        list pending capability approvals\n\
-  teamagents authority approve --request ID     approve one capability request (user only)\n\
-  teamagents authority deny --request ID        deny one capability request (user only)\n\
-  teamagents approvals [list] [--json]          the approvals a session is waiting on\n\
-  teamagents work_scopes [list] [--json]              the work_scopes the session carries (D-267)\n\
-  teamagents work_scopes open --id ID [--attach X]    open the next work, optionally attached to an instance,\n\
-      [--check ID=COMMAND]… [--deadline MIN]    with the user's own required checks and a deadline\n\
-  teamagents work_scopes cancel --id ID               close that work and release the instance its refusal parked\n\
-  teamagents approvals approve --id ID          approve that call, once (bound to its arguments)\n\
-  teamagents approvals deny --id ID             deny it; the operation fails closed\n\
-  teamagents inputs paths [--query PREFIX] [--json]  complete workspace attachment paths\n\
-  teamagents inputs [list] [--recipient ID] [--after N --limit N] [--json]  pending user inputs, with revisions\n\
-  teamagents inputs edit --id ID --revision N --prompt TEXT [--recipient ID] [--json]  revise pending text\n\
-  teamagents inputs cancel --id ID --revision N [--recipient ID] [--json]  cancel pending delivery\n\
-  teamagents instances [list] [--json]          the session's instances\n\
-  teamagents instances send --id ID --prompt TEXT [--after-turn] [--json]  submit to any member; --after-turn queues it for after the current turn\n\
-  teamagents instances model --id ID [--model KEY] [--effort E] [--json]  switch model/effort at the next turn\n\
-  teamagents instances resume|pause --id ID     let a parked instance run again, or stop one\n\
-  teamagents instances interrupt --id ID        cancel the running turn so a queued instruction takes over\n\
-  teamagents instances terminate --id ID --yes  retire it (workspace and open work handled)\n\
-  teamagents instances merge --id ID            bring a git_worktree member's branch into the session tree\n\
-  teamagents sessions [list] [--json]           the sessions this state root carries (D-364)\n\
-  teamagents sessions new [--name NAME]         create a named session beside the default one\n\
-  teamagents sessions fork --id ID [--name NAME] branch a session's conversation into a new one (D-365)\n\
-  teamagents sessions rename --id ID --name NAME  give a named session a new display name\n\
-  teamagents sessions restore --id ID           bring an archived session back\n\
-  teamagents sessions search --query TEXT [--limit N]  search every session's conversation (read-only, D-368)\n\
-  teamagents sessions export --id ID --output FILE [--format json|markdown] [--json]  export a complete local snapshot without starting it\n\
-  teamagents sessions archive --id ID           move a named session aside (refused while a daemon runs it)\n\
-  teamagents sessions open --id ID [--json]     restore/start or join a session and report its socket\n\
-  teamagents sessions history --id ID [--before N] [--limit N] [--json]  page all stored records without starting it\n\
-  teamagents sessions delete --id ID [--stop] --yes [--json]  delete its history; --stop also stops its daemon and work\n\
-  teamagents sessions prune [--days N] [--dry-run] [--yes]  drop archived sessions older than the window\n\
-  teamagents automations [list] [--json]        schedules that start a work on their own (D-367)\n\
-  teamagents automations add --every MIN --prompt TEXT [--name NAME]   create one\n\
-  teamagents automations pause|resume --id ID   stop it, or re-arm it one period out\n\
-  teamagents automations remove --id ID --yes   delete it\n\
-  teamagents tasks [list] [--json]              the session's tasks\n\
-  teamagents tasks cancel --id ID               cancel one; a delegator waiting on it is released\n\
-  teamagents artifacts [list] [--json]          what this state root holds on disk (bytes, owner, presence)\n\
-  teamagents mcp list                           the tools each configured MCP service offers (D-399),\n\
-       and whether an oauth binding is signed in\n\
-  teamagents mcp add --name N --command CMD     bind an MCP service in the user config (D-408):\n\
-       [--arg A]… [--transport stdio|http] [--url U] [--execution host] [--server NAME]\n\
-       [--oauth [--oauth-client-id ID]]         an http service that signs in with OAuth (D-412)\n\
-  teamagents mcp remove --name N                take that binding back out\n\
-  teamagents mcp login --name N                 sign in to an oauth binding (D-412): the URL is printed, the\n\
-       [--no-browser] [--paste] [--timeout SEC]  browser is opened unless --no-browser, the loopback callback is\n\
-       waited for unless --paste reads the redirected URL from stdin\n\
-  teamagents mcp logout --name N                forget that service's stored credential\n\
-  teamagents artifacts gc [--json]              collect the artifacts nothing references (needs no session)\n\
-  teamagents runners [list] [--json]            the job runners this state root still carries\n\
-  teamagents surface [--id INSTANCE] [--json]   what each model request was offered: tool names, authorized\n\
-  teamagents runners stop [--id JOB]            ask them to retire (a runner with a running command refuses)\n\
-  teamagents runners stop --service --yes [--id JOB]   stop the group a settled command left behind\n\
-  teamagents daemon [--state-root PATH] [--cwd DIR] [--model KEY] [--full-auto]\n\
-  teamagents daemon --stop [--state-root PATH]   stop that session's daemon (no pid: the socket is the address)\n\
-  teamagents init [--state-root PATH]   write config and prepare the state root\n\
-  teamagents doctor [--state-root PATH] check config, credentials, state root and host\n\
-  teamagents doctor environment [--cwd DIR] [--json] inspect host and configured execution tools, without repairs\n\
-  teamagents version | --version      print the version\n\
-  teamagents --help                   print this help\n\n\
-exec accepts repeated --attach PATH (workspace-relative UTF-8 text or PNG/JPEG/GIF/WebP; eight files,\n\
-1 MiB/text, 5 MiB/image, 16 MiB total). Files are snapshotted by the session daemon; symlinks are refused.\n\
-exec reads the prompt from stdin when it is \"-\", runs each --check acceptance command\n\
-in the workspace after the turn ends (a verdict on the exit code), and attaches each\n\
---accept ID=COMMAND to the work before the input lands (a gate the runtime repairs\n\
-against at the completion boundary), and exits 0 completed, 1 failed or unfinished,\n\
-3 approval required, 124 timeout, 2 usage. --json prints one report object; --stream-json\n\
-prints the session's events (one {\"type\":\"event\",…} line each, in order, then the same\n\
-report as {\"type\":\"report\",…}) while the run waits, flushed line by line.\n\
-authority, approvals, instances and tasks talk to the running session (start it with\n\
-teamagents or exec) and exit 0 done, 1 the session refused it, 2 usage. authority is how a\n\
-spawned worker gets shell@workspace (§5.1) and how a capability is taken back; approvals\n\
-answers the decision that made exec exit 3; instances and tasks are the user-side\n\
-interventions of §5.4 (pause/resume/terminate, cancel a task) without starting the TUI.\n\
-sessions manages named sessions. Without --session or --state-root, TUI/exec restores the most recently\nopened session in --cwd (or the launch directory), creating one if absent. --session ID uses that session's\nsaved workspace; --state-root pins an exact session root. --session default names the base root itself.\nArchive refuses a running session; delete --stop --yes stops it before deleting its history.\n\
-runners works on a state root rather than a session — it asks each leftover jobs-runner\n\
-process to retire, which is what a state root carries after its session is gone; a runner\n\
-whose command is still running refuses, so this never takes work away.\n\
-The Leader builds the team through spawn/delegate/send/wait; entry points from older\n\
-releases (TeamSpec files, line mode, session resume) are not supported.\n\
-First run: teamagents init -> set the credential env var -> teamagents doctor -> teamagents.";
+mod interface;
+
+const HELP: &str = "TeamAgents: work with a Leader in your terminal
+
+usage: teamagents [--cwd DIR] [--session ID] [--model KEY] [-c key=value]...
+
+  teamagents                 Open the TUI; resume this workspace's latest session
+  teamagents exec PROMPT     Run one headless input (- reads stdin)
+  teamagents sessions        List saved sessions
+  teamagents status          Inspect the running session
+  teamagents init            Write initial configuration
+  teamagents doctor          Check configuration and host
+  teamagents update          Inspect installation/update status
+  teamagents version         Print the version (--version, -V)
+
+Management: history, search_tree, instances, tasks, inputs, approvals,
+            authority, work_scopes, automations, artifacts, runners, surface, mcp
+
+Use teamagents COMMAND --help or teamagents COMMAND SUBCOMMAND --help
+for options and advanced controls. --help (-h) prints this overview.
+Explicit --session/--state-root selection retains the saved workspace.
+First run: teamagents init -> set the credential env var -> teamagents doctor.";
 
 fn usage() -> ! {
     eprintln!("{HELP}");
@@ -153,10 +81,7 @@ fn refuse(message: &str) -> ! {
 
 pub struct Args {
     pub cwd: Option<String>,
-    pub resume: Option<String>,
     pub full_auto: bool,
-    pub team: Option<String>,
-    pub plain: bool,
     pub command: Option<String>,
     pub positional: Option<String>,
     pub state_root: Option<String>,
@@ -241,7 +166,10 @@ pub struct Args {
 }
 
 fn parse_args() -> Args {
-    let argv: Vec<String> = std::env::args().skip(1).collect();
+    parse_args_from(std::env::args().skip(1).collect())
+}
+
+fn parse_args_from(argv: Vec<String>) -> Args {
     if argv.len() == 1 {
         match argv[0].as_str() {
             "-h" | "--help" => {
@@ -254,10 +182,7 @@ fn parse_args() -> Args {
     }
     let mut args = Args {
         cwd: None,
-        resume: None,
         full_auto: false,
-        team: None,
-        plain: false,
         command: None,
         positional: None,
         state_root: None,
@@ -312,8 +237,31 @@ fn parse_args() -> Args {
         overrides: Vec::new(),
     };
     let mut i = 0;
+    let mut flags = Vec::new();
+    let mut help = false;
     while i < argv.len() {
+        if args.after_double_dash {
+            if args.positional.is_some() {
+                reject("this entry point takes one positional argument; quote a multi-word prompt as one");
+            }
+            args.positional = Some(argv[i].clone());
+            i += 1;
+            continue;
+        }
+        let flag = argv[i].as_str();
+        if flag.starts_with('-') && !matches!(flag, "-" | "--" | "--help" | "-h") {
+            if flags.iter().any(|given| given == flag)
+                && !matches!(flag, "-c" | "--arg" | "--check" | "--accept" | "--attach")
+            {
+                given_twice(flag);
+            }
+            flags.push(flag.to_string());
+        }
         match argv[i].as_str() {
+            "--help" | "-h" => {
+                help = true;
+                i += 1;
+            }
             "--cwd" => {
                 if args.cwd.is_some() {
                     given_twice("--cwd");
@@ -326,42 +274,14 @@ fn parse_args() -> Args {
                 args.cwd = Some(v);
                 i += 2;
             }
-            "--resume" => {
-                if args.resume.is_some() {
-                    given_twice("--resume");
-                }
-                let v = argv
-                    .get(i + 1)
-                    .cloned()
-                    .filter(|v| !v.is_empty() && !v.starts_with('-'))
-                    .unwrap_or_else(|| needs_a_value("--resume"));
-                args.resume = Some(v);
-                i += 2;
-            }
-            "--team" => {
-                if args.team.is_some() {
-                    given_twice("--team");
-                }
-                let v = argv
-                    .get(i + 1)
-                    .cloned()
-                    .filter(|v| !v.is_empty() && !v.starts_with('-'))
-                    .unwrap_or_else(|| needs_a_value("--team"));
-                args.team = Some(v);
-                i += 2;
+            "--resume" | "--team" | "--plain" => {
+                refuse("--plain/--resume/--team are no longer supported; use teamagents (TUI) or teamagents exec.")
             }
             "--full-auto" => {
                 if args.full_auto {
                     given_twice("--full-auto");
                 }
                 args.full_auto = true;
-                i += 1;
-            }
-            "--plain" => {
-                if args.plain {
-                    given_twice("--plain");
-                }
-                args.plain = true;
                 i += 1;
             }
             // `-v` was verbose logging in an earlier release and is not a flag
@@ -593,7 +513,12 @@ fn parse_args() -> Args {
                 i += 2;
             }
             "--arg" if args.command.as_deref() == Some("mcp") => {
-                args.mcp_args.push(value_after(&argv, i, "--arg"));
+                args.mcp_args.push(
+                    argv.get(i + 1)
+                        .cloned()
+                        .filter(|value| !value.is_empty())
+                        .unwrap_or_else(|| needs_a_value("--arg")),
+                );
                 i += 2;
             }
             "-c" => {
@@ -888,15 +813,14 @@ fn parse_args() -> Args {
             )),
         }
     }
-    if args.command.as_deref() == Some("init")
-        && (args.positional.is_some()
-            || args.cwd.is_some()
-            || args.resume.is_some()
-            || args.team.is_some()
-            || args.plain
-            || args.full_auto)
-    {
-        reject("init takes no other arguments: it writes the config and prepares the state root");
+    if let Err(error) = interface::validate(&args, &flags, help) {
+        reject(&error);
+    }
+    if help {
+        if let Err(error) = interface::help(&args) {
+            reject(&error);
+        }
+        std::process::exit(0);
     }
     args
 }
@@ -1097,17 +1021,7 @@ fn run_authority(args: &Args) -> i32 {
     let socket = state_root.join("daemon.sock");
     // the verb may be inferred from the flags, so `teamagents authority --grant g-1`
     // and `authority --action shell --subject i-w --scope workspace` both work
-    let verb = args.positional.as_deref().unwrap_or_else(|| {
-        if args.grant.is_some() {
-            "revoke"
-        } else if args.request.is_some() {
-            "approve"
-        } else if args.subject.is_some() || args.action.is_some() || args.scope.is_some() {
-            "grant"
-        } else {
-            "list"
-        }
-    });
+    let verb = interface::verb(args);
     let command = match verb {
         "list" => {
             if args.grant.is_some()
@@ -1189,8 +1103,7 @@ fn run_authority(args: &Args) -> i32 {
 fn run_approvals(args: &Args) -> i32 {
     use teamagents_engine::v2::approvals::{ApprovalCommand, ApprovalOptions};
     let state_root = args.state_root.clone().map(PathBuf::from).unwrap_or_else(teamagents_engine::v2_root);
-    let verb =
-        args.positional.as_deref().unwrap_or_else(|| if args.approval_id.is_some() { "approve" } else { "list" });
+    let verb = interface::verb(args);
     let command = match verb {
         "list" => {
             if args.approval_id.is_some() {
@@ -1672,7 +1585,7 @@ fn resolve_session(args: &mut Args) -> Result<(), String> {
                     | "artifacts"
                     | "automations"
             )
-        ) || (args.daemon_stop && args.cwd.is_none() && args.model.is_none() && !args.full_auto);
+        ) || (args.command.as_deref() == Some("daemon") && args.daemon_stop);
         if args.state_root.is_none() && observes {
             let workspace = Path::new(args.cwd.as_deref().unwrap_or("."));
             let home = teamagents_engine::v2_root();
@@ -1771,7 +1684,11 @@ fn run_automations(args: &Args) -> i32 {
         "remove" => match args.approval_id.as_deref() {
             Some(id) if args.confirmed => match schedule.remove(id) {
                 Ok(entry) => {
-                    println!("removed automation {} ({})", entry.id, entry.name);
+                    if args.exec_json {
+                        println!("{}", serde_json::json!({"id": entry.id, "name": entry.name, "removed": true}));
+                    } else {
+                        println!("removed automation {} ({})", entry.id, entry.name);
+                    }
                     0
                 }
                 Err(error) => {
@@ -1791,11 +1708,18 @@ fn run_automations(args: &Args) -> i32 {
         "pause" | "resume" => match args.approval_id.as_deref() {
             Some(id) => match schedule.set_enabled(id, verb == "resume", now) {
                 Ok(entry) => {
-                    println!(
-                        "automation {} {}",
-                        entry.id,
-                        if entry.enabled { "enabled (next run one period out)" } else { "paused" }
-                    );
+                    if args.exec_json {
+                        println!(
+                            "{}",
+                            serde_json::json!({"id": entry.id, "name": entry.name, "enabled": entry.enabled})
+                        );
+                    } else {
+                        println!(
+                            "automation {} {}",
+                            entry.id,
+                            if entry.enabled { "enabled (next run one period out)" } else { "paused" }
+                        );
+                    }
                     0
                 }
                 Err(error) => {
@@ -2082,7 +2006,11 @@ fn run_sessions(args: &Args) -> i32 {
         "archive" => match args.approval_id.as_deref() {
             Some(id) => match registry.archive(id) {
                 Ok(dir) => {
-                    println!("archived session {id} to {}", dir.display());
+                    if args.exec_json {
+                        println!("{}", serde_json::json!({"id": id, "archived": true, "path": dir}));
+                    } else {
+                        println!("archived session {id} to {}", dir.display());
+                    }
                     0
                 }
                 Err(error) => {
@@ -2098,7 +2026,11 @@ fn run_sessions(args: &Args) -> i32 {
         "rename" => match (args.approval_id.as_deref(), args.session_name.as_deref()) {
             (Some(id), Some(name)) => match registry.rename(id, name) {
                 Ok(entry) => {
-                    println!("renamed session {} to {}", entry.id, entry.name);
+                    if args.exec_json {
+                        println!("{}", serde_json::json!({"id": entry.id, "name": entry.name, "renamed": true}));
+                    } else {
+                        println!("renamed session {} to {}", entry.id, entry.name);
+                    }
                     0
                 }
                 Err(error) => {
@@ -2118,7 +2050,11 @@ fn run_sessions(args: &Args) -> i32 {
         "restore" => match args.approval_id.as_deref() {
             Some(id) => match registry.restore(id) {
                 Ok(entry) => {
-                    println!("restored session {} ({})", entry.id, entry.name);
+                    if args.exec_json {
+                        println!("{}", serde_json::json!({"id": entry.id, "name": entry.name, "restored": true}));
+                    } else {
+                        println!("restored session {} ({})", entry.id, entry.name);
+                    }
                     0
                 }
                 Err(error) => {
@@ -2528,9 +2464,6 @@ fn run_inspect(args: &Args) -> i32 {
         || args.model.is_some()
         || args.full_auto
         || !args.overrides.is_empty()
-        || args.plain
-        || args.resume.is_some()
-        || args.team.is_some()
     {
         eprintln!("status/history read the running session: use --state-root or --session, and --json; history also takes --id and --limit");
         return 2;
@@ -2574,7 +2507,7 @@ fn run_runners(args: &Args) -> i32 {
     let state_root = args.state_root.clone().map(PathBuf::from).unwrap_or_else(teamagents_engine::v2_root);
     // `--service` *is* the stop action (the listing already shows what a group holds), so it may stand in for
     // the subcommand; it never combines with `list`, which reads.
-    let verb = args.positional.as_deref().unwrap_or(if args.service_stop { "stop" } else { "list" });
+    let verb = interface::verb(args);
     let command = match (verb, args.approval_id.clone()) {
         ("list", None) => RunnersCommand::List,
         ("list", Some(_)) => {
@@ -2650,10 +2583,7 @@ fn note_session_settings(socket: &Path, full_auto: bool, cwd: Option<&str>, star
     let described = |key: &str| greeting[key].as_str().unwrap_or("unknown").to_string();
     if full_auto && !started {
         eprintln!(
-            "note: a session is already running for this state root in {} mode, so --full-auto did not apply. \
-             Stop that daemon first (SIGTERM its pid — `ps -eo pid,args | grep \"[t]eamagents daemon\"` names \
-             the pid and state root; a detached daemon has no terminal to Ctrl-C in), or use another \
-             --state-root to start in full_auto.",
+            "note: a session is already running for this state root in {} mode; --full-auto is a compatibility option and does not change its mode.",
             described("permissions")
         );
     }
@@ -2727,6 +2657,14 @@ fn ensure_daemon(request: DaemonRequest<'_>) -> Result<(PathBuf, bool), String> 
     // daemon leaves a stale file that would make bind fail if we kept it
     if socket.exists() {
         if std::os::unix::net::UnixStream::connect(&socket).is_ok() {
+            if model.is_some() {
+                eprintln!(
+                    "note: --model does not change a running session; use instances model --id i-leader --model KEY."
+                );
+            }
+            if !overrides.is_empty() {
+                eprintln!("note: -c overrides do not change a running daemon; they apply when starting a daemon.");
+            }
             return Ok((socket, false));
         }
         let _ = std::fs::remove_file(&socket);
@@ -2922,10 +2860,6 @@ fn main() {
         Some("surface") => run_surface(&args),
         Some("status" | "history" | "search_tree") => run_inspect(&args),
         Some("artifacts") => run_artifacts(&args),
-        _ if args.plain || args.resume.is_some() || args.team.is_some() => {
-            eprintln!("--plain/--resume/--team are no longer supported; use teamagents (TUI) or teamagents exec.");
-            2
-        }
         // A bare word is not a TUI option: `teamagents` opens the TUI and
         // `teamagents exec "…"` runs one headless input. Starting a session and
         // dropping the word would lose exactly what the user typed — and a typo
@@ -2947,6 +2881,21 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::resolve_prompt;
+
+    #[test]
+    fn end_of_options_keeps_command_names_flags_and_delimiters_literal() {
+        for prompt in ["status", "--json", "--", "--help", "daemon"] {
+            let args = super::parse_args_from(["exec", "--", prompt].into_iter().map(str::to_string).collect());
+            assert_eq!(args.command.as_deref(), Some("exec"));
+            assert_eq!(args.positional.as_deref(), Some(prompt));
+            assert!(!args.exec_json);
+        }
+        for argv in [&["version", "--"][..], &["sessions", "--", "list"][..]] {
+            let args = super::parse_args_from(argv.iter().map(|arg| (*arg).to_string()).collect());
+            assert_eq!(args.command.as_deref(), Some(argv[0]));
+            assert_eq!(args.positional.as_deref(), argv.get(2).copied());
+        }
+    }
 
     #[test]
     fn exec_takes_the_prompt_from_the_argument_or_from_stdin() {

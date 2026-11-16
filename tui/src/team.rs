@@ -239,6 +239,14 @@ impl Team {
 
 /// Panel keys never enter the draft or execute a runtime command.
 pub fn key(app: &mut V2App, key: KeyEvent) {
+    use crossterm::event::KeyEventKind;
+    if !key.modifiers.is_empty()
+        || key.kind == KeyEventKind::Release
+        || (key.kind == KeyEventKind::Repeat
+            && matches!(key.code, KeyCode::Enter | KeyCode::Esc | KeyCode::Char('h' | 'd')))
+    {
+        return;
+    }
     match key.code {
         KeyCode::Esc => app.focus = Focus::Composer,
         KeyCode::Up if app.focus == Focus::Team => app.team.move_selection(false),

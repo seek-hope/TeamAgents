@@ -56,7 +56,7 @@ import sys
 REPO = pathlib.Path(__file__).resolve().parents[1]
 CONFIG_STRUCTS = ("UserConfig", "ModelProfile", "PriceRates", "ToolBinding", "Retention", "Hooks", "WorkLimits", "CheckSpec")
 # declaration, parsing/merging/validation, the doctor surface and the argv parser: none of them *use* a key
-PLUMBING = {"core/src/models.rs", "engine/src/config.rs", "engine/src/cli.rs", "engine/src/main.rs"}
+PLUMBING = {"core/src/models.rs", "engine/src/config.rs", "engine/src/cli.rs", "engine/src/main.rs", "engine/src/interface.rs"}
 
 # Keys of the hand-read `[permissions]` table (`engine/src/config.rs::project_permissions` reads them itself and
 # refuses every other name, D-161). They are config keys a user may write, so the examples and the documents may

@@ -6,7 +6,7 @@ This file records current behavior and reproducible evidence, not historical acc
 ✅ means the named local path has automated evidence. 🔶 means implementation exists but the stated external,
 empirical or full-system obligation remains open. No icon is a proof of every release condition.
 
-Current source inventory: core 198 / engine 526 / tui 117 test targets; the full gate passed.
+Current source inventory: core 198 / engine 533 / tui 121 test targets; the full gate passed.
 Installed CLI source: `0e9a212b84a2edefb5b7963e13869c5efe9653ec`; the unchanged installed TUI remains from
 `d96d7c8acf54b951030140f076540cbb730f88ab`, the last complete package baseline. Delivery CI at
 `6767b32c4a35fb71c476ca7fb81858d127ba4905` passed `test`, `test-aarch64`, `formal-tla` and `formal-kani`:
@@ -89,6 +89,15 @@ complete graphical-terminal or OS matrix.
 | A36 | Store/session lifecycle, search/export and guarded cleanup | `engine/tests/session_browser.rs`, `engine/tests/session_workspace.rs`, `session_export_tests.rs`, session CLI, `tools/install_check.py`, current schema 9 and maintained development tools |
 
 ## Current runtime and installation evidence
+
+D-527 adds scoped CLI validation and help, explicit end-of-options parsing, arbitrary MCP argv values,
+mutually exclusive update actions, resolved permission overrides and structured JSON mutation receipts.
+`engine/tests/interface.rs` checks isolated refusal before state access, guarded deletion and the new output
+contracts; parser tests keep command names and dash-leading prompts literal after `--`. `tui/tests/interface.rs`
+covers modifiers, Repeat events, approval identity across refresh, explicit editor syntax and shared slash
+metadata. Default bindings, Leader targeting, drafts and existing capabilities remain available. The PTY
+smoke waits for the visible composer acknowledgement between Esc and F6 after resizing; fixed delays can
+coalesce those bytes in the terminal parser. These interface changes do not alter schema or formal inputs.
 
 D-526 local source coverage adds current-directory session selection, successful-open recency, absolute path
 persistence, cold restart in the saved workspace, unavailable-candidate isolation and concurrent creation.

@@ -505,11 +505,11 @@ fn ctrl_e_edits_the_current_draft_and_slash_edit_is_local() {
     assert_eq!(app.composer.text(), "draft to edit", "the effect does not clear the draft");
 
     let mut app = V2App::new("minimal");
-    app.composer.set_text("draft text /edit");
+    app.composer.set_text("/edit draft text");
     assert_eq!(
         app.handle_key(key(KeyCode::Enter)),
         Some(V2Effect::EditDraft { initial: "draft text".into() }),
-        "/edit after a draft hands that draft to the editor"
+        "/edit TEXT hands that text to the editor"
     );
     assert_eq!(app.composer.text(), "", "the edited draft is not left in the composer");
 }
@@ -517,10 +517,10 @@ fn ctrl_e_edits_the_current_draft_and_slash_edit_is_local() {
 #[test]
 fn editor_cancel_restores_the_draft_for_the_slash_path() {
     let mut app = V2App::new("minimal");
-    app.composer.set_text("draft text /edit");
+    app.composer.set_text("/edit draft text");
     let effect = app.handle_key(key(KeyCode::Enter));
     let Some(V2Effect::EditDraft { initial }) = effect else {
-        panic!("the /edit suffix must open the editor");
+        panic!("the /edit command must open the editor");
     };
     assert_eq!(app.composer.text(), "", "the effect takes the draft out of the composer");
     app.finish_editor(&initial, Err("editor failed".into()));

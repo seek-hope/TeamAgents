@@ -2,23 +2,39 @@
 use crate::text::Composer;
 use crossterm::event::{KeyCode, KeyEvent};
 
-pub const COMMANDS: [(&str, &str); 15] = [
-    ("/help", "Show controls"),
-    ("/model", "Choose the Leader model and reasoning effort"),
-    ("/edit", "Edit a draft in the external editor"),
-    ("/sessions", "Browse conversations"),
-    ("/interrupt", "Interrupt the Leader model request"),
-    ("/quit", "Detach from this session"),
-    ("/queue", "Edit or cancel pending input"),
-    ("/tree", "Show the session exploration tree"),
-    ("/attach", "Stage a file; @path + Tab also completes"),
-    ("/detach", "Remove an attachment by index"),
-    ("/team", "Focus the team member sidebar"),
-    ("/chat", "Return to the Leader conversation"),
-    ("/tasks", "Inspect tasks and recorded outcomes"),
-    ("/activity", "Show recent observed team events"),
-    ("/inspect", "Inspect the selected member; h opens history"),
-];
+macro_rules! commands {
+    ($($variant:ident => ($name:literal, $help:literal)),+ $(,)?) => {
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub enum Command { $($variant),+ }
+        pub const COMMANDS: [(&str, &str); 15] = [$(($name, $help)),+];
+        impl Command {
+            pub fn parse(text: &str) -> Option<(Self, Option<&str>)> {
+                let end = text.find(char::is_whitespace).unwrap_or(text.len());
+                let argument = text.get(end..).and_then(|rest| rest.chars().next().map(|c| &rest[c.len_utf8()..]));
+                let command = match &text[..end] { $($name => Self::$variant,)+ _ => return None };
+                Some((command, argument))
+            }
+        }
+    };
+}
+
+commands! {
+    Help => ("/help", "Show controls"),
+    Model => ("/model", "Choose the Leader model and reasoning effort"),
+    Edit => ("/edit", "Edit optional TEXT in the external editor; Ctrl+E edits the current draft"),
+    Sessions => ("/sessions", "Browse conversations"),
+    Interrupt => ("/interrupt", "Interrupt the Leader model request"),
+    Quit => ("/quit", "Detach from this session"),
+    Queue => ("/queue", "Edit or cancel pending input"),
+    Tree => ("/tree", "Show the session exploration tree"),
+    Attach => ("/attach", "Stage a file; @path + Tab also completes"),
+    Detach => ("/detach", "Remove an attachment by index"),
+    Team => ("/team", "Focus the team member sidebar"),
+    Chat => ("/chat", "Return to the Leader conversation"),
+    Tasks => ("/tasks", "Inspect tasks and recorded outcomes"),
+    Activity => ("/activity", "Show recent observed team events"),
+    Inspect => ("/inspect", "Inspect the selected member; h opens history"),
+}
 
 #[derive(Default)]
 pub struct Completion {

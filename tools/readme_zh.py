@@ -22,7 +22,7 @@ LINK = re.compile(r"\]\(([^)\s]+)\)")
 VERB = re.compile(r"\bteamagents ([a-z][a-z-]*)")
 FLAG = re.compile(r"(?<![\w-])--[a-z][a-z-]*")
 CHORD = re.compile(r"(?:Ctrl|Alt)\+(?:[A-Za-z]+|[0-9]+|←|→)|\bF[0-9]+\b")
-COMMANDS = re.findall(r'\(\s*"(/[a-z]+)"', (REPO / "tui/src/completion.rs").read_text().split("];", 1)[0])
+COMMANDS = re.findall(r'\(\s*"(/[a-z]+)"', (REPO / "tui/src/completion.rs").read_text())
 if not COMMANDS:
     raise RuntimeError("the local command registry could not be read")
 LOCAL_COMMAND = re.compile(r"(?<![\w/])(?:" + "|".join(map(re.escape, COMMANDS)) + r")\b")

@@ -55,6 +55,7 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
 | Team interface | Member observation is separate from Leader action ownership | D-524 |
 | Public fetch | Fake-IP hostnames require public-address verification; content caps count UTF-8 bytes | D-525 |
 | Workspace sessions | Ordinary startup restores the most recently opened session in the launch workspace, creating one if absent | D-526 |
+| Interface contracts | Validate scoped options before state access; share command metadata; preserve intentional key actions and resolved overrides | D-527 |
 
 ## Authority and runtime
 
@@ -164,6 +165,18 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
 
 ## Interface, sessions and updates
 
+- CLI options are validated for the selected command and subcommand before session resolution or mutation
+  (D-527). Unsupported options and conflicting updater actions fail explicitly. `--` ends option parsing;
+  MCP argv values can start with a dash. Top-level help stays short, with complete scoped command help.
+  Compatibility `--full-auto` and MCP `--execution host` remain accepted without advertising an empty choice.
+  Explicit permission overrides feed the same resolved settings used by daemon boot. Accepted JSON mutation
+  options produce JSON receipts. Startup settings that cannot apply to an existing session are reported.
+- Default keyboard bindings remain. Action keys require their documented modifiers; navigation and editing
+  may repeat, but confirmations and mode changes do not consume Repeat events (D-527). Approval selection
+  follows identity across refreshes. `/edit [TEXT]` opens the external editor; Ctrl+E edits the current draft.
+  Arbitrary text ending in `/edit` has no editor meaning. Slash command metadata drives completion and dispatch;
+  incomplete commands show usage. These rules preserve Leader targeting, drafts and attachment ownership.
+
 - Without `--session` or `--state-root`, TUI/exec selects the nonarchived session most recently opened in the
   canonical launch directory (`--cwd` when supplied), creating a named session if none matches (D-526).
   Explicit roots/IDs and TUI switches retain the selected session's workspace. Session-dependent CLI reads and
@@ -217,7 +230,7 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
   credentials, active jobs or external backups as repository housekeeping.
 - Source counts come from Cargo lists. Every registered current total/triple must match; missing/ambiguous
   statements fail. Numeric regeneration does not establish a passing gate, install or formal result.
-- Current source contains 841 Rust tests: core 198, engine 526 and TUI 117.
+- Current source contains 852 Rust tests: core 198, engine 533 and TUI 121.
 - Formal material has 387 configurations across 47 modules: 63 positive configurations in 60 traversals,
   323 controls and one separate wide configuration; 79 witnesses and 9 Kani harnesses. Shared traversals require
   identical model/specification/domain. Witnesses establish reachability, not safety. The report binds verified

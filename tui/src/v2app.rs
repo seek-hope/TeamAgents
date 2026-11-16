@@ -686,6 +686,7 @@ impl V2App {
     }
 
     pub fn apply_approvals(&mut self, result: Json) {
+        let selected = self.approvals.get(self.approval_sel).map(|approval| approval.id.clone());
         self.approvals = result["approvals"]
             .as_array()
             .cloned()
@@ -698,10 +699,9 @@ impl V2App {
                 preview: a["preview"].as_str().unwrap_or("").to_string(),
             })
             .collect();
-        if self.approval_sel >= self.approvals.len() {
-            self.approval_sel = self.approvals.len().saturating_sub(1);
-        }
-        if self.approvals.is_empty() && self.focus == Focus::Approvals {
+        let retained = selected.as_ref().and_then(|id| self.approvals.iter().position(|approval| &approval.id == id));
+        self.approval_sel = retained.unwrap_or(0);
+        if self.focus == Focus::Approvals && (self.approvals.is_empty() || (selected.is_some() && retained.is_none())) {
             self.focus = Focus::Composer;
         }
     }
@@ -710,7 +710,7 @@ impl V2App {
         self.note_error(format!("command failed: {error}"));
     }
 
-    /// Settle an external-editor attempt. The `/edit` suffix path takes the
+    /// Settle an external-editor attempt. The `/edit TEXT` path takes the
     /// draft out of the composer before the effect is returned, so a cancel or
     /// editor failure must put it back; Ctrl+E supplies the same initial and is
     /// idempotent here.
@@ -786,10 +786,22 @@ impl V2App {
 
     pub fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> Option<V2Effect> {
         use crossterm::event::{KeyCode, KeyModifiers};
-        if key.kind == crossterm::event::KeyEventKind::Release {
+        if key.kind == crossterm::event::KeyEventKind::Release
+            || (key.kind == crossterm::event::KeyEventKind::Repeat
+                && (matches!(key.code, KeyCode::Enter | KeyCode::Esc | KeyCode::F(6))
+                    || (key.modifiers.contains(KeyModifiers::CONTROL)
+                        && matches!(key.code, KeyCode::Char('a' | 'c' | 'e' | 'g' | 'm' | 'o' | 'p' | 'q' | 's')))
+                    || (key.modifiers == KeyModifiers::ALT && matches!(key.code, KeyCode::Char('1'..='4')))))
+        {
+            return None;
+        }
+        if key.code == KeyCode::Esc && !key.modifiers.is_empty() {
             return None;
         }
         if self.help_open {
+            if key.kind == crossterm::event::KeyEventKind::Repeat && key.code == KeyCode::Char('?') {
+                return None;
+            }
             match (key.code, key.modifiers) {
                 (KeyCode::Esc, _) | (KeyCode::Char('?'), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
                     self.help_open = false;
@@ -809,7 +821,7 @@ impl V2App {
             return None;
         }
         if self.profile.is_some() {
-            if key.modifiers.contains(KeyModifiers::CONTROL) {
+            if key.modifiers == KeyModifiers::CONTROL {
                 match key.code {
                     KeyCode::Char('q') => {
                         self.quit = true;
@@ -820,7 +832,7 @@ impl V2App {
                         self.graphics.toggle();
                         return None;
                     }
-                    KeyCode::Char('m') => {
+                    KeyCode::Char('m') | KeyCode::Enter => {
                         self.profile = None;
                         return None;
                     }
@@ -851,7 +863,7 @@ impl V2App {
             }
             return browser.key(key).map(V2Effect::Sessions);
         }
-        if key.modifiers.contains(KeyModifiers::CONTROL) {
+        if key.modifiers == KeyModifiers::CONTROL {
             match key.code {
                 KeyCode::Char('s') => return self.open_sessions(),
                 KeyCode::Char('p') if self.focus == Focus::Composer => return self.open_queue(),
@@ -879,7 +891,7 @@ impl V2App {
                 _ => {}
             }
         }
-        if key.code == KeyCode::F(6) {
+        if key.code == KeyCode::F(6) && key.modifiers.is_empty() {
             self.focus = match self.focus {
                 Focus::Composer | Focus::Approvals => Focus::Team,
                 Focus::Team => {
@@ -943,6 +955,9 @@ impl V2App {
 
     fn profile_key(&mut self, key: crossterm::event::KeyEvent) -> Option<V2Effect> {
         use crossterm::event::KeyCode;
+        if !key.modifiers.is_empty() {
+            return None;
+        }
         let fallback = self.efforts.clone();
         let menu = self.profile.as_mut()?;
         match key.code {
@@ -988,7 +1003,12 @@ impl V2App {
     }
 
     fn approval_key(&mut self, key: crossterm::event::KeyEvent) -> Option<V2Effect> {
-        use crossterm::event::KeyCode;
+        use crossterm::event::{KeyCode, KeyEventKind};
+        if !key.modifiers.is_empty()
+            || (key.kind == KeyEventKind::Repeat && matches!(key.code, KeyCode::Char('a' | 'd')))
+        {
+            return None;
+        }
         match key.code {
             KeyCode::Esc => {
                 self.focus = Focus::Composer;
@@ -1017,7 +1037,27 @@ impl V2App {
 
     /// Client commands never become model input, including retired management commands.
     fn slash_command(&mut self, text: &str) -> Option<V2Effect> {
-        if let Some(path) = text.strip_prefix("/attach ") {
+        let Some((command, argument)) = crate::completion::Command::parse(text) else {
+            let commands = crate::completion::COMMANDS.iter().map(|(name, _)| *name).collect::<Vec<_>>().join(" · ");
+            self.command_note(format!(
+                "Unknown command {text:?}. commands: {commands}. Management: teamagents --help."
+            ));
+            return None;
+        };
+        self.dispatch_command(command, argument)
+    }
+
+    fn dispatch_command(&mut self, command: crate::completion::Command, argument: Option<&str>) -> Option<V2Effect> {
+        use crate::completion::Command;
+        if !matches!(command, Command::Attach | Command::Detach | Command::Edit)
+            && argument.is_some_and(|text| !text.trim().is_empty())
+        {
+            self.command_note(
+                "This command takes no arguments. Use /help for controls; management: teamagents --help.",
+            );
+            return None;
+        }
+        if let (Command::Attach, Some(path)) = (command, argument) {
             if self.attachments.paths.len() >= 8 {
                 self.command_note("At most eight attachments per input.");
             } else if path.is_empty() {
@@ -1031,7 +1071,7 @@ impl V2App {
             }
             return None;
         }
-        if let Some(index) = text.strip_prefix("/detach ") {
+        if let (Command::Detach, Some(index)) = (command, argument) {
             match index.trim().parse::<usize>().ok().filter(|i| *i > 0 && *i <= self.attachments.paths.len()) {
                 Some(index) => {
                     let path = self.attachments.paths.remove(index - 1);
@@ -1041,8 +1081,8 @@ impl V2App {
             }
             return None;
         }
-        match text.trim() {
-            "/help" => self.command_note(format!(
+        match command {
+            Command::Help => self.command_note(format!(
                 "Session {} · model {}
 Enter sends to the Leader; Shift+Enter adds a newline.
 Up/Down recalls input; PageUp/PageDown or the wheel reads history.
@@ -1066,36 +1106,35 @@ Ctrl+O expands or folds tool previews; /sessions shows full stored results.
 Ctrl+G switches graphics previews and source; image files stay unchanged.
 /tree shows the session exploration tree; ask the Leader to reorganize or focus it.
 Developer tools: teamagents --help; teamagents status --json; teamagents history --id ID.
+Commands:
+{}
 {}
 {}",
                 self.session_id,
                 self.active_instance().map(|i| i.model.as_str()).unwrap_or("unavailable"),
+                crate::completion::COMMANDS.iter().map(|(name, help)| format!("{name}: {help}")).collect::<Vec<_>>().join("\n"),
                 self.environment_details(),
                 self.diagnostic_details()
             )),
-            "/attach" => self.command_note(format!(
+            Command::Attach => self.command_note(format!(
                 "Staged attachments: {:?}. Use /attach PATH or @PATH then Tab to complete.",
                 self.attachments.paths
             )),
-            "/edit" => self
-                .command_note("Ctrl+E edits the current draft; type /edit after a draft to open it in VISUAL/EDITOR."),
-            "/team" => { self.focus = Focus::Team; }
-            "/chat" => self.team.show(crate::team::View::Conversation),
-            "/tasks" => { self.team.show(crate::team::View::Tasks); self.focus = Focus::Panel; }
-            "/activity" => { self.team.show(crate::team::View::Activity); self.focus = Focus::Panel; }
-            "/inspect" => { self.team.show(crate::team::View::Inspect); self.focus = Focus::Panel; }
-            "/sessions" => return self.open_sessions(),
-            "/queue" => return self.open_queue(),
-            "/tree" => return Some(V2Effect::SearchTree),
-            "/interrupt" => return self.interrupt(),
-            "/model" => return self.open_profile(),
-            "/quit" => {
+            Command::Detach => self.command_note("Use /detach INDEX with a staged attachment's one-based index."),
+            Command::Edit => return Some(V2Effect::EditDraft { initial: argument.unwrap_or("").to_string() }),
+            Command::Team => { self.focus = Focus::Team; }
+            Command::Chat => self.team.show(crate::team::View::Conversation),
+            Command::Tasks => { self.team.show(crate::team::View::Tasks); self.focus = Focus::Panel; }
+            Command::Activity => { self.team.show(crate::team::View::Activity); self.focus = Focus::Panel; }
+            Command::Inspect => { self.team.show(crate::team::View::Inspect); self.focus = Focus::Panel; }
+            Command::Sessions => return self.open_sessions(),
+            Command::Queue => return self.open_queue(),
+            Command::Tree => return Some(V2Effect::SearchTree),
+            Command::Interrupt => return self.interrupt(),
+            Command::Model => return self.open_profile(),
+            Command::Quit => {
                 self.quit = true;
                 return Some(V2Effect::Quit);
-            }
-            _ => {
-                let commands = crate::completion::COMMANDS.iter().map(|(name, _)| *name).collect::<Vec<_>>().join(" · ");
-                self.command_note(format!("Unknown command {text:?}. commands: {commands}. Management: teamagents --help."));
             }
         }
         None
@@ -1109,6 +1148,7 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
         if key.code == KeyCode::Char('?')
             && !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
             && self.composer.text().is_empty()
+            && key.kind == crossterm::event::KeyEventKind::Press
         {
             self.help_open = true;
             self.help_scroll = 0;
@@ -1128,8 +1168,8 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
         if self.completion.key(&mut self.composer, key) {
             return None;
         }
-        if key.code == KeyCode::Char('e') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            return Some(V2Effect::EditDraft { initial: self.composer.text() });
+        if key.code == KeyCode::Char('e') && key.modifiers == KeyModifiers::CONTROL {
+            return self.dispatch_command(crate::completion::Command::Edit, Some(&self.composer.text()));
         }
         match key.code {
             // Shift+Enter edits the draft without sending it. The terminal must
@@ -1138,40 +1178,17 @@ Developer tools: teamagents --help; teamagents status --json; teamagents history
                 self.composer.insert_newline();
                 None
             }
-            KeyCode::Enter => {
+            KeyCode::Enter if key.modifiers.is_empty() => {
                 let raw = self.composer.text();
-                if let Some(initial) = raw.strip_suffix("/edit") {
-                    if !initial.trim().is_empty() {
-                        self.composer.clear();
-                        return Some(V2Effect::EditDraft { initial: initial.trim_end().to_string() });
-                    }
+                if raw.starts_with('/') {
+                    self.composer.clear();
+                    return self.slash_command(&raw);
                 }
-                if !self.composer.text().starts_with('/') && (self.disconnected || self.active_instance().is_none()) {
+                if self.disconnected || self.active_instance().is_none() {
                     self.command_note("Message kept in the draft: waiting for the Leader connection.");
                     return None;
                 }
-                let text = {
-                    let raw = self.composer.text();
-                    if raw == "/attach"
-                        || raw == "/detach"
-                        || raw == "/edit"
-                        || raw.starts_with("/attach ")
-                        || raw.starts_with("/detach ")
-                    {
-                        // Client commands never enter the input history (same for attach and detach).
-                        self.composer.clear();
-                        raw
-                    } else {
-                        self.composer.submit()?
-                    }
-                };
-                // D-370: a leading `/` is a client command, not an instruction to the Leader (pi's slash-command
-                // shape). Handled here, before the active instance is required, so `/help` works with no instance.
-                // Client commands are not sent messages, so they never enter the input history; D-77's
-                // "the arrows walk what was sent" records ordinary submissions only, below.
-                if text.starts_with('/') {
-                    return self.slash_command(&text);
-                }
+                let text = self.composer.submit()?;
                 self.composer.record_submission(&text);
                 let instance = self.active_instance()?.id.clone();
                 let envelope = self.attachments.envelope(&text);

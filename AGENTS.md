@@ -45,7 +45,7 @@ make verify-model-counterexamples
 make verify-witnesses
 make verify-kani
 ```
-Current source inventory (2026-11-16): **841 Rust tests** (core 198 / engine 526 / tui 117), **63 positive TLA configurations in 60
+Current source inventory (2026-11-16): **852 Rust tests** (core 198 / engine 533 / tui 121), **63 positive TLA configurations in 60
 traversals**, **323 controls**, **79 witnesses**, **9 Kani harnesses**, and **387 configurations across 47
 modules**. Current acceptance covers the full local gate, source/installed PTY matrices, 18 offline probes,
 x86_64 musl release/install and scripted profile/fetch checks, plus a separate live Fetch API check.

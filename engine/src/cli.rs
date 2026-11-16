@@ -1043,7 +1043,7 @@ fn daemon_boot(
     let workspace = saved_workspace.unwrap_or_else(|| PathBuf::from(cwd.as_deref().unwrap_or(".")));
     let workspace = crate::v2::session_workspace::canonical_workspace(&workspace)?;
     // D-428: the command line's `-c` overrides enter the same load the daemon's config comes from
-    let (catalog, project) = load_user_config_for_with(&workspace, overrides)?;
+    let (catalog, project, review_permissions) = crate::config::load_resolved_config(&workspace, overrides)?;
     report_project_merge(&project);
     let mut available: Vec<String> = catalog.models.keys().cloned().collect();
     available.sort();
@@ -1111,8 +1111,8 @@ fn daemon_boot(
             state_root: state_root.clone(),
             workspace,
             permissions,
-            approvals_reviewer: crate::config::approval_reviewer_from_config()?,
-            reviewer_model: crate::config::reviewer_model_from_config()?,
+            approvals_reviewer: review_permissions.approvals_reviewer,
+            reviewer_model: review_permissions.reviewer_model,
             catalog,
             bindings: default_bindings(),
             // the fallback for an instance whose profile the catalog cannot resolve; each instance's own

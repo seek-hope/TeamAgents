@@ -1364,6 +1364,14 @@ pub fn load_user_config_for(cwd: &Path) -> Result<(UserConfig, ProjectMerge), St
 
 /// The same load with `-c` overrides applied to the user file's own tree (D-428).
 pub fn load_user_config_for_with(cwd: &Path, overrides: &[String]) -> Result<(UserConfig, ProjectMerge), String> {
+    load_resolved_config(cwd, overrides).map(|(catalog, project, _)| (catalog, project))
+}
+
+/// Resolve catalog and user-only permissions from the same overridden configuration snapshot.
+pub fn load_resolved_config(
+    cwd: &Path,
+    overrides: &[String],
+) -> Result<(UserConfig, ProjectMerge, Permissions), String> {
     let mut outcome = ProjectMerge { path: project_config_path(cwd), ..Default::default() };
     let user_text = read_config_file(&user_config_path())?;
     let project_text = read_config_file(&outcome.path)?;
@@ -1508,7 +1516,7 @@ pub fn load_user_config_for_with(cwd: &Path, overrides: &[String]) -> Result<(Us
     // session goes on. The difference D-232 pinned therefore dissolves in that direction: one behaviour, no
     // loader-shaped surprise.
     validate_shared(&catalog)?;
-    Ok((catalog, outcome))
+    Ok((catalog, outcome, permissions))
 }
 
 fn project_permissions(user: &toml::Value) -> Result<Permissions, String> {
@@ -1578,25 +1586,6 @@ fn project_permissions(user: &toml::Value) -> Result<Permissions, String> {
         ),
     };
     Ok(Permissions { trust_all: trusted, approvals_reviewer, reviewer_model, trusted_projects })
-}
-
-/// Full-auto must be user-chosen in config or CLI; never from a project file.
-pub fn approval_reviewer_from_config() -> Result<String, String> {
-    let text = std::fs::read_to_string(user_config_path()).unwrap_or_default();
-    if text.trim().is_empty() {
-        return Ok("user".into());
-    }
-    let user: toml::Value = text.parse().map_err(|e| format!("bad TOML: {e}"))?;
-    Ok(project_permissions(&user)?.approvals_reviewer)
-}
-
-pub fn reviewer_model_from_config() -> Result<Option<String>, String> {
-    let text = std::fs::read_to_string(user_config_path()).unwrap_or_default();
-    if text.trim().is_empty() {
-        return Ok(None);
-    }
-    let user: toml::Value = text.parse().map_err(|e| format!("bad TOML: {e}"))?;
-    Ok(project_permissions(&user)?.reviewer_model)
 }
 
 /// The text a member's prompt gets from `instruction_files` (D-102 recorded the promise; D-246 delivers it).

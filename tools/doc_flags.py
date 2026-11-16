@@ -62,6 +62,7 @@ import sys
 REPO = pathlib.Path(__file__).resolve().parents[1]
 CLI_SOURCE = REPO / "engine/src/main.rs"
 UPDATE_SOURCE = REPO / "engine/src/update.rs"
+INTERFACE_SOURCE = REPO / "engine/src/interface.rs"
 PARSER_SOURCES = (CLI_SOURCE, UPDATE_SOURCE)
 EXEC_SOURCE = REPO / "engine/src/v2/exec.rs"
 DOCS = ["README.md", "docs/USER-GUIDE.md", "docs/INSTALL.md"]
@@ -99,19 +100,33 @@ FLAG = re.compile(r"(?<![\w-])--[a-z][a-z-]*")
 # A match arm whose pattern is a bare alternation of string literals, e.g. `"--json"` on its own line (its
 # guard and `=>` follow). Distinguishes an arm from a message that merely starts with a quote.
 ARM_LINE = re.compile(r'^"[^"]*"(?:\s*\|\s*"[^"]*")*\s*$')
-VERB_MENTION = re.compile(r"`teamagents ([a-z][a-z-]*)(?: ([a-z][a-z-]*))?")
+VERB_MENTION = re.compile(r"`teamagents ([a-z][a-z_-]*)(?: ([a-z][a-z_-]*))?")
 # a verb line of the help text, e.g. "  teamagents instances resume|pause --id ID"
-VERB_LINE = re.compile(r"\s*teamagents ([a-z][a-z-]*)(.*)$")
+VERB_LINE = re.compile(r"\s*teamagents ([a-z][a-z_-]*)(.*)$")
 # the hidden entry points the dispatcher matches, which are served without being advertised
-HIDDEN_VERB = re.compile(r'Some\("([a-z][a-z-]*)"\)')
+HIDDEN_VERB = re.compile(r'Some\("([a-z][a-z_-]*)"\)')
+
+
+def command_rows() -> list:
+    """Read the shared command inventory used by scoped help and option validation."""
+    literal = r'"([^"\\]*(?:\\.[^"\\]*)*)"'
+    row = r"\(\s*" + r"\s*,\s*".join([literal] * 5) + r"\s*,?\s*\)"
+    rows = re.findall(row, INTERFACE_SOURCE.read_text())
+    if not rows or not any(name == "exec" for name, *_ in rows):
+        raise SystemExit("cannot locate the shared CLI command inventory")
+    return rows
 
 
 def served_flags() -> set:
-    """The flags in the CLI's own `HELP` text: the surface `teamagents --help` prints."""
+    """Flags in top-level, scoped and updater help, excluding compatibility-only choices."""
     lines = CLI_SOURCE.read_text().splitlines()
     start = next(i for i, line in enumerate(lines) if line.startswith("const HELP"))
     end = next(i for i in range(start, len(lines)) if lines[i].rstrip().endswith('";'))
     flags = set(FLAG.findall("\n".join(lines[start:end])))
+    for _, _, options, _, _ in command_rows():
+        flags |= set(FLAG.findall(options))
+    locators = INTERFACE_SOURCE.read_text().split("fn locators(", 1)[1].split("pub fn verb", 1)[0]
+    flags |= set(FLAG.findall(locators))
     # The updater owns its parser and subcommand help; it is not part of the top-level HELP literal.
     update_help = re.search(r"fn cli_help\(\) -> &'static str \{(.*?)\n\}", UPDATE_SOURCE.read_text(), re.S)
     if update_help is None:
@@ -141,6 +156,12 @@ def served_verbs() -> tuple:
             for sub in rest[0].strip("[]").split("|"):
                 if re.fullmatch(r"[a-z][a-z-]*", sub):
                     pairs.add(f"{verb} {sub}")
+    for name, verb, _, _, _ in command_rows():
+        if name:
+            verbs.add(name)
+        if name and verb and name != "daemon":
+            pairs.add(f"{name} {verb}")
+    pairs |= {"sessions ls", "automations ls"}
     return verbs | set(HIDDEN_VERB.findall(CLI_SOURCE.read_text())), pairs
 
 

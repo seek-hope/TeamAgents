@@ -222,6 +222,27 @@ impl SessionBrowser {
     }
 
     pub fn key(&mut self, key: KeyEvent) -> Option<SessionAction> {
+        use crossterm::event::KeyEventKind;
+        if key.kind == KeyEventKind::Release
+            || (key.kind == KeyEventKind::Repeat
+                && !matches!(
+                    key.code,
+                    KeyCode::Up
+                        | KeyCode::Down
+                        | KeyCode::PageUp
+                        | KeyCode::PageDown
+                        | KeyCode::Left
+                        | KeyCode::Right
+                        | KeyCode::Home
+                        | KeyCode::End
+                )
+                && !(self.search_editing && matches!(key.code, KeyCode::Char(_) | KeyCode::Backspace)))
+        {
+            return None;
+        }
+        if !self.search_editing && !key.modifiers.is_empty() {
+            return None;
+        }
         if self.busy {
             if key.code == KeyCode::Esc && self.search_pending {
                 self.cancel_search();

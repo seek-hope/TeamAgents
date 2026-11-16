@@ -63,16 +63,19 @@ fn parse_args() -> Args {
     let mut i = 0;
     while i < argv.len() {
         let step = match argv[i].as_str() {
+            "--help" | "-h" => {
+                println!("teamagents-tui [--daemon SOCKET] [--state-root PATH]\nConnect to a running session; --daemon takes precedence over PATH/daemon.sock.\nNormally launch with teamagents. Use teamagents exec for scripts.");
+                std::process::exit(0);
+            }
             // the session's workspace and mode belong to the daemon: the engine
-            // boots it (`teamagents --cwd DIR --full-auto`) and prints what the
+            // boots it (`teamagents --cwd DIR`) and prints what the
             // live session uses, so a flag here would be accepted and ignored
             "--cwd" => refuse(
                 "--cwd is not a TUI flag: the session's workspace belongs to the daemon. \
                  Start it with `teamagents --cwd DIR`; a running session keeps its own.",
             ),
             "--full-auto" => refuse(
-                "--full-auto is not a TUI flag: the session's mode belongs to the daemon. \
-                 Start it with `teamagents --full-auto`; a running session keeps the mode it booted with.",
+                "--full-auto is not a TUI flag. The daemon already uses full_auto, subject to capabilities and approval policy.",
             ),
             "--resume" | "--team" => refuse(&format!(
                 "{} is no longer supported: the daemon owns the session. Run `teamagents` (TUI) or \

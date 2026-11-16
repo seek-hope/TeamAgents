@@ -1479,10 +1479,17 @@ fn run_cli_inner(argv: &[String]) -> Result<i32, String> {
     let mut restart = true;
     let mut repo = DEFAULT_REPO.to_string();
     let mut index = 0;
+    let mut supplied = std::collections::BTreeSet::new();
     while index < argv.len() {
         let arg = &argv[index];
+        if !supplied.insert(arg.as_str()) {
+            return Err(format!("{arg} was given twice"));
+        }
         let value = |index: usize| -> Result<String, String> {
-            argv.get(index + 1).cloned().ok_or_else(|| format!("{arg} needs a value"))
+            argv.get(index + 1)
+                .filter(|value| !value.is_empty() && !value.starts_with('-'))
+                .cloned()
+                .ok_or_else(|| format!("{arg} needs a value"))
         };
         match arg.as_str() {
             "--help" | "-h" => {
@@ -1548,9 +1555,27 @@ fn run_cli_inner(argv: &[String]) -> Result<i32, String> {
             other => return Err(format!("unknown update argument {other:?}; use `teamagents update --help`")),
         }
     }
-    let layout = Layout::discover(install_root, bin_dir)?;
     if apply_flag && request.is_none() {
         return Err("update --apply needs --request PATH".into());
+    }
+    let actions = [health, check, status, rollback_flag, request.is_some(), target.is_some() || archive.is_some()];
+    if actions.into_iter().filter(|selected| *selected).count() > 1 {
+        return Err(
+            "choose one update action: --health, --check, --status, --rollback, --request, or --to/--archive".into()
+        );
+    }
+    let applying = target.is_some() || archive.is_some();
+    let allowed = |flag: &str| match flag {
+        "--json" => true,
+        "--install-root" | "--bin-dir" => !health,
+        "--state-root" => !check && request.is_none(),
+        "--repo" => check || (applying && archive.is_none()),
+        "--no-restart" => rollback_flag || applying,
+        "--apply" => request.is_some(),
+        _ => true, // action flags were checked together above
+    };
+    if let Some(flag) = supplied.iter().find(|flag| !allowed(flag)) {
+        return Err(format!("{flag} does not apply to the selected update action"));
     }
     if health {
         let root = state_root.ok_or("update --health needs --state-root")?;
@@ -1562,6 +1587,7 @@ fn run_cli_inner(argv: &[String]) -> Result<i32, String> {
         }
         return Ok(0);
     }
+    let layout = Layout::discover(install_root, bin_dir)?;
     if check {
         let current = layout.current_version().unwrap_or_else(|| "unknown".into());
         let latest = latest_release(&repo)?;

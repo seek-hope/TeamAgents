@@ -15,7 +15,7 @@ The last complete package baseline is `d96d7c8a`; delivery CI at `6767b32c` pass
 cover D-526. The current local formal replay retains its unchanged input-content fingerprint in
 [verification/REPORT.md](../verification/REPORT.md).
 
-- **841 Rust tests**: core 198, engine 526, TUI 117.
+- **852 Rust tests**: core 198, engine 533, TUI 121.
 - **63 positive TLA configurations in 60 traversals**, **323 controls**, **79 witnesses**, **9 Kani harnesses**.
 - Catalogue: **387 configurations across 47 modules**, including an incomplete wide configuration.
 - The package-baseline source and installed PTY matrices cover five terminal profiles and both forced graphics
@@ -58,6 +58,11 @@ These checks do not establish real-model task quality, full real-service accepta
   Unusable automatic candidates produce a note and are skipped; explicit opens retain actionable failures.
   `engine/tests/session_workspace.rs` covers selection, restart, path persistence, recency and concurrent creation;
   `tools/dogfood/tui_sessions.py` checks real-terminal workspace switching with retained drafts.
+- CLI validation rejects unrelated options and conflicting actions before session lookup or mutation. Scoped
+  help and validation share `engine/src/interface.rs`; slash completion/help/dispatch share command metadata.
+  Explicit permission overrides reach daemon boot, and JSON mutation options return structured receipts.
+  Confirmations and mode changes require deliberate key presses with their documented modifiers; approval
+  refresh follows the selected identity. `/edit [TEXT]` is explicit, while Ctrl+E edits the retained draft.
 - Shell, acceptance commands and local MCP run on the host with capability checks, not OS confinement.
 - One session-level exploration tree accompanies Leader compaction. It is model-maintained navigation, not
   authority, completion evidence or an alternate history. Member-private history is excluded.
@@ -74,6 +79,7 @@ These checks do not establish real-model task quality, full real-service accepta
 | Search-tree control and replay | `core/src/v2/control/search_tree.rs` |
 | Daemon, sessions and headless execution | `engine/tests/v2_daemon.rs`, `engine/tests/session_browser.rs`, `engine/src/v2/session_export_tests.rs` |
 | Provider and runner robustness | `engine/tests/cases/provider_robustness.rs`, `engine/tests/cases/jobs_robustness.rs` |
+| CLI options and TUI action boundaries | `engine/tests/interface.rs`, `tui/tests/interface.rs`, CLI parser delimiter tests |
 | TUI and terminal behavior | `tui/tests/team.rs`, `tui/tests/minimal.rs`, `tui/tests/conversation.rs`, `tui/tests/parity.rs`, `make pty` |
 | Fake-IP DNS and fetch | `engine/src/web_url.rs`, tool/search tests and scoped host probes |
 | Executable control-plane correspondence | `core/tests/v2_invariants.rs` |

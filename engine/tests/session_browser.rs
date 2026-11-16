@@ -273,7 +273,8 @@ fn search_and_export_cli_are_current_read_only_surfaces() {
 
     let incompatible = fixture.run(&["sessions", "export", "--output", &markdown_path_string, "--cwd", "."]);
     assert!(!incompatible.status.success());
-    assert!(String::from_utf8_lossy(&incompatible.stderr).contains("overrides do not apply"));
+    let message = String::from_utf8_lossy(&incompatible.stderr);
+    assert!(message.contains("does not take --cwd"), "{message}");
 }
 
 #[test]
