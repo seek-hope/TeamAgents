@@ -43,7 +43,7 @@ configurations across 48 modules**: **65 positive configurations in 62 traversal
 
 The `a6b5555a` package passed release/install rehearsal, an installed batch-edit refusal/repair workflow
 with a scripted loopback provider, and a session-prune preservation check. That runtime also passed the
-current PTY matrix and all 18 offline probes. D-521's AArch64 GNU user-emulation checks remain bound to
+PTY matrix as it existed at `a6b5555a` and all 18 offline probes. D-521's AArch64 GNU user-emulation checks remain bound to
 `675af52e`; they are not native ARM acceptance. The earlier `0eb4ee98` runtime passed `make probe-offline` (18/18), release rehearsal and fresh Debian 12/Ubuntu 22.04.5
 KVM checks for ordinary-user installation, malformed-argument rejection, same-schema upgrade/rollback and
 failed-startup recovery. Those guests used scripted loopback providers. Earlier pinned builds passed five PTY

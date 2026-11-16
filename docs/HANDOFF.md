@@ -47,7 +47,7 @@ Current source inventory and verification:
 
 - **837 Rust tests**: core 198, engine 522, TUI 117; the full `make check` passed on 2026-11-16.
   D-521 also passes the 26-tool AArch64 GNU emulation subset and a scripted daemon/headless workflow.
-  D-522 passed the current PTY matrix, 18 offline probes, musl release/install and installed workflow/session
+  D-522 passed the PTY matrix as it existed at `a6b5555a`, 18 offline probes, musl release/install and installed workflow/session
   preservation checks; D-521's architecture evidence remains bound to its own source.
   The earlier `0eb4ee98` archive passed 18 offline probes and fresh Debian/Ubuntu VM installation, malformed-
   argument rejection, upgrade, rollback and failed-startup recovery (see ACCEPTANCE.md).
