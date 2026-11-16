@@ -7,11 +7,11 @@ This file records current behavior and reproducible evidence, not historical acc
 empirical or full-system obligation remains open. No icon is a proof of every release condition.
 
 Current source inventory: core 198 / engine 533 / tui 121 test targets; the full gate passed.
-Installed CLI source: `0e9a212b84a2edefb5b7963e13869c5efe9653ec`; the unchanged installed TUI remains from
-`d96d7c8acf54b951030140f076540cbb730f88ab`, the last complete package baseline. Delivery CI at
+Installed CLI and TUI source: `02f147a572dd9abf59ceff8eb47940d55c3c68ac` (D-527).
+The last complete package baseline is `d96d7c8acf54b951030140f076540cbb730f88ab`. Delivery CI at
 `6767b32c4a35fb71c476ca7fb81858d127ba4905` passed `test`, `test-aarch64`, `formal-tla` and `formal-kani`:
 [run 43812934865](https://github.com/seek-hope/TeamAgents/actions/runs/43812934865).
-That CI does not cover D-526. The 26 AArch64 tool tests run under GNU user emulation, not native ARM.
+That CI does not cover D-526/D-527. The 26 AArch64 tool tests run under GNU user emulation, not native ARM.
 Package-baseline checks cover all 18
 offline probes, source/installed PTY matrices, x86_64 musl release/install, scripted profile/fetch behavior
 and a separate real Fetch API request. These bindings identify the tested source; subsequent edits do not
@@ -98,17 +98,23 @@ covers modifiers, Repeat events, approval identity across refresh, explicit edit
 metadata. Default bindings, Leader targeting, drafts and existing capabilities remain available. The PTY
 smoke waits for the visible composer acknowledgement between Esc and F6 after resizing; fixed delays can
 coalesce those bytes in the terminal parser. These interface changes do not alter schema or formal inputs.
+The final local gate passes all 852 Rust tests, formatting, Clippy and hygiene. The source TUI passes five
+terminal profiles and both forced graphics modes. Each release/installed pair passes 23 isolated CLI
+invocations and seven PTY checks covering approval modifiers/repeat, refresh, profile repeat, attachment paths,
+incomplete-command usage and explicit editor launch. Installed session switching also passes in a real PTY.
+The binaries were replaced atomically after private backups; the existing user daemon retained its PID/start
+identity. No ordinary configuration/session files were written and no real model was called by these probes.
+This does not renew the complete package, CI, external-provider or clean-host acceptance above.
 
-D-526 local source coverage adds current-directory session selection, successful-open recency, absolute path
-persistence, cold restart in the saved workspace, unavailable-candidate isolation and concurrent creation.
+| Installed binary | SHA-256 |
+|---|---|
+| CLI | `09c1886ef322f9af04432b2d49f6db5bead6f820a18a1935d3a887be0ce8bcf1` |
+| TUI | `e08424dd22ba6378f2bff5a0c90125da8549a68f93c914c275baa8b2ead64f8f` |
+
+Workspace-session coverage (D-526) includes current-directory selection, successful-open recency, absolute
+path persistence, cold restart in the saved workspace, unavailable-candidate isolation and concurrent creation.
 `engine/tests/session_workspace.rs` uses isolated state and an unavailable local model endpoint;
-`tools/dogfood/tui_sessions.py` verifies workspace changes and per-session drafts in a real PTY. The full
-local gate passes 841 Rust tests. The musl CLI passes isolated A/B/A selection, cross-directory cold reopen,
-creation-time binding and most-recent-open checks before and after installation; the installed session-switching
-PTY probe passes too. Its SHA-256 is `3f1ee956d0e63062325ed39a1a54ab85641ef2b53bb8f87636cfd6b9e0cf3c3b`.
-The CLI was replaced atomically after a private backup. The existing daemon retained its PID/start identity,
-the TUI binary was unchanged, and ordinary configuration/session files were not written. No real model was
-called by these binary/PTY probes. This does not renew the complete package or CI bindings above.
+`tools/dogfood/tui_sessions.py` verifies workspace changes and per-session drafts in a real PTY.
 
 The project config is read under explicit user trust (D-244). Loader regressions and
 `tools/dogfood/project_config.py` cover trusted/untrusted repositories and refusal of project self-authorization.
