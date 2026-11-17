@@ -1146,6 +1146,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("teamagents-mcp-row-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        crate::scratch_owner::record_ownership(&dir);
         let store = crate::mcp_auth::Store::at(&dir.join("mcp-auth.json"));
         let service = |oauth| McpService { name: "sentry".into(), transport: "http".into(), required: true, oauth };
         // nothing stored yet

@@ -1,4 +1,6 @@
 //! D-446: real CLI receipts for history paging, opening and deletion; no model requests.
+#[path = "../../test_scratch_owner.rs"]
+mod scratch_owner;
 use serde_json::{json, Value as Json};
 use std::{path::PathBuf, process::Command};
 use teamagents_engine::v2::{session_browser, sessions::Registry};
@@ -13,6 +15,7 @@ impl Fixture {
             std::env::temp_dir().join(format!("ta-session-ui-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]));
         let root = dir.join("base");
         std::fs::create_dir_all(&root).unwrap();
+        scratch_owner::record_ownership(&dir);
         std::fs::create_dir_all(dir.join("config/teamagents")).unwrap();
         std::fs::write(dir.join("config/teamagents/config.toml"),
             "skills_paths = []\n[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\napi_key_env = \"TA_SESSION_UI_KEY\"\nbase_url = \"http://127.0.0.1:1/v1\"\ncontext_window = 128000\n").unwrap();

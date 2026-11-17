@@ -1,4 +1,6 @@
 //! Interface contracts use isolated child configuration/state and never contact a user session.
+#[path = "../../test_scratch_owner.rs"]
+mod scratch_owner;
 use serde_json::Value;
 use std::{
     path::PathBuf,
@@ -10,6 +12,7 @@ impl Scratch {
     fn new() -> Self {
         let path = std::env::temp_dir().join(format!("ta-interface-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&path).unwrap();
+        scratch_owner::record_ownership(&path);
         Self(path)
     }
     fn run(&self, args: &[&str]) -> Output {

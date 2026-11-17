@@ -53,6 +53,7 @@ fn shell_quote(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
@@ -66,8 +67,7 @@ mod tests {
 
     #[test]
     fn the_editor_can_replace_the_draft_and_a_cancel_preserves_it() {
-        let dir = std::env::temp_dir().join(format!("ta-editor-test-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::scratch_owner::owned_temp_dir("ta-editor-test", &uuid::Uuid::new_v4().to_string());
         let write = script(&dir, "#!/bin/sh\nprintf 'edited text' > \"$1\"\n");
         assert_eq!(edit_text("original", Some(write.to_str().unwrap())).unwrap(), "edited text");
         let cancel = script(&dir, "#!/bin/sh\nexit 1\n");

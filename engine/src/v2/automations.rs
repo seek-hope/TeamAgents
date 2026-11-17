@@ -238,6 +238,7 @@ mod tests {
         fn new(tag: &str) -> Scratch {
             let dir = std::env::temp_dir().join(format!("ta-automations-{tag}-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(&dir).unwrap();
+            crate::scratch_owner::record_ownership(&dir);
             Scratch(dir)
         }
     }

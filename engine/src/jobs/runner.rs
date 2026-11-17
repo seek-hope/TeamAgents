@@ -497,6 +497,7 @@ mod tests {
     fn an_observed_exit_wins_over_a_late_deadline_tick_and_preserves_its_service() {
         let root = std::env::temp_dir().join(format!("teamagents-exit-deadline-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
+        crate::scratch_owner::record_ownership(&root);
         let spec = JobSpec {
             job_id: "exit-before-poll".into(),
             program: "/bin/sh".into(),

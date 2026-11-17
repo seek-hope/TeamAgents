@@ -1,4 +1,6 @@
 //! Cross-directory session selection and restart receipts using an unavailable local model endpoint.
+#[path = "../../test_scratch_owner.rs"]
+mod scratch_owner;
 use serde_json::Value as Json;
 use std::{
     path::{Path, PathBuf},
@@ -22,6 +24,7 @@ impl Fixture {
         for path in [&a, &b, &dir.join("config/teamagents")] {
             std::fs::create_dir_all(path).unwrap();
         }
+        scratch_owner::record_ownership(&dir);
         std::fs::write(dir.join("config/teamagents/config.toml"),
             "skills_paths = []\n[permissions]\ntrust_project = true\n[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\napi_key_env = \"TA_WORKSPACE_KEY\"\nbase_url = \"http://127.0.0.1:1/v1\"\ncontext_window = 128000\n").unwrap();
         let tui = dir.join("tui");

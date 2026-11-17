@@ -614,6 +614,7 @@ mod tests {
         std::fs::create_dir_all(&cwd).unwrap();
         std::env::set_var("XDG_CONFIG_HOME", root.join("config"));
         std::fs::create_dir_all(root.join("config/teamagents")).unwrap();
+        crate::scratch_owner::record_ownership(&root);
         std::fs::write(
             root.join("config/teamagents/config.toml"),
             "[models.m]\nprovider = \"openai\"\nmodel = \"x\"\n\n[hooks]\nnotify = [\"/bin/sh\", \"hook\"]\n\n[retention]\narchived_days = 30\n\n[[checks]]\nid = \"mine\"\ncommand = \"true\"\n",
@@ -662,6 +663,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::env::set_var("XDG_CONFIG_HOME", root.join("config"));
         std::fs::create_dir_all(root.join("config/teamagents")).unwrap();
+        crate::scratch_owner::record_ownership(&root);
         std::fs::write(
             root.join("config/teamagents/config.toml"),
             "[models.m]\nprovider = \"openai\"\nmodel = \"x\"\ncodex_profile = \"deepseek\"\n",
@@ -764,6 +766,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ta-override-equiv-{}", uuid::Uuid::new_v4()));
         let cfg = dir.join("teamagents");
         std::fs::create_dir_all(&cfg).unwrap();
+        crate::scratch_owner::record_ownership(&dir);
         let base = "[models.m]\nprovider = \"compatible\"\nmodel = \"x\"\n";
         let file_with_limits =
             format!("{base}\n[limits]\ntool_output_chars = 8000\ncontext_keep_chars = 64000\ndeadline_minutes = 15\n");
@@ -836,6 +839,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::env::set_var("XDG_CONFIG_HOME", root.join("config"));
         std::fs::create_dir_all(root.join("config/teamagents")).unwrap();
+        crate::scratch_owner::record_ownership(&root);
         let model = "[models.m]\nprovider = \"openai\"\nmodel = \"x\"\n";
         for (label, text) in [
             (
@@ -1010,6 +1014,7 @@ command = "test -s README.md"
         let dir = std::env::temp_dir().join(format!("ta-tools-edit-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        crate::scratch_owner::record_ownership(&dir);
         let path = dir.join("config.toml");
         std::fs::write(&path, "# my own config\n[models.m]\nprovider = \"openai\"\nmodel = \"x\"\n").unwrap();
 
@@ -1669,6 +1674,7 @@ mod project_config_tests {
     fn project_config_merges_with_user_priority_and_trust() {
         let _env = crate::env_lock();
         let root = std::env::temp_dir().join(format!("ta-config-{}", std::process::id()));
+        crate::scratch_owner::record_ownership(&root);
         let _ = std::fs::remove_dir_all(&root);
         let home = root.join("home");
         let project = root.join("proj");
@@ -1730,6 +1736,7 @@ model = "project-loses"
         let root = std::env::temp_dir().join(format!("ta-rules-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
+        crate::scratch_owner::record_ownership(&root);
         std::env::set_var("HOME", &root);
         std::fs::write(root.join("one.md"), "# One\nthe first rule\n").unwrap();
         std::fs::write(root.join("two.md"), "the second rule").unwrap();
@@ -1753,6 +1760,7 @@ model = "project-loses"
     fn the_two_loaders_agree_on_a_user_only_config() {
         let _env = crate::env_lock();
         let root = std::env::temp_dir().join(format!("ta-config-agree-{}", std::process::id()));
+        crate::scratch_owner::record_ownership(&root);
         let _ = std::fs::remove_dir_all(&root);
         let (home, project) = (root.join("home"), root.join("proj"));
         std::fs::create_dir_all(&project).unwrap();
@@ -1807,6 +1815,7 @@ deadline_minutes = 5
     fn an_untrusted_project_contributes_nothing_and_says_so() {
         let _env = crate::env_lock();
         let root = std::env::temp_dir().join(format!("ta-config-untrusted-{}", std::process::id()));
+        crate::scratch_owner::record_ownership(&root);
         let _ = std::fs::remove_dir_all(&root);
         let (home, project) = (root.join("home"), root.join("proj"));
         std::fs::create_dir_all(&project).unwrap();
@@ -1852,6 +1861,7 @@ deadline_minutes = 5
     fn project_trust_is_the_canonical_root_the_user_listed() {
         let _env = crate::env_lock();
         let root = std::env::temp_dir().join(format!("ta-config-trust-{}", std::process::id()));
+        crate::scratch_owner::record_ownership(&root);
         let _ = std::fs::remove_dir_all(&root);
         let (home, repo, other) = (root.join("home"), root.join("repo"), root.join("repo-two"));
         std::fs::create_dir_all(repo.join("pkg/src")).unwrap();
@@ -1916,6 +1926,7 @@ deadline_minutes = 5
     fn no_project_config_anywhere_keeps_the_old_path_and_trusts_nothing() {
         let _env = crate::env_lock();
         let root = std::env::temp_dir().join(format!("ta-config-noproject-{}", std::process::id()));
+        crate::scratch_owner::record_ownership(&root);
         let _ = std::fs::remove_dir_all(&root);
         let (home, nested) = (root.join("home"), root.join("plain/deep/er"));
         std::fs::create_dir_all(&nested).unwrap();
@@ -1932,6 +1943,7 @@ deadline_minutes = 5
     fn a_project_cannot_set_the_mode_or_grant_itself_trust() {
         let _env = crate::env_lock();
         let root = std::env::temp_dir().join(format!("ta-config-selfgrant-{}", std::process::id()));
+        crate::scratch_owner::record_ownership(&root);
         let _ = std::fs::remove_dir_all(&root);
         let (home, project) = (root.join("home"), root.join("proj"));
         std::fs::create_dir_all(&project).unwrap();
@@ -1963,6 +1975,7 @@ deadline_minutes = 5
     fn agents_files_are_discovered_from_the_trusted_boundary_to_the_cwd() {
         let _env = crate::env_lock();
         let root = std::env::temp_dir().join(format!("ta-agents-{}", uuid::Uuid::new_v4()));
+        crate::scratch_owner::record_ownership(&root);
         let _ = std::fs::remove_dir_all(&root);
         let (home, repo) = (root.join("home"), root.join("repo"));
         let sub = repo.join("a/b");
@@ -2014,6 +2027,7 @@ deadline_minutes = 5
     fn agents_discovery_stops_at_the_worktree_boundary() {
         let _env = crate::env_lock();
         let root = std::env::temp_dir().join(format!("ta-agents-wt-{}", uuid::Uuid::new_v4()));
+        crate::scratch_owner::record_ownership(&root);
         let _ = std::fs::remove_dir_all(&root);
         let (home, repo, worktree) = (root.join("home"), root.join("repo"), root.join("wt"));
         std::fs::create_dir_all(worktree.join("sub")).unwrap();

@@ -842,6 +842,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ta-mcp-policy-{}", uuid::Uuid::new_v4()));
         let root = dir.join("member");
         std::fs::create_dir_all(&root).unwrap();
+        crate::scratch_owner::record_ownership(&dir);
         let outside = dir.join("private");
         std::fs::write(&outside, "private").unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();

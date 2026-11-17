@@ -206,6 +206,7 @@ mod tests {
     #[test]
     fn timeout_kills_the_whole_process_group_including_grandchildren() {
         let marker = std::env::temp_dir().join(format!("ta-grandchild-{}", std::process::id()));
+        crate::scratch_owner::record_ownership(&marker);
         let _ = std::fs::remove_file(&marker);
         let code = format!(
             "import subprocess; subprocess.Popen(['python3','-c',\

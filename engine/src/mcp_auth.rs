@@ -956,6 +956,7 @@ mod tests {
     #[test]
     fn resource_validation_and_lock_wait_share_the_credential_deadline() {
         let dir = std::env::temp_dir().join(format!("ta-mcp-auth-scope-{}", uuid::Uuid::new_v4()));
+        crate::scratch_owner::record_ownership(&dir);
         let store = Store::at(&dir.join("mcp-auth.json"));
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -1002,6 +1003,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ta-mcp-auth-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        crate::scratch_owner::record_ownership(&dir);
         let store = Store::at(&dir.join("mcp-auth.json"));
         assert!(store.get("sentry").unwrap().is_none());
         let tokens = Tokens {
@@ -1099,6 +1101,7 @@ mod tests {
     fn credential_writes_refuse_staging_links_and_preserve_concurrent_services() {
         let dir = std::env::temp_dir().join(format!("ta-mcp-auth-lock-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
+        crate::scratch_owner::record_ownership(&dir);
         let store = Arc::new(Store::at(&dir.join("mcp-auth.json")));
         let victim = dir.join("victim");
         std::fs::write(&victim, "keep me").unwrap();
@@ -1134,6 +1137,7 @@ mod tests {
     fn credential_reads_refuse_future_versions_and_oversized_files() {
         let dir = std::env::temp_dir().join(format!("ta-mcp-auth-read-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
+        crate::scratch_owner::record_ownership(&dir);
         let path = dir.join("mcp-auth.json");
         std::fs::write(&path, r#"{"version":2,"services":{}}"#).unwrap();
         let store = Store::at(&path);

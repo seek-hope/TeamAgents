@@ -39,3 +39,8 @@ pub fn env_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
+
+/// Guarded test scratch roots (D-528): a `ta-*` name is a convention, so each root records the gate that made it.
+#[cfg(test)]
+#[path = "../../test_scratch_owner.rs"]
+pub(crate) mod scratch_owner;

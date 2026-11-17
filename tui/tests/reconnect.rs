@@ -5,6 +5,8 @@
 //! socket. Which is also how D-99 was diagnosed: the client did reconnect (a call succeeded and the flag
 //! cleared), but nothing rebuilt the frame, so the status line kept saying "disconnected" until some
 //! unrelated event forced a redraw.
+#[path = "../../test_scratch_owner.rs"]
+mod scratch_owner;
 use serde_json::json;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -61,6 +63,7 @@ fn successful_reconnect_keeps_a_failed_history_refresh_pending() {
 fn the_client_reconnects_after_the_daemon_restarts() {
     let dir = std::env::temp_dir().join(format!("ta-reconnect-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
+    scratch_owner::record_ownership(&dir);
     let socket = dir.join("daemon.sock");
     let (tx, rx) = channel();
     let first = thread::spawn({

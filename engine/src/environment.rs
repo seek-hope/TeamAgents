@@ -260,6 +260,7 @@ mod tests {
     fn config_watch_reports_changes_without_exposing_contents() {
         let root = std::env::temp_dir().join(format!("ta-env-watch-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
+        crate::scratch_owner::record_ownership(&root);
         let path = root.join("config.toml");
         std::fs::write(&path, "secret-before").unwrap();
         let watch = ConfigWatch::paths(vec![path.clone(), crate::config::project_config_path(&root)]);

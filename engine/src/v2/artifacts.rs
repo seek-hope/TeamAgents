@@ -480,6 +480,7 @@ mod tests {
         for online in [false, true] {
             let root = std::env::temp_dir().join(format!("ta-gc-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(&root).unwrap();
+            crate::scratch_owner::record_ownership(&root);
             let path = root.join("output");
             std::fs::create_dir(&path).unwrap(); // remove_file must fail, without relying on Unix permissions.
             let db = root.join("session.sqlite");

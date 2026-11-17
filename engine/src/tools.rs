@@ -2525,6 +2525,7 @@ mod tests {
     #[test]
     fn host_shell_preserves_state_without_loading_old_isolated_exports() {
         let root = std::env::temp_dir().join(format!("ta-host state-{}", uuid::Uuid::new_v4()));
+        crate::scratch_owner::record_ownership(&root);
         let state = root.join("state");
         std::fs::create_dir_all(&state).unwrap();
         std::fs::write(state.join("state.sh"), "export TA_OLD_ISOLATED=must-not-load\n").unwrap();
@@ -2601,6 +2602,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("ta-multiedit-{}", uuid::Uuid::new_v4()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
+        crate::scratch_owner::record_ownership(&root);
         std::fs::write(root.join("f.txt"), "one two three\n").unwrap();
         let executor = workspace_executor(root.clone(), None);
         let out = executor(
@@ -2649,6 +2651,7 @@ mod tests {
             ] {
                 let root = std::env::temp_dir().join(format!("ta-batch-hash-{}", uuid::Uuid::new_v4()));
                 std::fs::create_dir_all(&root).unwrap();
+                crate::scratch_owner::record_ownership(&root);
                 std::fs::write(root.join("a.txt"), "before-a\n").unwrap();
                 std::fs::write(root.join("b.txt"), "before-b\n").unwrap();
                 let executor = workspace_executor(root.clone(), None);
@@ -2672,6 +2675,7 @@ mod tests {
             }
             let root = std::env::temp_dir().join(format!("ta-batch-hash-valid-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(&root).unwrap();
+            crate::scratch_owner::record_ownership(&root);
             std::fs::write(root.join("a.txt"), "before-a\n").unwrap();
             std::fs::write(root.join("b.txt"), "before-b\n").unwrap();
             let executor = workspace_executor(root.clone(), None);
@@ -2706,6 +2710,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let root = std::env::temp_dir().join(format!("ta-batch-rollback-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
+        crate::scratch_owner::record_ownership(&root);
         let mut staged = vec![];
         let mut expected = vec![];
         for (name, original, replacement) in [("a.sh", "alpha", "changed-a"), ("b.txt", "beta", "changed-b")] {
@@ -2740,6 +2745,7 @@ mod tests {
     #[test]
     fn output_capture_spools_bounded_previews_and_reports_storage_errors() {
         let dir = std::env::temp_dir().join(format!("ta-output-{}", uuid::Uuid::new_v4()));
+        crate::scratch_owner::record_ownership(&dir);
         let location = OutputLocation { root: Some(&dir), prefix: ARTIFACTS_PREFIX };
         let mut first = OutputSink::new(location).unwrap();
         let second = OutputSink::new(location).unwrap();
@@ -2771,6 +2777,7 @@ mod tests {
     fn a_lock_directory_that_cannot_be_created_names_the_path() {
         let dir = std::env::temp_dir().join(format!("ta-lockfail-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
+        crate::scratch_owner::record_ownership(&dir);
         let blocked = dir.join("locks");
         std::fs::write(&blocked, "not a directory").unwrap();
         let error = with_path_lock(Some(&blocked), &dir.join("target.txt"), || Ok(())).err().unwrap();
@@ -2786,6 +2793,7 @@ mod tests {
         let locks = dir.join("locks");
         let workspace = dir.join("work");
         std::fs::create_dir_all(&workspace).unwrap();
+        crate::scratch_owner::record_ownership(&dir);
         let target = workspace.join("shared.txt");
         let order: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![]));
 
@@ -2845,6 +2853,7 @@ mod tests {
 
         let dir = std::env::temp_dir().join(format!("ta-image-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
+        crate::scratch_owner::record_ownership(&dir);
         let png = dir.join("ok.png");
         std::fs::write(&png, [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]).unwrap();
         let reference = read_image(std::fs::File::open(&png).unwrap(), "ok.png").unwrap();
@@ -2867,6 +2876,7 @@ mod tests {
     fn view_image_reference_becomes_a_part_for_a_vision_model_and_a_placeholder_otherwise() {
         let dir = std::env::temp_dir().join(format!("ta-image-flow-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
+        crate::scratch_owner::record_ownership(&dir);
         // a minimal 1x1 PNG: magic bytes are what the type check reads
         let png: Vec<u8> = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3];
         std::fs::write(dir.join("shot.png"), &png).unwrap();
@@ -2924,6 +2934,7 @@ mod tests {
     fn the_memory_tool_is_bound_and_recalls_across_sessions() {
         let state = std::env::temp_dir().join(format!("ta-memory-tool-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(state.join("artifacts")).unwrap();
+        crate::scratch_owner::record_ownership(&state);
         let workspace = state.join("ws");
         std::fs::create_dir_all(&workspace).unwrap();
         let scope =
@@ -2963,6 +2974,7 @@ mod tests {
     fn artifacts_are_pruned_to_the_directory_budget() {
         let dir = std::env::temp_dir().join(format!("ta-artifact-prune-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
+        crate::scratch_owner::record_ownership(&dir);
         for index in 0..5 {
             let path = dir.join(format!("exec-{index}.log"));
             std::fs::write(&path, vec![b'x'; 100]).unwrap();
@@ -2986,6 +2998,7 @@ mod tests {
     #[test]
     fn shell_artifact_stops_at_the_size_cap() {
         let dir = std::env::temp_dir().join(format!("ta-artifact-cap-{}", uuid::Uuid::new_v4()));
+        crate::scratch_owner::record_ownership(&dir);
         let mut sink = OutputSink {
             cap: 3 * 1024 * 1024,
             ..OutputSink::new(OutputLocation { root: Some(&dir), prefix: ARTIFACTS_PREFIX }).unwrap()
@@ -3005,6 +3018,7 @@ mod tests {
     fn cancelled_shell_keeps_partial_output_and_its_artifact() {
         let dir = std::env::temp_dir().join(format!("ta-cancel-output-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
+        crate::scratch_owner::record_ownership(&dir);
         let artifacts = dir.join("artifacts");
         let control = Arc::new(TurnControl::default());
         let child_control = control.clone();
@@ -3041,6 +3055,7 @@ mod tests {
     fn fallback_glob_never_follows_directory_links_and_checks_cancellation() {
         let dir = std::env::temp_dir().join(format!("ta-glob-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(dir.join("nested")).unwrap();
+        crate::scratch_owner::record_ownership(&dir);
         std::fs::write(dir.join("nested/file.txt"), "ok").unwrap();
         std::os::unix::fs::symlink("/etc", dir.join("escape")).unwrap();
         let control = TurnControl::default();
@@ -3097,6 +3112,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("ta-skillres-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("demo/scripts")).unwrap();
+        crate::scratch_owner::record_ownership(&root);
         std::fs::write(root.join("demo/SKILL.md"), "---\nname: demo\ndescription: d\n---\nbody").unwrap();
         std::fs::write(root.join("demo/scripts/run.sh"), "echo hi").unwrap();
         std::fs::write(root.join("outside.txt"), "secret").unwrap();
@@ -3128,6 +3144,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("ponytail")).unwrap();
         std::fs::create_dir_all(root.join("scanpy")).unwrap();
+        crate::scratch_owner::record_ownership(&root);
         std::fs::write(
             root.join("ponytail/SKILL.md"),
             "---\nname: ponytail\ndescription: laziest solution that works\n---\nponytail body",
@@ -3181,6 +3198,7 @@ mod tests {
     #[test]
     fn artifact_paths_are_per_member_not_session_shared() {
         let root = std::env::temp_dir().join(format!("ta-artifacts-{}", uuid::Uuid::new_v4()));
+        crate::scratch_owner::record_ownership(&root);
         let leader_art = root.join("instances/i-leader/artifacts");
         let worker_art = root.join("instances/i-worker/artifacts");
         for dir in [&leader_art, &worker_art] {
@@ -3209,6 +3227,7 @@ mod tests {
     fn workspace_paths_stay_inside_root() {
         let root = std::env::temp_dir().join(format!("ta-tools-{}", std::process::id()));
         std::fs::create_dir_all(root.join("sub")).unwrap();
+        crate::scratch_owner::record_ownership(&root);
         std::fs::write(root.join("sub/file.txt"), "hello").unwrap();
         assert!(resolve_in_root(&root, "sub/file.txt").is_ok());
         assert!(resolve_in_root(&root, "../etc/passwd").is_err());
@@ -3559,6 +3578,7 @@ mod tests {
     #[test]
     fn skill_candidates_reject_symlink_escapes() {
         let base = std::env::temp_dir().join(format!("ta-skill-test-{}", std::process::id()));
+        crate::scratch_owner::record_ownership(&base);
         let root = base.join("root");
         let outside = base.join("outside");
         std::fs::create_dir_all(root.join("real")).unwrap();
