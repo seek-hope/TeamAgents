@@ -512,10 +512,22 @@ fn copy_dir(from: &Path, to: &Path) -> Result<(), String> {
 /// role and tool-id fields.
 fn snippet(text: &str, needle: &str, width: usize) -> String {
     let lower = text.to_lowercase();
-    let start = match lower.find(&needle.to_lowercase()) {
-        Some(byte) => text[..byte].char_indices().rev().take(width / 3).last().map(|(index, _)| index).unwrap_or(0),
-        None => 0,
-    };
+    let mut start = 0;
+    if let Some(folded) = lower.find(&needle.to_lowercase()) {
+        // `folded` is an offset in `lower`, never in `text`: folding may change byte length (U+1E9E folds
+        // to U+00DF, three bytes to two) or character count (U+0130 folds to `i` plus U+0307). Slicing
+        // `text` at that offset could land inside a character, so fold character by character and take
+        // the original character the match begins in. A fold that disagrees with the whole-string total
+        // falls back to the head of the text instead of guessing a boundary.
+        let mut folded_end = 0;
+        for (offset, character) in text.char_indices() {
+            folded_end += character.to_lowercase().map(char::len_utf8).sum::<usize>();
+            if folded < folded_end {
+                start = text[..offset].char_indices().rev().take(width / 3).last().map(|(index, _)| index).unwrap_or(0);
+                break;
+            }
+        }
+    }
     let body: String = text[start..].chars().take(width).collect();
     let prefix = if start > 0 { "…" } else { "" };
     let suffix = if text[start..].chars().count() > width { "…" } else { "" };
@@ -907,6 +919,60 @@ mod tests {
         assert!(!restored.archived);
         assert!(scratch.path().join("sessions").join(&entry.id).is_dir());
         assert!(registry.restore(&entry.id).is_err(), "restoring a session that is not archived is refused");
+    }
+
+    /// D-368: a snippet is a window of the *original* message text. Case folding can *shrink* a character
+    /// (`\u{1e9e}` folds to the two-byte `\u{df}`), so a byte offset found in the folded string is not a
+    /// character boundary of the original one. Using it as a slice index aborted the whole session search
+    /// whenever such a character preceded the match.
+    #[test]
+    fn a_snippet_survives_case_folding_that_changes_byte_length() {
+        // `\u{1e9e}` costs three bytes and folds to two, so the folded offset of `needle` lands inside the
+        // following emoji: both of these panicked before the offset was translated to a real boundary.
+        for text in [
+            "\u{1e9e}\u{1f600}needle in the haystack",
+            "\u{1e9e}\u{1e9e}\u{1f600} needle here",
+            "\u{130}\u{1f600}needle in the haystack",
+            "plain ascii before the needle",
+            "\u{391}\u{3a3}\u{1f600}needle with a final sigma",
+        ] {
+            let window = snippet(text, "needle", 160);
+            assert!(window.contains("needle"), "{text:?} -> {window:?}");
+        }
+        // a wide window still elides the head instead of overflowing
+        let long = format!("{}needle at the end", "\u{1e9e} padding ".repeat(40));
+        let window = snippet(&long, "needle", 160);
+        assert!(window.starts_with('\u{2026}'), "{window:?}");
+        // and a needle that is absent has no folded offset to translate at all
+        assert_eq!(snippet("\u{1e9e} nothing here", "absent", 160), "\u{1e9e} nothing here");
+    }
+
+    /// D-368 end to end: session search is the user-facing caller of `snippet`, so a message whose case fold
+    /// shrinks before the match must return a hit instead of aborting the search.
+    #[test]
+    fn search_reports_a_hit_in_text_whose_case_fold_changes_length() {
+        use teamagents_core::v2::{Command, Control, Identity};
+        let scratch = Scratch::new("search-fold");
+        std::fs::create_dir_all(scratch.path()).unwrap();
+        let mut control = Control::open(&scratch.path().join("session.sqlite"), "s-main", true).unwrap();
+        for (id, method, params) in [
+            ("s1", "create_instance", serde_json::json!({"id": "i-leader"})),
+            (
+                "s2",
+                "submit_input",
+                serde_json::json!({"instance_id": "i-leader", "envelope_id": "e1",
+                                   "text": "\u{1e9e}\u{1f600} the needle is here"}),
+            ),
+        ] {
+            control
+                .submit(Command { command_id: id.into(), method: method.into(), params }, Identity::User)
+                .unwrap_or_else(|error| panic!("{method}: {error}"));
+        }
+        drop(control);
+        let (hits, skipped) = search(scratch.path(), "needle", 10).unwrap();
+        assert!(skipped.is_empty(), "{skipped:?}");
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert!(hits[0]["snippet"].as_str().unwrap().contains("needle"), "{hits:?}");
     }
 
     #[test]

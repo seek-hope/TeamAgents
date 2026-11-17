@@ -15,7 +15,7 @@ The last complete package baseline is `d96d7c8a`; delivery CI at `6767b32c` pass
 cover D-526/D-527. The current local formal replay retains its unchanged input-content fingerprint in
 [verification/REPORT.md](../verification/REPORT.md).
 
-- **852 Rust tests**: core 198, engine 533, TUI 121.
+- **854 Rust tests**: core 198, engine 535, TUI 121.
 - **63 positive TLA configurations in 60 traversals**, **323 controls**, **79 witnesses**, **9 Kani harnesses**.
 - Catalogue: **387 configurations across 47 modules**, including an incomplete wide configuration.
 - Current D-527 acceptance covers 23 isolated CLI invocations and seven PTY key/editor checks before and after

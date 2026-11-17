@@ -230,7 +230,7 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
   credentials, active jobs or external backups as repository housekeeping.
 - Source counts come from Cargo lists. Every registered current total/triple must match; missing/ambiguous
   statements fail. Numeric regeneration does not establish a passing gate, install or formal result.
-- Current source contains 852 Rust tests: core 198, engine 533 and TUI 121.
+- Current source contains 854 Rust tests: core 198, engine 535 and TUI 121.
 - Formal material has 387 configurations across 47 modules: 63 positive configurations in 60 traversals,
   323 controls and one separate wide configuration; 79 witnesses and 9 Kani harnesses. Shared traversals require
   identical model/specification/domain. Witnesses establish reachability, not safety. The report binds verified
