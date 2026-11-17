@@ -1459,6 +1459,7 @@ mod tests {
         for (version, maintenance, accepted) in [(1, true, true), (2, true, true), (3, true, false), (1, false, false)]
         {
             let dir = std::env::temp_dir().join(format!("ta-maint-{}", uuid::Uuid::new_v4()));
+            crate::scratch_owner::record_ownership(&dir);
             std::fs::create_dir(&dir).unwrap();
             let socket = dir.join("daemon.sock");
             let listener = UnixListener::bind(&socket).unwrap();
@@ -1797,6 +1798,7 @@ mod tests {
         let workspace = std::env::temp_dir().join(format!("ta-check-host-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&workspace);
         std::fs::create_dir_all(&workspace).unwrap();
+        crate::scratch_owner::record_ownership(&workspace);
         let checks = run_checks(&["touch host-check".to_string()], &workspace, 60);
         assert_eq!(checks.len(), 1, "{checks:?}");
         assert_eq!(checks[0]["ok"], Json::from(true), "{checks:?}");

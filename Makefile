@@ -75,9 +75,14 @@ lint:
 # (D-226) and a scratch directory (D-131) — are checked
 # by `tools/leak_guard.py` around the run: it names and stops whatever appeared, instead of reporting a count
 # that leaves the reader guessing and a process that poisons the next run's baseline (D-147).
+# Only a process that inherited *this* gate's marker is this gate's leak: the same user running the same suites
+# under the same TMPDIR creates the same names, so a bare difference would make a concurrent session's live work a
+# target (D-528). The value is fresh per invocation, so two gates of the same tree never share one, and it is
+# exported (not `?=`) so an inherited value cannot make one gate claim another's processes.
 # Display-process tests must execute a helper built from this source, including clean checkouts.
 test: build
 	@set -eu; guard=$$(mktemp); trap 'rm -f "$$guard"' EXIT HUP INT TERM; \
+		export TEAMAGENTS_LEAK_GUARD_RUN=$$(python3 -c 'import uuid; print(uuid.uuid4())'); \
 		python3 tools/leak_guard.py snapshot "$$guard"; \
 		status=0; for crate in $(CRATES); do \
 			cargo test $(CARGO_FLAGS) --manifest-path $$crate/Cargo.toml || { status=$$?; break; }; \
@@ -90,6 +95,7 @@ test: build
 # Cross-ABI regression coverage; this does not install or claim native ARM platform support.
 test-aarch64:
 	@set -eu; guard=$$(mktemp); trap 'rm -f "$$guard"' EXIT HUP INT TERM; \
+		export TEAMAGENTS_LEAK_GUARD_RUN=$$(python3 -c 'import uuid; print(uuid.uuid4())'); \
 		python3 tools/leak_guard.py snapshot "$$guard"; \
 		status=0; CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc \
 		CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \

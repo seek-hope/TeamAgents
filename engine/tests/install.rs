@@ -1,4 +1,7 @@
 //! Offline release bootstrap tests; no credentials or real installation paths.
+#[path = "../../test_scratch_owner.rs"]
+mod scratch_owner;
+
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::os::unix::fs::{symlink, PermissionsExt};
@@ -22,6 +25,7 @@ impl Fixture {
         for dir in ["release", "tools", "bin with spaces ' quote", "config/teamagents"] {
             fs::create_dir_all(root.join(dir)).unwrap();
         }
+        scratch_owner::record_ownership(&root);
         let fixture = Self { root };
         fixture.pack(true, true);
         fixture

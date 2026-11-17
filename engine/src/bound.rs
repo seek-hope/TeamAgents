@@ -414,6 +414,7 @@ mod tests {
     fn a_declared_mcp_service_is_bound_without_naming_it_in_the_bindings() {
         let root = std::env::temp_dir().join(format!("ta-mcp-declared-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
+        crate::scratch_owner::record_ownership(&root);
         let script = r#"
 import json, os, sys
 open(os.path.join(os.path.dirname(__file__) if False else '.', 'started'), 'w').write('1')
@@ -455,6 +456,7 @@ for line in sys.stdin:
     fn resource_only_and_paged_services_keep_their_declared_contract() {
         let root = std::env::temp_dir().join(format!("ta-mcp-contract-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
+        crate::scratch_owner::record_ownership(&root);
         let script = r#"
 import json, os, sys, time
 mode=sys.argv[1]
@@ -532,6 +534,7 @@ for line in sys.stdin:
     fn filtered_and_failed_services_reap_started_processes() {
         let root = std::env::temp_dir().join(format!("ta-mcp-cleanup-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
+        crate::scratch_owner::record_ownership(&root);
         let script = r#"
 import json, os, sys
 with open('pid', 'w') as f: f.write(str(os.getpid()))

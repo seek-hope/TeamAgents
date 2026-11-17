@@ -27,10 +27,13 @@ and D-140 is the case where it was gone by the time anyone looked.
 """
 import argparse
 import contextlib
+import ctypes
 import io
 import json
 import os
 import pathlib
+import platform
+import re
 import shutil
 import signal
 import subprocess
@@ -62,6 +65,13 @@ SCRATCH_PREFIXES = ("ta-", "teamagents-v2-", "teamagents-jobs-", "teamagents-reb
 # without the marker is spared but also unattributable. When no marker is set at all (a hand-run `audit`, older
 # tooling) the rule keeps its previous machine-wide meaning rather than silently disabling itself.
 RUN_MARKER = "TEAMAGENTS_LEAK_GUARD_RUN"
+
+# A process carries its gate in its environment; a directory cannot, and a prefix is not ownership either. The
+# shared test helper (`test_scratch_owner.rs`) appends each root it creates to `$TMPDIR/.ta-leak-owner-<marker>`, and
+# this audit reads that registry to tell this gate's leftover from a peer's. A directory no registry names is
+# **unattributed**: reported and kept, never called this run's leftover and never called a stranger's — no record
+# does not prove a foreign owner, only that ownership was not established (D-528).
+REGISTRY_PREFIX = ".ta-leak-owner-"
 
 # The daemon refuses to start without the model profile's API key environment variable, and this check needs a
 # daemon that really runs. The value is never used: no model is called, and the key is read only when one is.
@@ -189,9 +199,201 @@ def observe(root: pathlib.Path | None = None) -> dict:
     leaves one behind without any daemon to point at it — measured: `runner_crash_mid_job_is_outcome_unknown`
     left a live runner behind on every run until D-226 gave the suites a scratch root that stops them.
     """
-    return {"daemons": [[pid, args] for pid, args in daemon_pids(root)],
-            "runners": [[pid, args] for pid, args in runner_pids(root)],
+    # The start identity travels with the pid: a baseline of bare pid numbers would hide a new process that reused
+    # an earlier peer's number, and `audit` needs the identity anyway to bind a signal to the process it selected.
+    return {"daemons": [[pid, start_identity(pid), args] for pid, args in daemon_pids(root)],
+            "runners": [[pid, start_identity(pid), args] for pid, args in runner_pids(root)],
             "strays": sorted(strays(root))}
+
+
+# The kernel's `pidfd_open(2)` / `pidfd_send_signal(2)` numbers, needed only when libc does not export the
+# wrappers. They are never used silently on an unlisted architecture: the mapping below is the whole allowlist, and
+# anything else is reported `unavailable` instead of calling a number that means something else there.
+PIDFD_SYSCALLS = {"x86_64": (434, 424), "aarch64": (434, 424)}
+
+# The four answers a handle can give, and only one of them may ever be read as "this process is gone". Treating
+# ENOSYS/EPERM/EMFILE as ESRCH would turn "we could not look" into "it is already stopped" — a false stop receipt,
+# which is the one thing this module must never produce (D-528).
+PIDFD_OK = "ok"
+PIDFD_GONE = "gone"                # ESRCH: the kernel says that pid does not exist
+PIDFD_REFUSED = "refused"          # the pid exists but is not the process we decided about
+PIDFD_UNAVAILABLE = "unavailable"  # we cannot obtain or use an identity-bound handle at all
+
+# errno values that mean "the pid is gone" versus "we could not ask". Anything unlisted is `unavailable`, the
+# conservative side.
+GONE_ERRNOS = (3,)                      # ESRCH; every other failure is "unavailable", never "gone"
+
+
+_LIBC = None      # the process's own libc handle, loaded at most once
+
+
+def _libc():
+    """This process's `libc` handle, or `None` when it cannot be loaded at all."""
+    global _LIBC
+    if _LIBC is None:
+        try:
+            _LIBC = ctypes.CDLL(None, use_errno=True)
+        except OSError:
+            _LIBC = False
+    return _LIBC or None
+
+
+# The per-direction entry points, in preference order: the interpreter's own API, then libc's symbol, then an
+# allowlisted syscall number. Each direction is resolved on its own: having `pidfd_open` says nothing about
+# `pidfd_send_signal`, and calling the second because the first exists was a real bug shape here.
+PIDFD_API = {0: "pidfd_open", 1: "pidfd_send_signal"}
+
+
+def _pidfd_number(direction: int):
+    """`(kind, value)` for opening (0) or sending (1), each checked on its own."""
+    name = PIDFD_API[direction]
+    native = getattr(os, name, None)
+    if native is not None:
+        return ("native", native)
+    libc = _libc()
+    if libc is not None and getattr(libc, name, None) is not None:
+        return ("libc", libc)
+    mapping = PIDFD_SYSCALLS.get(platform.machine())
+    if libc is not None and mapping:
+        return ("syscall", (libc, mapping[direction]))
+    return ("none", None)
+
+
+def _pidfd_open(pid: int):
+    """`(fd, state)`: an identity-bound handle on `pid`, or the reason there is none.
+
+    A pidfd is the kernel's own reference to *one* process: once open it cannot be redirected to another, so the
+    pid-number reuse window between "we decided this process is ours" and "we signal it" is closed. Opening is
+    reported apart from existence — `PIDFD_GONE` only for ESRCH, `PIDFD_UNAVAILABLE` for every inability to ask
+    (missing symbol, unlisted architecture, EPERM, EMFILE, ENOSYS …), so a failure to obtain a handle can never be
+    read as evidence that a process stopped.
+    """
+    kind, handle = _pidfd_number(0)
+    if kind == "native":
+        try:
+            fd = handle(int(pid))
+        except OSError as error:
+            return None, (PIDFD_GONE if error.errno in GONE_ERRNOS else PIDFD_UNAVAILABLE)
+    elif kind == "libc":
+        fd = handle.pidfd_open(int(pid), 0)
+    elif kind == "syscall":
+        libc, number = handle
+        fd = libc.syscall(number, int(pid), 0)
+    else:
+        return None, PIDFD_UNAVAILABLE
+    if fd >= 0:
+        return fd, PIDFD_OK
+    errno_value = ctypes.get_errno()
+    return None, (PIDFD_GONE if errno_value in GONE_ERRNOS else PIDFD_UNAVAILABLE)
+
+
+def _pidfd_signal(fd: int, sig: int) -> str:
+    """Send `sig` through a pidfd: `PIDFD_OK`, `PIDFD_GONE`, or `PIDFD_UNAVAILABLE`."""
+    kind, handle = _pidfd_number(1)
+    if kind == "native":
+        try:
+            handle(int(fd), int(sig))
+        except OSError as error:
+            return PIDFD_GONE if error.errno in GONE_ERRNOS else PIDFD_UNAVAILABLE
+        return PIDFD_OK
+    elif kind == "libc":
+        sent = handle.pidfd_send_signal(int(fd), int(sig), None, 0)
+    elif kind == "syscall":
+        libc, number = handle
+        sent = libc.syscall(number, int(fd), int(sig), None, 0)
+    else:
+        return PIDFD_UNAVAILABLE
+    if sent == 0:
+        return PIDFD_OK
+    return PIDFD_GONE if ctypes.get_errno() in GONE_ERRNOS else PIDFD_UNAVAILABLE
+
+
+def _pidfd_exited(fd: int) -> bool:
+    """Has the process behind this pidfd exited? A pidfd becomes readable exactly when it does."""
+    import select
+    try:
+        return bool(select.select([fd], [], [], 0)[0])
+    except OSError:
+        return False   # cannot tell: never report "exited" from a failed probe
+
+
+def _close(fd: int) -> None:
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+
+
+def _serves(args: str, root: str) -> bool:
+    """Does this command line *name* `root` as the directory it serves? Whole-argument equality, not a substring.
+
+    A substring test would let `/a/ta-x` match `/a/ta-x2`, so a process serving a sibling directory could be taken
+    for one serving ours — the same reason `state_root_of` parses the argument instead of searching the text.
+    """
+    parts = args.split()
+    if parts[1:2] == ["jobs-runner"]:
+        return len(parts) > 2 and parts[2] == root
+    for index, part in enumerate(parts):
+        if part == "--state-root" and index + 1 < len(parts):
+            return parts[index + 1] == root
+        if part.startswith("--state-root="):
+            return part.split("=", 1)[1] == root
+    return False
+
+
+def start_identity(pid: int):
+    """`/proc/<pid>/stat` field 22 — the kernel's start time for that pid — or `None` when unreadable.
+
+    This is the same anchor the product uses (`jobs::start_ticks`): a pid number alone never identifies a process,
+    but a pid number *plus* its start time pins one. A reused number almost always has a different start time, so
+    re-reading it around `acquire` rejects a stranger even on the unmarked legacy path.
+    """
+    try:
+        stat = pathlib.Path(f"/proc/{pid}/stat").read_text(errors="replace")
+    except OSError:
+        return None
+    # the comm field may contain spaces and parentheses: split after the last ')'
+    fields = stat[stat.rfind(")") + 2:].split()
+    try:
+        return int(fields[19])   # field 22 overall; 20th of the post-comm fields
+    except (IndexError, ValueError):
+        return None
+
+
+def acquire(pid: int, finder=daemon_pids, marker: str = "", expected_identity=None, served: str = ""):
+    """`(pidfd, state)` for `pid`, but only while it is *still the process we decided about*.
+
+    The decision and the signal are different moments, and a pid number is reused freely in between. The handle is
+    opened first, then entitlement is re-checked on the process the handle actually names:
+
+    * with a run marker: its own environment must still carry `RUN_MARKER=marker`;
+    * without one (a hand-run audit, an older probe): `finder` must still list it **and**, when the caller saved
+      one, its start identity must be unchanged — a family name alone does not identify a process;
+    * when `served` is given, its command line must still name that same root.
+
+    Anything else is `PIDFD_REFUSED`, and **no signal is ever sent by pid number**: there is no bare-pid fallback,
+    so a reused number cannot be reached from this module at all.
+    """
+    if expected_identity is not None and start_identity(pid) != expected_identity:
+        return None, PIDFD_REFUSED
+    fd, state = _pidfd_open(pid)
+    if state != PIDFD_OK:
+        return None, state
+    if marker:
+        entitled = carries_marker(pid, marker)
+    else:
+        # No marker: the only evidence is the caller's own selection. A same-family replacement is not ours, so the
+        # saved identity is required to still match. A caller that saved none gets the family check alone, which is
+        # exactly the weaker claim it made.
+        entitled = (not finder or any(p == pid for p, _a in finder()))
+    if entitled and expected_identity is not None:
+        entitled = start_identity(pid) == expected_identity   # re-read around the open, both paths
+    if entitled and served:
+        entitled = any(p == pid and _serves(a, served) for p, a in finder()) if finder else True
+    if not entitled:
+        _close(fd)
+        return None, PIDFD_REFUSED
+    return fd, PIDFD_OK
 
 
 def _alive(pids: list[int], finder=daemon_pids) -> list[int]:
@@ -200,58 +402,103 @@ def _alive(pids: list[int], finder=daemon_pids) -> list[int]:
     return [pid for pid in pids if pid in known]
 
 
-def stop(pids: list[int], finder=daemon_pids, grace: float = 5.0, kill_grace: float = 10.0) -> list[int]:
-    """Stop these processes by pid: SIGTERM, then SIGKILL for what is left; return the survivors.
+def stop(pids: list[int], finder=daemon_pids, grace: float = 5.0, kill_grace: float = 10.0,
+         marker: str = "", identities: dict | None = None, report: list | None = None) -> list[int]:
+    """Stop these processes: SIGTERM through an identity-bound handle, then SIGKILL for what is left.
 
-    Signals go to a pid, never to a pattern: `pgrep`/`pkill -f` match any command line that *contains* the
+    Signals go to a process, never to a pattern: `pgrep`/`pkill -f` match any command line that *contains* the
     string, so `daemon --state-root <root>` also matched the shells whose text mentioned it and killed two of
     this session's own shells (D-144). The kill is escalated because a daemon that ignores TERM outlives its
     caller: `crash.py`'s daemon was still listed ~20 s after its probe exited (measured 2026-09-26, D-141).
+
+    **Identity is the pidfd, not the pid number** (D-528). The handle is opened while the pid is still the one we
+    decided about — start identity, ownership marker and served root are re-checked *around* that open
+    ([`acquire`]) — and TERM and the escalated KILL both go through that same handle. `os.kill` is never called
+    with a bare pid here, so a number reused after we decided cannot be reached.
+
+    Returns every pid that is **not proven stopped**: still alive through its handle, refused because it was no
+    longer the process we decided about, or unknown because no handle could be obtained. An inability to look
+    (ENOSYS, EPERM, EMFILE, an unlisted architecture) is reported as unknown, never as "gone": a false stop receipt
+    is the one outcome this module must not produce.
     """
+    handles: dict[int, int] = {}
+    unresolved: list[int] = []
+    wanted = identities or {}
+    outcomes: dict[int, dict] = {}
     for pid in pids:
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except ProcessLookupError:
+        fd, state = acquire(pid, finder, marker, expected_identity=wanted.get(pid))
+        if state == PIDFD_GONE:
+            outcomes[pid] = {"state": PIDFD_GONE}
+            continue                      # ESRCH: the kernel says that pid no longer exists
+        if fd is None:                    # refused, or unavailable: not proven stopped
+            unresolved.append(pid)
+            outcomes[pid] = {"state": state}
             continue
-        except PermissionError:
-            # Another user's process: this guard is not entitled to stop it, and a guard that crashes on a
-            # machine it shares is worse than one that reports. Measured 2026-10-02: a concurrent benchmark
-            # made `make check` exit 2 here instead of reporting a result (D-384).
-            continue
+        handles[pid] = fd
+        term = _pidfd_signal(fd, signal.SIGTERM)
+        outcomes[pid] = {"state": PIDFD_OK, "term": term}
+        if term == PIDFD_UNAVAILABLE:
+            unresolved.append(pid)
+
+    def pending() -> bool:
+        return any(not _pidfd_exited(fd) for fd in handles.values())
+
     deadline = time.time() + grace
-    while time.time() < deadline and _alive(pids, finder):
+    while time.time() < deadline and pending():
         time.sleep(0.25)
-    for pid in _alive(pids, finder):
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        except PermissionError:
-            pass
+    for pid, fd in handles.items():
+        if not _pidfd_exited(fd):
+            outcomes[pid]["kill"] = _pidfd_signal(fd, signal.SIGKILL)   # same handle: identity cannot change
     deadline = time.time() + kill_grace
-    while time.time() < deadline and _alive(pids, finder):
+    while time.time() < deadline and pending():
         time.sleep(0.25)
-    return _alive(pids, finder)
+    survivors = []
+    for pid, fd in handles.items():
+        exited = _pidfd_exited(fd)
+        outcomes[pid]["exited"] = exited
+        if not exited:
+            survivors.append(pid)
+    for fd in handles.values():
+        _close(fd)
+    if report is not None:
+        report.extend({"pid": pid, **outcomes.get(pid, {})} for pid in pids)
+    return survivors + unresolved
 
 
-def kill(pids: list[int], finder=daemon_pids, grace: float = 10.0) -> list[int]:
-    """SIGKILL these processes and return the survivors: for a probe that deliberately *crashes* one.
+def kill(pids: list[int], finder=daemon_pids, grace: float = 10.0, marker: str = "",
+         identities: dict | None = None) -> list[int]:
+    """SIGKILL these processes and return those not proven stopped: for a probe that deliberately *crashes* one.
 
     Not the same thing as `stop`: since D-150 the daemon handles SIGTERM and shuts itself down gracefully, so a
-    probe that measures what a *crash* leaves behind (`crash.py`, `unknown_outcome.py`) must send the signal
-    that has no handler. Signals still go to a pid, never to a pattern (D-144).
+    probe that measures what a *crash* leaves behind (`crash.py`, `unknown_outcome.py`) must send the signal that
+    has no handler. Signals still go through an identity-bound handle, never to a pattern or a bare number
+    (D-144, D-528), so a reused pid number cannot be hit here either, and an unopenable handle is `unresolved`
+    rather than a crash this probe can claim to have produced.
     """
+    handles: dict[int, int] = {}
+    unresolved: list[int] = []
+    wanted = identities or {}
     for pid in pids:
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except ProcessLookupError:
+        fd, state = acquire(pid, finder, marker, expected_identity=wanted.get(pid))
+        if state == PIDFD_GONE:
             continue
-        except PermissionError:
-            continue  # another user's process; see `stop`
+        if fd is None:
+            unresolved.append(pid)
+            continue
+        handles[pid] = fd
+        if _pidfd_signal(fd, signal.SIGKILL) == PIDFD_UNAVAILABLE:
+            unresolved.append(pid)
+
+    def pending() -> bool:
+        return any(not _pidfd_exited(fd) for fd in handles.values())
+
     deadline = time.time() + grace
-    while time.time() < deadline and _alive(pids, finder):
+    while time.time() < deadline and pending():
         time.sleep(0.25)
-    return _alive(pids, finder)
+    survivors = [pid for pid, fd in handles.items() if not _pidfd_exited(fd)]
+    for fd in handles.values():
+        _close(fd)
+    return survivors + unresolved
 
 
 def kill_daemons(root: pathlib.Path) -> list[int]:
@@ -292,6 +539,62 @@ def _served_path(args: str) -> str:
     return state_root_of(args) if parts[1:2] == ["daemon"] else ""
 
 
+def registry_roots(marker: str) -> set[str]:
+    """The scratch roots a gate recorded in its own registry: `$TMPDIR/.ta-leak-owner-<marker>`.
+
+    The registry is a plain file in the gate's `TMPDIR`, deliberately *not* inside the roots it names: a test's
+    scratch root is functional fixture state (an artifact directory the product scans, a database directory it
+    budgets, a directory a test makes read-only), and an extra file inside it changed 20 fixtures — measured while
+    replacing the in-root record with this one. A plain file is also invisible to the stray rule, which counts
+    directories only (D-143).
+    """
+    if not marker:
+        return set()
+    base = pathlib.Path(os.environ.get("TMPDIR", "/tmp"))
+    try:
+        text = (base / f"{REGISTRY_PREFIX}{marker}").read_text(errors="replace")
+    except OSError:
+        return set()
+    return {line.strip() for line in text.splitlines() if line.strip()}
+
+
+def registered_elsewhere(stray: str, marker: str) -> bool:
+    """Is `stray` in some *other* gate's registry? Then it is positively another run's root, not ours."""
+    base = pathlib.Path(os.environ.get("TMPDIR", "/tmp"))
+    for path in base.glob(f"{REGISTRY_PREFIX}*"):
+        if path.name == f"{REGISTRY_PREFIX}{marker}":
+            continue
+        try:
+            if stray in {line.strip() for line in path.read_text(errors="replace").splitlines()}:
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def served_by_marked(stray: str, daemons: list, runners: list, marker: str) -> bool:
+    """Is a process that carries this run's marker serving `stray`? Then the directory is this run's, whoever wrote
+    it: a suite that crashed between `mkdir` and its owner record still leaves the daemon we can interrogate."""
+    if not marker:
+        return False
+    for pid, _identity, args in _rows(list(daemons) + list(runners)):
+        served = _served_path(args)
+        if served and (served == stray or served.startswith(stray.rstrip("/") + "/")) and carries_marker(pid, marker):
+            return True
+    return False
+
+
+def _rows(entries: list) -> list[tuple[int, int | None, str]]:
+    """Normalise a snapshot/observation row to `(pid, identity, args)`, accepting the older two-field shape."""
+    out = []
+    for row in entries:
+        if len(row) == 3:
+            out.append((row[0], row[1], row[2]))
+        elif len(row) == 2:
+            out.append((row[0], None, row[1]))
+    return out
+
+
 def in_use(stray: str, daemons: list, runners: list) -> bool:
     """Is this scratch-looking directory being *used* by a live process right now?
 
@@ -301,7 +604,7 @@ def in_use(stray: str, daemons: list, runners: list) -> bool:
     cannot say whose it is — but "in use" can, without pretending to know the owner. It also keeps this audit from
     reporting a peer's *live* directory as our leak, while still reporting a directory whose processes are gone.
     """
-    for _pid, args in list(daemons) + list(runners):
+    for _pid, _identity, args in _rows(list(daemons) + list(runners)):
         served = _served_path(args)
         if served and (served == stray or served.startswith(stray.rstrip("/") + "/")):
             return True
@@ -347,78 +650,209 @@ def audit(path: pathlib.Path, root: pathlib.Path | None = None, out=sys.stdout) 
     before = json.loads(pathlib.Path(path).read_text())
     now = observe(root)
     marker = run_marker()
-    known_daemons = {pid for pid, _args in before["daemons"]}
-    known_runners = {pid for pid, _args in before.get("runners", [])}
-    new_daemons = [(pid, args) for pid, args in now["daemons"] if pid not in known_daemons]
-    new_runners = [(pid, args) for pid, args in now["runners"] if pid not in known_runners]
+
+    # A baseline of bare pid numbers hides a *new* process that reused an earlier peer's number, so a process counts
+    # as known only when both its pid and the start identity recorded with it still match.
+    def known(entry, baseline) -> bool:
+        pid, identity, _args = entry
+        for row in _rows(baseline):
+            if row[0] == pid and (identity is None or row[1] is None or row[1] == identity):
+                return True
+        return False
+
+    new_daemons = [e for e in _rows(now["daemons"]) if not known(e, before["daemons"])]
+    new_runners = [e for e in _rows(now["runners"]) if not known(e, before.get("runners", []))]
 
     def split(entries):
-        """`(owned, foreign, unattributed)` for new processes, by inherited environment rather than by name."""
+        """`(owned, foreign, unattributed)` for new processes — by inherited environment, never by name.
+
+        Absence of the marker is *not* evidence of a foreign owner: a cleared environment (`env -i`), an unreadable
+        `/proc`, and an older build with no marker all look alike from here, so they are `unattributed`. `foreign`
+        means positively a different run's marker.
+        """
         owned, foreign, unattributed = [], [], []
-        for pid, args in entries:
+        for pid, identity, args in entries:
             if not marker:
-                owned.append((pid, args))          # no marker set: the caller keeps the machine-wide rule
+                owned.append((pid, identity, args))   # no marker set: the caller keeps the machine-wide rule
                 continue
             try:
                 raw = pathlib.Path(f"/proc/{pid}/environ").read_bytes()
             except OSError:
-                unattributed.append((pid, args))
+                unattributed.append((pid, identity, args))
                 continue
-            (owned if f"{RUN_MARKER}={marker}".encode() in raw.split(b"\0") else foreign).append((pid, args))
+            if f"{RUN_MARKER}={marker}".encode() in raw.split(b"\0"):
+                owned.append((pid, identity, args))
+            elif any(field.startswith(f"{RUN_MARKER}=".encode()) for field in raw.split(b"\0")):
+                foreign.append((pid, identity, args))
+            else:
+                unattributed.append((pid, identity, args))   # alive, readable, and simply not marked
         return owned, foreign, unattributed
 
     leaked, foreign_daemons, unattributed_daemons = split(new_daemons)
     leaked_runners, foreign_runners, unattributed_runners = split(new_runners)
+
     new_strays = sorted(set(now["strays"]) - set(before["strays"]))
-    held = [stray for stray in new_strays if in_use(stray, now["daemons"], now["runners"])]
-    new_strays = [stray for stray in new_strays if stray not in held]
-    for pid, args in foreign_daemons + foreign_runners:
-        kind = "command runner" if (pid, args) in foreign_runners else "daemon"
+    # A directory carries no environment, so ownership comes from its owner record (written by the shared test
+    # helper) or from a marked process of this run serving it. Only `leaked` fails this run:
+    #   leaked      - the record names this run, or (with no marker set) the old strict rule applies
+    #   held        - a live process of this run is serving it: a directory in use was not left behind
+    #   unattributed - no record, or another run's, and unserved: reported and kept, ownership not established
+    leaked_strays, held, unattributed_strays = [], [], []
+    recorded = registry_roots(marker)
+    for stray in new_strays:
+        if marker and stray in recorded:
+            leaked_strays.append(stray)
+        elif in_use(stray, now["daemons"], now["runners"]):
+            held.append(stray)
+        elif marker and served_by_marked(stray, now["daemons"], now["runners"], marker):
+            held.append(stray)
+        elif not marker:
+            # No marker: no record can be checked, so this audit keeps its previous strict meaning rather than
+            # silently disabling directory detection for every existing caller.
+            leaked_strays.append(stray)
+        else:
+            unattributed_strays.append(stray)
+
+    for pid, _identity, args in foreign_daemons + foreign_runners:
+        kind = "command runner" if any(r[0] == pid for r in foreign_runners) else "daemon"
         print(f"another run's {kind} pid {pid} appeared during this run (serving "
-              f"{_served_path(args) or 'an unnamed directory'}): kept, not signalled - it does not carry this run's marker, so it is a "
-              f"concurrent session's work ({RUN_MARKER} is unset or different)", file=out)
-    for pid, args in unattributed_daemons + unattributed_runners:
-        print(f"unattributed process pid {pid} appeared during this run and its environment could not be read: "
-              f"kept, not signalled - ownership is unknown, which is not evidence that this run leaked it",
-              file=out)
+              f"{_served_path(args) or 'an unnamed directory'}): kept, not signalled - it carries a different "
+              f"{RUN_MARKER}, so it is a concurrent session's work", file=out)
+    for pid, _identity, args in unattributed_daemons + unattributed_runners:
+        print(f"process pid {pid} appeared during this run and its ownership was not established (no {RUN_MARKER} "
+              f"of this run, or its environment could not be read): kept, not signalled - this is not evidence "
+              f"that this run leaked it", file=out)
     for stray in held:
         print(f"scratch directory {stray} appeared during this run and a live process is serving it: kept, not "
               f"counted as this run's leftover - a directory in use has not been left behind", file=out)
-    if not leaked and not leaked_runners and not new_strays:
-        kept_processes = len(foreign_daemons) + len(foreign_runners) + len(unattributed_daemons) \
-            + len(unattributed_runners)
-        if kept_processes or held:
-            # "clean" here is this run's verdict, not a claim that nothing else is live: the peer processes and the
-            # in-use directories above are somebody's work, and calling that machine idle would be a second bug
+    for stray in unattributed_strays:
+        detail = ("another gate's registry names it" if registered_elsewhere(stray, marker)
+                  else "no gate registry names it")
+        print(f"scratch directory {stray} appeared during this run and ownership was not established: {detail}; "
+              f"kept and not called this run's leftover - a prefix is a convention, not ownership", file=out)
+
+    # Counts are stated for the window this audit actually saw: `now` is the current machine, not the baseline.
+    kept_processes = (len(foreign_daemons) + len(foreign_runners) + len(unattributed_daemons)
+                      + len(unattributed_runners))
+    baseline = (f"{len(_rows(before['daemons']))} daemon(s) and {len(_rows(before.get('runners', [])))} runner(s) "
+                f"in the baseline")
+    if not leaked and not leaked_runners and not leaked_strays:
+        if kept_processes or held or unattributed_strays:
             print(f"no leak from this run: {len(now['daemons'])} daemon(s), {len(now['runners'])} runner(s) and "
-                  f"{len(now['strays'])} scratch directory(ies) were present before the run; "
-                  f"{kept_processes} process(es) of another or unknown run and {len(held)} in-use directory(ies) "
-                  f"were reported above and left running (marker {marker or 'unset: machine-wide rule'})", file=out)
+                  f"{len(now['strays'])} scratch directory(ies) are on the machine now against {baseline}; "
+                  f"{kept_processes} process(es) of other or unestablished ownership, {len(held)} in-use "
+                  f"directory(ies) and {len(unattributed_strays)} directory(ies) of unestablished ownership were "
+                  f"reported above and left alone (marker {marker or 'unset: machine-wide rule'})", file=out)
         else:
             print(f"no leak: {len(now['daemons'])} daemon(s), {len(now['runners'])} runner(s) and "
-                  f"{len(now['strays'])} scratch directory(ies) present before the run are still all there is "
-                  f"(marker {marker or 'unset: machine-wide rule'})", file=out)
+                  f"{len(now['strays'])} scratch directory(ies) are on the machine now against {baseline}, with "
+                  f"nothing new (marker {marker or 'unset: machine-wide rule'})", file=out)
         return 0
-    survivors = stop([pid for pid, _args in leaked]) if leaked else []
-    for pid, args in leaked:
-        fate = "survived SIGTERM and SIGKILL" if pid in survivors else "gone"
-        print(f"leaked daemon pid {pid} (state root {state_root_of(args)}): sent SIGTERM, then SIGKILL — {fate}\n"
-              f"  started as: {args[:160]}", file=out)
-    runner_survivors = stop([pid for pid, _args in leaked_runners], finder=runner_pids) if leaked_runners else []
-    for pid, args in leaked_runners:
-        fate = "survived SIGTERM and SIGKILL" if pid in runner_survivors else "gone"
-        print(f"leaked command runner pid {pid}: sent SIGTERM, then SIGKILL — {fate}\n"
-              f"  started as: {args[:160]}", file=out)
-    for stray in new_strays:
+
+    def outcomes(entries, finder=daemon_pids) -> str:
+        """Stop `entries` and describe what was *attempted* and *observed*, per the handles' own answers."""
+        report: list = []
+        result = stop([pid for pid, _i, _a in entries], finder=finder, marker=marker,
+                      identities={pid: identity for pid, identity, _a in entries}, report=report)
+        lines = []
+        served = {pid: _served_path(args) for pid, _i, args in entries}
+        for row in report:
+            pid, state = row["pid"], row["state"]
+            where = served.get(pid) or "an unnamed directory"
+            if state == PIDFD_GONE:
+                lines.append(f"pid {pid} (serving {where}): already gone when the audit looked, nothing was signalled")
+            elif state == PIDFD_REFUSED:
+                lines.append(f"pid {pid} (serving {where}): not signalled - it was no longer the process this run selected")
+            elif state == PIDFD_UNAVAILABLE:
+                lines.append(f"pid {pid} (serving {where}): not signalled - no identity-bound handle could be "
+                             f"obtained; its state is unresolved, not stopped")
+            elif row.get("exited"):
+                lines.append(f"pid {pid} (serving {where}): stopped - signals attempted through a pidfd, exit observed")
+            else:
+                lines.append(f"pid {pid} (serving {where}): survived - signalled through a pidfd, still alive")
+        return "; ".join(lines) + ("" if not result else f" [unresolved: {sorted(set(result))}]")
+
+    if leaked:
+        print(f"leaked daemon(s) appeared during the run. {outcomes(leaked)}", file=out)
+    if leaked_runners:
+        print(f"leaked command runner(s) appeared during the run. "
+              f"{outcomes(leaked_runners, runner_pids)}", file=out)
+    for stray in leaked_strays:
         # kept on purpose: a leaked state root is the evidence of the test that wrote it (D-140)
         print(f"leaked scratch directory {stray} (kept: the directory is the evidence)", file=out)
-    kept = len(foreign_daemons) + len(foreign_runners) + len(unattributed_daemons) + len(unattributed_runners)
-    print(f"FAIL: {len(leaked)} daemon(s), {len(leaked_runners)} command runner(s) and {len(new_strays)} scratch "
+    print(f"FAIL: {len(leaked)} daemon(s), {len(leaked_runners)} command runner(s) and {len(leaked_strays)} scratch "
           "directory(ies) appeared during the run; a test that starts a daemon or a runner must stop it and remove "
           f"its own temp directory (D-111, D-131, D-226)"
-          + (f"; {kept} process(es) of another or unknown run were reported and left running (D-528)" if kept else ""),
-          file=out)
+          + (f"; {kept_processes} process(es) of other or unestablished ownership were reported and left running "
+             f"(D-528)" if kept_processes else ""), file=out)
     return 1
+
+
+def audit_ownership() -> int:
+    """Every guarded scratch constructor in this tree records its owner, or this audit says which one does not.
+
+    The stray rule only stays honest if each `ta-*` / `teamagents-*` root a test creates can be attributed. Marking
+    one constructor and leaving a raw one silently converts that constructor's leaked directory from "this run's
+    leftover" into "unattributed", which is a coverage *regression* even though the audit still exits 0. So the
+    coverage is checked as a source inventory rather than trusted: a guarded-prefix `temp_dir()` in test code must
+    either use the shared helper or write the owner file itself.
+
+    Reported as an inventory, not a guess: the count of constructors is printed, and the limit (prefixes are the
+    ones [`SCRATCH_PREFIXES`] names; a test root outside them was never covered, before or after D-528) is stated.
+    """
+    helper = ("owned_temp_dir", "record_ownership")
+    findings, covered, exempt = [], [], []
+    for path in sorted(pathlib.Path(REPO).rglob("*.rs")):
+        text_path = str(path.relative_to(REPO))
+        if "/target/" in text_path or text_path.endswith("test_scratch_owner.rs"):
+            continue
+        lines = path.read_text(errors="replace").splitlines()
+        for number, line in enumerate(lines, 1):
+            if "temp_dir()" not in line or ".join(" not in line:
+                continue
+            if not any(f'"{prefix}' in line for prefix in SCRATCH_PREFIXES):
+                continue
+            where = f"{text_path}:{number}"
+            # The stray rule counts *directories* only (D-143), so a constructor whose format ends in a name suffix
+            # (`…-{}.db`, `…-{}.log`) builds a file: it was never a stray, before or after D-528.
+            literal = re.search(r'join\(format!\("([^"]*)"', line)
+            if literal and not literal.group(1).rstrip().endswith("}"):
+                exempt.append(where)
+                continue
+            window = "\n".join(lines[number - 1:number + 9])
+            if any(marker in window for marker in helper):
+                covered.append(where)
+            elif not _is_test_code(text_path, lines, number):
+                exempt.append(where)          # a product path, not a test scratch root
+            else:
+                findings.append(f"{where} creates a guarded scratch root without an ownership record")
+    print(f"guarded scratch roots: {len(covered)} record their owner, {len(exempt)} are product paths, "
+          f"{len(findings)} do not")
+    print(f"coverage boundary: prefixes {', '.join(SCRATCH_PREFIXES)} under TMPDIR; a root a test names outside "
+          f"them was never covered by this rule, and plain files were never counted (D-143)")
+    for finding in findings:
+        print(f"FAIL: {finding}")
+    return 1 if findings else 0
+
+
+def _is_test_code(relative: str, lines: list[str], number: int) -> bool:
+    """Is this line test code? An integration test file and a `*tests.rs` module are test code from line 1.
+
+    Missing this distinction would exempt every raw constructor in `engine/tests/` — exactly the constructors the
+    coverage inventory exists to keep visible — so the file's own path decides before the `#[cfg(test)]` search.
+    """
+    parts = pathlib.PurePosixPath(relative).parts
+    if "tests" in parts[:-1] or relative.endswith(("tests.rs", "_tests.rs")):
+        return True
+    return _in_test_module(lines, number)
+
+
+def _in_test_module(lines: list[str], number: int) -> bool:
+    """Is line `number` inside a `#[cfg(test)]` module of this file?"""
+    for index in range(number - 2, -1, -1):
+        if lines[index].strip().startswith("#[cfg(test)]"):
+            return True
+    return False
 
 
 def wait_until(predicate, seconds: float) -> bool:
@@ -506,6 +940,15 @@ def self_check() -> int:
         return 1
     findings: list[str] = []
     started: list[int] = []   # every pid this check starts, so a failing control cannot leak one either
+    # the simulated controls below swap these temporarily; keep the real ones to restore
+    _pidfd_signal_before, _pidfd_exited_before = _pidfd_signal, _pidfd_exited
+    # pid -> start identity at the moment this check started it. Cleanup signals only a pid whose identity is
+    # unchanged, so a number the kernel has already reused cannot be signalled after its process was reaped (D-528).
+    identities: dict[int, int | None] = {}
+
+    def remember(pid: int) -> int:
+        identities.setdefault(pid, start_identity(pid))
+        return pid
     keep = {name: os.environ.get(name) for name in ("TMPDIR", "XDG_CONFIG_HOME", "XDG_STATE_HOME",
                                                      RUN_MARKER, "DEEPSEEK_API_KEY")}
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="leak-guard-"))
@@ -548,7 +991,7 @@ def self_check() -> int:
 
         # 3. a daemon this check starts by hand is found by the predicate (the D-144 control)
         daemon = _start_daemon(tmp / "root")
-        started.append(daemon.pid)
+        started.append(remember(daemon.pid))
         if not wait_until(lambda: daemon.pid in {pid for pid, _args in daemon_pids(tmp)}, 20):
             findings.append(f"the daemon predicate did not find a daemon this check started "
                             f"(pid {daemon.pid}, stat {process_state(daemon.pid)!r})")
@@ -579,15 +1022,38 @@ def self_check() -> int:
         #     must not be a way to make the stray rule silently stop firing, so the positive case is pinned here.
         stray_guard = tmp / "stray-guard.json"
         snapshot(stray_guard, tmp)
+        # (i) a directory THIS gate's registry names, and that nothing serves, is this gate's leftover
         leftover = tmp / "ta-unserved-leftover"
         leftover.mkdir()
+        (tmp / f"{REGISTRY_PREFIX}{os.environ[RUN_MARKER]}").write_text(f"{leftover}\n")
         report = io.StringIO()
         if audit(stray_guard, tmp, out=report) != 1:
-            findings.append(f"a new scratch directory no live process serves must still audit as a leak, got: "
-                            f"{report.getvalue().strip()}")
+            findings.append(f"a scratch directory this gate owns and no live process serves must audit as a leak, "
+                            f"got: {report.getvalue().strip()}")
         if str(leftover) not in report.getvalue():
             findings.append(f"the leak report must name the stray directory: {report.getvalue().strip()}")
         shutil.rmtree(leftover, ignore_errors=True)
+
+        # (ii) a *peer's* directory (named in another gate's registry), and one no registry names, are not this
+        #      gate's leftovers: they are reported and kept, and must not fail this gate. A prefix plus "it appeared
+        #      after the snapshot" is not ownership — a concurrent session creates the same names under the same TMPDIR.
+        peer_registry = tmp / f"{REGISTRY_PREFIX}peer-some-other-run"
+        for label, record in (("ta-peer-owned", peer_registry), ("ta-unrecorded", None)):
+            peer_dir = tmp / label
+            peer_dir.mkdir()
+            if record is not None:
+                record.write_text(f"{peer_dir}\n")
+            report = io.StringIO()
+            verdict = audit(stray_guard, tmp, out=report)
+            if verdict != 0:
+                findings.append(f"a directory this gate does not own ({label}) must not fail this gate's audit, "
+                                f"got: {report.getvalue().strip()}")
+            if str(peer_dir) not in report.getvalue() or "not established" not in report.getvalue():
+                findings.append(f"the audit must report an unattributed directory and say ownership was not "
+                                f"established: {report.getvalue().strip()}")
+            if not peer_dir.is_dir():
+                findings.append(f"the audit removed a directory it does not own ({label})")
+            shutil.rmtree(peer_dir, ignore_errors=True)
 
         # 5. a *peer session* is not this run's leak (D-528). Same user, same binary, same `/tmp` prefixes, a
         #    different run marker. Before the marker rule, `audit` reported this daemon and SIGTERM-then-SIGKILLed
@@ -597,7 +1063,7 @@ def self_check() -> int:
         peer_guard = tmp / "peer-guard.json"
         snapshot(peer_guard, tmp)
         peer = _start_daemon(tmp / "ta-peer-root", marker=f"peer-{uuid.uuid4()}")
-        started.append(peer.pid)
+        started.append(remember(peer.pid))
         if not wait_until(lambda: peer.pid in {pid for pid, _args in daemon_pids(tmp)}, 20):
             findings.append(f"the peer control's daemon did not start (pid {peer.pid})")
         report = io.StringIO()
@@ -622,7 +1088,7 @@ def self_check() -> int:
         runner_guard = tmp / "runner-guard.json"
         snapshot(runner_guard, tmp)
         owned_runner = _start_runner(tmp / "ta-jobs-owned")
-        started.append(owned_runner.pid)
+        started.append(remember(owned_runner.pid))
         if not wait_until(lambda: owned_runner.pid in {pid for pid, _args in runner_pids(tmp)}, 20):
             findings.append(f"the owned-runner control did not start (pid {owned_runner.pid})")
         report = io.StringIO()
@@ -639,7 +1105,7 @@ def self_check() -> int:
         peer_runner_guard = tmp / "peer-runner-guard.json"
         snapshot(peer_runner_guard, tmp)
         peer_runner = _start_runner(tmp / "ta-jobs-peer", marker=f"peer-{uuid.uuid4()}")
-        started.append(peer_runner.pid)
+        started.append(remember(peer_runner.pid))
         if not wait_until(lambda: peer_runner.pid in {pid for pid, _args in runner_pids(tmp)}, 20):
             findings.append(f"the peer-runner control did not start (pid {peer_runner.pid})")
         report = io.StringIO()
@@ -666,7 +1132,7 @@ def self_check() -> int:
         forked = []
         if wait_until(lambda: bool(daemon_pids(forked_root)), 20):
             forked = [pid for pid, _args in daemon_pids(forked_root)]
-            started.extend(forked)
+            started.extend(remember(pid) for pid in forked)
         if not forked:
             findings.append("the reparenting control's daemon did not start")
         else:
@@ -693,12 +1159,12 @@ def self_check() -> int:
                                     f"XDG_CONFIG_HOME={tmp / 'config'}",
                                     str(BIN), "daemon", "--state-root", str(cleared_root)],
                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        started.append(cleared.pid)
+        started.append(remember(cleared.pid))
         if not wait_until(lambda: bool(daemon_pids(cleared_root)), 20):
             findings.append("the cleared-environment control's daemon did not start")
         else:
             pid = daemon_pids(cleared_root)[0][0]
-            started.append(pid)
+            started.append(remember(pid))
             if carries_marker(pid, os.environ[RUN_MARKER]):
                 findings.append("a process started with `env -i` must not appear to carry the run marker")
             report = io.StringIO()
@@ -716,7 +1182,7 @@ def self_check() -> int:
 
         # 5. a zombie is not a live daemon (D-144)
         corpse = _start_daemon(tmp / "corpse-root")
-        started.append(corpse.pid)
+        started.append(remember(corpse.pid))
         wait_until(lambda: corpse.pid in {pid for pid, _args in daemon_pids()}, 20)
         corpse.kill()
         if not wait_until(lambda: (process_state(corpse.pid) or "").startswith("Z"), 20):
@@ -727,15 +1193,115 @@ def self_check() -> int:
         with contextlib.suppress(subprocess.TimeoutExpired):
             corpse.wait(timeout=10)
 
+        # 10. simulated identity and availability controls (D-528). These capture signals instead of sending them,
+        #     so a control can prove what *would* have been signalled without touching any real process — the
+        #     supervisor's review script is the same idea, and this keeps it in the gate.
+        sent: list[tuple[int, int]] = []
+
+        def record_signal(fd, sig):
+            sent.append((fd, int(sig)))
+            return PIDFD_OK
+
+        # 10a. identity changed between decision and signal: `stop` must not signal a stranger. The pid still exists
+        #      (so this is not "gone"), but its start identity differs from the saved one.
+        sent.clear()
+        real_acquire, real_open = globals()["acquire"], globals()["_pidfd_open"]
+        try:
+            globals()["_pidfd_open"] = lambda pid: (99, PIDFD_OK)
+            globals()["acquire"] = lambda pid, finder=daemon_pids, marker="", expected_identity=None, served="": (
+                (None, PIDFD_REFUSED) if expected_identity is not None else (99, PIDFD_OK))
+            globals()["_pidfd_signal"] = record_signal
+            globals()["_pidfd_exited"] = lambda fd: False
+            refused = stop([424242], identities={424242: 12345})
+            if sent:
+                findings.append(f"stop signalled a pid whose start identity changed: {sent}")
+            if 424242 not in refused:
+                findings.append(f"a refused identity must be reported unresolved, got {refused}")
+
+            # 10b. the handle cannot be obtained at all (ENOSYS/EPERM/EMFILE shape): unknown, never "gone"
+            sent.clear()
+            globals()["acquire"] = lambda pid, finder=daemon_pids, marker="", expected_identity=None, served="": (
+                None, PIDFD_UNAVAILABLE)
+            unresolved = stop([424243])
+            if 424243 not in unresolved:
+                findings.append(f"an unavailable pidfd must be reported unresolved, not treated as gone, got "
+                                f"{unresolved}")
+            sent.clear()
+            unresolved_kill = kill([424244])
+            if 424244 not in unresolved_kill:
+                findings.append(f"kill must report an unavailable pidfd as unresolved, got {unresolved_kill}")
+
+            # 10c. a real ESRCH is the only state that means "already gone"
+            globals()["_pidfd_open"] = lambda pid: (None, PIDFD_GONE)
+            globals()["acquire"] = lambda pid, finder=daemon_pids, marker="", expected_identity=None, served="": (
+                None, PIDFD_GONE)
+            if stop([424245]) or kill([424246]):
+                findings.append("a pid the kernel reports as gone must not be listed as a survivor")
+        finally:
+            globals()["acquire"], globals()["_pidfd_open"] = real_acquire, real_open
+            globals()["_pidfd_signal"] = _pidfd_signal_before
+            globals()["_pidfd_exited"] = _pidfd_exited_before
+
+        # 10d. the real path with real, disposable processes this check owns, both directions:
+        #      a *wrong* saved start identity is refused and the process must survive untouched,
+        #      the *correct* one is signalled and the process must die.
+        owned_env = dict(os.environ, **{RUN_MARKER: os.environ[RUN_MARKER]})
+        sleeper = subprocess.Popen(["/bin/sh", "-c", "sleep 60"], env=owned_env,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        started.append(remember(sleeper.pid))
+        if not wait_until(lambda: start_identity(sleeper.pid) is not None, 10):
+            findings.append("the identity control's process has no start identity")
+        else:
+            truth = start_identity(sleeper.pid)
+            refused = stop([sleeper.pid], marker=os.environ[RUN_MARKER], grace=1, kill_grace=1,
+                           identities={sleeper.pid: truth + 1})
+            if sleeper.poll() is not None:
+                findings.append("a wrong saved start identity was signalled: the owned process died anyway")
+            if sleeper.pid not in refused:
+                findings.append(f"a refused identity must be reported unresolved through the real path, got "
+                                f"{refused}")
+            signalled = stop([sleeper.pid], marker=os.environ[RUN_MARKER], grace=3, kill_grace=5,
+                             identities={sleeper.pid: truth})
+            if sleeper.poll() is None:
+                findings.append("a matching start identity was not signalled through the real path")
+            if signalled:
+                findings.append(f"a stopped owned process must not be reported unresolved, got {signalled}")
+
+        # 10e. the escalated KILL, through the same handle: a process that ignores TERM must still be stopped.
+        stubborn = subprocess.Popen(["/bin/sh", "-c", 'trap "" TERM; sleep 60'], env=owned_env,
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        started.append(remember(stubborn.pid))
+        if not wait_until(lambda: start_identity(stubborn.pid) is not None, 10):
+            findings.append("the escalation control's process has no start identity")
+        else:
+            survived = stop([stubborn.pid], marker=os.environ[RUN_MARKER], grace=1, kill_grace=8,
+                            identities={stubborn.pid: start_identity(stubborn.pid)})
+            if stubborn.poll() is None:
+                findings.append("a TERM-ignoring owned process survived the KILL escalation")
+            if survived:
+                findings.append(f"an escalated owned process must not be reported unresolved, got {survived}")
+
+        # 10f. a pid that never existed is the one state that reads `gone`
+        if _pidfd_open(2 ** 22 + 998877)[1] != PIDFD_GONE:
+            findings.append("a nonexistent pid must be reported gone through the real pidfd path")
+
         # 9. nothing this check did is still running
         if daemon_pids(tmp) or runner_pids(tmp):
             findings.append(f"the self-check left processes behind: daemons={daemon_pids(tmp)}, runners={runner_pids(tmp)}")
     finally:
-        # the guard's own rule, applied to the guard: signals go to the pids it started, so a control that fails
-        # cannot leave a daemon behind (a broken predicate could not find it afterwards; a pid list can)
-        stop(started)
+        # The guard's own rule, applied to the guard: a control that fails must not leave a process behind. The
+        # cleanup is identity-bound like everything else — each pid is stopped only while its start identity is
+        # still the one recorded when this check started it — so a number the kernel reused after a control already
+        # reaped its child is refused rather than signalled, and a stale numeric pid is never re-acquired (D-528).
+        stop(list(dict.fromkeys(started)), identities=identities)
         _restore_environment(keep)
         shutil.rmtree(tmp, ignore_errors=True)
+
+    # 11. the coverage inventory: every guarded scratch constructor in THIS tree records its owner (D-528). The
+    #     stray rule only stays honest if each root a test makes can be attributed; marking one constructor and
+    #     leaving a raw one would silently turn that constructor's leaked directory into "unattributed".
+    if audit_ownership() != 0:
+        findings.append("a guarded test scratch root does not record its owning gate (see above)")
 
     for finding in findings:
         print("FAIL:", finding)
@@ -749,9 +1315,13 @@ def main() -> int:
     parser.add_argument("verb", nargs="?", choices=("snapshot", "audit"), help="what to do with a guard file")
     parser.add_argument("file", nargs="?", help="the guard file: written by snapshot, read by audit")
     parser.add_argument("--self-check", action="store_true", help="check the guard's own rules and exit")
+    parser.add_argument("--audit-ownership", action="store_true",
+                        help="check that every guarded test scratch root records its owning gate")
     args = parser.parse_args()
     if args.self_check:
         return self_check()
+    if args.audit_ownership:
+        return audit_ownership()
     if not args.verb or not args.file:
         parser.error("snapshot FILE or audit FILE (or --self-check)")
     if args.verb == "snapshot":

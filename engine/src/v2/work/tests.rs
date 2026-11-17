@@ -19,6 +19,7 @@ fn stop_observation_requires_absence_and_preserves_the_unknown_journal() {
     let child = std::process::Command::new("sleep").arg("60").process_group(0).spawn().unwrap();
     let mut probe = Probe { child, dir: std::env::temp_dir().join(format!("ta-work-stop-{}", uuid::Uuid::new_v4())) };
     std::fs::create_dir_all(&probe.dir).unwrap();
+    crate::scratch_owner::record_ownership(&probe.dir);
     let job = JobSpec {
         job_id: "old-operation".into(),
         program: "/bin/bash".into(),

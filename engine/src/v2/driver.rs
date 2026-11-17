@@ -92,6 +92,7 @@ mod shell_recovery_tests {
     fn saved_execution_is_not_replaced_or_relaunched_by_an_upgrade() {
         let root = std::env::temp_dir().join(format!("ta-shell-recovery-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
+        crate::scratch_owner::record_ownership(&root);
         let host = JobSpec {
             job_id: "op-one".into(),
             program: "/bin/bash".into(),

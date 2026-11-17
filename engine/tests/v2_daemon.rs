@@ -424,6 +424,7 @@ async fn the_checkpoint_lists_the_bases_sessions_and_marks_the_one_it_serves() {
     let root =
         Root { dir: std::env::temp_dir().join(format!("ta-sr-{}", &uuid::Uuid::new_v4().simple().to_string()[..6])) };
     std::fs::create_dir_all(&root.dir).unwrap();
+    common::record_ownership(&root.dir);
     // the base keeps the registry; the daemon serves one of its named sessions
     let base = root.dir.join("state");
     std::fs::create_dir_all(&base).unwrap();

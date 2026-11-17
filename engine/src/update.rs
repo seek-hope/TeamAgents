@@ -1676,6 +1676,7 @@ fn cli_help() -> &'static str {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
@@ -1683,8 +1684,8 @@ mod tests {
 
     impl Temp {
         fn new(tag: &str) -> Temp {
-            let path = std::env::temp_dir().join(format!("ta-update-{tag}-{}", uuid::Uuid::new_v4()));
-            std::fs::create_dir_all(&path).unwrap();
+            let path =
+                crate::scratch_owner::owned_temp_dir(&format!("ta-update-{tag}"), &uuid::Uuid::new_v4().to_string());
             Temp(path)
         }
 
@@ -1990,7 +1991,7 @@ mod follow_up_tests {
 
     #[test]
     fn the_follow_up_is_sent_to_the_leader_through_the_new_binary() {
-        let root = std::env::temp_dir().join(format!("ta-update-follow-{}", uuid::Uuid::new_v4()));
+        let root = crate::scratch_owner::owned_temp_dir("ta-update-follow", &uuid::Uuid::new_v4().to_string());
         let layout = Layout { root: root.join("install"), bin_dir: root.join("bin") };
         let binary = layout.root.join("current/teamagents");
         std::fs::create_dir_all(binary.parent().unwrap()).unwrap();

@@ -313,6 +313,7 @@ pub fn stop_leftover_group(journal: &Journal, signal: i32) -> Result<usize, Stri
 
 #[cfg(test)]
 mod tests {
+
     use super::{state_lock, state_lock_waiting};
     use std::time::{Duration, Instant};
 
@@ -353,8 +354,8 @@ mod tests {
     }
 
     fn temp_path(tag: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("ta-state-lock-{tag}-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir =
+            crate::scratch_owner::owned_temp_dir(&format!("ta-state-lock-{tag}"), &uuid::Uuid::new_v4().to_string());
         dir.join("coordinator.lock")
     }
 

@@ -76,14 +76,22 @@ fn environment_doctor_rejects_missing_workspaces_and_inapplicable_flags() {
 /// A test that panics skips its final `remove_dir_all`, so a failing run in a CI condition (where some tests
 /// panic by design: `make check-nobwrap`) left state roots behind for `make test`'s leak guard to report,
 /// turning one failure into two (measured twice, D-171 and D-174). Tests still remove their tree explicitly at
+#[path = "../../test_scratch_owner.rs"]
+mod scratch_owner;
+
 /// the end; this is the path they cannot reach.
 struct Scratch(std::path::PathBuf);
 
 impl Scratch {
     /// A fresh, empty directory named after `label` and the test process.
+    ///
+    /// Ownership is recorded when the gate exported a marker (D-528): a `ta-*` name alone cannot tell this gate's
+    /// leftover from a concurrent session's root, and the catalog's audit reads the record to attribute it.
     fn new(label: &str) -> Scratch {
         let path = std::env::temp_dir().join(format!("ta-{label}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).expect("create the scratch root");
+        scratch_owner::record_ownership(&path);
         Scratch(path)
     }
 }
@@ -3759,6 +3767,7 @@ fn sessions_prune_needs_a_window_and_a_confirmation_and_its_dry_run_deletes_noth
     let base = home.join("base");
     let config_home = home.join("config");
     std::fs::create_dir_all(config_home.join("teamagents")).unwrap();
+    scratch_owner::record_ownership(&home);
     std::fs::write(
         config_home.join("teamagents/config.toml"),
         "[models.leader_main]\nprovider = \"openai\"\nmodel = \"test\"\n\

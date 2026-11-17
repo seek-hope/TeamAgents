@@ -6,3 +6,8 @@ pub mod v2;
 pub fn core_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
+
+/// Guarded test scratch roots (D-528): a `ta-*` name is a convention, so each root records the gate that made it.
+#[cfg(test)]
+#[path = "../../test_scratch_owner.rs"]
+pub(crate) mod scratch_owner;

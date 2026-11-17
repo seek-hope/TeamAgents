@@ -19,12 +19,23 @@ pub struct TempRoot {
 impl TempRoot {
     /// A fresh directory named `<TMPDIR>/teamagents-<name>-<uuid>` (the name the suites already used, so a leak
     /// is still recognisable by the leak guard's stray rule).
+    ///
+    /// The directory carries an ownership record (D-528): the gate exports `TEAMAGENTS_LEAK_GUARD_RUN`, and the
+    /// guard's audit may only call a directory *this* gate's leftover when the record names this gate. A name is a
+    /// convention, and a concurrent session of the same user creates the same names under the same `TMPDIR`; the
+    /// record is what tells the two apart. With no marker exported (a hand `cargo test`) no record is written, and
+    /// the audit reports the directory as unattributed rather than claiming it.
     pub fn new(name: &str) -> TempRoot {
         let dir = std::env::temp_dir().join(format!("teamagents-{name}-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("create the scratch root");
+        record_ownership(&dir);
         TempRoot { dir }
     }
 }
+
+#[path = "../../../test_scratch_owner.rs"]
+mod scratch_owner;
+pub use scratch_owner::record_ownership;
 
 impl std::ops::Deref for TempRoot {
     type Target = Path;

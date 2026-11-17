@@ -29,3 +29,8 @@ pub mod wire;
 pub fn now_epoch() -> f64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|since| since.as_secs_f64()).unwrap_or(0.0)
 }
+
+/// Guarded test scratch roots (D-528): a `ta-*` name is a convention, so each root records the gate that made it.
+#[cfg(test)]
+#[path = "../../test_scratch_owner.rs"]
+pub(crate) mod scratch_owner;

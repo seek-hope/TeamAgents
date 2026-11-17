@@ -217,6 +217,7 @@ fn handshake(socket: &Path) -> Result<(Conn, Json), String> {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixListener;
@@ -272,8 +273,10 @@ mod tests {
 
     fn fake_daemon(tag: &str, protocol_version: u64, replies: Vec<Json>) -> FakeDaemon {
         let dir = std::env::temp_dir().join(format!("ta-tui-daemon-{tag}-{}", std::process::id()));
+        crate::scratch_owner::record_ownership(&dir);
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir =
+            crate::scratch_owner::owned_temp_dir(&format!("ta-tui-daemon-{tag}"), &std::process::id().to_string());
         let socket = dir.join("daemon.sock");
         let listener = UnixListener::bind(&socket).unwrap();
         let (frames_tx, frames_rx) = channel();

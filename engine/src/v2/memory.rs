@@ -172,6 +172,7 @@ mod tests {
     fn home(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("ta-memory-{tag}-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
+        crate::scratch_owner::record_ownership(&dir);
         dir
     }
 

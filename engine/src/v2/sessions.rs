@@ -62,6 +62,7 @@ mod base_tests {
     #[test]
     fn a_named_sessions_root_resolves_to_the_base_and_the_default_to_itself() {
         let base = std::env::temp_dir().join(format!("ta-sessions-base-{}", uuid::Uuid::new_v4()));
+        crate::scratch_owner::record_ownership(&base);
         let named = base.join("sessions/one");
         std::fs::create_dir_all(&named).unwrap();
         // without the registry this is not a base yet: a bare tree keeps its own root
@@ -674,6 +675,7 @@ mod tests {
         fn new(tag: &str) -> Scratch {
             let dir = std::env::temp_dir().join(format!("ta-sessions-{tag}-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(&dir).unwrap();
+            crate::scratch_owner::record_ownership(&dir);
             Scratch(dir)
         }
         fn path(&self) -> &Path {

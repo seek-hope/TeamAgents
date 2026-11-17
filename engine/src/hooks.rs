@@ -220,6 +220,7 @@ mod tests {
     #[test]
     fn pre_tool_policy_decides_by_exit_code() {
         let dir = std::env::temp_dir().join(format!("ta-pretool-{}", uuid::Uuid::new_v4()));
+        crate::scratch_owner::record_ownership(&dir);
         let allow = script(&dir, "allow.sh", "cat > /dev/null; exit 0");
         let deny = script(&dir, "deny.sh", "cat > /dev/null; echo 'write_file is not allowed here' >&2; exit 2");
         let broken = script(&dir, "broken.sh", "cat > /dev/null; exit 7");
@@ -255,6 +256,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ta-hook-{}", uuid::Uuid::new_v4()));
         let out = dir.join("seen.txt");
         std::fs::create_dir_all(&dir).unwrap();
+        crate::scratch_owner::record_ownership(&dir);
         let hook =
             script(&dir, "hook.sh", &format!("printf '%s\\n' \"$1\" > {}\ncat >> {}\n", out.display(), out.display()));
 
@@ -296,6 +298,7 @@ mod tests {
     #[test]
     fn a_transiently_busy_hook_script_is_retried_not_dropped() {
         let dir = std::env::temp_dir().join(format!("ta-hook-busy-{}", uuid::Uuid::new_v4()));
+        crate::scratch_owner::record_ownership(&dir);
         let out = dir.join("busy.txt");
         let hook = script(&dir, "busy.sh", &format!("printf '%s\\n' \"$1\" > {}\n", out.display()));
         // a live writer on the script, released after the spawn has had its window

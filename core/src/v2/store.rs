@@ -872,6 +872,7 @@ fn rewrite_closing_notes(tx: &rusqlite::Transaction) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     /// D-253: a read-only open refuses what `open` refuses and **writes nothing** — a reader must not migrate a
@@ -885,8 +886,7 @@ mod tests {
         // A unique directory, like the sibling helper: a pid-keyed one collided with a *previous* run's leftover
         // (a stamped store, a 0555 directory) and made the fixture itself flaky — measured while writing the
         // read-only test, and the reason this is a uuid rather than a pid.
-        let dir = std::env::temp_dir().join(format!("ta-store-readonly-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::scratch_owner::owned_temp_dir("ta-store-readonly", &uuid::Uuid::new_v4().to_string());
         let path = dir.join("session.sqlite");
         {
             let conn = open(&path, true).unwrap();
@@ -1051,8 +1051,7 @@ mod tests {
     #[test]
     fn fork_database_snapshots_a_database_without_writing_the_source() {
         use super::{fork_database, open, open_read_only};
-        let dir = std::env::temp_dir().join(format!("ta-store-fork-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::scratch_owner::owned_temp_dir("ta-store-fork", &uuid::Uuid::new_v4().to_string());
         let source = dir.join("source.sqlite");
         {
             let conn = open(&source, true).unwrap();
