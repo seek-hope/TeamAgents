@@ -7,11 +7,15 @@ This file records current behavior and reproducible evidence, not historical acc
 empirical or full-system obligation remains open. No icon is a proof of every release condition.
 
 Current source inventory: core 198 / engine 535 / tui 121 test targets; the full gate passed.
-Installed CLI and TUI source: `02f147a572dd9abf59ceff8eb47940d55c3c68ac` (D-527).
+Installed CLI source: `c19232440686e4c334b1abb090f773885ff444bc`; TUI source:
+`02f147a572dd9abf59ceff8eb47940d55c3c68ac` (D-527), with unchanged TUI inputs.
 The last complete package baseline is `d96d7c8acf54b951030140f076540cbb730f88ab`. Delivery CI at
 `6767b32c4a35fb71c476ca7fb81858d127ba4905` passed `test`, `test-aarch64`, `formal-tla` and `formal-kani`:
 [run 43812934865](https://github.com/seek-hope/TeamAgents/actions/runs/43812934865).
-That CI does not cover D-526/D-527. The 26 AArch64 tool tests run under GNU user emulation, not native ARM.
+A later scheduled run on the same source, [43868995516](https://github.com/seek-hope/TeamAgents/actions/runs/43868995516),
+failed `update_json_with_a_live_daemon_prints_only_valid_json_on_stdout` at daemon readiness; the other three
+jobs passed. Neither run covers D-526/D-527 or the Unicode search fix. The 26 AArch64 tool tests run under GNU
+user emulation, not native ARM.
 Package-baseline checks cover all 18
 offline probes, source/installed PTY matrices, x86_64 musl release/install, scripted profile/fetch behavior
 and a separate real Fetch API request. These bindings identify the tested source; subsequent edits do not
@@ -90,6 +94,21 @@ complete graphical-terminal or OS matrix.
 
 ## Current runtime and installation evidence
 
+The Unicode search fix in `c1923244` translates lowercase-string match offsets into original-character
+boundaries, preserving the original-text snippet window. Independent review reproduced the old installed
+CLI panic on a disposable database, then verified four matching messages through debug, musl release and
+installed CLI binaries without changing the database. A separate probe using the production function checked
+every Unicode scalar as a prefix, repeated length-changing characters, contextual sigma and a match inside a
+lowercase expansion. The full local `make check` and `make language-check` passed on that source: 854 Rust
+tests (198/535/121), formatting, Clippy, hygiene and no process leak. The CLI was atomically replaced after
+a durable private backup; all three pre-existing daemons retained their PID/start identities. TUI inputs and
+its installed hash are unchanged, so its D-527 PTY evidence remains scoped to that source. No new package,
+clean-host or formal acceptance is claimed. Local receipts are under `tools/tmp/field-review/`.
+
+TeamAgents found and implemented the fix in a separate real-model run. Its execution remained blocked by one
+unknown outcome and stale running records; accepting the independently verified patch does not establish
+successful autonomous task finalization. No model calls were made by the independent acceptance probes.
+
 D-527 adds scoped CLI validation and help, explicit end-of-options parsing, arbitrary MCP argv values,
 mutually exclusive update actions, resolved permission overrides and structured JSON mutation receipts.
 `engine/tests/interface.rs` checks isolated refusal before state access, guarded deletion and the new output
@@ -98,7 +117,7 @@ covers modifiers, Repeat events, approval identity across refresh, explicit edit
 metadata. Default bindings, Leader targeting, drafts and existing capabilities remain available. The PTY
 smoke waits for the visible composer acknowledgement between Esc and F6 after resizing; fixed delays can
 coalesce those bytes in the terminal parser. These interface changes do not alter schema or formal inputs.
-The final local gate passes all 852 Rust tests, formatting, Clippy and hygiene. The source TUI passes five
+The D-527 local gate passed all 852 Rust tests, formatting, Clippy and hygiene. The source TUI passes five
 terminal profiles and both forced graphics modes. Each release/installed pair passes 23 isolated CLI
 invocations and seven PTY checks covering approval modifiers/repeat, refresh, profile repeat, attachment paths,
 incomplete-command usage and explicit editor launch. Installed session switching also passes in a real PTY.
@@ -108,7 +127,7 @@ This does not renew the complete package, CI, external-provider or clean-host ac
 
 | Installed binary | SHA-256 |
 |---|---|
-| CLI | `09c1886ef322f9af04432b2d49f6db5bead6f820a18a1935d3a887be0ce8bcf1` |
+| CLI | `dfb2d36479fec39cf126487f3780871c5e463c56dbc0ef7331d40f4ad343b30a` |
 | TUI | `e08424dd22ba6378f2bff5a0c90125da8549a68f93c914c275baa8b2ead64f8f` |
 
 Workspace-session coverage (D-526) includes current-directory selection, successful-open recency, absolute

@@ -6,13 +6,19 @@ The project is a standalone Rust control plane, runtime and team TUI. Read [DESI
 Q1–Q19/A01–A36 baseline, [DECISIONS.md](DECISIONS.md) for current contracts and [ACCEPTANCE.md](ACCEPTANCE.md)
 for exact source-bound evidence. Git retains implementation and experiment history; do not recreate a changelog here.
 
-Installed CLI and TUI source: `02f147a5` (D-527). The current source passes the full local gate and the
-five-profile PTY matrix with both forced graphics modes. Both musl binaries are installed after isolated CLI
-and key-action acceptance; the installed pair also passes real-terminal session switching with retained drafts.
-Replacement was atomic with private backups; the existing user daemon was neither stopped nor restarted, and
-ordinary configuration/session files were not written. This is not a database migration or live-model result.
-The last complete package baseline is `d96d7c8a`; delivery CI at `6767b32c` passed all four jobs but does not
-cover D-526/D-527. The current local formal replay retains its unchanged input-content fingerprint in
+Installed CLI source: `c1923244`; installed TUI source: `02f147a5` (D-527), with unchanged TUI inputs.
+The CLI fixes Unicode search snippets by mapping lowercase offsets back to original character boundaries.
+Independent acceptance passes the full 854-test local gate, language check, Unicode scalar-prefix probe and
+disposable-database CLI search before/after release and installation. The old CLI panics on the same fixture.
+D-527 retains the five-profile PTY matrix with both forced graphics modes, isolated key-action acceptance and
+installed session switching with retained drafts; those PTY checks were not rerun for this CLI-only change.
+Replacement was atomic with private backups; existing daemons retained their PID/start identities and ordinary
+configuration/session files were not written. Acceptance probes made no model calls. The TeamAgents debugging
+run did use a real model and remains blocked by unresolved execution records despite its accepted code fix.
+The last complete package baseline is `d96d7c8a`. CI at `6767b32c` passed all four jobs in run 43812934865;
+a subsequent scheduled run 43868995516 failed the updater daemon-readiness test while its other three jobs
+passed. Neither run covers D-526/D-527 or this search fix. Current local formal replay retains its unchanged
+input-content fingerprint in
 [verification/REPORT.md](../verification/REPORT.md).
 
 - **854 Rust tests**: core 198, engine 535, TUI 121.
@@ -107,6 +113,10 @@ not rewritten as a pass.
 [PRODUCT-COMPARISON.md](PRODUCT-COMPARISON.md) is the candidate-work queue. Its priorities are matched held-out
 outcome/cost comparisons, reliable team completion, independent Reviewer evaluation, tree/navigation usefulness,
 provider/OAuth/integration coverage and current clean-host/platform acceptance.
+
+The field-debug run exposed unresolved execution records that prevent completion after the corresponding
+processes are reportedly gone. Reproduce and repair receipt reconciliation without converting unknown effects
+to success or bypassing completion guards. The scheduled CI updater-readiness failure also needs diagnosis.
 
 Specific runtime gaps include cross-provider switching and ambiguous wire identities, provider-side fetch
 redirect/rebinding enforcement, session startup/filesystem races and full-backlog connection deadlines.
