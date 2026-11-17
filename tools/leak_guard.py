@@ -81,9 +81,33 @@ REGISTRY_PREFIX = ".ta-leak-owner-"
 PLACEHOLDER_KEY = "leak-guard-self-check-no-model-call"
 
 
+# What a marker may be: one path component, no separators and no traversal. The marker becomes part of the registry
+# file name, so an unchecked value containing `/` or `..` would let a gate write outside the directory that holds
+# every registry — the one thing the registry must never do. `make test` passes a UUID, which fits easily.
+MARKER_SHAPE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+
+def marker_problem(marker: str):
+    """Why this marker cannot name a registry file, or `None` when it can."""
+    if not marker:
+        return "empty"
+    if not MARKER_SHAPE.fullmatch(marker):
+        return (f"{marker!r} is not a single safe path component (letters, digits, '.', '_', '-' only, starting "
+                f"with a letter or digit)")
+    if marker in (".", "..") or ".." in marker:
+        return f"{marker!r} contains a path traversal"
+    return None
+
+
 def run_marker() -> str:
-    """This run's ownership marker: `""` when the caller set none, which keeps the machine-wide rule."""
-    return os.environ.get(RUN_MARKER, "")
+    """This run's ownership marker: `""` when the caller set none, which keeps the machine-wide rule.
+
+    A marker that cannot safely name a file resolves to `""` here, i.e. "no marker", so an unsafe value can never
+    reach [`registry_path`]. Callers that bind a registry treat that as unset: `snapshot` will not bind, and an audit
+    of a bound baseline fails as lost provenance rather than writing or reading somewhere unexpected.
+    """
+    marker = os.environ.get(RUN_MARKER, "")
+    return marker if marker and marker_problem(marker) is None else ""
 
 
 def carries_marker(pid: int, expected: str) -> bool:
@@ -616,7 +640,14 @@ def _served_path(args: str) -> str:
 
 
 def registry_path(marker: str) -> pathlib.Path:
-    """This gate's registry: `$TMPDIR/.ta-leak-owner-<marker>`."""
+    """This gate's registry: `$TMPDIR/.ta-leak-owner-<marker>`.
+
+    Refuses a marker that is not one safe path component, so no caller — including one that bypassed
+    [`run_marker`] — can build a name that escapes the registry directory.
+    """
+    problem = marker_problem(marker)
+    if problem:
+        raise ValueError(f"unsafe {RUN_MARKER}: {problem}")
     return pathlib.Path(os.environ.get("TMPDIR", "/tmp")) / f"{REGISTRY_PREFIX}{marker}"
 
 
@@ -667,9 +698,17 @@ def binding_problem(before: dict, marker: str):
     the documented previous behaviour. Every failure is returned, never raised, so the caller can report it before
     it touches a process or a directory.
     """
-    bound = before.get("registry")
-    if not bound:
+    # Presence of the key *is* the binding contract. An absent key is a legacy or hand-written snapshot that never
+    # had a registry — the only case that keeps the previous behaviour. A key that is present but unusable (`null`,
+    # `""`, `[]`, a non-string, a relative path, a traversal, another run's file) is a malformed *binding*, not an
+    # absent one: silently downgrading it to legacy would answer a binding claim with the machine-wide rule, which is
+    # exactly the fallback this check exists to prevent.
+    if "registry" not in before:
         return None
+    bound = before["registry"]
+    if not isinstance(bound, str) or not bound.strip():
+        return (f"the baseline's {RUN_MARKER} binding is present but unusable ({bound!r}): a malformed binding is "
+                f"not an absent one, and lost provenance is not a clean verdict")
     if not marker:
         return f"the baseline bound {bound}, but {RUN_MARKER} is unset: this audit cannot read that provenance"
     expected = registry_path(marker)
@@ -1316,6 +1355,71 @@ def self_check() -> int:
             if audit(forged, tmp, out=report) != 1:
                 findings.append(f"a baseline bound to a substituted path ({label}) must fail, got: "
                                 f"{report.getvalue().strip()}")
+
+        # 4c4. a *present but unusable* binding is a malformed binding, not an absent one (D-528). The key's
+        #      presence is the contract, so `null`, `""`, `[]` and a non-string must fail closed instead of
+        #      downgrading to the legacy machine-wide rule. Also pins that nothing is signalled in these cases.
+        for label, value in (("null", None), ("empty-string", ""), ("empty-list", []), ("number", 7)):
+            malformed = tmp / f"malformed-guard-{label}.json"
+            malformed.write_text(json.dumps({"daemons": [], "runners": [], "strays": [], "registry": value}))
+            rows = {"daemons": [[999993, 4242, "/x/teamagents daemon --state-root /somebody-else"]],
+                    "runners": [], "strays": []}
+            signals.clear()
+            real_observe = globals()["observe"]
+            real_stop = globals()["stop"]
+            globals()["observe"] = lambda root=None: rows
+            globals()["stop"] = lambda pids, finder=None, **kw: signals.append(sorted(pids)) or []
+            try:
+                report = io.StringIO()
+                verdict = audit(malformed, tmp, out=report)
+            finally:
+                globals()["observe"] = real_observe
+                globals()["stop"] = real_stop
+            if verdict != 1:
+                findings.append(f"a baseline whose registry key is present but {label} must fail, got exit "
+                                f"{verdict}: {report.getvalue().strip()}")
+            if "present but unusable" not in report.getvalue():
+                findings.append(f"a {label} binding must be reported as a malformed binding: "
+                                f"{report.getvalue().strip()}")
+            if signals:
+                findings.append(f"a {label} binding signalled pids: {signals}")
+
+        # an absent key is still legacy, and must stay allowed
+        legacy = tmp / "legacy-guard.json"
+        legacy.write_text(json.dumps({"daemons": [], "runners": [], "strays": []}))
+        report = io.StringIO()
+        if audit(legacy, tmp, out=report) != 0:
+            findings.append(f"a baseline with no registry key must stay legacy-compatible, got: {report.getvalue()}")
+
+        # 4c5. an unsafe marker can never name a file outside the registry directory. Real filesystem: build the
+        #      path for each unsafe value and prove it does not escape `tmp`, and that a real write attempt through
+        #      `snapshot` cannot create anything outside it either.
+        escaped = tmp / "escaped-registry"
+        escaped.mkdir()
+        for bad in ("../escaped-registry/x", "a/b", ".", "..", "with space", "tab\there"):
+            try:
+                built = registry_path(bad)
+            except ValueError:
+                continue                       # refused outright: the strongest answer
+            if built.parent.resolve() != tmp.resolve():
+                findings.append(f"an unsafe marker {bad!r} built {built} outside the registry directory")
+        saved_marker = os.environ[RUN_MARKER]
+        try:
+            os.environ[RUN_MARKER] = "../escaped-registry/leak"
+            if run_marker():
+                findings.append("run_marker accepted a traversal marker instead of treating it as unset")
+            snapshot(tmp / "unsafe-snapshot.json", tmp)
+            leaked = list(escaped.iterdir())
+            if leaked:
+                findings.append(f"an unsafe marker wrote outside the registry directory: {leaked}")
+            bound = json.loads((tmp / "unsafe-snapshot.json").read_text()).get("registry")
+            if bound:
+                findings.append(f"an unsafe marker still bound a registry: {bound}")
+        finally:
+            os.environ[RUN_MARKER] = saved_marker
+        # ordinary markers keep working exactly as before
+        if marker_problem("6d8b5f92-b85f-49ac-a3a0-6a0c5329465c") is not None:
+            findings.append("a normal per-invocation UUID marker must be accepted")
 
         # and nothing this control did removed a peer registry or a fixture directory
         if not aged_peer.is_file():

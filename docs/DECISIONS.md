@@ -261,9 +261,13 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
   scratch root per gate, kept as bounded residue rather than pruned heuristically. An audit uses the binding its
   baseline recorded and nothing else: with a binding present, an unset marker is lost provenance, a different
   marker is a mismatched audit of another gate's baseline, and a bound path that is not this gate's expected
-  registry (relative, traversal or another run's) is refused. All three fail visibly before any process or
-  directory is signalled or removed, instead of falling back to the machine-wide rule or reading a different
-  registry; a baseline without a binding is a legacy snapshot and is audited as before. The record is emitted as
+  registry (relative, traversal or another run's) is refused. Presence of the `registry` key is the contract: a key
+  that is present but unusable (`null`, `""`, `[]`, a non-string) is a malformed binding and fails, never silently
+  downgraded to the legacy rule — only an *absent* key is a legacy or hand-written snapshot, which is audited as
+  before. Every one of these cases fails visibly before any process or directory is signalled or removed. The
+  marker becomes part of the registry file name, so it must be one safe path component: an unsafe value (a
+  separator, `.`/`..`, whitespace) is treated as no marker by `run_marker` and refused outright by `registry_path`,
+  which keeps every registry inside the directory that holds them. The record is emitted as
   one append of one encoded line, so parallel test processes cannot interleave halves. Signals bind to a process,
   not a number: selection captures each pid's start time together
   with its arguments, a pidfd is opened, the saved identity, marker and served root are re-checked around that
