@@ -7,15 +7,17 @@ This file records current behavior and reproducible evidence, not historical acc
 empirical or full-system obligation remains open. No icon is a proof of every release condition.
 
 Current source inventory: core 198 / engine 536 / tui 121 test targets; the full gate passed.
-Installed CLI source: `c19232440686e4c334b1abb090f773885ff444bc`; TUI source:
-`02f147a572dd9abf59ceff8eb47940d55c3c68ac` (D-527), with unchanged TUI inputs.
+Installed CLI and TUI source: `cab1c47cda05d49b63b55075828be4ffe6402077`, merging the accepted D-528 candidate
+`ec1f1acbc6bfd151603f9cb04ebccc14696e8909`. Both x86_64 Linux musl binaries were rebuilt and atomically installed;
+current installation probes and artifact hashes are recorded below.
 The last complete package baseline is `d96d7c8acf54b951030140f076540cbb730f88ab`. Delivery CI at
 `6767b32c4a35fb71c476ca7fb81858d127ba4905` passed `test`, `test-aarch64`, `formal-tla` and `formal-kani`:
 [run 43812934865](https://github.com/seek-hope/TeamAgents/actions/runs/43812934865).
 A later scheduled run on the same source, [43868995516](https://github.com/seek-hope/TeamAgents/actions/runs/43868995516),
 failed `update_json_with_a_live_daemon_prints_only_valid_json_on_stdout` at daemon readiness; the other three
-jobs passed. Neither run covers D-526/D-527 or the Unicode search fix. The 26 AArch64 tool tests run under GNU
-user emulation, not native ARM.
+jobs passed. Neither run covers D-526/D-527 or the Unicode search fix. Subsequently, CI on `a4ce2a2e` passed all
+four jobs in [run 44000392754](https://github.com/seek-hope/TeamAgents/actions/runs/44000392754), before D-528.
+The 26 AArch64 tool tests run under GNU user emulation, not native ARM.
 Package-baseline checks cover all 18
 offline probes, source/installed PTY matrices, x86_64 musl release/install, scripted profile/fetch behavior
 and a separate real Fetch API request. These bindings identify the tested source; subsequent edits do not
@@ -94,6 +96,40 @@ complete graphical-terminal or OS matrix.
 
 ## Current runtime and installation evidence
 
+D-528 fixes the default test gate's attribution of a concurrent session as a leak. Signals bind the selected
+PID/start identity to a pidfd and recheck ownership; test scratch roots are recorded in a per-gate registry.
+Lost registry evidence, malformed snapshot bindings and invalid markers fail visibly. Peer registries are not
+aged out, so historical residue can accumulate across runs. The original field-debug `OUTCOME_UNKNOWN` remains
+unresolved; this repair does not recover that command's outcome.
+
+TeamAgents implemented candidate `ec1f1acb` and passed its final `make check`: 855 Rust tests, formatting,
+Clippy and hygiene. The supervisor inspected the actual operation receipt and separately passed 19/19 targeted
+registry controls. Those independent controls used real filesystem fixtures with mocked stop/kill functions;
+they do not by themselves prove real-process termination. Merge `cab1c47c` has the same tree as that candidate.
+The supervisor then passed `make test-aarch64` on the merged source: 26 tool tests under GNU/QEMU, not native ARM.
+The formal replay remains bound to the material hash in [the formal report](../verification/REPORT.md);
+subsequent registry follow-ups did not change those formal inputs.
+
+Both installed binaries were built from `cab1c47c` with the pinned toolchain, `--offline --locked --release`,
+`--jobs 4` and target `x86_64-unknown-linux-musl`. SHA-256:
+
+- CLI: `242153aa12df04642bf9be94b71417bef0befe0566b3170a6ed227847062196c`.
+- TUI: `196ff1661a8dffa95bbe4f3eb907e3c9dbf933e2f447afeaf9981a907f1d25a2`.
+
+Atomic replacement kept durable backups and preserved all four pre-existing daemon PID/start identities and
+mapped executable inodes. Running daemons retained their prior binaries. Installed version/help, isolated
+init/doctor, four Unicode search hits with an unchanged disposable database, and seven real-terminal key/editor
+checks passed. The minimal doctor fixture intentionally configured no optional skills, web tools, work limits or
+completion checks; its optional warnings were retained. No model calls or ordinary session access occurred.
+The older five-profile PTY matrix, session-switching and complete-package evidence were not rerun or renewed.
+
+Local evidence root: `~/.local/state/teamagents-runtime-debug-17bo3o4u/`. Independent checks and the delegated
+receipt review are `registry-final-independent-acceptance.json` and `registry-final-receipt-review.json`.
+`delivery/` contains `build.json`, `installation.json`, `test-aarch64.json` and the installed probe logs/receipts.
+The backup directory is `teamagents-leak-install-uvvvtn6_` under that evidence root. These local paths are provenance,
+not tracked dependencies. Reproduction entry points are `make check`, `make test-aarch64`,
+`python3 tools/leak_guard.py --self-check` and `engine/tests/leak_registry.rs`.
+
 The Unicode search fix in `c1923244` translates lowercase-string match offsets into original-character
 boundaries, preserving the original-text snippet window. Independent review reproduced the old installed
 CLI panic on a disposable database, then verified four matching messages through debug, musl release and
@@ -101,8 +137,8 @@ installed CLI binaries without changing the database. A separate probe using the
 every Unicode scalar as a prefix, repeated length-changing characters, contextual sigma and a match inside a
 lowercase expansion. The full local `make check` and `make language-check` passed on that source: 854 Rust
 tests (198/535/121), formatting, Clippy, hygiene and no process leak. The CLI was atomically replaced after
-a durable private backup; all three pre-existing daemons retained their PID/start identities. TUI inputs and
-its installed hash are unchanged, so its D-527 PTY evidence remains scoped to that source. No new package,
+a durable private backup; all three pre-existing daemons retained their PID/start identities. At that delivery,
+TUI inputs and its installed hash were unchanged, so its D-527 PTY evidence remained scoped to that source. No new package,
 clean-host or formal acceptance is claimed. Local receipts are under `tools/tmp/field-review/`.
 
 TeamAgents found and implemented the fix in a separate real-model run. Its execution remained blocked by one

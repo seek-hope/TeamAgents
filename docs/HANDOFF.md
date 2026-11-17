@@ -6,19 +6,26 @@ The project is a standalone Rust control plane, runtime and team TUI. Read [DESI
 Q1–Q19/A01–A36 baseline, [DECISIONS.md](DECISIONS.md) for current contracts and [ACCEPTANCE.md](ACCEPTANCE.md)
 for exact source-bound evidence. Git retains implementation and experiment history; do not recreate a changelog here.
 
-Installed CLI source: `c1923244`; installed TUI source: `02f147a5` (D-527), with unchanged TUI inputs.
-The CLI fixes Unicode search snippets by mapping lowercase offsets back to original character boundaries.
-Independent acceptance passes the full 854-test local gate, language check, Unicode scalar-prefix probe and
-disposable-database CLI search before/after release and installation. The old CLI panics on the same fixture.
-D-527 retains the five-profile PTY matrix with both forced graphics modes, isolated key-action acceptance and
-installed session switching with retained drafts; those PTY checks were not rerun for this CLI-only change.
-Replacement was atomic with private backups; existing daemons retained their PID/start identities and ordinary
-configuration/session files were not written. Acceptance probes made no model calls. The TeamAgents debugging
-run did use a real model and remains blocked by unresolved execution records despite its accepted code fix.
-The last complete package baseline is `d96d7c8a`. CI at `6767b32c` passed all four jobs in run 43812934865;
-a subsequent scheduled run 43868995516 failed the updater daemon-readiness test while its other three jobs
-passed. Neither run covers D-526/D-527 or this search fix. Current local formal replay retains its unchanged
-input-content fingerprint in
+Installed CLI and TUI source: `cab1c47c`, merging the independently accepted `ec1f1acb` leak-guard candidate.
+Both binaries were rebuilt with the pinned toolchain for x86_64 Linux musl and installed by atomic replacement
+with durable private backups. All four existing daemons retained their PID/start identities and mapped executable
+inodes; they continue running their prior binaries. Installation probes used disposable configuration/state and
+made no model calls: version/help, init/doctor, Unicode search and seven real-terminal key/editor checks passed.
+The full five-profile PTY matrix and session-switching evidence remain bound to D-527; this installation did not
+repeat them or the earlier complete package checks.
+
+D-528 makes the default test gates attribute processes and scratch directories to their own invocation. The final
+candidate passed TeamAgents' 855-test gate and the supervisor's 19 independent registry checks. The merged source
+also passed the 26-tool AArch64 GNU/QEMU target. Registry loss, malformed bindings and invalid markers fail
+visibly; peer registries are retained regardless of age. Registry files can accumulate across runs. Unknown
+ownership never authorizes a signal. See [ACCEPTANCE.md](ACCEPTANCE.md) for receipt paths and evidence boundaries.
+
+The follow-up TeamAgents work completed successfully; the original field-debug operation remains
+`OUTCOME_UNKNOWN` and was not rewritten or replayed. The installed CLI retains the accepted Unicode search fix.
+The last complete package baseline remains `d96d7c8a`. CI at `a4ce2a2e` passed all four jobs in
+[run 44000392754](https://github.com/seek-hope/TeamAgents/actions/runs/44000392754); that predates D-528.
+The older scheduled updater-readiness failure in run 43868995516 remains a separate diagnosis obligation.
+Current local formal replay retains its input-content binding in
 [verification/REPORT.md](../verification/REPORT.md).
 
 - **855 Rust tests**: core 198, engine 536, TUI 121.
@@ -114,9 +121,10 @@ not rewritten as a pass.
 outcome/cost comparisons, reliable team completion, independent Reviewer evaluation, tree/navigation usefulness,
 provider/OAuth/integration coverage and current clean-host/platform acceptance.
 
-The field-debug run exposed unresolved execution records that prevent completion after the corresponding
-processes are reportedly gone. Reproduce and repair receipt reconciliation without converting unknown effects
-to success or bypassing completion guards. The scheduled CI updater-readiness failure also needs diagnosis.
+The original field-debug run retains one `OUTCOME_UNKNOWN` operation without quiescence evidence; the completion
+refusal is correct. D-528 fixes the verification tool's ownership error that could kill a concurrent session's
+runner, but does not establish that historical command's outcome. Do not infer success from missing processes or
+bypass completion guards. The scheduled CI updater-readiness failure also needs diagnosis.
 
 Specific runtime gaps include cross-provider switching and ambiguous wire identities, provider-side fetch
 redirect/rebinding enforcement, session startup/filesystem races and full-backlog connection deadlines.
