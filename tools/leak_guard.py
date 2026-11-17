@@ -575,6 +575,20 @@ def self_check() -> int:
         with contextlib.suppress(subprocess.TimeoutExpired):
             daemon.wait(timeout=10)
 
+        # 4b. a scratch directory nobody serves is still this run's leftover (D-131): excluding in-use directories
+        #     must not be a way to make the stray rule silently stop firing, so the positive case is pinned here.
+        stray_guard = tmp / "stray-guard.json"
+        snapshot(stray_guard, tmp)
+        leftover = tmp / "ta-unserved-leftover"
+        leftover.mkdir()
+        report = io.StringIO()
+        if audit(stray_guard, tmp, out=report) != 1:
+            findings.append(f"a new scratch directory no live process serves must still audit as a leak, got: "
+                            f"{report.getvalue().strip()}")
+        if str(leftover) not in report.getvalue():
+            findings.append(f"the leak report must name the stray directory: {report.getvalue().strip()}")
+        shutil.rmtree(leftover, ignore_errors=True)
+
         # 5. a *peer session* is not this run's leak (D-528). Same user, same binary, same `/tmp` prefixes, a
         #    different run marker. Before the marker rule, `audit` reported this daemon and SIGTERM-then-SIGKILLed
         #    it, which is how a concurrent `make check` killed a live command runner and left the journal at
