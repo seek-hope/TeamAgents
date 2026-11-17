@@ -265,9 +265,14 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
   that is present but unusable (`null`, `""`, `[]`, a non-string) is a malformed binding and fails, never silently
   downgraded to the legacy rule — only an *absent* key is a legacy or hand-written snapshot, which is audited as
   before. Every one of these cases fails visibly before any process or directory is signalled or removed. The
-  marker becomes part of the registry file name, so it must be one safe path component: an unsafe value (a
-  separator, `.`/`..`, whitespace) is treated as no marker by `run_marker` and refused outright by `registry_path`,
-  which keeps every registry inside the directory that holds them. The record is emitted as
+  marker becomes part of the registry file name, so it must be one safe path component (letters, digits, `.`, `_`,
+  `-`; no separator, no `.`/`..`, no whitespace). Marker state is three-valued, and the three are not
+  interchangeable: absent or genuinely empty means no marker (the legacy machine-wide rule); present and well formed
+  is this gate's marker; present but unsafe is an **error**, never "no marker". `snapshot` raises it before creating
+  a baseline or a registry, so a misconfigured gate fails at the gate boundary instead of later as an unbound
+  baseline that falls back to the machine-wide rule, and `audit` reports it and fails before reading the baseline or
+  touching a process or directory; signalling code sees no marker in that state, and `registry_path` refuses it
+  outright, so no registry can be created inside or outside the registry directory. The record is emitted as
   one append of one encoded line, so parallel test processes cannot interleave halves. Signals bind to a process,
   not a number: selection captures each pid's start time together
   with its arguments, a pidfd is opened, the saved identity, marker and served root are re-checked around that

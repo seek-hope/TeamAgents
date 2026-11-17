@@ -99,15 +99,48 @@ def marker_problem(marker: str):
     return None
 
 
-def run_marker() -> str:
-    """This run's ownership marker: `""` when the caller set none, which keeps the machine-wide rule.
+def marker_state():
+    """`(marker, problem)`: the usable marker, and why a *present* value may not be used.
 
-    A marker that cannot safely name a file resolves to `""` here, i.e. "no marker", so an unsafe value can never
-    reach [`registry_path`]. Callers that bind a registry treat that as unset: `snapshot` will not bind, and an audit
-    of a bound baseline fails as lost provenance rather than writing or reading somewhere unexpected.
+    Three states, and they are deliberately not interchangeable:
+
+    * **absent** or set to the empty string -> `("", None)`: the caller supplied no marker, so the documented
+      machine-wide rule applies. This is the only legacy case.
+    * **present and well formed** -> `(value, None)`: this gate's ownership marker.
+    * **present but unsafe** -> `("", reason)`: a malformed marker is an *error*, never "no marker". Treating it as
+      absent would let a gate that meant to bind a registry quietly run unbound and fall back to the machine-wide
+      rule — the opposite of fail-closed provenance.
+
+    So signaling paths, which must never act on an unusable marker, see `""`; and every boundary that decides
+    whether a baseline is bound ([`marker_rejection`]) reports the error instead.
     """
-    marker = os.environ.get(RUN_MARKER, "")
-    return marker if marker and marker_problem(marker) is None else ""
+    raw = os.environ.get(RUN_MARKER, "")
+    if not raw:
+        return "", None
+    problem = marker_problem(raw)
+    return ("", problem) if problem else (raw, None)
+
+
+def marker_rejection():
+    """The deterministic error a present-but-invalid marker must produce, or `None` when the marker is usable.
+
+    `snapshot` raises it before it creates anything, and `audit` reports it and fails before it classifies, signals
+    or removes anything — so neither can turn a malformed marker into an unbound legacy run.
+    """
+    _marker, problem = marker_state()
+    if problem is None:
+        return None
+    return (f"{RUN_MARKER} is set to an unusable value: {problem}. A malformed marker is an error, not an absent "
+            f"one; refusing instead of falling back to the machine-wide rule")
+
+
+def run_marker() -> str:
+    """This run's usable ownership marker: `""` when none was supplied *or* the value is unusable.
+
+    Signaling code uses this, so it can never act on a malformed marker. Anything that decides whether a registry is
+    bound must use [`marker_rejection`] first, because "unusable" and "absent" are different states there.
+    """
+    return marker_state()[0]
 
 
 def carries_marker(pid: int, expected: str) -> bool:
@@ -139,6 +172,10 @@ model = "deepseek-flash"
 api_key_env = "DEEPSEEK_API_KEY"
 context_window = 1000000
 """
+
+
+class MarkerRefused(RuntimeError):
+    """A present-but-invalid `TEAMAGENTS_LEAK_GUARD_RUN`: a configuration error, reported without a traceback."""
 
 
 def is_running(stat: str) -> bool:
@@ -612,6 +649,12 @@ def snapshot(path: pathlib.Path, root: pathlib.Path | None = None) -> None:
     time a missing one means the record was destroyed rather than "nothing was ever recorded". A gate that cannot
     create it fails here, before the suites run, instead of producing an unattributable audit later.
     """
+    # A present-but-invalid marker is refused *before* anything is created: no registry file, no baseline, and no
+    # path derived from the unusable value. This is the boundary the default gate goes through, so a misconfigured
+    # gate fails here — visibly, before any suite runs — rather than later as an unbound baseline.
+    rejection = marker_rejection()
+    if rejection:
+        raise MarkerRefused(f"leak-guard snapshot refused: {rejection}")
     observed = observe(root)
     marker = run_marker()
     if marker:
@@ -817,6 +860,13 @@ def audit(path: pathlib.Path, root: pathlib.Path | None = None, out=sys.stdout) 
     so a peer's directory can at worst be mentioned in this run's output. A name is a convention, not ownership,
     and this report does not claim otherwise.
     """
+    # The same boundary on the reading side, and it comes first: an unusable marker fails deterministically, before
+    # the baseline is read and before any process or directory is classified, signalled or removed. It never
+    # silently becomes the machine-wide rule, and it does not depend on the baseline being present to be reported.
+    rejection = marker_rejection()
+    if rejection:
+        print(f"FAIL: {rejection}; no process or directory was signalled", file=out)
+        return 1
     before = json.loads(pathlib.Path(path).read_text())
     now = observe(root)
     marker = run_marker()
@@ -1391,35 +1441,81 @@ def self_check() -> int:
         if audit(legacy, tmp, out=report) != 0:
             findings.append(f"a baseline with no registry key must stay legacy-compatible, got: {report.getvalue()}")
 
-        # 4c5. an unsafe marker can never name a file outside the registry directory. Real filesystem: build the
-        #      path for each unsafe value and prove it does not escape `tmp`, and that a real write attempt through
-        #      `snapshot` cannot create anything outside it either.
+        # 4c5. a present-but-invalid marker is refused at the snapshot boundary (D-528), not downgraded to "no
+        #      marker": that downgrade wrote an *unbound* legacy baseline, which let the later audit fall back to
+        #      the machine-wide rule. Real filesystem: prove snapshot raises, that neither the baseline nor any
+        #      registry file is created, and that nothing appears outside the registry directory.
         escaped = tmp / "escaped-registry"
         escaped.mkdir()
-        for bad in ("../escaped-registry/x", "a/b", ".", "..", "with space", "tab\there"):
-            try:
-                built = registry_path(bad)
-            except ValueError:
-                continue                       # refused outright: the strongest answer
-            if built.parent.resolve() != tmp.resolve():
-                findings.append(f"an unsafe marker {bad!r} built {built} outside the registry directory")
         saved_marker = os.environ[RUN_MARKER]
-        try:
-            os.environ[RUN_MARKER] = "../escaped-registry/leak"
+        for bad in ("../escaped-registry/x", "a/b", ".", "..", "with space", "tab\there"):
+            os.environ[RUN_MARKER] = bad
+            unsafe_baseline = tmp / "unsafe-snapshot.json"
+            unsafe_baseline.unlink(missing_ok=True)
+            before_registries = set(tmp.glob(f"{REGISTRY_PREFIX}*"))
+            refusal = None
+            try:
+                snapshot(unsafe_baseline, tmp)
+            except MarkerRefused as error:
+                refusal = str(error)
+            except Exception as error:   # any other type is not the deterministic error path
+                findings.append(f"an unsafe marker {bad!r} raised {type(error).__name__}, not MarkerRefused")
+                continue
+            if refusal is None:
+                findings.append(f"snapshot accepted the unsafe marker {bad!r} instead of refusing it")
+                continue
+            if "unusable value" not in refusal:
+                findings.append(f"the refusal for {bad!r} must say the marker is unusable: {refusal}")
+            if unsafe_baseline.exists():
+                findings.append(f"an unsafe marker {bad!r} still wrote a baseline: it must refuse before writing")
+            if set(tmp.glob(f"{REGISTRY_PREFIX}*")) - before_registries:
+                findings.append(f"an unsafe marker {bad!r} created a registry file")
+            if list(escaped.iterdir()):
+                findings.append(f"an unsafe marker {bad!r} wrote outside the registry directory: "
+                                f"{list(escaped.iterdir())}")
             if run_marker():
-                findings.append("run_marker accepted a traversal marker instead of treating it as unset")
-            snapshot(tmp / "unsafe-snapshot.json", tmp)
-            leaked = list(escaped.iterdir())
-            if leaked:
-                findings.append(f"an unsafe marker wrote outside the registry directory: {leaked}")
-            bound = json.loads((tmp / "unsafe-snapshot.json").read_text()).get("registry")
-            if bound:
-                findings.append(f"an unsafe marker still bound a registry: {bound}")
+                findings.append(f"run_marker exposed the unusable marker {bad!r} to signalling code")
+            if marker_rejection() is None:
+                findings.append(f"marker_rejection accepted the unsafe marker {bad!r}")
+
+        # a bound baseline is still refused under an unusable marker, and nothing is signalled
+        signals.clear()
+        real_stop, real_observe = globals()["stop"], globals()["observe"]
+        try:
+            globals()["stop"] = lambda pids, finder=None, **kw: signals.append(sorted(pids)) or []
+            rows = {"daemons": [[999997, 4242, "/x/teamagents daemon --state-root /somebody-else"]],
+                    "runners": [], "strays": []}
+            globals()["observe"] = lambda root=None: rows
+            os.environ[RUN_MARKER] = "../escaped-registry/x"
+            report = io.StringIO()
+            verdict = audit(bound_guard_path, tmp, out=report)
         finally:
+            globals()["stop"], globals()["observe"] = real_stop, real_observe
             os.environ[RUN_MARKER] = saved_marker
-        # ordinary markers keep working exactly as before
+        if verdict != 1:
+            findings.append(f"a bound baseline audited under an unusable marker must fail, got exit {verdict}")
+        if "unusable value" not in report.getvalue():
+            findings.append(f"an unusable marker must be reported as such: {report.getvalue().strip()}")
+        if signals:
+            findings.append(f"an unusable marker reached stop() with {signals}")
+
+        # absent and genuinely empty stay legacy; a normal UUID still binds
+        for label, value in (("absent", None), ("empty", "")):
+            if value is None:
+                os.environ.pop(RUN_MARKER, None)
+            else:
+                os.environ[RUN_MARKER] = value
+            legacy_baseline = tmp / f"legacy-{label}.json"
+            snapshot(legacy_baseline, tmp)
+            if json.loads(legacy_baseline.read_text()).get("registry"):
+                findings.append(f"a {label} marker must stay unbound (legacy), but a registry was bound")
+            if audit(legacy_baseline, tmp, out=io.StringIO()) != 0:
+                findings.append(f"a {label} marker must keep the documented legacy audit behaviour")
+        os.environ[RUN_MARKER] = saved_marker
         if marker_problem("6d8b5f92-b85f-49ac-a3a0-6a0c5329465c") is not None:
             findings.append("a normal per-invocation UUID marker must be accepted")
+        if marker_rejection() is not None:
+            findings.append(f"this check's own UUID marker must be usable: {marker_rejection()}")
 
         # and nothing this control did removed a peer registry or a fixture directory
         if not aged_peer.is_file():
