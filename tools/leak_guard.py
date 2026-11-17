@@ -72,9 +72,9 @@ RUN_MARKER = "TEAMAGENTS_LEAK_GUARD_RUN"
 # **unattributed**: reported and kept, never called this run's leftover and never called a stranger's — no record
 # does not prove a foreign owner, only that ownership was not established (D-528).
 REGISTRY_PREFIX = ".ta-leak-owner-"
-# How long a gate's registry is kept for a later reader. A day is far longer than any gate and far shorter than a
-# machine's lifetime, so only abandoned lists are dropped.
-REGISTRY_LIFETIME_SECONDS = 24 * 60 * 60
+# Registries are not aged out: `snapshot` only ever writes or empties the file under its own marker, so a peer's
+# list survives whether its gate is running or long gone. The residue is one short line per scratch root per gate;
+# bounding it by age was unsafe (see `snapshot`).
 
 # The daemon refuses to start without the model profile's API key environment variable, and this check needs a
 # daemon that really runs. The value is never used: no model is called, and the key is read only when one is.
@@ -594,18 +594,16 @@ def snapshot(path: pathlib.Path, root: pathlib.Path | None = None) -> None:
         registry = registry_path(marker)
         try:
             registry.parent.mkdir(parents=True, exist_ok=True)
-            # A fresh gate starts with a fresh name list: this also bounds the file's growth to one gate.
+            # A fresh gate starts with a fresh name list: this bounds the file to one gate's roots and guarantees the
+            # binding read at audit time describes *this* gate.
             registry.write_text("")
-            # And a registry a day old belongs to a gate that is not running: its roots are long gone, and keeping
-            # every gate's list forever would be this rule's own small leak. Only files this rule created.
-            cutoff = time.time() - REGISTRY_LIFETIME_SECONDS
-            for stale in registry.parent.glob(f"{REGISTRY_PREFIX}*"):
-                with contextlib.suppress(OSError):
-                    if stale.is_file() and stale.name != registry.name and stale.stat().st_mtime < cutoff:
-                        stale.unlink()
         except OSError as error:
             raise RuntimeError(f"the gate marker is set but its registry {registry} could not be created: {error}")
         observed["registry"] = str(registry)
+        # A registry is only ever created or emptied under *our own* marker. Other `.ta-leak-owner-*` files are left
+        # exactly as they are: a peer gate may be running, and for one that is not, a name prefix plus an old mtime is
+        # not ownership evidence — deleting on that guess could destroy a live gate's records. The residue is bounded
+        # and small (one short line per root per gate) and is named in D-528 and docs rather than pruned heuristically.
     pathlib.Path(path).write_text(json.dumps(observed, indent=1) + "\n")
 
 
@@ -650,6 +648,45 @@ def read_registry(marker: str):
 def registry_roots(marker: str) -> set[str]:
     """The roots this gate recorded, treating any read failure as empty (see [`read_registry`] for the diagnosis)."""
     return read_registry(marker)[0]
+
+
+def binding_problem(before: dict, marker: str):
+    """Why this audit may not trust its baseline's registry binding, or `None` when it may.
+
+    A baseline that bound a registry made a claim — "these roots, under this gate" — and an audit must honour that
+    exact claim rather than fall back to reading whichever registry the *current* environment happens to name. The
+    fallbacks are what made a mismatched marker produce a clean machine-wide verdict, and in the unmarked case even
+    handed foreign pids to `stop`. So once a binding exists:
+
+    * no marker at all is *lost* provenance (the binding cannot be read);
+    * a different marker than the bound one is a *mismatched* audit of another gate's baseline;
+    * the bound path must be exactly this gate's registry path — no substitution, no traversal, no absolute path
+      into somebody else's run.
+
+    A baseline with **no** binding is a legacy or hand-written snapshot whose caller never had a registry; it keeps
+    the documented previous behaviour. Every failure is returned, never raised, so the caller can report it before
+    it touches a process or a directory.
+    """
+    bound = before.get("registry")
+    if not bound:
+        return None
+    if not marker:
+        return f"the baseline bound {bound}, but {RUN_MARKER} is unset: this audit cannot read that provenance"
+    expected = registry_path(marker)
+    try:
+        given = pathlib.Path(bound)
+    except (TypeError, ValueError):
+        return f"the baseline's registry binding {bound!r} is not a path"
+    if not given.is_absolute() or given.name != expected.name:
+        return (f"the baseline bound {bound}, which is not this gate's registry {expected}: refusing to read "
+                f"another run's records")
+    # resolve symlinks and `..` only after the name check, so a traversal cannot rename its way in
+    try:
+        if given.resolve() != expected.resolve():
+            return f"the baseline bound {bound}, which resolves outside this gate's registry {expected}"
+    except OSError as error:
+        return f"the baseline's registry binding {bound} could not be resolved: {error}"
+    return None
 
 
 def registered_elsewhere(stray: str, marker: str) -> bool:
@@ -792,13 +829,20 @@ def audit(path: pathlib.Path, root: pathlib.Path | None = None, out=sys.stdout) 
     #   held        - a live process of this run is serving it: a directory in use was not left behind
     #   unattributed - no record, or another run's, and unserved: reported and kept, ownership not established
     leaked_strays, held, unattributed_strays = [], [], []
+    # The baseline's own binding decides whether this audit may proceed at all, and it is checked before any
+    # process or directory is signalled: a mismatched marker must not reach `stop`, and must not be answered by
+    # reading a different registry than the baseline named.
+    problem = binding_problem(before, marker)
+    if problem:
+        print(f"FAIL: {problem}; no process or directory was signalled, and lost or mismatched ownership evidence "
+              f"is not a clean verdict", file=out)
+        return 1
     recorded, registry_problem = read_registry(marker)
-    # Fail closed only when this gate's snapshot *bound* a registry: then a missing or unreadable one means the
-    # record was destroyed after fixtures may have written to it. A baseline with no binding is a legacy or
-    # hand-written snapshot, whose caller never had a registry to begin with, so its directories are reported as
+    # A bound baseline that has passed the check above must also read cleanly: a missing or unreadable registry
+    # then means the record was destroyed after fixtures may have written to it. A baseline with no binding is a
+    # legacy or hand-written snapshot, whose caller never had a registry, so its directories are reported as
     # unattributed exactly as before — compatibility, not a silent clean verdict.
-    bound = bool(before.get("registry"))
-    if registry_problem and bound:
+    if registry_problem and before.get("registry"):
         # The fixtures may have recorded owned roots, so an unreadable registry is lost evidence, not "no roots":
         # say so and fail. Silently treating it as empty would report this run's own leaks as unattributed.
         print(f"FAIL: this run's scratch registry could not be read: {registry_problem}; "
@@ -1194,6 +1238,90 @@ def self_check() -> int:
                 registry.rmdir()
             # restore a healthy (empty) registry so the following controls read a bound gate, not this broken one
             registry.write_text("")
+
+        # 4c2. snapshot never deletes another run's registry (D-528). Age is not ownership: a peer gate may be
+        #      running, and one that is not leaves a small list, not something to guess about by mtime.
+        aged_peer = tmp / f"{REGISTRY_PREFIX}peer-active"
+        aged_peer.write_text("/tmp/peer-owned-root\n")
+        old = time.time() - (48 * 60 * 60)
+        os.utime(aged_peer, (old, old))
+        snapshot(tmp / "peer-preserve-guard.json", tmp)
+        if not aged_peer.is_file():
+            findings.append("snapshot deleted another run's registry: a name prefix and an old mtime are not "
+                            "ownership evidence")
+        elif aged_peer.read_text() != "/tmp/peer-owned-root\n":
+            findings.append("snapshot rewrote another run's registry")
+        # and our own snapshot bound exactly our own path, not the peer's
+        bound_guard = json.loads((tmp / "peer-preserve-guard.json").read_text())
+        if bound_guard.get("registry") != str(registry_path(os.environ[RUN_MARKER])):
+            findings.append(f"snapshot bound {bound_guard.get('registry')!r} instead of this gate's registry")
+
+        # 4c3. the baseline's binding is enforced before anything is signalled (D-528). A mismatched or absent
+        #      marker must not fall back to the machine-wide rule, and must not read a different registry.
+        bound_marker = os.environ[RUN_MARKER]
+        bound_path = registry_path(bound_marker)
+        bound_path.write_text("")
+        bound_guard_path = tmp / "binding-guard.json"
+        bound_guard_path.write_text(json.dumps({"daemons": [], "runners": [], "strays": [],
+                                               "registry": str(bound_path)}))
+        signals: list = []
+        real_stop = globals()["stop"]
+        try:
+            globals()["stop"] = lambda pids, finder=None, **kw: signals.append(sorted(pids)) or []
+            # a new process of *another* family appears: with a mismatched marker it must not be signalled
+            rows = {"daemons": [[999991, 4242, "/x/teamagents daemon --state-root /somebody-else"]],
+                    "runners": [], "strays": []}
+            real_observe = globals()["observe"]
+            globals()["observe"] = lambda root=None: rows
+            try:
+                for label, marker in (("unset", None), ("wrong", "someone-elses-gate")):
+                    saved = os.environ.pop(RUN_MARKER, None)
+                    if marker is not None:
+                        os.environ[RUN_MARKER] = marker
+                    report = io.StringIO()
+                    verdict = audit(bound_guard_path, tmp, out=report)
+                    if verdict != 1:
+                        findings.append(f"a bound baseline audited with a {label} marker must fail, got exit "
+                                        f"{verdict}: {report.getvalue().strip()}")
+                    if label == "unset" and "cannot read that provenance" not in report.getvalue():
+                        findings.append(f"an unset marker must be reported as lost provenance: "
+                                        f"{report.getvalue().strip()}")
+                    if label == "wrong" and "not this gate's registry" not in report.getvalue():
+                        findings.append(f"a wrong marker must be reported as a mismatched binding: "
+                                        f"{report.getvalue().strip()}")
+                    os.environ.pop(RUN_MARKER, None)
+                    if saved is not None:
+                        os.environ[RUN_MARKER] = saved
+                    if signals:
+                        findings.append(f"a {label} marker signalled foreign pids: {signals}")
+            finally:
+                globals()["observe"] = real_observe
+        finally:
+            globals()["stop"] = real_stop
+
+        # the correct marker still succeeds against the same bound baseline, so the rule is a check, not a wall
+        report = io.StringIO()
+        if audit(bound_guard_path, tmp, out=report) != 0:
+            findings.append(f"the correct marker must audit a bound baseline cleanly, got: {report.getvalue()}")
+
+        # a bound path that is not this gate's registry is refused even when the marker matches
+        for label, substitute in (
+            ("traversal", str(tmp / ".." / tmp.name / f"{REGISTRY_PREFIX}other")),
+            ("other-run", str(tmp / f"{REGISTRY_PREFIX}a-different-run")),
+            ("relative", f"{REGISTRY_PREFIX}{bound_marker}"),
+        ):
+            forged = tmp / f"forged-guard-{label}.json"
+            forged.write_text(json.dumps({"daemons": [], "runners": [], "strays": [], "registry": substitute}))
+            report = io.StringIO()
+            if audit(forged, tmp, out=report) != 1:
+                findings.append(f"a baseline bound to a substituted path ({label}) must fail, got: "
+                                f"{report.getvalue().strip()}")
+
+        # and nothing this control did removed a peer registry or a fixture directory
+        if not aged_peer.is_file():
+            findings.append("a peer registry is gone after the binding controls")
+        if not bound_path.is_file():
+            findings.append("this gate's own bound registry was removed by the binding controls")
 
         # 4d. the legacy wrappers bind identity and a root-scoped finder, so a bare pid list cannot reach a
         #     replacement. Captured, not sent: the mocked stop/kill only records its arguments.

@@ -16,6 +16,10 @@ fn parallel_records_are_whole_and_complete() {
     let base = std::env::temp_dir().join(format!("ta-concurrency-control-{marker}"));
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
+    // `base` is itself a guarded scratch root of this gate, so it is recorded in the gate's registry like any other.
+    // The *roots this control creates* go to a private registry instead: sharing the gate's would let every
+    // concurrently running test binary interleave its own records into the assertions.
+    scratch_owner::record_ownership(&base);
     let registry = base.join("registry");
 
     let handles: Vec<_> = (0..8)

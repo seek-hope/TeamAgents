@@ -255,10 +255,17 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
   name: every guarded test constructor records the root it creates in `$TMPDIR/.ta-leak-owner-<marker>` (a plain
   file in `TMPDIR`, never inside the root, because a root is functional fixture state), and only a root this run's
   registry names is its leftover; one no registry names is reported and kept as unattributed. `snapshot` creates
-  and binds that registry for a marked gate, and an audit whose baseline bound one fails when it can no longer be
-  read, rather than reading lost evidence as "no roots"; a baseline without a binding is a legacy snapshot and is
-  audited as before. The record is emitted as one append of one encoded line, so parallel test processes cannot
-  interleave halves. Signals bind to a process, not a number: selection captures each pid's start time together
+  and binds that registry for a marked gate, and writes or empties only the file under its own marker: another
+  gate's registry is never deleted or rewritten, because a name prefix plus an old mtime is not ownership evidence
+  and its gate may still be running. Registries are therefore not aged out; the residue is one short line per
+  scratch root per gate, kept as bounded residue rather than pruned heuristically. An audit uses the binding its
+  baseline recorded and nothing else: with a binding present, an unset marker is lost provenance, a different
+  marker is a mismatched audit of another gate's baseline, and a bound path that is not this gate's expected
+  registry (relative, traversal or another run's) is refused. All three fail visibly before any process or
+  directory is signalled or removed, instead of falling back to the machine-wide rule or reading a different
+  registry; a baseline without a binding is a legacy snapshot and is audited as before. The record is emitted as
+  one append of one encoded line, so parallel test processes cannot interleave halves. Signals bind to a process,
+  not a number: selection captures each pid's start time together
   with its arguments, a pidfd is opened, the saved identity, marker and served root are re-checked around that
   open, and TERM and the escalated KILL go through that one handle. `stop_daemons`, `stop_runners`, `kill_daemons`
   and `kill_runners` bind the same identities and a root-scoped finder, so the legacy entry points are not a way
