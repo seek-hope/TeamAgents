@@ -56,6 +56,7 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
 | Public fetch | Fake-IP hostnames require public-address verification; content caps count UTF-8 bytes | D-525 |
 | Workspace sessions | Ordinary startup restores the most recently opened session in the launch workspace, creating one if absent | D-526 |
 | Interface contracts | Validate scoped options before state access; share command metadata; preserve intentional key actions and resolved overrides | D-527 |
+| Leak-guard ownership | Only processes that inherited this run's marker are this run's leaks | D-528 |
 
 ## Authority and runtime
 
@@ -240,5 +241,16 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
   approval coverage. `TypeOK` is a type claim, not behavioral completeness.
 - `make test-aarch64` runs the 26-tool GNU user-emulation subset. Test targets audit leaks even after test
   failure, and either failure fails the target. Emulation is not native ARM/kernel/package acceptance.
+- A leak audit attributes before it signals (D-528). A `ta-*` / `teamagents-*` name is a convention, not
+  ownership: a concurrent session of the same user runs the same suites under the same `TMPDIR` with the same
+  binary. `make test` therefore exports `TEAMAGENTS_LEAK_GUARD_RUN=<uuid>`, and only a process whose own
+  `/proc/<pid>/environ` carries that marker is this run's leak; detached and reparented descendants inherit it
+  because the product's daemon and `jobs-runner` spawns do not clear the environment. A new process without the
+  marker is named in the report and left running, does not fail this run, and a clean verdict says "no leak from
+  this run" rather than calling the machine idle. A process whose environment cannot be read is `unattributed`
+  and equally left running. A scratch directory a live daemon or runner is serving has not been left behind and is
+  not counted as this run's leftover; removal never happens in an audit. Without a marker the rule keeps its
+  machine-wide meaning. Known limits: a leaked child that clears or rewrites its environment is reported but not
+  stopped, and a peer on an older build without the marker is spared yet unattributable.
 - Full Rust/SQLite refinement, whole-system composition, wide exhaustive completion, Policy B source-bound
   bidirectional fair-trace equivalence and arbitrary-input/live-model quality claims remain unestablished.
