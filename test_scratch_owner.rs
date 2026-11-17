@@ -29,26 +29,50 @@ pub fn registry_path(marker: &str) -> std::path::PathBuf {
 ///
 /// A gate that exported a marker asked to be able to attribute its roots to itself, so a failure to record **fails
 /// visibly**: an unrecorded root is indistinguishable from a peer's, and silently accepting that would turn "this
-/// gate could not attribute its own roots" into a clean audit. Appends are short single lines, so parallel test
-/// threads cannot interleave them.
+/// gate could not attribute its own roots" into a clean audit.
+///
+/// Concurrency: the record is encoded into one buffer and emitted with a **single** `write` on an `O_APPEND` handle.
+/// A formatted `writeln!` is not one write — it can split the path and the newline — and append mode only makes each
+/// *write* atomic, so two test processes could interleave halves of two records and hide owned roots. One write of
+/// one complete line cannot interleave, and a short write is treated as an error rather than retried, because a
+/// retry would be a second, separately-appendable write.
 pub fn record_ownership(dir: &std::path::Path) {
-    use std::io::Write;
     let Ok(marker) = std::env::var("TEAMAGENTS_LEAK_GUARD_RUN") else { return };
     if marker.is_empty() {
         return;
     }
-    let registry = registry_path(&marker);
-    let write = || -> std::io::Result<()> {
-        let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&registry)?;
-        writeln!(file, "{}", dir.display())
+    record_ownership_in(&registry_path(&marker), dir);
+}
+
+/// The append itself, against an explicit registry: what [`record_ownership`] does once it has a marker.
+///
+/// Split out so a test can exercise the real write path against a private file: a control that reused the gate's
+/// registry would share it with every concurrently running test binary of the same gate, and could neither isolate
+/// its own records nor clean up without touching theirs.
+pub fn record_ownership_in(registry: &std::path::Path, dir: &std::path::Path) {
+    use std::io::Write;
+    // the whole record, newline included, before anything is written
+    let mut record = dir.as_os_str().as_encoded_bytes().to_vec();
+    record.push(b'\n');
+    let write = || -> std::io::Result<usize> {
+        let mut file = std::fs::OpenOptions::new().create(true).append(true).open(registry)?;
+        file.write(&record)
     };
-    write().unwrap_or_else(|error| {
-        panic!(
+    match write() {
+        Ok(written) if written == record.len() => {}
+        Ok(written) => panic!(
+            "the gate marker is set but {} was only partly recorded in {} ({written} of {} bytes): this root could \
+             be unattributable",
+            dir.display(),
+            registry.display(),
+            record.len()
+        ),
+        Err(error) => panic!(
             "the gate marker is set but {} could not be recorded in {} ({error}): this root would be unattributable",
             dir.display(),
             registry.display()
-        )
-    });
+        ),
+    }
 }
 
 /// Create a fresh guarded scratch root and record it, in one step.

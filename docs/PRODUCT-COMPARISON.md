@@ -19,7 +19,7 @@ This is the candidate-work queue, not a record of past experiments. Implemented 
   projections. The tree is navigation, not authority or proof of success.
 - The product reads repository-local configuration under explicit user trust; hooks, checks, permissions,
   limits, retention and update policy remain under user control.
-- **854 Rust tests**, 63 positive TLA configurations in 60 traversals, 323 controls, 79 witnesses and 9 Kani
+- **855 Rust tests**, 63 positive TLA configurations in 60 traversals, 323 controls, 79 witnesses and 9 Kani
   harnesses. Current-host evidence covers five PTY profiles/both graphics modes, 18 offline probes, x86_64 musl
   installation and scripted profile/fetch checks; a separate live Fetch API check passed. AArch64 evidence is
   the 26-tool GNU user-emulation subset. None establishes general real-model task quality or native ARM acceptance.

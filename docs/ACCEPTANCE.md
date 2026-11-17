@@ -6,7 +6,7 @@ This file records current behavior and reproducible evidence, not historical acc
 ✅ means the named local path has automated evidence. 🔶 means implementation exists but the stated external,
 empirical or full-system obligation remains open. No icon is a proof of every release condition.
 
-Current source inventory: core 198 / engine 535 / tui 121 test targets; the full gate passed.
+Current source inventory: core 198 / engine 536 / tui 121 test targets; the full gate passed.
 Installed CLI source: `c19232440686e4c334b1abb090f773885ff444bc`; TUI source:
 `02f147a572dd9abf59ceff8eb47940d55c3c68ac` (D-527), with unchanged TUI inputs.
 The last complete package baseline is `d96d7c8acf54b951030140f076540cbb730f88ab`. Delivery CI at

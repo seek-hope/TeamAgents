@@ -21,7 +21,7 @@ passed. Neither run covers D-526/D-527 or this search fix. Current local formal 
 input-content fingerprint in
 [verification/REPORT.md](../verification/REPORT.md).
 
-- **854 Rust tests**: core 198, engine 535, TUI 121.
+- **855 Rust tests**: core 198, engine 536, TUI 121.
 - **63 positive TLA configurations in 60 traversals**, **323 controls**, **79 witnesses**, **9 Kani harnesses**.
 - Catalogue: **387 configurations across 47 modules**, including an incomplete wide configuration.
 - Current D-527 acceptance covers 23 isolated CLI invocations and seven PTY key/editor checks before and after

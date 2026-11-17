@@ -231,7 +231,7 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
   credentials, active jobs or external backups as repository housekeeping.
 - Source counts come from Cargo lists. Every registered current total/triple must match; missing/ambiguous
   statements fail. Numeric regeneration does not establish a passing gate, install or formal result.
-- Current source contains 854 Rust tests: core 198, engine 535 and TUI 121.
+- Current source contains 855 Rust tests: core 198, engine 536 and TUI 121.
 - Formal material has 387 configurations across 47 modules: 63 positive configurations in 60 traversals,
   323 controls and one separate wide configuration; 79 witnesses and 9 Kani harnesses. Shared traversals require
   identical model/specification/domain. Witnesses establish reachability, not safety. The report binds verified
@@ -254,10 +254,16 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
   silently left with directory detection disabled. A scratch directory is attributed by a *registry*, never by its
   name: every guarded test constructor records the root it creates in `$TMPDIR/.ta-leak-owner-<marker>` (a plain
   file in `TMPDIR`, never inside the root, because a root is functional fixture state), and only a root this run's
-  registry names is its leftover; one no registry names is reported and kept as unattributed. Signals bind to a
-  process, not a number: a pidfd is opened, the saved start identity, marker and served root are re-checked around
-  that open, and TERM and the escalated KILL go through that one handle — ESRCH is the only "gone", every other
-  failure stays unresolved rather than becoming stop evidence. Coverage is checked, not assumed:
+  registry names is its leftover; one no registry names is reported and kept as unattributed. `snapshot` creates
+  and binds that registry for a marked gate, and an audit whose baseline bound one fails when it can no longer be
+  read, rather than reading lost evidence as "no roots"; a baseline without a binding is a legacy snapshot and is
+  audited as before. The record is emitted as one append of one encoded line, so parallel test processes cannot
+  interleave halves. Signals bind to a process, not a number: selection captures each pid's start time together
+  with its arguments, a pidfd is opened, the saved identity, marker and served root are re-checked around that
+  open, and TERM and the escalated KILL go through that one handle. `stop_daemons`, `stop_runners`, `kill_daemons`
+  and `kill_runners` bind the same identities and a root-scoped finder, so the legacy entry points are not a way
+  around it. An unreadable start time is recorded as unknown and refused, never skipped; ESRCH is the only "gone",
+  and every other failure stays unresolved rather than becoming stop evidence. Coverage is checked, not assumed:
   `tools/leak_guard.py --audit-ownership` fails on a guarded-prefix constructor that records nothing. Known limits:
   a leaked child that clears or rewrites its environment is reported but not stopped; a peer on an older build is
   spared yet unattributable; a test root named outside the guarded prefixes, and a plain file, were never covered by

@@ -72,6 +72,9 @@ RUN_MARKER = "TEAMAGENTS_LEAK_GUARD_RUN"
 # **unattributed**: reported and kept, never called this run's leftover and never called a stranger's — no record
 # does not prove a foreign owner, only that ownership was not established (D-528).
 REGISTRY_PREFIX = ".ta-leak-owner-"
+# How long a gate's registry is kept for a later reader. A day is far longer than any gate and far shorter than a
+# machine's lifetime, so only abandoned lists are dropped.
+REGISTRY_LIFETIME_SECONDS = 24 * 60 * 60
 
 # The daemon refuses to start without the model profile's API key environment variable, and this check needs a
 # daemon that really runs. The value is never used: no model is called, and the key is read only when one is.
@@ -130,9 +133,22 @@ def _pids(subcommand: str, root: pathlib.Path | None = None) -> list[tuple[int, 
     """`(pid, args)` for the live `teamagents <subcommand> …` processes serving a root under `root`.
 
     Such a process is recognised by its **first argument** (`teamagents daemon …`, `teamagents jobs-runner …`),
-    which is what `make test`'s guard checked too. The `args` column of `ps` begins with the binary's *path*, so
-    a prefix test such as `args.startswith("daemon ")` matches nothing at all — measured 2026-09-26, after the sweep had been
-    silently doing nothing while the guard reported a leak it could not stop (D-144).
+    which is what `make test`'s guard checked too. The `args` column of `ps` begins with the binary's *path*, so a
+    prefix test such as `args.startswith("daemon ")` matches nothing at all — measured 2026-09-26, after the sweep
+    had been silently doing nothing while the guard reported a leak it could not stop (D-144).
+    """
+    return [(pid, args) for pid, _identity, args in _selected(subcommand, root)]
+
+
+UNKNOWN_IDENTITY = -1   # the start time could not be read: fail closed rather than skip the check
+
+
+def _selected(subcommand: str, root: pathlib.Path | None = None) -> list[tuple[int, int, str]]:
+    """`(pid, identity, args)` for this family, with the identity read *around* the metadata for that pid.
+
+    The `ps` line and the `/proc/<pid>/stat` read are two moments, so a pid number reused between them would pair
+    one process's arguments with another process's start time. Whenever that pair cannot be established the entry
+    carries `UNKNOWN_IDENTITY`, and [`acquire`] then refuses it: an incomplete identity never disables the check.
     """
     listing = subprocess.run(["ps", "-eo", "pid,stat,comm,args"], capture_output=True, text=True).stdout
     found = []
@@ -140,9 +156,6 @@ def _pids(subcommand: str, root: pathlib.Path | None = None) -> list[tuple[int, 
         parts = line.split(None, 3)
         if len(parts) != 4 or not is_running(parts[1]) or parts[2] != "teamagents":
             continue
-        # Only this user's processes can be this suite's leak. A `teamagents daemon` started by root inside a
-        # benchmark container is visible in `/proc` and cannot be signalled; counting it made `make check` exit 2
-        # while a benchmark ran (measured 2026-10-02, D-384). Ownership, not a pattern, is the rule (D-144).
         try:
             if os.stat(f"/proc/{parts[0]}").st_uid != os.geteuid():
                 continue
@@ -150,8 +163,18 @@ def _pids(subcommand: str, root: pathlib.Path | None = None) -> list[tuple[int, 
             continue
         if parts[3].split()[1:2] != [subcommand]:
             continue
-        if root is None or str(root) in parts[3]:
-            found.append((int(parts[0]), parts[3]))
+        if root is None or (lambda served: served and _under(served, str(root)))(_served_path(parts[3])):
+            pid = int(parts[0])
+            # re-read the arguments after the identity: if the process changed between the two reads, the pair is
+            # inconsistent and the entry is unusable
+            identity = start_identity(pid)
+            try:
+                after = pathlib.Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+            except OSError:
+                after = ""
+            if identity is None or (after and after.split()[1:2] != [subcommand]):
+                identity = UNKNOWN_IDENTITY
+            found.append((pid, identity, parts[3]))
     return found
 
 
@@ -199,10 +222,11 @@ def observe(root: pathlib.Path | None = None) -> dict:
     leaves one behind without any daemon to point at it — measured: `runner_crash_mid_job_is_outcome_unknown`
     left a live runner behind on every run until D-226 gave the suites a scratch root that stops them.
     """
-    # The start identity travels with the pid: a baseline of bare pid numbers would hide a new process that reused
-    # an earlier peer's number, and `audit` needs the identity anyway to bind a signal to the process it selected.
-    return {"daemons": [[pid, start_identity(pid), args] for pid, args in daemon_pids(root)],
-            "runners": [[pid, start_identity(pid), args] for pid, args in runner_pids(root)],
+    # The start identity travels with the pid, captured in the same selection that produced the arguments: a
+    # baseline of bare pid numbers would hide a new process that reused a peer's number, and an identity read later
+    # could describe a different process than the arguments record.
+    return {"daemons": [list(row) for row in _selected("daemon", root)],
+            "runners": [list(row) for row in _selected("jobs-runner", root)],
             "strays": sorted(strays(root))}
 
 
@@ -324,6 +348,12 @@ def _close(fd: int) -> None:
         pass
 
 
+def _under(served: str, root: str) -> bool:
+    """Is `served` the root itself or a directory beneath it? Whole-path containment, never a substring."""
+    root = root.rstrip("/")
+    return served == root or served.startswith(root + "/")
+
+
 def _serves(args: str, root: str) -> bool:
     """Does this command line *name* `root` as the directory it serves? Whole-argument equality, not a substring.
 
@@ -374,6 +404,9 @@ def acquire(pid: int, finder=daemon_pids, marker: str = "", expected_identity=No
     Anything else is `PIDFD_REFUSED`, and **no signal is ever sent by pid number**: there is no bare-pid fallback,
     so a reused number cannot be reached from this module at all.
     """
+    if expected_identity == UNKNOWN_IDENTITY:
+        # The caller could not establish which process this was, so nothing here can be attributed to it.
+        return None, PIDFD_REFUSED
     if expected_identity is not None and start_identity(pid) != expected_identity:
         return None, PIDFD_REFUSED
     fd, state = _pidfd_open(pid)
@@ -403,7 +436,8 @@ def _alive(pids: list[int], finder=daemon_pids) -> list[int]:
 
 
 def stop(pids: list[int], finder=daemon_pids, grace: float = 5.0, kill_grace: float = 10.0,
-         marker: str = "", identities: dict | None = None, report: list | None = None) -> list[int]:
+         marker: str = "", identities: dict | None = None, report: list | None = None,
+         served: dict | None = None) -> list[int]:
     """Stop these processes: SIGTERM through an identity-bound handle, then SIGKILL for what is left.
 
     Signals go to a process, never to a pattern: `pgrep`/`pkill -f` match any command line that *contains* the
@@ -425,8 +459,9 @@ def stop(pids: list[int], finder=daemon_pids, grace: float = 5.0, kill_grace: fl
     unresolved: list[int] = []
     wanted = identities or {}
     outcomes: dict[int, dict] = {}
+    roots = served or {}
     for pid in pids:
-        fd, state = acquire(pid, finder, marker, expected_identity=wanted.get(pid))
+        fd, state = acquire(pid, finder, marker, expected_identity=wanted.get(pid), served=roots.get(pid, ""))
         if state == PIDFD_GONE:
             outcomes[pid] = {"state": PIDFD_GONE}
             continue                      # ESRCH: the kernel says that pid no longer exists
@@ -466,7 +501,7 @@ def stop(pids: list[int], finder=daemon_pids, grace: float = 5.0, kill_grace: fl
 
 
 def kill(pids: list[int], finder=daemon_pids, grace: float = 10.0, marker: str = "",
-         identities: dict | None = None) -> list[int]:
+         identities: dict | None = None, served: dict | None = None) -> list[int]:
     """SIGKILL these processes and return those not proven stopped: for a probe that deliberately *crashes* one.
 
     Not the same thing as `stop`: since D-150 the daemon handles SIGTERM and shuts itself down gracefully, so a
@@ -478,8 +513,9 @@ def kill(pids: list[int], finder=daemon_pids, grace: float = 10.0, marker: str =
     handles: dict[int, int] = {}
     unresolved: list[int] = []
     wanted = identities or {}
+    roots = served or {}
     for pid in pids:
-        fd, state = acquire(pid, finder, marker, expected_identity=wanted.get(pid))
+        fd, state = acquire(pid, finder, marker, expected_identity=wanted.get(pid), served=roots.get(pid, ""))
         if state == PIDFD_GONE:
             continue
         if fd is None:
@@ -501,14 +537,30 @@ def kill(pids: list[int], finder=daemon_pids, grace: float = 10.0, marker: str =
     return survivors + unresolved
 
 
+def _bind(family: str, root: pathlib.Path | None):
+    """`(pids, identities, finder)` for one family at one root, captured once, for a stop/kill call.
+
+    The wrappers below used to hand `stop`/`kill` a bare `[pid]`, which left the identity map and the root-scoped
+    finder unused: a pid number reused between selection and signal was reachable. Binding the three together here
+    means the legacy entry points carry the same protection as `audit`, with the same return shape.
+    """
+    rows = _selected(family, root)
+    pids = [pid for pid, _identity, _args in rows]
+    identities = {pid: identity for pid, identity, _args in rows}
+    finder = (lambda: _pids(family, root))
+    return pids, identities, finder
+
+
 def kill_daemons(root: pathlib.Path) -> list[int]:
     """Crash the live daemons serving `root`: SIGKILL, no shutdown path (D-150)."""
-    return kill([pid for pid, _args in daemon_pids(root)])
+    pids, identities, finder = _bind("daemon", root)
+    return kill(pids, finder=finder, identities=identities)
 
 
 def kill_runners(root: pathlib.Path) -> list[int]:
     """Crash the live command runners serving `root`: SIGKILL, no shutdown path (D-150)."""
-    return kill([pid for pid, _args in runner_pids(root)], finder=runner_pids)
+    pids, identities, finder = _bind("jobs-runner", root)
+    return kill(pids, finder=finder, identities=identities)
 
 
 def stop_daemons(root: pathlib.Path) -> list[int]:
@@ -516,19 +568,45 @@ def stop_daemons(root: pathlib.Path) -> list[int]:
 
     Each probe used to run `pkill -f "daemon --state-root <root>"` here, the hazard D-144 measured: `pkill -f`
     matches any command line that *contains* the string, so it also matched the shells whose text mentioned it
-    and killed two of this session's own shells (D-148).
+    and killed two of this session's own shells (D-148). Identity and the root-scoped finder are bound at
+    selection, so the same pid number cannot be re-aimed at a replacement process.
     """
-    return stop([pid for pid, _args in daemon_pids(root)])
+    pids, identities, finder = _bind("daemon", root)
+    return stop(pids, finder=finder, identities=identities)
 
 
 def stop_runners(root: pathlib.Path) -> list[int]:
     """Stop the live command runners serving `root` (or all of them): `crash.py` and `unknown_outcome.py`."""
-    return stop([pid for pid, _args in runner_pids(root)], finder=runner_pids)
+    pids, identities, finder = _bind("jobs-runner", root)
+    return stop(pids, finder=finder, identities=identities)
 
 
 def snapshot(path: pathlib.Path, root: pathlib.Path | None = None) -> None:
-    """Write down what the guards see, so the audit can tell a leak from something that was already there."""
-    pathlib.Path(path).write_text(json.dumps(observe(root), indent=1) + "\n")
+    """Write down what the guards see, and bind this gate's registry, so a later audit can attribute a difference.
+
+    Binding is what makes a lost registry *detectable*: the gate creates its own registry file here, so at audit
+    time a missing one means the record was destroyed rather than "nothing was ever recorded". A gate that cannot
+    create it fails here, before the suites run, instead of producing an unattributable audit later.
+    """
+    observed = observe(root)
+    marker = run_marker()
+    if marker:
+        registry = registry_path(marker)
+        try:
+            registry.parent.mkdir(parents=True, exist_ok=True)
+            # A fresh gate starts with a fresh name list: this also bounds the file's growth to one gate.
+            registry.write_text("")
+            # And a registry a day old belongs to a gate that is not running: its roots are long gone, and keeping
+            # every gate's list forever would be this rule's own small leak. Only files this rule created.
+            cutoff = time.time() - REGISTRY_LIFETIME_SECONDS
+            for stale in registry.parent.glob(f"{REGISTRY_PREFIX}*"):
+                with contextlib.suppress(OSError):
+                    if stale.is_file() and stale.name != registry.name and stale.stat().st_mtime < cutoff:
+                        stale.unlink()
+        except OSError as error:
+            raise RuntimeError(f"the gate marker is set but its registry {registry} could not be created: {error}")
+        observed["registry"] = str(registry)
+    pathlib.Path(path).write_text(json.dumps(observed, indent=1) + "\n")
 
 
 def _served_path(args: str) -> str:
@@ -539,23 +617,39 @@ def _served_path(args: str) -> str:
     return state_root_of(args) if parts[1:2] == ["daemon"] else ""
 
 
-def registry_roots(marker: str) -> set[str]:
-    """The scratch roots a gate recorded in its own registry: `$TMPDIR/.ta-leak-owner-<marker>`.
+def registry_path(marker: str) -> pathlib.Path:
+    """This gate's registry: `$TMPDIR/.ta-leak-owner-<marker>`."""
+    return pathlib.Path(os.environ.get("TMPDIR", "/tmp")) / f"{REGISTRY_PREFIX}{marker}"
 
-    The registry is a plain file in the gate's `TMPDIR`, deliberately *not* inside the roots it names: a test's
-    scratch root is functional fixture state (an artifact directory the product scans, a database directory it
-    budgets, a directory a test makes read-only), and an extra file inside it changed 20 fixtures — measured while
-    replacing the in-root record with this one. A plain file is also invisible to the stray rule, which counts
-    directories only (D-143).
+
+def read_registry(marker: str):
+    """`(roots, problem)`: the roots this gate recorded, or why that could not be established.
+
+    `snapshot` creates the registry for a marked gate, so at audit time the file is expected to exist. An empty set
+    is a fact only when the read succeeded; a missing, unreadable or malformed registry is a `problem`, because the
+    fixtures may have recorded owned roots and reporting "no roots" would turn lost evidence into a clean verdict.
     """
     if not marker:
-        return set()
-    base = pathlib.Path(os.environ.get("TMPDIR", "/tmp"))
+        return set(), None
+    path = registry_path(marker)
     try:
-        text = (base / f"{REGISTRY_PREFIX}{marker}").read_text(errors="replace")
-    except OSError:
-        return set()
-    return {line.strip() for line in text.splitlines() if line.strip()}
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return set(), f"missing ({path}): snapshot should have created it"
+    except OSError as error:
+        return set(), f"unreadable ({path}): {error}"
+    if b"\0" in raw:
+        return set(), f"malformed ({path}): embedded NUL byte"
+    lines = [line for line in raw.split(b"\n") if line.strip()]
+    bad = [line for line in lines if not line.startswith(b"/")]
+    if bad:
+        return set(), f"malformed ({path}): {len(bad)} record(s) are not absolute paths"
+    return {line.decode("utf-8", "replace") for line in lines}, None
+
+
+def registry_roots(marker: str) -> set[str]:
+    """The roots this gate recorded, treating any read failure as empty (see [`read_registry`] for the diagnosis)."""
+    return read_registry(marker)[0]
 
 
 def registered_elsewhere(stray: str, marker: str) -> bool:
@@ -698,7 +792,21 @@ def audit(path: pathlib.Path, root: pathlib.Path | None = None, out=sys.stdout) 
     #   held        - a live process of this run is serving it: a directory in use was not left behind
     #   unattributed - no record, or another run's, and unserved: reported and kept, ownership not established
     leaked_strays, held, unattributed_strays = [], [], []
-    recorded = registry_roots(marker)
+    recorded, registry_problem = read_registry(marker)
+    # Fail closed only when this gate's snapshot *bound* a registry: then a missing or unreadable one means the
+    # record was destroyed after fixtures may have written to it. A baseline with no binding is a legacy or
+    # hand-written snapshot, whose caller never had a registry to begin with, so its directories are reported as
+    # unattributed exactly as before — compatibility, not a silent clean verdict.
+    bound = bool(before.get("registry"))
+    if registry_problem and bound:
+        # The fixtures may have recorded owned roots, so an unreadable registry is lost evidence, not "no roots":
+        # say so and fail. Silently treating it as empty would report this run's own leaks as unattributed.
+        print(f"FAIL: this run's scratch registry could not be read: {registry_problem}; "
+              f"snapshot bound it, so {len(new_strays)} new scratch director(ies) cannot be attributed and lost "
+              f"evidence is not a clean verdict", file=out)
+        for stray in new_strays:
+            print(f"  unattributed (registry lost): {stray}", file=out)
+        return 1
     for stray in new_strays:
         if marker and stray in recorded:
             leaked_strays.append(stray)
@@ -747,13 +855,18 @@ def audit(path: pathlib.Path, root: pathlib.Path | None = None, out=sys.stdout) 
             print(f"no leak: {len(now['daemons'])} daemon(s), {len(now['runners'])} runner(s) and "
                   f"{len(now['strays'])} scratch directory(ies) are on the machine now against {baseline}, with "
                   f"nothing new (marker {marker or 'unset: machine-wide rule'})", file=out)
+        # The registry is left in place, passing or failing: it is one gate's name list, and an audit is not
+        # necessarily the last reader of it (the self-check audits one snapshot repeatedly, a probe re-audits, a
+        # gate can be retried). Removing it here would make the next audit of a healthy gate look like lost
+        # evidence. Its lifetime is bounded at the other end, in `snapshot`.
         return 0
 
     def outcomes(entries, finder=daemon_pids) -> str:
         """Stop `entries` and describe what was *attempted* and *observed*, per the handles' own answers."""
         report: list = []
         result = stop([pid for pid, _i, _a in entries], finder=finder, marker=marker,
-                      identities={pid: identity for pid, identity, _a in entries}, report=report)
+                      identities={pid: identity for pid, identity, _a in entries}, report=report,
+                      served={pid: _served_path(args) for pid, _i, args in entries})
         lines = []
         served = {pid: _served_path(args) for pid, _i, args in entries}
         for row in report:
@@ -1054,6 +1167,70 @@ def self_check() -> int:
             if not peer_dir.is_dir():
                 findings.append(f"the audit removed a directory it does not own ({label})")
             shutil.rmtree(peer_dir, ignore_errors=True)
+
+        # 4c. a lost registry is lost evidence, not "no roots": the fixtures may have recorded owned roots, so the
+        #     audit must fail rather than report this run's own leak as unattributed.
+        for label, break_registry in (
+            ("missing", lambda registry: registry.unlink()),
+            ("unreadable", lambda registry: (registry.unlink(), registry.mkdir())),
+            ("malformed", lambda registry: registry.write_text("not-an-absolute-path\n")),
+        ):
+            lost_guard = tmp / f"lost-guard-{label}.json"
+            snapshot(lost_guard, tmp)
+            registry = registry_path(os.environ[RUN_MARKER])
+            break_registry(registry)
+            stray = tmp / f"ta-owned-during-{label}"
+            stray.mkdir()
+            report = io.StringIO()
+            if audit(lost_guard, tmp, out=report) != 1:
+                findings.append(f"a {label} registry must fail the audit, not report a clean verdict: "
+                                f"{report.getvalue().strip()}")
+            if "registry could not be read" not in report.getvalue():
+                findings.append(f"the audit must say the registry was lost ({label}): {report.getvalue().strip()}")
+            if not stray.is_dir():
+                findings.append(f"the audit removed a directory while its registry was {label}")
+            shutil.rmtree(stray, ignore_errors=True)
+            if registry.is_dir():
+                registry.rmdir()
+            # restore a healthy (empty) registry so the following controls read a bound gate, not this broken one
+            registry.write_text("")
+
+        # 4d. the legacy wrappers bind identity and a root-scoped finder, so a bare pid list cannot reach a
+        #     replacement. Captured, not sent: the mocked stop/kill only records its arguments.
+        captured = []
+        real_stop, real_kill = globals()["stop"], globals()["kill"]
+        try:
+            globals()["stop"] = lambda pids, finder=None, **kw: captured.append(("stop", pids, kw, finder)) or []
+            globals()["kill"] = lambda pids, finder=None, **kw: captured.append(("kill", pids, kw, finder)) or []
+            stop_daemons(tmp)
+            stop_runners(tmp)
+            kill_daemons(tmp)
+            kill_runners(tmp)
+        finally:
+            globals()["stop"], globals()["kill"] = real_stop, real_kill
+        if len(captured) != 4:
+            findings.append(f"the legacy wrappers must each stop/kill once, got {len(captured)} call(s)")
+        for label, pids, kw, finder in captured:
+            identities = kw.get("identities")
+            if not identities and pids:
+                findings.append(f"{label} was called without an identity map: a bare pid list could reach a "
+                                f"replacement process")
+            if finder is None:
+                findings.append(f"{label} was called without a root-scoped finder")
+            if pids and identities and set(identities) != set(pids):
+                findings.append(f"{label} identity map does not cover its pids: {identities} vs {pids}")
+
+        # 4e. an unknown saved identity fails closed: no handle is taken and nothing is signalled.
+        sent_probe: list = []
+        real_signal = globals()["_pidfd_signal"]
+        try:
+            globals()["_pidfd_signal"] = lambda fd, sig: sent_probe.append((fd, int(sig))) or PIDFD_OK
+            if stop([424247], identities={424247: UNKNOWN_IDENTITY}) != [424247]:
+                findings.append("an unknown saved identity must stay unresolved, not be treated as stopped")
+            if sent_probe:
+                findings.append(f"an unknown saved identity was signalled: {sent_probe}")
+        finally:
+            globals()["_pidfd_signal"] = real_signal
 
         # 5. a *peer session* is not this run's leak (D-528). Same user, same binary, same `/tmp` prefixes, a
         #    different run marker. Before the marker rule, `audit` reported this daemon and SIGTERM-then-SIGKILLed
