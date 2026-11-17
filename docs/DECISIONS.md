@@ -250,7 +250,17 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
   this run" rather than calling the machine idle. A process whose environment cannot be read is `unattributed`
   and equally left running. A scratch directory a live daemon or runner is serving has not been left behind and is
   not counted as this run's leftover; removal never happens in an audit. Without a marker the rule keeps its
-  machine-wide meaning. Known limits: a leaked child that clears or rewrites its environment is reported but not
-  stopped, and a peer on an older build without the marker is spared yet unattributable.
+  machine-wide meaning for processes and its previous strict meaning for directories, so an existing caller is never
+  silently left with directory detection disabled. A scratch directory is attributed by a *registry*, never by its
+  name: every guarded test constructor records the root it creates in `$TMPDIR/.ta-leak-owner-<marker>` (a plain
+  file in `TMPDIR`, never inside the root, because a root is functional fixture state), and only a root this run's
+  registry names is its leftover; one no registry names is reported and kept as unattributed. Signals bind to a
+  process, not a number: a pidfd is opened, the saved start identity, marker and served root are re-checked around
+  that open, and TERM and the escalated KILL go through that one handle — ESRCH is the only "gone", every other
+  failure stays unresolved rather than becoming stop evidence. Coverage is checked, not assumed:
+  `tools/leak_guard.py --audit-ownership` fails on a guarded-prefix constructor that records nothing. Known limits:
+  a leaked child that clears or rewrites its environment is reported but not stopped; a peer on an older build is
+  spared yet unattributable; a test root named outside the guarded prefixes, and a plain file, were never covered by
+  the stray rule; and a registry entry left by a killed gate makes that root attributable to a run that is gone.
 - Full Rust/SQLite refinement, whole-system composition, wide exhaustive completion, Policy B source-bound
   bidirectional fair-trace equivalence and arbitrary-input/live-model quality claims remain unestablished.
