@@ -1,4 +1,4 @@
-> Current source validation: core 198 / engine 536 / tui 121, plus 63 positive TLA configurations in 60
+> Current source validation: core 198 / engine 538 / tui 121, plus 63 positive TLA configurations in 60
 > traversals, 323 controls, 79 witnesses and 9 Kani harnesses. The latest `make check` passed. This document describes
 > current source, not an earlier release archive.
 
@@ -25,7 +25,7 @@
   reasoning effort.
 - Host Shell, acceptance commands and local MCP with explicit capability checks. Ordinary Shell requires no
   per-call approval; self-update approval remains. Retired sandbox settings are rejected.
-- File tools, persistent Shell state, DeepSeek/Exa search, DeepSeek fetch, Skills, stdio/HTTP MCP resources and
+- File tools, persistent Shell state, DeepSeek/Exa search and fetch, Skills, stdio/HTTP MCP resources and
   restricted JavaScript codemode. Batch file edits reject malformed supplied hash preconditions without
   modifying files. Hooks can report events or veto native tool calls.
 - File-open flags follow the target ABI; the file/tool regression subset runs under GNU
@@ -36,7 +36,7 @@
 
 ## Current evidence
 
-The full local gate passed **855 Rust tests** (core 198, engine 536, TUI 121). Formal material contains **387
+The full local gate passed **857 Rust tests** (core 198, engine 538, TUI 121). Formal material contains **387
 configurations across 47 modules**: **63 positive configurations in 60 traversals**, **323 negative controls**,
 **79 normal-path witnesses** and **9 Kani harnesses**. Search-tree coverage includes ordered pair transitions,
 23 controls covering every non-`TypeOK` tree claim and 11 witnesses. Witnesses demonstrate reachability only.

@@ -341,8 +341,8 @@ pub fn basic_tool_schemas(web: bool, skills: bool) -> Vec<Json> {
                 "ori_question":{"type":"string","maxLength":128,"description":"The user's original question, which helps the search engine understand intent."},
                 "provider":{"type":"string","enum":["auto","deepseek","exa","both"],"default":"auto","description":"auto uses every bound provider; both requires DeepSeek and Exa; deepseek/exa restricts the source."}
             },"required":["query"]})));
-        schemas.push(wrap("web_fetch", "Fetch a web page and return title, source URL, fetch time and the readable text body (HTML only; capped).",
-            json!({"type":"object","properties":{"url":{"type":"string"},"max_bytes":{"type":"integer"}},"required":["url"]})));
+        schemas.push(wrap("web_fetch", "Fetch readable page text through bound providers. auto prefers Exa and falls back to DeepSeek on transient errors only. For truncated content, read full_path with read_file starting at next_byte_offset.",
+            json!({"type":"object","properties":{"url":{"type":"string"},"provider":{"type":"string","enum":["auto","exa","deepseek"],"default":"auto"},"max_bytes":{"type":"integer","minimum":0,"description":"Inline preview in UTF-8 bytes, capped at 32000."}},"required":["url"]})));
     }
     if skills {
         schemas.push(wrap("skill", "Discover and load agent skills. action='search' with query keywords lists matching skills (name — summary); action='read' with a skill name loads its full instructions; add path='scripts/run.sh' to read one support file relative to the skill's directory (bounded to 32,000 characters; paths outside the skill and credential-shaped names are refused). Read a skill before applying it.",

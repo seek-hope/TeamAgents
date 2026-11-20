@@ -27,7 +27,7 @@ fn read_only(name: &str) -> bool {
 
 fn retired(tx: &Connection, request: &str) -> Result<bool, String> {
     let (instance,epoch,work,current_epoch,lifecycle,context,request_ref):(String,i64,Option<String>,i64,String,Option<String>,String)=tx.query_row(
-        "SELECT r.instance_id,r.epoch,r.work_id,i.context_epoch,i.lifecycle,w.context_json,r.request_ref FROM model_requests r
+        "SELECT r.instance_id,r.epoch,COALESCE(r.work_id,w.billed_work_id),i.context_epoch,i.lifecycle,w.context_json,r.request_ref FROM model_requests r
         JOIN instances i ON i.id=r.instance_id LEFT JOIN work_requests w ON w.request_id=r.request_id WHERE r.request_id=?1",
         [request],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).map_err(|e|format!("execution scope: {e}"))?;
     if epoch != current_epoch || lifecycle != "ACTIVE" {
@@ -45,7 +45,7 @@ fn retired(tx: &Connection, request: &str) -> Result<bool, String> {
     }
     if let Some(context) = context {
         let context: Json = serde_json::from_str(&context).map_err(|e| format!("execution work scope: {e}"))?;
-        if context["admission"] == true {
+        if context["admission"] == true && work.is_none() {
             return Ok(true);
         }
         if let Some(task) = context["task_id"].as_str().filter(|task| !task.is_empty()) {
@@ -88,11 +88,11 @@ pub(in crate::v2::control) fn candidates(tx: &Connection, instance: &str) -> Res
     let mut stmt=tx.prepare("SELECT o.operation_id,r.request_id,r.instance_id,i.workspace_ref,o.status,json_extract(o.intent_json,'$.name')
         FROM operations o JOIN decisions d ON d.decision_id=o.decision_id JOIN model_requests r ON r.request_id=d.request_id
         JOIN instances i ON i.id=r.instance_id LEFT JOIN work_requests w ON w.request_id=r.request_id
-        LEFT JOIN work_scopes g ON g.id=r.work_id LEFT JOIN tasks t ON t.id=json_extract(w.context_json,'$.task_id')
+        LEFT JOIN work_scopes g ON g.id=o.work_id LEFT JOIN tasks t ON t.id=json_extract(w.context_json,'$.task_id')
         WHERE o.quiescence_json IS NULL
         AND (i.lifecycle<>'ACTIVE' OR r.epoch<>i.context_epoch OR g.status<>'ACTIVE'
             OR t.status NOT IN ('RUNNING','PENDING')
-            OR (COALESCE(json_extract(w.context_json,'$.task_id'),'')='' AND i.active_work_id IS NOT r.work_id)
+            OR (COALESCE(json_extract(w.context_json,'$.task_id'),'')='' AND i.active_work_id IS NOT o.work_id)
             OR (w.request_id IS NULL AND EXISTS(SELECT 1 FROM tasks legacy WHERE legacy.assignee=r.instance_id
                 AND legacy.work_id=r.work_id AND legacy.status IN ('FAILED','BLOCKED','CANCELLED'))))
         AND o.status NOT IN ('PREPARED','CANCELLED_BEFORE_START')

@@ -46,20 +46,20 @@ pub struct ReviewFailure {
 
 // ponytail: recognize only literal search arguments and a small read-only option set. Other shell
 // syntax falls back to the conservative guard; broader recognition needs parsed command evidence.
-fn literal_search(command: &str) -> bool {
+fn search_arguments(command: &str) -> Option<(String, Vec<String>)> {
     let mut words = Vec::new();
     let mut word = String::new();
     let mut quote = None;
     let mut started = false;
     for ch in command.chars() {
         if ch.is_control() && ch != '\t' {
-            return false;
+            return None;
         }
         match quote {
             Some(q) if ch == q => quote = None,
             Some('\'') => word.push(ch),
             Some('"') if !matches!(ch, '$' | '`' | '\\') => word.push(ch),
-            Some(_) => return false,
+            Some(_) => return None,
             None if matches!(ch, '\'' | '"') => {
                 quote = Some(ch);
                 started = true;
@@ -92,7 +92,7 @@ fn literal_search(command: &str) -> bool {
                     | '#'
             ) =>
             {
-                return false
+                return None
             }
             None => {
                 word.push(ch);
@@ -101,7 +101,7 @@ fn literal_search(command: &str) -> bool {
         }
     }
     if quote.is_some() {
-        return false;
+        return None;
     }
     if started {
         words.push(word);
@@ -110,7 +110,7 @@ fn literal_search(command: &str) -> bool {
         .first()
         .is_some_and(|word| matches!(word.as_str(), "rg" | "grep" | "/usr/bin/rg" | "/usr/bin/grep" | "/bin/grep"))
     {
-        return false;
+        return None;
     }
     let mut pattern = 1;
     while let Some(option) = words.get(pattern).filter(|word| word.starts_with('-')) {
@@ -127,11 +127,12 @@ fn literal_search(command: &str) -> bool {
             | "--ignore-case"
             | "--word-regexp"
             | "--files-with-matches" => {}
-            _ => return false,
+            _ => return None,
         }
     }
     // Require explicit paths and refuse trailing options (including rg --pre).
-    pattern + 1 < words.len() && words[pattern + 1..].iter().all(|word| !word.starts_with('-'))
+    (pattern + 1 < words.len() && words[pattern + 1..].iter().all(|word| !word.starts_with('-')))
+        .then(|| (words[pattern].clone(), words[pattern + 1..].to_vec()))
 }
 
 pub fn hard_deny(action: &Json) -> Option<String> {
@@ -139,7 +140,22 @@ pub fn hard_deny(action: &Json) -> Option<String> {
         return Some("auto-review refuses a self-update request; it is user-only".into());
     }
     let text = serde_json::to_string(action).unwrap_or_default().to_ascii_lowercase();
-    let search = action["name"] == "shell" && action["args"]["command"].as_str().is_some_and(literal_search);
+    let literal =
+        (action["name"] == "shell").then(|| action["args"]["command"].as_str().and_then(search_arguments)).flatten();
+    let search = literal.is_some();
+    // A bare field name in a fixed search of explicit source/document files is not a credential value.
+    let field_lookup = literal.as_ref().is_some_and(|(pattern, paths)| {
+        pattern.eq_ignore_ascii_case("api_key")
+            && paths.iter().all(|path| {
+                let path_ref = std::path::Path::new(path);
+                path_ref.components().all(|c| match c {
+                    std::path::Component::CurDir => true,
+                    std::path::Component::Normal(part) => !part.to_string_lossy().starts_with('.'),
+                    _ => false,
+                }) && path_ref.extension().is_some_and(|ext| matches!(ext.to_str(), Some("rs" | "md")))
+                    && !path.to_ascii_lowercase().contains("api_key")
+            })
+    });
     let publication = ["git push", "gh release", "cargo publish", "git tag"];
     let checks = [
         ("git push", "publishing a branch"),
@@ -163,7 +179,7 @@ pub fn hard_deny(action: &Json) -> Option<String> {
         ("token=", "credential material"),
     ];
     if let Some(reason) = checks.iter().find_map(|(needle, why)| {
-        (text.contains(needle) && !(search && publication.contains(needle)))
+        (text.contains(needle) && !(search && publication.contains(needle) || *needle == "api_key" && field_lookup))
             .then(|| format!("auto-review refuses {why}"))
     }) {
         return Some(reason);
@@ -403,12 +419,13 @@ mod tests {
     fn literal_publication_searches_still_require_model_review() {
         for command in [
             "rg -n 'git push' README.md",
+            "rg -n API_KEY src/config.rs README.md",
             "grep -F -e 'cargo publish' ./docs/release.md",
             "rg -- \"gh release\" README.md",
             "rg 'git tag' 'a file.txt'",
             "rg '$(git push)' README.md",
         ] {
-            assert!(literal_search(command), "{command}");
+            assert!(search_arguments(command).is_some(), "{command}");
             assert!(hard_deny(&json!({"name":"shell","args":{"command":command}})).is_none(), "{command}");
         }
         for command in [
@@ -424,7 +441,7 @@ mod tests {
             "rg 'git push' $PATH",
             "rg 'git push' README.md --files",
         ] {
-            assert!(!literal_search(command), "{command}");
+            assert!(search_arguments(command).is_none(), "{command}");
             assert!(hard_deny(&json!({"name":"shell","args":{"command":command}})).is_some(), "{command}");
         }
         // Search syntax never bypasses credential, runtime, privilege or self-update rules.
@@ -432,6 +449,9 @@ mod tests {
             "rg 'git push' /etc/shadow",
             "rg 'git push' .ssh/id_rsa",
             "rg api_key .env",
+            "rg api_key ../private.md",
+            "rg api_key .private/notes.md",
+            "rg api_key /tmp/config.rs",
             "rg 'git tag' .local/bin/teamagents",
         ] {
             assert!(hard_deny(&json!({"name":"shell","args":{"command":command}})).is_some(), "{command}");

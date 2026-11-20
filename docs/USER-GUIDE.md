@@ -247,7 +247,22 @@ The repository's `fake-mcp-server` test binary supplies this URI; `engine/tests/
 the production driver, including a binding that filters out every ordinary tool. Real service URIs come from
 that service's resource list.
 
-Web search uses the bound DeepSeek/Exa providers; fetch uses DeepSeek's Markdown endpoint. If local DNS returns
+Web search and fetch use separate bindings. To add Exa fetch alongside DeepSeek, declare:
+
+```toml
+[tools.exa_fetch]
+kind = "web_fetch"
+provider = "exa"
+api_key_env = "EXA_API_KEY"
+```
+
+With both fetch bindings, the default tries Exa first. A transient transport failure, HTTP 408, 429 or 5xx
+allows one attempt through DeepSeek. An explicit provider never falls back. The result names the provider and
+reports any fallback reason. The last successful page is cached per member for ten minutes. For long pages,
+pass `full_path` and `next_byte_offset` to `read_file` as `path` and `byte_offset`; no second fetch is needed.
+The file holds the provider's extracted text, not necessarily the complete original page.
+
+If local DNS returns
 fake-IP routing addresses in `198.18.0.0/15`, fetch verifies the hostname through Cloudflare or Google HTTPS DNS.
 Private destinations remain refused; unavailable verification returns an error rather than bypassing the guard.
 This local check does not establish how the fetch provider handles later DNS changes or redirects.
@@ -262,8 +277,9 @@ Work scopes carry original input, budget, deadline and required checks. Every mo
 review and verification shares that budget. Reservations precede requests and settle as known or unknown usage.
 
 Required-check failure triggers bounded repair or `BLOCKED`, never false success. `FAILED` and `CANCELLED` are
-also honest outcomes. A progress reply does not settle work. Empty, plan-only or repeated unproductive recovery
-is bounded.
+also honest outcomes. Progress replies, valid plans and repeated tool results neither settle work nor stop it. A repeat warning
+lets the model continue an intentional observation. Without a budget or deadline, such work may continue
+until interrupted. Empty replies and invalid actions still have bounded recovery.
 
 After interruption, recovery uses persisted location. Known results are reused; in-flight losses become
 `OUTCOME_UNKNOWN`. Side effects are not replayed on a guess. A late response remains in its original epoch and

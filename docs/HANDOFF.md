@@ -28,7 +28,7 @@ The older scheduled updater-readiness failure in run 43868995516 remains a separ
 Current local formal replay retains its input-content binding in
 [verification/REPORT.md](../verification/REPORT.md).
 
-- **855 Rust tests**: core 198, engine 536, TUI 121.
+- **857 Rust tests**: core 198, engine 538, TUI 121.
 - **63 positive TLA configurations in 60 traversals**, **323 controls**, **79 witnesses**, **9 Kani harnesses**.
 - Catalogue: **387 configurations across 47 modules**, including an incomplete wide configuration.
 - Current D-527 acceptance covers 23 isolated CLI invocations and seven PTY key/editor checks before and after

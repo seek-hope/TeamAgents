@@ -888,8 +888,8 @@ fn autonomy_context_reset_preserves_recovery_and_original_input() {
     ctl.submit(cmd("reset-2", "reset_instance", json!({"instance_id":"i1"})), Identity::User).unwrap();
     work_turn(&mut ctl, "last", "i1", json!({}));
     let state = work_context(ctl.connection(), "i1").unwrap();
-    assert_eq!(state["state"], "BLOCKED");
-    assert_eq!(state["repair_turns"], 3);
+    assert_eq!(state["state"], "RUNNING");
+    assert_eq!(state["repair_turns"], 0);
     assert_eq!(state["checkpoint"]["decisions"][0], "Keep compatibility");
     assert_eq!(state["original_input"], original);
     assert_eq!(state["recent_user_inputs"].as_array().unwrap().len(), 1);
@@ -973,7 +973,7 @@ fn autonomy_informational_followup_creates_no_work_and_new_work_bills_admission(
 }
 
 #[test]
-fn autonomy_admission_cannot_execute_tools_or_reset_its_budget() {
+fn autonomy_first_tool_admits_work_once_without_resetting_budget() {
     let (mut ctl, path) = completed_autonomous_control("work-admission-budget");
     ctl.submit(
         cmd(
@@ -988,8 +988,26 @@ fn autonomy_admission_cannot_execute_tools_or_reset_its_budget() {
         ctl.connection().query_row("SELECT revision FROM instances WHERE id='i1'", [], |r| r.get(0)).unwrap();
     open_decision(&mut ctl, "premature", "i1", revision, 1);
     let operations: i64 = ctl.connection().query_row("SELECT COUNT(*) FROM operations", [], |r| r.get(0)).unwrap();
-    assert_eq!(operations, 0, "no operation is prepared before the new work is admitted");
-    assert_eq!(work_state(ctl.connection(), "i1").unwrap()["repair_turns"], 1);
+    assert_eq!(operations, 1);
+    let work = budget_work(ctl.connection(), "i1").unwrap().unwrap();
+    let op = "d-premature:0";
+    assert_eq!(
+        ctl.connection()
+            .query_row("SELECT work_id FROM operations WHERE operation_id=?1", [op], |r| r.get::<_, String>(0))
+            .unwrap(),
+        work
+    );
+    ctl.submit(cmd("dispatch", "dispatch_operation", json!({"operation_id":op})), Identity::System).unwrap();
+    ctl.submit(
+        cmd(
+            "result",
+            "complete_operation",
+            json!({"operation_id":op,"status":"SUCCEEDED","receipt":{"ok":true,"content":"done"}}),
+        ),
+        Identity::System,
+    )
+    .unwrap();
+    assert_eq!(work_context(ctl.connection(), "i1").unwrap()["observations"]["operations"][0]["operation_id"], op);
     drop(ctl);
     let mut ctl = Control::open(&path, "s1", false).unwrap();
     let revision: i64 =
@@ -1005,14 +1023,13 @@ fn autonomy_admission_cannot_execute_tools_or_reset_its_budget() {
         )
         .unwrap();
     assert_eq!(refused["budget_refused"], true, "the earlier admission attempt already used 15 of the 10000 tokens");
-    assert_eq!(lifecycle_of(&ctl, "i1"), "PARKED");
     let requests: i64 = ctl
         .connection()
         .query_row("SELECT COUNT(*) FROM model_requests WHERE request_id='over-budget'", [], |r| r.get(0))
         .unwrap();
     assert_eq!(requests, 0);
     let work_scopes: i64 = ctl.connection().query_row("SELECT COUNT(*) FROM work_scopes", [], |r| r.get(0)).unwrap();
-    assert_eq!(work_scopes, 1);
+    assert_eq!(work_scopes, 2);
     drop(ctl);
     cleanup(&path);
 }
@@ -1051,14 +1068,14 @@ fn work_turn(ctl: &mut Control, tag: &str, instance: &str, extra: Json) -> Json 
 }
 
 #[test]
-fn autonomy_prose_recovery_is_bounded_persistent_and_single_consumption() {
+fn autonomy_empty_reply_recovery_is_bounded_persistent_and_single_consumption() {
     let (mut ctl, path) = autonomous_control("work-prose");
-    work_turn(&mut ctl, "one", "i1", json!({}));
+    work_turn(&mut ctl, "one", "i1", json!({"entry":{"role":"assistant","content":""}}));
     assert_eq!(work_state(ctl.connection(), "i1").unwrap()["repair_turns"], 1);
     drop(ctl);
     let mut ctl = Control::open(&path, "s1", false).unwrap();
-    work_turn(&mut ctl, "two", "i1", json!({}));
-    work_turn(&mut ctl, "three", "i1", json!({}));
+    work_turn(&mut ctl, "two", "i1", json!({"entry":{"role":"assistant","content":""}}));
+    work_turn(&mut ctl, "three", "i1", json!({"entry":{"role":"assistant","content":""}}));
     let state = work_state(ctl.connection(), "i1").unwrap();
     assert_eq!(state["state"], "BLOCKED");
     assert_eq!(state["repair_turns"], 3);

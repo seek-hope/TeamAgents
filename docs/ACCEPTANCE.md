@@ -6,7 +6,7 @@ This file records current behavior and reproducible evidence, not historical acc
 ✅ means the named local path has automated evidence. 🔶 means implementation exists but the stated external,
 empirical or full-system obligation remains open. No icon is a proof of every release condition.
 
-Current source inventory: core 198 / engine 536 / tui 121 test targets; the full gate passed.
+Current source inventory: core 198 / engine 538 / tui 121 test targets; the full gate passed.
 Installed CLI and TUI source: `cab1c47cda05d49b63b55075828be4ffe6402077`, merging the accepted D-528 candidate
 `ec1f1acbc6bfd151603f9cb04ebccc14696e8909`. Both x86_64 Linux musl binaries were rebuilt and atomically installed;
 current installation probes and artifact hashes are recorded below.
@@ -187,6 +187,17 @@ modes pass, including simultaneous Leader/member media and hidden-task polling c
 local gate and all 18 offline probes pass on 2026-11-16; the real-daemon panel probe preserves a draft while
 inspecting a member and observing task cancellation. This establishes scripted behavior, not measured usability
 or live team quality.
+
+In the local source gate, a scripted driver made six identical Shell observations, received repeat feedback
+on its fourth request and finished with the sixth receipt. A separate crash/reopen case kept the third
+empty reply bounded; context reset preserved the original input and saved plan without blocking prose.
+These are state-transition regressions, not evidence of better real-model outcomes or lower cost.
+
+The D-482 fetch change passed the local `make check` gate (857 Rust tests). Loopback fixtures in
+`engine/src/tools/fetch.rs` exercise Exa-first selection, separate request headers and bodies, fallback on
+HTTP 408/429/503, and no fallback on explicit selection, HTTP 400/401/403, redirects or malformed JSON.
+They also reconstruct a multi-page UTF-8 extraction using `read_file`, check member isolation and verify that
+a cache hit does not override a domain restriction. These are source tests, not installed or live Exa evidence.
 
 DNS/fetch regressions cover independently verified public hostnames behind fake-IP DNS. Both configured
 search providers work on the current host.

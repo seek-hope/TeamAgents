@@ -1,6 +1,7 @@
 //! File tools confined to the member workspace, automatic host shell execution,
 //! and web fetch with an SSRF guard.
 
+mod fetch;
 pub use crate::search::web_search;
 use serde_json::{json, Value as Json};
 use sha2::{Digest, Sha256};
@@ -71,7 +72,7 @@ static FILE_WRITES: Mutex<()> = Mutex::new(());
 const ARTIFACTS_PREFIX: &str = "/artifacts/";
 const TOOL_OUTPUT_PREFIX: &str = "/tool-output/";
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct ArtifactPaths {
     own: Option<PathBuf>,
     private_output: Option<PathBuf>,
@@ -986,7 +987,7 @@ fn workspace_executor_with_control(
 #[derive(Default, Clone)]
 pub(crate) struct WebTools {
     pub(crate) search: Vec<(String, teamagents_core::models::ToolBinding)>,
-    pub(crate) fetch: Option<teamagents_core::models::ToolBinding>,
+    pub(crate) fetch: Vec<teamagents_core::models::ToolBinding>,
 }
 
 fn is_web_kind(kind: &str) -> bool {
@@ -1026,10 +1027,8 @@ pub(crate) fn web_tools(
         // (ToolServiceUnavailable). Each binding authorizes one search provider;
         // duplicate providers are collapsed deterministically at call time.
         let provider = binding.provider.as_deref().unwrap_or("deepseek");
-        if provider != "deepseek" && !(binding.kind == "web_search" && provider == "exa") {
-            return Err(format!(
-                "tool service {name:?}: unsupported web provider {provider:?} (DeepSeek serves search/fetch; Exa serves search)"
-            ));
+        if !matches!(provider, "deepseek" | "exa") {
+            return Err(format!("tool service {name:?}: unsupported web provider {provider:?}"));
         }
         if binding.required {
             if let Err(reason) = web_credential(provider, binding.api_key_env.as_deref()) {
@@ -1038,7 +1037,7 @@ pub(crate) fn web_tools(
         }
         match binding.kind.as_str() {
             "web_search" => tools.search.push((name.clone(), binding.clone())),
-            "web_fetch" if tools.fetch.is_none() => tools.fetch = Some(binding.clone()),
+            "web_fetch" => tools.fetch.push(binding.clone()),
             _ => {}
         }
     }
@@ -1265,7 +1264,8 @@ pub(crate) fn member_executor_with_control(
     memory: Option<MemoryScope>,
     max_tool_seconds: Option<u64>,
 ) -> impl Fn(&str, &Json, &TurnControl) -> Result<Json, String> + Send + Sync + 'static {
-    let workspace = workspace_executor_with_control(root, artifacts, shell_state, max_tool_seconds);
+    let workspace = workspace_executor_with_control(root, artifacts.clone(), shell_state, max_tool_seconds);
+    let fetcher = fetch::Fetcher::default();
     let web: OnceLock<Result<WebTools, String>> = OnceLock::new();
     move |tool: &str, args: &Json, control: &TurnControl| match tool {
         "web_search" => {
@@ -1277,31 +1277,8 @@ pub(crate) fn member_executor_with_control(
             web_search(&bindings, args)
         }
         "web_fetch" => {
-            let binding = web
-                .get_or_init(|| web_tools(&catalog, &bindings))
-                .as_ref()
-                .map_err(|e| e.clone())?
-                .fetch
-                .clone()
-                .ok_or_else(|| format!("tool {tool} is not bound to this member"))?;
-            let provider = binding.provider.as_deref().unwrap_or("deepseek");
-            if provider != "deepseek" {
-                return Err(format!("unsupported web provider {provider:?} (this build serves deepseek)"));
-            }
-            let url = args.get("url").and_then(|v| v.as_str()).unwrap_or("");
-            if let Ok(parsed) = url::Url::parse(url) {
-                if let Some(host) = parsed.host_str() {
-                    if !control.domain_allowed(host) {
-                        return Err(format!(
-                            "web_fetch: {host} is not in this member's allowed domains (a `web` grant with a \
-                             domain: scope restricts the targets)"
-                        ));
-                    }
-                }
-            }
-            let max = args.get("max_bytes").and_then(|v| v.as_u64()).unwrap_or(2_000_000) as usize;
-            let allow_private = binding.env.get("allow_private").map(|v| v == "1").unwrap_or(false);
-            web_fetch(url, max, allow_private, binding.url.as_deref(), binding.api_key_env.as_deref())
+            let web = web.get_or_init(|| web_tools(&catalog, &bindings)).as_ref().map_err(Clone::clone)?;
+            fetcher.fetch(&web.fetch, args, control, artifacts.output())
         }
         "skill" => {
             if !bindings.iter().any(|b| b == "skills") {
@@ -1519,19 +1496,26 @@ struct OutputSink {
     error: Option<String>,
 }
 
+fn create_output_file(location: OutputLocation<'_>) -> Result<(std::fs::File, String), String> {
+    let dir = location.root.ok_or("member has no output directory")?;
+    std::fs::create_dir_all(dir).map_err(|e| crate::cli::derived_dir_uncreatable(dir, &e))?;
+    let name = format!("exec-{}.log", uuid::Uuid::new_v4());
+    let path = dir.join(&name);
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)
+        .map_err(|e| format!("the output artifact {} cannot be created: {e}", path.display()))?;
+    prune_artifacts(dir, ARTIFACT_DIR_BYTES);
+    Ok((file, format!("{}{name}", location.prefix)))
+}
+
 impl OutputSink {
     fn new(location: OutputLocation<'_>) -> Result<Self, String> {
-        let (artifact, reference) = if let Some(dir) = location.root {
-            std::fs::create_dir_all(dir).map_err(|e| crate::cli::derived_dir_uncreatable(dir, &e))?;
-            let name = format!("exec-{}.log", uuid::Uuid::new_v4());
-            let path = dir.join(&name);
-            let file = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-                .map_err(|e| format!("the output artifact {} cannot be created: {e}", path.display()))?;
-            prune_artifacts(dir, ARTIFACT_DIR_BYTES);
-            (Some(file), Some(format!("{}{name}", location.prefix)))
+        let (artifact, reference) = if location.root.is_some() {
+            let (file, reference) = create_output_file(location)?;
+            (Some(file), Some(reference))
         } else {
             (None, None)
         };
@@ -2083,7 +2067,6 @@ pub fn is_private_addr(addr: std::net::IpAddr) -> bool {
 /// One wording for the three consumers — the tool call, the member's start (`web_tools`) and `doctor` — so the
 /// same binding cannot be described differently in a receipt, a park reason and a doctor row. A variable that
 /// is *set but empty* counts as absent, the way `api_key_env` does in `config::missing_key_envs`.
-/// D-482: search accepts DeepSeek and Exa; fetch remains DeepSeek-only.
 pub(crate) fn web_credential(provider: &str, api_key_env: Option<&str>) -> Result<String, String> {
     if !matches!(provider, "deepseek" | "exa") {
         return Err(format!("unsupported web provider {provider:?} (this build serves deepseek and exa)"));
@@ -2097,10 +2080,7 @@ pub(crate) fn web_credential(provider: &str, api_key_env: Option<&str>) -> Resul
     }
 }
 
-const DEEPSEEK_FETCH_URL: &str = "https://api.deepseek.com/v1/tools/fetch";
-
-/// DeepSeek Fetch: POST {url}; the API returns `{title, content}` with content already as Markdown.
-/// The local guard still rejects private literals/addresses before anything is sent to the API.
+/// Single DeepSeek binding for callers that do not use the member dispatcher.
 pub fn web_fetch(
     url: &str,
     max_bytes: usize,
@@ -2108,26 +2088,20 @@ pub fn web_fetch(
     endpoint: Option<&str>,
     api_key_env: Option<&str>,
 ) -> Result<Json, String> {
-    let url = if allow_private { url.to_string() } else { guard_url(url)? };
-    let endpoint = endpoint.unwrap_or(DEEPSEEK_FETCH_URL);
-    let key = web_credential("deepseek", api_key_env)?;
-    let mut request =
-        ureq::post(endpoint).timeout(std::time::Duration::from_secs(30)).set("content-type", "application/json");
-    request = request.set("authorization", &format!("Bearer {key}"));
-    let response =
-        request.send_string(&json!({"url": url}).to_string()).map_err(|e| format!("web_fetch failed: {e}"))?;
-    let payload: Json = response.into_json().map_err(|e| format!("web_fetch bad json: {e}"))?;
-    let title = payload.get("title").and_then(|v| v.as_str()).unwrap_or("");
-    let content = payload.get("content").and_then(|v| v.as_str()).unwrap_or("");
-    let truncated = content.len() > max_bytes;
-    let content = &content[..content.floor_char_boundary(max_bytes.min(content.len()))];
-    Ok(json!({
-        "title": if title.is_empty() { url.to_string() } else { title.to_string() },
-        "url": url,
-        "fetched_at": iso_now(),
-        "content": content,
-        "truncated": truncated,
-    }))
+    let mut binding = teamagents_core::models::ToolBinding {
+        url: endpoint.map(str::to_owned),
+        api_key_env: api_key_env.map(str::to_owned),
+        ..Default::default()
+    };
+    if allow_private {
+        binding.env.insert("allow_private".into(), "1".into());
+    }
+    fetch::Fetcher::default().fetch(
+        &[binding],
+        &json!({"url":url, "max_bytes":max_bytes}),
+        &TurnControl::default(),
+        OutputLocation { root: None, prefix: ARTIFACTS_PREFIX },
+    )
 }
 
 pub(crate) fn iso_now() -> String {
@@ -2159,7 +2133,7 @@ pub fn iso8601(seconds: i64) -> String {
 
 /// Basic-tool gate for the R2 kernel: workspace file/shell tools plus the
 /// member's bound web and MCP services, every call producing a ToolReceipt.
-type V2Executor = Box<dyn Fn(&str, &Json, &TurnControl) -> Result<Json, String> + Send + Sync>;
+type V2Executor = Arc<dyn Fn(&str, &Json, &TurnControl) -> Result<Json, String> + Send + Sync>;
 
 /// Load codemode's persisted `store`/`load` map (D-376). A missing or unreadable file is an empty store; a
 /// malformed one is reported on stderr rather than failing a boot, because the store is a convenience, not an
@@ -2178,6 +2152,7 @@ fn load_codemode_store(path: Option<&Path>) -> std::collections::BTreeMap<String
 
 pub(crate) struct V2Toolkit {
     executor: V2Executor,
+    native: Vec<Json>,
     // D-374: an `Arc` so a codemode script's host closure can hold it in a `'static` callback; the members of
     // the toolkit only ever call `&self` methods, so sharing it is sound.
     bound: Arc<crate::bound::BoundTools>,
@@ -2195,6 +2170,8 @@ pub(crate) struct V2Toolkit {
 /// `store`/`load` values live between restarts.
 #[derive(Default)]
 pub(crate) struct ToolWiring {
+    pub profile_tools: Vec<Json>,
+    pub storage: Option<crate::v2::storage::Storage>,
     pub hooks: Option<Arc<crate::hooks::Hooks>>,
     pub session_id: String,
     pub instance_id: String,
@@ -2230,6 +2207,19 @@ impl V2Toolkit {
             session: wiring.session_id.clone(),
             instance: wiring.instance_id.clone(),
         });
+        let web = web_tools(&catalog, &bindings)?;
+        let native = wiring
+            .profile_tools
+            .iter()
+            .filter(|s| match s["function"]["name"].as_str() {
+                Some("ls" | "read_file" | "glob" | "grep") => bindings.iter().any(|b| b == "files"),
+                Some("skill") => bindings.iter().any(|b| b == "skills"),
+                Some("web_search") => !web.search.is_empty(),
+                Some("web_fetch") => !web.fetch.is_empty(),
+                _ => false,
+            })
+            .cloned()
+            .collect();
         let executor = member_executor_with_control(
             root.clone(),
             catalog,
@@ -2240,7 +2230,16 @@ impl V2Toolkit {
             wiring.max_tool_seconds,
         );
         let codemode_store = Arc::new(std::sync::Mutex::new(load_codemode_store(wiring.codemode_store.as_deref())));
-        Ok(V2Toolkit { executor: Box::new(executor), bound, codemode_store, wiring, root, artifacts, shell_state })
+        Ok(V2Toolkit {
+            executor: Arc::new(executor),
+            native,
+            bound,
+            codemode_store,
+            wiring,
+            root,
+            artifacts,
+            shell_state,
+        })
     }
 
     /// Persist codemode's `store`/`load` map (D-376). A failure to write is reported on stderr, not turned into
@@ -2271,12 +2270,12 @@ impl V2Toolkit {
     ///
     /// D-374: bound MCP tools are **not** advertised individually any more. They are reached through the one
     /// `codemode` tool, so a script can chain and filter them and only its own output enters the context. When
-    /// no MCP tool or resource service is bound the list is empty and `codemode` is not offered.
+    /// neither native reads nor MCP services are available, `codemode` is not offered.
     pub(crate) fn mcp_schemas(&self) -> Vec<Json> {
-        if self.bound.tools.is_empty() && self.bound.services.is_empty() {
+        if self.native.is_empty() && self.bound.tools.is_empty() && self.bound.services.is_empty() {
             return vec![];
         }
-        vec![json!({"type": "function", "function": crate::codemode::schema(&self.bound)})]
+        vec![json!({"type": "function", "function": crate::codemode::schema_with_native(&self.bound, &self.native)})]
     }
 
     /// True when the name can cause a remote effect and must not be replayed after an interruption. Used at the
@@ -2363,17 +2362,31 @@ impl V2Toolkit {
         // `pre_tool` veto, so a script is not a way around the hook.
         if intent.name == crate::codemode::TOOL_NAME {
             let code = intent.args.get("code").and_then(|value| value.as_str()).unwrap_or("");
-            let veto: Option<crate::codemode::Veto> =
-                self.wiring.hooks.as_ref().filter(|hooks| hooks.has_pre_tool()).map(|hooks| {
-                    let hooks = hooks.clone();
-                    let session = self.wiring.session_id.clone();
-                    let instance = self.wiring.instance_id.clone();
-                    Arc::new(move |name: &str, args: &Json| {
-                        hooks.deny_reason(&json!({"session_id": session, "instance_id": instance,
-                                                  "tool": name, "arguments": args}))
-                    }) as crate::codemode::Veto
-                });
-            let outcome = crate::codemode::run(
+            let hooks = self.wiring.hooks.clone().filter(|h| h.has_pre_tool());
+            let session = self.wiring.session_id.clone();
+            let instance = self.wiring.instance_id.clone();
+            let storage = self.wiring.storage.clone();
+            let operation = operation_id.to_owned();
+            let runtime = storage.as_ref().map(|_| tokio::runtime::Handle::current());
+            let veto: Option<crate::codemode::Veto> = Some(Arc::new(move |name, args| {
+                if let Some(reason) = hooks.as_ref().and_then(|h| {
+                    h.deny_reason(&json!({"session_id":session,"instance_id":instance,"tool":name,"arguments":args}))
+                }) {
+                    return Some(reason);
+                }
+                if let (Some(storage), Some(runtime)) = (&storage, &runtime) {
+                    let op = operation.clone();
+                    let member = instance.clone();
+                    return runtime
+                        .block_on(storage.call(move |c| c.check_nested_operation(&op, &member)))
+                        .and_then(|r| r)
+                        .err();
+                }
+                None
+            }));
+            let native_exec = self.executor.clone();
+            let nested_control = control.clone();
+            let outcome = crate::codemode::run_with_native(
                 code,
                 crate::codemode::Codemode {
                     tools: self.bound.clone(),
@@ -2382,6 +2395,9 @@ impl V2Toolkit {
                     timeout_ms: crate::codemode::DEFAULT_TIMEOUT_MS,
                     aborted: control.check().is_err(),
                 },
+                &self.native,
+                move |name, args| native_exec(name, args, &nested_control),
+                control.clone(),
             );
             self.save_codemode_store();
             receipt.duration_ms = started_at.elapsed().as_millis() as u64;
@@ -2389,8 +2405,10 @@ impl V2Toolkit {
                 .calls
                 .iter()
                 .map(|call| match &call.error {
-                    Some(error) => json!({"name": call.name, "status": call.status, "error": error}),
-                    None => json!({"name": call.name, "status": call.status}),
+                    Some(error) => {
+                        json!({"name": call.name, "args_hash":call.args_hash,"status": call.status, "error": error})
+                    }
+                    None => json!({"name": call.name, "args_hash":call.args_hash,"status": call.status}),
                 })
                 .collect();
             if let Some(error) = outcome.error {
@@ -2456,17 +2474,17 @@ fn receipt_error_class(text: &str) -> &'static str {
 /// The turn-cancellation flag the reference loop and the driver share: cancelling
 /// a running turn is a local execution concern, not team state (§10 keeps one
 /// owner per fact).
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct TurnControl {
-    cancelled: AtomicBool,
-    active: Mutex<()>,
+    cancelled: Arc<AtomicBool>,
+    active: Arc<Mutex<()>>,
     /// D-470: the hosts this member's live `web` grants allow; empty means no allowlist.
     domains: Vec<String>,
 }
 
 impl TurnControl {
     pub fn with_domains(domains: Vec<String>) -> Self {
-        TurnControl { cancelled: AtomicBool::new(false), active: Mutex::new(()), domains }
+        TurnControl { domains, ..Default::default() }
     }
 
     /// D-470: an empty allowlist means unrestricted (the historical behavior); otherwise the host must match an
@@ -3440,11 +3458,9 @@ mod tests {
         fetch_catalog
             .tools
             .insert("fetch".into(), serde_json::from_value(json!({"kind": "web_fetch", "provider": "exa"})).unwrap());
-        let error = match web_tools(&fetch_catalog, &["web".into()]) {
-            Ok(_) => panic!("Exa must not become a fetch provider just because search accepts it"),
-            Err(error) => error,
-        };
-        assert!(error.contains("Exa serves search"), "{error}");
+        let tools = web_tools(&fetch_catalog, &["web".into()]).unwrap();
+        assert_eq!(tools.fetch.len(), 1);
+        assert!(tools.search.is_empty());
     }
 
     // -- P1-2 / P2-6 regression tests (review 2026-09-14) --

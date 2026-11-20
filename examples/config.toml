@@ -27,6 +27,9 @@
 # notify = ["/home/you/bin/teamagents-notify.sh"]
 # pre_tool = ["/home/you/bin/teamagents-policy.sh"]
 
+# User-only: omitted capabilities on delegated tasks request these scoped grants.
+# default_task_capabilities = ["shell@workspace"]
+
 [models.leader_main]
 provider = "deepseek"
 protocol = "deepseek"
@@ -108,6 +111,12 @@ env = { search_type = "auto" }
 kind = "web_fetch"
 provider = "deepseek"
 api_key_env = "DEEPSEEK_API_KEY"
+
+# Optional: enable Exa-first fetch. An Exa search binding alone does not authorize fetch.
+# [tools.exa_fetch]
+# kind = "web_fetch"
+# provider = "exa"
+# api_key_env = "EXA_API_KEY"
 
 # Sample: CodeGraph over the native stdio MCP + codemode path. This does not
 # install CodeGraph or initialize an index. Run codegraph init --yes /path/to/repo

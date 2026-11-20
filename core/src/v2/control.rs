@@ -170,6 +170,32 @@ impl Control {
         Ok(Control { conn: store::open_read_only(path)?, session_id: session_id.to_string() })
     }
 
+    /// Check the enclosing operation immediately before each nested call. A cancel or scope change
+    /// stops subsequent calls; it cannot undo an effect which has already started.
+    pub fn check_nested_operation(&self, operation: &str, instance: &str) -> Result<(), String> {
+        let tx = &self.conn;
+        let (work, live): (Option<String>, bool) = tx.query_row(
+            "SELECT o.work_id, o.cancel_requested=0 AND o.status IN ('DISPATCH_COMMITTED','RUNNING')
+              AND i.lifecycle='ACTIVE' AND i.context_epoch=r.epoch
+              AND (s.state IS NULL OR s.state='RUNNING') AND (g.status IS NULL OR g.status='ACTIVE')
+              FROM operations o JOIN decisions d ON d.decision_id=o.decision_id
+              JOIN model_requests r ON r.request_id=d.request_id JOIN instances i ON i.id=r.instance_id
+              LEFT JOIN work_requests w ON w.request_id=r.request_id LEFT JOIN work_scopes g ON g.id=o.work_id
+              LEFT JOIN work_states s ON s.work_id=o.work_id AND s.instance_id=i.id AND s.epoch=r.epoch
+                AND s.task_id=COALESCE(json_extract(w.context_json,'$.task_id'),'')
+              WHERE o.operation_id=?1 AND i.id=?2 AND i.session_id=?3 AND json_extract(o.intent_json,'$.name')='codemode'",
+            rusqlite::params![operation,instance,self.session_id], |r| Ok((r.get(0)?,r.get(1)?))).map_err(|e|format!("nested operation scope: {e}"))?;
+        if !live {
+            return Err("the enclosing operation is cancelled or no longer active".into());
+        }
+        if let Some(work) = work {
+            if work_deadline_passed(tx, &work)? {
+                return Err("work deadline passed".into());
+            }
+        }
+        work::takeover::dispatch_scope(tx, operation)
+    }
+
     /// The single entry point. Duplicate command ids return the stored
     /// receipt; the same id with a different payload is rejected (§6.3).
     pub fn submit(&mut self, command: Command, identity: Identity) -> Result<Json, String> {
@@ -1413,6 +1439,25 @@ fn resolve_requested_capabilities(
     let mut granted = Vec::new();
     let mut pending = Vec::new();
     for (action, scope) in capabilities {
+        // Reuse a standing grant, never a temporary grant belonging to another task.
+        let mut stmt = tx.prepare("SELECT id,resource_scope FROM grants WHERE session_id=?1 AND subject=?2 AND action=?3 AND task_id IS NULL AND revoked_at IS NULL ORDER BY id").map_err(|e| e.to_string())?;
+        let held = stmt
+            .query_map(rusqlite::params![session_id, subject, action], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+            .map_err(|e| e.to_string())?;
+        let mut existing = None;
+        for grant in held {
+            let (id, resource) = grant.map_err(|e| e.to_string())?;
+            if crate::v2::capability::scope_covers(&resource, scope) {
+                existing = Some(id);
+                break;
+            }
+        }
+        if let Some(id) = existing {
+            granted.push(id);
+            continue;
+        }
         if requester == "user" {
             granted.push(issue_task_grant(
                 tx,
@@ -3574,9 +3619,15 @@ fn import_response(tx: &Connection, session_id: &str, params: &Json, identity: &
     if selected.is_none() {
         return Err(format!("request {request_id} has no selected complete attempt; cannot import"));
     }
-    let awaiting_admission = work::admission_request(tx, request_id)?;
-    let intents = if awaiting_admission { Vec::new() } else { intents };
-    let wait = if awaiting_admission { None } else { wait };
+    let admission = work::admit_tool_decision(
+        tx,
+        session_id,
+        &request_instance,
+        request_id,
+        !intents.is_empty() && completion.is_none(),
+    )?;
+    let intents = if admission == Some(false) { Vec::new() } else { intents };
+    let wait = if admission.is_some() { None } else { wait };
     let inserted = tx
         .execute(
             "INSERT INTO decisions (decision_id, request_id, completion_json) VALUES (?1, ?2, ?3)",
@@ -3720,7 +3771,9 @@ fn import_response(tx: &Connection, session_id: &str, params: &Json, identity: &
         )
         .map_err(|e| format!("follow-up promotion: {e}"))?;
     }
-    work::response(tx, session_id, &request_instance, decision_id, params)?;
+    if admission != Some(true) {
+        work::response(tx, session_id, &request_instance, decision_id, params)?;
+    }
     work::wake_attention(tx, session_id, &request_instance)?;
     let phase = load_instance(tx, &request_instance)?.3;
     let _ = identity;
@@ -3806,7 +3859,7 @@ fn park_tasks_for_unknown(
 ) -> Result<(), String> {
     let (instance, work, source_task): (String, Option<String>, Option<String>) = tx
         .query_row(
-            "SELECT r.instance_id,r.work_id,json_extract(w.context_json,'$.task_id')
+            "SELECT r.instance_id,COALESCE(r.work_id,w.billed_work_id),json_extract(w.context_json,'$.task_id')
              FROM decisions d JOIN model_requests r ON d.request_id = r.request_id
              LEFT JOIN work_requests w ON w.request_id=r.request_id WHERE d.decision_id = ?1",
             [decision_id],
@@ -4008,9 +4061,9 @@ fn dispatch_operation(tx: &Connection, session_id: &str, params: &Json) -> Resul
     }
     let (instance, op_work, request_ref): (String, Option<String>, String) = tx
         .query_row(
-            "SELECT r.instance_id, r.work_id, r.request_ref FROM decisions d JOIN model_requests r ON d.request_id = r.request_id
-             WHERE d.decision_id = ?1",
-            [&decision_id],
+            "SELECT r.instance_id, o.work_id, r.request_ref FROM operations o JOIN decisions d ON d.decision_id=o.decision_id JOIN model_requests r ON d.request_id = r.request_id
+             WHERE o.operation_id = ?1",
+            [operation_id],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .map_err(|e| format!("decision instance: {e}"))?;
@@ -9318,6 +9371,19 @@ mod tests {
             )
             .unwrap();
         assert_eq!(live, 0, "task settlement revoked the child grant");
+        // A standing grant can satisfy later tasks without another approval or a duplicate child.
+        ctl.submit(
+            cmd("standing", "issue_grant", json!({"subject":"w1","action":"shell","resource_scope":"session"})),
+            Identity::User,
+        )
+        .unwrap();
+        let task = ctl.submit(cmd("repeat", "delegate_task",json!({"assignee":"w1","task_id":"t-repeat","description":"again","work_id":"g1","capabilities":["shell@workspace"]})),Identity::Instance("leader".into())).unwrap();
+        assert_eq!(task["status"], "PENDING");
+        let children: i64 = ctl
+            .connection()
+            .query_row("SELECT count(*) FROM grants WHERE task_id='t-repeat' AND action='shell'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(children, 0);
         // Parent revocation cascades to a fresh child.
         let spawned = ctl
             .submit(

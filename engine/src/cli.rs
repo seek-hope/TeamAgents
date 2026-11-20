@@ -592,8 +592,8 @@ pub fn doctor(state_root: Option<PathBuf>, overrides: &[String]) -> i32 {
                 &mut results,
                 "web tools",
                 false,
-                "none configured: the model is offered neither web_search nor web_fetch. Search supports DeepSeek \
-                 and Exa; fetch uses DeepSeek. Declare a [tools.*] web_search/web_fetch binding with its provider \
+                "none configured: the model is offered neither web_search nor web_fetch. Search and fetch support \
+                 DeepSeek and Exa. Declare a [tools.*] web_search/web_fetch binding with its provider \
                  and api_key_env (normally DEEPSEEK_API_KEY or EXA_API_KEY)"
                     .into(),
             );
@@ -604,8 +604,8 @@ pub fn doctor(state_root: Option<PathBuf>, overrides: &[String]) -> i32 {
             }
             let label = format!("tools.{name}");
             let provider = binding.provider.as_deref().unwrap_or("deepseek");
-            // D-167/D-482: each web binding needs its provider credential. Search accepts DeepSeek and Exa;
-            // fetch remains DeepSeek-only. A *required* binding that cannot work refuses the member's start,
+            // D-167/D-482: each web binding needs its provider credential. Search and fetch accept DeepSeek and Exa.
+            // A *required* binding that cannot work refuses the member's start,
             // so that is a FAIL (D-164's rule, applied to the web half). The credential wording comes from the
             // helper the tool call and the boot use, so the three cannot describe the same binding differently.
             let row: RowReporter = if binding.required { check } else { optional_check };

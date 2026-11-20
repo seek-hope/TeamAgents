@@ -34,7 +34,7 @@ pub(super) fn queue(
         set_state(tx, &k, "STOPPED", "Input recorded; explicitly resume the instance before interpreting it", "")?;
         return Ok(());
     }
-    reset(tx,&k,"Interpret the new input: answer informational follow-ups directly, or use work_checkpoint start_work for a new task")?;
+    reset(tx, &k, "Answer from context if sufficient; a tool call starts work for this input automatically")?;
     let payload: String = tx
         .query_row("SELECT payload_json FROM envelopes WHERE id=?1", [envelope], |r| r.get(0))
         .map_err(|e| format!("explicit admission checks: {e}"))?;
@@ -209,7 +209,7 @@ fn close(tx: &Connection, instance: &str, epoch: i64) -> Result<(), String> {
     )
 }
 
-fn activate(
+pub(super) fn activate(
     tx: &Connection,
     session: &str,
     instance: &str,
@@ -348,7 +348,7 @@ pub(super) fn response(
         return Ok(());
     }
     if params["intents"].as_array().is_some_and(|intents| !intents.is_empty()) || params.get("wait").is_some() {
-        answer_dangling_calls(tx,instance,epoch,"Admit a new task with work_checkpoint start_work before using tools or waiting. Informational follow-ups need only an answer.")?;
+        answer_dangling_calls(tx,instance,epoch,"No operation was prepared. Use the current input and its limits; explicitly start work before waiting. Informational follow-ups need only an answer.")?;
         return repair(tx, session, instance, "Work intent must be admitted before execution");
     }
     if let Some(checkpoint) = params.get("checkpoint") {

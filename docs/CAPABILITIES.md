@@ -22,7 +22,7 @@ finite model into full acceptance. See [ACCEPTANCE.md](ACCEPTANCE.md) for scenar
 | Text and output safety | Unicode/control tests with normalized JSON and escaped terminal rendering, including bidi/isolate controls | No arbitrary byte-string parser proof; JSON uses valid Unicode strings |
 | SQLite fault handling | Revision/head/event failure injection and savepoint tests, migration conflict rollback and random-walk invariants | Not a complete SQLite refinement or power-loss proof |
 | File/Shell/Skill tools | `engine/src/tools.rs`, host receipts, relative-Skill and revocation checks; real Cargo/Python/Node workflows | Host execution is not confinement; broader dependency ecosystems remain open |
-| Web search/fetch | Bound DeepSeek/Exa search and DeepSeek fetch, RRF/retry/cache; fake-IP public verification and byte-bound tests | Current-host search/fetch probes pass; broader proxy environments and provider-side redirect checks remain open |
+| Web search/fetch | Bound DeepSeek/Exa search and fetch; ranked search, conditional fetch fallback and member-local page continuation | Local fixtures exercise routing; live Exa fetch, broader proxy environments and provider-side redirects remain open |
 | MCP and codemode | stdio/HTTP fake services, resource list/read, ambiguity checks, restricted JavaScript and nested veto | Versioned external OAuth/SDK/client/extension coverage remains open |
 | Team TUI | Herdr-inspired member sidebar, Leader conversation, independent member history, tasks/activity, explicit approvals and TestBackend/PTY checks | Not a usability benchmark or every terminal/provider combination; activity is attachment-local |
 | Editing and attachments | Shared message/queue editing, `@PATH`, immutable snapshots and original-input revisions | Symlinks and out-of-workspace files are refused; no arbitrary path acceptance |
@@ -33,7 +33,7 @@ finite model into full acceptance. See [ACCEPTANCE.md](ACCEPTANCE.md) for scenar
 
 ## Current evidence totals
 
-- Rust tests: **855** (core 198, engine 536, TUI 121); full local gate passed.
+- Rust tests: **857** (core 198, engine 538, TUI 121); full local gate passed.
 - Positive TLA inputs: **65 configurations in 60 traversals**.
 - Negative controls: **323**, each required to refute its named claim.
 - Normal-path witnesses: **79**, which demonstrate reachability rather than safety.

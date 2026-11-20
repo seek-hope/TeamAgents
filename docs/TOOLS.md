@@ -60,7 +60,7 @@ Page through the full stored output of an earlier tool call (ids appear in maske
 
 *Offered by `kernel::collaboration_tool_schemas(actions)` (enrolled work; control action).*
 
-Save durable work progress or ask a material user question. Must be the sole tool call. start_work admits a new actionable user request only during input admission and requires objective. continue requires next_step; ask_user requires question; blocked requires reason. Checkpoints are model claims, not new authority. Record remaining items honestly; clear them only after appropriate evidence. Use wait for tool/member events and finish for completion. Routine short tasks within admitted work need no progress checkpoint; input admission still requires start_work for new work.
+Save durable work progress or ask a material user question. Must be the sole tool call. start_work admits a new actionable user request only during input admission and requires objective. continue requires next_step; ask_user requires question; blocked requires reason. Checkpoints are model claims, not new authority. Record remaining items honestly; clear them only after appropriate evidence. Use wait for tool/member events and finish for completion. Routine short tasks within admitted work need no progress checkpoint; during input admission a tool call can start the new work directly.
 
 | Parameter | Type | Required | Meaning |
 |---|---|---|---|
@@ -107,7 +107,7 @@ Delegate a task to another instance with a narrow return path: the assignee can 
 | `task_id` | `string` | no | Optional explicit task id; one is generated when omitted. |
 | `description` | `string` | yes | — |
 | `acceptance_refs` | `array` | no | References the result must satisfy. |
-| `capabilities` | `array` | no | Generic capabilities this task needs, e.g. shell@workspace. A live delegable parent grant issues a task-scoped child automatically; otherwise the task waits for the user's approval and is not dispatched. |
+| `capabilities` | `array` | no | Generic capabilities this task needs, e.g. shell@workspace. A standing grant on the assignee suffices. A live delegable parent can issue a task-scoped grant; otherwise the task waits for the user's approval and is not dispatched. |
 
 ### `spawn`
 
@@ -121,7 +121,7 @@ Create a new instance and atomically register its initial task with the return p
 | `instructions` | `string` | yes | System instructions for the new instance. |
 | `model` | `string` | no | Catalog entry for the new instance (a key such as leader_main, or the model name it declares). Omit to inherit this instance's model; a mixed team comes from naming a different entry. |
 | `task` | `string` | no | Initial task description; registered with its narrow return path when present. |
-| `capabilities` | `array` | no | Generic capabilities the initial task needs, e.g. shell@workspace. Requires task. A live delegable parent grant issues a task-scoped child automatically; otherwise the instance waits in WAITING_CAPABILITY for the user's approval and the task is not dispatched. |
+| `capabilities` | `array` | no | Generic capabilities the initial task needs, e.g. shell@workspace. Requires task. A standing grant on the assignee suffices. A live delegable parent can issue a task-scoped grant; otherwise the instance waits in WAITING_CAPABILITY for the user's approval and the task is not dispatched. |
 | `workspace` | `string` | no | Where the instance works. shared (default) uses the project directory; isolated gets a private directory under the session state root; git_worktree gets its own branch and worktree, and falls back to shared (saying why) when the project is not a clean git repository. |
 
 ### `cancel_task`
@@ -270,12 +270,13 @@ Search the web through the bound DeepSeek and/or Exa providers and return ranked
 
 *Offered by `reference::session_tool_schemas` (the profile's tools; the web half only for the kinds the config declares — §5.2/D-79/D-168).*
 
-Fetch a web page and return title, source URL, fetch time and the readable text body (HTML only; capped).
+Fetch readable page text through bound providers. auto prefers Exa and falls back to DeepSeek on transient errors only. For truncated content, read full_path with read_file starting at next_byte_offset.
 
 | Parameter | Type | Required | Meaning |
 |---|---|---|---|
 | `url` | `string` | yes | — |
-| `max_bytes` | `integer` | no | — |
+| `provider` | `string` | no | — |
+| `max_bytes` | `integer` | no | Inline preview in UTF-8 bytes, capped at 32000. |
 
 ### `skill`
 

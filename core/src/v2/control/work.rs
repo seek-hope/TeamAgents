@@ -6,8 +6,32 @@ use super::*;
 mod admission;
 pub(super) mod takeover;
 
-pub(super) fn admission_request(tx: &Connection, request: &str) -> Result<bool, String> {
-    Ok(admission::request(tx, request)?.is_some())
+/// None: ordinary request. Some(true): the tool decision admitted its own input.
+/// Some(false): keep the pending/superseded admission path free of effects.
+pub(super) fn admit_tool_decision(
+    tx: &Connection,
+    session: &str,
+    instance: &str,
+    request: &str,
+    tools: bool,
+) -> Result<Option<bool>, String> {
+    let Some(frozen) = admission::request(tx, request)? else { return Ok(None) };
+    if tools && budget_work(tx, instance)?.is_none() {
+        let state = admission::view(tx, instance)?;
+        if state["state"] == "RUNNING"
+            && state["epoch"] == frozen["epoch"]
+            && state["admission_id"] == frozen["admission_id"]
+            && state["recent_user_inputs"].as_array().zip(frozen["recent_user_inputs"].as_array()).is_some_and(
+                |(now, then)| now.iter().map(|i| &i["context_ref"]).eq(then.iter().map(|i| &i["context_ref"])),
+            )
+            && load_instance(tx, instance)?.2 == "ACTIVE"
+            && admission::budget(tx, instance, 0)?.is_none()
+        {
+            admission::activate(tx, session, instance, &state, &json!({}), "tool_decision")?;
+            return Ok(Some(true));
+        }
+    }
+    Ok(Some(false))
 }
 
 pub(super) fn admission_budget(
@@ -225,7 +249,7 @@ pub(super) fn context(tx: &Connection, instance: &str) -> Result<Json, String> {
     let mut operations=tx.prepare("SELECT o.operation_id,o.status,json_extract(o.intent_json,'$.call_id'),json_extract(o.intent_json,'$.name')
         FROM operations o JOIN decisions d ON d.decision_id=o.decision_id JOIN model_requests r ON r.request_id=d.request_id
         LEFT JOIN work_requests w ON w.request_id=r.request_id
-        WHERE r.instance_id=?1 AND r.work_id=?2 AND (?3='' OR json_extract(w.context_json,'$.task_id')=?3)
+        WHERE r.instance_id=?1 AND o.work_id=?2 AND (?3='' OR json_extract(w.context_json,'$.task_id')=?3)
         ORDER BY o.rowid DESC LIMIT 17").map_err(|e|format!("work observations: {e}"))?;
     let mut observed = operations
         .query_map(rusqlite::params![instance, result["work_id"].as_str(), result["task_id"].as_str()], |r| {
@@ -418,6 +442,12 @@ fn set_state(tx: &Connection, k: &WorkKey, state: &str, reason: &str, pending: &
     Ok(())
 }
 
+fn advise(tx: &Connection, session: &str, k: &WorkKey, reason: &str) -> Result<(), String> {
+    reset(tx, k, reason)?;
+    event(tx, session, "work_continuation", &k.1, &json!({"work_id":k.0,"reason":reason,"repair_turns":0}))?;
+    Ok(())
+}
+
 fn repair(tx: &Connection, session: &str, instance: &str, reason: &str) -> Result<(), String> {
     let Some(k) = current_key(tx, instance)? else { return Ok(()) };
     tx.execute("UPDATE work_states SET empty_turns=empty_turns+1 WHERE work_id=?1 AND instance_id=?2 AND epoch=?3 AND task_id=?4",
@@ -579,7 +609,7 @@ pub(super) fn response(
             "Work checkpoint recorded as model claims; user inputs, checks, grants and usage remain authoritative.",
         )?;
         match value["action"].as_str().unwrap_or("") {
-            "continue" => repair(tx, session, instance, "Checkpoint saved; execute the recorded next step")?,
+            "continue" => advise(tx, session, &k, "Checkpoint saved; continue with the next useful step")?,
             action => {
                 let reason = value[if action == "ask_user" { "question" } else { "reason" }].as_str().unwrap_or("");
                 let target = if action == "ask_user" { "NEEDS_INPUT" } else { "BLOCKED" };
@@ -614,7 +644,11 @@ pub(super) fn response(
             repair(tx, session, instance, "The requested wait was already satisfied; choose new work")?;
         }
     } else if params["intents"].as_array().is_none_or(Vec::is_empty) {
-        repair(tx, session, instance, "The response ended while agreed work remains open")?;
+        if params["entry"]["content"].as_str().is_some_and(|s| !s.trim().is_empty()) {
+            advise(tx, session, &k, "Progress reply recorded; the work is still open")?;
+        } else {
+            repair(tx, session, instance, "The response contained no text or action")?;
+        }
     }
     Ok(())
 }
@@ -633,7 +667,7 @@ pub(super) fn tools_consumed(
     let Some(k) = key(tx, instance)? else { return Ok(()) };
     let source: Option<(Option<String>, i64, String)> = tx
         .query_row(
-            "SELECT r.work_id,r.epoch,w.context_json FROM decisions d
+            "SELECT COALESCE(r.work_id,w.billed_work_id),r.epoch,w.context_json FROM decisions d
         JOIN model_requests r ON r.request_id=d.request_id JOIN work_requests w ON w.request_id=r.request_id
         WHERE d.decision_id=?1",
             [decision],
@@ -665,11 +699,19 @@ pub(super) fn tools_consumed(
             && fingerprints[n - period..] == fingerprints[n - 2 * period..n - period]
             && fingerprints[n - period..] == fingerprints[n - 3 * period..n - 2 * period]
     });
-    tx.execute("UPDATE work_states SET fingerprints_json=?5, empty_turns=CASE WHEN ?6 THEN empty_turns ELSE 0 END,
-        pending_reason='Tool results received', revision=revision+1 WHERE work_id=?1 AND instance_id=?2 AND epoch=?3 AND task_id=?4",
-        rusqlite::params![k.0,k.1,k.2,k.3,json!(fingerprints).to_string(),repeated]).map_err(|e|format!("work observation: {e}"))?;
+    let reason = if repeated {
+        "Repeated actions returned the same observations. Continue if intentional, change approach, or wait for an event."
+    } else {
+        "Tool results received"
+    };
+    tx.execute(
+        "UPDATE work_states SET fingerprints_json=?5, empty_turns=0, pending_reason=?6, revision=revision+1
+        WHERE work_id=?1 AND instance_id=?2 AND epoch=?3 AND task_id=?4",
+        rusqlite::params![k.0, k.1, k.2, k.3, json!(fingerprints).to_string(), reason],
+    )
+    .map_err(|e| format!("work observation: {e}"))?;
     if repeated {
-        repair(tx,session,instance,"Repeated actions returned the same observations; revise the approach or use an explicit event wait for intentional polling")?;
+        event(tx, session, "work_continuation", instance, &json!({"work_id":k.0,"reason":reason,"repair_turns":0}))?;
     }
     Ok(())
 }
@@ -728,7 +770,7 @@ pub(super) fn unknown_operation(tx: &Connection, decision: &str, operation: &str
         "UPDATE work_states SET state=CASE WHEN state='STOPPED' THEN state ELSE 'BLOCKED' END,
         pending_reason='',reason=?2,revision=revision+1
         WHERE (work_id,instance_id,epoch,task_id) IN (
-            SELECT r.work_id,r.instance_id,r.epoch,json_extract(w.context_json,'$.task_id')
+            SELECT COALESCE(r.work_id,w.billed_work_id),r.instance_id,r.epoch,json_extract(w.context_json,'$.task_id')
             FROM decisions d JOIN model_requests r ON r.request_id=d.request_id
             JOIN work_requests w ON w.request_id=r.request_id WHERE d.decision_id=?1)",
         rusqlite::params![
@@ -869,7 +911,7 @@ fn evidence_problem(tx: &Connection, k: &WorkKey, evidence: &Json) -> Result<Opt
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM operations o JOIN decisions d ON d.decision_id=o.decision_id
         JOIN model_requests r ON r.request_id=d.request_id LEFT JOIN work_requests w ON w.request_id=r.request_id
-        WHERE r.instance_id=?1 AND r.work_id=?2 AND (?3='' OR json_extract(w.context_json,'$.task_id')=?3))",
+        WHERE r.instance_id=?1 AND o.work_id=?2 AND (?3='' OR json_extract(w.context_json,'$.task_id')=?3))",
             rusqlite::params![k.1, k.0, k.3],
             |r| r.get(0),
         )
@@ -914,7 +956,7 @@ fn evidence_problem(tx: &Connection, k: &WorkKey, evidence: &Json) -> Result<Opt
         } else {
             tx.query_row("SELECT COALESCE((SELECT o.status='SUCCEEDED' FROM operations o JOIN decisions d ON d.decision_id=o.decision_id
                 JOIN model_requests r ON r.request_id=d.request_id LEFT JOIN work_requests w ON w.request_id=r.request_id
-                WHERE r.instance_id=?1 AND r.work_id=?2 AND (?3='' OR json_extract(w.context_json,'$.task_id')=?3)
+                WHERE r.instance_id=?1 AND o.work_id=?2 AND (?3='' OR json_extract(w.context_json,'$.task_id')=?3)
                 AND ((?4='operation' AND o.operation_id=?5) OR (?4='tool' AND json_extract(o.intent_json,'$.call_id')=?5))
                 ORDER BY o.rowid DESC LIMIT 1),0)",rusqlite::params![k.1,k.0,k.3,kind,id],|r|r.get(0))
         }.map_err(|e|format!("completion evidence reference: {e}"))?;

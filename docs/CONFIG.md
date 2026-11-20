@@ -76,11 +76,11 @@ accepted value. Unsupported `mcp_network` and check-level `network` settings are
 
 | Key | Type | Absent | Read by | Meaning |
 |---|---|---|---|---|
-| `provider` | `String` | empty | `engine/src/providers/mod.rs`, `engine/src/search.rs` … (6 files) | The vendor hint: `deepseek` selects that service's defaults (the reasoning echo, the deepseek protocol) while `protocol` is unset, and any other value is a label for a compatible service — the wire is decided by `protocol`/`base_url`, never by this name (D-40, D-229). |
+| `provider` | `String` | empty | `engine/src/providers/mod.rs`, `engine/src/search.rs` … (7 files) | The vendor hint: `deepseek` selects that service's defaults (the reasoning echo, the deepseek protocol) while `protocol` is unset, and any other value is a label for a compatible service — the wire is decided by `protocol`/`base_url`, never by this name (D-40, D-229). |
 | `protocol` | `String` | "openai" | `engine/src/providers/mod.rs`, `engine/src/v2/attachments.rs` … (3 files) | — |
 | `model` | `String` | empty | `core/src/kernel/instance.rs`, `core/src/kernel/mod.rs` … (20 files) | — |
 | `base_url` | `Option<String>` | unset (the reader applies its own) | `engine/src/providers/mod.rs` | — |
-| `api_key_env` | `Option<String>` | unset (the reader applies its own) | `engine/src/providers/mod.rs`, `engine/src/search.rs` … (3 files) | — |
+| `api_key_env` | `Option<String>` | unset (the reader applies its own) | `engine/src/providers/mod.rs`, `engine/src/search.rs` … (4 files) | — |
 | `timeout` | `i64` | 120 | `core/src/v2/control.rs`, `engine/src/mcp.rs` … (12 files) | — |
 | `max_retries` | `i64` | 2 | `engine/src/reference.rs`, `engine/src/v2/driver.rs` … (3 files) | Transport retries the driver may add to one request: the instance that uses this profile retries a transient failure this many times before the turn parks with `transient retries exhausted` (A19). Applied per instance since D-247 (D-240 measured the key accepted and ignored, because one session constant served every member); 0 means one attempt, and a negative value is refused at load. |
 | `generation_options` | `HashMap<String, Json>` | empty | `engine/src/providers/mod.rs` | — |
@@ -94,16 +94,16 @@ accepted value. Unsupported `mcp_network` and check-level `network` settings are
 
 | Key | Type | Absent | Read by | Meaning |
 |---|---|---|---|---|
-| `kind` | `String` | empty | `core/src/kernel/mod.rs`, `core/src/v2/control/search_tree.rs` … (38 files) | — |
+| `kind` | `String` | empty | `core/src/kernel/mod.rs`, `core/src/v2/control/search_tree.rs` … (39 files) | — |
 | `required` | `bool` | false | `core/src/kernel/mod.rs`, `engine/src/bound.rs` … (5 files) | — |
-| `provider` | `Option<String>` | unset (the reader applies its own) | `engine/src/providers/mod.rs`, `engine/src/search.rs` … (6 files) | Web provider: DeepSeek for search/fetch, Exa for search only (D-482). |
-| `api_key_env` | `Option<String>` | unset (the reader applies its own) | `engine/src/providers/mod.rs`, `engine/src/search.rs` … (3 files) | — |
+| `provider` | `Option<String>` | unset (the reader applies its own) | `engine/src/providers/mod.rs`, `engine/src/search.rs` … (7 files) | Web provider: deepseek (default) or exa. Search and fetch require separate bindings (D-482). |
+| `api_key_env` | `Option<String>` | unset (the reader applies its own) | `engine/src/providers/mod.rs`, `engine/src/search.rs` … (4 files) | — |
 | `mcp_server` | `Option<String>` | unset (the reader applies its own) | `engine/src/bound.rs` | — |
 | `mcp_transport` | `Option<String>` | unset (the reader applies its own) | `engine/src/bound.rs`, `engine/src/mcp_auth.rs` … (3 files) | — |
 | `mcp_execution` | `Option<String>` | unset (the reader applies its own) | `engine/src/bound.rs` | Local MCP execution: host only (also the default). Workspace isolation was removed. |
 | `command` | `Option<String>` | unset (the reader applies its own) | `core/src/v2/control/work_tests.rs`, `core/src/v2/control.rs` … (19 files) | The `kind = "mcp"` service's argv over stdio (the default transport) — required for that kind and transport, refused at load otherwise (D-232). |
 | `args` | `Vec<String>` | empty | `core/src/kernel/mod.rs`, `core/src/v2/control.rs` … (18 files) | — |
-| `url` | `Option<String>` | unset (the reader applies its own) | `engine/src/bound.rs`, `engine/src/mcp_auth.rs` … (9 files) | The `kind = "mcp"` service's endpoint over the `http` transport — required there, and an absolute http(s) URL (D-232). |
+| `url` | `Option<String>` | unset (the reader applies its own) | `engine/src/bound.rs`, `engine/src/mcp_auth.rs` … (10 files) | The `kind = "mcp"` service's endpoint over the `http` transport — required there, and an absolute http(s) URL (D-232). |
 | `bearer_token_env_var` | `Option<String>` | unset (the reader applies its own) | `engine/src/bound.rs`, `engine/src/mcp_auth.rs` | Bearer token for the http transport: names the environment variable the secret is read from — the token itself never lands in this file. |
 | `oauth` | `bool` | false | `engine/src/bound.rs`, `engine/src/mcp_auth.rs` … (3 files) | D-412: sign in to this HTTP service with OAuth (`teamagents mcp login --name <binding>`) and use the credential stored beside the config (`mcp-auth.json`, mode 0600). Mutually exclusive with `bearer_token_env_var`: one endpoint, one credential. |
 | `oauth_client_id` | `Option<String>` | unset (the reader applies its own) | `engine/src/mcp_auth.rs` | A pre-registered client id. Without it the sign-in registers this client dynamically (RFC 7591), which is what a server with no `registration_endpoint` cannot do — that server needs this key. |
@@ -113,7 +113,7 @@ accepted value. Unsupported `mcp_network` and check-level `network` settings are
 | `oauth_scopes` | `Vec<String>` | empty | `engine/src/mcp_auth.rs` | Scopes to request; unset means whatever the authorization server advertises. |
 | `startup_timeout_s` | `Option<u64>` | unset (the reader applies its own) | `engine/src/bound.rs` | initialize/tools/list timeout in seconds (default 60). |
 | `tool_timeout_s` | `Option<u64>` | unset (the reader applies its own) | `engine/src/bound.rs` | tools/call timeout in seconds (default 120). |
-| `env` | `HashMap<String, String>` | empty | `engine/src/bound.rs`, `engine/src/environment.rs` … (10 files) | Binding-specific environment/options. MCP expands ${VAR}; Exa search accepts search_type (default auto). |
+| `env` | `HashMap<String, String>` | empty | `engine/src/bound.rs`, `engine/src/environment.rs` … (11 files) | Binding-specific environment/options. MCP expands ${VAR}; Exa search accepts search_type (default auto). |
 | `tool_names` | `Vec<String>` | empty | `engine/src/bound.rs` | — |
 
 ### `top level`
@@ -121,14 +121,15 @@ accepted value. Unsupported `mcp_network` and check-level `network` settings are
 | Key | Type | Absent | Read by | Meaning |
 |---|---|---|---|---|
 | `models` | `HashMap<String, ModelProfile>` | empty | `engine/src/providers/mod.rs`, `engine/src/v2/daemon.rs` … (5 files) | — |
-| `tools` | `HashMap<String, ToolBinding>` | empty | `core/src/kernel/instance.rs`, `core/src/kernel/mod.rs` … (17 files) | — |
+| `tools` | `HashMap<String, ToolBinding>` | empty | `core/src/kernel/instance.rs`, `core/src/kernel/mod.rs` … (18 files) | — |
 | `skills_paths` | `Vec<String>` | empty | `engine/src/environment.rs`, `engine/src/tools.rs` | Directories the `skill` tool searches for `SKILL.md` entries. An entry must exist and be a directory; the default (`~/.agents/skills`) is used only when the key is unset (D-232). |
 | `instruction_files` | `Vec<String>` | empty | `engine/src/environment.rs`, `engine/src/v2/driver.rs` | Files whose text is appended to **every** member's system prompt (the leader's and each child's), in this order, each under a heading naming the file: read per turn, so an edit lands on the next turn, and a file that cannot be read is named by `doctor` and on the daemon's log rather than skipped in silence (D-102 recorded the promise, D-246 delivers it). |
+| `default_task_capabilities` | `Vec<String>` | empty | `engine/src/v2/driver.rs` | Capabilities requested for model-delegated tasks when the call omits capabilities. This requests, never grants. |
 | `retention` | `Retention` | the Retention default | `engine/src/v2/daemon.rs`, `engine/src/v2/driver.rs` … (3 files) | — |
 | `hooks` | `Hooks` | the Hooks default | `engine/src/hooks.rs`, `engine/src/tools.rs` … (3 files) | — |
 | `checks` | `Vec<CheckSpec>` | empty | `core/src/v2/control/work/admission.rs`, `core/src/v2/control.rs` … (5 files) | Acceptance checks run on the host at the completion boundary. Project configuration cannot define them. |
 | `limits` | `WorkLimits` | the WorkLimits default | `core/src/v2/control/work/admission.rs`, `core/src/v2/control/work.rs` … (9 files) | Usage and wall-clock ceilings every work this session creates carries (§8, A18/A35): the work's `max_total_tokens` refuses a new request once the settled usage would pass it, and its deadline refuses one past that moment. Both are the user's own bounds; a session with neither runs until the user stops it (see `docs/USER-GUIDE.md` §2.2). |
-| `update` | `UpdateConfig` | the UpdateConfig default | `core/src/kernel/types.rs`, `core/src/v2/control.rs` … (6 files) | Governed self-update policy (`[update]`). The user config is the only source: a repository-local file may never change how its own agent is replaced (D-453). |
+| `update` | `UpdateConfig` | the UpdateConfig default | `core/src/kernel/types.rs`, `core/src/v2/control.rs` … (7 files) | Governed self-update policy (`[update]`). The user config is the only source: a repository-local file may never change how its own agent is replaced (D-453). |
 
 ### `[limits]`
 

@@ -117,7 +117,7 @@ pub struct ToolBinding {
     pub kind: String,
     #[serde(default)]
     pub required: bool,
-    /// Web provider: DeepSeek for search/fetch, Exa for search only (D-482).
+    /// Web provider: deepseek (default) or exa. Search and fetch require separate bindings (D-482).
     #[serde(default)]
     pub provider: Option<String>,
     #[serde(default)]
@@ -195,6 +195,9 @@ pub struct UserConfig {
     /// recorded the promise, D-246 delivers it).
     #[serde(default)]
     pub instruction_files: Vec<String>,
+    /// Capabilities requested for model-delegated tasks when the call omits capabilities. This requests, never grants.
+    #[serde(default)]
+    pub default_task_capabilities: Vec<String>,
     #[serde(default)]
     pub retention: Retention,
     #[serde(default)]

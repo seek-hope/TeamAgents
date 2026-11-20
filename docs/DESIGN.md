@@ -201,7 +201,8 @@ Work scopes own budget, deadline, admission and acceptance. Work states/tasks ow
 Every model attempt, retry, compaction, review and verification shares the same work budget. Reservations happen
 before requests; actual or unknown usage is settled honestly.
 
-Enrolled work can continue after progress prose, with bounded recovery for empty/plan-only/repeated loops. A
+For enrolled work, prose, valid plan updates and repeated tool observations are advisory, not stop conditions.
+Empty replies and invalid actions still have bounded recovery. A
 blocked task does not satisfy a successful task-result wait. User input can supersede a wait without settling
 its condition. New input cannot replenish an active ceiling or resume parked work.
 
@@ -233,7 +234,7 @@ JSON export are read-only projections, not second business stores.
 `tools/` contains executable development and verification utilities, generated-document checkers and current
 product probes. `tools/tmp/` is ignored scratch for new local runs, not source or committed evidence.
 
-The current source has 855 Rust tests. Formal material has 387 configurations across 47 modules: 63 positive
+The current source has 857 Rust tests. Formal material has 387 configurations across 47 modules: 63 positive
 configurations, 323 controls and one separate wide configuration, evaluated in 60 positive traversals. There
 are 79 normal-path witnesses and 9 Kani harnesses. Witnesses demonstrate reachability only.
 

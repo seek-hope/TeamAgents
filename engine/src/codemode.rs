@@ -1,4 +1,4 @@
-//! Codemode: one tool that runs a model-written JavaScript program whose only capabilities are the bound MCP
+//! Codemode: one tool that runs a model-written JavaScript program over bound native reads and MCP
 //! tools (D-374, learned from pi's `codemode`; completed by D-376).
 //!
 //! The point is the information-flow shape, not the scripting: a script may call many MCP tools, loop, filter
@@ -61,6 +61,7 @@ struct Options {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CallRecord {
     pub name: String,
+    pub args_hash: String,
     pub status: &'static str,
     pub error: Option<String>,
 }
@@ -162,7 +163,7 @@ struct Meta {
     namespace: String,
 }
 
-fn metas(tools: &BoundTools) -> Vec<Meta> {
+fn metas(tools: &BoundTools, native: &[Json]) -> Vec<Meta> {
     let mut meta: Vec<Meta> = tools
         .tools
         .iter()
@@ -178,6 +179,20 @@ fn metas(tools: &BoundTools) -> Vec<Meta> {
             namespace: tool.namespace.clone(),
         })
         .collect();
+    for schema in native {
+        let f = &schema["function"];
+        let Some(name) = f["name"].as_str() else { continue };
+        if meta.iter().any(|t| t.ident == name) {
+            continue;
+        }
+        meta.push(Meta {
+            ident: name.into(),
+            real: name.into(),
+            description: f["description"].as_str().unwrap_or("").into(),
+            declaration: format!("{}(args: {}): Promise<unknown>", name, ts_type(&f["parameters"], 0)),
+            namespace: "native".into(),
+        });
+    }
     if !tools.services.is_empty() {
         meta.push(Meta {
             ident: "mcp_resource".into(),
@@ -193,7 +208,11 @@ fn metas(tools: &BoundTools) -> Vec<Meta> {
 /// The model-facing tool schema: the intro text plus a declaration of every bound MCP tool. Only called when at
 /// least one tool is bound (the toolkit gates it), so the description never advertises an empty `tools`.
 pub fn schema(tools: &BoundTools) -> Json {
-    let meta = metas(tools);
+    schema_with_native(tools, &[])
+}
+
+pub(crate) fn schema_with_native(tools: &BoundTools, native: &[Json]) -> Json {
+    let meta = metas(tools, native);
     let mut declarations = String::new();
     for tool in &meta {
         let alias = if tool.ident == tool.real { String::new() } else { format!(" (bound as `{}`)", tool.real) };
@@ -205,8 +224,9 @@ pub fn schema(tools: &BoundTools) -> Json {
         ));
     }
     let description = format!(
-        "Run JavaScript that calls MCP tools as `await tools.<name>(args)`.\n\
+        "Run JavaScript that calls the listed tools as `await tools.<name>(args)`.\n\
          - The code is evaluated in a fresh QuickJS sandbox as the body of an async function: top-level `await` and `return` work.\n\
+         - Use parallelReads([{{name, args}}, ...]) for up to eight independent bound file reads (read_file, ls, grep, glob). It returns ordered success or error results. Shell and writes are separate top-level operations.\n\
          - Tool names are normalized to JavaScript identifiers (`my-tool` is `tools.my_tool`); `ALL_TOOLS` lists every tool, `searchTools(query)` finds one by name or description, `describeTool(name)` returns its declaration and `describeNamespace(service)` lists one service's tools.\n\
          - A nested call that fails, is vetoed by the user's `pre_tool` hook, or gets invalid arguments rejects with an `Error` carrying the reason. Calls are real and have side effects; earlier calls are not undone when a later one fails.\n\
          - Only what the script emits with `text(...)`/`console.log(...)` and what it returns reaches you — nested tool output does NOT. Filter and aggregate in the script instead of returning raw payloads.\n\
@@ -287,6 +307,7 @@ globalThis.tools = new Proxy({{}}, {{
     }};
   }},
 }});
+globalThis.parallelReads = (calls) => {{ const r = JSON.parse(__reads(JSON.stringify(calls))); if (r.error) throw new Error(r.error); return r.results; }};
 globalThis.__stringify = (value) => (typeof value === "string" ? value : JSON.stringify(value));
 globalThis.text = (value) => __text(globalThis.__stringify(value));
 globalThis.console = {{}};
@@ -418,12 +439,28 @@ fn image_shape(item: &Json) -> Result<(String, usize), String> {
 /// Run one script. `tools` supplies the only capabilities; `store` is the cross-call JSON store; `veto` is the
 /// user's `pre_tool` hook, asked once per nested call.
 pub fn run(source: &str, context: Codemode) -> Outcome {
+    run_with_native(
+        source,
+        context,
+        &[],
+        |_, _| Err("unbound native tool".into()),
+        crate::tools::TurnControl::default(),
+    )
+}
+
+pub(crate) fn run_with_native(
+    source: &str,
+    context: Codemode,
+    native: &[Json],
+    execute: impl Fn(&str, &Json) -> Result<Json, String> + Send + Sync + 'static,
+    control: crate::tools::TurnControl,
+) -> Outcome {
     let kind =
         |kind: Kind, error: String| Outcome { output: String::new(), calls: Vec::new(), error: Some(error), kind };
     if context.aborted {
         return kind(Kind::Aborted, "codemode: the turn was interrupted before the script ran".into());
     }
-    if context.tools.tools.is_empty() && context.tools.services.is_empty() {
+    if context.tools.tools.is_empty() && context.tools.services.is_empty() && native.is_empty() {
         return kind(Kind::Script, "codemode is not available: no MCP tool is bound to this member".into());
     }
     let (body, options) = match parse_source(source) {
@@ -443,7 +480,11 @@ pub fn run(source: &str, context: Codemode) -> Outcome {
     runtime.set_memory_limit(MEMORY_LIMIT_BYTES);
     {
         let timed_out = timed_out.clone();
+        let control = control.clone();
         runtime.set_interrupt_handler(Some(Box::new(move || {
+            if control.check().is_err() {
+                return true;
+            }
             if Instant::now() >= deadline {
                 timed_out.store(true, Ordering::SeqCst);
                 return true;
@@ -456,42 +497,58 @@ pub fn run(source: &str, context: Codemode) -> Outcome {
         Err(error) => return kind(Kind::Sandbox, format!("codemode: {error}")),
     };
 
-    let meta = metas(&context.tools);
+    let meta = metas(&context.tools, native);
+    let native_names: Vec<String> = meta
+        .iter()
+        .filter(|m| {
+            native.iter().any(|s| s["function"]["name"] == m.real) && !context.tools.names().contains(m.real.as_str())
+        })
+        .map(|m| m.real.clone())
+        .collect();
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let calls: Arc<Mutex<Vec<CallRecord>>> = Arc::new(Mutex::new(Vec::new()));
 
     let outcome: Result<(), String> = context_js.with(|ctx| {
         let prepared: Result<(), String> = (|| {
             let host = context.tools.clone();
+            let control = control.clone();
             let veto = context.veto.clone();
             let call_log = calls.clone();
-            let host_fn = Function::new(ctx.clone(), move |name: String, args: String| -> String {
-                let parsed: Json = serde_json::from_str(&args).unwrap_or(Json::Null);
-                if let Some(reason) = veto.as_ref().and_then(|veto| veto(&name, &parsed)) {
-                    call_log
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .push(CallRecord { name, status: "denied", error: Some(reason.clone()) });
-                    return json!({"ok": false, "error": format!("denied by the user's pre_tool hook: {reason}")})
-                        .to_string();
-                }
-                let rendered = match host.call(&name, &parsed) {
-                    Some(Ok(value)) => Ok(value),
-                    Some(Err(error)) => Err(error),
-                    None => Err(format!("unknown tool {name:?}")),
+            let readable: Vec<String> = native_names.iter().filter(|n| matches!(n.as_str(),"read_file"|"ls"|"grep"|"glob")).cloned().collect();
+            let invoke = Arc::new(move |name: String, parsed: Json| {
+                let args_hash = teamagents_core::kernel::args_hash(&parsed);
+                let mut status = "error";
+                let result = control.check().and_then(|()| {
+                    if !parsed.is_object() {return Err("expected object arguments".into());}
+                    if let Some(reason) = veto.as_ref().and_then(|v|v(&name,&parsed)) {
+                        status = "denied";
+                        return Err(format!("denied by the user's pre_tool hook or operation policy: {reason}"));
+                    }
+                    if Instant::now() >= deadline {return Err("codemode deadline passed".into());}
+                    if native_names.contains(&name) {return execute(&name,&parsed);}
+                    host.call(&name,&parsed).unwrap_or_else(||Err(format!("unknown tool {name:?}")))
+                });
+                if result.is_ok() {status="ok";}
+                call_log.lock().unwrap_or_else(|p|p.into_inner()).push(CallRecord{name,args_hash,status,error:result.as_ref().err().cloned()});
+                match result {Ok(value)=>json!({"ok":true,"value":value}), Err(error)=>json!({"ok":false,"error":error})}
+            });
+            let one = invoke.clone();
+            let host_fn = Function::new(ctx.clone(), move |name:String,args:String| {
+                one(name,serde_json::from_str(&args).unwrap_or(Json::Null)).to_string()
+            }).map_err(|e|e.to_string())?;
+            let batch = Function::new(ctx.clone(),move |raw:String| -> String {
+                let calls = match serde_json::from_str::<Vec<Json>>(&raw) {
+                    Ok(c) if c.len()<=8 && c.iter().all(|v| readable.iter().any(|n|v["name"]==*n) && v["args"].is_object()) => c,
+                    _ => return json!({"error":"parallelReads expects at most eight bound native file reads with object args"}).to_string()
                 };
-                let mut log = call_log.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                match &rendered {
-                    Ok(_) => log.push(CallRecord { name, status: "ok", error: None }),
-                    Err(error) => log.push(CallRecord { name, status: "error", error: Some(error.clone()) }),
-                }
-                drop(log);
-                match rendered {
-                    Ok(value) => json!({"ok": true, "value": value}).to_string(),
-                    Err(error) => json!({"ok": false, "error": error}).to_string(),
-                }
-            })
-            .map_err(|error| error.to_string())?;
+                let results = std::thread::scope(|scope| {
+                    let run = &invoke;
+                    let workers:Vec<_>=calls.into_iter().map(|c| scope.spawn(move ||run(c["name"].as_str().unwrap().into(),c["args"].clone()))).collect();
+                    workers.into_iter().map(|w| w.join().expect("read worker panicked")).collect::<Vec<_>>()
+                });
+                json!({"results":results}).to_string()
+            }).map_err(|e|e.to_string())?;
+            ctx.globals().set("__reads",batch).map_err(|e|e.to_string())?;
             let setter = {
                 let store = context.store.clone();
                 Function::new(ctx.clone(), move |key: String, value: Option<String>| -> Option<String> {
@@ -604,7 +661,13 @@ pub fn run(source: &str, context: Codemode) -> Outcome {
             Outcome { output: text, calls, error: None, kind: Kind::Completed }
         }
         Err(error) => {
-            let kind = if timed_out.load(Ordering::SeqCst) { Kind::Timeout } else { Kind::Script };
+            let kind = if control.check().is_err() {
+                Kind::Aborted
+            } else if timed_out.load(Ordering::SeqCst) {
+                Kind::Timeout
+            } else {
+                Kind::Script
+            };
             let prefix = if kind == Kind::Timeout { "codemode: the script exceeded its deadline\n" } else { "" };
             Outcome { output: String::new(), calls, error: Some(format!("{prefix}{error}")), kind }
         }

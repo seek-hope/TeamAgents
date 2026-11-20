@@ -215,14 +215,12 @@ async fn autonomy_question_survives_restart_without_another_confirmation() {
 async fn autonomy_recovery_budget_survives_an_inflight_crash() {
     let root = root("autonomy-crash");
     std::fs::create_dir_all(root.dir.join("ws")).unwrap();
-    let (provider, seen) =
-        recording(vec![Step::Message(reply("I will continue")), Step::Message(reply("Still planning")), Step::Hang]);
+    let (provider, seen) = recording(vec![Step::Message(reply("")), Step::Message(reply("")), Step::Hang]);
     let handle = start(autonomous_config(&root, provider)).await.unwrap();
     handle.input("Complete the work.").await.unwrap();
     wait_for_requests(&seen, 3, 5000).await;
     handle.crash().await;
-    let (provider, resumed) =
-        recording(vec![Step::Message(reply("More planning")), Step::Message(finish_call("Must not run"))]);
+    let (provider, resumed) = recording(vec![Step::Message(reply("")), Step::Message(finish_call("Must not run"))]);
     let handle = start(autonomous_config(&root, provider)).await.unwrap();
     wait_event(&handle, "work_blocked", 5000).await;
     assert_eq!(recorded(&resumed).len(), 1, "restart does not replenish empty-turn recovery");
@@ -238,21 +236,25 @@ async fn autonomy_recovery_budget_survives_an_inflight_crash() {
 }
 
 #[tokio::test]
-async fn autonomy_repeated_actions_stop_without_inventing_progress() {
-    if !autonomy_runner_child("autonomy_repeated_actions_stop_without_inventing_progress") {
+async fn autonomy_repeated_observations_advise_without_stopping() {
+    if !autonomy_runner_child("autonomy_repeated_observations_advise_without_stopping") {
         eprintln!("Completed in the isolated child runner; its exit and test count were checked.");
         return;
     }
     let root = root("autonomy-repeat");
     std::fs::create_dir_all(root.dir.join("ws")).unwrap();
-    let script = (0..6).map(|n| Step::Message(shell_call(&format!("read-{n}"), "printf unchanged"))).collect();
+    let mut script: Vec<_> =
+        (0..6).map(|n| Step::Message(shell_call(&format!("read-{n}"), "printf unchanged"))).collect();
+    script.push(Step::Message(json!({"role":"assistant","content":"","tool_calls":[{"id":"done","type":"function",
+        "function":{"name":"finish","arguments":json!({"status":"success","summary":"Verified six stable samples.","evidence":["tool:read-5"]}).to_string()}}]})));
     let (provider, seen) = recording(script);
     let handle = start(autonomous_config(&root, provider)).await.unwrap();
     handle.input("Investigate and resolve the issue.").await.unwrap();
-    wait_event(&handle, "work_blocked", 15000).await;
-    assert_eq!(recorded(&seen).len(), 5, "three equal observations plus two bounded recovery attempts");
-    let events = handle.events(0).await.unwrap();
-    assert!(!events.iter().any(|e| e["kind"] == "work_completed"));
+    assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
+    let requests = recorded(&seen);
+    assert_eq!(requests.len(), 7);
+    assert!(request_text(&requests[3]).contains("Repeated actions returned the same observations"));
+    assert!(!handle.events(0).await.unwrap().iter().any(|e| e["kind"] == "work_blocked"));
     handle.shutdown().await.unwrap();
 }
 

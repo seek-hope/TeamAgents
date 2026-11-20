@@ -1467,18 +1467,18 @@ async fn autonomy_headless_question_answer_and_successor_acceptance() {
 async fn autonomy_headless_distinguishes_information_from_new_work() {
     let root = root("autonomy-intent");
     std::fs::create_dir_all(root.dir.join("ws")).unwrap();
-    let admission = json!({"role":"assistant","content":"","tool_calls":[{"id":"start","type":"function",
-        "function":{"name":"work_checkpoint","arguments":json!({"action":"start_work","objective":"Give the second result"}).to_string()}}]});
+    std::fs::write(root.dir.join("ws/answer.txt"), "Second result.").unwrap();
+    let read = json!({"role":"assistant","content":"","tool_calls":[{"id":"answer","type":"function",
+        "function":{"name":"read_file","arguments":json!({"path":"answer.txt"}).to_string()}}]});
+    let finish = json!({"role":"assistant","content":"","tool_calls":[{"id":"done","type":"function",
+        "function":{"name":"finish","arguments":json!({"status":"success","summary":"Second result.","evidence":["tool:answer"]}).to_string()}}]});
     let scripts = HashMap::from([(
         "i-leader".to_string(),
-        vec![
-            finish_call("First result."),
-            reply("The first result is complete."),
-            admission,
-            finish_call("Second result."),
-        ],
+        vec![finish_call("First result."), reply("The first result is complete."), read, finish],
     )]);
     let mut cfg = config(&root, scripts);
+    cfg.supervisor.bindings = vec!["files".into()];
+    cfg.supervisor.leader_profile.tools = teamagents_engine::reference::basic_tool_schemas(false, false);
     cfg.supervisor.work_limits = json!({"autonomous_work":true});
     let handle = serve(cfg).await.unwrap();
     let (socket, workspace) = (root.dir.join("state/daemon.sock"), root.dir.join("ws"));
@@ -1507,10 +1507,7 @@ async fn autonomy_headless_distinguishes_information_from_new_work() {
 async fn autonomy_headless_reports_bounded_blocking_without_timing_out() {
     let root = root("autonomy-exec-blocked");
     std::fs::create_dir_all(root.dir.join("ws")).unwrap();
-    let scripts = HashMap::from([(
-        "i-leader".to_string(),
-        vec![reply("Planning"), reply("More planning"), reply("Still planning")],
-    )]);
+    let scripts = HashMap::from([("i-leader".to_string(), vec![reply(""), reply(""), reply("")])]);
     let mut cfg = config(&root, scripts);
     cfg.supervisor.work_limits = json!({"autonomous_work":true});
     let handle = serve(cfg).await.unwrap();

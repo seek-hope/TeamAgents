@@ -835,6 +835,8 @@ pub(crate) fn spawn_driver<P: Provider + 'static>(
         Some(config.state_root.join("artifacts")),
         Some(config.state_root.join("shell")),
         crate::tools::ToolWiring {
+            profile_tools: config.profile.tools.clone(),
+            storage: Some(storage.clone()),
             hooks: hooks.clone(),
             session_id: config.session_id.clone(),
             instance_id: config.instance_id.clone(),
@@ -3211,7 +3213,7 @@ that delegated it learns the outcome only from a settlement.";
         let args = &intent["args"];
         let mut prepared_path: Option<String> = None;
         let mut workspace_info: Option<Json> = None;
-        let (method, params) = match name {
+        let (method, mut params) = match name {
             teamagents_core::kernel::SEND_TOOL => {
                 ("send_message", json!({"recipient": args["recipient"], "text": args["text"]}))
             }
@@ -3348,6 +3350,15 @@ that delegated it learns the outcome only from a settlement.";
             }
             other => return Err(format!("execute_collaboration: unknown tool {other}")),
         };
+        if matches!(method, "delegate_task" | "spawn_instance") {
+            if let Some(requested) = args.get("capabilities") {
+                params["capabilities"] = requested.clone();
+            } else if (method == "delegate_task" || params.get("task").is_some())
+                && !self.config.catalog.default_task_capabilities.is_empty()
+            {
+                params["capabilities"] = json!(self.config.catalog.default_task_capabilities);
+            }
+        }
         let action = name.to_string();
         let result = self
             .submit(

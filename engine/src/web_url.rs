@@ -216,7 +216,7 @@ fn doh_addresses(payload: &Json, record_type: u64) -> Result<Vec<IpAddr>, String
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use serde_json::json;
     static DNS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -317,7 +317,7 @@ mod tests {
         assert!(doh_addresses(&json!({"Status":0}), 28).unwrap().is_empty());
     }
 
-    fn serve(responses: Vec<(u16, String)>) -> (String, std::thread::JoinHandle<Vec<String>>) {
+    pub(crate) fn serve(responses: Vec<(u16, String)>) -> (String, std::thread::JoinHandle<Vec<String>>) {
         use std::io::{BufRead, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let endpoint = format!("http://{}/", listener.local_addr().unwrap());

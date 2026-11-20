@@ -264,8 +264,18 @@ fn read_config_file(path: &Path) -> Result<String, String> {
 /// so `every_user_config_field_is_accepted` fails the moment a field is added and
 /// forgotten here — a silent drop would make the feature inert, which is exactly
 /// what happened to `[retention]` and `[hooks]` before that test existed.
-const CATALOG_KEYS: &[&str] =
-    &["models", "tools", "skills_paths", "instruction_files", "retention", "hooks", "checks", "limits", "update"];
+const CATALOG_KEYS: &[&str] = &[
+    "models",
+    "tools",
+    "skills_paths",
+    "instruction_files",
+    "default_task_capabilities",
+    "retention",
+    "hooks",
+    "checks",
+    "limits",
+    "update",
+];
 
 /// The one wording for a key this build does not serve (D-75's rule, D-161's enforcement):
 /// refused with a pointer, never dropped in silence.
@@ -307,6 +317,14 @@ pub fn parse_user_config(text: &str) -> Result<UserConfig, String> {
 /// the other — measured 2026-09-27, `[tools.t] kind = "mcp"` with no `command` passed `load_user_config_for`
 /// while `parse_user_config` refused it. Which checks a config gets must not depend on the loader.
 fn validate_shared(catalog: &UserConfig) -> Result<(), String> {
+    for capability in &catalog.default_task_capabilities {
+        if !capability
+            .split_once('@')
+            .is_some_and(|(action, scope)| teamagents_core::v2::capability::authorizes_something(action, scope))
+        {
+            return Err(format!("unsupported default_task_capabilities entry: {capability:?}"));
+        }
+    }
     validate_checks(catalog)?;
     validate_profiles(catalog)?;
     validate_tools(catalog)?;
@@ -1500,7 +1518,7 @@ pub fn load_resolved_config(
     // user config here too: the product's loader kept it, this one dropped it, so wiring the merge would have
     // silently lost every `[limits]` setting (found while writing D-244, and the test
     // `the_two_loaders_agree_on_a_user_only_config` is what keeps the two rule sets equal).
-    for key in ["retention", "hooks", "checks", "limits", "update"] {
+    for key in ["default_task_capabilities", "retention", "hooks", "checks", "limits", "update"] {
         if let Some(value) = user.get(key) {
             merged.insert(key.into(), value.clone());
         }

@@ -255,12 +255,10 @@ async fn spawned_worker_settles_and_the_leader_completes() {
         Step::Message(finish_call("team answered 4")),
     ];
     let worker = vec![Step::Message(finish_call("4"))];
-    let handle = start(config(
-        &root,
-        factory(HashMap::from([("i-leader".to_string(), leader), ("i-worker".to_string(), worker)])),
-    ))
-    .await
-    .expect("start");
+    let mut cfg =
+        config(&root, factory(HashMap::from([("i-leader".to_string(), leader), ("i-worker".to_string(), worker)])));
+    cfg.catalog.default_task_capabilities = vec!["shell@workspace".into()];
+    let handle = start(cfg).await.expect("start");
     // the leader may manage the session (spawn authority, §5.1)
     let mut control = second_control(&root);
     control
@@ -273,6 +271,16 @@ async fn spawned_worker_settles_and_the_leader_completes() {
             teamagents_core::v2::Identity::User,
         )
         .expect("manage grant");
+    control
+        .submit(
+            cmd(
+                "g-task-shell",
+                "issue_grant",
+                json!({"subject":"i-leader","action":"shell","resource_scope":"workspace","delegable":true}),
+            ),
+            teamagents_core::v2::Identity::User,
+        )
+        .unwrap();
     handle.input("i-leader", "get me 2+2 via a worker").await.expect("input");
     let closed = wait_event(&handle, "work_completed", 20_000).await;
     assert_eq!(closed["payload"]["status"], json!("SUCCEEDED"));
@@ -280,6 +288,8 @@ async fn spawned_worker_settles_and_the_leader_completes() {
     let task: String =
         control.connection().query_row("SELECT status FROM tasks WHERE id = 't-answer'", [], |row| row.get(0)).unwrap();
     assert_eq!(task, "SUCCEEDED");
+    let children: i64 = control.connection().query_row("SELECT count(*) FROM grants WHERE subject='i-worker' AND action='shell' AND task_id='t-answer' AND parent_grant_id IS NOT NULL AND delegable=0 AND revoked_at IS NOT NULL",[],|r|r.get(0)).unwrap();
+    assert_eq!(children, 1);
     let snapshot = handle.snapshot().await.unwrap();
     let ids: Vec<&str> = snapshot["instances"].as_array().unwrap().iter().map(|i| i["id"].as_str().unwrap()).collect();
     assert!(ids.contains(&"i-leader") && ids.contains(&"i-worker"), "{ids:?}");

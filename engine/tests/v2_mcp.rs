@@ -500,7 +500,9 @@ async fn codemode_runs_mcp_tools_and_only_its_output_reaches_the_context() {
     let root = root("codemode");
     std::fs::create_dir_all(root.dir.join("ws")).unwrap();
     let script = r#"
-const a = await tools.echo_echo({ text: "ping", times: 2 });
+const [page, missing, other] = parallelReads(["input.txt", "absent.txt", "other.txt"].map(path => ({name:"read_file", args:{path,limit:1}})));
+if (missing.ok || !missing.error || other.value.content !== "other") throw new Error("wrong batch results");
+const a = await tools.echo_echo({ text: page.value.content.trim(), times: 2 });
 const b = await tools.echo_echo({ text: "pong", times: 3 });
 text(a.length + ":" + b.length);
 return "filtered";
@@ -512,7 +514,10 @@ return "filtered";
     let seen = provider.seen();
     let mut config = root.config(provider);
     config.catalog = echo_catalog(env!("CARGO_BIN_EXE_fake-mcp-server"));
-    config.bindings = vec!["echo_service".into()];
+    config.profile.tools = teamagents_engine::reference::basic_tool_schemas(false, false);
+    config.bindings = vec!["files".into(), "echo_service".into()];
+    std::fs::write(root.dir.join("ws/input.txt"), "ping").unwrap();
+    std::fs::write(root.dir.join("ws/other.txt"), "other").unwrap();
     let handle = start(config).await.expect("start");
     handle.input("use the mcp echo tool").await.expect("input");
     assert_eq!(run_to_work_close(&handle).await, "SUCCEEDED");
@@ -527,6 +532,14 @@ return "filtered";
     let results = tool_results(&root);
     let reply = results.iter().find(|entry| entry.contains("9:14")).cloned().unwrap_or_default();
     assert!(!reply.is_empty(), "the script's output is the receipt: {results:?}");
+    let message: Json = serde_json::from_str(&reply).unwrap();
+    let result: Json = serde_json::from_str(message["content"].as_str().unwrap()).unwrap();
+    let calls = result["calls"].as_array().unwrap();
+    assert_eq!(calls.len(), 5);
+    for (path, status) in [("input.txt", "ok"), ("absent.txt", "error"), ("other.txt", "ok")] {
+        let hash = teamagents_core::kernel::args_hash(&json!({"path":path,"limit":1}));
+        assert!(calls.iter().any(|c| c["name"] == "read_file" && c["status"] == status && c["args_hash"] == hash));
+    }
     assert!(
         !reply.contains("ping ping") && !reply.contains("pong pong"),
         "the nested MCP payloads stayed in the sandbox: {reply}"

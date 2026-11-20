@@ -3,20 +3,20 @@
 This report records accepted finite verification evidence and its limits. Property/configuration mappings are
 in [README.md](README.md); reproduction commands are in [DEVELOPMENT.md](../docs/DEVELOPMENT.md).
 
-## 0. Gate status (re-run 2026-11-17)
+## 0. Gate status (re-run 2026-11-20)
 
-Material SHA-256: `123436c2ac1f2d65c8f4e498a3ea661f60e4fd81b5327b76f7001865cb687db6`.
+Material SHA-256: `f140c5b7b73493ad1b803c6ec5999c160ab4d427ad5b9fcd61efd22dde30ae77`.
 
 The current finite replay verified all **63** configurations in **60** traversals,
 refuted all **323** negative controls, reached all **79** normal-path witnesses and passed all **9** Kani harnesses.
-Each Make target exited 0,
-and its input hashes remained unchanged throughout execution. Kani reported
+Each Make target exited 0. Kani reported
 `Complete - 9 successfully verified harnesses, 0 failures, 9 total`.
 
 The fingerprint binds the current model/configuration files, verification drivers, Makefile and compiled Kani
 subjects. `tools/verification_catalogue.py --source-hash` recomputes it; changing the fingerprint alone does not
-renew acceptance. Current replay inputs, logs and actual target exits are retained under
-`tools/tmp/current-verification/`. This is a finite model result, not native-runtime refinement.
+renew acceptance. Replay logs for this run are under `tools/tmp/delivery-20261120/formal/`.
+These finite models do not establish native-runtime refinement or cover all of the new first-tool admission
+and nested native-tool semantics.
 
 The catalogue contains **387 configurations across 47 modules**, including one separate incomplete wide
 configuration. Positive inputs share a traversal only when their model, specification and domains match;

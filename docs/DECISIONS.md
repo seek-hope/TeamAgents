@@ -85,9 +85,16 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
 
 - Work scopes own budget, deadline, admission and acceptance. Work states/tasks own continuation, delegation
   and attribution; sessions own history and isolation. There is no separate goal entity.
-- Work continues across turns, compaction and restart. Progress prose is not completion. Unproductive recovery
-  is bounded; blocked, failed and cancelled outcomes are not successes. Required checks must pass, but a green
-  command alone does not prove the whole deliverable.
+- Work continues across turns, compaction and restart. Progress prose, valid continuation checkpoints and
+  repeated observations alone neither complete nor block enrolled work. The next turn receives feedback;
+  empty replies and rejected protocol or completion actions retain bounded recovery. Without a budget or
+  deadline, valid but unproductive turns may continue until interrupted. Blocked, failed and cancelled
+  outcomes are not successes. Required checks must pass, but a green command alone does not prove delivery.
+- A first tool decision for matching, live pending input admits its work before preparing operations in the
+  same transaction. Plain informational answers still create no work; execution uses the ordinary dispatch
+  checks. The frozen request scope stays unchanged; the operation and its receipts belong to the new work.
+- Model task calls forward explicit capabilities. A user-only default task capability list applies when
+  omitted; an explicit empty list opts out. Neither form grants authority.
 - Members have no ambient Shell grant. Delegation uses explicit task/result paths and scoped grants.
 - The user may read/address any instance. An instance reads only its own private history; shared projections
   must not leak another member's context. Shared, isolated and Git-worktree policies are supported. Retirement
@@ -139,6 +146,10 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
   request, never retroactively. Logical requests and transport attempts are distinct; a complete late response
   may be selected once, while partial/unselected responses cannot create tool effects. Retry, stream framing,
   stall and response-size limits are explicit. Timeout does not establish absence of side effects.
+- D-482: Search and fetch each require their own provider bindings. Automatic fetch tries bound Exa first,
+  then bound DeepSeek only on a transient transport/read failure or HTTP 408, 429 or 5xx. Explicit selection
+  never switches providers. Missing/rejected credentials, redirects, invalid input, malformed responses and
+  guard failures do not trigger fallback. Each attempt uses only its binding's credential.
 - The URL guard canonicalizes HTTP(S), rejects credentials/internal hosts/non-public literals and checks all
   local DNS answers. Fake-IP hostname answers in `198.18.0.0/15` require public A/AAAA verification through
   Cloudflare HTTPS DNS, with Google fallback. Both families must finish; known private answers stop fallback.
@@ -231,7 +242,7 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
   credentials, active jobs or external backups as repository housekeeping.
 - Source counts come from Cargo lists. Every registered current total/triple must match; missing/ambiguous
   statements fail. Numeric regeneration does not establish a passing gate, install or formal result.
-- Current source contains 855 Rust tests: core 198, engine 536 and TUI 121.
+- Current source contains 857 Rust tests: core 198, engine 538 and TUI 121.
 - Formal material has 387 configurations across 47 modules: 63 positive configurations in 60 traversals,
   323 controls and one separate wide configuration; 79 witnesses and 9 Kani harnesses. Shared traversals require
   identical model/specification/domain. Witnesses establish reachability, not safety. The report binds verified

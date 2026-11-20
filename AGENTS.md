@@ -45,7 +45,7 @@ make verify-model-counterexamples
 make verify-witnesses
 make verify-kani
 ```
-Current source inventory (2026-11-16): **855 Rust tests** (core 198 / engine 536 / tui 121), **63 positive TLA configurations in 60
+Current source inventory (2026-11-16): **857 Rust tests** (core 198 / engine 538 / tui 121), **63 positive TLA configurations in 60
 traversals**, **323 controls**, **79 witnesses**, **9 Kani harnesses**, and **387 configurations across 47
 modules**. Current acceptance covers the full local gate, source/installed PTY matrices, 18 offline probes,
 x86_64 musl release/install and scripted profile/fetch checks, plus a separate live Fetch API check.
@@ -82,8 +82,8 @@ window is for scripted regression only.
   stop evidence before shared-workspace takeover. Unknown effects are never replayed.
 - A task may park in `BLOCKED` after exhausted checks, member failure or cancellation; this is not success.
   Cancel it with `teamagents tasks cancel --id` and redispatch as new work when appropriate.
-- Enrolled work can continue after progress prose, but empty replies, plan-only loops and repeated patterns can
-  block honestly. A BLOCKED task does not satisfy a task-result wait; cancellation does.
+- Enrolled work continues after progress prose, valid plans and repeated observations. Empty responses
+  and invalid actions still have bounded recovery. A BLOCKED task does not satisfy a task-result wait; cancellation does.
 - Interrupts have recovery boundaries. Known results are reused; in-flight losses become `OUTCOME_UNKNOWN`.
 - Approvals bind one operation, argument hash and permission revision, and are consumed by that dispatch.
   Automatic review never approves self-update.
