@@ -2,6 +2,8 @@
 
 use std::process::Command;
 
+#[path = "cases/catalog.rs"]
+mod catalog_tests;
 #[test]
 fn environment_doctor_discovers_host_tools_without_running_them_or_starting_work() {
     use std::os::unix::fs::PermissionsExt;

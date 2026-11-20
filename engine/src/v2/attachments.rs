@@ -180,11 +180,13 @@ pub async fn submit(storage: &Storage, root: &Path, catalog: &UserConfig, comman
         rusqlite::params![instance, c.session_id], |r| Ok((r.get(0)?, r.get(1)?)),
     ).map_err(|e| format!("attachment recipient: {e}"))).await??;
     let profile: Json = serde_json::from_str(&profile).map_err(|e| format!("attachment profile: {e}"))?;
-    let images =
-        crate::providers::resolve_model(catalog, profile["model"].as_str().unwrap_or("")).is_some_and(|(_, p)| {
-            p.images
-                && matches!(p.protocol.as_str(), "openai" | "chat/completions" | "deepseek" | "responses" | "anthropic")
-        });
+    let images = crate::providers::stored_model(catalog, &profile).is_some_and(|(_, p)| {
+        p.images
+            && matches!(
+                p.protocol.as_str(),
+                "openai" | "chat/completions" | "deepseek" | "responses" | "anthropic" | "gemini"
+            )
+    });
     let prepared = tokio::task::spawn_blocking(move || prepare(Path::new(&workspace), &paths, images))
         .await
         .map_err(|e| format!("attachment capture: {e}"))??;
@@ -298,7 +300,7 @@ pub fn expand(root: &Path, entries: &mut [ContextEntry], images: bool, protocol:
                 let quoted = text.split('\n').map(|line| format!("> {line}")).collect::<Vec<_>>().join("\n");
                 parts.push(json!({"type":"text","text":format!("{heading}\nQuoted file content:\n{quoted}\nEnd of attachment.")}));
             } else {
-                if !images || !matches!(protocol, "chat_completions" | "responses" | "anthropic") {
+                if !images || !matches!(protocol, "chat_completions" | "responses" | "anthropic" | "gemini") {
                     return Err(format!("image attachments unsupported by selected model/protocol {protocol}"));
                 }
                 parts.push(json!({"type":"text","text":heading}));

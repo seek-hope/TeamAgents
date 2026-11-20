@@ -75,6 +75,12 @@ commands! {
     ("runners", "stop", "--cwd DIR --id JOB --service --yes --json", "", "Retire runners; --service --yes stops a group left by a settled command."),
     ("artifacts", "list", "--cwd DIR --json", "", "List stored artifacts and presence."),
     ("artifacts", "gc", "--cwd DIR --json", "", "Collect unreferenced artifacts."),
+    ("local-models", "list", "--model KEY --json", "--model", "List model states from the local router bound to a user profile."),
+    ("local-models", "load", "--model KEY --yes --json", "--model --yes", "Request loading the selected profile's model on its local router."),
+    ("local-models", "unload", "--model KEY --yes --json", "--model --yes", "Request unloading the selected profile's model on its local router."),
+    ("catalog", "list", "--name SOURCE --json", "", "List cached directory metadata, including missing models."),
+    ("catalog", "refresh", "--name SOURCE --json", "", "Refresh user-bound model directories without inference."),
+    ("catalog", "rollback", "--name SOURCE --json", "--name", "Publish the previous directory snapshot as a new version."),
     ("mcp", "list", "--cwd DIR", "", "List configured MCP services, tools and OAuth state."),
     ("mcp", "add", "--name NAME --transport stdio|http --command CMD --arg ARG --url URL --server NAME --oauth --oauth-client-id ID", "--name", "Add a host MCP binding. Repeat --arg for exact argv, including dash-leading values."),
     ("mcp", "remove", "--name NAME", "--name", "Remove an MCP binding."),
@@ -85,7 +91,7 @@ commands! {
 
 fn locators(command: &Command) -> &'static str {
     match (command.name, command.verb) {
-        ("version" | "mcp" | "jobs-runner", _) | ("doctor", "environment") => "",
+        ("version" | "catalog" | "local-models" | "mcp" | "jobs-runner", _) | ("doctor", "environment") => "",
         ("sessions", _) => "--state-root PATH",
         _ => "--state-root PATH --session ID",
     }

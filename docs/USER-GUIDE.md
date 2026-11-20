@@ -63,7 +63,85 @@ The product reads repository-local configuration under an explicit trust rule; i
 hooks, checks, limits, retention and update policy never silently override user configuration.
 See [CONFIG.md](CONFIG.md) for every field and [INSTALL.md](INSTALL.md) for storage locations.
 Startup `-c key=value` overrides include user-only permission settings. A running daemon keeps its configuration;
-joining clients report unapplied model/config settings. Use `instances model` to change an existing profile.
+joining clients report unapplied model/config settings. Use `instances model` to select a configured key for a
+new request. Selecting another profile changes its endpoint, protocol and credential reference together; use
+an exact key when two profiles share the same wire model name. This is an explicit switch, not automatic routing.
+
+For native Gemini text and tool use, set `protocol = "gemini"`, the Google model ID, and
+`api_key_env = "GEMINI_API_KEY"` on a profile. The default API root is
+`https://generativelanguage.googleapis.com/v1beta`. Declare `images = true` only for a model that accepts
+image **input**. API-key transport is not account login, image generation, or evidence of access to a model.
+
+### Refresh a model directory (Linux)
+
+Opt in **in your user config**. `catalog_sources` maps a namespace to a user-defined Chat Completions profile
+with an explicit API root. Refresh sends one GET to that root's `/models`, using only the seed's credential
+reference, no prompt and no inference. HTTPS is required except for loopback IPs. Redirects, incomplete
+pages, malformed or empty directories do not replace the previous snapshot. An ID-only `/models` response
+is insufficient: this adapter reads [OpenRouter-style metadata](https://openrouter.ai/docs/guides/overview/models)
+for text input/output, tool support, image input and context length. Other directory formats need adapters.
+
+```toml
+[catalog_sources]
+router = "router_seed"
+
+[models.router_seed]
+provider = "openrouter"
+protocol = "chat/completions"
+model = "your-chosen-model-id"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+```
+
+```bash
+teamagents catalog refresh --name router --json
+teamagents catalog list --name router --json
+teamagents catalog rollback --name router --json
+```
+
+Select a discovered model by its exact `router::<wire-id>` key. Discovery never sets the default model.
+Generated entries inherit the seed's destination, protocol, credential reference, timeout and retry policy,
+not its price or generation options. A full user profile at the same key takes precedence; no user TOML is
+rewritten. A missing row stays in the directory with `missing: true`; it is not evidence that inference will
+succeed. Refresh reports before/after metadata per change. The private SQLite cache under `$XDG_STATE_HOME`
+(default `~/.local/state/teamagents-catalog/`) keeps the latest eight changed snapshots per source identity.
+Rollback publishes the previous snapshot. New requests in a running session read current metadata;
+retries never silently acquire a new destination or body. Editing the seed/config itself still requires a restart.
+
+For daily refresh independent of sessions, see the [Linux timer setup](../examples/systemd/README.md).
+The timer is not installed or enabled automatically.
+
+<!-- maps: examples/systemd/README.md reader=user -->
+
+### Manage models on an existing local llama.cpp router
+
+Add the allowlist **before the first TOML table** in your user config. Each key must name a profile in that
+same file; a project or discovered profile cannot opt in. Use the model ID advertised by your router.
+
+```toml
+local_router_profiles = ["desk"]
+
+[models.desk]
+provider = "local"
+protocol = "chat/completions"
+model = "your-local-model"
+base_url = "http://127.0.0.1:9931/v1"
+# api_key_env = "LOCAL_ROUTER_KEY"
+```
+
+```bash
+teamagents local-models list --model desk --json
+teamagents local-models load --model desk --yes --json
+teamagents local-models unload --model desk --yes --json
+```
+
+These commands contact the [llama.cpp router](https://github.com/ggml-org/llama.cpp/blob/972d2313bc0bf0a45f634f77d95c9fb03aeab12c/tools/server/README.md)
+via a numeric loopback IP only, without using proxies or following redirects. Listing shows IDs and states,
+not file paths or process arguments. Changes target only the configured model. Loading refuses if another
+model is resident or in transition; unloading can interrupt other clients using this model. Use a dedicated
+router if others can change its state between inspection and dispatch. Acknowledgement is not readiness:
+list again to inspect the current state. If the router disconnects during dispatch, inspect before retrying.
+This CLI does not download or delete weights, launch or stop the router, select a session profile, or run inference.
 
 ### 2.1 Acceptance checks (`[[checks]]`)
 
@@ -219,7 +297,7 @@ protected while stored operation receipts or context reference them, even after 
 and offline artifact collection retry failed unlinks and skip `EVIDENCE` roots. Retaining history can therefore
 retain its referenced bytes beyond an owner's lifetime; no automatic reference-expiry policy is selected.
 
-MCP negotiates revision **2025-06-18** over stdio and streamable HTTP, with the same operation, budget,
+Generic MCP bindings negotiate revision **2025-06-18** over stdio and streamable HTTP, with the same operation, budget,
 cancellation and receipt paths. A peer returning another revision fails explicitly. `codemode` composes bound
 tools in restricted JavaScript without ambient filesystem, network or timers. `tools.mcp_resource` lists/reads
 resources, including services with no selected tools; specify `service` when multiple bindings are ambiguous.
@@ -233,6 +311,23 @@ selection and refresh check the same locked record. Refresh and retry share the 
 credential-lock waits. Codemode exposes normalized JavaScript identifiers while preserving remote tool names.
 This covers PKCE/public-client flows and local interoperability tests. External authenticated services,
 challenge-directed discovery and resumable SSE reconnects are not established by those tests.
+
+For CodeGraph 1.6.3, configure this in the **user** config. The dedicated binding speaks its native
+`2024-11-05` stdio revision without a bridge or a generic protocol downgrade:
+
+```toml
+[tools.graph]
+kind = "mcp"
+command = "codegraph"
+args = ["serve", "--mcp"]
+codegraph_projects = []
+```
+
+Use `teamagents mcp list` to check discovery. In codemode, `tools.graph_codegraph_explore({query: "symbol"})`
+returns the canonical project, upstream result (including stale-index warnings), and index timestamps.
+Timestamps do not prove the index is current. The default project is the member workspace. To let the Leader
+query another project, list its exact absolute root and pass `projectPath` in the call. Workers cannot use the
+Leader's extra roots. Missing/invalid indexes are refused: no initialization or fallback to a parent project.
 
 For a bound service named `example`, a codemode call can read its public resource:
 

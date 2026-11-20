@@ -177,7 +177,8 @@ impl CustomProvider {
             "response" | "responses" => "responses",
             "anthropic" => "anthropic",
             "chat/completions" => "chat/completions",
-            _ => return Err("the API format must be responses, anthropic or chat/completions".into()),
+            "gemini" => "gemini",
+            _ => return Err("the API format must be responses, anthropic, gemini or chat/completions".into()),
         };
         let base = self.base_url.trim().trim_end_matches('/');
         let url = url::Url::parse(base).map_err(|_| "the base URL must be a valid HTTP(S) URL")?;
@@ -266,6 +267,8 @@ fn read_config_file(path: &Path) -> Result<String, String> {
 /// what happened to `[retention]` and `[hooks]` before that test existed.
 const CATALOG_KEYS: &[&str] = &[
     "models",
+    "catalog_sources",
+    "local_router_profiles",
     "tools",
     "skills_paths",
     "instruction_files",
@@ -327,6 +330,12 @@ fn validate_shared(catalog: &UserConfig) -> Result<(), String> {
     }
     validate_checks(catalog)?;
     validate_profiles(catalog)?;
+    crate::catalog::validate_sources(catalog)?;
+    for key in &catalog.local_router_profiles {
+        let profile =
+            catalog.models.get(key).ok_or_else(|| format!("local_router_profiles names missing model {key:?}"))?;
+        crate::local_models::root(profile).map_err(|e| format!("local router profile {key:?}: {e}"))?;
+    }
     validate_tools(catalog)?;
     validate_update(catalog)?;
     Ok(())
@@ -422,7 +431,7 @@ fn validate_profiles(catalog: &UserConfig) -> Result<(), String> {
 
 /// The wire protocols the provider dispatch can build (`engine/src/providers/mod.rs`): the two named arms and
 /// the chat-completions shape three names share.
-const PROTOCOLS: &[&str] = &["openai", "chat/completions", "deepseek", "responses", "anthropic"];
+const PROTOCOLS: &[&str] = &["openai", "chat/completions", "deepseek", "responses", "anthropic", "gemini"];
 
 /// The tool kinds a `[tools.<name>]` entry may declare (`engine/src/bound.rs`).
 const TOOL_KINDS: &[&str] = &["web_search", "web_fetch", "mcp"];
@@ -431,6 +440,18 @@ const TOOL_KINDS: &[&str] = &["web_search", "web_fetch", "mcp"];
 /// stayed in `doctor`'s tools list and nothing was ever bound (measured 2026-09-27, D-162).
 fn validate_tools(catalog: &UserConfig) -> Result<(), String> {
     for (name, binding) in &catalog.tools {
+        if let Some(projects) = &binding.codegraph_projects {
+            if binding.kind != "mcp"
+                || binding.mcp_transport.as_deref().unwrap_or("stdio") != "stdio"
+                || binding.command.as_deref().and_then(|c| Path::new(c).file_name()).and_then(|s| s.to_str())
+                    != Some("codegraph")
+                || binding.args != ["serve", "--mcp"]
+                || !binding.env.is_empty()
+                || projects.iter().any(|p| !Path::new(p).is_absolute())
+            {
+                return Err(format!("tools.{name}.codegraph_projects requires codegraph serve --mcp over stdio, no custom env, and absolute project roots"));
+            }
+        }
         if !TOOL_KINDS.contains(&binding.kind.as_str()) {
             return Err(format!(
                 "tools.{name}.kind = {:?}: this build serves {} (docs/CONFIG.md, `[tools.<name>]`)",
@@ -1456,12 +1477,36 @@ pub fn load_resolved_config(
                 outcome.refused.push(format!("{class}:{name} ({untrusted})"));
                 continue;
             }
+            if class == "tool" && value.get("codegraph_projects").is_some() {
+                outcome.refused.push(format!("tool:{name} (CodeGraph project access must be bound by the user)"));
+                continue;
+            }
             outcome.accepted.push(format!("{class}:{name}"));
             out.insert(name, value);
         }
         toml::Value::Table(out)
     };
-    let models = merge(table(&user, "models"), table(&project, "models"), "model", &mut outcome);
+    let user_models = table(&user, "models");
+    let sources = table(&user, "catalog_sources");
+    for seed in sources.values() {
+        if !seed.as_str().is_some_and(|key| user_models.contains_key(key)) {
+            return Err("catalog_sources requires a profile defined by the user".into());
+        }
+    }
+    for key in user.get("local_router_profiles").and_then(toml::Value::as_array).into_iter().flatten() {
+        if !key.as_str().is_some_and(|name| user_models.contains_key(name)) {
+            return Err("local_router_profiles requires profiles defined by the user".into());
+        }
+    }
+    let mut project_models = table(&project, "models");
+    project_models.retain(|name, _| {
+        let reserved = name.split_once("::").is_some_and(|(ns, _)| sources.contains_key(ns));
+        if reserved {
+            outcome.refused.push(format!("model:{name} (user-managed catalogue namespace)"));
+        }
+        !reserved
+    });
+    let models = merge(user_models, project_models, "model", &mut outcome);
     let tools = merge(table(&user, "tools"), table(&project, "tools"), "tool", &mut outcome);
     merged.insert("models".into(), models);
     merged.insert("tools".into(), tools);
@@ -1518,7 +1563,16 @@ pub fn load_resolved_config(
     // user config here too: the product's loader kept it, this one dropped it, so wiring the merge would have
     // silently lost every `[limits]` setting (found while writing D-244, and the test
     // `the_two_loaders_agree_on_a_user_only_config` is what keeps the two rule sets equal).
-    for key in ["default_task_capabilities", "retention", "hooks", "checks", "limits", "update"] {
+    for key in [
+        "default_task_capabilities",
+        "retention",
+        "hooks",
+        "checks",
+        "limits",
+        "update",
+        "catalog_sources",
+        "local_router_profiles",
+    ] {
         if let Some(value) = user.get(key) {
             merged.insert(key.into(), value.clone());
         }

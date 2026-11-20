@@ -88,6 +88,7 @@ impl ChatCompletions {
                 if let Some(fields) = message.as_object_mut() {
                     fields.remove("responses_output");
                     fields.remove("anthropic_blocks");
+                    fields.remove("gemini_content");
                     // The thinking-mode requirement is that the field is *present* on an assistant message that
                     // carries tool calls, and the comment above records that an empty string satisfies it
                     // (verified against deepseek-flash, deepseek-reasoner and deepseek-chat). Echoing the model's

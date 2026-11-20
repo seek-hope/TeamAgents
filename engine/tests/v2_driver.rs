@@ -718,6 +718,55 @@ async fn profile_selection_applies_before_the_first_request_and_survives_tool_fo
 }
 
 #[tokio::test]
+async fn restart_does_not_resend_a_prepared_turn_to_a_changed_destination() {
+    let root = root("route-recovery");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let (before, log) = recording(vec![Step::Hang]);
+    let mut original = named_profile_config(&root, before);
+    original.catalog.models.get_mut("leader_main").unwrap().base_url = Some("http://127.0.0.1:8001".into());
+    let handle = start(original).await.unwrap();
+    handle.input("prepare a request").await.unwrap();
+    wait_for_requests(&log, 1, 5000).await;
+    handle.crash().await;
+    let (after, log) = recording(vec![]);
+    let mut changed = named_profile_config(&root, after);
+    changed.catalog.models.get_mut("leader_main").unwrap().base_url = Some("http://127.0.0.1:8002".into());
+    let handle = start(changed).await.unwrap();
+    wait_event(&handle, "request_failed", 5000).await;
+    assert!(recorded(&log).is_empty());
+    let snapshot = handle.snapshot().await.unwrap();
+    assert_eq!(snapshot["instance"]["lifecycle"], "PARKED");
+    assert_eq!(snapshot["work"]["unknown_usage"], 1);
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn restart_refuses_changed_instructions_even_with_the_same_profile() {
+    let root = root("body-recovery");
+    let ws = root.dir.join("ws");
+    std::fs::create_dir_all(&ws).unwrap();
+    let file = ws.join("policy.txt");
+    std::fs::write(&file, "original instruction").unwrap();
+    let (before, log) = recording(vec![Step::Hang]);
+    let mut original = named_profile_config(&root, before);
+    original.catalog.instruction_files.push(file.to_string_lossy().into_owned());
+    let handle = start(original).await.unwrap();
+    handle.input("prepare a request").await.unwrap();
+    let first = wait_for_requests(&log, 1, 5000).await;
+    assert!(request_text(&first[0]).contains("original instruction"));
+    handle.crash().await;
+    std::fs::write(&file, "changed instruction").unwrap();
+    let (after, log) = recording(vec![]);
+    let mut changed = named_profile_config(&root, after);
+    changed.catalog.instruction_files.push(file.to_string_lossy().into_owned());
+    let handle = start(changed).await.unwrap();
+    wait_event(&handle, "request_failed", 5000).await;
+    assert!(recorded(&log).is_empty());
+    assert_eq!(handle.snapshot().await.unwrap()["instance"]["lifecycle"], "PARKED");
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn crash_before_model_response_recovers_with_honest_billing() {
     let root = root("crash-model");
     std::fs::create_dir_all(root.dir.join("ws")).unwrap();

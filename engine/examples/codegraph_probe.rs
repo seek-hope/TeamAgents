@@ -61,16 +61,11 @@ fn catalog() -> UserConfig {
         serde_json::from_value(json!({
             "kind": "mcp",
             "command": "codegraph",
-            "args": ["serve", "--mcp", "--path", ".", "--no-watch"],
+            "args": ["serve", "--mcp"],
+            "codegraph_projects": [],
+            "required": true,
             "startup_timeout_s": 60,
-            "tool_timeout_s": 120,
-            "env": {
-                "CODEGRAPH_MCP_TOOLS": "explore",
-                "CODEGRAPH_TELEMETRY": "0",
-                "CODEGRAPH_NO_UPDATE_CHECK": "1",
-                "CODEGRAPH_EXPLORE_DEDUP": "0",
-                "NO_COLOR": "1"
-            }
+            "tool_timeout_s": 120
         }))
         .expect("the fixed CodeGraph binding is valid"),
     );
@@ -90,10 +85,11 @@ const namespace = describeNamespace("codegraph");
 if (!namespace || !namespace.tools.some((tool) => tool.name === "codegraph_codegraph_explore")) {
   throw new Error("CodeGraph namespace is missing explore");
 }
-const result = await tools.codegraph_codegraph_explore(__CALL_ARGS__);
-if (typeof result !== "string") throw new Error("expected CodeGraph text output");
-if (!result.includes("Source Code")) throw new Error(result.slice(0, 1000));
-text(result.slice(0, 4000));
+const args = __CALL_ARGS__;
+const result = await tools.codegraph_codegraph_explore(args);
+if (result.project !== args.projectPath || result.freshness.status !== "not_verified") throw new Error("missing project or freshness evidence");
+if (!result.result.includes("Source Code")) throw new Error(result.result.slice(0, 1000));
+text(result.result.slice(0, 4000));
 "#
     .replace("__CALL_ARGS__", &call_args);
     let outcome = codemode::run(

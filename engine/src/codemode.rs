@@ -193,7 +193,7 @@ fn metas(tools: &BoundTools, native: &[Json]) -> Vec<Meta> {
             namespace: "native".into(),
         });
     }
-    if !tools.services.is_empty() {
+    if tools.services.values().any(|s| s.supports("resources")) {
         meta.push(Meta {
             ident: "mcp_resource".into(),
             real: "mcp_resource".into(),
@@ -686,6 +686,7 @@ mod tests {
             parameters,
             namespace: "svc".into(),
             output_schema: None,
+            projects: None,
             remote: None,
         }
     }

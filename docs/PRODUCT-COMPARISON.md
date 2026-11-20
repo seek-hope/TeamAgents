@@ -19,7 +19,7 @@ This is the candidate-work queue, not a record of past experiments. Implemented 
   projections. The tree is navigation, not authority or proof of success.
 - The product reads repository-local configuration under explicit user trust; hooks, checks, permissions,
   limits, retention and update policy remain under user control.
-- **857 Rust tests**, 63 positive TLA configurations in 60 traversals, 323 controls, 79 witnesses and 9 Kani
+- **868 Rust tests**, 63 positive TLA configurations in 60 traversals, 323 controls, 79 witnesses and 9 Kani
   harnesses. Current-host evidence covers five PTY profiles/both graphics modes, 18 offline probes, x86_64 musl
   installation and scripted profile/fetch checks; a separate live Fetch API check passed. AArch64 evidence is
   the 26-tool GNU user-emulation subset. None establishes general real-model task quality or native ARM acceptance.
@@ -33,7 +33,7 @@ This is the candidate-work queue, not a record of past experiments. Implemented 
 | P1 | Reviewer judgement | Independent multi-model adversarial/benign cases, strict parsing and honest accounting of transport, quota and parser failures; reused development cases are not a holdout |
 | P1 | Tree and interface usefulness | Correct/complete summaries and tree references, navigation usability and reduced lostness across representative sessions |
 | P1 | Provider and environment acceptance | Current real-provider protocol/mixed-team/image coverage, broader proxy environments, provider-side destination/redirect checks, public SSH and graphical terminals |
-| P2 | Profile switching | Cross-provider switching and unambiguous catalogue identity when profiles share a wire name |
+| P2 | Request routing and local models | Explicit cross-provider switching and local-router list/load/unload have loopback coverage. Test automatic selection within user-authorized destinations, real router state and cost before claiming parity. |
 | P2 | Integration contracts | External OAuth, versioned SDK/client/extension matrices, resumable streams and broader dependency ecosystems |
 | P2 | Distribution acceptance | Current clean-host install/update/rollback, failed-startup recovery, schema transitions, physical hosts, broader distributions and native ARM/packages |
 | P2 | Formal completion | Wide exhaustive completion, Rust/SQLite refinement, whole-system composition and Policy B source-bound bidirectional fair-trace equivalence |

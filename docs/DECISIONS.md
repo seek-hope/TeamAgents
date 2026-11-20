@@ -112,14 +112,39 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
   outcome/usage rather than silently dropping evidence. Outcome events trigger attribution even when a later
   input is active. Older-history cursors strictly decrease; read errors are infrastructure errors, not timeouts.
 
+## Approved workflow requirements (implementation staged)
+
+- Model account credentials are separate from MCP credentials. Never import another harness's auth store.
+  Native Gemini, Codex and Kimi account access, typed classifiers and image generation/editing require
+  protocol-specific acceptance; a compatible chat endpoint or an image preview is not equivalent.
+- Catalogue refresh is both scheduled and on demand. Preserve user edits, update only managed fields, mark
+  missing models without removing them, retain differences and rollback history, and preserve the last good
+  catalogue on failure. Only new requests may observe a refresh; never silently substitute another model.
+- Rewind has exactly two modes: conversation only (default), or conversation and tracked files. Preserve
+  the abandoned branch and editable prompt. Preview file changes and refuse conflicts or unconfirmed stop;
+  never rewind usage, approvals, task facts or external effects. File-only rewind is not supported.
+- Native CodeGraph serves an explicit project allowlist via MCP. Report repository identity and index
+  freshness without widening a member's scope, creating an index or inventing protocol compatibility.
+- A script is not a blanket approval. Effectful subcalls require their own operation, authorization, receipt
+  and cancel/recovery checks. Do not replay unknown effects or roll back facts about completed subcalls.
+- Per-request routing is confined to explicitly allowed destinations, capabilities and budgets. Keep prior
+  attempts and their known/unknown charges. Visible text or unknown side effects prevent automatic replay.
+  Managing local model files and serving processes requires explicit user authorization, not inference.
+  The local-router CLI reads exact user profile keys only. Load/unload require explicit confirmation;
+  loss of a router acknowledgement is not a reason to resend. No session tool or discovery entry grants
+  router management access.
+- Native Apple Silicon distribution is deferred. These requirements describe the target, not passing evidence.
+
 ## Context, profiles and exploration tree
 
 - Real-model evaluation uses each profile's native context window with recorded provenance. Synthetic small
   windows are for scripted regressions only.
 - Persisted profiles reload after the post-drain snapshot, before preparation, compaction and reservation.
   Catalogue keys resolve to wire names, defaults and normalized effort; revision checks reject stale preparation.
-  Recovery uses the same resolution, but cached retry bodies remain unchanged. General cross-provider hot
-  switching and ambiguous catalogue entries sharing a wire identity remain open.
+  Explicit selection binds the adapter and tariff by catalogue key, not a possibly shared wire name. Cached
+  retries retain their prepared request. Recovery checks both route and serialized provider-neutral request
+  (including the tool surface and expanded images); a missing or mismatched digest parks without a resend.
+  Automatic routing, model-account login and live-service acceptance are separate obligations.
 - Materialization preserves wire messages/tool-result pairing. Bounded compact-JSON estimation preserves
   aggregate ASCII rounding, Unicode scalars, escaping and image allowances without duplicating input arrays.
 - Compaction preserves the original request, revisions, acceptance criteria, open questions and receipt
@@ -142,7 +167,7 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
   must be 64-character hexadecimal strings; malformed values fail a whole batch before staging/writes. Hashes
   remain optional and case-insensitive for both batch forms. Tool-body hash failure is distinct from predispatch
   argument refusal. Path pinning, authority, atomic commit and rollback rules remain binding.
-- Chat Completions, DeepSeek, Responses and Anthropic adapters coexist. Profile changes apply at the next
+- Chat Completions, DeepSeek, Responses, Gemini and Anthropic adapters coexist. Profile changes apply at the next
   request, never retroactively. Logical requests and transport attempts are distinct; a complete late response
   may be selected once, while partial/unselected responses cannot create tool effects. Retry, stream framing,
   stall and response-size limits are explicit. Timeout does not establish absence of side effects.
@@ -158,7 +183,9 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
 - DNS verification shares a ten-second deadline and 64 KiB body cap. At most eight uncancellable OS lookup
   workers may linger. A resolver may consume the whole deadline. Fetch content is clipped at a UTF-8 byte
   boundary. Provider-side DNS, redirects, later rebinding and broader proxy environments remain external obligations.
-- MCP negotiates exactly `2025-06-18` over stdio/streamable HTTP. Bound resource-only/filtered services remain
+- Generic MCP negotiates exactly `2025-06-18` over stdio/streamable HTTP. Only the user-bound native
+  CodeGraph stdio client uses `2024-11-05`, exposes only explore and refuses resource capability.
+  Bound resource-only/filtered services remain
   available through normal authorization/hooks. Discovery shares one deadline, 100 pages and 16 MiB aggregate
   response budget; malformed/repeated cursors fail. JSON-RPC string/numeric IDs are preserved. Codemode checks
   normalized catalogue names and dispatches original remote names; ambiguous resource reads are refused.
@@ -242,7 +269,7 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
   credentials, active jobs or external backups as repository housekeeping.
 - Source counts come from Cargo lists. Every registered current total/triple must match; missing/ambiguous
   statements fail. Numeric regeneration does not establish a passing gate, install or formal result.
-- Current source contains 857 Rust tests: core 198, engine 538 and TUI 121.
+- Current source contains 868 Rust tests: core 198, engine 549 and TUI 121.
 - Formal material has 387 configurations across 47 modules: 63 positive configurations in 60 traversals,
   323 controls and one separate wide configuration; 79 witnesses and 9 Kani harnesses. Shared traversals require
   identical model/specification/domain. Witnesses establish reachability, not safety. The report binds verified

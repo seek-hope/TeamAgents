@@ -12,12 +12,14 @@ pub fn v2_root() -> std::path::PathBuf {
 }
 
 pub mod bound;
+pub mod catalog;
 pub mod cli;
 pub mod codemode;
 pub mod config;
 pub mod environment;
 pub mod hooks;
 pub mod jobs;
+pub mod local_models;
 pub mod mcp;
 pub mod mcp_auth;
 pub mod observability;

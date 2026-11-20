@@ -120,17 +120,17 @@ policy on its own. See the handler and control wrapper for scope, revision, gran
 
 | Method | Parameters | Reply keys | Answered at |
 |---|---|---|---|
-| `previews` | — | `previews` | `engine/src/v2/daemon.rs:788` |
-| `checkpoint` | — | `snapshot`, `watermark` | `engine/src/v2/daemon.rs:794` |
-| `events` | — | — | `engine/src/v2/daemon.rs:801` |
-| `search_tree` | — | — | `engine/src/v2/daemon.rs:805` |
-| `history` | `before`, `instance_id` | `entries`, `envelope_id`, `epoch`, `idx`, `instance_id`, `kind`, `message`, `next_before`, `work_work_id`, `workspace` | `engine/src/v2/daemon.rs:813` |
-| `surfaces` | `instance_id` | `epoch`, `instance_id`, `kind`, `offered_tools`, `request_id`, `status`, `surface_authorized`, `surfaces`, `work_id` | `engine/src/v2/daemon.rs:895` |
-| `inputs` | — | `envelope_id`, `epoch`, `inputs`, `instance_id`, `next_after`, `payload`, `revision`, `sequence` | `engine/src/v2/daemon.rs:927` |
-| `tasks` | — | `tasks` | `engine/src/v2/daemon.rs:978` |
-| `approvals` | — | `approvals`, `id`, `operation_id`, `preview`, `tool` | `engine/src/v2/daemon.rs:987` |
-| `work_scopes` | — | `attached_instances`, `deadline`, `id`, `known_usage`, `limits`, `status`, `summary`, `unknown_usage`, `work_scopes` | `engine/src/v2/daemon.rs:1016` |
-| `grants` | — | `action`, `capability_requests`, `delegable`, `grants`, `id`, `issuer`, `parent_grant_id`, `requester`, `resource_scope`, `revision`, `revoked`, `status`, `subject`, `task_id` | `engine/src/v2/daemon.rs:1070` |
+| `previews` | — | `previews` | `engine/src/v2/daemon.rs:776` |
+| `checkpoint` | — | `snapshot`, `watermark` | `engine/src/v2/daemon.rs:782` |
+| `events` | — | — | `engine/src/v2/daemon.rs:789` |
+| `search_tree` | — | — | `engine/src/v2/daemon.rs:793` |
+| `history` | `before`, `instance_id` | `entries`, `envelope_id`, `epoch`, `idx`, `instance_id`, `kind`, `message`, `next_before`, `work_work_id`, `workspace` | `engine/src/v2/daemon.rs:801` |
+| `surfaces` | `instance_id` | `epoch`, `instance_id`, `kind`, `offered_tools`, `request_id`, `status`, `surface_authorized`, `surfaces`, `work_id` | `engine/src/v2/daemon.rs:883` |
+| `inputs` | — | `envelope_id`, `epoch`, `inputs`, `instance_id`, `next_after`, `payload`, `revision`, `sequence` | `engine/src/v2/daemon.rs:915` |
+| `tasks` | — | `tasks` | `engine/src/v2/daemon.rs:966` |
+| `approvals` | — | `approvals`, `id`, `operation_id`, `preview`, `tool` | `engine/src/v2/daemon.rs:975` |
+| `work_scopes` | — | `attached_instances`, `deadline`, `id`, `known_usage`, `limits`, `status`, `summary`, `unknown_usage`, `work_scopes` | `engine/src/v2/daemon.rs:1004` |
+| `grants` | — | `action`, `capability_requests`, `delegable`, `grants`, `id`, `issuer`, `parent_grant_id`, `requester`, `resource_scope`, `revision`, `revoked`, `status`, `subject`, `task_id` | `engine/src/v2/daemon.rs:1058` |
 
 ### Commands (executed by the control plane)
 
@@ -209,7 +209,6 @@ work projections, are outside this scan; consult their linked source contracts a
 | Built at | Fields |
 |---|---|
 | `serve` | `id`, `name`, `root`, `active` |
-| `serve` | `key`, `model`, `provider`, `efforts` |
 | `mcp_rows` | `name`, `transport`, `required`, `oauth`, `credential` |
 | `run_scheduler` | `id`, `instance_id` |
 | `serve_client` | `server`, `protocol_version`, `session_id`, `state_root`, `permissions`, `workspace` |

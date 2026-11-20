@@ -6,6 +6,7 @@
 pub mod anthropic;
 pub mod chat_completions;
 mod content;
+mod gemini;
 pub mod responses;
 
 use serde_json::{json, Value as Json};
@@ -236,13 +237,20 @@ pub(crate) fn stream_stall_bound(timeout: Duration) -> Duration {
 /// One HTTP client policy for every protocol adapter (§7 keeps a single
 /// production stack): 30s connect timeout plus the OS trust anchors.
 pub(crate) fn http_client() -> Result<reqwest::Client, String> {
+    client_builder().build().map_err(|e| format!("http client: {e}"))
+}
+
+fn client_builder() -> reqwest::ClientBuilder {
     // http1_only keeps the protocol explicit and makes ALPN advertise
     // http/1.1 (edges that require ALPN otherwise drop the handshake)
-    let mut builder = reqwest::Client::builder().connect_timeout(Duration::from_secs(30)).http1_only();
+    let mut builder = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(30))
+        .http1_only();
     for anchor in os_trust_anchors() {
         builder = builder.add_root_certificate(anchor);
     }
-    builder.build().map_err(|e| format!("http client: {e}"))
+    builder
 }
 
 /// Streaming preview events. Previews are never authoritative facts (§9):
@@ -314,6 +322,9 @@ pub struct AttemptOutcome {
 /// streams stay archived attempts and never produce tool intents.
 pub trait Provider: Send + Sync {
     fn protocol(&self) -> &str;
+    /// Scripted providers are already supplied by their caller. Production adapters must switch
+    /// endpoint, protocol and credential together, or become unavailable; never retain the old adapter.
+    fn select_profile(&mut self, _selector: &str, _entry: Option<&ModelProfile>) {}
     fn complete(
         &self,
         request: &ModelRequest,
@@ -329,6 +340,7 @@ pub trait Provider: Send + Sync {
 pub enum AnyProvider {
     ChatCompletions(chat_completions::ChatCompletions),
     Responses(responses::Responses),
+    Gemini(gemini::Gemini),
     Anthropic(anthropic::Anthropic),
     /// The catalog could not build a provider for this instance's model. Every
     /// attempt fails permanently with the reason, so the instance parks through
@@ -341,10 +353,18 @@ pub enum AnyProvider {
 }
 
 impl Provider for AnyProvider {
+    fn select_profile(&mut self, selector: &str, entry: Option<&ModelProfile>) {
+        *self = entry
+            .ok_or_else(|| format!("model {selector:?} is missing or ambiguous; select a catalogue key"))
+            .and_then(build_for_profile)
+            .unwrap_or_else(|reason| Self::Unavailable { reason });
+    }
+
     fn protocol(&self) -> &str {
         match self {
             AnyProvider::ChatCompletions(provider) => provider.protocol(),
             AnyProvider::Responses(provider) => provider.protocol(),
+            AnyProvider::Gemini(provider) => provider.protocol(),
             AnyProvider::Anthropic(provider) => provider.protocol(),
             AnyProvider::Unavailable { .. } => "unavailable",
         }
@@ -359,6 +379,7 @@ impl Provider for AnyProvider {
         match self {
             AnyProvider::ChatCompletions(provider) => provider.complete(request, cancel, on_event).await,
             AnyProvider::Responses(provider) => provider.complete(request, cancel, on_event).await,
+            AnyProvider::Gemini(provider) => provider.complete(request, cancel, on_event).await,
             AnyProvider::Anthropic(provider) => provider.complete(request, cancel, on_event).await,
             AnyProvider::Unavailable { reason } => Err(ProviderError::permanent(reason.clone())),
         }
@@ -405,11 +426,13 @@ pub fn resolve_profile(profile: KernelProfile, catalog: &UserConfig) -> KernelPr
             options.insert("reasoning_effort".into(), serde_json::Value::String(normalized));
         }
     }
+    let mut effective = serde_json::to_value(options).expect("JSON generation options");
+    effective.sort_all_objects();
     KernelProfile {
         model: entry.model.clone(),
         instructions: profile.instructions.clone(),
         tools: profile.tools.clone(),
-        options: serde_json::to_value(options).unwrap_or_else(|_| serde_json::json!({})),
+        options: effective,
         context_window: entry.context_window.or(profile.context_window),
         // D-392: the catalog entry is authoritative for the capability, and the fallback keeps whatever the
         // caller resolved (an unknown model keeps fail-closed `false`).
@@ -435,16 +458,31 @@ pub fn resolve_model<'a>(catalog: &'a UserConfig, model: &str) -> Option<(&'a St
     if let Some(entry) = catalog.models.get_key_value(model) {
         return Some(entry);
     }
-    catalog.models.iter().find(|(_, profile)| profile.model == model)
+    let mut matches = catalog.models.iter().filter(|(_, profile)| profile.model == model);
+    let first = matches.next()?;
+    matches.next().is_none().then_some(first)
+}
+
+/// Persisted selections with an explicit key must never fall back to a wire alias. Older rows may
+/// only identify a wire model: a name collision is not evidence for one particular account.
+pub fn stored_model<'a>(catalog: &'a UserConfig, profile: &Json) -> Option<(&'a String, &'a ModelProfile)> {
+    if let Some(key) = profile["catalog_key"].as_str() {
+        return catalog.models.get_key_value(key);
+    }
+    let name = profile["model"].as_str()?;
+    let mut matches = catalog.models.iter().filter(|(_, p)| p.model == name);
+    match matches.next() {
+        Some(pair) => matches.next().is_none().then_some(pair),
+        None => catalog.models.get_key_value(name),
+    }
 }
 
 pub fn build_for_model(catalog: &UserConfig, model: &str) -> Result<AnyProvider, String> {
-    let (key, profile) = resolve_model(catalog, model).ok_or_else(|| {
+    let (_, profile) = resolve_model(catalog, model).ok_or_else(|| {
         let mut available: Vec<&str> = catalog.models.keys().map(String::as_str).collect();
         available.sort();
         format!("model {model:?} is not in the user catalog (keys: {})", available.join(", "))
     })?;
-    let _ = key;
     build_for_profile(profile)
 }
 
@@ -456,6 +494,12 @@ pub fn build_for_profile(profile: &ModelProfile) -> Result<AnyProvider, String> 
     let timeout = Duration::from_secs(profile.timeout.max(1) as u64);
     let configured = profile.base_url.as_deref().map(str::trim).filter(|base| !base.is_empty());
     match profile.protocol.as_str() {
+        "gemini" => Ok(AnyProvider::Gemini(gemini::Gemini::new(
+            configured.unwrap_or("https://generativelanguage.googleapis.com/v1beta"),
+            api_key,
+            timeout,
+            profile.context_window,
+        )?)),
         "anthropic" => Ok(AnyProvider::Anthropic(
             anthropic::Anthropic::new(configured.unwrap_or("https://api.anthropic.com"), api_key, timeout)?
                 .with_context_window(profile.context_window),
@@ -567,6 +611,8 @@ mod tests {
             Some("leader_main".into()),
             "the declared model name resolves too"
         );
+        catalog.models.insert("other_account".into(), catalog.models["leader_main"].clone());
+        assert!(resolve_model(&catalog, "deepseek-flash").is_none(), "shared wire names cannot identify an endpoint");
         assert!(resolve_model(&catalog, "gpt-9").is_none(), "an unknown reference stays unknown");
     }
 

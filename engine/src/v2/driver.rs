@@ -588,6 +588,10 @@ pub struct Driver<P: Provider> {
     shell_state: PathBuf,
     /// Fixed requests held in memory; after a restart they are rebuilt from
     /// the persisted context under the same request id (§6.3).
+    selected_key: Option<String>,
+    selection_loaded: bool,
+    // Explicit profiles as configured at boot; a rollback can remove a discovered key, never a user override.
+    catalog_base: Option<teamagents_core::models::UserConfig>,
     prepared: std::collections::HashMap<String, ModelRequest>,
     /// A31/§4.4 disk-full latch: once a submit fails StorageFull the driver
     /// stops stepping and only retries the park until it lands.
@@ -642,7 +646,9 @@ pub async fn start<P: Provider + 'static>(mut config: DriverConfig<P>) -> Result
         &config.workspace.to_string_lossy(),
         &config.work_limits,
         &leader_profile,
-        // this path drives one instance over the session's own root, so the root here *is* the session root
+        // This API accepts a wire-effective kernel profile, not a separate user-selected catalogue key.
+        (leader_profile.model != config.profile.model).then_some(config.profile.model.as_str()),
+        // This single-instance path uses the session root itself for retention.
         RetentionBoot {
             history_days: config.catalog.retention.history_days,
             evidence: crate::config::state_root_marked_as_evidence(&config.state_root),
@@ -672,6 +678,7 @@ pub(crate) async fn bootstrap(
     workspace: &str,
     work_limits: &Json,
     leader_profile: &teamagents_core::kernel::KernelProfile,
+    catalog_key: Option<&str>,
     retention: RetentionBoot,
 ) -> Result<(), String> {
     storage
@@ -679,7 +686,7 @@ pub(crate) async fn bootstrap(
             let instance = instance_id.to_string();
             let workspace = workspace.to_string();
             let mut work_limits = work_limits.clone();
-            let profile = json!({"model": leader_profile.model, "instructions": leader_profile.instructions,
+            let profile = json!({"model": leader_profile.model, "catalog_key":catalog_key, "instructions": leader_profile.instructions,
                                  "options": leader_profile.options, "context_window": leader_profile.context_window,
                                  "images": leader_profile.images});
             let deadline_minutes = work_limits
@@ -835,6 +842,7 @@ pub(crate) fn spawn_driver<P: Provider + 'static>(
         Some(config.state_root.join("artifacts")),
         Some(config.state_root.join("shell")),
         crate::tools::ToolWiring {
+            is_leader: config.instance_id == config.leader_id,
             profile_tools: config.profile.tools.clone(),
             storage: Some(storage.clone()),
             hooks: hooks.clone(),
@@ -852,10 +860,13 @@ pub(crate) fn spawn_driver<P: Provider + 'static>(
     )?);
     let driver = Driver {
         shell_state: config.state_root.join("shell"),
+        catalog_base: (!config.catalog.catalog_sources.is_empty()).then(|| config.catalog.clone()),
         config,
         storage: storage.clone(),
         shared: shared.clone(),
         toolkit,
+        selected_key: None,
+        selection_loaded: false,
         prepared: std::collections::HashMap::new(),
         storage_full: false,
         compact_failures: 0,
@@ -1077,7 +1088,11 @@ impl<P: Provider> Driver<P> {
     }
 
     fn pricing(&self, model: &str, catalog_key: bool) -> Json {
-        let direct = if catalog_key { self.config.catalog.models.get(model) } else { None };
+        let direct = if catalog_key {
+            self.config.catalog.models.get(model)
+        } else {
+            self.selected_key.as_ref().and_then(|k| self.config.catalog.models.get(k)).filter(|p| p.model == model)
+        };
         let mut matches = self.config.catalog.models.values().filter(|entry| entry.model == model);
         let first = matches.next();
         // A raw model id shared by multiple endpoints has no unique tariff. Never guess a price.
@@ -1123,7 +1138,21 @@ impl<P: Provider> Driver<P> {
     /// cover. At most one summary is visible — a later summary covers the
     /// older one — and it always precedes the retained tail it summarizes.
     async fn context_entries(&self, snapshot: &Snapshot) -> Result<Vec<ContextEntry>, String> {
-        self.read_entries(snapshot, true).await
+        let binding = self.request_binding();
+        let mut entries = self.read_entries(snapshot, true).await?;
+        for entry in &mut entries {
+            if entry.kind != EntryKind::Assistant {
+                continue;
+            }
+            if let Some(fields) = entry.message.as_object_mut() {
+                if fields.remove("teamagents_route").as_ref().and_then(Json::as_str) != Some(binding.as_str()) {
+                    for name in ["anthropic_blocks", "responses_output", "gemini_content", "reasoning_content"] {
+                        fields.remove(name);
+                    }
+                }
+            }
+        }
+        Ok(entries)
     }
 
     /// D-392: turn every `view_image` reference in this request's view into a real image part — or the
@@ -1947,6 +1976,7 @@ that delegated it learns the outcome only from a settlement.";
                     "begin_request",
                     json!({"instance_id": self.config.instance_id, "request_id": request_id,
                            "revision": revision, "prepared_work": work, "est_prompt_tokens": request.est_prompt_tokens,
+                           "request_ref":self.prepared_binding(&request)?,
                            "offered_tools": offered_tools, "surface_authorized": surface_authorized,
                            "pricing": self.pricing(&self.config.profile.model, false)}),
                 ),
@@ -1988,33 +2018,77 @@ that delegated it learns the outcome only from a settlement.";
     /// the kernel receives the API model name, generation defaults and normalized effort.
     async fn refresh_profile(&mut self) -> Result<(), String> {
         let instance = self.config.instance_id.clone();
-        let text: Option<String> = self
+        let text: String = self
             .storage
-            .call(move |control| {
-                control
-                    .connection()
-                    .query_row("SELECT profile_json FROM instances WHERE id = ?1", [&instance], |row| row.get(0))
-                    .ok()
+            .call(move |c| {
+                c.connection()
+                    .query_row("SELECT profile_json FROM instances WHERE id=?1", [&instance], |r| r.get(0))
+                    .map_err(|e| format!("read instance profile: {e}"))
             })
-            .await?;
-        if let Some(text) = text {
-            if let Ok(profile) = serde_json::from_str::<Json>(&text) {
-                let mut selected = self.config.profile.clone();
-                if let Some(model) = profile["model"].as_str().filter(|model| !model.is_empty()) {
-                    selected.model = model.to_string();
-                }
-                if profile.get("options").is_some_and(Json::is_object) {
-                    selected.options = profile["options"].clone();
-                }
-                self.config.profile = crate::providers::resolve_profile(selected, &self.config.catalog);
-            }
+            .await??;
+        let profile: Json = serde_json::from_str(&text).map_err(|e| format!("invalid instance profile: {e}"))?;
+        let selector =
+            profile["catalog_key"].as_str().or_else(|| profile["model"].as_str()).unwrap_or(&self.config.profile.model);
+        let previous = self.selected_key.as_ref().and_then(|key| self.config.catalog.models.get(key)).cloned();
+        if let Some(base) = &self.catalog_base {
+            let mut fresh = base.clone();
+            crate::catalog::overlay(&mut fresh)?;
+            self.config.catalog.models = fresh.models;
         }
+        let entry = crate::providers::stored_model(&self.config.catalog, &profile);
+        let key = entry.map(|(k, _)| k.clone());
+        if !self.selection_loaded || self.selected_key != key || previous.as_ref() != entry.map(|(_, p)| p) {
+            self.config.provider.select_profile(selector, entry.map(|(_, p)| p));
+            self.selected_key = key.clone();
+            self.selection_loaded = true;
+        }
+        let mut selected = self.config.profile.clone();
+        selected.model = key.unwrap_or_else(|| selector.to_owned());
+        selected.options = profile.get("options").filter(|v| v.is_object()).cloned().unwrap_or_else(|| json!({}));
+        if let Some((_, entry)) = entry {
+            selected.images = entry.images;
+            selected.context_window = entry.context_window;
+            self.config.max_retries = entry.max_retries.max(0) as usize;
+        }
+        self.config.profile =
+            if entry.is_some() { crate::providers::resolve_profile(selected, &self.config.catalog) } else { selected };
+        Ok(())
+    }
+
+    // Keep only a digest of the selected transport and generation policy, never a key value or a URL in a receipt.
+    fn request_binding(&self) -> String {
+        let key = self.selected_key.as_deref().unwrap_or("");
+        let mut identity = json!({"key":key,"entry":self.config.catalog.models.get(key),"options":self.config.profile.options,"wire":self.config.profile.model});
+        identity.sort_all_objects();
+        format!("profile:{}", teamagents_core::kernel::args_hash(&identity))
+    }
+
+    /// Hash the provider-neutral request, including expanded images, without storing another copy of private
+    /// prompts or attachments. The route prefix lets recovery refuse a different recipient before rebuilding.
+    fn prepared_binding(&self, request: &ModelRequest) -> Result<String, String> {
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        serde_json::to_writer(&mut hash, request).map_err(|e| format!("hash prepared request: {e}"))?;
+        Ok(format!("{}:{:x}", self.request_binding(), hash.finalize()))
+    }
+
+    async fn refuse_resend(&self, request_id: &str, reason: &str) -> Result<(), String> {
+        self.submit(
+            self.command(
+                format!("fail-prepared-{request_id}"),
+                "fail_request",
+                json!({
+                    "request_id":request_id, "reason":reason, "park":true
+                }),
+            ),
+            Identity::System,
+        )
+        .await?;
         Ok(())
     }
 
     async fn step_model(&mut self, snapshot: &Snapshot) -> Result<(), String> {
         let request_id = snapshot.active_request.clone().ok_or("MODEL_PENDING without active request")?;
-        self.refresh_profile().await?;
         // recovery: a selected complete attempt is imported from its artifact,
         // never re-requested (§6.3)
         let selected: Option<(String, Option<String>)> = self
@@ -2041,6 +2115,23 @@ that delegated it learns the outcome only from a settlement.";
         let request = match self.prepared.get(&request_id) {
             Some(request) => request.clone(),
             None => {
+                self.refresh_profile().await?;
+                let id = request_id.clone();
+                let frozen: String = self
+                    .storage
+                    .call(move |c| {
+                        c.connection()
+                            .query_row("SELECT request_ref FROM model_requests WHERE request_id=?1", [&id], |r| {
+                                r.get(0)
+                            })
+                            .map_err(|e| format!("request binding: {e}"))
+                    })
+                    .await??;
+                if frozen.rsplit_once(':').map(|(route, _)| route) != Some(self.request_binding().as_str()) {
+                    return self
+                        .refuse_resend(&request_id, "prepared model route is missing or changed; not resent")
+                        .await;
+                }
                 let mut entries = self.context_entries(snapshot).await?;
                 self.expand_images(&mut entries)?;
                 let work = self.work_context(Some(&request_id)).await?;
@@ -2052,6 +2143,10 @@ that delegated it learns the outcome only from a settlement.";
                 self.wire_mask = mask;
                 append_work_context(&mut request, &work);
                 self.append_search_tree_context(&mut request).await?;
+                if self.prepared_binding(&request)? != frozen {
+                    return self.refuse_resend(&request_id, "prepared request content changed; not resent").await;
+                }
+                self.prepared.insert(request_id.clone(), request.clone());
                 request
             }
         };
@@ -2075,7 +2170,10 @@ that delegated it learns the outcome only from a settlement.";
         self.shared.preview.lock().unwrap().clear();
         self.shared.cancel_attempt.lock().unwrap().take();
         match outcome {
-            Ok(outcome) => {
+            Ok(mut outcome) => {
+                if let Some(fields) = outcome.response.message.as_object_mut() {
+                    fields.insert("teamagents_route".into(), json!(self.request_binding()));
+                }
                 let response_ref = self.store_response_artifact(&attempt_id, &outcome).await?;
                 let recorded = self
                     .submit(
@@ -2403,7 +2501,10 @@ that delegated it learns the outcome only from a settlement.";
     /// allowed it (the next driver step re-dispatches); `Ok(false)` means it
     /// denied it (the control plane cancelled the operation). An error leaves
     /// the approval pending for the user; it never becomes an implicit allow.
-    async fn review_operation(&self, operation_id: &str, intent: &Json, approval_id: &str) -> Result<bool, String> {
+    async fn review_operation(&mut self, operation_id: &str, intent: &Json, approval_id: &str) -> Result<bool, String> {
+        if !self.selection_loaded {
+            self.refresh_profile().await?;
+        }
         let (model, reviewer_provider) = match &self.config.reviewer_model {
             Some(key) => {
                 let (_, entry) = crate::providers::resolve_model(&self.config.catalog, key)
@@ -3310,6 +3411,7 @@ that delegated it learns the outcome only from a settlement.";
                 prepared_path = Some(workspace_path.clone());
                 workspace_info = Some(info);
                 let mut profile = self.config.profile.clone();
+                let mut catalog_key = self.selected_key.clone();
                 profile.instructions = args["instructions"].as_str().unwrap_or("").to_string();
                 // A named model is resolved through the catalog *here*, so an
                 // unknown name is this tool call's error (the model can correct
@@ -3321,6 +3423,12 @@ that delegated it learns the outcome only from a settlement.";
                         let error = format!("unknown model {requested:?} (catalog keys: {})", keys.join(", "));
                         return self.complete_with_error(operation_id, intent, "collaboration", &error).await;
                     };
+                    if self.catalog_base.as_ref().is_some_and(|base| !base.models.contains_key(key))
+                        && self.selected_key.as_ref() != Some(key)
+                    {
+                        return self.complete_with_error(operation_id,intent,"collaboration","discovery is not a grant: a child may inherit the selected model, but another discovered destination needs explicit user configuration").await;
+                    }
+                    catalog_key = Some(key.clone());
                     let skeleton = KernelProfile {
                         model: key.clone(),
                         instructions: profile.instructions.clone(),
@@ -3339,7 +3447,7 @@ that delegated it learns the outcome only from a settlement.";
                     profile.context_window = resolved.context_window;
                 }
                 let mut params = json!({"instance_id": instance_id, "instructions": args["instructions"],
-                                        "profile": {"model": profile.model, "instructions": profile.instructions,
+                                        "profile": {"model": profile.model, "catalog_key":catalog_key,"instructions": profile.instructions,
                                                     "tools": profile.tools, "options": profile.options,
                                                     "context_window": profile.context_window},
                                         "workspace_ref": workspace_path}); // the spawner's active work charges the child's task

@@ -16,6 +16,10 @@ use teamagents_engine::providers::{
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
+#[path = "cases/gemini.rs"]
+mod gemini;
+#[path = "cases/local_router.rs"]
+mod local_router;
 #[path = "cases/provider_content.rs"]
 mod provider_content;
 #[path = "cases/provider_robustness.rs"]

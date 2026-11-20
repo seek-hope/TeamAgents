@@ -165,7 +165,7 @@ impl Usage {
 /// Provider-neutral model request. `messages`/`tools` are chat-completions
 /// shaped; `options` carries the effective generation snapshot so a restart
 /// never silently inherits a mutated global profile (§4.1).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ModelRequest {
     pub request_id: String,
     pub model: String,

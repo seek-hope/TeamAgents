@@ -200,7 +200,10 @@ pub fn doctor(state_root: Option<PathBuf>, overrides: &[String]) -> i32 {
     // repository-local one, under the user's trust gate — and reports the merge's decision in its own row,
     // because the daemon's copy of it lands in `<state root>/daemon.log`.
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let catalog = load_user_config_for_with(&cwd, overrides);
+    let catalog = load_user_config_for_with(&cwd, overrides).and_then(|(mut cfg, merge)| {
+        crate::catalog::overlay(&mut cfg)?;
+        Ok((cfg, merge))
+    });
     match &catalog {
         Ok((catalog, merge)) => {
             let models: Vec<&String> = catalog.models.keys().collect();
@@ -1045,16 +1048,18 @@ fn daemon_boot(
     // D-428: the command line's `-c` overrides enter the same load the daemon's config comes from
     let (catalog, project, review_permissions) = crate::config::load_resolved_config(&workspace, overrides)?;
     report_project_merge(&project);
-    let mut available: Vec<String> = catalog.models.keys().cloned().collect();
+    let mut effective = catalog.clone();
+    crate::catalog::overlay(&mut effective)?;
+    let mut available: Vec<String> = effective.models.keys().cloned().collect();
     available.sort();
     let model = model.or_else(|| {
         saved_model
-            .map(|name| crate::providers::resolve_model(&catalog, &name).map(|(key, _)| key.clone()).unwrap_or(name))
+            .map(|name| crate::providers::resolve_model(&effective, &name).map(|(key, _)| key.clone()).unwrap_or(name))
     });
     let model_key = match model {
         Some(key) => key,
         None if catalog.models.contains_key("leader_main") => "leader_main".into(),
-        None if available.len() == 1 => available[0].clone(),
+        None if catalog.models.len() == 1 => catalog.models.keys().next().unwrap().clone(),
         // an empty catalog is a first run, not a missing flag: name the step that
         // creates one instead of leaving the user with "(available: )" (D-73)
         None if available.is_empty() => {
@@ -1076,7 +1081,7 @@ fn daemon_boot(
         ));
     }
     // preflight: credentials/protocol resolve at boot, not mid-session (§7)
-    crate::providers::build_for_model(&catalog, &model_key)?;
+    crate::providers::build_for_model(&effective, &model_key)?;
     // Publish absolute identities even when the client supplied a relative state root.
     let state_root = state_root.canonicalize().map_err(|error| state_root_uncreatable(&state_root, &error))?;
     let permissions = "full_auto".to_string();
@@ -1086,7 +1091,7 @@ fn daemon_boot(
     crate::update::write_boot_record(&state_root, &workspace, &model_key, full_auto, overrides, &permissions)
         .map_err(|error| crate::cli::state_root_uncreatable(&state_root, &std::io::Error::other(error)))?;
     let socket = state_root.join("daemon.sock");
-    let catalog_for_factory = catalog.clone();
+    let catalog_for_factory = effective;
     // D-168: the members' tool surface follows the config — a web tool is offered only for the kind the catalog
     // declares a binding of (§5.2: binding is the authorization), which is what `doctor`'s row for a config
     // without one already claimed.

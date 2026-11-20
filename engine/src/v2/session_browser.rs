@@ -74,7 +74,10 @@ pub fn resume_settings(dir: &Path) -> Result<(Option<String>, Option<PathBuf>), 
         ));
     }
     let profile: Json = serde_json::from_str(&profile).map_err(|e| format!("session profile: {e}"))?;
-    Ok((profile["model"].as_str().map(str::to_string), Some(PathBuf::from(workspace))))
+    Ok((
+        profile["catalog_key"].as_str().or_else(|| profile["model"].as_str()).map(str::to_string),
+        Some(PathBuf::from(workspace)),
+    ))
 }
 
 /// Explicit deletion, unlike age-based pruning. The CLI owns the base registry lock throughout this call.

@@ -149,6 +149,43 @@ impl McpClient {
         startup_timeout_s: u64,
         tool_timeout_s: u64,
     ) -> Result<Arc<Self>, String> {
+        Self::stdio(command, args, env, root, startup_timeout_s, tool_timeout_s, PROTOCOL_REVISION)
+    }
+
+    /// CodeGraph 1.6.x serves the original stdio tools protocol. Speak that revision explicitly;
+    /// this is not a fallback on failed negotiation, and does not affect HTTP or generic MCP bindings.
+    pub(crate) fn connect_codegraph(
+        command: &str,
+        root: &Path,
+        startup: u64,
+        timeout: u64,
+    ) -> Result<Arc<Self>, String> {
+        Self::stdio(
+            command,
+            &["serve".into(), "--mcp".into()],
+            &[
+                ("CODEGRAPH_MCP_TOOLS".into(), "explore".into()),
+                ("CODEGRAPH_TELEMETRY".into(), "0".into()),
+                ("CODEGRAPH_NO_WATCH".into(), "1".into()),
+                ("CODEGRAPH_NO_UPDATE_CHECK".into(), "1".into()),
+                ("CODEGRAPH_DIR".into(), ".codegraph".into()),
+            ],
+            root,
+            startup,
+            timeout,
+            "2024-11-05",
+        )
+    }
+
+    fn stdio(
+        command: &str,
+        args: &[String],
+        env: &[(String, String)],
+        root: &Path,
+        startup_timeout_s: u64,
+        tool_timeout_s: u64,
+        revision: &str,
+    ) -> Result<Arc<Self>, String> {
         let root = root.canonicalize().map_err(|e| format!("MCP workspace unavailable: {e}"))?;
         let mut cmd = Command::new(command);
         cmd.args(args);
@@ -182,7 +219,7 @@ impl McpClient {
         let pending = Arc::new(Mutex::new(HashMap::new()));
         let stdin = Arc::new(Mutex::new(stdin));
         let reader_stdin = stdin.clone();
-        let workspace: Arc<Mutex<Option<std::path::PathBuf>>> = Arc::new(Mutex::new(None));
+        let workspace: Arc<Mutex<Option<std::path::PathBuf>>> = Arc::new(Mutex::new(Some(root.clone())));
         let reader_workspace = workspace.clone();
         let client = Arc::new(Self {
             transport: Transport::Stdio {
@@ -233,11 +270,11 @@ impl McpClient {
         if let Err(e) = client
             .call(
                 "initialize",
-                json!({"protocolVersion":PROTOCOL_REVISION,"capabilities":{"roots":{}},
+                json!({"protocolVersion":revision,"capabilities":{"roots":{}},
                 "clientInfo":{"name":"teamagents","version":env!("CARGO_PKG_VERSION")}}),
                 client.startup_ms,
             )
-            .and_then(|reply| client.accept_initialize(&reply))
+            .and_then(|reply| client.accept_initialize(&reply, revision))
         {
             client.close();
             return Err(format!("MCP host initialization failed: {e}"));
@@ -296,7 +333,7 @@ impl McpClient {
             }),
             client.startup_ms,
         )?;
-        client.accept_initialize(&initialized)?;
+        client.accept_initialize(&initialized, PROTOCOL_REVISION)?;
         if let Transport::Http { protocol, .. } = &client.transport {
             *protocol.lock().unwrap() = Some(PROTOCOL_REVISION.to_string());
         }
@@ -305,12 +342,9 @@ impl McpClient {
         Ok(client)
     }
 
-    fn accept_initialize(&self, reply: &Json) -> Result<(), String> {
-        if reply["protocolVersion"].as_str() != Some(PROTOCOL_REVISION) {
-            return Err(format!(
-                "unsupported MCP protocolVersion {}; supported: {PROTOCOL_REVISION}",
-                reply["protocolVersion"]
-            ));
+    fn accept_initialize(&self, reply: &Json, revision: &str) -> Result<(), String> {
+        if reply["protocolVersion"].as_str() != Some(revision) {
+            return Err(format!("unsupported MCP protocolVersion {}; supported: {revision}", reply["protocolVersion"]));
         }
         *self.capabilities.lock().unwrap() = reply.get("capabilities").cloned().unwrap_or_else(|| json!({}));
         Ok(())

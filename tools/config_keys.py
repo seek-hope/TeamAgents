@@ -130,13 +130,15 @@ def named_keys(text: str) -> set[str]:
     after the first dot is a user-chosen name.
     """
     found = set()
+    directory_names = False
     for line in text.splitlines():
         section = re.match(r"\s*(?:#\s*)?\[\[?([a-z_][a-z0-9_.]*)\]?\]", line)
         if section:
             found.add(section.group(1).split(".")[0])
+            directory_names = section.group(1) == "catalog_sources"
             continue
         key = re.match(r"\s*(?:#\s*)?([a-z_][a-z0-9_]*)\s*=", line)
-        if key:
+        if key and not directory_names:
             found.add(key.group(1))
     return found
 

@@ -4,7 +4,9 @@ use serde_json::{json, Value as Json};
 
 pub fn parts(content: &Json, protocol: &str) -> Result<Vec<Json>, ProviderError> {
     let text = |value: &str| {
-        if protocol == "responses" {
+        if protocol == "gemini" {
+            json!({"text":value})
+        } else if protocol == "responses" {
             json!({"type":"input_text","text":value})
         } else {
             json!({"type":"text","text":value})
@@ -37,7 +39,9 @@ pub fn parts(content: &Json, protocol: &str) -> Result<Vec<Json>, ProviderError>
                 if !matches!(media_type, "image/png" | "image/jpeg" | "image/gif" | "image/webp") || data.is_empty() {
                     return Err(ProviderError::permanent("unsupported image snapshot type or empty bytes"));
                 }
-                Ok(if protocol == "responses" {
+                Ok(if protocol == "gemini" {
+                    json!({"inlineData":{"mimeType":media_type,"data":data}})
+                } else if protocol == "responses" {
                     json!({"type":"input_image","image_url":url})
                 } else {
                     json!({"type":"image","source":{"type":"base64","media_type":media_type,"data":data}})

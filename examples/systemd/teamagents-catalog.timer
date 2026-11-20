@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh TeamAgents model directories daily
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

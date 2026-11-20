@@ -25,6 +25,92 @@ pub struct BoundTool {
     pub output_schema: Option<Json>,
     /// (client, remote tool name) for MCP tools; None for the native web tools.
     pub remote: Option<(Arc<McpClient>, String)>,
+    pub(crate) projects: Option<Arc<CodeGraphRoots>>,
+}
+
+/// Canonical exact roots, not a list of parent directories under which discovery is allowed.
+#[derive(Debug)]
+pub(crate) struct CodeGraphRoots {
+    workspace: std::path::PathBuf,
+    extra: Vec<std::path::PathBuf>,
+}
+
+impl CodeGraphRoots {
+    fn new(root: &Path, extras: &[String]) -> Result<Self, String> {
+        let canonical = |p: &Path| p.canonicalize().map_err(|e| format!("CodeGraph project {}: {e}", p.display()));
+        let workspace = canonical(root)?;
+        let extra = extras
+            .iter()
+            .map(|s| {
+                let p = Path::new(s);
+                if !p.is_absolute() {
+                    return Err("CodeGraph roots must be absolute".into());
+                }
+                canonical(p)
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(Self { workspace, extra })
+    }
+    fn start_root(&self) -> Result<&Path, String> {
+        std::iter::once(&self.workspace)
+            .chain(&self.extra)
+            .map(|p| p.as_path())
+            .find(|p| Self::index(p).is_ok())
+            .ok_or_else(|| "no local CodeGraph index in an authorized root; no index was created".into())
+    }
+
+    /// Match the native server's `nodes` schema test before it is allowed to search upwards.
+    fn index(root: &Path) -> Result<Json, String> {
+        let dir = root.join(".codegraph");
+        let db = dir.join("codegraph.db");
+        if !db.is_file() || db.canonicalize().ok().as_ref() != Some(&db) {
+            return Err("CodeGraph requires a local index in the selected project; no index was created".into());
+        }
+        for sidecar in ["codegraph.db-shm", "codegraph.db-wal", "codegraph.db-journal"] {
+            if dir.join(sidecar).symlink_metadata().is_ok_and(|m| !m.is_file()) {
+                return Err("CodeGraph needs local SQLite sidecars".into());
+            }
+        }
+        let conn = rusqlite::Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|_| "CodeGraph index is unreadable")?;
+        conn.query_row("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='nodes'", [], |_| Ok(()))
+            .map_err(|_| "CodeGraph index is invalid; no ancestor fallback")?;
+        let mtime = |p: &Path| {
+            p.metadata().ok()?.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok().map(|t| t.as_secs())
+        };
+        Ok(
+            json!({"status":"not_verified", "database_mtime_unix":mtime(&db), "wal_mtime_unix":mtime(&dir.join("codegraph.db-wal"))}),
+        )
+    }
+    fn arguments(&self, args: &Json) -> Result<(String, Json, Json), String> {
+        let mut obj = args.as_object().cloned().ok_or("CodeGraph needs an argument object")?;
+        if obj.keys().any(|k| !matches!(k.as_str(), "query" | "projectPath" | "maxFiles"))
+            || obj.get("query").and_then(Json::as_str).is_none_or(|q| q.trim().is_empty())
+        {
+            return Err("invalid CodeGraph explore arguments".into());
+        }
+        if obj.get("maxFiles").is_some_and(|n| !n.as_u64().is_some_and(|v| (1..=20).contains(&v))) {
+            return Err("CodeGraph maxFiles must be in 1..20".into());
+        }
+        let root = match obj.get("projectPath") {
+            None => self.workspace.clone(),
+            Some(v) => {
+                let p = Path::new(v.as_str().ok_or("CodeGraph projectPath must be a string")?);
+                if !p.is_absolute() {
+                    return Err("CodeGraph projectPath must be absolute".into());
+                }
+                p.canonicalize().map_err(|_| "CodeGraph project is unavailable")?
+            }
+        };
+        if root != self.workspace && !self.extra.contains(&root) {
+            return Err("CodeGraph project is outside the allowed roots".into());
+        }
+        // Upstream walks ancestors for a missing index. Never silently query an enclosing project.
+        let freshness = Self::index(&root)?;
+        let project = root.to_str().ok_or("CodeGraph requires a UTF-8 root")?.to_string();
+        obj.insert("projectPath".into(), json!(project));
+        Ok((project, Json::Object(obj), freshness))
+    }
 }
 
 pub struct BoundTools {
@@ -47,7 +133,17 @@ impl BoundTools {
         Self::load_in(catalog, bindings, &root)
     }
 
+    /// Explicit user-side discovery and local probes may use the configured extra roots.
     pub fn load_in(catalog: &UserConfig, bindings: &[String], root: &Path) -> Result<BoundTools, String> {
+        Self::for_member(catalog, bindings, root, true)
+    }
+
+    pub(crate) fn for_member(
+        catalog: &UserConfig,
+        bindings: &[String],
+        root: &Path,
+        extra_roots: bool,
+    ) -> Result<BoundTools, String> {
         let mut tools: Vec<BoundTool> = vec![];
         let mut selected: Vec<(String, ToolBinding)> = vec![];
         for name in bindings {
@@ -80,13 +176,14 @@ impl BoundTools {
             }
         }
 
+        selected.sort_by(|a, b| a.0.cmp(&b.0));
         let mut clients: Vec<Arc<McpClient>> = vec![];
         let mut services = std::collections::BTreeMap::new();
         for (name, binding) in selected {
             match binding.kind.as_str() {
                 // web tools are served by the member's tool executor (web_search/web_fetch)
                 "web_search" | "web_fetch" => {}
-                "mcp" => match load_service(name.as_str(), &binding, root) {
+                "mcp" => match load_service(name.as_str(), &binding, root, extra_roots) {
                     Ok((client, mut service_tools)) => {
                         if service_tools.is_empty() && !client.supports("resources") {
                             client.close();
@@ -143,12 +240,19 @@ impl BoundTools {
         }
         let tool = self.tools.iter().find(|t| t.name == name)?;
         let (client, remote) = tool.remote.as_ref()?;
+        if let Some(roots) = &tool.projects {
+            return Some(roots.arguments(args).and_then(|(project, bound, freshness)| {
+                let value = render_result(client.call_tool_result(remote, &bound), None, &tool.name)?;
+                Ok(json!({"project":project,"result":value,"freshness":freshness}))
+            }));
+        }
         Some(render_result(client.call_tool_result(remote, args), tool.output_schema.as_ref(), &tool.name))
     }
 
     fn call_resource(&self, args: &Json) -> Result<Json, String> {
         let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("");
         let mut services = self.services.clone();
+        services.retain(|_, client| client.supports("resources"));
         if services.is_empty() {
             return Err("mcp_resource needs a bound MCP service".into());
         }
@@ -191,7 +295,7 @@ impl BoundTools {
                 })
             })
             .collect();
-        if !self.services.is_empty() {
+        if self.services.values().any(|s| s.supports("resources")) {
             schemas.push(json!({
                 "name": "mcp_resource",
                 "description": "List or read resources from a bound MCP service (binding is the authorization). Use action list with an optional cursor, or action read with a non-empty uri. service is required only when multiple services are bound.",
@@ -241,7 +345,7 @@ pub fn list_services(catalog: &UserConfig, root: &Path) -> Vec<ServiceListing> {
             continue;
         }
         let label = binding.mcp_server.clone().unwrap_or_else(|| name.clone());
-        let listed = match load_service(name, binding, root) {
+        let listed = match load_service(name, binding, root, true) {
             Ok((client, tools)) => {
                 let rows = tools.iter().map(|tool| (tool.name.clone(), tool.description.clone())).collect();
                 client.close();
@@ -254,15 +358,31 @@ pub fn list_services(catalog: &UserConfig, root: &Path) -> Vec<ServiceListing> {
     out
 }
 
-fn load_service(name: &str, binding: &ToolBinding, root: &Path) -> Result<(Arc<McpClient>, Vec<BoundTool>), String> {
+fn load_service(
+    name: &str,
+    binding: &ToolBinding,
+    root: &Path,
+    extra_roots: bool,
+) -> Result<(Arc<McpClient>, Vec<BoundTool>), String> {
     if binding.mcp_execution.as_deref().is_some_and(|mode| mode != "host") {
         return Err(format!(
             "binding {name:?}: MCP workspace isolation was removed (D-480); remove mcp_execution to use the host"
         ));
     }
     let transport = binding.mcp_transport.clone().unwrap_or_else(|| "stdio".into());
-    let client = match transport.as_str() {
-        "stdio" => {
+    let projects = binding
+        .codegraph_projects
+        .as_ref()
+        .map(|extra| CodeGraphRoots::new(root, if extra_roots { extra } else { &[] }).map(Arc::new))
+        .transpose()?;
+    let client = match (transport.as_str(), projects.as_ref()) {
+        ("stdio", Some(roots)) => McpClient::connect_codegraph(
+            binding.command.as_deref().ok_or("CodeGraph needs a command")?,
+            roots.start_root()?,
+            binding.startup_timeout_s.unwrap_or(60),
+            binding.tool_timeout_s.unwrap_or(120),
+        )?,
+        ("stdio", None) => {
             let command = binding.command.clone().ok_or_else(|| format!("binding {name:?} needs a command"))?;
             // same contract as bearer_token_env_var below: a named variable
             // that is not set is a hard error, never a silent empty secret
@@ -287,7 +407,7 @@ fn load_service(name: &str, binding: &ToolBinding, root: &Path) -> Result<(Arc<M
                 binding.tool_timeout_s.unwrap_or(120),
             )?
         }
-        "http" => {
+        ("http", _) => {
             let url =
                 binding.url.clone().ok_or_else(|| format!("binding {name:?} needs a url for the http transport"))?;
             // The credential is resolved *before* the client connects: `connect_http` performs the initialize
@@ -336,19 +456,25 @@ fn load_service(name: &str, binding: &ToolBinding, root: &Path) -> Result<(Arc<M
                 binding.tool_timeout_s.unwrap_or(120),
             )?
         }
-        "sse" => {
+        ("sse", _) => {
             return Err(format!(
                 "binding {name:?}: the MCP \"sse\" transport was removed from the spec; use \"http\" (streamable HTTP)"
             ))
         }
-        other => return Err(format!("MCP transport {other:?} is not implemented (use \"stdio\" or \"http\")")),
+        (other, _) => return Err(format!("MCP transport {other:?} is not implemented (use \"stdio\" or \"http\")")),
     };
     // the workspace is what a server gets when it asks for `roots/list`
-    client.set_workspace(root);
+    if projects.is_none() {
+        client.set_workspace(root);
+    }
     let service = binding.mcp_server.clone().unwrap_or_else(|| name.to_string());
     let allowed: HashSet<&str> = binding.tool_names.iter().map(|s| s.as_str()).collect();
     let mut out = vec![];
     let listing = if client.supports("resources") && !client.supports("tools") { Ok(vec![]) } else { client.tools() };
+    if projects.is_some() && client.supports("resources") {
+        client.close();
+        return Err("unexpected CodeGraph resources capability".into());
+    }
     let listed = match listing {
         Ok(tools) => tools,
         Err(error) => {
@@ -358,7 +484,7 @@ fn load_service(name: &str, binding: &ToolBinding, root: &Path) -> Result<(Arc<M
     };
     for tool in listed {
         let remote_name = tool.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        if remote_name.is_empty() {
+        if remote_name.is_empty() || (projects.is_some() && remote_name != "codegraph_explore") {
             continue;
         }
         let prefixed = format!("{service}_{remote_name}");
@@ -372,8 +498,13 @@ fn load_service(name: &str, binding: &ToolBinding, root: &Path) -> Result<(Arc<M
             parameters: tool.get("inputSchema").cloned().unwrap_or(json!({"type": "object"})),
             namespace: service.clone(),
             output_schema: tool.get("outputSchema").cloned(),
+            projects: projects.clone(),
             remote: Some((client.clone(), remote_name)),
         });
+    }
+    if projects.is_some() && out.is_empty() {
+        client.close();
+        return Err("native CodeGraph did not offer the selected explore tool".into());
     }
     Ok((client, out))
 }
@@ -402,6 +533,39 @@ mod tests {
 
     fn binding(value: Json) -> ToolBinding {
         serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn codegraph_uses_exact_index_roots_and_never_falls_back_to_an_ancestor() {
+        use std::os::unix::fs::symlink;
+        let root = std::env::temp_dir().join(format!("ta-codegraph-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("work/.codegraph")).unwrap();
+        crate::scratch_owner::record_ownership(&root);
+        let work = root.join("work");
+        let extra = root.join("extra");
+        let child = work.join("child");
+        std::fs::create_dir_all(extra.join(".codegraph")).unwrap();
+        std::fs::create_dir(&child).unwrap();
+        for p in [&work, &extra] {
+            rusqlite::Connection::open(p.join(".codegraph/codegraph.db"))
+                .unwrap()
+                .execute_batch("CREATE TABLE nodes(id INTEGER)")
+                .unwrap();
+        }
+        let roots = CodeGraphRoots::new(&work, &[extra.display().to_string(), child.display().to_string()]).unwrap();
+        assert_eq!(roots.arguments(&json!({"query":"test"})).unwrap().1["projectPath"], work.to_str().unwrap());
+        assert!(roots.arguments(&json!({"query":"q","projectPath":extra})).is_ok());
+        for denied in [&child, &root] {
+            assert!(roots.arguments(&json!({"query":"q","projectPath":denied})).is_err());
+        }
+        assert!(CodeGraphRoots::new(&work, &[]).unwrap().arguments(&json!({"query":"q","projectPath":extra})).is_err());
+        std::fs::create_dir(child.join(".codegraph")).unwrap();
+        std::fs::write(child.join(".codegraph/codegraph.db"), b"not a database").unwrap();
+        assert!(roots.arguments(&json!({"query":"q","projectPath":child})).is_err());
+        std::fs::remove_dir_all(child.join(".codegraph")).unwrap();
+        symlink(work.join(".codegraph"), child.join(".codegraph")).unwrap();
+        assert!(roots.arguments(&json!({"query":"q","projectPath":child})).is_err());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     /// D-74: `[tools.<name>] kind = "mcp"` in the user catalog is the binding, and

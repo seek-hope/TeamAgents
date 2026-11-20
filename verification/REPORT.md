@@ -5,16 +5,22 @@ in [README.md](README.md); reproduction commands are in [DEVELOPMENT.md](../docs
 
 ## 0. Gate status (re-run 2026-11-20)
 
-Material SHA-256: `f140c5b7b73493ad1b803c6ec5999c160ab4d427ad5b9fcd61efd22dde30ae77`.
+Material SHA-256: `d3bcc0e51ebfc046f03be2350362460b19a750289ad24760ad8d4408ddcebd89`.
 
-The current finite replay verified all **63** configurations in **60** traversals,
-refuted all **323** negative controls, reached all **79** normal-path witnesses and passed all **9** Kani harnesses.
-Each Make target exited 0. Kani reported
+The positive replay covered all **63** configurations in **60** traversals. The retained
+`/tmp/teamagents-positive-vbxti4bm/results.json` was checked against the current module/configuration
+hashes, the pinned TLC jar digest, generated configurations and logs: all 60 process exits were zero and
+all 60 logs passed the verdict check. This is traversal evidence, not a separately recovered Make exit code.
+The earlier, unchanged suites refuted all **323** negative controls and reached all **79** witnesses.
+The only changed formal input was a Rust serialization derive in the kernel types compiled by Kani.
+`make verify-kani` was rerun and reported
 `Complete - 9 successfully verified harnesses, 0 failures, 9 total`.
 
 The fingerprint binds the current model/configuration files, verification drivers, Makefile and compiled Kani
 subjects. `tools/verification_catalogue.py --source-hash` recomputes it; changing the fingerprint alone does not
-renew acceptance. Replay logs for this run are under `tools/tmp/delivery-20261120/formal/`.
+renew acceptance. Earlier replay logs are under `tools/tmp/delivery-20261120/formal/`; the fresh Kani receipt
+is `tools/tmp/workflow-check/kani.log`. Neither the prior models nor the Kani harnesses prove the catalogue,
+provider routing, Gemini or CodeGraph changes.
 These finite models do not establish native-runtime refinement or cover all of the new first-tool admission
 and nested native-tool semantics.
 

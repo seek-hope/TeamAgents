@@ -128,7 +128,9 @@ impl SupervisorHandle {
             // Concurrent attachment submissions queue on the lock instead of failing busy:
             // each one snapshots its own files in turn (D-451 review fix).
             let _preparing = self.input_preparation.lock().await;
-            super::attachments::submit(&self.storage, &self.input_root, &self.input_catalog, cmd).await?
+            let mut effective = self.input_catalog.clone();
+            crate::catalog::overlay(&mut effective)?;
+            super::attachments::submit(&self.storage, &self.input_root, &effective, cmd).await?
         } else {
             self.submit(cmd, Identity::User).await?
         };
@@ -178,6 +180,26 @@ impl SupervisorHandle {
             Identity::User,
         )
         .await
+    }
+
+    pub(crate) fn model_rows(&self) -> Result<Json, String> {
+        let mut catalog = self.input_catalog.clone();
+        crate::catalog::overlay(&mut catalog)?;
+        let mut models: Vec<_> = catalog.models.iter().collect();
+        models.sort_by(|a, b| a.0.cmp(b.0));
+        Ok(Json::Array(
+            models
+                .into_iter()
+                .map(|(key, p)| {
+                    let efforts = if p.efforts.is_empty() {
+                        teamagents_core::models::DEFAULT_EFFORTS.iter().map(|s| s.to_string()).collect()
+                    } else {
+                        p.efforts.clone()
+                    };
+                    json!({"key":key,"model":p.model,"provider":p.provider,"efforts":efforts})
+                })
+                .collect(),
+        ))
     }
 
     pub fn session_id(&self) -> &str {
@@ -312,7 +334,7 @@ impl SupervisorHandle {
 fn stored_profile(json: &Json, fallback: &KernelProfile) -> KernelProfile {
     KernelProfile {
         images: json.get("images").and_then(Json::as_bool).unwrap_or(fallback.images),
-        model: json["model"].as_str().unwrap_or(&fallback.model).to_string(),
+        model: json["catalog_key"].as_str().or_else(|| json["model"].as_str()).unwrap_or(&fallback.model).to_string(),
         instructions: json["instructions"].as_str().unwrap_or("").to_string(),
         tools: json["tools"].as_array().cloned().unwrap_or_default(),
         options: json.get("options").cloned().unwrap_or(json!({})),
@@ -353,13 +375,16 @@ where
     super::attachments::recover(&storage).await?;
     let input_root = config.state_root.clone();
     let input_catalog = config.catalog.clone();
-    let leader_profile = crate::providers::resolve_profile(config.leader_profile.clone(), &config.catalog);
+    let mut effective = input_catalog.clone();
+    crate::catalog::overlay(&mut effective)?;
+    let leader_profile = crate::providers::resolve_profile(config.leader_profile.clone(), &effective);
     bootstrap(
         &storage,
         &config.leader_id,
         &config.workspace.to_string_lossy(),
         &config.work_limits,
         &leader_profile,
+        Some(&config.leader_profile.model),
         crate::v2::driver::RetentionBoot {
             history_days: config.catalog.retention.history_days,
             evidence: crate::config::state_root_marked_as_evidence(&config.state_root),

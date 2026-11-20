@@ -49,8 +49,9 @@ pub struct ModelProfile {
     /// protocol) while `protocol` is unset, and any other value is a label for a compatible service — the
     /// wire is decided by `protocol`/`base_url`, never by this name (D-40, D-229).
     pub provider: String,
+    /// Wire protocol: openai (legacy), chat/completions, responses, anthropic, deepseek or gemini.
     #[serde(default = "default_protocol")]
-    pub protocol: String, // "openai" (legacy) | "chat/completions" | "responses" | "anthropic" | "deepseek"
+    pub protocol: String,
     pub model: String,
     #[serde(default)]
     pub base_url: Option<String>,
@@ -126,6 +127,10 @@ pub struct ToolBinding {
     pub mcp_server: Option<String>,
     #[serde(default)]
     pub mcp_transport: Option<String>,
+    /// Native CodeGraph stdio binding. The user and Leader may query the member workspace or these
+    /// exact additional indexed roots; other instances may query only their own workspace.
+    #[serde(default)]
+    pub codegraph_projects: Option<Vec<String>>,
     /// Local MCP execution: host only (also the default). Workspace isolation was removed.
     #[serde(default)]
     pub mcp_execution: Option<String>,
@@ -183,6 +188,13 @@ pub struct ToolBinding {
 pub struct UserConfig {
     #[serde(default)]
     pub models: HashMap<String, ModelProfile>,
+    /// User-owned discovery namespaces. Each names an explicit local Chat Completions profile whose
+    /// configured API root also serves an OpenRouter-shaped models directory.
+    #[serde(default)]
+    pub catalog_sources: HashMap<String, String>,
+    /// User profile keys allowed to manage a loopback llama.cpp router. Grants no session tool.
+    #[serde(default)]
+    pub local_router_profiles: Vec<String>,
     #[serde(default)]
     pub tools: HashMap<String, ToolBinding>,
     /// Directories the `skill` tool searches for `SKILL.md` entries. An entry must exist and be a directory;

@@ -1226,7 +1226,12 @@ fn set_instance_profile(tx: &Connection, session_id: &str, params: &Json, identi
         .map_err(|e| format!("instance profile {instance_id}: {e}"))?;
     let mut profile: Json = serde_json::from_str(&text).map_err(|e| format!("instance profile {instance_id}: {e}"))?;
     if let Some(model) = params["model"].as_str().filter(|model| !model.trim().is_empty()) {
+        if profile["catalog_key"].as_str().or_else(|| profile["model"].as_str()) != Some(model) {
+            // Generation options belong to the old model. An explicit effort below selects an override for the new one.
+            profile["options"] = json!({});
+        }
         profile["model"] = json!(model);
+        profile["catalog_key"] = json!(model);
     }
     if let Some(effort) = params["effort"].as_str().filter(|effort| !effort.trim().is_empty()) {
         if !profile["options"].is_object() {

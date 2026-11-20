@@ -17,7 +17,6 @@ use serde_json::{json, Value as Json};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use teamagents_core::models::DEFAULT_EFFORTS;
 use teamagents_core::v2::{wire, Command, Control};
 
 /// Wire version of this protocol; the greeting advertises it and every
@@ -113,21 +112,6 @@ where
             Err(_) => Json::Array(vec![]),
         }
     };
-    let mut catalog_models: Vec<_> = config.supervisor.catalog.models.iter().collect();
-    catalog_models.sort_by(|a, b| a.0.cmp(b.0));
-    let models = Json::Array(
-        catalog_models
-            .iter()
-            .map(|(key, profile)| {
-                let efforts = if profile.efforts.is_empty() {
-                    DEFAULT_EFFORTS.iter().map(|effort| effort.to_string()).collect::<Vec<_>>()
-                } else {
-                    profile.efforts.clone()
-                };
-                json!({"key": key, "model": profile.model, "provider": profile.provider, "efforts": efforts})
-            })
-            .collect(),
-    );
     let facts = Arc::new(SessionFacts {
         session_id: session_id.clone(),
         state_root: state_root.to_string_lossy().into_owned(),
@@ -136,7 +120,6 @@ where
         work_limits: config.supervisor.work_limits.clone(),
         mcp,
         sessions,
-        models,
         sources: crate::environment::sources(&config.supervisor.catalog),
         config_watch: crate::environment::ConfigWatch::new(&config.supervisor.workspace),
     });
@@ -263,9 +246,6 @@ struct SessionFacts {
     /// checkpoint because the registry lives beside the state root, not inside it, and a TUI has no business
     /// reading the filesystem (D-364's registry is the daemon's own knowledge).
     sessions: Json,
-    /// D-473: the user's `[models]` catalog (key, wire model, provider) so the TUI can offer a model menu instead
-    /// of asking the user to remember config keys. Static for the session's lifetime.
-    models: Json,
     sources: Json,
     config_watch: crate::environment::ConfigWatch,
 }
@@ -445,8 +425,16 @@ async fn handle(request: &Json, supervisor: &SupervisorHandle, session_db: &Path
             } else {
                 Json::Null
             };
+            let models = if method == "checkpoint" {
+                match supervisor.model_rows() {
+                    Ok(rows) => rows,
+                    Err(error) => return reply(false, json!(error)),
+                }
+            } else {
+                Json::Null
+            };
             match read_only(session_db, session_id, |conn| {
-                read_method(method, &params, conn, &previews, &mcp, &facts.sessions, &facts.models)
+                read_method(method, &params, conn, &previews, &mcp, &facts.sessions, &models)
             }) {
                 Ok(mut result) => {
                     if method == "checkpoint" {

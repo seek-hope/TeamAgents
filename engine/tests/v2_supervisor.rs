@@ -470,6 +470,119 @@ async fn wait_model_request_complete(control: &teamagents_core::v2::Control, ins
 }
 
 #[tokio::test]
+async fn explicit_profile_switch_routes_a_shared_wire_name_to_the_selected_endpoint() {
+    let root = root("profile-destination");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let first=FakeServer::start(vec![sse_response("data: {\"choices\":[{\"delta\":{\"content\":\"first reply\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")]).await;
+    let second=FakeServer::start(vec![sse_response("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"second reply\"}]},\"finishReason\":\"STOP\"}]}\n\n")]).await;
+    let mut catalog = UserConfig::default();
+    for (key, proto, base, temperature, images) in
+        [("one", "chat/completions", &first.base, 0.1, true), ("two", "gemini", &second.base, 0.9, false)]
+    {
+        catalog.models.insert(key.into(), serde_json::from_value(json!({"provider":key,"protocol":proto,"model":"shared-wire","base_url":base,"generation_options":{"temperature":temperature},"images":images,"max_retries":0,"price":{"input_usd_per_million":1,"output_usd_per_million":2,"source":key}})).unwrap());
+    }
+    let factory_catalog = catalog.clone();
+    let mut cfg = config(&root, move |_, profile| {
+        teamagents_engine::providers::build_for_model(&factory_catalog, &profile.model).unwrap()
+    });
+    cfg.leader_profile.model = "one".into();
+    cfg.catalog = catalog;
+    let h = start(cfg).await.unwrap();
+    let c = second_control(&root);
+    h.input("i-leader", "first question").await.unwrap();
+    wait_model_request_complete(&c, "i-leader").await;
+    wait_instance_phase(&h, "i-leader", "READY", 5000).await;
+    assert!(second.bodies().is_empty());
+    h.submit_user(cmd("switch", "set_instance_profile", json!({"instance_id":"i-leader","model":"two"})))
+        .await
+        .unwrap();
+    h.input("i-leader", "second question").await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), second.task).await.unwrap().unwrap();
+    for _ in 0..200 {
+        if c.connection()
+            .query_row("SELECT count(*) FROM model_requests WHERE status='COMPLETE'", [], |r| r.get::<_, i64>(0))
+            .unwrap()
+            == 2
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(15)).await;
+    }
+    let rows:Vec<String>=c.connection().prepare("SELECT json_extract(pricing_json,'$.rates.source') FROM model_requests WHERE status='COMPLETE' ORDER BY rowid").unwrap().query_map([],|r|r.get(0)).unwrap().collect::<Result<_,_>>().unwrap();
+    assert_eq!(rows, ["one", "two"]);
+    let one: Json = serde_json::from_str(&first.bodies()[0]).unwrap();
+    let two: Json = serde_json::from_str(&second.bodies.lock().unwrap()[0]).unwrap();
+    assert_eq!(one["model"], "shared-wire");
+    assert_eq!(one["temperature"], 0.1);
+    assert!(one.to_string().contains("view_image"));
+    assert!(!two["tools"].to_string().contains("view_image"));
+    assert!(two["contents"].to_string().contains("second question"));
+    assert_eq!(two["generationConfig"]["temperature"], 0.9);
+    assert_eq!(first.bodies().len(), 1);
+    first.task.await.unwrap();
+    h.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn private_continuation_stays_with_its_endpoint_on_a_same_protocol_switch() {
+    let root = root("private-route");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let frame = |answer: &str| {
+        sse_response(&format!(
+            "data: {}\n\ndata: [DONE]\n\n",
+            json!({"choices":[{"delta":{"content":answer,"reasoning_content":"private-bound-fixture"},"finish_reason":"stop"}]})
+        ))
+    };
+    let a = FakeServer::start(vec![frame("public-first"), frame("public-second")]).await;
+    let b = FakeServer::start(vec![frame("public-third")]).await;
+    let mut catalog = UserConfig::default();
+    for (key, base) in [("a", &a.base), ("b", &b.base)] {
+        catalog.models.insert(
+            key.into(),
+            serde_json::from_value(
+                json!({"provider":"fixture","protocol":"chat/completions","model":"shared","base_url":base}),
+            )
+            .unwrap(),
+        );
+    }
+    let factory = catalog.clone();
+    let mut cfg = config(&root, move |_, p| teamagents_engine::providers::build_for_model(&factory, &p.model).unwrap());
+    cfg.catalog = catalog;
+    cfg.leader_profile.model = "a".into();
+    let h = start(cfg).await.unwrap();
+    let control = second_control(&root);
+    for (i, q) in ["one", "two", "three"].into_iter().enumerate() {
+        if i == 2 {
+            h.submit_user(cmd("switch", "set_instance_profile", json!({"instance_id":"i-leader","model":"b"})))
+                .await
+                .unwrap();
+        }
+        h.input("i-leader", q).await.unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let count: i64 = control
+                .connection()
+                .query_row("SELECT count(*) FROM model_requests WHERE status='COMPLETE'", [], |r| r.get(0))
+                .unwrap();
+            if count == 1 + i as i64 {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            tokio::time::sleep(Duration::from_millis(15)).await;
+        }
+        wait_instance_phase(&h, "i-leader", "READY", 5000).await;
+    }
+    assert!(a.bodies()[1].contains("private-bound-fixture"));
+    let next = &b.bodies()[0];
+    assert!(next.contains("public-second"));
+    assert!(!next.contains("private-bound-fixture"));
+    assert!(!next.contains("teamagents_route"));
+    a.task.await.unwrap();
+    b.task.await.unwrap();
+    h.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn heterogeneous_instances_run_different_protocols_in_one_session() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
     let root = root("hetero");

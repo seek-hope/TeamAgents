@@ -6,13 +6,11 @@ The project is a standalone Rust control plane, runtime and team TUI. Read [DESI
 Q1–Q19/A01–A36 baseline, [DECISIONS.md](DECISIONS.md) for current contracts and [ACCEPTANCE.md](ACCEPTANCE.md)
 for exact source-bound evidence. Git retains implementation and experiment history; do not recreate a changelog here.
 
-Installed CLI and TUI source: `cab1c47c`, merging the independently accepted `ec1f1acb` leak-guard candidate.
-Both binaries were rebuilt with the pinned toolchain for x86_64 Linux musl and installed by atomic replacement
-with durable private backups. All four existing daemons retained their PID/start identities and mapped executable
-inodes; they continue running their prior binaries. Installation probes used disposable configuration/state and
-made no model calls: version/help, init/doctor, Unicode search and seven real-terminal key/editor checks passed.
-The full five-profile PTY matrix and session-switching evidence remain bound to D-527; this installation did not
-repeat them or the earlier complete package checks.
+Installed CLI and TUI source: `e1d49e2b`. Both installed hashes match the private installation receipt.
+The uninstalled working tree adds native Gemini API-key transport, versioned model directories, explicit
+endpoint switching, scoped CodeGraph discovery and user-confirmed local-router management. The provider,
+directory and local-router tests use loopback fixtures. The `codegraph_probe` engine example uses a real
+indexed workspace. Neither requires a personal model login. The directory timer is opt-in.
 
 D-528 makes the default test gates attribute processes and scratch directories to their own invocation. The final
 candidate passed TeamAgents' 855-test gate and the supervisor's 19 independent registry checks. The merged source
@@ -22,13 +20,13 @@ ownership never authorizes a signal. See [ACCEPTANCE.md](ACCEPTANCE.md) for rece
 
 The follow-up TeamAgents work completed successfully; the original field-debug operation remains
 `OUTCOME_UNKNOWN` and was not rewritten or replayed. The installed CLI retains the accepted Unicode search fix.
-The last complete package baseline remains `d96d7c8a`. CI at `a4ce2a2e` passed all four jobs in
+The earlier package/PTY evidence below remains bound to `d96d7c8a`. CI at `a4ce2a2e` passed all four jobs in
 [run 44000392754](https://github.com/seek-hope/TeamAgents/actions/runs/44000392754); that predates D-528.
 The older scheduled updater-readiness failure in run 43868995516 remains a separate diagnosis obligation.
 Current local formal replay retains its input-content binding in
 [verification/REPORT.md](../verification/REPORT.md).
 
-- **857 Rust tests**: core 198, engine 538, TUI 121.
+- **868 Rust tests**: core 198, engine 549, TUI 121.
 - **63 positive TLA configurations in 60 traversals**, **323 controls**, **79 witnesses**, **9 Kani harnesses**.
 - Catalogue: **387 configurations across 47 modules**, including an incomplete wide configuration.
 - Current D-527 acceptance covers 23 isolated CLI invocations and seven PTY key/editor checks before and after
@@ -126,8 +124,9 @@ refusal is correct. D-528 fixes the verification tool's ownership error that cou
 runner, but does not establish that historical command's outcome. Do not infer success from missing processes or
 bypass completion guards. The scheduled CI updater-readiness failure also needs diagnosis.
 
-Specific runtime gaps include cross-provider switching and ambiguous wire identities, provider-side fetch
-redirect/rebinding enforcement, session startup/filesystem races and full-backlog connection deadlines.
+Specific runtime gaps include automatic request routing, model-account login, image generation/editing,
+typed classifiers, rewind, effectful script orchestration, provider-side fetch redirect/rebinding enforcement,
+session startup/filesystem races and full-backlog connection deadlines.
 Wide exhaustive completion, Rust/SQLite refinement, whole-system composition and Policy B source-bound
 bidirectional fair-trace equivalence remain open. Fair scheduling, escaped/remote effects and real power loss
 remain environmental obligations. Retention policy does not authorize expiry of referenced output bytes.

@@ -6,11 +6,11 @@ This file records current behavior and reproducible evidence, not historical acc
 ✅ means the named local path has automated evidence. 🔶 means implementation exists but the stated external,
 empirical or full-system obligation remains open. No icon is a proof of every release condition.
 
-Current source inventory: core 198 / engine 538 / tui 121 test targets; the full gate passed.
-Installed CLI and TUI source: `cab1c47cda05d49b63b55075828be4ffe6402077`, merging the accepted D-528 candidate
-`ec1f1acbc6bfd151603f9cb04ebccc14696e8909`. Both x86_64 Linux musl binaries were rebuilt and atomically installed;
-current installation probes and artifact hashes are recorded below.
-The last complete package baseline is `d96d7c8acf54b951030140f076540cbb730f88ab`. Delivery CI at
+Current source inventory: core 198 / engine 549 / tui 121 test targets. Inventory alone is not acceptance.
+Installed CLI and TUI source: `e1d49e2b90f3f23711b76ff818e8e25e5101d947`. Both binaries match the SHA-256
+receipt in the private `teamagents-install-e1d49e2b-eEBvF7` installation directory. The workflow changes
+in this working tree have not been installed. The earlier package baseline described below is
+`d96d7c8acf54b951030140f076540cbb730f88ab`. Delivery CI at
 `6767b32c4a35fb71c476ca7fb81858d127ba4905` passed `test`, `test-aarch64`, `formal-tla` and `formal-kani`:
 [run 43812934865](https://github.com/seek-hope/TeamAgents/actions/runs/43812934865).
 A later scheduled run on the same source, [43868995516](https://github.com/seek-hope/TeamAgents/actions/runs/43868995516),
@@ -23,11 +23,29 @@ offline probes, source/installed PTY matrices, x86_64 musl release/install, scri
 and a separate real Fetch API request. These bindings identify the tested source; subsequent edits do not
 inherit a new CI pass or installation result merely by preserving the counts.
 The current local formal replay passed **63 positive configurations in 60 traversals**, **323 controls**,
-**79 witnesses** and **9 Kani harnesses**, with all four Make targets exiting 0. Its input-content binding is in
+**79 witnesses** and **9 Kani harnesses**. The per-traversal receipts, fresh Kani run and limits are in
 [the formal report](../verification/REPORT.md), separate from the installed-runtime CI above.
 The catalogue contains 387 configurations across 47 modules, including the
 separate wide configuration. PTY covers five terminal profiles and both forced graphics modes; this is not a
 complete graphical-terminal or OS matrix.
+
+## Staged workflow evidence (not installed)
+
+- Two loopback Gemini protocol tests cover signed tool continuation, images, usage and refusal of incomplete
+  calls. Separate supervisor tests switch recipients sharing a wire model name and check that a same-protocol
+  switch retains public conversation but does not forward the previous recipient's private reasoning fields.
+- The directory CLI test refreshes a running isolated daemon, marks a missing model, observes the changed
+  tool surface on the next request, rejects a broken directory, rolls back and checks a user override.
+  The optional Linux timer example has not been enabled on the host. No real directory or inference service
+  is required by the test.
+- Local-router tests use loopback HTTP fixtures. The CLI test checks the exact list/load/unload requests,
+  refusal without consent or when a peer is resident, and no second POST after a lost acknowledgement.
+  Another fixture rejects a contradictory peer state before dispatch, checks that neither list nor load
+  follows a redirect, and returns an unknown outcome without replay for malformed load acknowledgements.
+  These are not live llama.cpp, GGUF, GPU or inference checks.
+- The CodeGraph example connects via native stdio MCP and reads source through codemode. Reported index
+  age/version warnings remain visible; retrieving source neither certifies freshness nor proves better
+  task outcomes than another harness.
 
 ## Requirements (Q1–Q19) and their evidence
 

@@ -76,16 +76,16 @@ accepted value. Unsupported `mcp_network` and check-level `network` settings are
 
 | Key | Type | Absent | Read by | Meaning |
 |---|---|---|---|---|
-| `provider` | `String` | empty | `engine/src/providers/mod.rs`, `engine/src/search.rs` … (7 files) | The vendor hint: `deepseek` selects that service's defaults (the reasoning echo, the deepseek protocol) while `protocol` is unset, and any other value is a label for a compatible service — the wire is decided by `protocol`/`base_url`, never by this name (D-40, D-229). |
-| `protocol` | `String` | "openai" | `engine/src/providers/mod.rs`, `engine/src/v2/attachments.rs` … (3 files) | — |
-| `model` | `String` | empty | `core/src/kernel/instance.rs`, `core/src/kernel/mod.rs` … (20 files) | — |
-| `base_url` | `Option<String>` | unset (the reader applies its own) | `engine/src/providers/mod.rs` | — |
-| `api_key_env` | `Option<String>` | unset (the reader applies its own) | `engine/src/providers/mod.rs`, `engine/src/search.rs` … (4 files) | — |
-| `timeout` | `i64` | 120 | `core/src/v2/control.rs`, `engine/src/mcp.rs` … (12 files) | — |
+| `provider` | `String` | empty | `engine/src/catalog.rs`, `engine/src/providers/mod.rs` … (8 files) | The vendor hint: `deepseek` selects that service's defaults (the reasoning echo, the deepseek protocol) while `protocol` is unset, and any other value is a label for a compatible service — the wire is decided by `protocol`/`base_url`, never by this name (D-40, D-229). |
+| `protocol` | `String` | "openai" | `engine/src/catalog.rs`, `engine/src/local_models.rs` … (5 files) | Wire protocol: openai (legacy), chat/completions, responses, anthropic, deepseek or gemini. |
+| `model` | `String` | empty | `core/src/kernel/instance.rs`, `core/src/kernel/mod.rs` … (21 files) | — |
+| `base_url` | `Option<String>` | unset (the reader applies its own) | `engine/src/catalog.rs`, `engine/src/local_models.rs` … (3 files) | — |
+| `api_key_env` | `Option<String>` | unset (the reader applies its own) | `engine/src/catalog.rs`, `engine/src/local_models.rs` … (6 files) | — |
+| `timeout` | `i64` | 120 | `core/src/v2/control.rs`, `engine/src/catalog.rs` … (15 files) | — |
 | `max_retries` | `i64` | 2 | `engine/src/reference.rs`, `engine/src/v2/driver.rs` … (3 files) | Transport retries the driver may add to one request: the instance that uses this profile retries a transient failure this many times before the turn parks with `transient retries exhausted` (A19). Applied per instance since D-247 (D-240 measured the key accepted and ignored, because one session constant served every member); 0 means one attempt, and a negative value is refused at load. |
 | `generation_options` | `HashMap<String, Json>` | empty | `engine/src/providers/mod.rs` | — |
-| `efforts` | `Vec<String>` | empty | `engine/src/v2/daemon.rs`, `tui/src/v2app.rs` … (3 files) | Ordered reasoning-effort values this model accepts, for the Ctrl+M menu (D-476). An empty list means `DEFAULT_EFFORTS`; the control plane does not treat this as a permission, so the CLI may still set an explicit level outside the menu. |
-| `images` | `bool` | false | `core/src/kernel/types.rs`, `engine/src/providers/mod.rs` … (5 files) | Does this model accept images (D-392)? **Fail-closed by default**: only a profile that says `images = true` may carry an image part to the wire, so a model that was never checked for vision is sent the placeholder text instead of a block its provider would reject or silently ignore. The declared capability is the gate; no runtime probe guesses it. |
+| `efforts` | `Vec<String>` | empty | `engine/src/v2/supervisor.rs`, `tui/src/v2app.rs` … (3 files) | Ordered reasoning-effort values this model accepts, for the Ctrl+M menu (D-476). An empty list means `DEFAULT_EFFORTS`; the control plane does not treat this as a permission, so the CLI may still set an explicit level outside the menu. |
+| `images` | `bool` | false | `core/src/kernel/types.rs`, `engine/src/catalog.rs` … (6 files) | Does this model accept images (D-392)? **Fail-closed by default**: only a profile that says `images = true` may carry an image part to the wire, so a model that was never checked for vision is sent the placeholder text instead of a block its provider would reject or silently ignore. The declared capability is the gate; no runtime probe guesses it. |
 | `context_window` | `Option<u64>` | unset (the reader applies its own) | `core/src/kernel/instance.rs`, `engine/src/providers/anthropic.rs` … (8 files) | Model context window in tokens (drives the /status remaining-context column; None = unknown, shown as "not configured"). |
 | `price` | `Option<PriceRates>` | unset (the reader applies its own) | `engine/src/v2/driver.rs` | Optional USD-per-million tariff with a user-supplied source/date. Frozen per request; estimates only. |
 | `codex_profile` | `Option<String>` | unset (the reader applies its own) | nothing: D-75: refused at load — an external Codex profile is not part of this release | Codex members only: layer `$CODEX_HOME/<name>.config.toml` by running `codex --profile <name> app-server`. **Not implemented in this release** (DESIGN Q12 excludes an external Codex adaptation): no code path reads it, and a config that sets it is refused at load instead of being ignored (D-75) — configure the member directly with `provider`/`protocol`/`base_url`/`api_key_env`. |
@@ -96,10 +96,11 @@ accepted value. Unsupported `mcp_network` and check-level `network` settings are
 |---|---|---|---|---|
 | `kind` | `String` | empty | `core/src/kernel/mod.rs`, `core/src/v2/control/search_tree.rs` … (39 files) | — |
 | `required` | `bool` | false | `core/src/kernel/mod.rs`, `engine/src/bound.rs` … (5 files) | — |
-| `provider` | `Option<String>` | unset (the reader applies its own) | `engine/src/providers/mod.rs`, `engine/src/search.rs` … (7 files) | Web provider: deepseek (default) or exa. Search and fetch require separate bindings (D-482). |
-| `api_key_env` | `Option<String>` | unset (the reader applies its own) | `engine/src/providers/mod.rs`, `engine/src/search.rs` … (4 files) | — |
+| `provider` | `Option<String>` | unset (the reader applies its own) | `engine/src/catalog.rs`, `engine/src/providers/mod.rs` … (8 files) | Web provider: deepseek (default) or exa. Search and fetch require separate bindings (D-482). |
+| `api_key_env` | `Option<String>` | unset (the reader applies its own) | `engine/src/catalog.rs`, `engine/src/local_models.rs` … (6 files) | — |
 | `mcp_server` | `Option<String>` | unset (the reader applies its own) | `engine/src/bound.rs` | — |
 | `mcp_transport` | `Option<String>` | unset (the reader applies its own) | `engine/src/bound.rs`, `engine/src/mcp_auth.rs` … (3 files) | — |
+| `codegraph_projects` | `Option<Vec<String>>` | unset (the reader applies its own) | `engine/src/bound.rs` | Native CodeGraph stdio binding. The user and Leader may query the member workspace or these exact additional indexed roots; other instances may query only their own workspace. |
 | `mcp_execution` | `Option<String>` | unset (the reader applies its own) | `engine/src/bound.rs` | Local MCP execution: host only (also the default). Workspace isolation was removed. |
 | `command` | `Option<String>` | unset (the reader applies its own) | `core/src/v2/control/work_tests.rs`, `core/src/v2/control.rs` … (19 files) | The `kind = "mcp"` service's argv over stdio (the default transport) — required for that kind and transport, refused at load otherwise (D-232). |
 | `args` | `Vec<String>` | empty | `core/src/kernel/mod.rs`, `core/src/v2/control.rs` … (18 files) | — |
@@ -120,8 +121,10 @@ accepted value. Unsupported `mcp_network` and check-level `network` settings are
 
 | Key | Type | Absent | Read by | Meaning |
 |---|---|---|---|---|
-| `models` | `HashMap<String, ModelProfile>` | empty | `engine/src/providers/mod.rs`, `engine/src/v2/daemon.rs` … (5 files) | — |
-| `tools` | `HashMap<String, ToolBinding>` | empty | `core/src/kernel/instance.rs`, `core/src/kernel/mod.rs` … (18 files) | — |
+| `models` | `HashMap<String, ModelProfile>` | empty | `engine/src/catalog.rs`, `engine/src/local_models.rs` … (7 files) | — |
+| `catalog_sources` | `HashMap<String, String>` | empty | `engine/src/catalog.rs`, `engine/src/v2/driver.rs` | User-owned discovery namespaces. Each names an explicit local Chat Completions profile whose configured API root also serves an OpenRouter-shaped models directory. |
+| `local_router_profiles` | `Vec<String>` | empty | `engine/src/local_models.rs` | User profile keys allowed to manage a loopback llama.cpp router. Grants no session tool. |
+| `tools` | `HashMap<String, ToolBinding>` | empty | `core/src/kernel/instance.rs`, `core/src/kernel/mod.rs` … (19 files) | — |
 | `skills_paths` | `Vec<String>` | empty | `engine/src/environment.rs`, `engine/src/tools.rs` | Directories the `skill` tool searches for `SKILL.md` entries. An entry must exist and be a directory; the default (`~/.agents/skills`) is used only when the key is unset (D-232). |
 | `instruction_files` | `Vec<String>` | empty | `engine/src/environment.rs`, `engine/src/v2/driver.rs` | Files whose text is appended to **every** member's system prompt (the leader's and each child's), in this order, each under a heading naming the file: read per turn, so an edit lands on the next turn, and a file that cannot be read is named by `doctor` and on the daemon's log rather than skipped in silence (D-102 recorded the promise, D-246 delivers it). |
 | `default_task_capabilities` | `Vec<String>` | empty | `engine/src/v2/driver.rs` | Capabilities requested for model-delegated tasks when the call omits capabilities. This requests, never grants. |
@@ -146,9 +149,9 @@ accepted value. Unsupported `mcp_network` and check-level `network` settings are
 
 | Key | Type | Absent | Read by | Meaning |
 |---|---|---|---|---|
-| `id` | `String` | empty | `core/src/kernel/instance.rs`, `core/src/v2/control/search_tree.rs` … (43 files) | Stable id, used in failures, receipts and repair feedback. |
+| `id` | `String` | empty | `core/src/kernel/instance.rs`, `core/src/v2/control/search_tree.rs` … (45 files) | Stable id, used in failures, receipts and repair feedback. |
 | `command` | `String` | empty | `core/src/v2/control/work_tests.rs`, `core/src/v2/control.rs` … (19 files) | The command, executed through the same shell tool the model uses. |
-| `timeout` | `Option<u64>` | unset (the reader applies its own) | `core/src/v2/control.rs`, `engine/src/mcp.rs` … (12 files) | Seconds; absent means the shell tool's own default. |
+| `timeout` | `Option<u64>` | unset (the reader applies its own) | `core/src/v2/control.rs`, `engine/src/catalog.rs` … (15 files) | Seconds; absent means the shell tool's own default. |
 | `inputs` | `Vec<String>` | empty | `core/src/v2/control.rs`, `engine/src/v2/driver.rs` … (3 files) | Workspace-relative inputs the check reads. |
 
 ### `[hooks]`

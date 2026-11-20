@@ -26,7 +26,7 @@ usage: teamagents [--cwd DIR] [--session ID] [--model KEY] [-c key=value]...
   teamagents version         Print the version (--version, -V)
 
 Management: history, search_tree, instances, tasks, inputs, approvals,
-            authority, work_scopes, automations, artifacts, runners, surface, mcp
+            authority, work_scopes, automations, artifacts, runners, surface, mcp, catalog, local-models
 
 Use teamagents COMMAND --help or teamagents COMMAND SUBCOMMAND --help
 for options and advanced controls. --help (-h) prints this overview.
@@ -364,7 +364,7 @@ fn parse_args_from(argv: Vec<String>) -> Args {
             }
             "serve" | "init" | "doctor" | "validate" | "sessions" | "automations" | "version" | "exec"
             | "authority" | "approvals" | "instances" | "tasks" | "runners" | "artifacts" | "work_scopes"
-            | "surface" | "mcp" | "status" | "history" | "search_tree" | "inputs" => {
+            | "surface" | "mcp" | "catalog" | "local-models" | "status" | "history" | "search_tree" | "inputs" => {
                 if args.command.is_some() {
                     reject("two entry points were given: pick one (teamagents --help lists them)");
                 }
@@ -388,6 +388,8 @@ fn parse_args_from(argv: Vec<String>) -> Args {
                     args.command.as_deref(),
                     Some(
                         "exec"
+                            | "catalog"
+                            | "local-models"
                             | "doctor"
                             | "status"
                             | "history"
@@ -449,7 +451,7 @@ fn parse_args_from(argv: Vec<String>) -> Args {
             "--yes"
                 if matches!(
                     args.command.as_deref(),
-                    Some("instances" | "tasks" | "runners" | "sessions" | "automations")
+                    Some("instances" | "tasks" | "runners" | "sessions" | "automations" | "local-models")
                 ) =>
             {
                 if args.confirmed {
@@ -496,7 +498,7 @@ fn parse_args_from(argv: Vec<String>) -> Args {
                 );
                 i += 2;
             }
-            "--name" if matches!(args.command.as_deref(), Some("sessions" | "automations" | "mcp")) => {
+            "--name" if matches!(args.command.as_deref(), Some("sessions" | "automations" | "mcp" | "catalog")) => {
                 if args.session_name.is_some() {
                     given_twice("--name");
                 }
@@ -1138,13 +1140,36 @@ fn run_approvals(args: &Args) -> i32 {
     })
 }
 
-/// `teamagents instances`: the §5.4 instance levers, headless (D-68).
-/// `teamagents mcp list`: what the configured MCP services actually offer (D-399).
-///
-/// The comparison's Pi column has `pi mcp list`; here the surface was the config file plus `doctor`, and since
-/// D-376 the tools are reachable only through codemode — so a user had no way to see them without asking a model.
-/// This connects to each configured service and prints its tools, exiting 1 when any service failed (so a CI job
-/// can catch a broken one) while still listing the healthy ones.
+/// Current user-owned management for local llama.cpp routers. The command is never offered as a model tool.
+fn run_local_models(args: &Args) -> i32 {
+    let Some(key) = args.model.as_deref() else {
+        eprintln!("local-models needs --model PROFILE");
+        return 2;
+    };
+    let cfg = match teamagents_engine::config::load_user_config(&teamagents_engine::config::user_config_path()) {
+        Ok(cfg) => cfg,
+        Err(error) => {
+            eprintln!("local-models: {error}");
+            return 1;
+        }
+    };
+    match teamagents_engine::local_models::command(&cfg, interface::verb(args), key, args.confirmed) {
+        Ok(report) => {
+            if args.exec_json {
+                println!("{report}")
+            } else {
+                println!("{}", serde_json::to_string_pretty(&report).unwrap());
+            }
+            0
+        }
+        Err(error) => {
+            eprintln!("local-models: {error}");
+            1
+        }
+    }
+}
+
+/// Dispatch MCP discovery and binding management. Listing reports partial failures.
 fn run_mcp(args: &Args) -> i32 {
     match args.positional.as_deref().unwrap_or("list") {
         "list" => run_mcp_list(args),
@@ -2850,6 +2875,26 @@ fn main() {
         Some("authority") => run_authority(&args),
         Some("approvals") => run_approvals(&args),
         Some("work_scopes") => run_work(&args),
+        Some("catalog") => {
+            use teamagents_engine::{catalog, config};
+            match config::load_user_config(&config::user_config_path())
+                .and_then(|cfg| catalog::command(&cfg, interface::verb(&args), args.session_name.as_deref()))
+            {
+                Ok((report, ok)) => {
+                    if args.exec_json {
+                        println!("{report}")
+                    } else {
+                        println!("{}", serde_json::to_string_pretty(&report).unwrap())
+                    };
+                    i32::from(!ok)
+                }
+                Err(e) => {
+                    eprintln!("catalog: {e}");
+                    1
+                }
+            }
+        }
+        Some("local-models") => run_local_models(&args),
         Some("mcp") => run_mcp(&args),
         Some("instances") => run_instances(&args),
         Some("inputs") => run_inputs(&args),

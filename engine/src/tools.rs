@@ -2170,6 +2170,7 @@ pub(crate) struct V2Toolkit {
 /// `store`/`load` values live between restarts.
 #[derive(Default)]
 pub(crate) struct ToolWiring {
+    pub is_leader: bool,
     pub profile_tools: Vec<Json>,
     pub storage: Option<crate::v2::storage::Storage>,
     pub hooks: Option<Arc<crate::hooks::Hooks>>,
@@ -2198,7 +2199,7 @@ impl V2Toolkit {
         // Bound MCP services load at driver boot: a required service that is
         // unavailable fails the boot honestly, an optional one only drops its
         // capability (same contract as the legacy member start, plan §7).
-        let bound = Arc::new(crate::bound::BoundTools::load_in(&catalog, &bindings, &root)?);
+        let bound = Arc::new(crate::bound::BoundTools::for_member(&catalog, &bindings, &root, wiring.is_leader)?);
         // D-405: durable memory hangs off the *base* directory (the one holding `sessions.json`), so every named
         // session under it shares one store. Only the driver knows where that is — its own `state_root` is the
         // instance directory — so the base arrives in the wiring.

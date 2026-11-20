@@ -1,0 +1,8 @@
+[Unit]
+Description=Refresh user-bound TeamAgents model directories (no inference)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/teamagents catalog refresh --json
+UMask=0077
+NoNewPrivileges=yes
