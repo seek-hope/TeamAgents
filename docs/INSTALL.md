@@ -60,8 +60,15 @@ the host. Retired sandbox keys are rejected rather than silently converted into 
 
 `init` does not merge new settings into an existing config; review and edit it explicitly.
 
-The current database is **schema 10**. The 9→10 migration preserves instance profiles, work, history and prepared
-requests. A store with live Workers needs an explicit shared model decision; other stores start in follow mode.
+Source builds use **schema 13**. The 12→13 migration creates empty workspace snapshot and restore-attempt tables.
+Existing conversation checkpoints continue to work with their original data. The 11→12 step fences off older writers that would ignore session MCP
+restrictions. It creates an empty rewind-point table and allows multiple reviewed envelopes to reference the
+same immutable attachment, preserving existing attachment rows. It does not infer past checkpoints. Untouched
+bindings retain their configured behavior. The 10→11 step marks existing Workers persistent without rewriting historical
+envelopes or inferring which task an old request addressed. New Worker turns record their assignment before
+provider dispatch. A legacy finish with no recorded assignment cannot settle a task by queue position;
+inspect the outstanding task before resuming. Earlier writers cannot enforce after-work delivery.
+The 9→10 migration preserves instance profiles, work, history and prepared requests. A store with live Workers needs an explicit shared model decision; other stores start in follow mode.
 Earlier migrations derive the Leader role and add the session exploration-tree projection. An unexpected pre-existing tree table is refused without modifying the
 original store. Older writers cannot reopen the migrated database. A binary rollback alone is not a database
 rollback; retain a pre-upgrade backup if rollback matters.

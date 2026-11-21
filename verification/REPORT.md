@@ -5,7 +5,11 @@ in [README.md](README.md); reproduction commands are in [DEVELOPMENT.md](../docs
 
 ## 0. Gate status (re-run 2026-11-21)
 
-Material SHA-256: `61e099c0d8c539c82aef2ada797bd35d850c7654f230a4eb3a027c0ecc9332f5`.
+Material SHA-256: `a0fa34e615e084e455e7b51fa995c3ec9f23620c94f1c1ddf5623c9c681d8001`.
+
+For D-530 only the Kani input `core/src/kernel/types.rs` changed in the formal material. All nine
+harnesses passed again (`tools/tmp/selected-workflows/kani.log`); they do not verify the new lifetime
+or input scheduling rules. The TLA inputs were unchanged and were not rerun for this change.
 
 D-529 replayed the changed `V2ProfileSwitch` module: the positive configuration exhausted 252 distinct
 states with no violation; each of its four controls violated its named invariant. The `profile_next_request`
@@ -74,7 +78,10 @@ arbitrary-input TLA enumeration.
 1. **Full refinement and composition.** No complete Rust/SQLite trace refinement, whole-system composition,
    arbitrary actor/command/bootstrap/schema/fork/retention/export composition or arbitrary-string capability
    algebra is established. In particular, `bind_legacy_leader` and the schema 9→10 migration have executable
-   regression tests, not a formal refinement proof.
+   regression tests, not a formal refinement proof. Manual `request_compaction` and `take_compaction`,
+   after-work admission, temporary Worker release and schema 10→11 are likewise not formally proved.
+   `rewind_conversation`, `send_rewind_draft`, `set_mcp_service` and the 11→12 and 12→13 migrations
+   have no source-bound formal proof. PTY and scripted/stdio tests do not establish such a proof.
 2. **Wide and canonical allocation.** The separate wide configuration is not claimed complete. Policy B
    canonical allocation is not adopted; a source-bound bidirectional fair-trace equivalence, including actual
    actions, enabledness, occurrence, fairness, properties/witnesses and exact source binding, is not complete.

@@ -119,6 +119,7 @@ Create a new instance and atomically register its initial task with the return p
 |---|---|---|---|
 | `instance_id` | `string` | yes | — |
 | `instructions` | `string` | yes | System instructions for the new instance. |
+| `lifetime` | `string` | no | Persistent (default) stays available for reuse. Temporary releases its driver after its final settled assignment when safe; workspace and receipts remain. |
 | `task` | `string` | no | Initial task description; registered with its narrow return path when present. |
 | `capabilities` | `array` | no | Generic capabilities the initial task needs, e.g. shell@workspace. Requires task. A standing grant on the assignee suffices. A live delegable parent can issue a task-scoped grant; otherwise the instance waits in WAITING_CAPABILITY for the user's approval and the task is not dispatched. |
 | `workspace` | `string` | no | Where the instance works. shared (default) uses the project directory; isolated gets a private directory under the session state root; git_worktree gets its own branch and worktree, and falls back to shared (saying why) when the project is not a clean git repository. |

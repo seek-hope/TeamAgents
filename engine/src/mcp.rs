@@ -164,7 +164,7 @@ impl McpClient {
             command,
             &["serve".into(), "--mcp".into()],
             &[
-                ("CODEGRAPH_MCP_TOOLS".into(), "explore".into()),
+                ("CODEGRAPH_MCP_TOOLS".into(), "explore,search,callers,callees,impact,status".into()),
                 ("CODEGRAPH_TELEMETRY".into(), "0".into()),
                 ("CODEGRAPH_NO_WATCH".into(), "1".into()),
                 ("CODEGRAPH_NO_UPDATE_CHECK".into(), "1".into()),

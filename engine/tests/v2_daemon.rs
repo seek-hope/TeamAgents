@@ -118,6 +118,10 @@ mod common;
 mod event_pages;
 #[path = "cases/inputs.rs"]
 mod inputs;
+#[path = "cases/mcp_policy.rs"]
+mod mcp_policy;
+#[path = "cases/rewind.rs"]
+mod rewind;
 
 /// The scratch root of one test: `teamagents-v2-daemon-<tag>-<uuid>`, removed when the test ends (D-226).
 type Root = common::TempRoot;
@@ -1292,7 +1296,7 @@ async fn explicit_input_recovers_an_idle_unsettled_worker_without_automatic_prom
             command: InterventionCommand::SendInput {
                 id: "i-worker".into(),
                 text: "Settle your task honestly now.".into(),
-                deferred: false,
+                after: None,
             },
         })
     })

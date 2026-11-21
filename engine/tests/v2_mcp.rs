@@ -17,7 +17,7 @@ use teamagents_engine::v2::driver::{start, DriverConfig, DriverHandle};
 
 /// Tool names advertised with each model request, in request order.
 #[derive(Clone, Default)]
-struct Seen(Arc<Mutex<Vec<Vec<String>>>>);
+struct Seen(Arc<Mutex<Vec<Vec<String>>>>, Arc<Mutex<Vec<Json>>>);
 
 struct ScriptedProvider {
     script: Mutex<VecDeque<Json>>,
@@ -49,6 +49,7 @@ impl Provider for ScriptedProvider {
             .filter_map(|tool| tool["function"]["name"].as_str().map(str::to_string))
             .collect::<Vec<_>>();
         self.seen.0.lock().unwrap().push(names);
+        self.seen.1.lock().unwrap().extend(request.messages.iter().filter(|m| m["role"] == "tool").cloned());
         let message = self.script.lock().unwrap().pop_front().unwrap_or_else(|| reply("script exhausted"));
         Ok(AttemptOutcome {
             response: ModelResponse {
@@ -507,6 +508,7 @@ if (missing.ok || !missing.error || other.value.content !== "other") throw new E
 const a = await tools.echo_echo({ text: page.value.content.trim(), times: 2 });
 const b = await tools.echo_echo({ text: "pong", times: 3 });
 text(a.length + ":" + b.length);
+image("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=");
 return "filtered";
 "#;
     let provider = ScriptedProvider::new(vec![
@@ -518,6 +520,7 @@ return "filtered";
     config.catalog = echo_catalog(env!("CARGO_BIN_EXE_fake-mcp-server"));
     config.profile.tools = teamagents_engine::reference::basic_tool_schemas(false, false);
     config.bindings = vec!["files".into(), "echo_service".into()];
+    config.profile.images = true;
     std::fs::write(root.dir.join("ws/input.txt"), "ping").unwrap();
     std::fs::write(root.dir.join("ws/other.txt"), "other").unwrap();
     let handle = start(config).await.expect("start");
@@ -536,6 +539,12 @@ return "filtered";
     assert!(!reply.is_empty(), "the script's output is the receipt: {results:?}");
     let message: Json = serde_json::from_str(&reply).unwrap();
     let result: Json = serde_json::from_str(message["content"].as_str().unwrap()).unwrap();
+    assert!(result["output"]["image_sha256"].is_string());
+    assert!(!reply.contains("iVBORw0"), "the receipt keeps a reference, not encoded bytes");
+    assert!(seen.1.lock().unwrap().iter().any(|m| m["content"][1]["image_url"]["url"]
+        .as_str()
+        .is_some_and(|s| s.starts_with("data:image/png;base64,iVBORw0"))
+        && m["content"][0]["text"].as_str().is_some_and(|s| s.contains("9:14"))));
     let calls = result["calls"].as_array().unwrap();
     assert_eq!(calls.len(), 5);
     for (path, status) in [("input.txt", "ok"), ("absent.txt", "error"), ("other.txt", "ok")] {
@@ -751,9 +760,9 @@ for line in sys.stdin:
     assert!(marker.is_file(), "the fixture's MCP server never recorded the call, so nothing was in flight");
     handle.crash().await;
     let recovering = ScriptedProvider::new(vec![finish_call("recovered without guessing")]);
-    let mut config = root.config(recovering);
-    config.catalog = catalog;
-    config.bindings = vec!["echo_service".into()];
+    // The runtime's new configuration no longer contains the service. Recovery must use the
+    // original dispatch classification, not turn a lost reply into an ordinary unknown-tool failure.
+    let config = root.config(recovering);
     let handle = start(config).await.expect("restart");
     let event = wait_event(&handle, "operation_completed", 10_000).await;
     assert_eq!(event["payload"]["status"], json!("OUTCOME_UNKNOWN"));

@@ -44,7 +44,10 @@ fn relative(path: &str) -> Result<&Path, String> {
 }
 
 /// Pin each component with O_NOFOLLOW, including symlinks that would stay inside the workspace.
-fn open_confined(root: &Path, relative: &Path, directory: bool) -> Result<File, String> {
+pub(crate) fn open_confined(root: &Path, relative: &Path, directory: bool) -> Result<File, String> {
+    if relative.components().any(|c| !matches!(c, Component::Normal(_) | Component::CurDir)) {
+        return Err("expected a workspace-relative path without parent traversal".into());
+    }
     let mut file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)

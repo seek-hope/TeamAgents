@@ -71,6 +71,14 @@ fn menu_shortcuts_and_confirmation_do_not_repeat_or_accept_extra_modifiers() {
 #[test]
 fn editor_grammar_does_not_intercept_paths_or_ordinary_messages() {
     let mut app = app();
+    app.composer.set_text("/compact preserve units");
+    assert!(
+        matches!(app.handle_key(key(KeyCode::Enter)), Some(V2Effect::Compact { focus, .. }) if focus == "preserve units")
+    );
+    app.composer.set_text("/later preserve units");
+    assert!(
+        matches!(app.handle_key(key(KeyCode::Enter)), Some(V2Effect::SubmitInput { text, after_work:true, .. }) if text == "preserve units")
+    );
     app.composer.set_text("/attach src/edit");
     assert!(app.handle_key(key(KeyCode::Enter)).is_none());
     assert_eq!(app.attachments.paths, ["src/edit"]);
@@ -95,6 +103,23 @@ fn editor_grammar_does_not_intercept_paths_or_ordinary_messages() {
 
 #[test]
 fn every_completion_command_has_a_local_dispatch_path() {
+    let mut state = app();
+    state.open_rewind_draft(&serde_json::json!({"envelope":"selected","draft":{"text":"/quit"}}));
+    assert!(
+        matches!(state.handle_key(key(KeyCode::Enter)),Some(V2Effect::RewindSend{source,text,..}) if source=="selected" && text=="/quit")
+    );
+    assert!(!state.quit);
+    state.open_rewind_draft(&serde_json::json!({"envelope":"selected","draft":{"text":"old"}}));
+    state.handle_key(key(KeyCode::Esc));
+    assert!(state.attachments.rewind_source.is_none());
+    state.rewind_preview = Some(serde_json::json!({"envelope":"older"}));
+    state.composer.set_text("/rewind files selected");
+    assert!(matches!(state.handle_key(key(KeyCode::Enter)),Some(V2Effect::RewindFiles{key}) if key=="selected"));
+    assert!(state.rewind_preview.is_none());
+    state.composer.set_text("/mcp hide my-key");
+    assert!(
+        matches!(state.handle_key(key(KeyCode::Enter)),Some(V2Effect::McpChange{action,service}) if action=="hide" && service=="my-key")
+    );
     for (name, _) in teamagents_tui::completion::COMMANDS {
         let mut app = app();
         app.composer.set_text(name);

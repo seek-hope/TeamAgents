@@ -140,6 +140,37 @@ fn concurrent_cancel_and_drain_never_apply_cancelled_input() {
 }
 
 #[test]
+fn after_work_input_survives_reopen_without_entering_the_current_work() {
+    let (session, mut ctl) = Session::new();
+    apply(&mut ctl, "scope", "create_work", json!({"id":"work","instance_id":"i1"})).unwrap();
+    for id in ["later", "removed"] {
+        let params = json!({"instance_id":"i1","envelope_id":id,"text":id,"after":"work"});
+        let reply = apply(&mut ctl, id, "submit_input", params.clone()).unwrap();
+        assert_eq!(reply["after"], "work");
+        assert_eq!(apply(&mut ctl, id, "submit_input", params).unwrap(), reply);
+    }
+    assert_eq!(apply(&mut ctl, "edit", "edit_input", revise("later", 0)).unwrap()["state"], "AFTER_WORK");
+    apply(&mut ctl, "remove", "cancel_input", revise("removed", 0)).unwrap();
+    drop(ctl);
+    let mut ctl = Control::open(&session.0, "s1", false).unwrap();
+    queue(&mut ctl, "steer", "use this now");
+    assert_eq!(drain(&mut ctl, "early").unwrap()["applied"], 1);
+    // The pending request predates the work scope, so it is not an open request on this work.
+    apply(&mut ctl, "settle", "cancel_work", json!({"work_id":"work"})).unwrap();
+    assert_eq!(drain(&mut ctl, "late").unwrap()["applied"], 1);
+    assert_eq!(drain(&mut ctl, "again").unwrap()["applied"], 0);
+    let ids: Vec<String> = ctl
+        .connection()
+        .prepare("SELECT envelope_id FROM context_entries WHERE kind='user' ORDER BY idx")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(ids, ["steer", "later"]);
+}
+
+#[test]
 fn unedited_input_has_no_redundant_revision_copy() {
     let (session, mut ctl) = Session::new();
     queue(&mut ctl, "a", "original");
@@ -164,6 +195,23 @@ fn unedited_input_has_no_redundant_revision_copy() {
     assert_eq!(serde_json::from_str::<Value>(&rows[1].1).unwrap()["text"], "revised");
     drop(ctl);
     drop(session);
+}
+
+#[test]
+fn migration_from_ten_keeps_existing_workers_persistent_and_pending_inputs_unchanged() {
+    let (session, mut ctl) = Session::new();
+    queue(&mut ctl, "a", "keep pending");
+    ctl.connection()
+        .execute_batch(
+            "ALTER TABLE instances DROP COLUMN release_park; ALTER TABLE instances DROP COLUMN worker_lifetime; ALTER TABLE model_requests DROP COLUMN assignment_task_id; UPDATE meta SET value='10' WHERE key='schema_version'",
+        )
+        .unwrap();
+    drop(ctl);
+    let ctl = Control::open(&session.0, "s1", false).unwrap();
+    let (bound, release): (Option<String>, bool) = ctl.connection().query_row("SELECT assignment_task_id, release_park FROM model_requests JOIN instances ON id='i2' WHERE request_id='r1'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+    assert_eq!((bound, release), (None, false), "migration cannot invent a historical assignment or release");
+    let stored:(String,String,String) = ctl.connection().query_row("SELECT worker_lifetime, e.state, e.payload_json FROM instances JOIN envelopes e ON e.id='a' WHERE instances.id='i2'",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+    assert_eq!(stored, ("persistent".into(), "ACCEPTED".into(), json!({"text":"keep pending"}).to_string()));
 }
 
 #[test]

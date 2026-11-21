@@ -74,7 +74,7 @@ accepted value. Unsupported `mcp_network` and check-level `network` settings are
 | `output_usd_per_million` | `f64` | required when price is configured | `core/src/v2/pricing.rs` | Required when price is configured. USD per million output tokens. |
 | `cache_read_usd_per_million` | `Option<f64>` | unset (the reader applies its own) | `core/src/v2/pricing.rs` | USD per million cache-read tokens; missing means unknown when reads occur. |
 | `cache_write_usd_per_million` | `Option<f64>` | unset (the reader applies its own) | `core/src/v2/pricing.rs` | USD per million cache-write tokens; missing means unknown when writes occur. |
-| `source` | `String` | required when price is configured | `core/src/v2/control/search_tree.rs`, `core/src/v2/control/work/takeover.rs` … (8 files) | Required tariff source and date, never fetched or guessed at runtime. |
+| `source` | `String` | required when price is configured | `core/src/v2/control/rewind.rs`, `core/src/v2/control/search_tree.rs` … (9 files) | Required tariff source and date, never fetched or guessed at runtime. |
 
 ### `[models.<name>]`
 
@@ -98,7 +98,7 @@ accepted value. Unsupported `mcp_network` and check-level `network` settings are
 
 | Key | Type | Absent | Read by | Meaning |
 |---|---|---|---|---|
-| `kind` | `String` | empty | `core/src/kernel/mod.rs`, `core/src/v2/control/search_tree.rs` … (39 files) | — |
+| `kind` | `String` | empty | `core/src/kernel/mod.rs`, `core/src/v2/control/rewind.rs` … (43 files) | — |
 | `required` | `bool` | false | `core/src/kernel/mod.rs`, `engine/src/bound.rs` … (5 files) | — |
 | `provider` | `Option<String>` | unset (the reader applies its own) | `engine/src/catalog.rs`, `engine/src/providers/mod.rs` … (8 files) | Web provider: deepseek (default) or exa. Search and fetch require separate bindings (D-482). |
 | `api_key_env` | `Option<String>` | unset (the reader applies its own) | `engine/src/catalog.rs`, `engine/src/local_models.rs` … (6 files) | — |
@@ -107,7 +107,7 @@ accepted value. Unsupported `mcp_network` and check-level `network` settings are
 | `codegraph_projects` | `Option<Vec<String>>` | unset (the reader applies its own) | `engine/src/bound.rs` | Native CodeGraph stdio binding. The user and Leader may query the member workspace or these exact additional indexed roots; other instances may query only their own workspace. |
 | `mcp_execution` | `Option<String>` | unset (the reader applies its own) | `engine/src/bound.rs` | Local MCP execution: host only (also the default). Workspace isolation was removed. |
 | `command` | `Option<String>` | unset (the reader applies its own) | `core/src/v2/control/work_tests.rs`, `core/src/v2/control.rs` … (19 files) | The `kind = "mcp"` service's argv over stdio (the default transport) — required for that kind and transport, refused at load otherwise (D-232). |
-| `args` | `Vec<String>` | empty | `core/src/kernel/mod.rs`, `core/src/v2/control.rs` … (18 files) | — |
+| `args` | `Vec<String>` | empty | `core/src/kernel/mod.rs`, `core/src/v2/control.rs` … (20 files) | — |
 | `url` | `Option<String>` | unset (the reader applies its own) | `engine/src/bound.rs`, `engine/src/mcp_auth.rs` … (10 files) | The `kind = "mcp"` service's endpoint over the `http` transport — required there, and an absolute http(s) URL (D-232). |
 | `bearer_token_env_var` | `Option<String>` | unset (the reader applies its own) | `engine/src/bound.rs`, `engine/src/mcp_auth.rs` | Bearer token for the http transport: names the environment variable the secret is read from — the token itself never lands in this file. |
 | `oauth` | `bool` | false | `engine/src/bound.rs`, `engine/src/mcp_auth.rs` … (3 files) | D-412: sign in to this HTTP service with OAuth (`teamagents mcp login --name <binding>`) and use the credential stored beside the config (`mcp-auth.json`, mode 0600). Mutually exclusive with `bearer_token_env_var`: one endpoint, one credential. |
@@ -118,7 +118,7 @@ accepted value. Unsupported `mcp_network` and check-level `network` settings are
 | `oauth_scopes` | `Vec<String>` | empty | `engine/src/mcp_auth.rs` | Scopes to request; unset means whatever the authorization server advertises. |
 | `startup_timeout_s` | `Option<u64>` | unset (the reader applies its own) | `engine/src/bound.rs` | initialize/tools/list timeout in seconds (default 60). |
 | `tool_timeout_s` | `Option<u64>` | unset (the reader applies its own) | `engine/src/bound.rs` | tools/call timeout in seconds (default 120). |
-| `env` | `HashMap<String, String>` | empty | `engine/src/bound.rs`, `engine/src/environment.rs` … (11 files) | Binding-specific environment/options. MCP expands ${VAR}; Exa search accepts search_type (default auto). |
+| `env` | `HashMap<String, String>` | empty | `engine/src/bound.rs`, `engine/src/environment.rs` … (12 files) | Binding-specific environment/options. MCP expands ${VAR}; Exa search accepts search_type (default auto). |
 | `tool_names` | `Vec<String>` | empty | `engine/src/bound.rs` | — |
 
 ### `top level`
@@ -134,8 +134,8 @@ accepted value. Unsupported `mcp_network` and check-level `network` settings are
 | `default_task_capabilities` | `Vec<String>` | empty | `engine/src/v2/driver.rs` | Capabilities requested for model-delegated tasks when the call omits capabilities. This requests, never grants. |
 | `retention` | `Retention` | the Retention default | `engine/src/v2/daemon.rs`, `engine/src/v2/driver.rs` … (3 files) | — |
 | `hooks` | `Hooks` | the Hooks default | `engine/src/hooks.rs`, `engine/src/tools.rs` … (3 files) | — |
-| `checks` | `Vec<CheckSpec>` | empty | `core/src/v2/control/work/admission.rs`, `core/src/v2/control.rs` … (5 files) | Acceptance checks run on the host at the completion boundary. Project configuration cannot define them. |
-| `limits` | `WorkLimits` | the WorkLimits default | `core/src/v2/control/work/admission.rs`, `core/src/v2/control/work.rs` … (9 files) | Usage and wall-clock ceilings every work this session creates carries (§8, A18/A35): the work's `max_total_tokens` refuses a new request once the settled usage would pass it, and its deadline refuses one past that moment. Both are the user's own bounds; a session with neither runs until the user stops it (see `docs/USER-GUIDE.md` §2.2). |
+| `checks` | `Vec<CheckSpec>` | empty | `core/src/v2/control/rewind.rs`, `core/src/v2/control/work/admission.rs` … (6 files) | Acceptance checks run on the host at the completion boundary. Project configuration cannot define them. |
+| `limits` | `WorkLimits` | the WorkLimits default | `core/src/v2/control/work/admission.rs`, `core/src/v2/control/work.rs` … (10 files) | Usage and wall-clock ceilings every work this session creates carries (§8, A18/A35): the work's `max_total_tokens` refuses a new request once the settled usage would pass it, and its deadline refuses one past that moment. Both are the user's own bounds; a session with neither runs until the user stops it (see `docs/USER-GUIDE.md` §2.2). |
 | `update` | `UpdateConfig` | the UpdateConfig default | `core/src/kernel/types.rs`, `core/src/v2/control.rs` … (7 files) | Governed self-update policy (`[update]`). The user config is the only source: a repository-local file may never change how its own agent is replaced (D-453). |
 
 ### `[limits]`
@@ -143,7 +143,7 @@ accepted value. Unsupported `mcp_network` and check-level `network` settings are
 | Key | Type | Absent | Read by | Meaning |
 |---|---|---|---|---|
 | `max_total_tokens` | `Option<u64>` | unset (the reader applies its own) | `core/src/v2/control/work/admission.rs`, `core/src/v2/control/work_tests.rs` … (6 files) | Usage ceiling in tokens, counted from provider-reported usage, live reservations and each request's estimate; usage a provider never reported stays the work's `unknown_usage` counter and does not charge the ceiling (D-287). |
-| `deadline_minutes` | `Option<u64>` | unset (the reader applies its own) | `core/src/v2/control/work/admission.rs`, `engine/src/v2/driver.rs` | Wall-clock ceiling in minutes. Initial work_scopes start at creation; subsequent work admission starts at its first pending input and keeps that clock when it creates a work. |
+| `deadline_minutes` | `Option<u64>` | unset (the reader applies its own) | `core/src/v2/control/work/admission.rs`, `core/src/v2/control.rs` … (3 files) | Wall-clock ceiling in minutes. Initial work_scopes start at creation; subsequent work admission starts at its first pending input and keeps that clock when it creates a work. |
 | `independent_verification` | `bool` | false | `core/src/v2/control.rs`, `engine/src/v2/driver.rs` | D-393/D-395: does a work with required checks need a round another instance registered before it may settle? Opt-in, and the session's own statement about *who* may settle its work_scopes. |
 | `tool_output_chars` | `Option<usize>` | unset (the reader applies its own) | `core/src/kernel/instance.rs`, `engine/src/providers/mod.rs` … (3 files) | D-426: the most characters of one tool output the model is shown (unset keeps the built-in 24 000). A *cost* limit: the full text stays in the store and the readback tool pages it, so a lower value trades re-sent tokens for one extra call when the model really needs the rest. |
 | `context_keep_chars` | `Option<usize>` | unset (the reader applies its own) | `core/src/kernel/instance.rs`, `engine/src/providers/mod.rs` … (3 files) | D-426/D-459: how many characters of tool output the first wire view keeps before masking the older ones (unset keeps a quarter of the model's context window, clamped). The chosen frontier is held fixed until compaction, so lower values cut the initial request and the date of the next cache miss, not every turn. |
@@ -153,7 +153,7 @@ accepted value. Unsupported `mcp_network` and check-level `network` settings are
 
 | Key | Type | Absent | Read by | Meaning |
 |---|---|---|---|---|
-| `id` | `String` | empty | `core/src/kernel/instance.rs`, `core/src/v2/control/search_tree.rs` … (45 files) | Stable id, used in failures, receipts and repair feedback. |
+| `id` | `String` | empty | `core/src/kernel/instance.rs`, `core/src/v2/control/rewind.rs` … (48 files) | Stable id, used in failures, receipts and repair feedback. |
 | `command` | `String` | empty | `core/src/v2/control/work_tests.rs`, `core/src/v2/control.rs` … (19 files) | The command, executed through the same shell tool the model uses. |
 | `timeout` | `Option<u64>` | unset (the reader applies its own) | `core/src/v2/control.rs`, `engine/src/catalog.rs` … (15 files) | Seconds; absent means the shell tool's own default. |
 | `inputs` | `Vec<String>` | empty | `core/src/v2/control.rs`, `engine/src/v2/driver.rs` … (3 files) | Workspace-relative inputs the check reads. |

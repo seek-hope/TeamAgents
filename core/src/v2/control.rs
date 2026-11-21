@@ -4,6 +4,8 @@
 //! identity, operation ids, permission revisions and sequence numbers are
 //! filled here — never taken from model or client fields.
 
+pub mod mcp_policy;
+pub mod rewind;
 mod role_models;
 mod search_tree;
 
@@ -74,7 +76,10 @@ pub struct Command {
     pub params: Json,
 }
 
+type CaptureFiles = Box<dyn Fn() -> Result<rewind::FileSnapshot, String> + Send>;
+
 pub struct Control {
+    capture_files: Option<CaptureFiles>,
     conn: Connection,
     pub session_id: String,
 }
@@ -161,7 +166,11 @@ fn payload_hash(method: &str, params: &Json, identity: &Identity) -> String {
 impl Control {
     pub fn open(path: &Path, session_id: &str, create: bool) -> Result<Control, String> {
         let conn = store::open(path, create)?;
-        Ok(Control { conn, session_id: session_id.to_string() })
+        Ok(Control { conn, session_id: session_id.to_string(), capture_files: None })
+    }
+
+    pub fn set_file_capture(&mut self, capture: impl Fn() -> Result<rewind::FileSnapshot, String> + Send + 'static) {
+        self.capture_files = Some(Box::new(capture));
     }
 
     pub fn connection(&self) -> &Connection {
@@ -172,7 +181,7 @@ impl Control {
     /// stamp, not the pragmas, no migration — uses this; `submit` on it fails like any write on a read-only
     /// database, which is the point.
     pub fn open_read_only(path: &Path, session_id: &str) -> Result<Control, String> {
-        Ok(Control { conn: store::open_read_only(path)?, session_id: session_id.to_string() })
+        Ok(Control { conn: store::open_read_only(path)?, session_id: session_id.to_string(), capture_files: None })
     }
 
     /// Check the enclosing operation immediately before each nested call. A cancel or scope change
@@ -204,7 +213,7 @@ impl Control {
     /// The single entry point. Duplicate command ids return the stored
     /// receipt; the same id with a different payload is rejected (§6.3).
     pub fn submit(&mut self, command: Command, identity: Identity) -> Result<Json, String> {
-        self.submit_inner(command, identity, None).map_err(|error| {
+        self.submit_inner(command, identity, None, None).map_err(|error| {
             // A31/§4.4: SQLite reports a full disk as SQLITE_FULL ("database
             // or disk is full") through whichever handler context stringified
             // it. Classify it at the boundary so drivers can stop dispatching
@@ -227,7 +236,7 @@ impl Control {
         if command.method != "submit_input" {
             return Err("snapshots require submit_input".into());
         }
-        self.submit_inner(command, Identity::User, Some(snapshots))
+        self.submit_inner(command, Identity::User, Some(snapshots), None)
     }
 
     /// Inspect dedup before filesystem work, including a retry after files vanished.
@@ -236,11 +245,48 @@ impl Control {
         receipt_lookup(&self.conn, &command.command_id, &hash)
     }
 
+    /// Check admission before the host stages files. The publishing transaction repeats these checks.
+    pub fn check_file_rewind(&self, command: &Command) -> Result<(), String> {
+        rewind::check_attempt(&self.conn, &command.command_id)?;
+        rewind::validate(&self.conn, &self.session_id, &command.params, true)?;
+        Ok(())
+    }
+
+    /// A committed file attempt without a command receipt may already have touched disk.
+    /// Only a newly reviewed command can act again. Never replay the callback on restart.
+    pub fn submit_file_rewind(
+        &mut self,
+        command: Command,
+        mut publish: impl FnMut() -> Result<usize, String>,
+    ) -> Result<Json, String> {
+        if command.method != "rewind_conversation"
+            || command.params["mode"] != "conversation_and_files"
+            || command.command_id.is_empty()
+        {
+            return Err("combined rewind command required".into());
+        }
+        let hash = payload_hash(&command.method, &command.params, &Identity::User);
+        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
+        if let Some(result) = receipt_lookup(&tx, &command.command_id, &hash)? {
+            return Ok(result);
+        }
+        rewind::check_attempt(&tx, &command.command_id)?;
+        rewind::validate(&tx, &self.session_id, &command.params, true)?;
+        tx.execute(
+            "INSERT INTO rewind_attempts(command_id,payload_hash) VALUES(?1,?2)",
+            rusqlite::params![command.command_id, hash],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        self.submit_inner(command, Identity::User, None, Some(&mut publish))
+    }
+
     fn submit_inner(
         &mut self,
         command: Command,
         identity: Identity,
         snapshots: Option<Vec<super::attachments::InputAttachment>>,
+        publish: Option<&mut dyn FnMut() -> Result<usize, String>>,
     ) -> Result<Json, String> {
         if command.command_id.is_empty() {
             return Err("command_id must not be empty".into());
@@ -251,6 +297,12 @@ impl Control {
         if let Some(result) = receipt_lookup(&self.conn, &command.command_id, &hash)? {
             return Ok(result);
         }
+        let snapshot = match &self.capture_files {
+            Some(capture) if rewind::may_deliver(&self.conn, &command.method, &command.params, &identity)? => {
+                Some(capture())
+            }
+            _ => None,
+        };
         let method = command.method.clone();
         let mut params = command.params.clone();
         // D-463: IMMEDIATE takes the write lock before the check, so two connections submitting the same
@@ -272,7 +324,27 @@ impl Control {
         } else if method == "submit_input" && params.get("attachments").is_some_and(|v| v != &json!([])) {
             return Err("input attachments must be snapshotted by the engine".into());
         }
-        let result = dispatch(&tx, &self.session_id, &method, &params, &identity)?;
+        if publish.is_none() {
+            rewind::check_attempt(&tx, &command.command_id)?;
+        }
+        let start = if snapshot.is_some() {
+            tx.query_row("SELECT COALESCE(MAX(rowid),0) FROM rewind_points", [], |r| r.get(0))
+                .map_err(|e| e.to_string())?
+        } else {
+            0
+        };
+        let result = if let Some(publish) = publish {
+            let mut result = rewind::apply_mode(&tx, &self.session_id, &params, true)?;
+            let count = publish()?;
+            result["files_changed"] = json!(count > 0);
+            result["restored_files"] = json!(count);
+            result
+        } else {
+            dispatch(&tx, &self.session_id, &method, &params, &identity)?
+        };
+        if let Some(snapshot) = snapshot {
+            rewind::bind_snapshot(&tx, start, snapshot)?;
+        }
         // D-466 follow-up: a poll that changed nothing is a read. Storing a receipt per poll made 94% of a real
         // session's 4.8M command rows (D-464 measured 4,562,833 `drain_inbox` receipts at 38.4/s). Replaying
         // such an id re-runs the drain, which applies nothing while nothing is pending; the narrowing is
@@ -305,6 +377,33 @@ fn dispatch(
     params: &Json,
     identity: &Identity,
 ) -> Result<Json, String> {
+    // Driver actions computed outside the transaction must still refer to the same finish,
+    // even if a newer candidate belongs to the same work and epoch. The token is a fence,
+    // not authorization; unguarded manual commands retain their own admission rules.
+    if let Some(value) = params.get("candidate_row") {
+        let instance = match (method, identity) {
+            ("complete_task", Identity::Instance(actor)) => actor.as_str(),
+            (
+                "complete_work" | "close_completion" | "register_check_runs" | "repair_completion" | "block_work",
+                Identity::System,
+            ) => params["instance_id"].as_str().ok_or("completion candidate requires an instance")?,
+            _ => return Err("completion candidate is only valid for driver settlement commands".into()),
+        };
+        let row = value.as_i64().filter(|r| *r > 0).ok_or("invalid completion candidate")?;
+        let current: Option<i64> = tx
+            .query_row(
+                "SELECT d.rowid FROM decisions d JOIN model_requests r ON r.request_id=d.request_id
+            JOIN instances i ON i.id=r.instance_id AND i.context_epoch=r.epoch WHERE i.id=?1 AND i.session_id=?2
+            AND i.phase='COMPLETION_PENDING' AND d.completion_json IS NOT NULL ORDER BY d.rowid DESC LIMIT 1",
+                rusqlite::params![instance, session_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| format!("completion candidate: {e}"))?;
+        if current != Some(row) {
+            return Ok(json!({"completion_deferred":true,"reason":"completion candidate is no longer current"}));
+        }
+    }
     match method {
         "create_instance" => create_instance(tx, session_id, params, identity),
         "spawn_instance" => spawn_instance(tx, session_id, params, identity),
@@ -337,6 +436,11 @@ fn dispatch(
         "cancel_input" => revise_input(tx, session_id, params, identity, true),
         "begin_request" => begin_request(tx, session_id, params, identity),
         "record_attempt" => record_attempt(tx, session_id, params),
+        "rewind_conversation" => rewind::apply(tx, session_id, params, identity),
+        "send_rewind_draft" => rewind::send(tx, session_id, params, identity),
+        "set_mcp_service" => mcp_policy::change(tx, session_id, params, identity),
+        "request_compaction" => request_compaction(tx, session_id, params, identity),
+        "take_compaction" => take_compaction(tx, session_id, params, identity),
         "begin_compression" => begin_compression(tx, session_id, params, identity),
         "compress_context" => compress_context(tx, session_id, params, identity),
         "fail_compression" => fail_compression(tx, session_id, params),
@@ -860,7 +964,7 @@ fn close_epoch_execution(
         let mut stmt = tx
             .prepare(
                 "SELECT id FROM envelopes
-                 WHERE recipient = ?1 AND epoch = ?2 AND session_id = ?3 AND state = 'ACCEPTED'
+                 WHERE recipient = ?1 AND epoch = ?2 AND session_id = ?3 AND state IN ('ACCEPTED','DEFERRED','AFTER_WORK')
                  ORDER BY sequence",
             )
             .map_err(|e| format!("seal envelopes scan: {e}"))?;
@@ -872,7 +976,7 @@ fn close_epoch_execution(
     let envelopes = tx
         .execute(
             "UPDATE envelopes SET state = 'SUPERSEDED'
-             WHERE recipient = ?1 AND epoch = ?2 AND session_id = ?3 AND state = 'ACCEPTED'",
+             WHERE recipient = ?1 AND epoch = ?2 AND session_id = ?3 AND state IN ('ACCEPTED','DEFERRED','AFTER_WORK')",
             rusqlite::params![instance_id, epoch, session_id],
         )
         .map_err(|e| format!("seal envelopes: {e}"))?;
@@ -1004,6 +1108,14 @@ fn create_instance(tx: &Connection, session_id: &str, params: &Json, identity: &
     }
     let workspace = params["workspace_ref"].as_str().unwrap_or("");
     let is_leader = params["is_leader"].as_bool().unwrap_or(false) && matches!(identity, Identity::User);
+    let lifetime = params
+        .get("lifetime")
+        .map_or(Some("persistent"), Json::as_str)
+        .filter(|v| matches!(*v, "temporary" | "persistent"))
+        .ok_or("Worker lifetime must be temporary or persistent")?;
+    if is_leader && params.get("lifetime").is_some() {
+        return Err("lifetime is a Worker property".into());
+    }
     if is_leader {
         let exists: bool = tx
             .query_row("SELECT EXISTS(SELECT 1 FROM instances WHERE is_leader=1)", [], |r| r.get(0))
@@ -1020,9 +1132,9 @@ fn create_instance(tx: &Connection, session_id: &str, params: &Json, identity: &
     tx.execute(
         "INSERT INTO instances
          (id, session_id, profile_revision, workspace_ref, context_epoch, lifecycle, phase,
-          revision, active_work_id, active_request_id, context_head, profile_json, is_leader)
-         VALUES (?1, ?2, 1, ?3, 0, 'ACTIVE', 'READY', 0, NULL, NULL, 0, ?4, ?5)",
-        rusqlite::params![id, session_id, workspace, profile.to_string(), is_leader],
+          revision, active_work_id, active_request_id, context_head, profile_json, is_leader, worker_lifetime)
+         VALUES (?1, ?2, 1, ?3, 0, 'ACTIVE', 'READY', 0, NULL, NULL, 0, ?4, ?5, ?6)",
+        rusqlite::params![id, session_id, workspace, profile.to_string(), is_leader, lifetime],
     )
     .map_err(|e| format!("create_instance {id}: {e}"))?;
     if !workspace.is_empty() && matches!(identity, Identity::User) {
@@ -1067,8 +1179,11 @@ fn spawn_instance(tx: &Connection, session_id: &str, params: &Json, identity: &I
     if params.get("model").is_some() || params.get("catalog_key").is_some() {
         return Err("spawn cannot override the shared Worker model".into());
     }
-    let create = json!({"id": instance_id, "profile": params.get("profile").cloned().unwrap_or(json!({})),
+    let mut create = json!({"id": instance_id, "profile": params.get("profile").cloned().unwrap_or(json!({})),
                         "workspace_ref": params["workspace_ref"].as_str().unwrap_or("")});
+    if let Some(value) = params.get("lifetime") {
+        create["lifetime"] = value.clone();
+    }
     // Identity::Instance here on purpose: spawn grants no automatic
     // shell@workspace — that path belongs to user-driven creation only (§5.1)
     create_instance(tx, session_id, &create, &Identity::Instance(spawner.clone()))?;
@@ -1103,7 +1218,9 @@ fn spawn_instance(tx: &Connection, session_id: &str, params: &Json, identity: &I
         task = delegate_task(tx, session_id, &delegate, &delegation_identity)?;
     }
     event(tx, session_id, "instance_spawned", instance_id, &json!({"spawner": spawner, "task": !task.is_null()}))?;
-    Ok(json!({"instance_id": instance_id, "task": task}))
+    Ok(
+        json!({"instance_id": instance_id, "task": task, "lifetime": create.get("lifetime").and_then(Json::as_str).unwrap_or("persistent")}),
+    )
 }
 
 /// Default inbox capacity per recipient (§5.3): a full inbox fails the
@@ -1294,6 +1411,15 @@ fn update_profile(tx: &Connection, session_id: &str, instance_id: &str, params: 
                "effort": profile["options"]["reasoning_effort"], "revision": revision}))
 }
 
+/// Is there a current-epoch envelope that the next drain can deliver? Used by read-only
+/// diagnostics too; a held instruction is not runnable while a different work owns the recipient.
+pub fn inbox_ready(tx: &Connection, instance: &str, epoch: i64) -> Result<bool, String> {
+    tx.query_row("SELECT EXISTS(SELECT 1 FROM envelopes WHERE recipient=?1 AND epoch=?2 AND
+        (state='ACCEPTED' OR (state='AFTER_WORK' AND ?3 AND EXISTS(SELECT 1 FROM work_scopes g
+         WHERE g.id=json_extract(envelopes.payload_json,'$.after_work_id') AND g.session_id=envelopes.session_id AND g.status<>'ACTIVE'))))",
+        rusqlite::params![instance,epoch,budget_work(tx,instance)?.is_none()], |r|r.get(0)).map_err(|e|format!("inbox readiness: {e}"))
+}
+
 fn drain_inbox(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
     let instance_id = params["instance_id"].as_str().ok_or("drain_inbox.instance_id required")?;
     match identity {
@@ -1308,15 +1434,20 @@ fn drain_inbox(tx: &Connection, session_id: &str, params: &Json, identity: &Iden
     if lifecycle == "TERMINATED" {
         return Err(format!("instance {instance_id} is terminated"));
     }
+    // A released instruction is not steering for a work attached between settlement and drain.
+    let free = budget_work(tx, instance_id)?.is_none();
     let queued: Vec<(String, String, i64, String, Option<String>, String)> = {
         let mut stmt = tx
             .prepare(
                 "SELECT id, sender, epoch, kind, correlation_id, payload_json FROM envelopes
-                 WHERE recipient = ?1 AND session_id = ?2 AND state = 'ACCEPTED' ORDER BY sequence",
+                 WHERE recipient = ?1 AND session_id = ?2 AND (state = 'ACCEPTED' OR
+                   (state='AFTER_WORK' AND (epoch<>?3 OR ?4) AND EXISTS(SELECT 1 FROM work_scopes g
+                    WHERE g.id=json_extract(envelopes.payload_json,'$.after_work_id') AND g.session_id=?2 AND g.status<>'ACTIVE')))
+                 ORDER BY sequence",
             )
             .map_err(|e| format!("inbox read: {e}"))?;
         let rows = stmt
-            .query_map(rusqlite::params![instance_id, session_id], |row| {
+            .query_map(rusqlite::params![instance_id, session_id, epoch, free], |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))
             })
             .map_err(|e| format!("inbox query: {e}"))?;
@@ -1337,6 +1468,9 @@ fn drain_inbox(tx: &Connection, session_id: &str, params: &Json, identity: &Iden
             continue;
         }
         let payload: Json = serde_json::from_str(&payload_json).unwrap_or(json!({}));
+        if kind == "user_input" && payload.get("after_work_id").is_some() && budget_work(tx, instance_id)?.is_some() {
+            continue; // An earlier input in this same drain opened a work.
+        }
         let content = envelope_text(&kind, &sender, correlation.as_deref(), &payload);
         let mut message = json!({"role": "user", "content": content});
         if kind == "user_input" {
@@ -1346,6 +1480,7 @@ fn drain_inbox(tx: &Connection, session_id: &str, params: &Json, identity: &Iden
         tx.execute("UPDATE envelopes SET state = 'APPLIED' WHERE id = ?1", [&id])
             .map_err(|e| format!("apply envelope {id}: {e}"))?;
         if kind == "user_input" {
+            rewind::capture(tx, instance_id, epoch, &id, &payload)?;
             event(
                 tx,
                 session_id,
@@ -1920,6 +2055,17 @@ fn start_task(tx: &Connection, session_id: &str, params: &Json, identity: &Ident
     Ok(json!({"task_id": task_id, "status": "RUNNING"}))
 }
 
+/// The still-open assignment named by this turn, never the current queue head. Older requests
+/// may already have an enrolled work snapshot; do not infer a missing task for an old request.
+pub fn completion_task(tx: &Connection, instance: &str) -> Result<Option<String>, String> {
+    tx.query_row("SELECT t.id FROM (SELECT r.instance_id,r.epoch,r.work_id,COALESCE(r.assignment_task_id,json_extract(w.context_json,'$.task_id')) AS task_id
+        FROM decisions d JOIN model_requests r ON r.request_id=d.request_id LEFT JOIN work_requests w ON w.request_id=r.request_id
+        WHERE r.instance_id=?1 AND d.completion_json IS NOT NULL ORDER BY d.rowid DESC LIMIT 1) c
+        JOIN instances i ON i.id=c.instance_id AND i.context_epoch=c.epoch AND i.phase='COMPLETION_PENDING'
+        JOIN tasks t ON t.id=c.task_id AND t.assignee=i.id AND t.work_id=c.work_id AND t.status IN ('PENDING','RUNNING')",
+        [instance], |r|r.get(0)).optional().map_err(|e|format!("completion assignment: {e}"))
+}
+
 /// Settle or report a task (§5.3): the assignee proves the narrow return
 /// capability for exactly this task; the result is delivered only to a
 /// still-available requester, and a terminal settlement consumes the return
@@ -1954,10 +2100,15 @@ fn complete_task(tx: &Connection, session_id: &str, params: &Json, identity: &Id
         }
         Identity::System => return Err("the system does not complete tasks".into()),
     }
-    if matches!(identity, Identity::Instance(_))
-        && work::completion(tx, session_id, &assignee, target, summary, &result_refs)?
-    {
-        return Ok(json!({"task_id":task_id,"status":status,"completion_deferred":true}));
+    if matches!(identity, Identity::Instance(_)) {
+        if load_instance(tx, &assignee)?.3 == "COMPLETION_PENDING"
+            && completion_task(tx, &assignee)?.as_deref() != Some(task_id)
+        {
+            return Ok(json!({"task_id":task_id,"status":status,"completion_deferred":true}));
+        }
+        if work::completion(tx, session_id, &assignee, target, summary, &result_refs)? {
+            return Ok(json!({"task_id":task_id,"status":status,"completion_deferred":true}));
+        }
     }
     tx.execute(
         "UPDATE tasks SET status = ?1, result_refs_json = ?2, revision = revision + 1 WHERE id = ?3",
@@ -2063,7 +2214,32 @@ fn complete_task(tx: &Connection, session_id: &str, params: &Json, identity: &Id
     if requester != "user" {
         work::wake_attention(tx, session_id, &requester)?;
     }
-    Ok(json!({"task_id": task_id, "status": target, "delivered": delivered, "woken": woken}))
+    // A temporary member releases its driver, not its workspace or audit trail. Cancellation
+    // and blocked work never authorize this path. A pending user message wins over release.
+    let quiet = terminal && tx.query_row("SELECT EXISTS(SELECT 1 FROM instances i WHERE i.id=?1
+        AND i.is_leader=0 AND i.worker_lifetime='temporary' AND i.lifecycle='ACTIVE' AND i.phase='READY'
+        AND i.active_work_id IS NULL AND i.active_request_id IS NULL
+        AND NOT EXISTS(SELECT 1 FROM tasks WHERE (assignee=i.id OR requester=i.id) AND status NOT IN ('SUCCEEDED','FAILED','CANCELLED'))
+        AND NOT EXISTS(SELECT 1 FROM model_requests WHERE instance_id=i.id AND status='PENDING')
+        AND NOT EXISTS(SELECT 1 FROM work_inputs WHERE instance_id=i.id AND state='PENDING')
+        AND COALESCE((SELECT kind FROM context_entries WHERE instance_id=i.id AND epoch=i.context_epoch
+            AND compressed_by IS NULL AND kind!='summary' ORDER BY idx DESC LIMIT 1),'runtime') IN ('assistant','runtime')
+        AND NOT EXISTS(SELECT 1 FROM waits WHERE instance_id=i.id AND status='PENDING')
+        AND NOT EXISTS(SELECT 1 FROM envelopes WHERE recipient=i.id AND epoch=i.context_epoch AND state IN ('ACCEPTED','DEFERRED','AFTER_WORK'))
+        AND NOT EXISTS(SELECT 1 FROM operations o JOIN decisions d ON d.decision_id=o.decision_id JOIN model_requests r ON r.request_id=d.request_id
+          WHERE r.instance_id=i.id AND o.status IN ('PREPARED','DISPATCH_COMMITTED','RUNNING','OUTCOME_UNKNOWN')))", [&assignee], |row|row.get::<_,bool>(0)).map_err(|e|format!("check temporary release: {e}"))?;
+    let park = quiet && work::takeover::candidates(tx, &assignee)?.is_empty();
+    if park {
+        set_lifecycle(
+            tx,
+            session_id,
+            &json!({"instance_id":assignee,"lifecycle":"PARKED","reason":"Temporary Worker released after task settlement"}),
+            &Identity::System,
+        )?;
+        tx.execute("UPDATE instances SET release_park=1 WHERE id=?1", [&assignee])
+            .map_err(|e| format!("mark temporary release: {e}"))?;
+    }
+    Ok(json!({"task_id": task_id, "status": target, "delivered": delivered, "woken": woken, "parked_for_release":park}))
 }
 
 /// Cancel a task (§5.3): the requester or the user closes it, the return
@@ -2320,8 +2496,38 @@ fn submit_input(tx: &Connection, session_id: &str, params: &Json, identity: &Ide
         .map_err(|e| format!("envelope sequence: {e}"))?;
     // D-470: an explicit follow-up (`after = "turn"`) enters at the next READY boundary once the current turn's
     // decision is consumed; without it the input is applied now (or at the boundary a turn in flight leaves).
-    let deferred = params["after"].as_str() == Some("turn");
-    let state = if deferred { "DEFERRED" } else { "ACCEPTED" };
+    let awaiting_delivery = |include_deferred: bool| -> Result<bool, String> {
+        tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM envelopes WHERE recipient=?1 AND epoch=?2 AND kind='user_input'
+                AND (state='ACCEPTED' OR (?3 AND state='DEFERRED') OR (state='AFTER_WORK' AND ?5 AND EXISTS(
+                    SELECT 1 FROM work_scopes g WHERE g.id=json_extract(envelopes.payload_json,'$.after_work_id') AND g.status<>'ACTIVE')))
+                AND sequence<?4)",
+            rusqlite::params![instance_id, epoch, include_deferred, sequence, budget_work(tx, instance_id)?.is_none()],
+            |r| r.get(0),
+        )
+        .map_err(|e| format!("earlier queued input: {e}"))
+    };
+    let state = match params.get("after").map(Json::as_str) {
+        None => "ACCEPTED",
+        Some(Some("turn")) => "DEFERRED",
+        Some(Some("work")) => {
+            if role_models::leader(tx)?.as_ref().map(|r| r.0.as_str()) != Some(instance_id) {
+                return Err("after-work delivery targets the session Leader".into());
+            }
+            if let Some(owner) = budget_work(tx, instance_id)? {
+                payload["after_work_id"] = json!(owner);
+                "AFTER_WORK"
+            } else if awaiting_delivery(true)?
+                || work::view(tx, instance_id)?["admission"] == true
+                || matches!(phase.as_str(), "MODEL_PENDING" | "TOOLS_PENDING" | "COMPLETION_PENDING")
+            {
+                return Err("no active work scope yet; use ordinary input or wait for admission".into());
+            } else {
+                "ACCEPTED"
+            }
+        }
+        _ => return Err("submit_input.after must be turn or work when specified".into()),
+    };
     tx.execute(
         "INSERT INTO envelopes
          (id, session_id, sender, recipient, epoch, kind, correlation_id, payload_json, sequence, state)
@@ -2331,11 +2537,18 @@ fn submit_input(tx: &Connection, session_id: &str, params: &Json, identity: &Ide
     .map_err(|e| format!("envelope {envelope_id}: {e}"))?;
     // Revision history is lazy: the envelope remains the original payload until
     // the first edit/cancel, whose transaction records revision 0 before changing it.
-    if deferred {
+    if state != "ACCEPTED" {
         publish_list(tx, session_id, params)?;
-        event(tx, session_id, "input_queued", instance_id, &json!({"envelope_id": envelope_id, "deferred": true}))?;
+        let after = &params["after"];
+        event(
+            tx,
+            session_id,
+            "input_queued",
+            instance_id,
+            &json!({"envelope_id": envelope_id, "deferred": true,"after":after}),
+        )?;
         return Ok(json!({"envelope_id": envelope_id, "applied": false, "queued": true, "deferred": true,
-                         "instance_revision": revision}));
+                         "after":after,"instance_revision": revision}));
     }
     // A turn in flight has a *fixed* request that cannot include this input, so
     // applying it now would store it behind that request's own reply: the model
@@ -2344,10 +2557,8 @@ fn submit_input(tx: &Connection, session_id: &str, params: &Json, identity: &Ide
     // did nothing (measured; D-63). The input therefore waits for the next READY
     // boundary, where `drain_inbox` applies it in sequence order (§5.3/§5.4, and
     // the model's own `Input` action: user input lands at READY).
-    let earlier:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM envelopes WHERE recipient=?1 AND epoch=?2 AND kind='user_input' AND state='ACCEPTED' AND sequence<?3)",
-        rusqlite::params![instance_id,epoch,sequence],|r|r.get(0)).map_err(|e|format!("earlier queued input: {e}"))?;
     if matches!(phase.as_str(), "MODEL_PENDING" | "TOOLS_PENDING" | "COMPLETION_PENDING")
-        || (matches!(phase.as_str(), "READY" | "WAITING") && earlier)
+        || (matches!(phase.as_str(), "READY" | "WAITING") && awaiting_delivery(false)?)
     {
         if phase == "WAITING" {
             supersede_input_waits(tx, instance_id)?;
@@ -2360,6 +2571,7 @@ fn submit_input(tx: &Connection, session_id: &str, params: &Json, identity: &Ide
     let applied = append_context(tx, instance_id, epoch, "user", &message, Some(envelope_id), &json!([]))?;
     let input_head = context_head(tx, instance_id)?;
     if applied {
+        rewind::capture(tx, instance_id, epoch, envelope_id, &payload)?;
         work::admit_input(tx, session_id, instance_id, envelope_id)?;
         tx.execute("UPDATE instances SET revision=revision+1 WHERE id=?1", [instance_id])
             .map_err(|e| format!("input preparation revision: {e}"))?;
@@ -2510,7 +2722,7 @@ fn revise_input(
         .optional()
         .map_err(|e| format!("pending input: {e}"))?;
     let (stored_epoch, state, raw) = row.ok_or("no user input with that identity and recipient")?;
-    if stored_epoch != epoch || state != "ACCEPTED" {
+    if stored_epoch != epoch || !matches!(state.as_str(), "ACCEPTED" | "DEFERRED" | "AFTER_WORK") {
         return Err(format!("input {envelope} is {state} or belongs to an old epoch; only pending input can change"));
     }
     let current: Option<i64> = tx
@@ -2533,9 +2745,9 @@ fn revise_input(
         payload["text"] = json!(text);
     }
     let next = revision.checked_add(1).ok_or("input revision exhausted")?;
-    let state = if cancel { "CANCELLED" } else { "ACCEPTED" };
+    let state = if cancel { "CANCELLED" } else { state.as_str() };
     tx.execute(
-        "UPDATE envelopes SET payload_json = ?1, state = ?2 WHERE id = ?3 AND state = 'ACCEPTED'",
+        "UPDATE envelopes SET payload_json = ?1, state = ?2 WHERE id = ?3",
         rusqlite::params![payload.to_string(), state, envelope],
     )
     .map_err(|e| format!("revise input: {e}"))?;
@@ -2622,6 +2834,62 @@ fn append_entry(
     Ok(id)
 }
 
+/// A user request is a one-shot maintenance operation, never new conversational input.
+fn request_compaction(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
+    require_user(identity)?;
+    let id = params["instance_id"].as_str().ok_or("request_compaction.instance_id required")?;
+    let focus = params
+        .get("focus")
+        .map_or(Some(""), Json::as_str)
+        .filter(|s| s.len() <= 4096)
+        .ok_or("compaction focus must be text of at most 4096 bytes")?;
+    let (session, epoch, lifecycle, phase, revision) = load_instance(tx, id)?;
+    if session != session_id || role_models::leader(tx)?.as_ref().map(|r| r.0.as_str()) != Some(id) {
+        return Err("manual compaction targets the session Leader".into());
+    }
+    let busy: bool = tx
+        .query_row("SELECT EXISTS(SELECT 1 FROM model_requests WHERE instance_id=?1 AND status='PENDING')", [id], |r| {
+            r.get(0)
+        })
+        .map_err(|e| e.to_string())?;
+    if lifecycle != "ACTIVE" || !matches!(phase.as_str(), "READY" | "WAITING") || busy {
+        return Err("manual compaction needs an active Leader at a safe request boundary".into());
+    }
+    let pending = json!({"instance_id":id,"epoch":epoch,"revision":revision,"focus":focus});
+    if tx
+        .execute("INSERT OR IGNORE INTO meta(key,value) VALUES('manual_compaction',?1)", [pending.to_string()])
+        .map_err(|e| e.to_string())?
+        == 0
+    {
+        return Err("a manual compaction is already queued".into());
+    }
+    event(tx, session_id, "manual_compaction_queued", id, &json!({"epoch":epoch,"revision":revision}))?;
+    Ok(json!({"queued":true,"epoch":epoch}))
+}
+
+/// Claim before provider I/O. A crash after the claim never resends a manual request.
+fn take_compaction(tx: &Connection, session: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
+    require_system(identity)?;
+    let id = params["instance_id"].as_str().ok_or("take_compaction.instance_id required")?;
+    let raw: Option<String> = tx
+        .query_row(
+            "DELETE FROM meta WHERE key='manual_compaction' AND json_extract(value,'$.instance_id')=?1 RETURNING value",
+            [id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let Some(raw) = raw else { return Ok(Json::Null) };
+    let pending: Json = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+    let (_, epoch, lifecycle, phase, revision) = load_instance(tx, id)?;
+    let ready = pending["epoch"] == epoch
+        && pending["revision"] == revision
+        && lifecycle == "ACTIVE"
+        && matches!(phase.as_str(), "READY" | "WAITING");
+    event(tx, session, "manual_compaction_claimed", id, &json!({"ready":ready,"epoch":epoch,"revision":revision}))?;
+    Ok(if ready { pending } else { Json::Null })
+}
+
 fn context_head(tx: &Connection, instance: &str) -> Result<i64, String> {
     tx.query_row("SELECT context_head FROM instances WHERE id=?1", [instance], |row| row.get(0))
         .map_err(|e| format!("context position: {e}"))
@@ -2646,7 +2914,8 @@ fn begin_request(tx: &Connection, session_id: &str, params: &Json, identity: &Id
         return Err("instance does not belong to this session".to_string());
     }
     if lifecycle != "ACTIVE" {
-        return Err(format!("instance {instance_id} is {lifecycle}, not dispatching"));
+        let stale = if revision != expected_revision { ": stale executor" } else { "" };
+        return Err(format!("instance {instance_id} is {lifecycle}, not dispatching{stale}"));
     }
     if phase != "READY" {
         return Err(format!("instance {instance_id} is {phase}, not READY"));
@@ -2659,8 +2928,13 @@ fn begin_request(tx: &Connection, session_id: &str, params: &Json, identity: &Id
     if let Some(prepared) = params.get("prepared_work") {
         work::check_prepared(tx, instance_id, prepared)?;
     }
-    let work_id = budget_work(tx, instance_id)?;
-    if let Some(work) = work_id.as_deref() {
+    let expected_mcp = params["mcp_revision"].as_i64().unwrap_or(0);
+    if mcp_policy::read(tx)?.revision != expected_mcp {
+        return Err("stale executor: MCP policy changed during preparation".into());
+    }
+    let assignment = work::key(tx, instance_id)?;
+    let work_id = assignment.as_ref().map(|k| k.0.as_str());
+    if let Some(work) = work_id {
         // A35: past the work deadline no new request begins — the daemon
         // honors the deadline even if an eval client expired or was killed.
         // A committed refusal with an auditable event, same as the budget
@@ -2691,9 +2965,19 @@ fn begin_request(tx: &Connection, session_id: &str, params: &Json, identity: &Id
     work::begin(tx, instance_id, request_id)?;
     tx.execute(
         "INSERT INTO model_requests (request_id, instance_id, epoch, work_id, request_ref, status, est_prompt_tokens,
-                                     offered_tools, surface_authorized)
-         VALUES (?1, ?2, ?3, ?4, ?5, 'PENDING', ?6, ?7, ?8)",
-        rusqlite::params![request_id, instance_id, epoch, work_id, request_ref, est, offered, authorized],
+                                     offered_tools, surface_authorized, assignment_task_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, 'PENDING', ?6, ?7, ?8, ?9)",
+        rusqlite::params![
+            request_id,
+            instance_id,
+            epoch,
+            work_id,
+            request_ref,
+            est,
+            offered,
+            authorized,
+            assignment.as_ref().map(|k| &k.3)
+        ],
     )
     .map_err(|e| format!("begin_request {request_id}: {e}"))?;
     super::pricing::freeze(tx, request_id, &params["pricing"])?;
@@ -2950,6 +3234,12 @@ fn begin_compression(tx: &Connection, session_id: &str, params: &Json, identity:
         work::check_prepared(tx, instance_id, prepared)?;
     }
     let work_id = budget_work(tx, instance_id)?;
+    if params["manual"] == true && work_id.is_none() && work::view(tx, instance_id)?["admission"] != true {
+        let limited: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM meta WHERE key='work_policy_v1' AND (json_extract(value,'$.limits.max_total_tokens') IS NOT NULL OR json_extract(value,'$.limits.deadline_minutes') IS NOT NULL))", [], |r| r.get(0)).map_err(|e|e.to_string())?;
+        if limited {
+            return Ok(json!({"budget_refused":true,"reason":"manual compaction has no active budget owner"}));
+        }
+    }
     if let Some(work) = work_id.as_deref() {
         if work_deadline_passed(tx, work)? {
             event(
@@ -3034,6 +3324,19 @@ fn compress_context(tx: &Connection, session_id: &str, params: &Json, identity: 
     }
     if !attempt_id.is_empty() && selected.as_deref() != Some(attempt_id) {
         return Err(format!("attempt {attempt_id} is not the selected attempt of {request_id}"));
+    }
+    if let Some(head) = params["context_head"].as_i64() {
+        if context_head(tx, instance_id)? != head
+            || !tx
+                .query_row(
+                    "SELECT epoch=?2 AND instance_id=?3 FROM model_requests WHERE request_id=?1",
+                    rusqlite::params![request_id, epoch, instance_id],
+                    |r| r.get::<_, bool>(0),
+                )
+                .map_err(|e| e.to_string())?
+        {
+            return Err("context changed during compression; retain all originals".into());
+        }
     }
     let visible: Vec<(String, i64)> = {
         let mut stmt = tx
@@ -3239,7 +3542,7 @@ fn condition_state(
                 .map_err(|e| format!("wait envelope: {e}"))?;
             Ok(match state.as_deref() {
                 Some("APPLIED") => ConditionState::Satisfied,
-                Some("ACCEPTED") => ConditionState::Pending,
+                Some("ACCEPTED" | "DEFERRED" | "AFTER_WORK") => ConditionState::Pending,
                 _ => ConditionState::Dead,
             })
         }
@@ -3713,6 +4016,9 @@ fn import_response(tx: &Connection, session_id: &str, params: &Json, identity: &
         // the caller: it binds the fixed intent to its parameters (§6.1)
         let args_hash = crate::kernel::args_hash(&args);
         let mut fixed = json!({"index": index, "call_id": call_id, "name": name, "args": args, "args_hash": args_hash});
+        if intent["remote_dispatch"] == true {
+            fixed["remote_dispatch"] = json!(true);
+        }
         // Derive parse failures from the original call, never from a model-written sentinel or validity flag.
         if let Some(problem) = tool_argument_problem(&fixed["args"], entry_message, index) {
             fixed["argument_error"] = json!(problem);
@@ -4620,7 +4926,7 @@ fn set_lifecycle(tx: &Connection, session_id: &str, params: &Json, identity: &Id
         return Err(format!("instance {instance_id} is terminated"));
     }
     tx.execute(
-        "UPDATE instances SET lifecycle = ?1, revision = revision + 1 WHERE id = ?2",
+        "UPDATE instances SET lifecycle = ?1, release_park=0, revision = revision + 1 WHERE id = ?2",
         rusqlite::params![lifecycle, instance_id],
     )
     .map_err(|e| format!("set_lifecycle: {e}"))?;
@@ -4904,6 +5210,11 @@ fn register_check_round(
     if at_completion_boundary && phase != "COMPLETION_PENDING" {
         return Err(format!("instance {instance_id} is {phase}; checks register only at the completion boundary"));
     }
+    if at_completion_boundary {
+        if let Some(reply) = defer_foreign_completion(tx, instance_id, work_id)? {
+            return Ok(reply);
+        }
+    }
     let request_id = format!("check:{work_id}:{round}");
     let exists: bool = tx
         .query_row("SELECT COUNT(*) FROM model_requests WHERE request_id = ?1", [&request_id], |row| {
@@ -5022,6 +5333,9 @@ fn repair_completion(tx: &Connection, session_id: &str, params: &Json, identity:
     if phase != "COMPLETION_PENDING" {
         return Ok(json!({"instance_id": instance_id, "phase": phase, "already_closed": true}));
     }
+    if let Some(reply) = defer_foreign_completion(tx, instance_id, work_id)? {
+        return Ok(reply);
+    }
     // §8: "the model is given the real remaining time and error summaries so it can change course". A check
     // that fails on its own leaves its output and exit code in the conversation as a tool result, but the
     // stale-input verdict belongs to the *runtime*: the check exited 0 and only the re-verification of its
@@ -5098,15 +5412,11 @@ fn block_work(tx: &Connection, session_id: &str, params: &Json, identity: &Ident
         )
         .map_err(|e| format!("block_work {work_id}: {e}"))?;
     if work_status != "ACTIVE" {
-        // same rule as complete_work: a terminal work frees the instance
-        tx.execute(
-            "UPDATE instances SET phase = 'READY', revision = revision + 1
-             WHERE id = ?1 AND phase = 'COMPLETION_PENDING'",
-            [instance_id],
-        )
-        .map_err(|e| format!("close finished work: {e}"))?;
-        detach_work(tx, work_id)?;
+        close_terminal_work_turn(tx, instance_id, work_id)?;
         return Ok(json!({"work_id": work_id, "status": work_status, "already_closed": true}));
+    }
+    if let Some(reply) = defer_foreign_completion(tx, instance_id, work_id)? {
+        return Ok(reply);
     }
     tx.execute("UPDATE work_scopes SET status = 'BLOCKED' WHERE id = ?1", [work_id])
         .map_err(|e| format!("work block: {e}"))?;
@@ -5413,6 +5723,48 @@ fn cancel_work(tx: &Connection, session_id: &str, params: &Json, identity: &Iden
     Ok(json!({"work_id": work_id, "status": "CANCELLED", "released": released, "detached": detached}))
 }
 
+// Independent verification is not a producer claim. All producer completion actions must
+// agree on the same work and epoch before creating checks or settling anything.
+fn defer_foreign_completion(tx: &Connection, instance: &str, work: &str) -> Result<Option<Json>, String> {
+    if work::policy(tx)?.is_none() {
+        return Ok(None);
+    }
+    let (phase,epoch,attached,claim):(String,i64,Option<String>,bool)=tx.query_row(
+        "SELECT i.phase,i.context_epoch,i.active_work_id,COALESCE((SELECT r.epoch=i.context_epoch AND COALESCE(r.work_id,w.billed_work_id) IS ?2
+         FROM decisions d JOIN model_requests r ON r.request_id=d.request_id LEFT JOIN work_requests w ON w.request_id=r.request_id
+         WHERE r.instance_id=i.id AND d.completion_json IS NOT NULL ORDER BY d.rowid DESC LIMIT 1),0) FROM instances i WHERE i.id=?1",
+        rusqlite::params![instance,work],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(|e|format!("completion owner: {e}"))?;
+    if phase == "COMPLETION_PENDING" && attached.as_deref() == Some(work) && claim {
+        return Ok(None);
+    }
+    if phase == "COMPLETION_PENDING" && attached.as_deref() == Some(work) {
+        answer_dangling_calls(
+            tx,
+            instance,
+            epoch,
+            "This completion does not belong to the selected work; reconcile the current work first",
+        )?;
+        tx.execute("UPDATE instances SET phase='READY',revision=revision+1 WHERE id=?1", [instance])
+            .map_err(|e| format!("reject foreign completion: {e}"))?;
+    }
+    Ok(Some(
+        json!({"work_id":work,"status":"ACTIVE","completion_deferred":true,"reason":"completion belongs to a different work scope or boundary"}),
+    ))
+}
+
+fn close_terminal_work_turn(tx: &Connection, instance: &str, work: &str) -> Result<(), String> {
+    // A repeated close may release its own late finish, not another work's pending candidate.
+    let unowned = budget_work(tx, instance)?.is_none();
+    tx.execute("UPDATE instances SET phase='READY',revision=revision+1 WHERE id=?1 AND phase='COMPLETION_PENDING'
+        AND (active_work_id IS NULL OR active_work_id=?2) AND (SELECT r.epoch=instances.context_epoch AND
+          (COALESCE(r.work_id,w.billed_work_id)=?2 OR (?3 AND r.work_id IS NULL AND w.request_id IS NULL))
+        FROM decisions d JOIN model_requests r ON r.request_id=d.request_id LEFT JOIN work_requests w ON w.request_id=r.request_id
+        WHERE r.instance_id=instances.id AND d.completion_json IS NOT NULL ORDER BY d.rowid DESC LIMIT 1)", rusqlite::params![instance,work,unowned])
+        .map_err(|e|format!("close terminal work turn: {e}"))?;
+    detach_work(tx, work)?;
+    Ok(())
+}
+
 fn complete_work(tx: &Connection, session_id: &str, params: &Json) -> Result<Json, String> {
     let work_id = params["work_id"].as_str().ok_or("complete_work.work_id required")?;
     let instance_id = params["instance_id"].as_str().ok_or("complete_work.instance_id required")?;
@@ -5424,16 +5776,25 @@ fn complete_work(tx: &Connection, session_id: &str, params: &Json) -> Result<Jso
         )
         .map_err(|e| format!("complete_work {work_id}: {e}"))?;
     if work_status != "ACTIVE" {
-        // a work that is already terminal never leaves the instance in a
-        // completion state: a late finish ends its turn here (§8)
-        tx.execute(
-            "UPDATE instances SET phase = 'READY', revision = revision + 1
-             WHERE id = ?1 AND phase = 'COMPLETION_PENDING'",
-            [instance_id],
-        )
-        .map_err(|e| format!("close finished work: {e}"))?;
-        detach_work(tx, work_id)?;
+        close_terminal_work_turn(tx, instance_id, work_id)?;
         return Ok(json!({"work_id": work_id, "status": work_status, "already_closed": true}));
+    }
+    let completion: Option<String> = tx
+        .query_row(
+            "SELECT d.completion_json FROM decisions d
+             JOIN model_requests r ON d.request_id = r.request_id
+             WHERE r.instance_id = ?1 AND d.completion_json IS NOT NULL
+             ORDER BY d.rowid DESC LIMIT 1",
+            [instance_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("completion read: {e}"))?;
+    // With no model claim the legacy manual settlement is FAILED, never successful.
+    if completion.is_some() {
+        if let Some(reply) = defer_foreign_completion(tx, instance_id, work_id)? {
+            return Ok(reply);
+        }
     }
     let open: i64 = tx
         .query_row(
@@ -5472,39 +5833,7 @@ fn complete_work(tx: &Connection, session_id: &str, params: &Json) -> Result<Jso
         };
         let _ = verifier;
     }
-    let completion: Option<(String, String)> = tx
-        .query_row(
-            "SELECT d.completion_json,r.request_id FROM decisions d
-             JOIN model_requests r ON d.request_id = r.request_id
-             WHERE r.instance_id = ?1 AND d.completion_json IS NOT NULL
-             ORDER BY d.rowid DESC LIMIT 1",
-            [instance_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()
-        .map_err(|e| format!("completion read: {e}"))?;
-    if work::policy(tx)?.is_some()
-        && completion.is_some()
-        && completion.as_ref().map(|(_, request)| request_work(tx, request)).transpose()?.flatten().as_deref()
-            != Some(work_id)
-    {
-        let epoch = load_instance(tx, instance_id)?.1;
-        answer_dangling_calls(
-            tx,
-            instance_id,
-            epoch,
-            "This completion does not belong to the selected work; reconcile the current work first",
-        )?;
-        tx.execute(
-            "UPDATE instances SET phase='READY',revision=revision+1 WHERE id=?1 AND phase='COMPLETION_PENDING'",
-            [instance_id],
-        )
-        .map_err(|e| format!("reject foreign completion: {e}"))?;
-        return Ok(
-            json!({"work_id":work_id,"status":"ACTIVE","completion_deferred":true,"reason":"completion belongs to a different work scope"}),
-        );
-    }
-    let candidate: Json = completion.as_ref().and_then(|(raw, _)| serde_json::from_str(raw).ok()).unwrap_or(Json::Null);
+    let candidate: Json = completion.as_deref().and_then(|raw| serde_json::from_str(raw).ok()).unwrap_or(Json::Null);
     let status = match candidate["outcome"].as_str().unwrap_or("failed") {
         "success" => "SUCCEEDED",
         "blocked" => "BLOCKED",
@@ -5798,6 +6127,8 @@ fn fork_reset(tx: &Connection, session_id: &str, params: &Json, identity: &Ident
         return Err(format!("instance {keep} does not belong to this session"));
     }
     work::fork(tx, keep)?;
+    tx.execute("DELETE FROM rewind_points", []).map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM meta WHERE key IN ('manual_compaction','rewind_draft')", []).map_err(|e| e.to_string())?;
     // Applied user input remains provenance for a pending admission in the copy.
     tx.execute("DELETE FROM envelopes WHERE session_id=?1 AND NOT EXISTS(SELECT 1 FROM work_inputs w
         WHERE w.instance_id=?2 AND w.state='PENDING' AND w.envelope_id=envelopes.id AND envelopes.state='APPLIED' AND envelopes.kind='user_input')",
@@ -6445,6 +6776,15 @@ mod tests {
     fn a_deferred_follow_up_enters_after_the_turn_closes() {
         let (mut ctl, path) = control("follow-up");
         create_instance(&mut ctl, "i1");
+        let file = path.with_extension("tracked");
+        std::fs::write(&file, b"queued").unwrap();
+        let source = file.clone();
+        ctl.set_file_capture(move || {
+            Ok(rewind::FileSnapshot {
+                root: "fixture".into(),
+                files: std::collections::BTreeMap::from([("file".into(), std::fs::read(&source).unwrap())]),
+            })
+        });
         let queued = ctl
             .submit(
                 cmd(
@@ -6461,6 +6801,11 @@ mod tests {
         let state: String =
             ctl.connection().query_row("SELECT state FROM envelopes WHERE id = 'e1'", [], |row| row.get(0)).unwrap();
         assert_eq!(state, "DEFERRED");
+        assert_eq!(
+            ctl.connection().query_row("SELECT count(*) FROM rewind_manifests", [], |r| r.get::<_, i64>(0)).unwrap(),
+            0
+        );
+        std::fs::write(&file, b"delivered").unwrap();
         // close a turn: open a decision, dispatch and complete its operation
         open_decision(&mut ctl, "fu", "i1", 0, 1);
         ctl.submit(
@@ -6485,6 +6830,8 @@ mod tests {
             .submit(cmd("drain-fu", "drain_inbox", json!({"instance_id": "i1"})), Identity::Instance("i1".into()))
             .expect("drain");
         assert_eq!(drained["applied"], json!(1));
+        assert_eq!(ctl.connection().query_row("SELECT b.body FROM rewind_manifests m JOIN rewind_blobs b ON b.digest=json_extract(m.manifest,'$.files.file') WHERE m.envelope_id='e1'",[],|r|r.get::<_,Vec<u8>>(0)).unwrap(),b"delivered");
+        std::fs::remove_file(file).unwrap();
         assert_eq!(context_count(&ctl, "i1"), before + 1, "the follow-up lands as one user entry");
         let last: String = ctl
             .connection()
@@ -6563,6 +6910,116 @@ mod tests {
         assert!(body_big.len() < 1024, "a repetitive body compresses: {} bytes", body_big.len());
         assert_ne!(digest, digest_big);
         assert_eq!(decode_result(&body_big).unwrap(), big);
+    }
+
+    #[test]
+    fn rewind_restores_the_applied_prefix_as_of_its_point_and_preserves_prior_receipts() {
+        let (mut ctl, path) = control("rewind");
+        create_instance(&mut ctl, "leader");
+        create_instance(&mut ctl, "worker");
+        let input = |target: &str, key: &str| {
+            cmd(key, "submit_input", json!({"instance_id":target,"envelope_id":key,"text":key}))
+        };
+        ctl.submit(input("worker", "foreign"), Identity::User).unwrap();
+        let first = ctl.submit(input("leader", "before"), Identity::User).unwrap();
+        let add = |ctl: &Control, kind: &str, message: Json| {
+            append_entry(ctl.connection(), "leader", 0, kind, &message, None, &json!([])).unwrap()
+        };
+        let summary = add(&ctl, "summary", json!({"role":"user","content":"summary before target"}));
+        ctl.connection()
+            .execute("UPDATE context_entries SET compressed_by=?1 WHERE envelope_id='before'", [&summary])
+            .unwrap();
+        add(&ctl, "assistant", json!({"role":"assistant","tool_calls":[{"id":"call"}]}));
+        add(&ctl, "tool_result", json!({"role":"tool","tool_call_id":"call","content":"result"}));
+        ctl.connection().execute("UPDATE instances SET phase='MODEL_PENDING' WHERE id='leader'", []).unwrap();
+        ctl.submit(input("leader", "selected"), Identity::User).unwrap();
+        assert!(rewind::preview(ctl.connection(), "selected").is_err());
+        ctl.submit(
+            cmd(
+                "edit",
+                "edit_input",
+                json!({"instance_id":"leader","envelope_id":"selected","revision":0,"text":"edited in queue"}),
+            ),
+            Identity::User,
+        )
+        .unwrap();
+        ctl.connection().execute("UPDATE instances SET phase='READY' WHERE id='leader'", []).unwrap();
+        drain(&mut ctl, "leader");
+        let params = rewind::preview(ctl.connection(), "selected").unwrap();
+        assert_eq!(params["draft"]["text"], "edited in queue");
+        assert!(rewind::preview(ctl.connection(), "foreign").is_err());
+        let later = add(&ctl, "summary", json!({"role":"user","content":"summary AFTER target"}));
+        ctl.connection()
+            .execute(
+                "UPDATE context_entries SET compressed_by=?1 WHERE instance_id='leader' AND idx BETWEEN 2 AND 4",
+                [&later],
+            )
+            .unwrap();
+        assert!(ctl.submit(cmd("stale", "rewind_conversation", params), Identity::User).unwrap_err().contains("stale"));
+        drop(ctl);
+        let mut ctl = Control::open(&path, "s1", false).unwrap();
+        let params = rewind::preview(ctl.connection(), "selected").unwrap();
+        assert!(ctl
+            .submit(cmd("actor", "rewind_conversation", params.clone()), Identity::Instance("leader".into()))
+            .is_err());
+        for (name, status) in [("busy", "RUNNING"), ("uncertain", "OUTCOME_UNKNOWN")] {
+            ctl.connection().execute("INSERT INTO operations(operation_id,decision_id,tool_index,epoch,args_hash,status) VALUES(?1,?1,0,0,'fixture',?2)",rusqlite::params![name,status]).unwrap();
+            assert!(ctl
+                .submit(cmd(name, "rewind_conversation", params.clone()), Identity::User)
+                .unwrap_err()
+                .contains("quiet"));
+            ctl.connection().execute("UPDATE operations SET status='FAILED' WHERE operation_id=?1", [name]).unwrap();
+        }
+        let mut combined = params.clone();
+        combined["mode"] = json!("conversation_and_files");
+        let interrupted = cmd("interrupted-files", "rewind_conversation", combined);
+        assert!(ctl
+            .submit_file_rewind(interrupted.clone(), || Err("injected file error".into()))
+            .unwrap_err()
+            .contains("injected"));
+        drop(ctl);
+        let mut ctl = Control::open(&path, "s1", false).unwrap();
+        assert!(ctl
+            .submit_file_rewind(interrupted, || panic!("replayed uncertain file writes"))
+            .unwrap_err()
+            .contains("already attempted"));
+        assert!(rewind::draft(ctl.connection()).unwrap().is_null());
+        let apply = cmd("apply", "rewind_conversation", params);
+        let reply = ctl.submit(apply.clone(), Identity::User).unwrap();
+        assert_eq!(reply["submitted"], false);
+        assert_eq!(ctl.submit(apply, Identity::User).unwrap(), reply);
+        let visible:Vec<(String,String)>=ctl.connection().prepare("SELECT kind,message_json FROM context_entries WHERE instance_id='leader' AND epoch=1 AND compressed_by IS NULL ORDER BY kind!='summary',idx").unwrap().query_map([],|r|Ok((r.get(0)?,r.get(1)?))).unwrap().collect::<Result<_,_>>().unwrap();
+        assert_eq!(visible.iter().map(|r| r.0.as_str()).collect::<Vec<_>>(), ["summary", "assistant", "tool_result"]);
+        assert!(visible[0].1.contains("summary before target"));
+        assert!(visible[1].1.contains("call"));
+        assert!(visible[2].1.contains("result"));
+        assert_eq!(rewind::draft(ctl.connection()).unwrap()["draft"]["text"], "edited in queue");
+        assert_eq!(rewind::points(ctl.connection(), i64::MAX).unwrap()["points"][0]["envelope"], "before");
+        assert_eq!(ctl.submit(input("leader", "before"), Identity::User).unwrap(), first, "old receipt unchanged");
+        let send = cmd(
+            "revised",
+            "send_rewind_draft",
+            json!({"source":"selected","envelope_id":"fresh","text":"new question"}),
+        );
+        let receipt = ctl.submit(send.clone(), Identity::User).unwrap();
+        assert_eq!(receipt["applied"], true);
+        assert_eq!(ctl.submit(send, Identity::User).unwrap(), receipt);
+        assert!(rewind::draft(ctl.connection()).unwrap().is_null());
+        assert_eq!(
+            ctl.connection()
+                .query_row("SELECT COUNT(*) FROM context_entries WHERE instance_id='leader' AND epoch=0", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            6
+        );
+        let earlier = rewind::preview(ctl.connection(), "before").unwrap();
+        let second = ctl.submit(cmd("again", "rewind_conversation", earlier), Identity::User).unwrap();
+        assert_eq!(second["epoch"], 2);
+        assert_eq!(second["draft"]["text"], "before");
+        assert!(rewind::preview(ctl.connection(), "selected").is_err());
+        assert!(rewind::preview(ctl.connection(), "fresh").is_err());
+        drop(ctl);
+        cleanup(&path);
     }
 
     #[test]

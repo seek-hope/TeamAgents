@@ -12,6 +12,7 @@ pub mod daemon;
 mod diagnostics;
 pub mod driver;
 pub mod exec;
+mod file_rewind;
 pub mod inspect;
 pub mod intervene;
 pub mod memory;

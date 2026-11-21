@@ -241,14 +241,24 @@ async fn wait_task_settled(handle: &SupervisorHandle, task_id: &str, timeout_ms:
 #[tokio::test]
 async fn spawned_worker_settles_and_the_leader_completes() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    for temporary in [false, true] {
+        settled_worker(temporary).await;
+    }
+}
+
+async fn settled_worker(temporary: bool) {
     let root = root("spawn-loop");
+    let mut spawn_args = json!({"instance_id":"i-worker", "instructions":"math helper", "workspace":"isolated"});
+    if temporary {
+        spawn_args["lifetime"] = json!("temporary");
+    }
     std::fs::create_dir_all(root.dir.join("ws")).unwrap();
     // leader: spawn the worker, delegate with an explicit task id, wait on
     // the task, finish. worker: one finish settles the delegated task.
     let leader = vec![
         Step::Message(json!({"role": "assistant", "content": "", "tool_calls": [
             {"id": "c1", "type": "function", "function": {"name": "spawn",
-             "arguments": json!({"instance_id": "i-worker", "instructions": "math helper"}).to_string()}},
+             "arguments": spawn_args.to_string()}},
             {"id": "c2", "type": "function", "function": {"name": "delegate",
              "arguments": json!({"assignee": "i-worker", "task_id": "t-answer", "description": "what is 2+2"}).to_string()}}
         ]})),
@@ -256,8 +266,19 @@ async fn spawned_worker_settles_and_the_leader_completes() {
         Step::Message(finish_call("team answered 4")),
     ];
     let worker = vec![Step::Message(finish_call("4"))];
-    let mut cfg =
-        config(&root, factory(HashMap::from([("i-leader".to_string(), leader), ("i-worker".to_string(), worker)])));
+    // A driver owns one provider. A Weak request log lets this test observe the actual drop,
+    // rather than inferring driver exit from the persisted lifecycle alone.
+    let worker_log: Seen = Default::default();
+    let driver = Arc::downgrade(&worker_log);
+    let first_log = Mutex::new(Some(worker_log));
+    let scripts = factory(HashMap::from([("i-leader".to_string(), leader), ("i-worker".to_string(), worker)]));
+    let mut cfg = config(&root, move |id: &str, profile: &KernelProfile| {
+        let mut p = scripts(id, profile);
+        if id == "i-worker" {
+            p.seen = first_log.lock().unwrap().take().expect("no automatic respawn");
+        }
+        p
+    });
     cfg.catalog.default_task_capabilities = vec!["shell@workspace".into()];
     let handle = start(cfg).await.expect("start");
     // the leader may manage the session (spawn authority, §5.1)
@@ -289,12 +310,57 @@ async fn spawned_worker_settles_and_the_leader_completes() {
     let task: String =
         control.connection().query_row("SELECT status FROM tasks WHERE id = 't-answer'", [], |row| row.get(0)).unwrap();
     assert_eq!(task, "SUCCEEDED");
+    let worker: (String, String) = control
+        .connection()
+        .query_row("SELECT worker_lifetime,lifecycle FROM instances WHERE id='i-worker'", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap();
+    let expected = if temporary { ("temporary", "PARKED") } else { ("persistent", "ACTIVE") };
+    assert_eq!(worker, (expected.0.into(), expected.1.into()));
+    if temporary {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while driver.upgrade().is_some() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("temporary driver exited");
+    } else {
+        assert!(driver.upgrade().is_some(), "persistent driver still present");
+    }
+    let inputs = root.dir.join("state/instances/i-worker/work/INPUTS.md");
+    assert!(inputs.is_file(), "workspace survives settlement");
+    let count:i64 = control.connection().query_row("SELECT COUNT(*) FROM envelopes WHERE recipient='i-leader' AND kind='task_result' AND correlation_id='t-answer' AND state='APPLIED'",[],|r|r.get(0)).unwrap();
+    assert_eq!(count, 1);
     let children: i64 = control.connection().query_row("SELECT count(*) FROM grants WHERE subject='i-worker' AND action='shell' AND task_id='t-answer' AND parent_grant_id IS NOT NULL AND delegable=0 AND revoked_at IS NOT NULL",[],|r|r.get(0)).unwrap();
     assert_eq!(children, 1);
     let snapshot = handle.snapshot().await.unwrap();
     let ids: Vec<&str> = snapshot["instances"].as_array().unwrap().iter().map(|i| i["id"].as_str().unwrap()).collect();
     assert!(ids.contains(&"i-leader") && ids.contains(&"i-worker"), "{ids:?}");
     handle.shutdown().await.expect("shutdown");
+    let boots = Arc::new(Mutex::new(Vec::new()));
+    let log = boots.clone();
+    let provider = factory(HashMap::new());
+    let handle = start(config(&root, move |id: &str, p: &KernelProfile| {
+        log.lock().unwrap().push(id.to_string());
+        provider(id, p)
+    }))
+    .await
+    .unwrap();
+    // Both rows are scanned in one discovery pass. Wait for a live Leader round trip.
+    handle.input("i-leader", "Report the result already returned.").await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5),async {
+        loop {
+            let restarted: bool=control.connection().query_row("SELECT EXISTS(SELECT 1 FROM context_entries WHERE instance_id='i-leader' AND kind='assistant' AND message_json LIKE '%script exhausted%')",[],|r|r.get(0)).unwrap();
+            if restarted {break;}
+            tokio::time::sleep(Duration::from_millis(15)).await;
+        }
+    }).await.expect("new Leader responded");
+    handle.shutdown().await.unwrap();
+    let starts = boots.lock().unwrap();
+    assert_eq!(starts.iter().filter(|id| *id == "i-worker").count(), usize::from(!temporary));
+    assert!(inputs.is_file());
 }
 
 #[tokio::test]

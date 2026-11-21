@@ -65,11 +65,8 @@ fn read_sql(conn: &Connection, include_settled: bool) -> rusqlite::Result<View> 
             rusqlite::params![request, epoch],
             |r| r.get(0),
         )?;
-        let incoming: bool = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM envelopes WHERE recipient = ?1 AND epoch = ?2 AND state = 'ACCEPTED')",
-            rusqlite::params![id, epoch],
-            |r| r.get(0),
-        )?;
+        let incoming = teamagents_core::v2::control::inbox_ready(conn, &id, epoch)
+            .map_err(|error| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, error.into()))?;
         let (pending, running): (i64, i64) = conn.query_row(
             "SELECT COUNT(CASE WHEN status = 'PENDING' THEN 1 END),
                     COUNT(CASE WHEN status = 'RUNNING' THEN 1 END) FROM tasks WHERE assignee = ?1",

@@ -57,6 +57,7 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
 | Workspace sessions | Ordinary startup restores the most recently opened session in the launch workspace, creating one if absent | D-526 |
 | Interface contracts | Validate scoped options before state access; share command metadata; preserve intentional key actions and resolved overrides | D-527 |
 | Session model roles | User selects one Leader model and one shared Worker policy | D-529 |
+| Selected workflows | Manual Leader compaction and after-work input; scoped native graph reads and authenticated search caching | D-530 |
 | Leak-guard ownership | Only processes that inherited this run's marker are this run's leaks | D-528 |
 
 ## Authority and runtime
@@ -64,7 +65,7 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
 - `core/src/v2/control.rs::Control::submit` is the single team-transaction entry. Identity, operation IDs,
   permission revisions and event sequence numbers come from control state, not model/client claims.
 - Each session has one SQLite store with WAL and `synchronous=FULL`. Engine writes serialize through a bounded
-  single-writer worker; model/tool waits happen outside transactions. The schema is 9 with explicit migration.
+  single-writer worker; model/tool waits happen outside transactions. The schema is 11 with explicit migration.
 - Persisted phase and location drive execution. Known results are reused; unknown effects become
   `OUTCOME_UNKNOWN` and are never replayed on a guess.
 - Instance termination is user-only, distinct from interrupt, cancellation, pause, detachment and shutdown.
@@ -115,15 +116,41 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
 
 ## Approved workflow requirements (implementation staged)
 
-- Model account credentials are separate from MCP credentials. Never import another harness's auth store.
-  Native Gemini, Codex and Kimi account access, typed classifiers and image generation/editing require
-  protocol-specific acceptance; a compatible chat endpoint or an image preview is not equivalent.
+- D-530: support rewind, not general message branching. Manual Leader compaction is a maintenance request,
+  not a chat turn. Ordinary input steers current work; explicitly held Leader input enters only after the
+  named work settles, including cancellation, at a boundary without another work owner. Held checks never
+  attach to an intervening work. A blocked but active scope is not settled.
+- Persistent Workers stay available by default. An explicitly temporary Worker parks after its final settled
+  task at a quiet boundary; the driver exits and closes its MCP clients. Release preserves the instance,
+  workspace, history and receipts. Cancellation or a blocked task does not trigger automatic release.
+  A Worker finish belongs to the assignment recorded for its request, not to the queue head at delivery.
+  This is not permission for a member to terminate another instance.
+- Target official OpenAI, Anthropic and Google subscription integrations only, when a supported third-party
+  path is available. Model account credentials are separate from MCP credentials. Never import another harness's
+  auth store. Typed classifiers, image generation/editing and actual image return require protocol-specific
+  acceptance; a compatible chat endpoint or an image preview is not equivalent.
+- Session MCP controls apply to an exact configured key. Start/stop control connections; hide/expose control
+  both tool and resource access, independently of connection state. Stop suppresses even a required service by
+  explicit user choice; start and reconnect do not unhide it. Forks inherit restrictions. A policy receipt
+  records desired state, not a claim about live clients. Refuse changes while a model request, operation or
+  unresolved dispatch might use the old surface. No user configuration or credentials are edited.
+- The operator shell runs in the attached workspace and is not a model tool. Output is local unless the
+  user explicitly stages it as a draft, reviews it, then sends it.
+  Skip new import/export formats, virtual routing, plugin/SDK parity and GGUF downloads. Defer additional
+  platforms and host updater/proxy migrations; do not install timers or migrate user accounts.
 - Catalogue refresh is both scheduled and on demand. Preserve user edits, update only managed fields, mark
   missing models without removing them, retain differences and rollback history, and preserve the last good
   catalogue on failure. Only new requests may observe a refresh; never silently substitute another model.
 - Rewind has exactly two modes: conversation only (default), or conversation and tracked files. Preserve
   the abandoned branch and editable prompt. Preview file changes and refuse conflicts or unconfirmed stop;
   never rewind usage, approvals, task facts or external effects. File-only rewind is not supported.
+  The conversation-only implementation captures delivered Leader inputs, starts a new epoch in the same
+  session and reopens the original editable payload; it never resubmits it automatically. The combined mode restores the working bytes of Git-tracked regular files at Leader prompt delivery,
+  including dirty files later changed by shell commands without native edit receipts. The preview labels
+  unattributed differences and binds confirmation to the observed file digests and conversation point.
+  A later mismatch with a recorded native edit blocks restoration. A missing delivery snapshot leaves
+  only the read-only receipt comparison available. Interrupted native file mutations with a committed dispatch
+  and missing receipt close as `OUTCOME_UNKNOWN`. This preserves any intervening operator edit.
 - Native CodeGraph serves an explicit project allowlist via MCP. Report repository identity and index
   freshness without widening a member's scope, creating an index or inventing protocol compatibility.
 - A script is not a blanket approval. Effectful subcalls require their own operation, authorization, receipt
@@ -196,7 +223,7 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
   workers may linger. A resolver may consume the whole deadline. Fetch content is clipped at a UTF-8 byte
   boundary. Provider-side DNS, redirects, later rebinding and broader proxy environments remain external obligations.
 - Generic MCP negotiates exactly `2025-06-18` over stdio/streamable HTTP. Only the user-bound native
-  CodeGraph stdio client uses `2024-11-05`, exposes only explore and refuses resource capability.
+  CodeGraph stdio client uses `2024-11-05`, defaults to explore, allows explicitly selected scoped read queries and refuses resource capability.
   Bound resource-only/filtered services remain
   available through normal authorization/hooks. Discovery shares one deadline, 100 pages and 16 MiB aggregate
   response budget; malformed/repeated cursors fail. JSON-RPC string/numeric IDs are preserved. Codemode checks
@@ -256,7 +283,7 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
   remain distinct from process-stop evidence; missing usage and unknown effects remain explicit.
 - F6 cycles composer/team/inspection focus; Alt+1 through Alt+4 select Chat/Tasks/Activity/Inspect. Enter submits,
   Shift+Enter inserts a newline, Ctrl+C interrupts, Ctrl+Q detaches, Ctrl+S opens sessions, Ctrl+P pending inputs
-  and Ctrl+M model/effort selection. All fifteen slash commands share one registry. Completion edits the draft;
+  and Ctrl+M model/effort selection. All slash commands share one registry. Completion edits the draft;
   a separate Enter executes it.
 - Session search/fork/rename/archive/restore/delete preserve authoritative history. Fork needs a stopped source
   and fresh execution evidence. Listening endpoints are protected regardless of greeting; only missing/refused
@@ -281,7 +308,7 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
   credentials, active jobs or external backups as repository housekeeping.
 - Source counts come from Cargo lists. Every registered current total/triple must match; missing/ambiguous
   statements fail. Numeric regeneration does not establish a passing gate, install or formal result.
-- Current source contains 874 Rust tests: core 201, engine 551 and TUI 122.
+- Current source contains 893 Rust tests: core 210, engine 561 and TUI 122.
 - Formal material has 387 configurations across 47 modules: 63 positive configurations in 60 traversals,
   323 controls and one separate wide configuration; 79 witnesses and 9 Kani harnesses. Shared traversals require
   identical model/specification/domain. Witnesses establish reachability, not safety. The report binds verified

@@ -118,6 +118,8 @@ fn main() {
     };
     v2_main(&socket);
 }
+static ENHANCED_KEYS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
 fn restore_terminal() {
     let mut out = std::io::stdout();
     let _ = execute!(
@@ -126,7 +128,7 @@ fn restore_terminal() {
         crossterm::event::DisableBracketedPaste,
         LeaveAlternateScreen
     );
-    if supports_keyboard_enhancement().unwrap_or(false) {
+    if ENHANCED_KEYS.get() == Some(&true) {
         let _ = out.execute(crossterm::event::PopKeyboardEnhancementFlags);
     }
     let _ = disable_raw_mode();
@@ -138,7 +140,7 @@ fn enter_terminal() {
     let mut stdout = std::io::stdout();
     enable_raw_mode().expect("raw mode");
     stdout.execute(EnterAlternateScreen).expect("alt screen");
-    if supports_keyboard_enhancement().unwrap_or(false) {
+    if *ENHANCED_KEYS.get_or_init(|| supports_keyboard_enhancement().unwrap_or(false)) {
         let _ = stdout.execute(crossterm::event::PushKeyboardEnhancementFlags(
             crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
                 | crossterm::event::KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES,
@@ -176,17 +178,8 @@ fn v2_main(socket: &std::path::Path) -> ! {
         }
         default_hook(info);
     }));
-    let mut stdout = std::io::stdout();
-    enable_raw_mode().expect("raw mode");
-    stdout.execute(EnterAlternateScreen).expect("alt screen");
-    if supports_keyboard_enhancement().unwrap_or(false) {
-        let _ = stdout.execute(crossterm::event::PushKeyboardEnhancementFlags(
-            crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                | crossterm::event::KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES,
-        ));
-    }
-    execute!(stdout, crossterm::event::EnableMouseCapture, crossterm::event::EnableBracketedPaste).ok();
-    let backend = CrosstermBackend::new(stdout);
+    enter_terminal();
+    let backend = CrosstermBackend::new(std::io::stdout());
     let mut terminal = Terminal::new(backend).expect("terminal");
 
     let code = run_v2(&mut terminal, client, app);
@@ -209,7 +202,7 @@ fn v2_sync_checkpoint(client: &mut DaemonClient, app: &mut V2App) {
 fn v2_refresh_history(client: &mut DaemonClient, app: &mut V2App) {
     app.history_dirty = true;
     let Some(instance) = app.active_instance().map(|i| i.id.clone()) else { return };
-    match client.call("history", json!({"instance_id": instance, "limit": 400})) {
+    match client.call("history", json!({"instance_id": instance, "limit": 400,"current_epoch":true})) {
         Ok(result) => app.apply_history(result),
         Err(e) => app.mark_disconnected(&e),
     }
@@ -299,21 +292,22 @@ fn run_v2_effect(effect: V2Effect, client: &mut DaemonClient, app: &mut V2App, s
             }
             Err(error) => app.command_failed(&error),
         },
-        V2Effect::SubmitInput { instance, envelope, text, attachments } => {
+        V2Effect::SubmitInput { instance, envelope, text, attachments, after_work } => {
             // the envelope id doubles as the command id: a retry after a lost
             // reply dedups at the control plane (§9)
-            let result = client.command(
-                &format!("input-{envelope}"),
-                "submit_input",
-                json!({"instance_id": instance, "envelope_id": envelope, "text": text, "attachments":attachments}),
-            );
+            let mut params =
+                json!({"instance_id": instance, "envelope_id": envelope, "text": text, "attachments":attachments});
+            if after_work {
+                params["after"] = json!("work");
+            }
+            let result = client.command(&format!("input-{envelope}"), "submit_input", params);
             match result {
                 Ok(reply) => {
                     app.attachments.accepted();
                     app.input_receipt(&envelope, &reply);
                 }
                 Err(e) => {
-                    app.composer.set_text(&text);
+                    app.composer.set_text(&if after_work { format!("/later {text}") } else { text });
                     app.submit_failed(&e);
                     app.command_note("No send acknowledgement: delivery may have succeeded. The draft is restored; retrying it unchanged reuses its input identity. Inspect Ctrl+P/history before changing it.");
                 }
@@ -328,6 +322,78 @@ fn run_v2_effect(effect: V2Effect, client: &mut DaemonClient, app: &mut V2App, s
             match result {
                 Ok(_) => v2_refresh_approvals(client, app),
                 Err(e) => app.decide_failed(&e),
+            }
+        }
+        V2Effect::RewindList{before} => match client.call("rewind_points",json!({"before":before})) {
+            Ok(r)=>app.command_note(format!("Applicable Leader prompts (newest first): {}. Use /rewind preview KEY; older points: /rewind before {}",r["points"],r["next_before"])),Err(e)=>app.command_failed(&e),
+        },
+        V2Effect::RewindFiles {key} => match client.call("rewind_points",json!({"envelope":key,"files":true})) {
+            Ok(report) if report["scope"] == "git_tracked_workspace" => {
+                let mut lines=vec![format!("Restore Git-tracked workspace files to their contents when {key} was delivered, and reopen that prompt.")];
+                for file in report["files"].as_array().into_iter().flatten() {
+                    lines.push(format!("{}  {}",file["status"].as_str().unwrap_or("unavailable"),file["path"]));
+                }
+                lines.push("snapshot_difference includes edits by shells or external editors. Review every path.".into());
+                if report["apply_available"]==true { lines.push("Confirm with /rewind apply.".into()); app.rewind_preview=Some(report); } else {lines.push("Conflicts prevent restoration.".into());}
+                app.command_note(lines.join("\n"));
+            }
+            Ok(report) if report["scope"] == "recorded_leader_edits" => {
+                let mut lines = vec![format!("Recorded Leader edits since {key} (read-only preview)")];
+                if let Some(files) = report["files"].as_array() {
+                    for file in files {
+                        lines.push(format!("{}  {}", file["status"].as_str().unwrap_or("unavailable"), file["path"]));
+                    }
+                }
+                lines.push(format!("Workspace snapshot unavailable: {}", report["snapshot_error"]));
+                lines.push(format!("Other successful file operations without edit records: {}",report["untracked_file_operations"]));
+                app.command_note(lines.join("\n"));
+            }
+            Ok(_) => app.command_failed("This daemon does not support file previews."),
+            Err(e) => app.command_failed(&e),
+        },
+        V2Effect::RewindPreview{key}=>match client.call("rewind_points",json!({"envelope":key})){
+            Ok(p)=>{app.command_note(format!("Conversation only. Keep the prefix before {} and reopen its prompt. Files, work and external effects are unchanged. Old history stays readable. Confirm with /rewind apply. Prompt: {}",key,p["draft"]["text"]));app.rewind_preview=Some(p);},Err(e)=>app.command_failed(&e),
+        },
+        V2Effect::RewindApply{preview}=>{
+            let mut params=json!({"mode":preview["mode"],"envelope":preview["envelope"],"epoch":preview["epoch"],"revision":preview["revision"],"head":preview["head"]});
+            if let Some(digest)=preview.get("preview_digest") {params["preview_digest"]=digest.clone();}
+            match client.command(&format!("rewind-{}",uuid::Uuid::new_v4()),"rewind_conversation",params){
+            Ok(r)=>{app.open_rewind_draft(&r);v2_sync_checkpoint(client,app);v2_refresh_history(client,app);},Err(e)=>app.command_failed(&e),
+        }},
+        V2Effect::RewindDraft=>match client.call("rewind_points",json!({"draft":true})){Ok(r)=>app.open_rewind_draft(&r),Err(e)=>app.command_failed(&e)},
+        V2Effect::RewindSend{source,envelope,text}=>match client.command(&format!("input-{envelope}"),"send_rewind_draft",json!({"source":source,"envelope_id":envelope,"text":text})) {
+            Ok(r)=>{app.attachments.accepted();app.input_receipt(&envelope,&r);},Err(e)=>{app.composer.set_text(&text);app.submit_failed(&e);},
+        },
+        V2Effect::McpStatus => match client.call("checkpoint", json!({})) {
+            Ok(reply) => {
+                let s = &reply["snapshot"];
+                app.command_note(format!(
+                    "Configured MCP bindings: {}\nDesired session policy: {}\nLast observed by driver: {}",
+                    s["mcp"], s["mcp_policy"], s["mcp_drivers"]
+                ));
+            }
+            Err(e) => app.command_failed(&e),
+        },
+        V2Effect::McpChange { action, service } => match client.command(
+            &format!("mcp-{}", uuid::Uuid::new_v4()),
+            "set_mcp_service",
+            json!({"action":action,"service":service}),
+        ) {
+            Ok(reply) => {
+                app.command_note(format!("MCP desired state: {reply}. Use /mcp status to check driver observations."))
+            }
+            Err(e) => app.command_failed(&e),
+        },
+        V2Effect::Compact { instance, focus } => {
+            match client.command(
+                &format!("compact-{}", uuid::Uuid::new_v4()),
+                "request_compaction",
+                json!({"instance_id":instance,"focus":focus}),
+            ) {
+                Ok(_) => app.command_note(
+                    "Compaction requested, not yet completed. The most recent input and its results stay verbatim.",
+                ),
+                Err(e) => app.command_failed(&e),
             }
         }
         V2Effect::Interrupt { instance } => {
@@ -379,7 +445,7 @@ fn run_v2_effect(effect: V2Effect, client: &mut DaemonClient, app: &mut V2App, s
                 Err(error) => app.command_note(format!("The profile change was refused: {error}")),
             }
         }
-        V2Effect::EditDraft { .. } | V2Effect::Quit => {}
+        V2Effect::EditDraft { .. } | V2Effect::OperatorShell { .. } | V2Effect::Quit => {}
     }
 }
 
@@ -425,6 +491,35 @@ fn run_v2(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, mut client
                     if let Some(effect) = app.handle_key(key) {
                         match effect {
                             V2Effect::EditDraft { initial } => edit_in_editor(terminal, &mut app, &initial),
+                            V2Effect::OperatorShell { workspace, command, draft } => {
+                                let _ = images.clear(&mut std::io::stdout());
+                                restore_terminal();
+                                let result = teamagents_tui::operator_shell::run(
+                                    std::path::Path::new(&workspace),
+                                    command.as_deref(),
+                                );
+                                enter_terminal();
+                                let _ = terminal.clear();
+                                match result {
+                                    Ok(out) => {
+                                        let limit = if out.limited { " (output limited)" } else { "" };
+                                        if draft && !out.text.is_empty() {
+                                            // Prefix as plain text: stdout beginning with a slash must never execute as a local command.
+                                            app.composer.set_text(&format!("Shell output:\n{}", out.text));
+                                            app.command_note(format!(
+                                                "Shell {}{limit}. Review the draft before sending; nothing sent.",
+                                                out.status
+                                            ));
+                                        } else {
+                                            app.command_note(format!(
+                                                "Local shell {}{limit}; not sent.\n{}",
+                                                out.status, out.text
+                                            ));
+                                        }
+                                    }
+                                    Err(error) => app.command_failed(&format!("local shell: {error}; nothing sent")),
+                                }
+                            }
                             other => run_v2_effect(other, &mut client, &mut app, &mut sessions),
                         }
                     }

@@ -64,7 +64,9 @@ CREATE TABLE IF NOT EXISTS instances (
     context_head INTEGER NOT NULL DEFAULT 0,
     profile_json TEXT NOT NULL,
     -- Exactly the bootstrap Leader maintains the session exploration tree.
-    is_leader INTEGER NOT NULL DEFAULT 0
+    is_leader INTEGER NOT NULL DEFAULT 0,
+    worker_lifetime TEXT NOT NULL DEFAULT 'persistent' CHECK(worker_lifetime IN ('temporary','persistent')),
+    release_park INTEGER NOT NULL DEFAULT 0 CHECK(release_park IN (0,1))
 );
 
 CREATE TABLE IF NOT EXISTS work_scopes (
@@ -183,9 +185,9 @@ CREATE TABLE IF NOT EXISTS input_attachments (
     envelope_id TEXT NOT NULL,
     ordinal INTEGER NOT NULL,
     artifact_id TEXT NOT NULL,
-    PRIMARY KEY (envelope_id, ordinal),
-    UNIQUE (artifact_id)
+    PRIMARY KEY (envelope_id, ordinal)
 );
+CREATE INDEX IF NOT EXISTS idx_input_attachment_artifacts ON input_attachments(artifact_id);
 
 CREATE TABLE IF NOT EXISTS context_entries (
     instance_id TEXT NOT NULL,
@@ -207,6 +209,21 @@ CREATE TABLE IF NOT EXISTS context_entries (
 -- apply dedup: one context change per (instance, epoch, envelope)
 CREATE UNIQUE INDEX IF NOT EXISTS idx_context_apply_dedup
     ON context_entries(instance_id, epoch, envelope_id) WHERE envelope_id IS NOT NULL;
+
+-- No backfill: old stores did not register application-time rewind points.
+CREATE TABLE IF NOT EXISTS rewind_points (
+    instance_id TEXT NOT NULL,
+    epoch INTEGER NOT NULL,
+    prompt_idx INTEGER NOT NULL,
+    envelope_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    UNIQUE(instance_id,epoch,envelope_id),
+    PRIMARY KEY(instance_id, epoch, prompt_idx)
+);
+CREATE TABLE IF NOT EXISTS rewind_blobs (digest TEXT PRIMARY KEY, body BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS rewind_manifests (envelope_id TEXT PRIMARY KEY, manifest TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS rewind_attempts (command_id TEXT PRIMARY KEY, payload_hash TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_context_entry_ids ON context_entries(instance_id,epoch,id);
 
 -- D-504: one model-maintained exploration tree per session. Revisions are
 -- append-only; the head is only a pointer, never a second mutable tree copy.
@@ -247,7 +264,9 @@ CREATE TABLE IF NOT EXISTS model_requests (
     -- authorized that set against the grants at assembly time. Written once, at registration: a later grant
     -- changes the *next* request's record and never rewrites this one.
     offered_tools TEXT,
-    surface_authorized INTEGER NOT NULL DEFAULT 0
+    surface_authorized INTEGER NOT NULL DEFAULT 0,
+    -- Assigned task for this turn at registration, not whatever heads the queue at settlement.
+    assignment_task_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS attempts (
@@ -372,7 +391,7 @@ pub fn open(path: &Path, create: bool) -> Result<Connection, String> {
             )
             .map_err(|e| format!("stamp meta: {e}"))?;
         }
-        None => return Err(format!("{} is not a v2 session database (no format stamp)", path.display())),
+        None => return Err(unstamped_database(&conn, path)?),
         Some(found) => {
             if found != V2_FORMAT_ID {
                 return Err(format!(
@@ -436,7 +455,7 @@ pub fn open_read_only(path: &Path) -> Result<Connection, String> {
         .map_err(|e| format!("inspect {}: {e}", path.display()))?
         > 0;
     if !has_meta {
-        return Err(format!("{} is not a v2 session database (no format stamp)", path.display()));
+        return Err(unstamped_database(&conn, path)?);
     }
     let format: Option<String> = conn
         .query_row("SELECT value FROM meta WHERE key = 'format_id'", [], |row| row.get(0))
@@ -448,7 +467,7 @@ pub fn open_read_only(path: &Path) -> Result<Connection, String> {
             "{} has format {found:?}, expected {V2_FORMAT_ID:?}; refusing to reinterpret state",
             path.display()
         )),
-        None => Err(format!("{} is not a v2 session database (no format stamp)", path.display())),
+        None => Err(unstamped_database(&conn, path)?),
     }
 }
 
@@ -502,6 +521,17 @@ fn schema_tables() -> std::collections::HashSet<String> {
         .filter_map(|line| line.trim().strip_prefix("CREATE TABLE IF NOT EXISTS "))
         .filter_map(|rest| rest.split([' ', '(']).next().filter(|name| !name.is_empty()).map(str::to_string))
         .collect()
+}
+
+// Read-only preflight and writer entry must explain the same foreign-file refusal.
+fn unstamped_database(conn: &Connection, path: &Path) -> Result<String, String> {
+    let foreign = foreign_tables(conn)?;
+    let reason = format!("{} is not a v2 session database (no format stamp)", path.display());
+    Ok(if foreign.is_empty() {
+        reason
+    } else {
+        format!("{reason}; foreign tables: {foreign:?}; use another state root")
+    })
 }
 
 /// Tables in an existing file that the v2 schema did not create. An unstamped
@@ -690,6 +720,32 @@ fn migrate(conn: &Connection, from: i64) -> Result<(), String> {
                 )
                 .map_err(|e| format!("migrate shared Worker policy: {e}"))?;
             }
+            // Older stores have no held after-work inputs; all existing Workers remain reusable.
+            10 => {
+                if !column_present(&tx, "model_requests", "assignment_task_id")? {
+                    tx.execute_batch("ALTER TABLE model_requests ADD COLUMN assignment_task_id TEXT")
+                        .map_err(|e| format!("migrate request assignment: {e}"))?;
+                }
+                if !column_present(&tx, "instances", "worker_lifetime")? {
+                    tx.execute_batch("ALTER TABLE instances ADD COLUMN worker_lifetime TEXT NOT NULL DEFAULT 'persistent' CHECK(worker_lifetime IN ('temporary','persistent'))")
+                        .map_err(|e|format!("migrate Worker lifetime: {e}"))?;
+                }
+                if !column_present(&tx, "instances", "release_park")? {
+                    tx.execute_batch("ALTER TABLE instances ADD COLUMN release_park INTEGER NOT NULL DEFAULT 0 CHECK(release_park IN (0,1))").map_err(|e|format!("migrate Worker release: {e}"))?;
+                }
+            }
+            // Session MCP restrictions live in meta. A writer unaware of them must not reconnect services.
+            11 => {
+                // A reviewed rewind draft references already published immutable bytes. Keep the
+                // original rows and their export cursors; only the one-owner constraint changes.
+                tx.execute_batch("ALTER TABLE input_attachments RENAME TO rewind_old_attachments;
+                    CREATE TABLE input_attachments(envelope_id TEXT NOT NULL, ordinal INTEGER NOT NULL, artifact_id TEXT NOT NULL, PRIMARY KEY(envelope_id,ordinal));
+                    INSERT INTO input_attachments(rowid,envelope_id,ordinal,artifact_id) SELECT rowid,envelope_id,ordinal,artifact_id FROM rewind_old_attachments;
+                    DROP TABLE rewind_old_attachments;").map_err(|e|format!("migrate 11 -> 12 attachment references: {e}"))?;
+                tx.execute_batch(SCHEMA).map_err(|e| format!("migrate 11 -> 12 rewind points: {e}"))?;
+            }
+            // File baselines exist only for deliveries captured by a snapshot-aware writer.
+            12 => tx.execute_batch(SCHEMA).map_err(|e| format!("migrate 12 -> 13 workspace rewind: {e}"))?,
             other => return Err(format!("no migration step from v2 schema version {other}")),
         }
         version += 1;
@@ -1388,6 +1444,63 @@ mod tests {
             .unwrap();
         assert!(sql.contains("unexpected"), "{sql}");
         drop(reader);
+        cleanup(&p);
+    }
+
+    #[test]
+    fn rewind_migration_preserves_attachment_cursors_and_does_not_invent_points() {
+        let p = path("rewind-migrate");
+        {
+            let db = open(&p, true).unwrap();
+            db.execute_batch(
+                "DROP TABLE rewind_points; DROP TABLE input_attachments;
+                CREATE TABLE input_attachments(envelope_id TEXT NOT NULL, ordinal INTEGER NOT NULL,
+                    artifact_id TEXT NOT NULL UNIQUE, PRIMARY KEY(envelope_id,ordinal));
+                INSERT INTO input_attachments(rowid,envelope_id,ordinal,artifact_id) VALUES(19,'first',0,'image');
+                INSERT INTO context_entries(instance_id,epoch,idx,id,kind,envelope_id,created)
+                    VALUES('leader',0,1,'leader:0:1','user','first',0);
+                UPDATE meta SET value='11' WHERE key='schema_version';",
+            )
+            .unwrap();
+        }
+        let db = open(&p, false).unwrap();
+        assert_eq!(
+            db.query_row(
+                "SELECT rowid FROM input_attachments WHERE envelope_id='first' AND ordinal=0 AND artifact_id='image'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            19
+        );
+        assert_eq!(db.query_row("SELECT count(*) FROM rewind_points", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        db.execute("INSERT INTO input_attachments VALUES('reviewed',0,'image')", []).unwrap();
+        assert!(db.execute("INSERT INTO input_attachments VALUES('reviewed',0,'other')", []).is_err());
+        drop(db);
+        cleanup(&p);
+    }
+
+    #[test]
+    fn workspace_migration_preserves_historical_points_without_backfilling_bytes() {
+        let p = path("workspace-rewind-migration");
+        let db = open(&p, true).unwrap();
+        db.execute_batch(
+            "DROP TABLE rewind_blobs; DROP TABLE rewind_manifests; DROP TABLE rewind_attempts;
+            INSERT INTO rewind_points VALUES('leader',1,1,'prompt','{}');
+            UPDATE meta SET value='12' WHERE key='schema_version';",
+        )
+        .unwrap();
+        drop(db);
+        let db = open(&p, false).unwrap();
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM rewind_points WHERE envelope_id='prompt'", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        for table in ["rewind_blobs", "rewind_manifests", "rewind_attempts"] {
+            assert_eq!(db.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        }
+        drop(db);
         cleanup(&p);
     }
 

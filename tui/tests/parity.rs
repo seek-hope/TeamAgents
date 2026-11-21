@@ -32,11 +32,16 @@ fn completion_edits_only_until_an_explicit_submit_and_keeps_input_ownership() {
     for (prefix, command) in [
         ("/h", "/help"),
         ("/s", "/sessions"),
+        ("/sh", "/shell"),
         ("/i", "/interrupt"),
         ("/q", "/quit"),
         ("/m", "/model"),
+        ("/mc", "/mcp"),
+        ("/rew", "/rewind"),
         ("/e", "/edit"),
         ("/que", "/queue"),
+        ("/comp", "/compact"),
+        ("/lat", "/later"),
         ("/t", "/tree"),
         ("/a", "/attach"),
         ("/d", "/detach"),
@@ -61,11 +66,16 @@ fn completion_edits_only_until_an_explicit_submit_and_keeps_input_ownership() {
         HashSet::from([
             "/help",
             "/sessions",
+            "/shell",
             "/interrupt",
             "/quit",
             "/model",
+            "/mcp",
+            "/rewind",
             "/edit",
             "/queue",
+            "/compact",
+            "/later",
             "/tree",
             "/attach",
             "/detach",
@@ -76,12 +86,21 @@ fn completion_edits_only_until_an_explicit_submit_and_keeps_input_ownership() {
             "/inspect",
         ])
     );
+    // At standard height the menu may scroll; every command must be reachable and visible when selected.
     let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
-    terminal.draw(|frame| v2ui::render(frame, &mut app)).unwrap();
-    let rendered: String = terminal.backend().buffer().content().iter().map(|cell| cell.symbol()).collect();
-    for command in &commands {
-        assert!(rendered.contains(command), "the slash menu must display {command}");
+    let mut seen = HashSet::new();
+    for _ in 0..commands.len() {
+        terminal.draw(|frame| v2ui::render(frame, &mut app)).unwrap();
+        let displayed: String = terminal.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        for &name in &commands {
+            if displayed.contains(&format!("> {name} ")) {
+                seen.insert(name);
+            }
+        }
+        app.handle_key(key(KeyCode::Down));
     }
+    assert_eq!(seen, commands);
+
     app.composer.set_text("/unknown-command");
     assert!(app.handle_key(key(KeyCode::Enter)).is_none());
     for command in &commands {

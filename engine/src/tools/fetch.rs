@@ -3,6 +3,7 @@ use super::{guard_url, iso_now, web_credential, OutputLocation, TurnControl, PAG
 use serde_json::{json, Value as Json};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::VecDeque,
     io::{Read, Write},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -22,10 +23,42 @@ struct Cached {
     expires: Instant,
     page: Arc<Page>,
 }
-// ponytail: retain only the last successful page per member. Add a byte-budgeted LRU if repeated
-// back-and-forth fetches matter; no process-wide sharing of authenticated page content.
+impl Cached {
+    fn bytes(&self) -> usize {
+        self.page.title.len() + self.page.content.len() + self.page.fetched_at.len()
+    }
+}
+
+// Small, member-local cache. Keep the authenticated route in the digest, not in cache diagnostics.
 #[derive(Default)]
-pub(super) struct Fetcher(Mutex<Option<Cached>>);
+pub(super) struct Fetcher(Mutex<VecDeque<Cached>>);
+
+impl Fetcher {
+    fn lookup(&self, key: &[u8; 32], now: Instant) -> Result<Option<Arc<Page>>, String> {
+        let mut pages = self.0.lock().map_err(|_| "fetch cache poisoned")?;
+        pages.retain(|entry| entry.expires > now);
+        let Some(ix) = pages.iter().position(|entry| entry.key == *key) else { return Ok(None) };
+        let entry = pages.remove(ix).expect("index from this queue");
+        let page = entry.page.clone();
+        pages.push_back(entry);
+        Ok(Some(page))
+    }
+
+    fn remember(&self, entry: Cached) -> Result<(), String> {
+        if entry.bytes() > BODY_LIMIT {
+            return Ok(());
+        }
+        let mut pages = self.0.lock().map_err(|_| "fetch cache poisoned")?;
+        let now = Instant::now();
+        pages.retain(|old| old.key != entry.key && old.expires > now);
+        let mut bytes = entry.bytes() + pages.iter().map(Cached::bytes).sum::<usize>();
+        while pages.len() >= 32 || bytes > BODY_LIMIT {
+            bytes -= pages.pop_front().expect("a cache entry fits by itself").bytes();
+        }
+        pages.push_back(entry);
+        Ok(())
+    }
+}
 
 struct Failure {
     detail: String,
@@ -150,13 +183,7 @@ impl Fetcher {
                 hasher.update(field);
             }
             let key = hasher.finalize().into();
-            let cached = self
-                .0
-                .lock()
-                .map_err(|_| "fetch cache poisoned")?
-                .as_ref()
-                .filter(|entry| entry.key == key && entry.expires > Instant::now())
-                .map(|entry| entry.page.clone());
+            let cached = self.lookup(&key, Instant::now())?;
             control.check()?;
             let hit = cached.is_some();
             let page = if let Some(page) = cached {
@@ -165,8 +192,7 @@ impl Fetcher {
                 match request(provider, endpoint, &credential, url.as_str()) {
                     Ok(page) => {
                         let page = Arc::new(page);
-                        *self.0.lock().map_err(|_| "fetch cache poisoned")? =
-                            Some(Cached { key, expires: Instant::now() + TTL, page: page.clone() });
+                        self.remember(Cached { key, expires: Instant::now() + TTL, page: page.clone() })?;
                         page
                     }
                     Err(failure) => {
@@ -327,6 +353,27 @@ mod tests {
             .unwrap_err()
             .contains("allowed domains"));
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn member_page_cache_evicts_by_recency_payload_bytes_and_expiration() {
+        let cache = Fetcher::default();
+        let now = Instant::now();
+        let entry = |id, size| Cached {
+            key: [id; 32],
+            expires: now + TTL,
+            page: Arc::new(Page { title: String::new(), content: "a".repeat(size), fetched_at: String::new() }),
+        };
+        for id in 0..32 {
+            cache.remember(entry(id, 1)).unwrap();
+        }
+        assert!(cache.lookup(&[0; 32], now).unwrap().is_some());
+        cache.remember(entry(32, 1)).unwrap();
+        assert!(cache.lookup(&[1; 32], now).unwrap().is_none());
+        assert!(cache.lookup(&[0; 32], now).unwrap().is_some());
+        cache.remember(entry(33, BODY_LIMIT)).unwrap();
+        assert!(cache.lookup(&[0; 32], now).unwrap().is_none());
+        assert!(cache.lookup(&[33; 32], now + TTL).unwrap().is_none());
     }
 
     #[test]

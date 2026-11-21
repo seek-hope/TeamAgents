@@ -67,6 +67,7 @@ pub struct SupervisorHandle {
     task: std::sync::Mutex<Option<tokio::task::JoinHandle<Result<(), String>>>>,
     _lock: std::fs::File,
     input_root: PathBuf,
+    workspace: PathBuf,
     input_catalog: teamagents_core::models::UserConfig,
     input_preparation: tokio::sync::Mutex<()>,
 }
@@ -132,6 +133,25 @@ impl SupervisorHandle {
             // each one snapshots its own files in turn (D-451 review fix).
             let _preparing = self.input_preparation.lock().await;
             super::attachments::submit(&self.storage, &self.input_root, &self.input_catalog, cmd).await?
+        } else if cmd.method == "rewind_conversation" && cmd.params["mode"] == "conversation_and_files" {
+            let workspace = self.workspace.clone();
+            let state = self.input_root.clone();
+            self.storage.call(move |c| super::file_rewind::apply(c, cmd, &workspace, &state)).await??
+        } else if cmd.method == "set_mcp_service" {
+            let catalog = &self.input_catalog;
+            let configured =
+                cmd.params["service"].as_str().and_then(|k| catalog.tools.get(k)).is_some_and(|b| b.kind == "mcp");
+            self.storage
+                .call(move |c| {
+                    if let Some(receipt) = c.command_receipt(&cmd, &Identity::User)? {
+                        return Ok(receipt);
+                    }
+                    if !configured {
+                        return Err("select an exact MCP binding from this session's trusted configuration".into());
+                    }
+                    c.submit(cmd, Identity::User)
+                })
+                .await??
         } else if matches!(cmd.method.as_str(), "set_instance_profile" | "set_role_model") {
             let mut catalog = self.input_catalog.clone();
             self.storage
@@ -225,6 +245,16 @@ impl SupervisorHandle {
                 })
                 .collect(),
         ))
+    }
+
+    pub(crate) fn service_status(&self) -> Json {
+        self.drivers
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, d)| !d.task.is_finished())
+            .map(|(id, d)| (id.clone(), d.shared.service_status.lock().unwrap().clone()))
+            .collect()
     }
 
     pub fn session_id(&self) -> &str {
@@ -397,6 +427,8 @@ where
         return Err("session was deleted while waiting for its coordinator lock".into());
     }
     let storage = Storage::open(&config.session_db, &config.session_id, true, config.storage_queue)?;
+    let workspace = config.workspace.clone();
+    super::file_rewind::enable(&storage, &workspace, &config.state_root).await?;
     super::attachments::recover(&storage).await?;
     let input_root = config.state_root.clone();
     let base_catalog = config.catalog_base.take().unwrap_or_else(|| config.catalog.clone());
@@ -461,6 +493,7 @@ where
         task: std::sync::Mutex::new(Some(task)),
         _lock: lock,
         input_root,
+        workspace,
         input_catalog: base_catalog,
         input_preparation: tokio::sync::Mutex::new(()),
     })
@@ -515,10 +548,13 @@ where
                     let rows = stmt
                         .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
                         .map_err(|e| format!("discover query: {e}"))?;
-                    rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("discover collect: {e}"))
+                    let policy = teamagents_core::v2::control::mcp_policy::read(control.connection())?;
+                    rows.collect::<Result<Vec<_>, _>>()
+                        .map(|rows| (rows, policy))
+                        .map_err(|e| format!("discover collect: {e}"))
                 })
                 .await;
-            let instances: Vec<(String, String, String, String)> = match discovery {
+            let (instances, policy): (Vec<(String, String, String, String)>, _) = match discovery {
                 Ok(result) => result?,
                 Err(error) if error == super::storage::BACKPRESSURE => {
                     // A full queue rejected this read before submission. Retry
@@ -550,14 +586,25 @@ where
                 let mut unusable: Vec<(String, String)> = vec![];
                 let no_drivers = {
                     let mut drivers = self.drivers.lock().unwrap();
-                    // retire finished or terminated drivers (§5.4)
+                    // Shutdown can drain the handles while discovery awaits its SQLite snapshot.
+                    // Never recreate them from that older ACTIVE row. Likewise a newly finished
+                    // driver may have parked itself *after* the read: reconsider only on a fresh pass.
+                    if self.shutdown.load(std::sync::atomic::Ordering::SeqCst) {
+                        break;
+                    }
+                    let mut just_finished = std::collections::HashSet::new();
                     drivers.retain(|id, driver| {
                         let alive =
                             instances.iter().any(|(iid, lifecycle, _, _)| iid == id && lifecycle != "TERMINATED");
-                        alive && !driver.task.is_finished()
+                        if driver.task.is_finished() {
+                            just_finished.insert(id.clone());
+                            false
+                        } else {
+                            alive
+                        }
                     });
                     for (id, lifecycle, workspace_ref, profile_json) in &instances {
-                        if lifecycle != "ACTIVE" || drivers.contains_key(id) {
+                        if lifecycle != "ACTIVE" || drivers.contains_key(id) || just_finished.contains(id) {
                             continue;
                         }
                         let stored: Json =
@@ -617,7 +664,7 @@ where
                             work_limits: self.config.work_limits.clone(),
                             require_shell_approval: self.config.require_shell_approval,
                         };
-                        let (shared, task) = match spawn_driver(driver_config, &self.storage) {
+                        let (shared, task) = match spawn_driver(driver_config, &self.storage, policy.clone()) {
                             Ok(pair) => pair,
                             Err(error) => {
                                 // A driver that cannot boot — a required MCP service whose secret is missing, an

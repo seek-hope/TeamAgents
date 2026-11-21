@@ -6,6 +6,7 @@
 //! Fetch remains in `tools.rs` and is intentionally not part of this module.
 
 use serde_json::{json, Value as Json};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
 use std::io::Read;
 use std::sync::{Condvar, Mutex, OnceLock};
@@ -544,8 +545,12 @@ fn search_binding(name: &str, binding: &ToolBinding, input: &SearchInput) -> Res
             )
         })?;
     let endpoint = binding.url.as_deref().unwrap_or_else(|| provider.default_url());
+    let search_type = binding.env.get("search_type").map(String::as_str).unwrap_or("auto");
+    // A rotated key may select a different account at the same endpoint. Never store raw keys.
     let key = json!({
         "binding": name,
+        "account": format!("{:x}", Sha256::digest(credential.as_bytes())),
+        "search_type": search_type,
         "provider": provider.name(),
         "endpoint": endpoint,
         "query": input.query,
@@ -585,7 +590,7 @@ fn search_binding(name: &str, binding: &ToolBinding, input: &SearchInput) -> Res
                         json!({
                             "query": input.query,
                             "numResults": input.count,
-                            "type": binding.env.get("search_type").map(String::as_str).unwrap_or("auto"),
+                            "type": search_type,
                             "contents": contents,
                         })
                     }
@@ -1015,6 +1020,35 @@ mod tests {
         assert_eq!(second["cache_sources"]["deepseek"], "cache");
         assert_eq!(seen.lock().unwrap().len(), 2, "one retry, then a cache hit");
         std::env::remove_var("TA_D482_RETRY");
+    }
+
+    #[test]
+    fn rotated_account_and_changed_search_type_do_not_reuse_results() {
+        let _env = crate::env_lock();
+        let var = "TA_TEST_SEARCH_ISOLATION";
+        let prev = std::env::var_os(var);
+        let responses = ["first", "second", "third"]
+            .map(|name| (200, json!({"results":[{"title":name,"url":"https://search.example/"}]})));
+        let (url, seen) = server(responses.into(), Duration::ZERO);
+        let mut bindings = [binding("search", "exa", &url, Some(var))];
+        std::env::set_var(var, "fixture-one");
+        let query = args("same query");
+        let first = web_search(&bindings, &query).unwrap();
+        std::env::set_var(var, "fixture-two");
+        let second = web_search(&bindings, &query).unwrap();
+        bindings[0].1.env.insert("search_type".into(), "deep".into());
+        let third = web_search(&bindings, &query).unwrap();
+        let repeat = web_search(&bindings, &query).unwrap();
+        if let Some(prev) = prev {
+            std::env::set_var(var, prev);
+        } else {
+            std::env::remove_var(var);
+        }
+        assert_eq!(first["results"][0]["title"], "first");
+        assert_eq!(second["results"][0]["title"], "second");
+        assert_eq!(third["results"][0]["title"], "third");
+        assert_eq!(repeat["from_cache"], true);
+        assert_eq!(seen.lock().unwrap().len(), 3);
     }
 
     #[test]

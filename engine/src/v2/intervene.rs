@@ -27,7 +27,7 @@ pub enum InterventionCommand {
     /// The session's instances with their lifecycle and phase.
     ListInstances,
     /// Direct user input to a selected member (D-445), with the ordinary queue boundary.
-    SendInput { id: String, text: String, deferred: bool },
+    SendInput { id: String, text: String, after: Option<&'static str> },
     /// Stop driving an instance at its next safe boundary (§5.4).
     Pause { id: String },
     /// Let a parked or paused instance run again.
@@ -167,7 +167,7 @@ pub fn execute(options: &InterventionOptions) -> Result<Json, (i32, String)> {
                 "instance_id": resolved, "lifecycle": row["lifecycle"], "instance": row, "result": result,
             }))
         }
-        InterventionCommand::SendInput { id, text, deferred } => {
+        InterventionCommand::SendInput { id, text, after } => {
             if text.trim().is_empty() {
                 return Err((2, "instances send: empty prompt".into()));
             }
@@ -176,8 +176,8 @@ pub fn execute(options: &InterventionOptions) -> Result<Json, (i32, String)> {
             let resolved = row["id"].as_str().unwrap_or_default();
             let envelope = format!("env-{}", uuid::Uuid::new_v4());
             let mut params = json!({"instance_id": resolved, "envelope_id": envelope, "text": text});
-            if *deferred {
-                params["after"] = json!("turn");
+            if let Some(after) = after {
+                params["after"] = json!(after);
             }
             let result = client
                 .command(&format!("input-{envelope}"), "submit_input", params)
@@ -456,7 +456,9 @@ fn print_report(options: &InterventionOptions, report: &Json) {
         InterventionCommand::SendInput { .. } => println!(
             "{}: input {} ({}); this is an input receipt, not a completion verdict",
             report["instance_id"].as_str().unwrap_or(""),
-            if report["result"]["deferred"] == json!(true) {
+            if report["result"]["after"] == "work" {
+                "queued for after the current work"
+            } else if report["result"]["deferred"] == json!(true) {
                 "queued for after this turn"
             } else if report["result"]["queued"] == json!(true) {
                 "queued"

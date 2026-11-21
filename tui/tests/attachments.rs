@@ -37,7 +37,7 @@ fn path_selection_cancellation_staging_retry_and_explicit_submission() {
     assert_eq!(app.attachments.paths, [label]);
     assert!(app.composer.text().is_empty());
     app.composer.set_text("read attached\nwith details");
-    let Some(V2Effect::SubmitInput { instance, envelope, text, attachments }) = app.handle_key(key(KeyCode::Enter))
+    let Some(V2Effect::SubmitInput { instance, envelope, text, attachments, .. }) = app.handle_key(key(KeyCode::Enter))
     else {
         panic!("no submit")
     };

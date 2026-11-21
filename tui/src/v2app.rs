@@ -215,14 +215,47 @@ pub enum V2Effect {
     },
     /// Read the one session-level exploration tree.
     SearchTree,
+    RewindList {
+        before: Option<i64>,
+    },
+    RewindPreview {
+        key: String,
+    },
+    RewindFiles {
+        key: String,
+    },
+    RewindApply {
+        preview: Json,
+    },
+    RewindDraft,
+    RewindSend {
+        source: String,
+        envelope: String,
+        text: String,
+    },
+    McpStatus,
+    McpChange {
+        action: String,
+        service: String,
+    },
+    Compact {
+        instance: String,
+        focus: String,
+    },
     /// Open the external editor for this draft (D-454).
     EditDraft {
         initial: String,
+    },
+    OperatorShell {
+        workspace: String,
+        command: Option<String>,
+        draft: bool,
     },
     SubmitInput {
         instance: String,
         envelope: String,
         text: String,
+        after_work: bool,
         attachments: Vec<String>,
     },
     Decide {
@@ -274,6 +307,7 @@ pub struct V2App {
     /// Read-only checkpoint observations, never instructions to the model.
     work_diagnostics: Vec<(String, Json)>,
     environment: Json,
+    pub rewind_preview: Option<Json>,
     pending_input_receipts: HashSet<String>,
     pub entries: Vec<ChatEntry>,
     pub transcript: crate::transcript::Transcript,
@@ -323,6 +357,7 @@ impl V2App {
             team: crate::team::Team::default(),
             work_diagnostics: vec![],
             environment: Json::Null,
+            rewind_preview: None,
             pending_input_receipts: HashSet::new(),
             entries: vec![],
             transcript: crate::transcript::Transcript::default(),
@@ -430,6 +465,7 @@ impl V2App {
             let Some(envelope) = row["id"].as_str() else { continue };
             let state = match row["state"].as_str() {
                 Some("APPLIED") => "received into the Leader's context (not a completion verdict)",
+                Some("AFTER_WORK") => "accepted; waiting for the current work to settle",
                 Some("DEFERRED") => "accepted; waiting for the current turn to end",
                 Some("ACCEPTED") => "accepted; queued for the next safe boundary",
                 Some("CANCELLED") => "pending delivery cancelled; no model interruption was requested",
@@ -440,7 +476,7 @@ impl V2App {
                 envelope,
                 state,
                 false,
-                matches!(row["state"].as_str(), Some("ACCEPTED" | "DEFERRED")),
+                matches!(row["state"].as_str(), Some("ACCEPTED" | "DEFERRED" | "AFTER_WORK")),
             );
         }
         if self.session_name.is_empty() {
@@ -681,6 +717,11 @@ impl V2App {
                         ),
                     });
                 }
+                "conversation_rewound" | "instance_reset" => {
+                    refresh.checkpoint = true;
+                    refresh.history = true;
+                    self.rewind_preview = None;
+                }
                 "instance_created" => {
                     refresh.checkpoint = true;
                     self.note(format!("instance {} created", event["scope"].as_str().unwrap_or("?")));
@@ -771,6 +812,17 @@ impl V2App {
         }
     }
 
+    pub fn open_rewind_draft(&mut self, reply: &Json) {
+        let (Some(source), Some(text)) = (reply["envelope"].as_str(), reply["draft"]["text"].as_str()) else {
+            self.command_note("No current rewind draft.");
+            return;
+        };
+        self.attachments.accepted();
+        self.attachments.rewind_source = Some(source.to_owned());
+        self.composer.set_text(text);
+        self.command_note(format!("Rewind draft opened, not sent. Enter sends edited text with the original snapshots and checks; Esc discards the local draft. Attachments: {}; checks: {}", reply["draft"]["attachments"],reply["draft"]["checks"]));
+    }
+
     pub fn mark_disconnected(&mut self, error: &str) {
         self.history_dirty = true;
         if !self.disconnected {
@@ -794,7 +846,9 @@ impl V2App {
     /// D-479: retain the acknowledged envelope through refresh/reconnect. History or a checkpoint,
     /// never a timer, changes 'queued' into 'received'. Retry identity remains owned by Attachments.
     pub fn input_receipt(&mut self, envelope: &str, reply: &Json) {
-        let state = if reply["deferred"] == true {
+        let state = if reply["after"] == "work" {
+            "accepted; waiting for the current work to settle"
+        } else if reply["deferred"] == true {
             "accepted; waiting for the current turn to end"
         } else if reply["queued"] == true {
             "accepted; queued for the next safe boundary (Ctrl+P inspects pending inputs)"
@@ -1162,8 +1216,17 @@ impl V2App {
 
     fn dispatch_command(&mut self, command: crate::completion::Command, argument: Option<&str>) -> Option<V2Effect> {
         use crate::completion::Command;
-        if !matches!(command, Command::Attach | Command::Detach | Command::Edit)
-            && argument.is_some_and(|text| !text.trim().is_empty())
+        if !matches!(
+            command,
+            Command::Attach
+                | Command::Detach
+                | Command::Edit
+                | Command::Compact
+                | Command::Later
+                | Command::Shell
+                | Command::Mcp
+                | Command::Rewind
+        ) && argument.is_some_and(|text| !text.trim().is_empty())
         {
             self.command_note(
                 "This command takes no arguments. Use /help for controls; management: teamagents --help.",
@@ -1235,6 +1298,45 @@ Commands:
             )),
             Command::Detach => self.command_note("Use /detach INDEX with a staged attachment's one-based index."),
             Command::Edit => return Some(V2Effect::EditDraft { initial: argument.unwrap_or("").to_string() }),
+            Command::Rewind => {
+                if self.disconnected {self.command_note("Reconnect before inspecting or changing the conversation.");return None}
+                let arg=argument.unwrap_or("").trim();
+                if !self.attachments.paths.is_empty(){self.command_note("Remove staged files before opening a rewind draft.");return None}
+                if arg.is_empty(){return Some(V2Effect::RewindList{before:None})}
+                if arg=="draft" {return Some(V2Effect::RewindDraft)}
+                if let Some(before)=arg.strip_prefix("before ").and_then(|v|v.parse().ok()){return Some(V2Effect::RewindList{before:Some(before)})}
+                if let Some(key) = arg.strip_prefix("files ").map(str::trim).filter(|s| !s.is_empty()) {
+                    self.rewind_preview = None;
+                    return Some(V2Effect::RewindFiles {key:key.into()});
+                }
+                if let Some(key)=arg.strip_prefix("preview ").filter(|s|!s.is_empty()){self.rewind_preview=None;return Some(V2Effect::RewindPreview{key:key.into()})}
+                if arg=="apply" {if let Some(preview)=self.rewind_preview.take(){return Some(V2Effect::RewindApply{preview})}}
+                self.command_note("Use /rewind preview KEY for conversation only or /rewind files KEY to include tracked files. Confirm with /rewind apply. /rewind draft reopens the unsent prompt.");
+            }
+            Command::Mcp => {
+                if self.disconnected {self.command_note("Disconnected: no MCP request sent.");return None}
+                let arg=argument.unwrap_or("").trim();
+                if arg.is_empty() || arg=="status" {return Some(V2Effect::McpStatus)}
+                if let Some((action,key))=arg.split_once(char::is_whitespace){
+                    let key=key.trim();
+                    if !key.is_empty() && matches!(action,"start"|"stop"|"hide"|"expose"|"reconnect"){return Some(V2Effect::McpChange{action:action.into(),service:key.into()})}
+                }
+                self.command_note("Use /mcp status, or /mcp start|stop|hide|expose|reconnect KEY.");
+            }
+            Command::Shell => {
+                let Some(workspace) = self.workspace().filter(|w| std::path::Path::new(w).is_absolute() && !self.disconnected) else {
+                    self.command_note("Local shell not started: reconnect to a session with a known workspace.");
+                    return None;
+                };
+                let (command, draft) = match argument.map(str::trim_start).filter(|s| !s.is_empty()) {
+                    None => (None, false),
+                    Some(s) => match s.split_once(char::is_whitespace) {
+                        Some((mode @ ("view" | "draft"), cmd)) if !cmd.trim().is_empty() => (Some(cmd.to_owned()), mode == "draft"),
+                        _ => { self.command_note("Use /shell, /shell view COMMAND, or /shell draft COMMAND. Nothing is sent automatically."); return None; }
+                    }
+                };
+                return Some(V2Effect::OperatorShell {workspace:workspace.to_owned(),command,draft});
+            }
             Command::Team => { self.focus = Focus::Team; }
             Command::Chat => self.team.show(crate::team::View::Conversation),
             Command::Tasks => { self.team.show(crate::team::View::Tasks); self.focus = Focus::Panel; }
@@ -1243,6 +1345,17 @@ Commands:
             Command::Sessions => return self.open_sessions(),
             Command::Queue => return self.open_queue(),
             Command::Tree => return Some(V2Effect::SearchTree),
+            Command::Later => {
+                let Some(text) = argument.filter(|s| !s.trim().is_empty()) else { self.command_note("Use /later TEXT."); return None; };
+                let draft = format!("/later {text}");
+                if self.disconnected || self.active_instance().is_none() { self.composer.set_text(&draft); self.command_note("Message kept in the draft: waiting for the Leader connection."); return None; }
+                self.composer.record_submission(&draft);
+                return Some(V2Effect::SubmitInput { instance:self.active_instance()?.id.clone(), envelope:self.attachments.envelope(&draft), text:text.into(), attachments:self.attachments.paths.clone(), after_work:true });
+            }
+            Command::Compact => {
+                if self.disconnected { self.command_note("Disconnected: compaction not requested."); }
+                else { return Some(V2Effect::Compact { instance:self.active_instance()?.id.clone(), focus:argument.unwrap_or("").to_string() }); }
+            }
             Command::Interrupt => return self.interrupt(),
             Command::Model => return self.open_profile(),
             Command::Quit => {
@@ -1267,18 +1380,26 @@ Commands:
             self.help_scroll = 0;
             return None;
         }
-        if self.attachments.key(&mut self.composer, key) {
+        if self.attachments.rewind_source.is_some() && key.code == KeyCode::Esc {
+            self.composer.clear();
+            self.attachments.accepted();
+            self.command_note(
+                "Local rewind draft discarded; nothing sent. /rewind draft can reopen it until the context advances.",
+            );
+            return None;
+        }
+        if self.attachments.rewind_source.is_none() && self.attachments.key(&mut self.composer, key) {
             if let Some(note) = self.attachments.take_notice() {
                 self.command_note(note);
             }
             return None;
         }
-        if key.code == KeyCode::Tab && key.modifiers.is_empty() {
+        if self.attachments.rewind_source.is_none() && key.code == KeyCode::Tab && key.modifiers.is_empty() {
             if let Some(prefix) = self.attachments.request(&self.composer) {
                 return Some(V2Effect::InputPaths { prefix });
             }
         }
-        if self.completion.key(&mut self.composer, key) {
+        if self.attachments.rewind_source.is_none() && self.completion.key(&mut self.composer, key) {
             return None;
         }
         if key.code == KeyCode::Char('e') && key.modifiers == KeyModifiers::CONTROL {
@@ -1293,7 +1414,7 @@ Commands:
             }
             KeyCode::Enter if key.modifiers.is_empty() => {
                 let raw = self.composer.text();
-                if raw.starts_with('/') {
+                if self.attachments.rewind_source.is_none() && raw.starts_with('/') {
                     self.composer.clear();
                     return self.slash_command(&raw);
                 }
@@ -1305,7 +1426,16 @@ Commands:
                 self.composer.record_submission(&text);
                 let instance = self.active_instance()?.id.clone();
                 let envelope = self.attachments.envelope(&text);
-                Some(V2Effect::SubmitInput { instance, envelope, text, attachments: self.attachments.paths.clone() })
+                if let Some(source) = self.attachments.rewind_source.clone() {
+                    return Some(V2Effect::RewindSend { source, envelope, text });
+                }
+                Some(V2Effect::SubmitInput {
+                    instance,
+                    envelope,
+                    text,
+                    after_work: false,
+                    attachments: self.attachments.paths.clone(),
+                })
             }
             KeyCode::PageUp => {
                 self.scroll_chat(self.last_chat_height.max(1));

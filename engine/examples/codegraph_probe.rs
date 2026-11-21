@@ -63,6 +63,7 @@ fn catalog() -> UserConfig {
             "command": "codegraph",
             "args": ["serve", "--mcp"],
             "codegraph_projects": [],
+            "tool_names": ["codegraph_explore", "codegraph_search", "codegraph_callers", "codegraph_callees", "codegraph_impact", "codegraph_status"],
             "required": true,
             "startup_timeout_s": 60,
             "tool_timeout_s": 120
@@ -90,6 +91,11 @@ const result = await tools.codegraph_codegraph_explore(args);
 if (result.project !== args.projectPath || result.freshness.status !== "not_verified") throw new Error("missing project or freshness evidence");
 if (!result.result.includes("Source Code")) throw new Error(result.result.slice(0, 1000));
 text(result.result.slice(0, 4000));
+for (const [suffix, params] of Object.entries({status: {}, search: {query: args.query.split(" ")[0], limit: 3}, callers: {symbol: args.query.split(" ")[0]}, callees: {symbol: args.query.split(" ")[0]}, impact: {symbol: args.query.split(" ")[0], depth: 1}})) {
+  const reply = await tools["codegraph_codegraph_" + suffix]({...params, projectPath: args.projectPath});
+  if (reply.project !== args.projectPath || !reply.result || reply.freshness.status !== "not_verified") throw new Error("missing scoped " + suffix + " result");
+  text(suffix + ": " + reply.result.slice(0, 100));
+}
 "#
     .replace("__CALL_ARGS__", &call_args);
     let outcome = codemode::run(
@@ -105,10 +111,7 @@ text(result.result.slice(0, 4000));
     if let Some(error) = outcome.error {
         return Err(format!("codemode failed: {error}\n{}", outcome.output));
     }
-    if outcome.calls.len() != 1
-        || outcome.calls[0].name != "codegraph_codegraph_explore"
-        || outcome.calls[0].status != "ok"
-    {
+    if outcome.calls.len() != 6 || outcome.calls.iter().any(|call| call.status != "ok") {
         return Err(format!("unexpected nested-call receipt: {:?}", outcome.calls));
     }
     Ok(outcome.output)

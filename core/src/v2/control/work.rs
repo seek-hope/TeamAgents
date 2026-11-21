@@ -119,7 +119,7 @@ pub(super) fn configure(tx: &Connection, session: &str, params: &Json, identity:
     Ok(json!({"version": 1}))
 }
 
-fn key(tx: &Connection, instance: &str) -> Result<Option<WorkKey>, String> {
+pub(super) fn key(tx: &Connection, instance: &str) -> Result<Option<WorkKey>, String> {
     let Some(work) = budget_work(tx, instance)? else { return Ok(None) };
     let (_, epoch, _, _, _) = load_instance(tx, instance)?;
     let owned: Option<String> = tx
@@ -269,8 +269,8 @@ pub(super) fn context(tx: &Connection, instance: &str) -> Result<Json, String> {
 pub(super) fn reset_epoch(tx: &Connection, instance: &str, old: i64, new: i64) -> Result<(), String> {
     tx.execute("INSERT INTO work_states(work_id,instance_id,epoch,task_id,state,checkpoint_json,policy_json,pending_reason,
         empty_turns,revision,reason,fingerprints_json)
-        SELECT w.work_id,w.instance_id,?3,w.task_id,w.state,w.checkpoint_json,w.policy_json,
-            CASE WHEN w.state='RUNNING' THEN 'Context reset; inspect saved work and receipts before continuing' ELSE w.pending_reason END,
+        SELECT w.work_id,w.instance_id,?3,w.task_id,CASE WHEN w.state IN ('WAITING','VERIFYING') THEN 'RUNNING' ELSE w.state END,w.checkpoint_json,w.policy_json,
+            CASE WHEN w.state IN ('RUNNING','WAITING','VERIFYING') THEN 'Context reset; inspect saved work and receipts before continuing' ELSE w.pending_reason END,
             w.empty_turns,w.revision+1,w.reason,w.fingerprints_json
         FROM work_states w LEFT JOIN work_scopes g ON g.id=w.work_id
         WHERE w.instance_id=?1 AND w.epoch=?2 AND (g.status='ACTIVE' OR w.work_id='')",rusqlite::params![instance,old,new])
@@ -283,15 +283,16 @@ pub(super) fn admit_input(tx: &Connection, session: &str, instance: &str, envelo
     let (_, epoch, lifecycle, _, _) = load_instance(tx, instance)?;
     if budget_work(tx, instance)?.is_none() && settings["leader_id"].as_str() == Some(instance) {
         // A new admitted input gets a new record; it never reopens a terminal work.
-        let latest: Option<String> = tx
-            .query_row(
-                "SELECT status FROM work_scopes WHERE session_id=?1 ORDER BY rowid DESC LIMIT 1",
-                [session],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(|e| format!("last work work: {e}"))?;
-        if matches!(latest.as_deref(), Some("BLOCKED" | "CANCELLED")) {
+        // A held instruction was explicitly submitted for the boundary *after* its work. The
+        // control-written binding authorizes fresh admission, not resuming the old work. Other
+        // inputs retain the explicit-recovery rule after cancellation or a terminal block.
+        let needs_recovery: bool = tx.query_row(
+            "SELECT COALESCE((SELECT status IN ('BLOCKED','CANCELLED') FROM work_scopes WHERE session_id=?1 ORDER BY rowid DESC LIMIT 1),0)
+             AND NOT EXISTS(SELECT 1 FROM envelopes e JOIN work_scopes g ON g.id=json_extract(e.payload_json,'$.after_work_id')
+                WHERE e.id=?2 AND e.recipient=?3 AND e.session_id=?1 AND g.session_id=?1 AND e.kind='user_input'
+                AND e.state='APPLIED' AND g.status IN ('SUCCEEDED','FAILED','BLOCKED','CANCELLED'))",
+            rusqlite::params![session,envelope,instance], |r|r.get(0)).map_err(|e|format!("work admission boundary: {e}"))?;
+        if needs_recovery {
             return Err(
                 "the previous work is blocked or cancelled; explicitly create a new work before admitting more work"
                     .into(),
@@ -815,8 +816,8 @@ pub(super) fn fork(tx: &Connection, keep: &str) -> Result<(), String> {
     }
     tx.execute("DELETE FROM work_states WHERE task_id<>''", []).map_err(|e| format!("fork task work: {e}"))?;
     tx.execute("DELETE FROM work_requests", []).map_err(|e| format!("fork work requests: {e}"))?;
-    tx.execute("UPDATE work_states SET state=CASE WHEN state IN ('RUNNING','WAITING') THEN 'STOPPED' ELSE state END,
-        reason=CASE WHEN state IN ('RUNNING','WAITING') THEN 'Conversation fork; provide explicit input before continuing' ELSE reason END,
+    tx.execute("UPDATE work_states SET state=CASE WHEN state IN ('RUNNING','WAITING','VERIFYING') THEN 'STOPPED' ELSE state END,
+        reason=CASE WHEN state IN ('RUNNING','WAITING','VERIFYING') THEN 'Conversation fork; provide explicit input before continuing' ELSE reason END,
         pending_reason='',revision=revision+1",[]).map_err(|e|format!("fork work stop: {e}"))?;
     answer_dangling_calls(tx,keep,load_instance(tx,keep)?.1,"Historical call from the source session: its execution was not copied. Inspect the source receipts before continuing; this note does not establish its outcome.")?;
     Ok(())

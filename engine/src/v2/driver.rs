@@ -374,6 +374,10 @@ struct Snapshot {
     /// The active work's absolute deadline, if it has one. Read here rather than in its own storage call: the
     /// worker's queue is bounded, and a second call per step is what turned a warning into a failed turn (D-410).
     work_deadline: Option<f64>,
+    context_head: i64,
+    manual_compaction: bool,
+    release_park: bool,
+    mcp_revision: i64,
     /// D-418: the active work's `required_checks` (the user's own acceptance commands), for the same reason — the
     /// model is told the criterion when its turn opens, and that must not cost a storage call per step.
     work_checks: Vec<Json>,
@@ -389,6 +393,7 @@ pub(crate) struct Shared {
     pub(crate) preview: Mutex<String>,
     /// D-479: last prompt-assembly observation, not an authoritative model-request receipt.
     pub(crate) instruction_sources: Mutex<Json>,
+    pub(crate) service_status: Mutex<Json>,
 }
 
 /// D-415: whether a shell call's `timeout` came from the model (clamped by `[limits] max_tool_seconds`) or from
@@ -588,6 +593,7 @@ pub struct Driver<P: Provider> {
     storage: Storage,
     shared: Arc<Shared>,
     toolkit: Arc<V2Toolkit>,
+    mcp_revision: i64,
     shell_state: PathBuf,
     /// Fixed requests held in memory; after a restart they are rebuilt from
     /// the persisted context under the same request id (§6.3).
@@ -639,6 +645,7 @@ pub async fn start<P: Provider + 'static>(mut config: DriverConfig<P>) -> Result
         .map_err(|e| format!("state root {}: {e}", config.state_root.display()))?;
     let lock = crate::jobs::state_lock(&config.state_root.join("coordinator.lock"))?;
     let storage = Storage::open(&config.session_db, &config.session_id, true, config.storage_queue)?;
+    super::file_rewind::enable(&storage, &config.workspace, &config.state_root).await?;
     let session_id = config.session_id.clone();
     let instance_id = config.instance_id.clone();
     let work_id = format!("work-{session_id}");
@@ -657,7 +664,8 @@ pub async fn start<P: Provider + 'static>(mut config: DriverConfig<P>) -> Result
         },
     )
     .await?;
-    let (shared, task) = spawn_driver(config, &storage)?;
+    let policy = storage.call(|c| teamagents_core::v2::control::mcp_policy::read(c.connection())).await??;
+    let (shared, task) = spawn_driver(config, &storage, policy)?;
     Ok(DriverHandle { storage, shared, session_id, instance_id, work_id, task, _lock: lock })
 }
 
@@ -816,6 +824,7 @@ fn storage_full(error: &str) -> bool {
 pub(crate) fn spawn_driver<P: Provider + 'static>(
     mut config: DriverConfig<P>,
     storage: &Storage,
+    policy: teamagents_core::v2::control::mcp_policy::McpPolicy,
 ) -> Result<SpawnedDriver, String> {
     let jobs = config.state_root.join("jobs");
     std::fs::create_dir_all(&jobs).map_err(|e| crate::cli::derived_dir_uncreatable(&jobs, &e))?;
@@ -831,6 +840,7 @@ pub(crate) fn spawn_driver<P: Provider + 'static>(
         cancel_attempt: Mutex::new(None),
         preview: Mutex::new(String::new()),
         instruction_sources: Mutex::new(Json::Null),
+        service_status: Mutex::new(Json::Null),
     });
     // Bound MCP services load at boot: a required service that is unavailable
     // fails the boot honestly, an optional one only drops its capability (§7).
@@ -842,6 +852,7 @@ pub(crate) fn spawn_driver<P: Provider + 'static>(
         Some(config.state_root.join("artifacts")),
         Some(config.state_root.join("shell")),
         crate::tools::ToolWiring {
+            mcp_policy: policy.clone(),
             is_leader: config.instance_id == config.leader_id,
             profile_tools: config.profile.tools.clone(),
             storage: Some(storage.clone()),
@@ -858,7 +869,9 @@ pub(crate) fn spawn_driver<P: Provider + 'static>(
             max_tool_seconds: config.catalog.limits.max_tool_seconds,
         },
     )?);
+    *shared.service_status.lock().unwrap() = json!({"revision":policy.revision,"services":toolkit.service_status()});
     let driver = Driver {
+        mcp_revision: policy.revision,
         shell_state: config.state_root.join("shell"),
         catalog_base: config.catalog_base.take(),
         config,
@@ -910,8 +923,45 @@ impl<P: Provider> Driver<P> {
                 }
                 self.last_lifecycle = Some(snapshot.lifecycle.clone());
             }
-            if snapshot.lifecycle == "TERMINATED" {
+            if snapshot.lifecycle == "TERMINATED" || (snapshot.release_park && snapshot.lifecycle == "PARKED") {
                 return Ok(()); // the supervisor retires this driver (§5.4)
+            }
+            if snapshot.mcp_revision != self.mcp_revision {
+                let policy =
+                    self.storage.call(|c| teamagents_core::v2::control::mcp_policy::read(c.connection())).await??;
+                let toolkit =
+                    Arc::get_mut(&mut self.toolkit).ok_or("MCP service transition refused: tools still borrowed")?;
+                toolkit.reconcile_mcp(policy.clone()).await?;
+                self.mcp_revision = policy.revision;
+                *self.shared.service_status.lock().unwrap() =
+                    json!({"revision":policy.revision,"services":toolkit.service_status()});
+                continue;
+            }
+            if snapshot.manual_compaction && !self.storage_full {
+                let claim = self
+                    .submit(
+                        self.command(
+                            format!("compact-claim-{}", uuid::Uuid::new_v4()),
+                            "take_compaction",
+                            json!({"instance_id":self.config.instance_id}),
+                        ),
+                        Identity::System,
+                    )
+                    .await?;
+                if let Some(focus) = claim["focus"].as_str() {
+                    if claim["revision"] == snapshot.revision && claim["epoch"] == snapshot.epoch {
+                        self.refresh_profile().await?;
+                        let entries = self.context_entries(&snapshot).await?;
+                        let work = self.work_context(None).await?;
+                        if self
+                            .compact(&entries, snapshot.revision, &work, Some((focus, snapshot.context_head)))
+                            .await?
+                        {
+                            self.wire_mask = None;
+                        }
+                    }
+                }
+                continue;
             }
             if snapshot.lifecycle != "ACTIVE" {
                 self.wait().await;
@@ -1108,7 +1158,9 @@ impl<P: Provider> Driver<P> {
                     .connection()
                     .query_row(
                         "SELECT i.lifecycle, i.phase, i.revision, i.context_epoch, i.active_request_id,
-                                i.active_work_id, g.deadline, g.limits_json
+                                i.active_work_id, g.deadline, g.limits_json, i.context_head,
+                                i.is_leader AND EXISTS(SELECT 1 FROM meta WHERE key='manual_compaction'), i.release_park,
+                                COALESCE((SELECT json_extract(value,'$.revision') FROM meta WHERE key='mcp_policy'),0)
                          FROM instances i LEFT JOIN work_scopes g ON g.id = i.active_work_id
                          WHERE i.id = ?1",
                         [&instance],
@@ -1121,6 +1173,10 @@ impl<P: Provider> Driver<P> {
                                 active_request: row.get(4)?,
                                 active_work: row.get(5)?,
                                 work_deadline: row.get(6)?,
+                                context_head: row.get(8)?,
+                                manual_compaction: row.get(9)?,
+                                release_park: row.get(10)?,
+                                mcp_revision:row.get(11)?,
                                 work_checks: row
                                     .get::<_, Option<String>>(7)?
                                     .and_then(|limits| serde_json::from_str::<Json>(&limits).ok())
@@ -1345,7 +1401,13 @@ impl<P: Provider> Driver<P> {
     /// the covered prefix into a summary entry; the originals stay in the
     /// epoch and stay reachable. Returns whether a summary committed — a
     /// failed summary is a lost optimization, never a failed turn.
-    async fn compact(&mut self, entries: &[ContextEntry], revision: i64, work: &Json) -> Result<bool, String> {
+    async fn compact(
+        &mut self,
+        entries: &[ContextEntry],
+        revision: i64,
+        work: &Json,
+        manual: Option<(&str, i64)>,
+    ) -> Result<bool, String> {
         let Some(window) = self.config.profile.context_window.filter(|window| *window > 0) else { return Ok(false) };
         // The retained tail is the newest user input and everything after it:
         // a summary never hides the working set the current turn is using —
@@ -1386,6 +1448,13 @@ impl<P: Provider> Driver<P> {
             }
         }
         let leader_tree = self.config.instance_id == self.config.leader_id;
+        let summary_prompt = match manual.map(|(f, _)| f).filter(|f| !f.is_empty()) {
+            Some(f) => format!(
+                "User emphasis for this summary (preserve the required sections): {}\n{SUMMARY_PROMPT}",
+                json!(f)
+            ),
+            None => SUMMARY_PROMPT.to_string(),
+        };
         let prompt = if leader_tree {
             let session = self.config.session_id.clone();
             let previous = self
@@ -1402,11 +1471,11 @@ impl<P: Provider> Driver<P> {
                 retained
             };
             format!(
-                "{SUMMARY_PROMPT}{blob}\n{index}\n{SEARCH_TREE_SUMMARY_SUFFIX}{previous}\n\
+                "{summary_prompt}{blob}\n{index}\n{SEARCH_TREE_SUMMARY_SUFFIX}{previous}\n\
                      Retained recent entries for tree navigation (outside summary coverage):\n{retained}"
             )
         } else {
-            format!("{SUMMARY_PROMPT}{blob}\n{index}")
+            format!("{summary_prompt}{blob}\n{index}")
         };
         let messages = vec![json!({"role": "user", "content": prompt})];
         let request_id = format!("comp-{}", uuid::Uuid::new_v4());
@@ -1426,7 +1495,7 @@ impl<P: Provider> Driver<P> {
                     "begin_compression",
                     json!({"instance_id": self.config.instance_id, "request_id": request_id,
                            "request_ref": format!("compression:{}", self.config.instance_id),
-                           "revision": revision, "prepared_work": work, "est_prompt_tokens": request.est_prompt_tokens,
+                           "revision": revision, "manual":manual.is_some(), "prepared_work": work, "est_prompt_tokens": request.est_prompt_tokens,
                            "pricing": self.pricing(&self.config.profile.model, false)}),
                 ),
                 Identity::System,
@@ -1504,7 +1573,7 @@ impl<P: Provider> Driver<P> {
                     format!("compress-{request_id}"),
                     "compress_context",
                     json!({"instance_id": self.config.instance_id, "request_id": request_id,
-                           "attempt_id": attempt_id, "summary": summary, "keep_ids": keep_ids,
+                           "attempt_id": attempt_id, "summary": summary, "keep_ids": keep_ids, "context_head":manual.map(|(_,head)|head),
                            "search_tree": tree_patch, "search_tree_error": tree_error}),
                 ),
                 Identity::System,
@@ -1875,6 +1944,9 @@ that delegated it learns the outcome only from a settlement.";
         } else {
             snapshot
         };
+        if snapshot.lifecycle != "ACTIVE" {
+            return Ok(true); // A pause won the drain/preparation race; retain this driver.
+        }
         // A turn opens for *unaddressed* work only: content that arrived since the
         // last request (the drain above applied it) or a task this instance has not
         // started yet. A task it already addressed is not a reason to ask again —
@@ -1947,7 +2019,7 @@ that delegated it learns the outcome only from a settlement.";
         // budget for and what the provider receives
         let last_prompt = self.last_prompt_tokens().await?;
         if self.over_threshold(&request, last_prompt) {
-            if self.compact(&entries, revision, &work).await? {
+            if self.compact(&entries, revision, &work, None).await? {
                 self.wire_mask = None;
                 entries = self.context_entries(snapshot).await?;
                 self.expand_images(&mut entries)?;
@@ -1975,7 +2047,7 @@ that delegated it learns the outcome only from a settlement.";
                     format!("begin-{request_id}"),
                     "begin_request",
                     json!({"instance_id": self.config.instance_id, "request_id": request_id,
-                           "revision": revision, "prepared_work": work, "est_prompt_tokens": request.est_prompt_tokens,
+                           "revision": revision, "mcp_revision":self.mcp_revision,"prepared_work": work, "est_prompt_tokens": request.est_prompt_tokens,
                            "request_ref":self.prepared_binding(&request)?,
                            "offered_tools": offered_tools, "surface_authorized": surface_authorized,
                            "pricing": self.pricing(&self.config.profile.model, false)}),
@@ -2373,7 +2445,7 @@ that delegated it learns the outcome only from a settlement.";
             KernelOutput::ToolIntents(intents) => (
                 intents
                     .iter()
-                    .map(|intent| json!({"index": intent.index, "call_id": intent.call_id, "name": intent.name, "args": intent.args}))
+                    .map(|intent| json!({"index": intent.index, "call_id": intent.call_id, "name": intent.name, "args": intent.args, "remote_dispatch": self.toolkit.is_mcp_tool(&intent.name)}))
                     .collect::<Vec<_>>(),
                 Json::Null,
                 Json::Null,
@@ -2838,14 +2910,14 @@ that delegated it learns the outcome only from a settlement.";
                 | teamagents_core::kernel::SPAWN_TOOL
                 | teamagents_core::kernel::VERIFY_TOOL
                 | teamagents_core::kernel::CANCEL_TOOL => self.execute_collaboration(&operation_id, &intent).await?,
-                _ if recovered && self.toolkit.is_mcp_tool(name) => {
-                    // A25/§6.3: the call crossed the process boundary before the
-                    // interruption, so the remote effect cannot be verified and
-                    // must not be re-issued — server idempotence annotations
-                    // never authorize a replay of a remote effect.
-                    let reason = format!(
-                        "MCP tool {name} was dispatched before an interruption; the remote outcome cannot be verified, so it was not retried"
-                    );
+                _ if recovered
+                    && (intent["remote_dispatch"] == true
+                        || self.toolkit.is_mcp_tool(name)
+                        || matches!(name, "write_file" | "edit_file" | "edit_files" | "delete")) =>
+                {
+                    // The mutation may already have reached disk or the remote peer. Only a
+                    // terminal receipt establishes its result, even when current bytes match.
+                    let reason = format!("Lost the result of the committed {name} dispatch during an interruption");
                     let mut receipt =
                         self.receipt_skeleton(&operation_id, &intent, true, json!({"error": reason}).to_string());
                     receipt.error = Some(ReceiptError { class: "outcome_unknown".into(), reason });
@@ -3423,6 +3495,9 @@ that delegated it learns the outcome only from a settlement.";
                 let mut params = json!({"instance_id": instance_id, "instructions": args["instructions"],
                                         "profile": {"instructions": args["instructions"], "tools": self.config.profile.tools},
                                         "workspace_ref": workspace_path}); // the spawner's active work charges the child's task
+                if let Some(value) = args.get("lifetime") {
+                    params["lifetime"] = value.clone();
+                }
                 if let Some(task) = args.get("task") {
                     params["task"] = task.clone();
                 }
@@ -3540,7 +3615,8 @@ that delegated it learns the outcome only from a settlement.";
         let toolkit = self.toolkit.clone();
         let op = operation_id.to_string();
         let domains = self.allowed_web_domains().await?;
-        let control = crate::tools::TurnControl::with_domains(domains);
+        let mut control = crate::tools::TurnControl::with_domains(domains);
+        let edit_record = (name == "edit_file").then(|| control.record_native_edit());
         let receipt = tokio::task::spawn_blocking(move || toolkit.call(&op, &typed, &control))
             .await
             .map_err(|e| format!("tool worker join: {e}"))?;
@@ -3558,13 +3634,12 @@ that delegated it learns the outcome only from a settlement.";
                 receipt.content = serde_json::json!({"error": message}).to_string();
             }
         }
-        self.complete_op(
-            operation_id,
-            if receipt.ok { "SUCCEEDED" } else { "FAILED" },
-            &serde_json::to_value(receipt).unwrap_or(Json::Null),
-            vec![],
-        )
-        .await
+        let status = if receipt.ok { "SUCCEEDED" } else { "FAILED" };
+        let mut stored = serde_json::to_value(receipt).map_err(|e| format!("serialize tool receipt: {e}"))?;
+        if let Some(record) = edit_record.and_then(|r| r.lock().unwrap_or_else(|e| e.into_inner()).take()) {
+            stored["native_edit"] = record;
+        }
+        self.complete_op(operation_id, status, &stored, vec![]).await
     }
 
     async fn complete_with_error(
@@ -3638,21 +3713,10 @@ that delegated it learns the outcome only from a settlement.";
             .await?
     }
 
-    /// Oldest open (PENDING or RUNNING) assigned task.
-    async fn oldest_open_task(&self) -> Result<Option<String>, String> {
+    async fn completion_task(&self) -> Result<Option<String>, String> {
         let instance = self.config.instance_id.clone();
         self.storage
-            .call(move |control| {
-                control
-                    .connection()
-                    .query_row(
-                        "SELECT id FROM tasks WHERE assignee = ?1 AND status IN ('PENDING', 'RUNNING') ORDER BY rowid LIMIT 1",
-                        [&instance],
-                        |row| row.get(0),
-                    )
-                    .optional()
-                    .map_err(|e| format!("oldest open task: {e}"))
-            })
+            .call(move |control| teamagents_core::v2::control::completion_task(control.connection(), &instance))
             .await?
     }
 
@@ -3685,22 +3749,16 @@ that delegated it learns the outcome only from a settlement.";
     }
 
     async fn step_completion(&mut self, snapshot: &Snapshot) -> Result<(), String> {
+        let (candidate_row, candidate) = self.completion_candidate().await?;
+        if candidate_row == 0 {
+            return Err("completion pending without a stored finish".into());
+        }
         if let Some(work) = snapshot.active_work.clone() {
             if !self.work_is_active(&work).await? {
                 // the work already reached a terminal status: this turn just
                 // ends, it never re-runs the checks or re-closes the work
-                self.submit(
-                    self.command(
-                        format!("close-completion-{}", uuid::Uuid::new_v4()),
-                        "close_completion",
-                        json!({"instance_id": self.config.instance_id}),
-                    ),
-                    Identity::System,
-                )
-                .await?;
-                return Ok(());
+                return self.close_candidate(candidate_row).await;
             }
-            let (candidate_row, candidate) = self.completion_candidate().await?;
             let outcome = candidate["outcome"].as_str().unwrap_or("failed");
             // only a claimed success is verified; a candidate that admits
             // undelivered work is never upgraded by passing checks (§8)
@@ -3714,18 +3772,17 @@ that delegated it learns the outcome only from a settlement.";
                 self.command(
                     format!("complete-work-{work}-{candidate_row}"),
                     "complete_work",
-                    json!({"work_id": work, "instance_id": self.config.instance_id}),
+                    json!({"candidate_row":candidate_row,"work_id": work, "instance_id": self.config.instance_id}),
                 ),
                 Identity::System,
             )
             .await?;
             return Ok(());
         }
-        // no owned work: the finish settles the oldest open assigned task
-        // from the stored candidate (§5.3); an empty queue just closes
-        match self.oldest_open_task().await? {
+        // A finish can return only to the assignment frozen before the model call. A missing
+        // or cancelled assignment never transfers its result to a different queued task.
+        match self.completion_task().await? {
             Some(task_id) => {
-                let (candidate_row, candidate) = self.completion_candidate().await?;
                 let status = match candidate["outcome"].as_str().unwrap_or("failed") {
                     "success" => "SUCCEEDED",
                     "blocked" => "BLOCKED",
@@ -3737,24 +3794,27 @@ that delegated it learns the outcome only from a settlement.";
                     self.command(
                         format!("complete-task-{task_id}-{candidate_row}"),
                         "complete_task",
-                        json!({"task_id": task_id, "status": status, "summary": summary, "result_refs": evidence}),
+                        json!({"candidate_row":candidate_row,"task_id": task_id, "status": status, "summary": summary, "result_refs": evidence}),
                     ),
                     Identity::Instance(self.config.instance_id.clone()),
                 )
                 .await?;
             }
-            None => {
-                self.submit(
-                    self.command(
-                        format!("close-completion-{}", uuid::Uuid::new_v4()),
-                        "close_completion",
-                        json!({"instance_id": self.config.instance_id}),
-                    ),
-                    Identity::System,
-                )
-                .await?;
-            }
+            None => self.close_candidate(candidate_row).await?,
         }
+        Ok(())
+    }
+
+    async fn close_candidate(&self, row: i64) -> Result<(), String> {
+        self.submit(
+            self.command(
+                format!("close-candidate-{row}"),
+                "close_completion",
+                json!({"candidate_row":row,"instance_id":self.config.instance_id}),
+            ),
+            Identity::System,
+        )
+        .await?;
         Ok(())
     }
 
@@ -4014,7 +4074,7 @@ that delegated it learns the outcome only from a settlement.";
                     self.command(
                         format!("complete-work-{work}-{candidate_row}"),
                         "complete_work",
-                        json!({"work_id": work, "instance_id": self.config.instance_id}),
+                        json!({"candidate_row":candidate_row,"work_id": work, "instance_id": self.config.instance_id}),
                     ),
                     Identity::System,
                 )
@@ -4035,9 +4095,9 @@ that delegated it learns the outcome only from a settlement.";
                     .collect();
                 self.submit(
                     self.command(
-                        format!("block-work-{work}"),
+                        format!("block-work-{work}-{candidate_row}"),
                         "block_work",
-                        json!({"work_id": work, "instance_id": self.config.instance_id,
+                        json!({"candidate_row":candidate_row,"work_id": work, "instance_id": self.config.instance_id,
                                "reason": format!("required checks failed ({}) after {rounds} round(s)", summary.join(", "))}),
                     ),
                     Identity::System,
@@ -4047,9 +4107,9 @@ that delegated it learns the outcome only from a settlement.";
             }
             self.submit(
                 self.command(
-                    format!("repair-completion-{work}-{rounds}"),
+                    format!("repair-completion-{work}-{candidate_row}-{rounds}"),
                     "repair_completion",
-                    json!({"instance_id": self.config.instance_id, "work_id": work, "round": rounds,
+                    json!({"candidate_row":candidate_row,"instance_id": self.config.instance_id, "work_id": work, "round": rounds,
                            "failures": failures}),
                 ),
                 Identity::System,
@@ -4060,9 +4120,9 @@ that delegated it learns the outcome only from a settlement.";
         if rounds >= max_rounds {
             self.submit(
                 self.command(
-                    format!("block-work-{work}"),
+                    format!("block-work-{work}-{candidate_row}"),
                     "block_work",
-                    json!({"work_id": work, "instance_id": self.config.instance_id,
+                    json!({"candidate_row":candidate_row,"work_id": work, "instance_id": self.config.instance_id,
                            "reason": format!("required checks did not pass within {max_rounds} rounds")}),
                 ),
                 Identity::System,
@@ -4073,9 +4133,9 @@ that delegated it learns the outcome only from a settlement.";
         let observed = self.observe_check_inputs(checks);
         self.submit(
             self.command(
-                format!("check-round-{work}-{}", rounds + 1),
+                format!("check-round-{work}-{candidate_row}-{}", rounds + 1),
                 "register_check_runs",
-                json!({"work_id": work, "instance_id": self.config.instance_id,
+                json!({"candidate_row":candidate_row,"work_id": work, "instance_id": self.config.instance_id,
                        "round": rounds + 1, "checks": observed}),
             ),
             Identity::System,

@@ -13,6 +13,7 @@ use std::path::Path;
 use std::sync::Arc;
 use teamagents_core::models::{ToolBinding, UserConfig};
 
+#[derive(Clone)]
 pub struct BoundTool {
     pub name: String,
     pub description: String,
@@ -82,12 +83,24 @@ impl CodeGraphRoots {
             json!({"status":"not_verified", "database_mtime_unix":mtime(&db), "wal_mtime_unix":mtime(&dir.join("codegraph.db-wal"))}),
         )
     }
-    fn arguments(&self, args: &Json) -> Result<(String, Json, Json), String> {
+    fn arguments(&self, tool: &str, args: &Json) -> Result<(String, Json, Json), String> {
         let mut obj = args.as_object().cloned().ok_or("CodeGraph needs an argument object")?;
-        if obj.keys().any(|k| !matches!(k.as_str(), "query" | "projectPath" | "maxFiles"))
-            || obj.get("query").and_then(Json::as_str).is_none_or(|q| q.trim().is_empty())
+        let (fields, required): (&[&str], Option<&str>) = match tool {
+            "codegraph_explore" => (&["query", "maxFiles"], Some("query")),
+            "codegraph_search" => (&["query", "limit"], Some("query")),
+            "codegraph_callers" | "codegraph_callees" => (&["symbol", "limit"], Some("symbol")),
+            "codegraph_impact" => (&["symbol", "depth"], Some("symbol")),
+            "codegraph_status" => (&[], None),
+            _ => return Err("unsupported native CodeGraph tool".into()),
+        };
+        if obj.keys().any(|k| k != "projectPath" && !fields.contains(&k.as_str()))
+            || required.is_some_and(|k| {
+                obj.get(k).and_then(Json::as_str).is_none_or(|v| v.trim().is_empty() || v.len() > 8192)
+            })
+            || obj.get("limit").is_some_and(|v| !v.as_u64().is_some_and(|n| (1..=100).contains(&n)))
+            || obj.get("depth").is_some_and(|v| !v.as_u64().is_some_and(|n| (1..=5).contains(&n)))
         {
-            return Err("invalid CodeGraph explore arguments".into());
+            return Err("invalid native CodeGraph arguments".into());
         }
         if obj.get("maxFiles").is_some_and(|n| !n.as_u64().is_some_and(|v| (1..=20).contains(&v))) {
             return Err("CodeGraph maxFiles must be in 1..20".into());
@@ -113,6 +126,7 @@ impl CodeGraphRoots {
     }
 }
 
+#[derive(Default)]
 pub struct BoundTools {
     pub tools: Vec<BoundTool>,
     pub(crate) services: std::collections::BTreeMap<String, Arc<McpClient>>,
@@ -144,85 +158,7 @@ impl BoundTools {
         root: &Path,
         extra_roots: bool,
     ) -> Result<BoundTools, String> {
-        let mut tools: Vec<BoundTool> = vec![];
-        let mut selected: Vec<(String, ToolBinding)> = vec![];
-        for name in bindings {
-            if DEFAULT_BINDINGS.contains(&name.as_str()) {
-                continue; // built-in capabilities, not catalog services
-            }
-            let Some(binding) = catalog.tools.get(name) else {
-                return Err(format!("unknown tool binding {name:?}"));
-            };
-            if binding.kind == "files" || binding.kind == "shell" {
-                continue;
-            }
-            selected.push((name.clone(), binding.clone()));
-        }
-        for (name, binding) in &catalog.tools {
-            let declared_now = selected.iter().any(|(n, _)| n == name);
-            let web =
-                bindings.iter().any(|b| b == "web") && matches!(binding.kind.as_str(), "web_search" | "web_fetch");
-            // D-74: a `[tools.<name>] kind = "mcp"` entry *is* the user's binding of
-            // that service. It used to be loaded only when its name appeared in the
-            // bindings list, and that list is built by the product (the daemon binds
-            // files/shell/web/skills), which no user surface could extend — so every
-            // configured MCP service was unreachable while the docs promised the
-            // `[tools.*]` section as the binding (the web rule below has always
-            // worked this way). Only the merged, trust-filtered catalog reaches here:
-            // a project file's tools need `[permissions] trust_project = true`.
-            let declared_service = binding.kind == "mcp";
-            if (web || declared_service) && !declared_now {
-                selected.push((name.clone(), binding.clone()));
-            }
-        }
-
-        selected.sort_by(|a, b| a.0.cmp(&b.0));
-        let mut clients: Vec<Arc<McpClient>> = vec![];
-        let mut services = std::collections::BTreeMap::new();
-        for (name, binding) in selected {
-            match binding.kind.as_str() {
-                // web tools are served by the member's tool executor (web_search/web_fetch)
-                "web_search" | "web_fetch" => {}
-                "mcp" => match load_service(name.as_str(), &binding, root, extra_roots) {
-                    Ok((client, mut service_tools)) => {
-                        if service_tools.is_empty() && !client.supports("resources") {
-                            client.close();
-                        } else {
-                            let namespace = binding.mcp_server.clone().unwrap_or_else(|| name.clone());
-                            if services.contains_key(&namespace) {
-                                client.close();
-                                for client in &clients {
-                                    client.close();
-                                }
-                                return Err(format!("duplicate MCP service name {namespace:?}"));
-                            }
-                            clients.push(client.clone());
-                            services.insert(namespace, client);
-                        }
-                        tools.append(&mut service_tools);
-                    }
-                    Err(e) if binding.required => {
-                        for client in &clients {
-                            client.close();
-                        }
-                        return Err(format!("required tool service {name:?} is unavailable: {e}"));
-                    }
-                    Err(e) => {
-                        // optional service failure only removes that capability
-                        eprintln!("tool service {name:?} unavailable: {e}");
-                    }
-                },
-                other => {
-                    if binding.required {
-                        for client in &clients {
-                            client.close();
-                        }
-                        return Err(format!("tool binding {name:?} has unsupported kind {other:?}"));
-                    }
-                }
-            }
-        }
-        Ok(BoundTools { tools, services })
+        MemberServices::new(catalog, bindings, root, extra_roots)?.apply(&Default::default())
     }
 
     pub fn names(&self) -> HashSet<&str> {
@@ -241,7 +177,7 @@ impl BoundTools {
         let tool = self.tools.iter().find(|t| t.name == name)?;
         let (client, remote) = tool.remote.as_ref()?;
         if let Some(roots) = &tool.projects {
-            return Some(roots.arguments(args).and_then(|(project, bound, freshness)| {
+            return Some(roots.arguments(remote, args).and_then(|(project, bound, freshness)| {
                 let value = render_result(client.call_tool_result(remote, &bound), None, &tool.name)?;
                 Ok(json!({"project":project,"result":value,"freshness":freshness}))
             }));
@@ -321,6 +257,137 @@ impl BoundTools {
     pub fn close(&self) {
         for client in self.services.values() {
             client.close();
+        }
+    }
+}
+
+/// A hidden service keeps its connection, but neither its tools nor resources are callable.
+type ServiceSlot = (u64, Option<(Arc<McpClient>, Vec<BoundTool>)>);
+#[derive(Default)]
+pub(crate) struct MemberServices {
+    bindings: std::collections::BTreeMap<String, ToolBinding>,
+    root: std::path::PathBuf,
+    extra_roots: bool,
+    slots: std::collections::BTreeMap<String, ServiceSlot>,
+}
+impl MemberServices {
+    pub(crate) fn new(
+        catalog: &UserConfig,
+        bindings: &[String],
+        root: &Path,
+        extra_roots: bool,
+    ) -> Result<Self, String> {
+        let mut selected: Vec<(String, ToolBinding)> = vec![];
+        for name in bindings {
+            if DEFAULT_BINDINGS.contains(&name.as_str()) {
+                continue; // built-in capabilities, not catalog services
+            }
+            let Some(binding) = catalog.tools.get(name) else {
+                return Err(format!("unknown tool binding {name:?}"));
+            };
+            if binding.kind == "files" || binding.kind == "shell" {
+                continue;
+            }
+            selected.push((name.clone(), binding.clone()));
+        }
+        for (name, binding) in &catalog.tools {
+            let declared_now = selected.iter().any(|(n, _)| n == name);
+            let web =
+                bindings.iter().any(|b| b == "web") && matches!(binding.kind.as_str(), "web_search" | "web_fetch");
+            // D-74: a `[tools.<name>] kind = "mcp"` entry *is* the user's binding of
+            // that service. It used to be loaded only when its name appeared in the
+            // bindings list, and that list is built by the product (the daemon binds
+            // files/shell/web/skills), which no user surface could extend — so every
+            // configured MCP service was unreachable while the docs promised the
+            // `[tools.*]` section as the binding (the web rule below has always
+            // worked this way). Only the merged, trust-filtered catalog reaches here:
+            // a project file's tools need `[permissions] trust_project = true`.
+            let declared_service = binding.kind == "mcp";
+            if (web || declared_service) && !declared_now {
+                selected.push((name.clone(), binding.clone()));
+            }
+        }
+
+        selected.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut namespaces = HashSet::new();
+        let mut configured = std::collections::BTreeMap::new();
+        for (name, binding) in selected {
+            match binding.kind.as_str() {
+                "mcp" => {
+                    let namespace = binding.mcp_server.as_deref().unwrap_or(&name).to_owned();
+                    if !namespaces.insert(namespace.clone()) {
+                        return Err(format!("duplicate MCP service name {namespace:?}"));
+                    }
+                    configured.insert(name, binding);
+                }
+                "web_search" | "web_fetch" => (),
+                other if binding.required => {
+                    return Err(format!("tool binding {name:?} has unsupported kind {other:?}"))
+                }
+                _ => (),
+            }
+        }
+        Ok(Self { bindings: configured, root: root.into(), extra_roots, slots: Default::default() })
+    }
+    pub(crate) fn apply(
+        &mut self,
+        policy: &teamagents_core::v2::control::mcp_policy::McpPolicy,
+    ) -> Result<BoundTools, String> {
+        let mut bound = BoundTools::default();
+        for (name, binding) in &self.bindings {
+            let rule = policy.services.get(name).copied().unwrap_or_default();
+            if !rule.running || self.slots.get(name).is_some_and(|(g, _)| *g != rule.generation) {
+                if let Some((_, Some((client, _)))) = self.slots.remove(name) {
+                    client.close()
+                }
+            }
+            if !rule.running {
+                continue;
+            }
+            if !self.slots.contains_key(name) {
+                let loaded = match load_service(name, binding, &self.root, self.extra_roots) {
+                    Ok((client, tools)) if tools.is_empty() && !client.supports("resources") => {
+                        client.close();
+                        None
+                    }
+                    Ok(slot) => Some(slot),
+                    Err(e) if binding.required => {
+                        return Err(format!("required tool service {name:?} is unavailable: {e}"))
+                    }
+                    Err(e) => {
+                        eprintln!("tool service {name:?} unavailable: {e}");
+                        None
+                    }
+                };
+                self.slots.insert(name.clone(), (rule.generation, loaded));
+            }
+            if let Some((_, Some((client, tools)))) = self.slots.get(name).filter(|_| rule.exposed) {
+                bound.services.insert(binding.mcp_server.clone().unwrap_or_else(|| name.clone()), client.clone());
+                bound.tools.extend(tools.iter().cloned());
+            }
+        }
+        Ok(bound)
+    }
+    pub(crate) fn status(&self) -> Json {
+        self.bindings
+            .keys()
+            .map(|name| {
+                (
+                    name.clone(),
+                    json!(match self.slots.get(name) {
+                        Some((_, Some(_))) => "connected",
+                        Some(_) => "unavailable",
+                        None => "stopped",
+                    }),
+                )
+            })
+            .collect()
+    }
+    pub(crate) fn close(&self) {
+        for (_, slot) in self.slots.values() {
+            if let Some((client, _)) = slot {
+                client.close()
+            }
         }
     }
 }
@@ -484,7 +551,21 @@ fn load_service(
     };
     for tool in listed {
         let remote_name = tool.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        if remote_name.is_empty() || (projects.is_some() && remote_name != "codegraph_explore") {
+        if projects.is_some()
+            && remote_name != "codegraph_explore"
+            && (allowed.is_empty()
+                || !matches!(
+                    remote_name.as_str(),
+                    "codegraph_search"
+                        | "codegraph_callers"
+                        | "codegraph_callees"
+                        | "codegraph_impact"
+                        | "codegraph_status"
+                ))
+        {
+            continue;
+        }
+        if remote_name.is_empty() {
             continue;
         }
         let prefixed = format!("{service}_{remote_name}");
@@ -504,7 +585,7 @@ fn load_service(
     }
     if projects.is_some() && out.is_empty() {
         client.close();
-        return Err("native CodeGraph did not offer the selected explore tool".into());
+        return Err("native CodeGraph did not offer any selected read-only tool".into());
     }
     Ok((client, out))
 }
@@ -553,18 +634,31 @@ mod tests {
                 .unwrap();
         }
         let roots = CodeGraphRoots::new(&work, &[extra.display().to_string(), child.display().to_string()]).unwrap();
-        assert_eq!(roots.arguments(&json!({"query":"test"})).unwrap().1["projectPath"], work.to_str().unwrap());
-        assert!(roots.arguments(&json!({"query":"q","projectPath":extra})).is_ok());
+        assert_eq!(
+            roots.arguments("codegraph_explore", &json!({"query":"test"})).unwrap().1["projectPath"],
+            work.to_str().unwrap()
+        );
+        assert!(roots.arguments("codegraph_explore", &json!({"query":"q","projectPath":extra})).is_ok());
         for denied in [&child, &root] {
-            assert!(roots.arguments(&json!({"query":"q","projectPath":denied})).is_err());
+            assert!(roots.arguments("codegraph_explore", &json!({"query":"q","projectPath":denied})).is_err());
         }
-        assert!(CodeGraphRoots::new(&work, &[]).unwrap().arguments(&json!({"query":"q","projectPath":extra})).is_err());
+        assert!(CodeGraphRoots::new(&work, &[])
+            .unwrap()
+            .arguments("codegraph_explore", &json!({"query":"q","projectPath":extra}))
+            .is_err());
         std::fs::create_dir(child.join(".codegraph")).unwrap();
         std::fs::write(child.join(".codegraph/codegraph.db"), b"not a database").unwrap();
-        assert!(roots.arguments(&json!({"query":"q","projectPath":child})).is_err());
+        assert!(roots.arguments("codegraph_explore", &json!({"query":"q","projectPath":child})).is_err());
         std::fs::remove_dir_all(child.join(".codegraph")).unwrap();
         symlink(work.join(".codegraph"), child.join(".codegraph")).unwrap();
-        assert!(roots.arguments(&json!({"query":"q","projectPath":child})).is_err());
+        assert!(roots.arguments("codegraph_explore", &json!({"query":"q","projectPath":child})).is_err());
+        for tool in ["codegraph_callers", "codegraph_callees", "codegraph_impact"] {
+            assert!(roots.arguments(tool, &json!({"symbol":"Control","projectPath":extra})).is_ok());
+            assert!(roots.arguments(tool, &json!({"symbol":"Control","projectPath":root})).is_err());
+        }
+        assert!(roots.arguments("codegraph_impact", &json!({"symbol":"Control","depth":999})).is_err());
+        assert!(roots.arguments("codegraph_status", &json!({"path":"/"})).is_err());
+        assert!(roots.arguments("codegraph_init", &json!({})).is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -660,7 +754,8 @@ for line in sys.stdin:
                 "args":["-u","-c",script,mode],"required":true,"startup_timeout_s":if mode=="slow" {1} else {3}})),
             );
             let began = std::time::Instant::now();
-            let loaded = BoundTools::load_in(&catalog, &[], &root);
+            let mut services = MemberServices::new(&catalog, &[], &root, true).unwrap();
+            let loaded = services.apply(&Default::default());
             if matches!(mode, "loop" | "future" | "slow") {
                 let error = loaded.err().expect("invalid peer must fail");
                 let expected = match mode {
@@ -686,7 +781,16 @@ for line in sys.stdin:
                     assert_eq!(bound.names(), HashSet::from(["probe_first", "probe_second"]));
                 }
                 assert!(root.join(format!("{mode}.roots")).exists(), "string request ID was not answered");
-                bound.close();
+                drop(bound);
+                let mut policy = teamagents_core::v2::control::mcp_policy::McpPolicy::default();
+                policy.services.entry("probe".into()).or_default().exposed = false;
+                let hidden = services.apply(&policy).unwrap();
+                assert!(hidden.schemas().is_empty());
+                assert!(hidden.call("probe_first", &json!({})).is_none());
+                assert!(hidden
+                    .call("mcp_resource", &json!({"action":"read","uri":"memo://one"}))
+                    .is_none_or(|r| r.is_err()));
+                services.close();
             }
             let pid = std::fs::read_to_string(root.join(format!("{mode}.pid"))).unwrap();
             assert!(!Path::new(&format!("/proc/{pid}")).exists(), "{mode} leaked its service");

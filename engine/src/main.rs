@@ -94,6 +94,7 @@ pub struct Args {
     pub follow: bool,
     /// D-470: `instances send --after-turn` — queue the input for after the current turn.
     pub after_turn: bool,
+    pub after_work: bool,
     pub timeout: Option<u64>,
     pub checks: Vec<String>,
     /// D-385: `exec --accept ID=COMMAND` — work-level required checks attached to the work before the input lands.
@@ -194,6 +195,7 @@ fn parse_args_from(argv: Vec<String>) -> Args {
         role: None,
         follow: false,
         after_turn: false,
+        after_work: false,
         timeout: None,
         checks: Vec::new(),
         accept: Vec::new(),
@@ -357,6 +359,10 @@ fn parse_args_from(argv: Vec<String>) -> Args {
             }
             "--follow" => {
                 args.follow = true;
+                i += 1;
+            }
+            "--after-work" => {
+                args.after_work = true;
                 i += 1;
             }
             "--after-turn" => {
@@ -1185,6 +1191,28 @@ fn run_local_models(args: &Args) -> i32 {
 fn run_mcp(args: &Args) -> i32 {
     match args.positional.as_deref().unwrap_or("list") {
         "list" => run_mcp_list(args),
+        action @ ("status" | "start" | "stop" | "reconnect" | "hide" | "expose") => {
+            let root = args.state_root.clone().map(PathBuf::from).unwrap_or_else(teamagents_engine::v2_root);
+            let result=teamagents_engine::v2::exec::Client::connect(&root.join("daemon.sock")).and_then(|mut client| {
+                if action=="status" {
+                    let state=client.call("checkpoint",serde_json::json!({}))?;
+                    let s=&state["snapshot"];
+                    Ok(serde_json::json!({"configured":s["mcp"],"desired":s["mcp_policy"],"observed":s["mcp_drivers"]}))
+                } else {
+                    client.command(&format!("mcp-{}",uuid::Uuid::new_v4()),"set_mcp_service",serde_json::json!({"service":args.session_name,"action":action}))
+                }
+            });
+            match result {
+                Ok(v) => {
+                    println!("{}", serde_json::to_string_pretty(&v).unwrap());
+                    0
+                }
+                Err(e) => {
+                    eprintln!("mcp {action}: {e}");
+                    1
+                }
+            }
+        }
         "add" => run_mcp_add(args),
         "remove" => run_mcp_remove(args),
         "login" => run_mcp_login(args),
@@ -1622,7 +1650,12 @@ fn resolve_session(args: &mut Args) -> Result<(), String> {
                     | "artifacts"
                     | "automations"
             )
-        ) || (args.command.as_deref() == Some("daemon") && args.daemon_stop);
+        ) || (args.command.as_deref() == Some("daemon") && args.daemon_stop)
+            || (args.command.as_deref() == Some("mcp")
+                && matches!(
+                    args.positional.as_deref(),
+                    Some("status" | "start" | "stop" | "reconnect" | "hide" | "expose")
+                ));
         if args.state_root.is_none() && observes {
             let workspace = Path::new(args.cwd.as_deref().unwrap_or("."));
             let home = teamagents_engine::v2_root();
@@ -2422,7 +2455,18 @@ fn run_instances(args: &Args) -> i32 {
                 eprintln!("instances send needs a nonempty --prompt TEXT");
                 return 2;
             };
-            InterventionCommand::SendInput { id, text: text.clone(), deferred: args.after_turn }
+            if args.after_turn && args.after_work {
+                eprintln!("choose only one of --after-turn or --after-work");
+                return 2;
+            }
+            let after = if args.after_work {
+                Some("work")
+            } else if args.after_turn {
+                Some("turn")
+            } else {
+                None
+            };
+            InterventionCommand::SendInput { id, text: text.clone(), after }
         }
         ("terminate", Some(id)) => InterventionCommand::Terminate { id },
         // D-252: the worktree member's branch, brought into the session's own tree

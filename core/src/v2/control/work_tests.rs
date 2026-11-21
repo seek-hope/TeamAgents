@@ -216,6 +216,24 @@ fn autonomy_preparation_is_fenced_against_new_input_and_assignment_changes() {
         assert!(error.contains("stale executor"), "{error}");
     }
     prepare_work_member(&mut ctl);
+    let revision = load_instance(ctl.connection(), "i2").unwrap().4;
+    ctl.submit(
+        cmd("pause-prepared", "set_lifecycle", json!({"instance_id":"i2","lifecycle":"PAUSED"})),
+        Identity::User,
+    )
+    .unwrap();
+    let error = ctl
+        .submit(
+            cmd("paused-begin", "begin_request", json!({"instance_id":"i2","request_id":"paused","revision":revision})),
+            Identity::Instance("i2".into()),
+        )
+        .unwrap_err();
+    assert!(error.contains("stale executor"), "the preparing driver must re-read a manual pause: {error}");
+    ctl.submit(
+        cmd("resume-prepared", "set_lifecycle", json!({"instance_id":"i2","lifecycle":"ACTIVE"})),
+        Identity::User,
+    )
+    .unwrap();
     let prepared = work_context(ctl.connection(), "i2").unwrap();
     ctl.submit(cmd("cancel-prepared", "cancel_task", json!({"task_id":"task-1"})), Identity::User).unwrap();
     ctl.submit(
@@ -432,6 +450,37 @@ fn autonomy_queued_steering_is_applied_before_the_existing_work_settles() {
 }
 
 #[test]
+fn foreign_completion_cannot_check_block_or_release_another_works_input() {
+    for method in ["register_check_runs", "repair_completion", "block_work", "complete_work"] {
+        let (mut ctl, path) = autonomous_control(method);
+        work_turn(&mut ctl, "old", "i1", json!({"completion":{"outcome":"success","summary":"A only"}}));
+        let checks = json!([{"id":"only-b","command":"false"}]);
+        ctl.submit(cmd("switch","create_work",json!({"id":"g2","instance_id":"i1","limits":{"required_checks":checks,"independent_verification":true}})),Identity::User).unwrap();
+        ctl.submit(
+            cmd(
+                "later",
+                "submit_input",
+                json!({"instance_id":"i1","envelope_id":"later","text":"next","after":"work"}),
+            ),
+            Identity::User,
+        )
+        .unwrap();
+        let result = ctl
+            .submit(
+                cmd("foreign", method, json!({"instance_id":"i1","work_id":"g2","round":1,"checks":checks})),
+                Identity::System,
+            )
+            .unwrap();
+        assert_eq!(result["completion_deferred"], true, "{method}: {result}");
+        assert_eq!(work_status_of(&ctl, "g2"), "ACTIVE");
+        let state:(String,i64,String)=ctl.connection().query_row("SELECT state,(SELECT COUNT(*) FROM model_requests WHERE work_id='g2'),(SELECT phase FROM instances WHERE id='i1') FROM envelopes WHERE id='later'",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+        assert_eq!(state, ("AFTER_WORK".into(), 0, "READY".into()));
+        drop(ctl);
+        cleanup(&path);
+    }
+}
+
+#[test]
 fn autonomy_old_completion_cannot_settle_a_new_assignment() {
     let (mut ctl, path) = autonomous_control("work-stale-finish");
     prepare_work_member(&mut ctl);
@@ -465,6 +514,38 @@ fn autonomy_old_completion_cannot_settle_a_new_assignment() {
     assert_eq!(refused["completion_deferred"], true);
     assert_eq!(load_task(ctl.connection(), "s1", "task-2").unwrap().3, "RUNNING");
     assert_eq!(load_task(ctl.connection(), "s1", "task-1").unwrap().3, "CANCELLED");
+    // A valid return grant for a second open task is not ownership of the first task's finish.
+    ctl.submit(cmd("end-stale", "close_completion", json!({"instance_id":"i2"})), Identity::System).unwrap();
+    ctl.submit(
+        cmd("third", "delegate_task", json!({"task_id":"task-3","assignee":"i2","work_id":"g1"})),
+        Identity::User,
+    )
+    .unwrap();
+    drain(&mut ctl, "i2");
+    work_turn(
+        &mut ctl,
+        "second-finish",
+        "i2",
+        json!({"completion":{"outcome":"success","summary":"For task two only"}}),
+    );
+    let stale_row: i64 = ctl
+        .connection()
+        .query_row("SELECT rowid FROM decisions WHERE decision_id='d-old-task-finish'", [], |r| r.get(0))
+        .unwrap();
+    for method in
+        ["complete_task", "close_completion", "register_check_runs", "repair_completion", "block_work", "complete_work"]
+    {
+        let actor = if method == "complete_task" { Identity::Instance("i2".into()) } else { Identity::System };
+        let reply=ctl.submit(cmd(&format!("late-{method}"),method,json!({"candidate_row":stale_row,"instance_id":"i2","task_id":"task-2","work_id":"g1","status":"SUCCEEDED"})),actor).unwrap();
+        assert_eq!(reply["completion_deferred"], true, "{method}");
+        assert_eq!(phase_of(&ctl, "i2"), "COMPLETION_PENDING");
+    }
+    let settle =
+        |id: &str| cmd(id, "complete_task", json!({"task_id":id,"status":"SUCCEEDED","summary":"For task two only"}));
+    assert_eq!(ctl.submit(settle("task-3"), Identity::Instance("i2".into())).unwrap()["completion_deferred"], true);
+    assert_eq!(load_task(ctl.connection(), "s1", "task-3").unwrap().3, "PENDING");
+    assert_eq!(phase_of(&ctl, "i2"), "COMPLETION_PENDING");
+    assert_eq!(ctl.submit(settle("task-2"), Identity::Instance("i2".into())).unwrap()["status"], "SUCCEEDED");
     drop(ctl);
     cleanup(&path);
 }
@@ -572,6 +653,117 @@ fn prepare_work_member(ctl: &mut Control) {
     )
     .unwrap();
     ctl.submit(cmd("start-task", "start_task", json!({"task_id":"task-1"})), Identity::Instance("i2".into())).unwrap();
+}
+
+#[test]
+fn temporary_release_needs_a_quiet_settlement_not_a_cancellation_or_block() {
+    for boundary in ["quiet", "cancel", "blocked", "queued", "applied", "second_task", "delegated", "unknown"] {
+        let (mut ctl, path) = autonomous_control(boundary);
+        ctl.submit(
+            cmd(
+                "worker",
+                "create_instance",
+                json!({"id":"w","lifetime":"temporary","workspace_ref":"/tmp/fixture-worker"}),
+            ),
+            Identity::User,
+        )
+        .unwrap();
+        ctl.submit(
+            cmd("assign", "delegate_task", json!({"assignee":"w","task_id":"one","work_id":"g1"})),
+            Identity::User,
+        )
+        .unwrap();
+        drain(&mut ctl, "w");
+        ctl.submit(cmd("start", "start_task", json!({"task_id":"one"})), Identity::User).unwrap();
+        if boundary == "unknown" {
+            let rev = load_instance(ctl.connection(), "w").unwrap().4;
+            open_decision(&mut ctl, "uncertain", "w", rev, 1);
+            ctl.submit(
+                cmd("dispatch", "dispatch_operation", json!({"operation_id":"d-uncertain:0"})),
+                Identity::System,
+            )
+            .unwrap();
+            ctl.submit(
+                cmd(
+                    "lost",
+                    "complete_operation",
+                    json!({"operation_id":"d-uncertain:0","status":"OUTCOME_UNKNOWN","receipt":{"started":true}}),
+                ),
+                Identity::System,
+            )
+            .unwrap();
+        } else {
+            work_turn(
+                &mut ctl,
+                "candidate",
+                "w",
+                json!({"completion":{"outcome":"success","summary":"Assignment finished"}}),
+            );
+        }
+        match boundary {
+            "queued" | "applied" => {
+                ctl.submit(
+                    cmd(
+                        "input",
+                        "submit_input",
+                        json!({"instance_id":"w","envelope_id":"later","text":"Review this next"}),
+                    ),
+                    Identity::User,
+                )
+                .unwrap();
+                if boundary == "applied" {
+                    drain(&mut ctl, "w");
+                }
+            }
+            "second_task" => {
+                ctl.submit(
+                    cmd("another", "delegate_task", json!({"assignee":"w","task_id":"two","work_id":"g1"})),
+                    Identity::User,
+                )
+                .unwrap();
+            }
+            "delegated" => {
+                ctl.submit(
+                    cmd(
+                        "grant",
+                        "issue_grant",
+                        json!({"subject":"w","action":"delegate","resource_scope":"instance:i1"}),
+                    ),
+                    Identity::User,
+                )
+                .unwrap();
+                ctl.submit(
+                    cmd("subtask", "delegate_task", json!({"assignee":"i1","task_id":"two","work_id":"g1"})),
+                    Identity::Instance("w".into()),
+                )
+                .unwrap();
+            }
+            _ => {}
+        }
+        if boundary == "cancel" {
+            ctl.submit(cmd("cancel", "cancel_task", json!({"task_id":"one"})), Identity::User).unwrap();
+        } else {
+            let status = if boundary == "blocked" { "BLOCKED" } else { "SUCCEEDED" };
+            let result = ctl
+                .submit(cmd("settle", "complete_task", json!({"task_id":"one","status":status})), Identity::User)
+                .unwrap();
+            assert_eq!(result["parked_for_release"], boundary == "quiet", "{boundary}: {result}");
+        }
+        assert_eq!(lifecycle_of(&ctl, "w"), if boundary == "quiet" { "PARKED" } else { "ACTIVE" }, "{boundary}");
+        if boundary == "quiet" {
+            ctl.submit(cmd("resume", "set_lifecycle", json!({"instance_id":"w","lifecycle":"ACTIVE"})), Identity::User)
+                .unwrap();
+            ctl.submit(cmd("park", "set_lifecycle", json!({"instance_id":"w","lifecycle":"PARKED"})), Identity::User)
+                .unwrap();
+            let release: bool = ctl
+                .connection()
+                .query_row("SELECT release_park FROM instances WHERE id='w'", [], |r| r.get(0))
+                .unwrap();
+            assert!(!release, "a later user park is not a request to release the driver");
+        }
+        drop(ctl);
+        cleanup(&path);
+    }
 }
 
 #[test]
@@ -898,6 +1090,62 @@ fn autonomy_context_reset_preserves_recovery_and_original_input() {
     cleanup(&path);
 }
 
+#[test]
+fn reset_recovers_discarded_wait_or_completion_without_delivering_old_epoch_input() {
+    for verifying in [false, true] {
+        let (mut ctl, path) = autonomous_control("boundary-reset");
+        ctl.submit(
+            cmd(
+                "held",
+                "submit_input",
+                json!({"instance_id":"i1","envelope_id":"held","text":"after original work","after":"work"}),
+            ),
+            Identity::User,
+        )
+        .unwrap();
+        let wait = json!({"mode":"ALL","conditions":[{"kind":"envelope","envelope_id":"held"}]});
+        let (name, args, extra) = if verifying {
+            (
+                "finish",
+                json!({"status":"success","summary":"A"}),
+                json!({"completion":{"outcome":"success","summary":"A"}}),
+            )
+        } else {
+            ("wait", wait.clone(), json!({"wait":wait}))
+        };
+        let mut extra = extra;
+        extra["entry"] = json!({"role":"assistant","content":"","tool_calls":[{"id":"old-call","type":"function","function":{"name":name,"arguments":args.to_string()}}]});
+        work_turn(&mut ctl, "pending", "i1", extra);
+        assert_eq!(
+            work_state(ctl.connection(), "i1").unwrap()["state"],
+            if verifying { "VERIFYING" } else { "WAITING" }
+        );
+        let fork_path = db_path("boundary-copy");
+        store::fork_database(&path, &fork_path).unwrap();
+        let mut copy = Control::open(&fork_path, "s1", false).unwrap();
+        copy.submit(cmd("fork", "fork_reset", json!({})), Identity::User).unwrap();
+        assert_eq!(work_state(copy.connection(), "i1").unwrap()["state"], "STOPPED");
+        let held: i64 =
+            copy.connection().query_row("SELECT COUNT(*) FROM envelopes WHERE id='held'", [], |r| r.get(0)).unwrap();
+        assert_eq!(held, 0);
+        drop(copy);
+        cleanup(&fork_path);
+        ctl.submit(cmd("reset", "reset_instance", json!({"instance_id":"i1"})), Identity::User).unwrap();
+        let state = work_state(ctl.connection(), "i1").unwrap();
+        assert_eq!(state["state"], "RUNNING");
+        assert!(state["pending_reason"].as_str().unwrap().contains("Context reset"));
+        work_turn(&mut ctl, "fresh", "i1", json!({"completion":{"outcome":"success","summary":"reconciled"}}));
+        ctl.submit(cmd("close", "complete_work", json!({"instance_id":"i1","work_id":"g1"})), Identity::System)
+            .unwrap();
+        assert_eq!(drain(&mut ctl, "i1")["applied"], 0);
+        let old: String =
+            ctl.connection().query_row("SELECT state FROM envelopes WHERE id='held'", [], |r| r.get(0)).unwrap();
+        assert_eq!(old, "SUPERSEDED");
+        drop(ctl);
+        cleanup(&path);
+    }
+}
+
 fn completed_autonomous_control(tag: &str) -> (Control, std::path::PathBuf) {
     let (mut ctl, path) = autonomous_control(tag);
     work_turn(
@@ -1050,6 +1298,132 @@ fn autonomous_control(tag: &str) -> (Control, std::path::PathBuf) {
     .unwrap();
     ctl.submit(cmd("input-1", "submit_input",json!({"instance_id":"i1","envelope_id":"user-1","text":"Implement the agreed change; preserve the public API."})),Identity::User).unwrap();
     (ctl, path)
+}
+
+#[test]
+fn held_input_starts_fresh_admission_once_after_its_named_work_settles() {
+    for settlement in ["cancel_work", "block_work", "complete_work"] {
+        let (mut ctl, path) = autonomous_control(settlement);
+        let later = |id: &str| {
+            cmd(
+                id,
+                "submit_input",
+                json!({"instance_id":"i1","envelope_id":id,"text":id,"after":"work", "checks":[{"id":"new-only","command":"true"}]}),
+            )
+        };
+        assert_eq!(ctl.submit(later("next"), Identity::User).unwrap()["after"], "work");
+        assert_eq!(ctl.submit(later("also-held"), Identity::User).unwrap()["after"], "work");
+        let condition = json!({"kind":"envelope","envelope_id":"next"});
+        assert!(matches!(
+            condition_state(ctl.connection(), "s1", "i1", 0, &condition).unwrap(),
+            ConditionState::Pending
+        ));
+        assert_eq!(
+            ctl.submit(cmd("early", "drain_inbox", json!({"instance_id":"i1"})), Identity::User).unwrap()["applied"],
+            0
+        );
+        if settlement != "cancel_work" {
+            work_turn(
+                &mut ctl,
+                "finish-old",
+                "i1",
+                json!({"completion":{"outcome":"success","summary":"old work finished"}}),
+            );
+        }
+        let actor = if settlement == "cancel_work" { Identity::User } else { Identity::System };
+        ctl.submit(cmd("settle", settlement, json!({"work_id":"g1","instance_id":"i1"})), actor).unwrap();
+        assert!(ctl.submit(later("too-soon"), Identity::User).unwrap_err().contains("wait for admission"));
+        drop(ctl);
+        let mut ctl = Control::open(&path, "s1", false).unwrap();
+        assert!(inbox_ready(ctl.connection(), "i1", 0).unwrap());
+        // A different, explicitly attached scope can win the race between settlement and drain.
+        ctl.submit(cmd("other-work", "create_work", json!({"id":"intervening","instance_id":"i1"})), Identity::User)
+            .unwrap();
+        assert!(!inbox_ready(ctl.connection(), "i1", 0).unwrap());
+        assert_eq!(
+            ctl.submit(cmd("during-other", "drain_inbox", json!({"instance_id":"i1"})), Identity::User).unwrap()
+                ["applied"],
+            0
+        );
+        assert!(matches!(
+            condition_state(ctl.connection(), "s1", "i1", 0, &condition).unwrap(),
+            ConditionState::Pending
+        ));
+        ctl.submit(
+            cmd(
+                "other-input",
+                "submit_input",
+                json!({"instance_id":"i1","envelope_id":"other-input","text":"This belongs to the intervening work"}),
+            ),
+            Identity::User,
+        )
+        .unwrap();
+        work_turn(
+            &mut ctl,
+            "other-finish",
+            "i1",
+            json!({"completion":{"outcome":"success","summary":"Intervening work done"}}),
+        );
+        for method in ["block_work", "complete_work"] {
+            ctl.submit(
+                cmd(&format!("old-{method}"), method, json!({"work_id":"g1","instance_id":"i1"})),
+                Identity::System,
+            )
+            .unwrap();
+            assert_eq!(
+                phase_of(&ctl, "i1"),
+                "COMPLETION_PENDING",
+                "a replay on a terminal work must not consume a newer finish"
+            );
+        }
+        assert_eq!(
+            ctl.submit(
+                cmd("finish-other", "complete_work", json!({"work_id":"intervening","instance_id":"i1"})),
+                Identity::System
+            )
+            .unwrap()["status"],
+            "SUCCEEDED"
+        );
+        let limits: String = ctl
+            .connection()
+            .query_row("SELECT limits_json FROM work_scopes WHERE id='intervening'", [], |r| r.get(0))
+            .unwrap();
+        assert!(!limits.contains("new-only"));
+        for (id, count) in [("apply", 1), ("again", 0)] {
+            assert_eq!(
+                ctl.submit(cmd(id, "drain_inbox", json!({"instance_id":"i1"})), Identity::User).unwrap()["applied"],
+                count
+            );
+        }
+        assert!(matches!(
+            condition_state(ctl.connection(), "s1", "i1", 0, &condition).unwrap(),
+            ConditionState::Satisfied
+        ));
+        let new_work = budget_work(ctl.connection(), "i1").unwrap().unwrap();
+        assert_ne!(new_work, "g1");
+        let (assigned, entries, delivered): (String,i64,i64)=ctl.connection().query_row("SELECT work_id,(SELECT COUNT(*) FROM context_entries WHERE envelope_id='next'),(SELECT COUNT(*) FROM events WHERE kind='input' AND json_extract(payload_json,'$.envelope_id')='next') FROM work_inputs WHERE envelope_id='next'",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+        assert_eq!((assigned, entries, delivered), (new_work.clone(), 1, 1));
+        assert_eq!(ctl.submit(later("third"), Identity::User).unwrap()["after"], "work");
+        let bound:String=ctl.connection().query_row("SELECT json_extract(payload_json,'$.after_work_id') FROM envelopes WHERE id='third' AND state='AFTER_WORK'",[],|r|r.get(0)).unwrap();
+        assert_eq!(bound, new_work);
+        let owner_of = |ctl: &Control, id: &str| {
+            ctl.connection()
+                .query_row("SELECT work_id FROM work_inputs WHERE envelope_id=?1", [id], |r| r.get::<_, String>(0))
+                .optional()
+                .unwrap()
+        };
+        assert_eq!(owner_of(&ctl, "also-held"), None, "the first checked input opened a work inside the drain");
+        ctl.submit(cmd("close-new", "cancel_work", json!({"work_id":new_work})), Identity::User).unwrap();
+        assert_eq!(drain(&mut ctl, "i1")["applied"], 1);
+        let second = owner_of(&ctl, "also-held").unwrap();
+        assert_ne!(second, new_work);
+        assert_eq!(owner_of(&ctl, "third"), None, "sequence order survives intervening works");
+        ctl.submit(cmd("close-second", "cancel_work", json!({"work_id":second})), Identity::User).unwrap();
+        assert_eq!(drain(&mut ctl, "i1")["applied"], 1);
+        assert!(owner_of(&ctl, "third").is_some());
+        drop(ctl);
+        cleanup(&path);
+    }
 }
 
 fn work_turn(ctl: &mut Control, tag: &str, instance: &str, extra: Json) -> Json {

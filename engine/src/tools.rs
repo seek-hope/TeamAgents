@@ -321,6 +321,7 @@ struct StagedWrite {
     temp: PathBuf,
     committed: bool,
     preserve: bool,
+    strict_parent: bool,
 }
 
 impl StagedWrite {
@@ -330,6 +331,16 @@ impl StagedWrite {
         }
         let root = std::fs::canonicalize(root).map_err(|e| e.to_string())?;
         let parent = member_parent(&root, path, true)?;
+        Self::at_parent(&root, path, content, parent, false)
+    }
+
+    fn at_parent(
+        root: &Path,
+        path: &Path,
+        content: &[u8],
+        parent: std::fs::File,
+        strict_parent: bool,
+    ) -> Result<Self, String> {
         let parent_path = PathBuf::from(format!("/proc/self/fd/{}", parent.as_raw_fd()));
         let leaf = parent_path.join(path.file_name().ok_or("file path required")?);
         let permissions = match std::fs::symlink_metadata(&leaf) {
@@ -339,7 +350,16 @@ impl StagedWrite {
             Err(e) => return Err(e.to_string()),
         };
         let temp = parent_path.join(format!(".teamagents-{}.tmp", uuid::Uuid::new_v4()));
-        let staged = Self { root, path: path.to_path_buf(), parent, leaf, temp, committed: false, preserve: false };
+        let staged = Self {
+            root: root.to_owned(),
+            path: path.to_path_buf(),
+            parent,
+            leaf,
+            temp,
+            committed: false,
+            preserve: false,
+            strict_parent,
+        };
         let mut file =
             std::fs::OpenOptions::new().write(true).create_new(true).open(&staged.temp).map_err(|e| e.to_string())?;
         // Restrict the staging inode before it contains any old private data.
@@ -357,12 +377,34 @@ impl StagedWrite {
     fn check(&self, expected: Option<&str>, control: &TurnControl) -> Result<(), String> {
         control.check()?;
         check_member_fd(&self.root, &self.parent)?;
+        if self.strict_parent {
+            use std::os::unix::fs::MetadataExt;
+            let relative = self.path.strip_prefix(&self.root).map_err(|e| e.to_string())?;
+            let current = crate::v2::attachments::open_confined(
+                &self.root,
+                relative.parent().ok_or("invalid restore path")?,
+                true,
+            )?;
+            let current = current.metadata().map_err(|e| e.to_string())?;
+            let pinned = self.parent.metadata().map_err(|e| e.to_string())?;
+            if (current.dev(), current.ino()) != (pinned.dev(), pinned.ino()) {
+                return Err("workspace directory changed during rewind".into());
+            }
+        }
         // Do not follow a leaf swapped by an external writer while staging.
         if std::fs::symlink_metadata(&self.leaf).is_ok_and(|meta| !meta.is_file()) {
             return Err("file changed while writing".into());
         }
         if let Some(expected) = expected {
-            let mut current = open_member_file(&self.root, &self.path).map_err(|e| format!("file conflict: {e}"))?;
+            let mut current = if self.strict_parent {
+                std::fs::OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                    .open(&self.leaf)
+                    .map_err(|e| e.to_string())?
+            } else {
+                open_member_file(&self.root, &self.path).map_err(|e| format!("file conflict: {e}"))?
+            };
             if !file_hash(&mut current, control)?.eq_ignore_ascii_case(expected) {
                 return Err("file conflict: expected_sha256 no longer matches; read the file again".into());
             }
@@ -431,6 +473,38 @@ fn commit_batch(
         }
     }
     Ok(())
+}
+
+/// Hold native writer locks and prepare rollback copies before the control-plane fence.
+pub(crate) fn stage_rewind(
+    root: &Path,
+    locks: &Path,
+    files: &[(String, Vec<u8>, Vec<u8>)],
+) -> Result<impl FnMut() -> Result<usize, String>, String> {
+    let root = std::fs::canonicalize(root).map_err(|e| e.to_string())?;
+    let mut guards = Vec::new();
+    let mut staged = Vec::new();
+    let mut expected = Vec::new();
+    for (relative, current, original) in files {
+        let path = root.join(relative);
+        guards.push(acquire_path_lock(Some(locks), &path)?);
+        let parent = crate::v2::attachments::open_confined(
+            &root,
+            Path::new(relative).parent().ok_or("invalid restore path")?,
+            true,
+        )?;
+        let write =
+            StagedWrite::at_parent(&root, &path, original, parent.try_clone().map_err(|e| e.to_string())?, true)?;
+        let rollback = StagedWrite::at_parent(&root, &path, current, parent, true)?;
+        expected.push(format!("{:x}", Sha256::digest(current)));
+        staged.push((write, rollback, format!("{:x}", Sha256::digest(original))));
+    }
+    Ok(move || {
+        let _guards = &guards;
+        let expected = expected.iter().map(String::as_str).collect::<Vec<_>>();
+        commit_batch(&mut staged, &expected, &TurnControl::default())?;
+        Ok(staged.len())
+    })
 }
 
 fn positive_arg(args: &Json, key: &str, default: u64) -> Result<u64, String> {
@@ -557,11 +631,11 @@ fn normalize(path: &Path) -> PathBuf {
 
 /// Images a model can actually look at. Base64 turns a 5 MiB file into ~6.7 MiB
 /// of request body, so this is the ceiling for one picture.
-const MAX_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
+pub(crate) const MAX_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
 
 /// Media type by magic bytes; a wrong label is worse than a refusal because the
 /// provider renders whatever it is told.
-fn image_media_type(bytes: &[u8]) -> Option<&'static str> {
+pub(crate) fn image_media_type(bytes: &[u8]) -> Option<&'static str> {
     match bytes {
         [0x89, b'P', b'N', b'G', ..] => Some("image/png"),
         [0xFF, 0xD8, 0xFF, ..] => Some("image/jpeg"),
@@ -631,20 +705,40 @@ pub fn expand_image_reference(root: &Path, artifacts: Option<&Path>, message: &m
     let reference = envelope.get("output").unwrap_or(&envelope).clone();
     let Some(label) = reference["image"].as_str() else { return };
     let media_type = reference["media_type"].as_str().unwrap_or("image/png");
+    // Only an explicit script image has a digest and accompanying text. It must refer to the
+    // current member's own output, never a workspace path supplied by a script or server.
+    let caption = reference["caption"].as_str().unwrap_or("");
+    let digest = reference.get("image_sha256");
+    if digest.is_some()
+        && (!label.starts_with("/artifacts/exec-")
+            || label.contains("..")
+            || label[ARTIFACTS_PREFIX.len()..].contains('/'))
+    {
+        message["content"] = json!("[invalid script image reference]");
+        return;
+    }
     if !images {
-        message["content"] = json!(IMAGE_PLACEHOLDER);
+        message["content"] = if caption.is_empty() {
+            json!(IMAGE_PLACEHOLDER)
+        } else {
+            json!(format!("{caption}\n{IMAGE_PLACEHOLDER}"))
+        };
         return;
     }
     match load_image_reference(root, artifacts, label, media_type) {
         Ok(bytes) => {
+            if digest.is_some_and(|d| d.as_str() != Some(&format!("{:x}", Sha256::digest(&bytes)))) {
+                message["content"] = json!(format!("{caption}\n[image changed since the tool receipt]"));
+                return;
+            }
             let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
             message["content"] = json!([
-                {"type": "text", "text": format!("image {label} ({media_type}, {} bytes)", bytes.len())},
+                {"type": "text", "text": format!("{caption}{}image {label} ({media_type}, {} bytes)", if caption.is_empty() {""} else {"\n"}, bytes.len())},
                 {"type": "image_url", "image_url": {"url": format!("data:{media_type};base64,{encoded}")}},
             ]);
         }
         Err(reason) => {
-            message["content"] = json!(format!("[image {label} could not be loaded: {reason}]"));
+            message["content"] = json!(format!("{caption}[image {label} could not be loaded: {reason}]"));
         }
     }
 }
@@ -917,14 +1011,22 @@ fn workspace_executor_with_control(
                 } else {
                     &root
                 };
-                atomic_write(
-                    file_root,
-                    lock_dir.as_deref(),
-                    &path,
-                    text.replacen(&old, new, 1).as_bytes(),
-                    Some(&hash),
-                    control,
-                )?;
+                let edited = text.replacen(&old, new, 1);
+                atomic_write(file_root, lock_dir.as_deref(), &path, edited.as_bytes(), Some(&hash), control)?;
+                if let Some(record) = &control.native_edit {
+                    let key = arg("path");
+                    if let Some(relative) = path
+                        .strip_prefix(&root)
+                        .ok()
+                        .filter(|_| root.join(&key) == path && !Path::new(&key).is_absolute())
+                        .and_then(Path::to_str)
+                    {
+                        *record.lock().unwrap_or_else(|e| e.into_inner()) = Some(json!({
+                            "path":relative, "before":hash, "after":format!("{:x}", Sha256::digest(edited.as_bytes())),
+                            "offset":at
+                        }));
+                    }
+                }
                 Ok(json!(edit_diff(&path, &text, at, &old, new)))
             }
             "edit_files" => edit_batch(args),
@@ -2156,6 +2258,7 @@ pub(crate) struct V2Toolkit {
     // D-374: an `Arc` so a codemode script's host closure can hold it in a `'static` callback; the members of
     // the toolkit only ever call `&self` methods, so sharing it is sound.
     bound: Arc<crate::bound::BoundTools>,
+    services: crate::bound::MemberServices,
     // D-374: codemode's `store`/`load` values. D-376 persists them under the instance's state root, so a
     // daemon restart does not lose them.
     codemode_store: Arc<std::sync::Mutex<std::collections::BTreeMap<String, Json>>>,
@@ -2170,6 +2273,7 @@ pub(crate) struct V2Toolkit {
 /// `store`/`load` values live between restarts.
 #[derive(Default)]
 pub(crate) struct ToolWiring {
+    pub mcp_policy: teamagents_core::v2::control::mcp_policy::McpPolicy,
     pub is_leader: bool,
     pub profile_tools: Vec<Json>,
     pub storage: Option<crate::v2::storage::Storage>,
@@ -2199,7 +2303,8 @@ impl V2Toolkit {
         // Bound MCP services load at driver boot: a required service that is
         // unavailable fails the boot honestly, an optional one only drops its
         // capability (same contract as the legacy member start, plan §7).
-        let bound = Arc::new(crate::bound::BoundTools::for_member(&catalog, &bindings, &root, wiring.is_leader)?);
+        let mut services = crate::bound::MemberServices::new(&catalog, &bindings, &root, wiring.is_leader)?;
+        let bound = Arc::new(services.apply(&wiring.mcp_policy)?);
         // D-405: durable memory hangs off the *base* directory (the one holding `sessions.json`), so every named
         // session under it shares one store. Only the driver knows where that is — its own `state_root` is the
         // instance directory — so the base arrives in the wiring.
@@ -2235,6 +2340,7 @@ impl V2Toolkit {
             executor: Arc::new(executor),
             native,
             bound,
+            services,
             codemode_store,
             wiring,
             root,
@@ -2289,7 +2395,27 @@ impl V2Toolkit {
     /// Reap bound MCP server processes on driver shutdown (§6.4); the
     /// clients' own Drop is the backstop.
     pub(crate) fn close_mcp(&self) {
-        self.bound.close();
+        self.services.close();
+    }
+
+    pub(crate) async fn reconcile_mcp(
+        &mut self,
+        policy: teamagents_core::v2::control::mcp_policy::McpPolicy,
+    ) -> Result<(), String> {
+        let mut services = std::mem::take(&mut self.services);
+        let (slots, bound) = tokio::task::spawn_blocking(move || {
+            let projection = services.apply(&policy);
+            (services, projection)
+        })
+        .await
+        .map_err(|e| format!("MCP transition worker: {e}"))?;
+        self.services = slots;
+        self.bound = Arc::new(bound?);
+        Ok(())
+    }
+
+    pub(crate) fn service_status(&self) -> Json {
+        self.services.status()
     }
 
     /// Execute one fixed intent. Same-response tool calls run sequentially
@@ -2412,7 +2538,15 @@ impl V2Toolkit {
                     None => json!({"name": call.name, "args_hash":call.args_hash,"status": call.status}),
                 })
                 .collect();
-            if let Some(error) = outcome.error {
+            let output = match outcome.image {
+                Some(bytes) => control.check().and_then(|()| {
+                    let (mut file, reference) = create_output_file(OutputLocation { root:self.artifacts.as_deref(), prefix:ARTIFACTS_PREFIX })?;
+                    file.write_all(&bytes).and_then(|()|file.sync_all()).map_err(|e|format!("store script image: {e}"))?;
+                    Ok(json!({"image":reference,"image_sha256":format!("{:x}",Sha256::digest(&bytes)),"media_type":image_media_type(&bytes),"bytes":bytes.len(),"caption":outcome.output}))
+                }),
+                None => Ok(json!(outcome.output)),
+            };
+            if let Some(error) = outcome.error.or_else(|| output.as_ref().err().cloned()) {
                 receipt.ok = false;
                 let class = match outcome.kind {
                     crate::codemode::Kind::Timeout => "codemode_timeout",
@@ -2428,10 +2562,11 @@ impl V2Toolkit {
                 receipt.error = Some(ReceiptError { class, reason: error });
             } else {
                 receipt.ok = true;
+                let output = output.expect("output error handled above");
                 receipt.content = if calls.is_empty() {
-                    json!({"output": outcome.output}).to_string()
+                    json!({"output": output}).to_string()
                 } else {
-                    json!({"output": outcome.output, "calls": calls}).to_string()
+                    json!({"output": output, "calls": calls}).to_string()
                 };
             }
             return receipt;
@@ -2481,9 +2616,17 @@ pub struct TurnControl {
     active: Arc<Mutex<()>>,
     /// D-470: the hosts this member's live `web` grants allow; empty means no allowlist.
     domains: Vec<String>,
+    // Populated only by a direct native edit after its checked write commits.
+    native_edit: Option<Arc<Mutex<Option<Json>>>>,
 }
 
 impl TurnControl {
+    pub(crate) fn record_native_edit(&mut self) -> Arc<Mutex<Option<Json>>> {
+        let record = Arc::new(Mutex::new(None));
+        self.native_edit = Some(record.clone());
+        record
+    }
+
     pub fn with_domains(domains: Vec<String>) -> Self {
         TurnControl { domains, ..Default::default() }
     }

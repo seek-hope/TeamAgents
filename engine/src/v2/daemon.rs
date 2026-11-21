@@ -409,9 +409,25 @@ async fn handle(request: &Json, supervisor: &SupervisorHandle, session_db: &Path
     }
     let method = request.get("method").and_then(|v| v.as_str()).unwrap_or("");
     let params = request.get("params").cloned().unwrap_or(json!({}));
+    if method == "rewind_points" && params.get("files").is_some() {
+        let Some(key) = params["envelope"].as_str().filter(|s| !s.is_empty() && params["files"] == true) else {
+            return reply(false, json!("file preview requires files=true and an envelope"));
+        };
+        let db = session_db.to_owned();
+        let workspace = PathBuf::from(&facts.workspace);
+        let key = key.to_owned();
+        let state = PathBuf::from(&facts.state_root);
+        return match tokio::task::spawn_blocking(move || super::file_rewind::preview(&db, &workspace, &state, &key))
+            .await
+        {
+            Ok(Ok(preview)) => reply(true, preview),
+            Ok(Err(error)) => reply(false, json!(error)),
+            Err(error) => reply(false, json!(format!("file preview: {error}"))),
+        };
+    }
     match method {
-        "checkpoint" | "events" | "history" | "search_tree" | "tasks" | "grants" | "approvals" | "work_scopes"
-        | "surfaces" | "previews" | "inputs" => {
+        "rewind_points" | "checkpoint" | "events" | "history" | "search_tree" | "tasks" | "grants" | "approvals"
+        | "work_scopes" | "surfaces" | "previews" | "inputs" => {
             // §9: previews are the supervisor's in-memory streaming text, not a table; every other read comes from
             // the database. Passing the payload keeps previews inside `read_method`'s dispatch, which is what
             // `docs/PROTOCOL.md` is generated from.
@@ -437,6 +453,7 @@ async fn handle(request: &Json, supervisor: &SupervisorHandle, session_db: &Path
             }) {
                 Ok(mut result) => {
                     if method == "checkpoint" {
+                        result["snapshot"]["mcp_drivers"] = supervisor.service_status();
                         result["snapshot"]["environment"] = json!({
                             "workspace": facts.workspace, "execution": "host",
                             "permissions": facts.permissions, "sources": facts.sources,
@@ -554,7 +571,7 @@ fn read_snapshot(conn: &rusqlite::Connection, mcp: &Json, sessions: &Json, model
         }
     }
     let mut stmt = conn
-        .prepare("SELECT id, lifecycle, phase, profile_json FROM instances ORDER BY id")
+        .prepare("SELECT id, lifecycle, phase, profile_json, CASE WHEN is_leader=0 THEN worker_lifetime END FROM instances ORDER BY id")
         .map_err(|e| format!("snapshot prepare: {e}"))?;
     let rows = stmt
         .query_map([], |row| {
@@ -565,7 +582,7 @@ fn read_snapshot(conn: &rusqlite::Connection, mcp: &Json, sessions: &Json, model
             let model = profile["catalog_key"].as_str().map(Json::from).unwrap_or_else(|| profile["model"].clone());
             Ok(json!({"id": id, "lifecycle": row.get::<_, String>(1)?,
                       "phase": row.get::<_, String>(2)?, "model": model, "reason": reason,
-                      "effort": profile["options"]["reasoning_effort"],
+                      "lifetime": row.get::<_,Option<String>>(4)?, "effort": profile["options"]["reasoning_effort"],
                       "can_run_shell": can_shell, "diagnosis": work.activities.get(&id)}))
         })
         .map_err(|e| format!("snapshot query: {e}"))?;
@@ -632,7 +649,7 @@ fn read_snapshot(conn: &rusqlite::Connection, mcp: &Json, sessions: &Json, model
         "work_policy_version": if work_enabled { json!(1) } else { Json::Null },
         // D-413: the configured MCP services and their credential state, so a client that cannot read this
         // machine's config (the TUI is one) can still tell a user what the session bound and what to do next.
-        "mcp": mcp,
+        "mcp": mcp, "mcp_policy":teamagents_core::v2::control::mcp_policy::read(conn)?,
         // D-429: the named sessions under this base, so a TUI can offer them without reading the filesystem
         "sessions": sessions,
         // D-473: the configured model catalog, for the TUI's model/effort menu
@@ -791,6 +808,15 @@ fn read_method(
             // Head and delivered page are read from the same SQLite snapshot.
             read_events(conn, params)
         }
+        "rewind_points" => {
+            if let Some(key) = params["envelope"].as_str() {
+                teamagents_core::v2::control::rewind::preview(conn, key)
+            } else if params["draft"] == true {
+                teamagents_core::v2::control::rewind::draft(conn)
+            } else {
+                teamagents_core::v2::control::rewind::points(conn, params["before"].as_i64().unwrap_or(i64::MAX))
+            }
+        }
         "search_tree" => {
             let session: String = conn
                 .query_row("SELECT session_id FROM instances WHERE is_leader=1 ORDER BY rowid LIMIT 1", [], |row| {
@@ -824,12 +850,19 @@ fn read_method(
                         c.envelope_id, i.workspace_ref, NULLIF(w.work_id,'')
                      FROM context_entries c LEFT JOIN instances i ON i.id = c.instance_id
                      LEFT JOIN work_inputs w ON w.instance_id=c.instance_id AND w.epoch=c.epoch AND w.envelope_id=c.envelope_id
-                     WHERE c.instance_id = ?1 AND (?3 IS NULL OR (c.epoch,c.idx) < (?3,?4))
+                     WHERE c.instance_id = ?1 AND (?6=0 OR c.epoch=i.context_epoch) AND (?3 IS NULL OR (c.epoch,c.idx) < (?3,?4))
                      ORDER BY c.epoch DESC, c.idx DESC LIMIT ?2",
                 )
                 .map_err(|e| format!("history prepare: {e}"))?;
             let mut rows = stmt
-                .query(rusqlite::params![instance, limit + 1, before_epoch, before_idx, wire::EVENT_PAGE_BYTES as i64])
+                .query(rusqlite::params![
+                    instance,
+                    limit + 1,
+                    before_epoch,
+                    before_idx,
+                    wire::EVENT_PAGE_BYTES as i64,
+                    params["current_epoch"] == true
+                ])
                 .map_err(|e| format!("history query: {e}"))?;
             let mut entries = Vec::new();
             let mut bytes = 0;
@@ -925,10 +958,10 @@ fn read_method(
             let mut stmt = conn
                 .prepare(
                     "SELECT e.id, e.sequence, e.epoch, length(CAST(e.payload_json AS BLOB)),
-                        COALESCE((SELECT MAX(r.revision) FROM input_revisions r WHERE r.envelope_id = e.id), 0)
+                        COALESCE((SELECT MAX(r.revision) FROM input_revisions r WHERE r.envelope_id = e.id), 0), e.state
                  FROM envelopes e JOIN instances i ON i.id = e.recipient AND i.session_id = e.session_id
                  WHERE e.recipient = COALESCE(?1,(SELECT id FROM instances WHERE is_leader=1)) AND e.epoch = i.context_epoch AND e.sender = 'user'
-                   AND e.kind = 'user_input' AND e.state = 'ACCEPTED' AND e.sequence > ?2
+                   AND e.kind = 'user_input' AND e.state IN ('ACCEPTED','DEFERRED','AFTER_WORK') AND e.sequence > ?2
                  ORDER BY e.sequence LIMIT ?3",
                 )
                 .map_err(|e| format!("inputs: {e}"))?;
@@ -957,6 +990,7 @@ fn read_method(
                     .map_err(|e| format!("inputs: {e}"))?;
                 inputs.push(json!({"envelope_id": id, "sequence": row.get::<_, i64>(1).map_err(|e| e.to_string())?,
                     "epoch": row.get::<_, i64>(2).map_err(|e| e.to_string())?,
+                    "state":row.get::<_, String>(5).map_err(|e| e.to_string())?,
                     "payload": serde_json::from_str::<Json>(&raw).map_err(|e| format!("inputs payload: {e}"))?,
                     "revision": row.get::<_, i64>(4).map_err(|e| e.to_string())?}));
                 payload_bytes += bytes;

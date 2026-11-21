@@ -102,6 +102,7 @@ class FakeDaemon:
                 params = frame.get("params", {})
                 if method == "checkpoint":
                     out = {"snapshot": {"instances": self.instances, "tasks": self.tasks, "work": WORK,
+                                        "environment": {"workspace": os.path.dirname(self.sock_path)},
                                         "role_models": self.roles, "models": [
                                             {"key": "lead", "model": "deepseek-flash", "provider": "fixture"},
                                             {"key": "worker-key", "model": "deepseek-flash", "provider": "second"}]},
@@ -170,6 +171,25 @@ class FakeDaemon:
                             task["status"] = "CANCELLED"
                     self.emit("task_cancelled", "i-worker", {"task_id": task_id, "reason": "tui"})
                     out = {"task_id": task_id, "status": "CANCELLED"}
+                elif method == "rewind_points" and params.get("files"):
+                    out = {"mode": "conversation_and_files", "scope": "git_tracked_workspace", "envelope": "pty-point",
+                           "epoch": 0, "head": 4, "revision": 2, "files": [{"path": "sample", "status": "snapshot_difference"}],
+                           "preview_digest": "pty-token", "apply_available": True}
+                elif method == "rewind_points":
+                    out = {"mode": "conversation", "envelope": "pty-point", "head": 4, "revision": 2,
+                           "epoch": 0, "draft": {"text": "/quit"}}
+                elif method == "rewind_conversation" and frame.get("command_id"):
+                    expected = {"mode": "conversation", "envelope": "pty-point", "head": 4, "revision": 2, "epoch": 0}
+                    if params.get("mode") == "conversation_and_files":
+                        expected.update(mode="conversation_and_files", preview_digest="pty-token")
+                    assert params == expected, params
+                    out = {"envelope": "pty-point", "draft": {"text": "/quit"}, "submitted": False}
+                elif method == "send_rewind_draft" and frame.get("command_id"):
+                    out = {"applied": True}
+                elif method == "request_compaction" and frame.get("command_id"):
+                    out = {"queued": True, "epoch": 0}
+                elif method == "submit_input" and params.get("after") == "work" and frame.get("command_id"):
+                    out = {"queued": True, "after": "work", "deferred": True, "applied": False}
                 elif method == "submit_input" and frame.get("command_id"):
                     text = params.get("text", "")
                     self.history.append({"idx": len(self.history) + 1, "kind": "user",
@@ -210,7 +230,7 @@ def main():
 
     pid, fd = pty.fork()
     if pid == 0:
-        os.execvpe(BIN, [BIN, "--daemon", daemon.sock_path], ENV)
+        os.execvpe(BIN, [BIN, "--daemon", daemon.sock_path], dict(ENV, SHELL="/bin/sh", ENV="/dev/null"))
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 36, 96, 0, 0))
     failures = []
     scr = Screen(96, 36)
@@ -491,6 +511,79 @@ def main():
     os.write(fd, b"/s\x1b")
     scr.feed(read_all(fd, 0.4).decode("utf-8", "replace"))
     expect("/s", "cancelled completion keeps the draft")
+
+    # Both commands acknowledge queued work; neither claims the provider already acted.
+    # Use a wide conversation pane so the receipt assertion is independent of wrapping.
+    scr = Screen(220, 48)
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 48, 220, 0, 0))
+    os.write(fd, b"\x17")  # clear the retained /s draft
+    scr.feed(read_all(fd, 0.4).decode("utf-8", "replace"))
+    new_frames = len(daemon.frames)
+    os.write(fd, b"/compact preserve units\r")
+    scr.feed(read_all(fd, 0.8).decode("utf-8", "replace"))
+    expect("Compaction requested, not yet completed", "manual compaction receipt")
+    os.write(fd, b"/later check units\r")
+    scr.feed(read_all(fd, 0.8).decode("utf-8", "replace"))
+    expect("waiting for the current work to settle", "after-work receipt")
+    writes = [f for f in daemon.frames[new_frames:] if "command_id" in f]
+    if ([f["method"] for f in writes] != ["request_compaction", "submit_input"] or
+            writes[0]["params"] != {"instance_id": "i-leader", "focus": "preserve units"} or
+            any(writes[1]["params"].get(k) != v for k, v in
+                {"after": "work", "text": "check units", "instance_id": "i-leader"}.items())):
+        failures.append("maintenance and after-work input did not use separate, Leader-bound commands")
+
+    # The operator shell runs locally in the reported workspace. A failed view and an
+    # interactive shell never send input. Only an explicit Enter sends reviewed stdout.
+    before_shell = len(daemon.frames)
+    def shell_step(data, wait_for, label):
+        os.write(fd, data)
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            raw = read_all(fd, 0.2)
+            scr.feed(raw.decode("utf-8", "replace"))
+            if (isinstance(wait_for, bytes) and wait_for in raw or
+                    isinstance(wait_for, str) and wait_for in "\n".join(scr.lines())):
+                return
+        failures.append(f"{label}: terminal did not reach {wait_for!r}")
+
+    shell_step(b"/shell view printf private-view; exit 7\r", "exit status: 7", "view returned to TUI")
+    expect("private-view", "private shell stdout")
+    expect("exit status: 7", "shell failure restores the TUI")
+    shell_step(b"/shell\r", b"\x1b[?1049l", "switched to the shell terminal")
+    shell_step(b"pwd > operator-cwd; exit\n", "Local shell exit status: 0", "interactive shell exited")
+    marker = os.path.join(workdir, "operator-cwd")
+    if not os.path.isfile(marker) or open(marker).read().strip() != os.path.realpath(workdir):
+        failures.append("interactive shell did not use the session workspace")
+    shell_step(b"/shell draft printf /quit\r", "Review the draft before sending", "shell output staged")
+    expect("Review the draft before sending", "shell review boundary")
+    if any("command_id" in f for f in daemon.frames[before_shell:]):
+        failures.append("local shell sent a business command without review")
+    os.write(fd, b"\r")
+    scr.feed(read_all(fd, 0.6).decode("utf-8", "replace"))
+    writes = [f for f in daemon.frames[before_shell:] if "command_id" in f]
+    if len(writes) != 1 or writes[0]["method"] != "submit_input" or writes[0]["params"]["text"] != "Shell output:\n/quit":
+        failures.append("reviewed shell output did not submit once as plain Leader input")
+
+    # Follow the preview and the editable draft all the way to the socket. A slash in
+    # recovered text is input, not a local command; Esc may discard without sending.
+    before_rewind = len(daemon.frames)
+    shell_step(b"/rewind preview pty-point\r", "Conversation only.", "preview rewind boundary")
+    shell_step(b"/rewind apply\r", "Rewind draft opened, not sent", "reopen prompt")
+    shell_step(b"\x1b", "Local rewind draft discarded", "dismiss unsent draft")
+    if [f["method"] for f in daemon.frames[before_rewind:] if "command_id" in f] != ["rewind_conversation"]:
+        failures.append("preview, apply or discard submitted an unreviewed prompt")
+    os.write(fd, b"/rewind draft\r")
+    scr.feed(read_all(fd, 0.6).decode("utf-8", "replace"))
+    os.write(fd, b" edited\r")
+    scr.feed(read_all(fd, 0.6).decode("utf-8", "replace"))
+    sent = [f for f in daemon.frames[before_rewind:] if f["method"] == "send_rewind_draft"]
+    if len(sent) != 1 or sent[0]["params"].get("text") != "/quit edited" or sent[0]["params"].get("source") != "pty-point":
+        failures.append("reviewed rewind draft did not send exactly once as edited text")
+
+    shell_step(b"/rewind files pty-point\r", "snapshot_difference", "preview tracked file changes")
+    shell_step(b"/rewind apply\r", "Rewind draft opened, not sent", "restore tracked files and prompt")
+    if [f["params"].get("preview_digest") for f in daemon.frames if f["method"] == "rewind_conversation"] != [None, "pty-token"]:
+        failures.append("combined rewind did not confirm the displayed file preview")
 
     # Exit detaches only; it sends no daemon-side business command.
     before_exit = sum("command_id" in f for f in daemon.frames)

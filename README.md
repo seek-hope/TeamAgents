@@ -6,7 +6,7 @@ TeamAgents is a Rust-native, local-first agent runtime. A Leader works with the 
 to other instances, and persists execution, approvals, context, costs and evidence in one authoritative SQLite
 store per session. The TUI and headless clients share the same daemon and phase machine.
 
-The current format is **database schema 10**, **socket protocol 2** and **work policy 1**.
+The current format is **database schema 13**, **socket protocol 2** and **work policy 1**.
 
 ## Current capabilities
 
@@ -90,7 +90,7 @@ Common TUI keys:
 - `Ctrl+O` expands or folds tool previews. `Ctrl+G` switches previews and source.
 
 Slash commands are `/help`, `/sessions`, `/interrupt`, `/quit`, `/model`, `/attach`, `/detach`, `/queue`, `/tree`,
-`/edit`, `/team`, `/chat`, `/tasks`, `/activity` and `/inspect`. Completion fills a command but submits only after
+`/edit`, `/shell`, `/mcp`, `/rewind`, `/compact`, `/later`, `/team`, `/chat`, `/tasks`, `/activity` and `/inspect`. Completion fills a command but submits only after
 a separate Enter. For file references, type
 `@PATH` and Tab, then accept a candidate; files are sent only with your message.
 
@@ -139,7 +139,7 @@ See [the architecture guide](docs/ARCHITECTURE.md) for state machines and data r
 
 ## Current evidence
 
-The full local gate passed **874 Rust tests** (core 201, engine 551, TUI 122).
+The full local gate passed **893 Rust tests** (core 210, engine 561, TUI 122).
 Formal material contains **387 configurations across 47 modules**:
 
 - **63 positive configurations in 60 traversals**;

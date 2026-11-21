@@ -6,7 +6,7 @@ TeamAgents 是一个 Rust 原生、本地优先的智能体运行时。Leader �
 实例，并在每个会话的权威 SQLite 存储中持久化执行状态、审批、上下文、用量和证据。TUI 与无界面客户端
 共享同一个 daemon 和阶段机。
 
-当前格式为 **数据库 schema 10**、**socket protocol 2** 和 **work policy 1**。
+当前格式为 **数据库 schema 13**、**socket protocol 2** 和 **work policy 1**。
 
 ## 当前能力
 
@@ -81,7 +81,7 @@ engine/target/debug/teamagents search_tree --json
 - `Ctrl+O` 展开或折叠工具预览。`Ctrl+G` 在预览和源码之间切换。
 
 斜杠命令包括 `/help`、`/sessions`、`/interrupt`、`/quit`、`/model`、`/attach`、`/detach`、
-`/queue`、`/tree`、`/edit`、`/team`、`/chat`、`/tasks`、`/activity` 和 `/inspect`。补全只填入命令，仍需按 Enter 才会提交。
+`/queue`、`/tree`、`/edit`、`/shell`、`/mcp`、`/rewind`、`/compact`、`/later`、`/team`、`/chat`、`/tasks`、`/activity` 和 `/inspect`。补全只填入命令，仍需按 Enter 才会提交。
 输入 `@PATH` 后按 Tab 并选择候选，
 可以暂存文件引用；文件只会随你之后发送的消息一起提交。
 
@@ -128,7 +128,7 @@ daemon + supervisor + 每个实例的 driver
 
 ## 当前证据
 
-最新完整本地门禁已通过 **874 项 Rust 测试**（core 201、engine 551、TUI 122）。
+最新完整本地门禁已通过 **893 项 Rust 测试**（core 210、engine 561、TUI 122）。
 形式化材料包含 **47 个模块、387 个配置**：
 
 - **63 个正向配置，60 次遍历**；

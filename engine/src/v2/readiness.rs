@@ -36,6 +36,16 @@ pub(crate) fn tail_is_addressed(conn: &rusqlite::Connection, id: &str, epoch: i6
     // row: a compression summary precedes its retained tail even at a higher idx.
     // Use the primary-key tail index rather than sorting the entire visible
     // history on every checkpoint. Only a summary-only view needs a second probe.
+    let held: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM meta m JOIN instances i ON i.id=?1
+        WHERE m.key='rewind_draft' AND json_extract(m.value,'$.instance')=i.id AND json_extract(m.value,'$.epoch')=?2
+          AND json_extract(m.value,'$.head')=i.context_head)",
+        rusqlite::params![id, epoch],
+        |r| r.get(0),
+    )?;
+    if held {
+        return Ok(true);
+    } // Reopening an editable prompt does not schedule a turn.
     let mut tail: Option<String> = conn
         .query_row(
             "SELECT kind FROM context_entries WHERE instance_id = ?1 AND epoch = ?2

@@ -289,7 +289,6 @@ fn retired_commands_are_local_and_approval_arrival_does_not_steal_typing() {
         "/topology",
         "/work_scopes cancel x",
         "/switch other",
-        "/mcp",
         "/status",
         "/sessions extra",
         "/help extra",
@@ -298,6 +297,8 @@ fn retired_commands_are_local_and_approval_arrival_does_not_steal_typing() {
         assert!(app.handle_key(key(KeyCode::Enter)).is_none(), "{command}");
         assert!(app.entries.last().unwrap().text.contains("teamagents --help"));
     }
+    app.composer.set_text("/mcp");
+    assert_eq!(app.handle_key(key(KeyCode::Enter)), Some(V2Effect::McpStatus));
     app.composer.set_text("dr");
     app.apply_approvals(json!({"approvals": [{"id": "ap-1"}]}));
     assert_eq!(app.focus, Focus::Composer);

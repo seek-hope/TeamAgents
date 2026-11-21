@@ -19,9 +19,8 @@
 //! * **The payload still does not enter the context.** `V2Codemode.tla` states that rule and its negative
 //!   control refutes a build that pushed nested payloads.
 //!
-//! Ceiling (D-376): `image()` validates and accounts for an image item, but this build has no image flow into
-//! the model context (`engine/src/providers/*` says so where the placeholder lives), so an image is reported
-//! to the model as a short marker rather than a multimodal block. Remote image URLs are refused, as in pi.
+//! A successful script may explicitly return one bounded inline image. Only the toolkit writes its bytes;
+//! the sandbox never opens paths or resolves remote URLs.
 
 use crate::bound::BoundTools;
 use rquickjs::{Context, Function, Promise, Runtime, Value};
@@ -81,6 +80,7 @@ pub enum Kind {
 pub struct Outcome {
     /// What the model sees: the script's `text()`/`console` output, its return value and any image markers.
     pub output: String,
+    pub image: Option<Vec<u8>>,
     pub calls: Vec<CallRecord>,
     /// The model-visible error when the script failed.
     pub error: Option<String>,
@@ -231,7 +231,7 @@ pub(crate) fn schema_with_native(tools: &BoundTools, native: &[Json]) -> Json {
          - A nested call that fails, is vetoed by the user's `pre_tool` hook, or gets invalid arguments rejects with an `Error` carrying the reason. Calls are real and have side effects; earlier calls are not undone when a later one fails.\n\
          - Only what the script emits with `text(...)`/`console.log(...)` and what it returns reaches you — nested tool output does NOT. Filter and aggregate in the script instead of returning raw payloads.\n\
          - No Node, no file system, no network, no timers; a 256 MB heap and a hard deadline apply.\n\
-         - `store(key, value)`/`load(key)` persist JSON values across codemode calls in this session. `exit()` ends the script successfully. `image(...)` accepts a base64 `data:` URL.\n\
+         - `store(key, value)`/`load(key)` persist JSON values across codemode calls in this session. `exit()` ends the script successfully. `image(...)` returns one inline PNG/JPEG/GIF/WebP (5 MiB maximum) to an image-capable model; paths and remote URLs are refused.\n\
          - The first line may be `// @options: {{\"timeout_ms\": 60000, \"max_output_tokens\": 2000}}`.\n\n\
          Available tools:\ndeclare const tools: {{{declarations}\n}};"
     );
@@ -410,18 +410,30 @@ fn is_exit(value: &Value<'_>) -> bool {
         .unwrap_or(false)
 }
 
-/// Validate an `image()` argument and return `(mime, approximate bytes)`. Remote URLs are refused (pi's rule):
-/// a script must not make the host fetch a URL.
-fn image_shape(item: &Json) -> Result<(String, usize), String> {
+/// Decode only bounded inline data and verify its claimed format before it can leave the sandbox.
+fn image_bytes(item: &Json) -> Result<Vec<u8>, String> {
+    fn decode(mime: &str, data: &str) -> Result<Vec<u8>, String> {
+        use base64::Engine;
+        let limit = crate::tools::MAX_IMAGE_BYTES as usize;
+        if data.len() > limit.div_ceil(3) * 4 {
+            return Err("codemode: image exceeds 5 MiB".into());
+        }
+        let bytes =
+            base64::engine::general_purpose::STANDARD.decode(data).map_err(|_| "codemode: invalid base64 image")?;
+        if bytes.len() > limit || crate::tools::image_media_type(&bytes) != Some(mime) {
+            return Err("codemode: image size or media type mismatch".into());
+        }
+        Ok(bytes)
+    }
     let data = match item {
         Json::String(url) => url.as_str(),
         Json::Object(object) => {
             if let Some(url) = object.get("image_url").and_then(|v| v.as_str()) {
                 url
             } else if object.get("type").and_then(|v| v.as_str()) == Some("image") {
-                let mime = object.get("mimeType").and_then(|v| v.as_str()).unwrap_or("image/png").to_string();
+                let mime = object.get("mimeType").and_then(|v| v.as_str()).ok_or("codemode: missing image mimeType")?;
                 let data = object.get("data").and_then(|v| v.as_str()).unwrap_or("");
-                return Ok((mime, data.len() * 3 / 4));
+                return decode(mime, data);
             } else {
                 return Err("codemode: image() wants a data: URL or an MCP image block".into());
             }
@@ -431,9 +443,8 @@ fn image_shape(item: &Json) -> Result<(String, usize), String> {
     let Some(rest) = data.strip_prefix("data:") else {
         return Err("codemode: image() refuses a remote URL; pass a base64 data: URL".into());
     };
-    let mime = rest.split(';').next().unwrap_or("image/png").to_string();
-    let bytes = rest.split(',').nth(1).map(|payload| payload.len() * 3 / 4).unwrap_or(0);
-    Ok((mime, bytes))
+    let (mime, payload) = rest.split_once(";base64,").ok_or("codemode: image must be a base64 data URL")?;
+    decode(mime, payload)
 }
 
 /// Run one script. `tools` supplies the only capabilities; `store` is the cross-call JSON store; `veto` is the
@@ -455,8 +466,13 @@ pub(crate) fn run_with_native(
     execute: impl Fn(&str, &Json) -> Result<Json, String> + Send + Sync + 'static,
     control: crate::tools::TurnControl,
 ) -> Outcome {
-    let kind =
-        |kind: Kind, error: String| Outcome { output: String::new(), calls: Vec::new(), error: Some(error), kind };
+    let kind = |kind: Kind, error: String| Outcome {
+        output: String::new(),
+        image: None,
+        calls: Vec::new(),
+        error: Some(error),
+        kind,
+    };
     if context.aborted {
         return kind(Kind::Aborted, "codemode: the turn was interrupted before the script ran".into());
     }
@@ -506,6 +522,7 @@ pub(crate) fn run_with_native(
         .map(|m| m.real.clone())
         .collect();
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let image = Arc::new(Mutex::new(None));
     let calls: Arc<Mutex<Vec<CallRecord>>> = Arc::new(Mutex::new(Vec::new()));
 
     let outcome: Result<(), String> = context_js.with(|ctx| {
@@ -594,17 +611,13 @@ pub(crate) fn run_with_native(
                 .map_err(|error| error.to_string())?
             };
             let imagist = {
-                let output = output.clone();
+                let image = image.clone();
                 Function::new(ctx.clone(), move |item: String| -> Option<String> {
                     let parsed: Json = serde_json::from_str(&item).unwrap_or(Json::Null);
-                    match image_shape(&parsed) {
-                        Ok((mime, bytes)) => {
-                            output
-                                .lock()
-                                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                                .push(format!("[image: {mime}, ~{bytes} bytes — this build cannot put an image into the model's context]"));
-                            None
-                        }
+                    let mut slot = image.lock().unwrap_or_else(|p| p.into_inner());
+                    if slot.is_some() { return Some("codemode: only one image per script is supported".into()); }
+                    match image_bytes(&parsed) {
+                        Ok(bytes) => { *slot = Some(bytes); None }
                         Err(error) => Some(error),
                     }
                 })
@@ -658,7 +671,13 @@ pub(crate) fn run_with_native(
             if truncated {
                 text.push_str("\n… (codemode output truncated at max_output_tokens)");
             }
-            Outcome { output: text, calls, error: None, kind: Kind::Completed }
+            Outcome {
+                output: text,
+                image: image.lock().unwrap_or_else(|p| p.into_inner()).take(),
+                calls,
+                error: None,
+                kind: Kind::Completed,
+            }
         }
         Err(error) => {
             let kind = if control.check().is_err() {
@@ -669,7 +688,7 @@ pub(crate) fn run_with_native(
                 Kind::Script
             };
             let prefix = if kind == Kind::Timeout { "codemode: the script exceeded its deadline\n" } else { "" };
-            Outcome { output: String::new(), calls, error: Some(format!("{prefix}{error}")), kind }
+            Outcome { output: String::new(), image: None, calls, error: Some(format!("{prefix}{error}")), kind }
         }
     }
 }
@@ -888,8 +907,18 @@ for line in sys.stdin:
 
     #[test]
     fn image_accepts_a_data_url_and_refuses_a_remote_url() {
-        let good = run_source("image('data:image/png;base64,AAAA'); text('done');");
-        assert!(good.output.contains("[image: image/png"), "{}", good.output);
+        let good = run_source("image('data:image/png;base64,iVBORw0KGgo='); text('done');");
+        assert_eq!(good.image.unwrap(), b"\x89PNG\r\n\x1a\n");
+        assert_eq!(good.output, "done");
+        for code in [
+            "image('data:image/png;base64,AAAA')",
+            "image('data:image/png;base64,!!!')",
+            "image('data:image/png;base64,iVBORw0KGgo='); throw new Error('later failure')",
+            "for(let i=0;i<2;i++) image({type:'image', mimeType:'image/png',data:'iVBORw0KGgo='})",
+        ] {
+            let bad = run_source(code);
+            assert!(bad.image.is_none() && bad.error.is_some());
+        }
         let remote = run_source("image('https://example.com/a.png');");
         assert!(remote.error.expect("remote refused").contains("remote URL"), "a remote image URL is refused");
     }

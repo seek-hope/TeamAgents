@@ -431,6 +431,9 @@ fn detail_lines(app: &V2App) -> Vec<String> {
         String::new(),
         diagnostic["summary"].as_str().unwrap_or("No diagnosis reported by this daemon.").into(),
     ];
+    if let Some(lifetime) = row["lifetime"].as_str() {
+        lines.push(format!("Worker lifetime: {lifetime}"));
+    }
     if let Some(reason) = diagnostic["reason"]
         .as_str()
         .filter(|s| !s.is_empty())

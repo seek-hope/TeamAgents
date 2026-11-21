@@ -856,6 +856,59 @@ async fn tool_result_is_reused_after_crash_not_reexecuted() {
 }
 
 #[tokio::test]
+async fn recovered_file_dispatch_preserves_intervening_user_edits() {
+    use teamagents_core::v2::{Command, Control, Identity};
+    let root = root("file-dispatch-recovery");
+    let workspace = root.dir.join("ws");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let path = workspace.join("fact.txt");
+    let provider = vec![Step::Message(finish_call("recovered"))].into_provider();
+    let mut config = root.config(provider);
+    config.bindings.push("files".into());
+    let handle = start(root.config(Vec::<Step>::new().into_provider())).await.unwrap();
+    handle.shutdown().await.unwrap();
+    let mut control = Control::open(&config.session_db, &config.session_id, false).unwrap();
+    let mut submit = |method: &str, params: Json, identity: Identity| {
+        control
+            .submit(Command { command_id: uuid::Uuid::new_v4().to_string(), method: method.into(), params }, identity)
+            .unwrap()
+    };
+    let id = "i-main";
+    let input =
+        submit("submit_input", json!({"instance_id":id,"envelope_id":"start","text":"write a file"}), Identity::User);
+    submit(
+        "begin_request",
+        json!({"instance_id":id,"request_id":"r","revision":input["instance_revision"]}),
+        Identity::Instance(id.into()),
+    );
+    submit(
+        "record_attempt",
+        json!({"request_id":"r","attempt_id":"a","status":"COMPLETE","usage":{"total_tokens":1}}),
+        Identity::System,
+    );
+    let args = json!({"path":"fact.txt","content":"session write"});
+    let call = json!({"id":"write","type":"function","function":{"name":"write_file","arguments":args.to_string()}});
+    submit(
+        "import_response",
+        json!({"request_id":"r","decision_id":"d","entry":{"role":"assistant","content":"","tool_calls":[call]},"intents":[{"index":0,"name":"write_file","call_id":"write","args":args}]}),
+        Identity::System,
+    );
+    assert_eq!(
+        submit("dispatch_operation", json!({"operation_id":"d:0"}), Identity::System)["status"],
+        "DISPATCH_COMMITTED"
+    );
+    drop(control);
+    // Simulate the filesystem side of the crash window after dispatch and before the receipt.
+    std::fs::write(&path, "session write").unwrap();
+    std::fs::write(&path, "user revision").unwrap();
+    let handle = start(config).await.unwrap();
+    let closed = wait_event(&handle, "operation_completed", 5000).await;
+    assert_eq!(closed["payload"]["status"], "OUTCOME_UNKNOWN");
+    assert_eq!(std::fs::read(&path).unwrap(), b"user revision");
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn runner_crash_mid_job_is_outcome_unknown() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
     let root = root("crash-runner");
@@ -1434,6 +1487,140 @@ async fn worker_finish_settles_the_delegated_task_from_the_stored_candidate() {
     assert_eq!(row.1, "[]", "no evidence in the candidate means no result refs");
     wait_phase(&handle, "READY", 5_000).await;
     handle.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn manual_pause_during_preparation_retains_the_temporary_worker_until_resume() {
+    use teamagents_core::v2::Identity;
+    struct PauseOnSelection {
+        db: PathBuf,
+        selected: bool,
+        inner: ScriptedProvider,
+    }
+    impl Provider for PauseOnSelection {
+        fn protocol(&self) -> &str {
+            "scripted"
+        }
+        fn select_profile(&mut self, _: &str, _: Option<&teamagents_core::models::ModelProfile>) {
+            if !self.selected {
+                self.selected = true;
+                let mut ctl = teamagents_core::v2::Control::open(&self.db, "s-test", false).unwrap();
+                ctl.submit(
+                    cmd("pause-preparation", "set_lifecycle", json!({"instance_id":"w","lifecycle":"PAUSED"})),
+                    Identity::User,
+                )
+                .unwrap();
+            }
+        }
+        async fn complete(
+            &self,
+            request: &ModelRequest,
+            cancel: &Cancel,
+            on_event: &mut (dyn FnMut(ProviderEvent) + Send),
+        ) -> Result<AttemptOutcome, ProviderError> {
+            self.inner.complete(request, cancel, on_event).await
+        }
+    }
+    let root = root("pause-preparation");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let mut ctl = second_control(&root);
+    make_leader(&mut ctl, root.dir.join("ws").to_str().unwrap());
+    ctl.submit(cmd("worker", "create_instance", json!({"id":"w","lifetime":"temporary"})), Identity::User).unwrap();
+    ctl.submit(cmd("work", "create_work", json!({"id":"g"})), Identity::User).unwrap();
+    ctl.submit(cmd("task", "delegate_task", json!({"assignee":"w","task_id":"t","work_id":"g"})), Identity::User)
+        .unwrap();
+    let mut config = root.config_with(PauseOnSelection {
+        db: root.dir.join("session.sqlite"),
+        selected: false,
+        inner: vec![Step::Message(finish_call("resumed"))].into_provider(),
+    });
+    config.instance_id = "w".into();
+    let handle = start(config).await.unwrap();
+    wait_lifecycle(&handle, "PAUSED", 5_000).await;
+    let count: i64 = ctl
+        .connection()
+        .query_row("SELECT COUNT(*) FROM model_requests WHERE instance_id='w'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 0);
+    handle.resume().await.unwrap(); // Standalone driver: there is no supervisor to replace it.
+    assert_eq!(wait_task_settled(&handle, "t", 5_000).await["payload"]["status"], "SUCCEEDED");
+    wait_lifecycle(&handle, "PARKED", 5_000).await;
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn late_capability_approval_does_not_redirect_an_inflight_worker_result() {
+    use teamagents_core::v2::Identity;
+    struct ApproveDuringRequest {
+        db: PathBuf,
+        request: String,
+        inner: ScriptedProvider,
+    }
+    impl Provider for ApproveDuringRequest {
+        fn protocol(&self) -> &str {
+            "scripted"
+        }
+        async fn complete(
+            &self,
+            request: &ModelRequest,
+            cancel: &Cancel,
+            event: &mut (dyn FnMut(ProviderEvent) + Send),
+        ) -> Result<AttemptOutcome, ProviderError> {
+            let mut ctl = teamagents_core::v2::Control::open(&self.db, "s-test", false).unwrap();
+            // This occurs after begin_request, before its finish. Replaying the approval on the
+            // second model call must not create another assignment or result.
+            ctl.submit(cmd("approve-older", "approve_capability", json!({"request_id":self.request})), Identity::User)
+                .unwrap();
+            self.inner.complete(request, cancel, event).await
+        }
+    }
+    let root = root("reordered-capability");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let mut ctl = second_control(&root);
+    make_worker(&mut ctl, &root, "w");
+    ctl.submit(cmd("work", "create_work", json!({"id":"g"})), Identity::User).unwrap();
+    ctl.submit(
+        cmd("delegate", "issue_grant", json!({"subject":"i-main","action":"delegate","resource_scope":"instance:w"})),
+        Identity::User,
+    )
+    .unwrap();
+    let delegate = |task: &str| {
+        cmd(
+            task,
+            "delegate_task",
+            json!({"task_id":task,"assignee":"w","work_id":"g","description":task,"capabilities":["web@domain:fixture.invalid"]}),
+        )
+    };
+    let older = ctl.submit(delegate("older"), Identity::Instance("i-main".into())).unwrap();
+    let newer = ctl.submit(delegate("newer"), Identity::Instance("i-main".into())).unwrap();
+    assert_eq!(older["status"], "WAITING_CAPABILITY", "{older}");
+    assert_eq!(newer["status"], "WAITING_CAPABILITY", "{newer}");
+    ctl.submit(
+        cmd("approve-newer", "approve_capability", json!({"request_id":newer["capability_requests"][0]})),
+        Identity::User,
+    )
+    .unwrap();
+    let mut config = root.config_with(ApproveDuringRequest {
+        db: root.dir.join("session.sqlite"),
+        request: older["capability_requests"][0].as_str().unwrap().into(),
+        inner: vec![Step::Message(finish_call("newer result")), Step::Message(finish_call("older result"))]
+            .into_provider(),
+    });
+    config.instance_id = "w".into();
+    let handle = start(config).await.unwrap();
+    wait_task_settled(&handle, "older", 5_000).await;
+    let pairs:Vec<(String,String)>=ctl.connection().prepare("SELECT correlation_id,json_extract(payload_json,'$.summary') FROM envelopes WHERE recipient='i-main' AND kind='task_result' ORDER BY sequence").unwrap().query_map([],|r|Ok((r.get(0)?,r.get(1)?))).unwrap().collect::<Result<_,_>>().unwrap();
+    assert_eq!(pairs, vec![("newer".into(), "newer result".into()), ("older".into(), "older result".into())]);
+    let assignments: Vec<String> = ctl
+        .connection()
+        .prepare("SELECT assignment_task_id FROM model_requests WHERE instance_id='w' ORDER BY rowid")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(assignments, ["newer", "older"]);
+    handle.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -2277,6 +2464,37 @@ async fn check_dispatch_refused_parks_without_burning_repair_rounds() {
     handle.shutdown().await.expect("shutdown");
 }
 
+#[tokio::test]
+async fn user_compaction_emphasizes_a_topic_without_opening_a_chat_turn() {
+    use teamagents_core::v2::control::{Command, Identity};
+    let root = root("manual-compact");
+    let (provider, seen) = recording(vec![
+        Step::Message(reply("first answer")),
+        Step::Message(reply("second answer")),
+        Step::Message(reply("1. Original request: preserve the units")),
+    ]);
+    let handle = start(root.config_with(provider)).await.unwrap();
+    handle.input("Review the measurements").await.unwrap();
+    wait_event_count(&handle, "response_imported", 1, 15_000).await;
+    handle.input("Record the result").await.unwrap();
+    wait_event_count(&handle, "response_imported", 2, 15_000).await;
+    let mut ctl = second_control(&root);
+    let command = || Command {
+        command_id: "manual-1".into(),
+        method: "request_compaction".into(),
+        params: json!({"instance_id":"i-main","focus":"Preserve SI units"}),
+    };
+    assert!(ctl.submit(command(), Identity::Instance("i-main".into())).is_err());
+    let receipt = ctl.submit(command(), Identity::User).unwrap();
+    wait_event_count(&handle, "context_compressed", 1, 15_000).await;
+    assert_eq!(ctl.submit(command(), Identity::User).unwrap(), receipt);
+    handle.shutdown().await.unwrap();
+    let requests = recorded(&seen);
+    assert_eq!(requests.len(), 3);
+    assert!(request_text(&requests[2]).contains("Preserve SI units"));
+    assert_eq!(requests[2]["tools"], 0);
+}
+
 /// R22/A20: a context that no longer fits the native window is compacted
 /// before the turn is fixed. The summary call is billed to the work, the
 /// covered text stays reachable through readback, and a restarted driver
@@ -2313,7 +2531,7 @@ async fn long_context_compacts_before_the_turn_and_survives_a_restart() {
     wait_event_count(&handle, "response_imported", 4, 15_000).await;
     let requests = recorded(&log);
     assert_eq!(requests.len(), 5, "one summary call plus two attempts per turn");
-    assert!(request_text(&requests[0]).contains("Behavior policy v1."));
+    assert!(request_text(&requests[0]).contains("Behavior policy v2."));
     assert!(!requests[0]["tool_names"].as_array().unwrap().iter().any(|name| name == "work_checkpoint"));
     // the summary call is a plain prompt: no system message, no tools (§7)
     let compaction = &requests[2];

@@ -158,9 +158,14 @@ pub fn render(frame: &mut Frame, queue: &Queue) {
                 let text = row["payload"]["text"].as_str().unwrap_or("");
                 let preview: String = text.chars().take(120).map(|c| if c.is_control() { ' ' } else { c }).collect();
                 let count = row["payload"]["attachments"].as_array().map_or(0, Vec::len);
+                let when = match row["state"].as_str() {
+                    Some("AFTER_WORK") => "after work: ",
+                    Some("DEFERRED") => "after turn: ",
+                    _ => "",
+                };
                 Line::styled(
                     crate::v2ui::fit(
-                        &format!("{} {preview} · {count} files", if i == queue.selected { ">" } else { " " },),
+                        &format!("{} {when}{preview} · {count} files", if i == queue.selected { ">" } else { " " },),
                         rows[1].width.saturating_sub(2) as usize,
                     ),
                     if i == queue.selected { selection() } else { secondary() },

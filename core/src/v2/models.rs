@@ -14,7 +14,8 @@ pub const V2_FORMAT_ID: &str = "teamagents-v2";
 /// 7 -> 8: goals become work scopes; identifiers, events and acceptance/budget state are migrated explicitly.
 /// 8 -> 9 (D-504): one append-only, revisioned exploration tree per session and its Leader role.
 /// 9 -> 10 (D-529): older writers cannot enforce a shared Worker model policy.
-pub const V2_SCHEMA_VERSION: i64 = 10;
+/// 10 -> 11: older writers do not release or seal after-work input.
+pub const V2_SCHEMA_VERSION: i64 = 13;
 
 /// Request kinds (§4.1 ModelRequest): an ordinary turn request advances the
 /// instance phase; a compression request only produces a summary (§7, A20).

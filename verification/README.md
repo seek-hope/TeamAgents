@@ -76,6 +76,11 @@ module the method's rule is checked in; the property-by-property anchors above s
 | `configure_work` | `V2Work.tla` models enabled work transitions; policy validation and storage migration are sample-tested, not formally proved |
 | `observe_operation_stops` | `V2Work.tla` models observation before takeover; OS identity and journal validation are sample-tested, not formally proved |
 | `record_attempt` | `V2Control.tla` |
+| `rewind_conversation` | unproven: as-of compaction, epoch copying, workspace snapshot restoration and quiet admission are Rust-tested, not modelled |
+| `send_rewind_draft` | unproven: draft fencing and immutable attachment reuse have executable checks only |
+| `set_mcp_service` | unproven: desired session policy, frozen requests and per-driver reconciliation are not composed in a model |
+| `request_compaction` | unproven: user-only manual maintenance admission and focus are Rust-tested |
+| `take_compaction` | unproven: claiming a manual request before provider I/O and refusing stale context are not modelled |
 | `begin_compression` | `V2Compress.tla` |
 | `compress_context` | `V2Compress.tla` |
 | `fail_compression` | `V2Compress.tla` |

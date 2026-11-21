@@ -6,14 +6,15 @@ This file records current behavior and reproducible evidence, not historical acc
 ✅ means the named local path has automated evidence. 🔶 means implementation exists but the stated external,
 empirical or full-system obligation remains open. No icon is a proof of every release condition.
 
-Current source inventory: core 201 / engine 551 / tui 122 test targets. Inventory alone is not acceptance.
+Current source inventory: core 210 / engine 561 / tui 122 test targets. Inventory alone is not acceptance.
 D-529 source tests cover role selection, atomic refusal during turn and compression requests, and schema 9→10
 migration (`core/tests/role_models.rs`). Two loopback endpoints with the same wire name verify follow, pin,
 restart, compression and retry bodies (`engine/tests/v2_supervisor.rs`). Menu filtering, confirmation and
 cancellation are covered by `tui/tests/minimal.rs`; the source PTY matrix exercises filter and confirmation
 with two entries sharing a wire name. In a separate isolated check, the schema-9 writer built from `4ca73a75`
 refused to open a migrated, checkpointed schema-10 store for writing; its database file was unchanged. See
-`tools/tmp/d529/upgraded-writer-refusal.log`. The local `make check` passed all 874 Rust tests and the\nrepository audits. These are not live-provider, installed-binary or rollback tests.
+`tools/tmp/d529/upgraded-writer-refusal.log`. The local `make check` passed all 874 Rust tests and the
+repository audits. These are not live-provider, installed-binary or rollback tests.
 
 Installed CLI and TUI source: `82533938e376e78d7d20d7510a2d7fa217c55fda` (version 0.2.0, x86_64 Linux
 musl). Both binaries match the locally built archive. The private `teamagents-install-82533938-mmjVi3`
@@ -44,6 +45,60 @@ complete graphical-terminal or OS matrix.
 
 ## Source workflow checks (not installed or live-service tests)
 
+The schema 13 `make check` run passed 893 Rust tests (210 core, 561 engine, 122 TUI) with zero failures
+and zero ignored tests. Five source PTY profiles exercised confirmation of the file preview, and both
+forced graphics modes passed. After the gate started, the Git rewind case switched to the real job
+runner and capture added a second metadata check. The three daemon rewind cases and engine Clippy passed
+on that final code. Logs are `git-workspace-gate.log`, `git-pty.log` and `git-rewind-final.log` under
+`tools/tmp/selected-workflows/`.
+
+The earlier schema 12 source passed `make check` with 891 Rust tests (209 core, 560 engine, 122 TUI),
+zero failures and zero ignored tests. The source PTY run passed five terminal profiles and both forced
+graphics modes. All 18 offline probes passed with zero daemons from the run left and no new scratch.
+The final Rust gate includes in-memory reconstruction of UTF-8 file edits. The PTY and offline runs
+preceded that last preview change. Receipts in `tools/tmp/selected-workflows/` are
+`file-preview-gate.{log,exit}`, `preview-pty.{log,exit}` and `preview-offline.{log,exit}`.
+
+The schema 11→12 writer probe used a disposable copy of a schema 11 store with two instances and an
+attachment at rowid 37. The upgrade retained both instances, the rowid and the original reference,
+created zero retroactive rewind points, and accepted a second reference to the artifact. The schema 11
+writer refused the migrated store. Its database SHA-256 matched the pre-refusal checksum
+(`tools/tmp/selected-workflows/schema12-writer.log`).
+
+The daemon rewind regression deletes the original attachment file, restarts the session with an unsent
+draft, and inspects the single edited request and both envelope references. The PTY exercises preview,
+apply, Esc, draft reopening and explicit submission of edited slash-prefixed text. A separate socket
+regression reconstructs original UTF-8 bytes from consecutive Leader edits, including a deletion, and
+checks a subsequent operator edit and a symlink replacement.
+The lost-dispatch regression checks that recovery preserves the operator's revision. The schema 13 socket regression modifies a tracked binary with a real shell, rejects a stale preview,
+then restores its dirty delivery bytes after a daemon restart. Replaying the command returns the same
+receipt after a subsequent edit. The deferred-input test reads the persisted bytes following inbox drain.
+Real-provider evaluation and power-loss testing remain open.
+
+Earlier D-530 schema 11 source gate: `make check` ran 885 Rust tests with zero failures or ignored tests, and passed
+formatting, all-target Clippy and repository hygiene. All 18 offline probes passed with zero daemons of the
+run left and no new scratch. The real PTY matrix passed five terminal profiles and both forced graphics
+modes. Receipts: `tools/tmp/selected-workflows/gate8-{check,probe-offline,pty}.{log,exit}`. The three crates
+also passed advisory and source checks against the cached advisory data; this is not a fresh security scan.
+These source gates do not renew installed-binary, live-provider or formal-model evidence.
+
+- Source-only checks cover a focused Leader summary (`engine/tests/v2_driver.rs`), after-work delivery and
+  the schema 10 migration (`core/tests/input_queue.rs`), fresh admission after work settlement (`core/src/v2/control/work_tests.rs`),
+  and temporary versus persistent driver lifetime and workspace retention across settlement and restart
+  (`engine/tests/v2_supervisor.rs`). `engine/tests/v2_mcp.rs` checks that explicit script image bytes reach a
+  scripted vision request but not its tool receipt. No model-account login or real inference is involved.
+- Two scripted driver tests exercise real Control transactions during request preparation and provider I/O.
+  A manually paused temporary Worker emits no model request before explicit resume on the same driver.
+  When the older task receives capability approval during the newer task's model call, each stored request
+  names its own assignment and the Leader receives exactly two results with the matching task IDs and summaries.
+  Control rejects settlement, repair and check registration from an obsolete finish without clearing the current one.
+- Held inputs do not steer an intervening work, even if another held input opened it during the same drain.
+  Reopen, multiple checked inputs, immutable attachment descriptors, and current-epoch runnable diagnostics
+  have separate Rust regressions. An active blocked work is not terminal for admission.
+- A disposable store created with the D-529 core held a Leader and a Worker. After source migration the Worker
+  was persistent, both instances remained, and the D-529 writer refused schema 11. The checkpointed database
+  SHA-256 was unchanged by refusal (`tools/tmp/selected-workflows/writer-refusal-final.log`). The new release flag
+  was zero and the request assignment column was present. No user database was opened.
 - Two loopback Gemini protocol tests cover signed tool continuation, images, usage and refusal of incomplete
   calls. Separate supervisor tests switch recipients sharing a wire model name and check that a same-protocol
   switch retains public conversation but does not forward the previous recipient's private reasoning fields.
@@ -81,7 +136,7 @@ complete graphical-terminal or OS matrix.
 | Q15 | Authorized work resumes after restart; unknown effects are never blindly replayed | A08, A09, A11, A24: persisted-phase recovery, `OUTCOME_UNKNOWN`, durable operation and runner journals |
 | Q16 | Single-instance behavior must not regress and collaboration should show reproducible gain | A01: local scripted collaboration evidence exists; a general matched held-out outcome/cost comparison remains open |
 | Q17 | Estimate cost before committing a full multi-round budget | A18, `docs/PRODUCT-COMPARISON.md`: usage is recorded per request/work with known and unknown accounting; a current priced comparison is not claimed |
-| Q18 | Old config/session compatibility is not inherently required; migration and cleanup are deliberate | A34, A36: schema 10 migration and explicit cleanup are implemented; older writers cannot reopen the migrated store |
+| Q18 | Old config/session compatibility is not inherently required; migration and cleanup are deliberate | A34, A36: migrations through schema 13 and explicit cleanup are implemented; older writers cannot reopen the migrated store |
 | Q19 | Cleanup follows an explicit ownership decision while Git history remains | A36, `tools/README.md`: current tree contains only current source and tools; `tools/` holds executable development and verification utilities |
 
 ## Matrix A01–A36 (per-item evidence)
@@ -123,7 +178,7 @@ complete graphical-terminal or OS matrix.
 | A33 | Second daemon, coordinator exclusion and lock recovery | `second_daemon_is_refused_and_shutdown_releases_the_lock`, `V2Coordinator`, D-522 listener/uncertainty guards and explicit-stop refusal checks |
 | A34 | Foreign or wrong-version state-store refusal | `open_refuses_unstamped_foreign_and_wrong_version`, `open_migrates_v8_to_the_session_search_tree`, conflict rollback and `V2Store` |
 | A35 | Work deadline | `work_deadline_refuses_new_requests_and_dispatches`, deadline park and cancel/release behavior |
-| A36 | Store/session lifecycle, search/export and guarded cleanup | `engine/tests/session_browser.rs`, `engine/tests/session_workspace.rs`, `session_export_tests.rs`, session CLI, `tools/install_check.py`, current schema 10 and maintained development tools |
+| A36 | Store/session lifecycle, search/export and guarded cleanup | `engine/tests/session_browser.rs`, `engine/tests/session_workspace.rs`, `session_export_tests.rs`, session CLI, `tools/install_check.py`, current schema 13 and maintained development tools |
 
 ## Current runtime and installation evidence
 

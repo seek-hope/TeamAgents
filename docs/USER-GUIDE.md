@@ -72,6 +72,15 @@ For native Gemini text and tool use, set `protocol = "gemini"`, the Google model
 `https://generativelanguage.googleapis.com/v1beta`. Declare `images = true` only for a model that accepts
 image **input**. API-key transport is not account login, image generation, or evidence of access to a model.
 
+TeamAgents does not currently sign in to a model subscription. OpenAI documents an
+[open-source, locally hosted ChatGPT plan flow](https://developers.openai.com/siwc/token-sharing-open-source)
+for eligible Responses API requests. This requires the app's own registration, consent, token validation
+and a completed request; naming a catalogue entry is not a sign-in. Anthropic's
+[Agent SDK policy](https://code.claude.com/docs/en/agent-sdk/overview) requires prior approval to offer
+Claude.ai login in third-party products. Google's [consumer account notice](https://developers.google.com/gemini-code-assist/docs/deprecations/code-assist-individuals)
+retires the old Gemini CLI consumer login; its replacement product is not evidence of TeamAgents access.
+Do not copy another harness's tokens. MCP login authenticates a tool service, not the selected model.
+
 ### Refresh a model directory (Linux)
 
 Opt in **in your user config**. `catalog_sources` maps a namespace to a user-defined Chat Completions profile
@@ -214,6 +223,12 @@ In the composer:
 - Ctrl+E opens the current draft in `VISUAL`, falling back to `EDITOR`. Saving with exit 0 replaces the draft;
   cancellation, nonzero exit or read failure restores it. `/edit [TEXT]` opens the editor with optional exact
   text; `/edit` alone starts an empty draft. Text or paths ending in `/edit` have no special meaning.
+- `/shell` temporarily leaves the TUI for an interactive local shell in the attached session workspace. Exit
+  the shell to return. This is your terminal, not a model tool or an approval; the team can still be working.
+  Its commands and terminal output do not enter the session. Use `/shell view COMMAND` for local-only stdout,
+  or `/shell draft COMMAND` to review stdout in the composer and explicitly send it later. These modes run
+  `/bin/sh -c`; stderr stays on the terminal. At most 16 KiB of stdout is retained. Check for secrets before
+  sending; exiting the foreground shell does not undo effects or stop background jobs.
 - `/help` shows current controls, environment and diagnostics. `?` on an empty draft opens the shortcut overlay.
 - Slash completion edits only the draft. An explicit second Enter executes the completed command.
 - `/attach PATH` stages a workspace file; `/detach INDEX` removes one. `@PATH` followed by Tab offers workspace
@@ -222,8 +237,21 @@ In the composer:
   `TEAMAGENTS_GRAPHICS=auto|kitty|blocks|off`.
 
 Local commands are `/help`, `/sessions`, `/interrupt`, `/quit`, `/model`, `/attach`, `/detach`, `/queue`, `/tree`,
-`/edit`, `/team`, `/chat`, `/tasks`, `/activity` and `/inspect`. They never become model input.
+`/edit`, `/shell`, `/team`, `/chat`, `/tasks`, `/activity`, `/inspect`, `/compact` and `/later`. Command names never become model input.
+`/compact [FOCUS]` requests a one-shot summary of older Leader context; the newest input and its tail remain.
+The receipt means queued, not applied. No eligible history, a stale boundary or exhausted budget can prevent compaction.
+`/later TEXT` holds the input for the end of the current work (CLI: `instances send --id ID --after-work --prompt TEXT`).
+It stays editable in `/queue`. If a different work starts before delivery, the input and any attached checks
+wait rather than joining it. Checked inputs are admitted in order; once one starts a work, the remaining
+held inputs wait for the next free boundary. A blocked but active work must settle or be cancelled first. Resetting the Leader
+seals undelivered input from its old epoch; forking does not copy it. An idle Leader with no work
+receives it normally; during admission, wait for a work ID or send ordinary input instead.
 `/team` focuses member selection; the other new view commands open the named view.
+
+For a one-off assignment the Leader can spawn a Worker with `lifetime: "temporary"`. Once its last task
+settles with no pending work, delivery, or uncertain operation, it parks and releases its driver and MCP clients.
+The member and workspace are not deleted. Inspect the member or resume it explicitly if needed. Omit `lifetime`
+or select `persistent` to keep a reusable Worker. Cancellation or a blocked task is not a release signal.
 
 ## 4. Approvals and lifecycle
 
@@ -315,6 +343,34 @@ resources, including services with no selected tools; specify `service` when mul
 Tool discovery follows cursors within one startup-timeout budget, at most 100 pages and 16 MiB total response
 bytes. Resource listing returns the server's cursor for the caller to follow.
 
+To revisit a delivered Leader prompt in a quiet session, use `/rewind` and
+`/rewind preview ENVELOPE`, then `/rewind apply`. This is **conversation only**: the selected
+prompt reopens in the composer, but nothing is sent until Enter. Esc discards the local draft;
+`/rewind draft` reopens it until context advances. Resubmission uses the original immutable attachments
+and acceptance checks. The session browser retains abandoned history. Pending work, waits, queued input
+and uncertain operations block rewind. Older sessions have no retroactive prompt checkpoints. To restore files too, use `/rewind files ENVELOPE`, review the changed paths, then use `/rewind apply`.
+Each path returns to its working contents when the Leader received the prompt, including uncommitted
+edits present then. A queued prompt uses its actual delivery. A `snapshot_difference` can come from
+shell commands, Workers or your editor. Confirmation authorizes overwriting the displayed revision.
+A conflicting native edit receipt or a change since preview requires review before applying.
+
+The snapshot covers regular files tracked in the workspace's Git index. Git links, symlinks and
+untracked paths are outside that set. A missing regular file, changed tracked path set, unreadable
+file or exceeded limit prevents combined restoration. Capture allows 8,192 paths, 10 MiB per file and
+64 MiB in total. A preview can list up to 256 changed paths. The session database contains the captured
+bytes. Older checkpoints and non-Git workspaces offer a read-only comparison of recorded Leader edits.
+After an interrupted restore, inspect the files and preview again. A process crash during multiple
+renames can leave a partial file restore with the conversation still at its prior epoch.
+
+In an attached TUI, `/mcp status` shows the configured binding keys, desired session policy and last
+observed driver revisions. Use `/mcp hide KEY` to withdraw tools and resources without disconnecting.
+`stop` disconnects; `start` connects without changing exposure; `reconnect` replaces a running
+connection. Use `expose` to restore the configured surface. The CLI equivalents are
+`teamagents mcp status` and `teamagents mcp ACTION --name KEY`; select another session with `--session ID`.
+A change receipt records policy, not proof that every driver has applied it or that remote effects stopped.
+Inspect status again to compare revisions. A pending request, operation or unknown outcome refuses changes.
+Configuration and credentials remain unchanged; stopped bindings stay stopped after daemon restart.
+
 `teamagents mcp list` inspects configured services. OAuth login/logout uses `teamagents mcp login|logout`;
 a server 401 can refresh an unexpired token, including during initialization, without another browser login.
 Credentials are bound to the exact resource URL saved at login. Changing that URL requires another login;
@@ -334,11 +390,18 @@ args = ["serve", "--mcp"]
 codegraph_projects = []
 ```
 
+Omit `tool_names` for explore only. To select other read tools explicitly, set, for example,
+`tool_names = ["codegraph_explore", "codegraph_search", "codegraph_callers", "codegraph_callees", "codegraph_impact", "codegraph_status"]`.
 Use `teamagents mcp list` to check discovery. In codemode, `tools.graph_codegraph_explore({query: "symbol"})`
 returns the canonical project, upstream result (including stale-index warnings), and index timestamps.
 Timestamps do not prove the index is current. The default project is the member workspace. To let the Leader
 query another project, list its exact absolute root and pass `projectPath` in the call. Workers cannot use the
 Leader's extra roots. Missing/invalid indexes are refused: no initialization or fallback to a parent project.
+
+In codemode, `image(dataUrl)` or `image({type:"image", mimeType, data})` returns one explicit inline image
+(up to 5 MiB) on a successful script. The toolkit keeps the bytes under the member and writes a digest and
+reference into the tool receipt; a vision-capable request expands it. Text-only models receive the caption and
+an omission notice. Remote URLs and local paths are not image arguments. This does not generate images.
 
 For a bound service named `example`, a codemode call can read its public resource:
 
@@ -364,7 +427,7 @@ api_key_env = "EXA_API_KEY"
 
 With both fetch bindings, the default tries Exa first. A transient transport failure, HTTP 408, 429 or 5xx
 allows one attempt through DeepSeek. An explicit provider never falls back. The result names the provider and
-reports any fallback reason. The last successful page is cached per member for ten minutes. For long pages,
+reports any fallback reason. Each member caches up to 32 successful pages for ten minutes, with an 8 MiB total text budget and least-recently-used eviction. Cache hits still check the binding, credential and URL policy. For long pages,
 pass `full_path` and `next_byte_offset` to `read_file` as `path` and `byte_offset`; no second fetch is needed.
 The file holds the provider's extracted text, not necessarily the complete original page.
 

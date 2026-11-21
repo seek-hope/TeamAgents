@@ -191,8 +191,12 @@ def main() -> int:
                 failures.append(f"the retry should be the complete, priced attempt: {second}")
         if len(facts["requests"]) != 1:
             failures.append(f"one request, {len(facts['requests'])}: {facts['requests']}")
-        if any("c1" in entry for _, entry in facts["entries"]):
-            failures.append("the truncated attempt's tool call reached the conversation")
+        # A route fingerprint is hexadecimal and can contain "c1". Inspect call identities,
+        # not substrings of serialized history, and require the successful retry's actual call.
+        messages = [json.loads(raw) for _, raw in facts["entries"]]
+        calls = [call["id"] for message in messages for call in message.get("tool_calls", [])]
+        if calls != ["finish-1"] or any(message.get("tool_call_id") == "c1" for message in messages):
+            failures.append(f"the conversation must contain only the retry's finish call; saw {calls}")
 
         # --- scenario 2: truncated after visible text → permanent, no retry ----------------------
         report, facts, seen = scenario("visible", [TRUNCATED_VISIBLE], "Do the work.", root / "visible")

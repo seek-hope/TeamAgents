@@ -96,6 +96,16 @@ fn ready_is_not_idle_when_work_is_unaddressed_and_uses_current_visible_epoch() {
     assert_eq!(f.code(), "idle_unsettled", "stale/future epoch input cannot drive this epoch");
     f.conn.execute_batch("UPDATE envelopes SET epoch = 0").unwrap();
     assert_eq!(f.code(), "ready", "queued input prevents an idle diagnosis");
+    f.conn.execute_batch(r#"UPDATE envelopes SET state='AFTER_WORK', payload_json='{"after_work_id":"named"}';
+        INSERT INTO work_scopes(id,session_id,original_request_ref,status,limits_json,known_usage_json,reservations_json)
+        VALUES ('named','s','','ACTIVE','{}','{}','{}'), ('g','s','','ACTIVE','{}','{}','{}');"#).unwrap();
+    assert_eq!(f.code(), "idle_unsettled", "held input is not steering");
+    f.conn.execute_batch("UPDATE work_scopes SET status='SUCCEEDED' WHERE id='named'").unwrap();
+    assert_eq!(f.code(), "idle_unsettled", "a different assignment still owns the member");
+    f.conn.execute_batch("UPDATE work_scopes SET status='CANCELLED' WHERE id='g'").unwrap();
+    assert_eq!(f.code(), "ready", "the named work settled and the member can now admit input");
+    f.conn.execute_batch("UPDATE instances SET context_epoch=1; DELETE FROM context_entries WHERE epoch=1").unwrap();
+    assert_eq!(f.code(), "idle_unsettled", "a held input from another epoch cannot open a turn");
 }
 
 #[test]

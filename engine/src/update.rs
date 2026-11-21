@@ -1761,9 +1761,27 @@ mod tests {
         let temp = Temp::new("socket-probe");
         let path = temp.path().join("daemon.sock");
         assert!(!socket_has_live_peer(&path).unwrap());
-        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        // Own the listener in a single-threaded fixture. A listener in the Rust test
+        // process can be inherited by concurrent fork/exec tests before CLOEXEC takes effect.
+        use std::process::{Command, Stdio};
+        let mut peer = Command::new("python3")
+            .args([
+                "-c",
+                "import socket, sys
+s = socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.listen()
+sys.stdout.buffer.write(b'!'); sys.stdout.flush(); sys.stdin.buffer.read(1)",
+            ])
+            .arg(&path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut ready = [0];
+        peer.stdout.take().unwrap().read_exact(&mut ready).unwrap();
+        assert_eq!(ready, [b'!']);
         assert!(socket_has_live_peer(&path).unwrap());
-        drop(listener);
+        drop(peer.stdin.take());
+        assert!(peer.wait().unwrap().success());
         assert!(!socket_has_live_peer(&path).unwrap());
         assert!(path.exists(), "startup polling must leave cleanup to the daemon");
         std::fs::remove_file(&path).unwrap();

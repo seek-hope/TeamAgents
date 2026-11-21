@@ -152,10 +152,24 @@ async fn immutable_snapshot_retry_revision_gc_and_corruption() {
         })
         .await
         .unwrap();
+    storage
+        .call(|c| {
+            c.submit(
+                Command {
+                    command_id: "work".into(),
+                    method: "create_work".into(),
+                    params: json!({"id":"w","instance_id":"i-leader"}),
+                },
+                Identity::User,
+            )
+        })
+        .await
+        .unwrap()
+        .unwrap();
     let command = Command {
         command_id: "input-a".into(),
         method: "submit_input".into(),
-        params: json!({"instance_id":"i-leader","envelope_id":"a","text":"read this","attachments":[label]}),
+        params: json!({"instance_id":"i-leader","envelope_id":"a","text":"read this","attachments":[label],"after":"work"}),
     };
     let reply = submit(&storage, &root.0, &UserConfig::default(), command.clone()).await.unwrap();
     assert_eq!(reply["queued"], true);
@@ -186,15 +200,29 @@ async fn immutable_snapshot_retry_revision_gc_and_corruption() {
                 .as_array()
                 .unwrap()
                 .is_empty());
+            let drain = |id: &str| Command {
+                command_id: id.into(),
+                method: "drain_inbox".into(),
+                params: json!({"instance_id":"i-leader"}),
+            };
+            assert_eq!(c.submit(drain("early"), Identity::User).unwrap()["applied"], 0);
             c.submit(
                 Command {
-                    command_id: "drain".into(),
-                    method: "drain_inbox".into(),
-                    params: json!({"instance_id":"i-leader"}),
+                    command_id: "cancel-work".into(),
+                    method: "cancel_work".into(),
+                    params: json!({"work_id":"w"}),
                 },
                 Identity::User,
             )
             .unwrap();
+            assert_eq!(c.submit(drain("after"), Identity::User).unwrap()["applied"], 1);
+            let delivered: String = c
+                .connection()
+                .query_row("SELECT message_json FROM context_entries WHERE envelope_id='a'", [], |r| r.get(0))
+                .unwrap();
+            let delivered: Json = serde_json::from_str(&delivered).unwrap();
+            assert_eq!(delivered["attachments"], serde_json::from_str::<Json>(&raw).unwrap()["attachments"]);
+            assert_eq!(c.submit(drain("again"), Identity::User).unwrap()["applied"], 0);
             serde_json::from_str::<Json>(&raw).unwrap()
         })
         .await

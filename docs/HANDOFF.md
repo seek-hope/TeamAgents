@@ -6,6 +6,21 @@ The project is a standalone Rust control plane, runtime and team TUI. Read [DESI
 Q1–Q19/A01–A36 baseline, [DECISIONS.md](DECISIONS.md) for current contracts and [ACCEPTANCE.md](ACCEPTANCE.md)
 for exact source-bound evidence. Git retains implementation and experiment history; do not recreate a changelog here.
 
+Source-only D-530 work is not installed. The current source adds session-scoped MCP restrictions,
+operator shell and conversation-only rewind. Preview and apply a delivered Leader input with `/rewind`;
+reopen its unsent draft after restart. Abandoned epochs are retained. In a Git workspace, `/rewind files ENVELOPE` previews the dirty working bytes captured at delivery.
+`/rewind apply` restores the reviewed tracked files and opens the prompt. Missing historical snapshots
+fall back to receipt-only inspection. Interrupted file batches require inspection and a fresh preview.
+See [the user guide](USER-GUIDE.md) for operator commands and boundaries. The schema 13 writer holds explicitly queued Leader inputs until
+their work settles. The enrolled-work regression covers real admission after success, cancellation and a terminal
+check block; an active blocked scope is not terminal. The Worker supervisor regression compares explicit temporary
+and default persistent drivers across settlement and restart, including retained workspaces. Fresh admission
+is checked again for each held input, so checks and attachments do not enter an intervening work. A prepared
+Worker turn keeps its task ID; the real driver regression grants an older task during the newer request and
+checks both result envelopes. Manual pause during preparation keeps the same driver for explicit resume. See
+[the staged workflow requirements](DECISIONS.md#approved-workflow-requirements-implementation-staged) for the
+remaining scope. Back up a session before migrating; the installed D-529 writer cannot reopen it.
+
 Installed CLI and TUI source: `82533938`. Both installed files match the local musl package; the backup and
 checksums are recorded in [ACCEPTANCE.md](ACCEPTANCE.md). D-529 adds session-level Leader and Worker model
 selection. No user session was opened or restarted during installation. Back up an existing session before
@@ -29,7 +44,7 @@ The older scheduled updater-readiness failure in run 43868995516 remains a separ
 Current local formal replay retains its input-content binding in
 [verification/REPORT.md](../verification/REPORT.md).
 
-- **874 Rust tests**: core 201, engine 551, TUI 122.
+- **893 Rust tests**: core 210, engine 561, TUI 122.
 - **63 positive TLA configurations in 60 traversals**, **323 controls**, **79 witnesses**, **9 Kani harnesses**.
 - Catalogue: **387 configurations across 47 modules**, including an incomplete wide configuration.
 - Current D-527 acceptance covers 23 isolated CLI invocations and seven PTY key/editor checks before and after
@@ -128,7 +143,7 @@ runner, but does not establish that historical command's outcome. Do not infer s
 bypass completion guards. The scheduled CI updater-readiness failure also needs diagnosis.
 
 Specific runtime gaps include automatic request routing, model-account login, image generation/editing,
-typed classifiers, rewind, effectful script orchestration, provider-side fetch redirect/rebinding enforcement,
+typed classifiers, power-loss recovery of file batches, effectful script orchestration, provider-side fetch redirect/rebinding enforcement,
 session startup/filesystem races and full-backlog connection deadlines.
 Wide exhaustive completion, Rust/SQLite refinement, whole-system composition and Policy B source-bound
 bidirectional fair-trace equivalence remain open. Fair scheduling, escaped/remote effects and real power loss

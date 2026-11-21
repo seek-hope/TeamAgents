@@ -172,7 +172,12 @@ async fn autonomy_continues_after_prose_and_verifies_the_written_result() {
     assert_eq!(std::fs::read_to_string(root.dir.join("ws/result.txt")).unwrap(), "verified");
     let requests = recorded(&seen);
     assert_eq!(requests.len(), 5);
-    assert!(requests.iter().all(|r| request_text(r).contains("Behavior policy v1.")));
+    assert!(requests.iter().all(|r| {
+        let prompt = request_text(r);
+        prompt.contains("Behavior policy v2.")
+            && prompt.contains("data leakage")
+            && prompt.contains("measure a baseline")
+    }));
     assert!(requests.iter().all(|r| r["tool_names"].as_array().unwrap().iter().any(|t| t == "work_checkpoint")));
     assert!(!request_text(&requests[0]).contains("never end a turn leaving it open"));
     assert!(request_text(&requests[4]).contains("result.txt verified by the shell check"));

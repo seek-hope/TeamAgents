@@ -29,6 +29,8 @@ fn request_target(composer: &Composer) -> Option<(Target, String)> {
 #[derive(Default)]
 pub struct Attachments {
     pub paths: Vec<String>,
+    /// Immutable source prompt, held with its draft across session switches.
+    pub rewind_source: Option<String>,
     pub candidates: Vec<String>,
     pub selected: usize,
     prefix: String,
@@ -127,6 +129,7 @@ impl Attachments {
         envelope
     }
     pub fn accepted(&mut self) {
+        self.rewind_source = None;
         self.paths.clear();
         self.retry = None;
         self.candidates.clear();

@@ -6,7 +6,7 @@ macro_rules! commands {
     ($($variant:ident => ($name:literal, $help:literal)),+ $(,)?) => {
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         pub enum Command { $($variant),+ }
-        pub const COMMANDS: [(&str, &str); 15] = [$(($name, $help)),+];
+        pub const COMMANDS: [(&str, &str); 20] = [$(($name, $help)),+];
         impl Command {
             pub fn parse(text: &str) -> Option<(Self, Option<&str>)> {
                 let end = text.find(char::is_whitespace).unwrap_or(text.len());
@@ -23,8 +23,13 @@ commands! {
     Model => ("/model", "Choose the Leader model and effort or the shared Worker model"),
     Edit => ("/edit", "Edit optional TEXT in the external editor; Ctrl+E edits the current draft"),
     Sessions => ("/sessions", "Browse conversations"),
+    Rewind => ("/rewind", "List Leader prompts; preview KEY, apply or reopen the last draft"),
+    Mcp => ("/mcp", "Inspect session MCP services, or start|stop|reconnect|hide|expose KEY"),
+    Shell => ("/shell", "Open a local shell, or use /shell view|draft COMMAND for bounded stdout"),
     Interrupt => ("/interrupt", "Interrupt the Leader model request"),
     Quit => ("/quit", "Detach from this session"),
+    Compact => ("/compact", "Summarize older Leader context, optionally emphasizing TEXT"),
+    Later => ("/later", "Send TEXT after the Leader's current work settles"),
     Queue => ("/queue", "Edit or cancel pending input"),
     Tree => ("/tree", "Show the session exploration tree"),
     Attach => ("/attach", "Stage a file; @path + Tab also completes"),

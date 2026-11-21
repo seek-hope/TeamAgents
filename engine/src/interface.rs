@@ -38,7 +38,7 @@ commands! {
     ("approvals", "approve", "--cwd DIR --json --id ID", "--id", "Approve one operation bound to its arguments."),
     ("approvals", "deny", "--cwd DIR --json --id ID", "--id", "Deny one operation."),
     ("instances", "list", "--cwd DIR --json", "", "List session instances."),
-    ("instances", "send", "--cwd DIR --json --id ID --prompt TEXT --after-turn", "--id --prompt", "Send to a member; --after-turn defers delivery until its current turn ends."),
+    ("instances", "send", "--cwd DIR --json --id ID --prompt TEXT --after-turn --after-work", "--id --prompt", "Send input now, after this turn, or after the Leader's active work settles."),
     ("instances", "model", "--cwd DIR --json --role leader|workers --model KEY --effort LEVEL --follow", "--role", "Select a Leader model/effort or pin all Workers to a key or follow the Leader."),
     ("instances", "resume", "--cwd DIR --json --id ID", "--id", "Resume a parked instance."),
     ("instances", "pause", "--cwd DIR --json --id ID", "--id", "Pause an instance."),
@@ -82,6 +82,12 @@ commands! {
     ("catalog", "refresh", "--name SOURCE --json", "", "Refresh user-bound model directories without inference."),
     ("catalog", "rollback", "--name SOURCE --json", "--name", "Publish the previous directory snapshot as a new version."),
     ("mcp", "list", "--cwd DIR", "", "List configured MCP services, tools and OAuth state."),
+    ("mcp", "status", "--json", "", "Show desired session MCP policy and each driver's last observed connections without probing services."),
+    ("mcp", "start", "--name NAME --json", "--name", "Request session-local MCP start for an exact configured binding at a quiet boundary."),
+    ("mcp", "stop", "--name NAME --json", "--name", "Request session-local MCP stop for an exact configured binding at a quiet boundary."),
+    ("mcp", "reconnect", "--name NAME --json", "--name", "Request session-local MCP reconnect for an exact configured binding at a quiet boundary."),
+    ("mcp", "hide", "--name NAME --json", "--name", "Request session-local MCP hide for an exact configured binding at a quiet boundary."),
+    ("mcp", "expose", "--name NAME --json", "--name", "Request session-local MCP expose for an exact configured binding at a quiet boundary."),
     ("mcp", "add", "--name NAME --transport stdio|http --command CMD --arg ARG --url URL --server NAME --oauth --oauth-client-id ID", "--name", "Add a host MCP binding. Repeat --arg for exact argv, including dash-leading values."),
     ("mcp", "remove", "--name NAME", "--name", "Remove an MCP binding."),
     ("mcp", "login", "--name NAME --cwd DIR --no-browser --paste --timeout SEC", "--name", "Authenticate OAuth; --paste reads the redirect instead of waiting for a callback."),
@@ -91,6 +97,7 @@ commands! {
 
 fn locators(command: &Command) -> &'static str {
     match (command.name, command.verb) {
+        ("mcp", "status" | "start" | "stop" | "reconnect" | "hide" | "expose") => "--state-root PATH --session ID",
         ("version" | "catalog" | "local-models" | "mcp" | "jobs-runner", _) | ("doctor", "environment") => "",
         ("sessions", _) => "--state-root PATH",
         _ => "--state-root PATH --session ID",

@@ -8,6 +8,7 @@ pub mod editor;
 pub mod graphics;
 mod highlight;
 pub mod markdown;
+pub mod operator_shell;
 pub mod queue;
 pub mod session_client;
 pub mod sessions;
