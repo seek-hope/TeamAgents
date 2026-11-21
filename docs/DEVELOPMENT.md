@@ -30,8 +30,8 @@ make language-check
 
 Current ledger: **core 210 / engine 561 / TUI 122 = 893 tests**. `tools/test_counts.py` checks that the source
 suites and all registered current totals/triples agree (D-519). Its `--write` mode changes captured numbers only;
-keep dates and source-bound passing-gate claims accurate separately. Update its `HEADLINES` patterns if
-a current statement changes format. A source count is not a passing test receipt; see ACCEPTANCE.md for gate status.
+update its `HEADLINES` patterns when a current statement changes format. Acceptance scenarios and
+executable checks are mapped in [ACCEPTANCE.md](ACCEPTANCE.md).
 
 The file/tool subset also runs on the AArch64 GNU ABI through QEMU user emulation:
 

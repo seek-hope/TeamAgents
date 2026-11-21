@@ -267,6 +267,7 @@ fn read_config_file(path: &Path) -> Result<String, String> {
 /// what happened to `[retention]` and `[hooks]` before that test existed.
 const CATALOG_KEYS: &[&str] = &[
     "models",
+    "default_model",
     "catalog_sources",
     "local_router_profiles",
     "tools",
@@ -326,6 +327,11 @@ fn validate_shared(catalog: &UserConfig) -> Result<(), String> {
             .is_some_and(|(action, scope)| teamagents_core::v2::capability::authorizes_something(action, scope))
         {
             return Err(format!("unsupported default_task_capabilities entry: {capability:?}"));
+        }
+    }
+    if let Some(key) = &catalog.default_model {
+        if !catalog.models.contains_key(key) {
+            return Err(format!("default_model names missing profile {key:?}"));
         }
     }
     validate_checks(catalog)?;
@@ -1487,6 +1493,11 @@ pub fn load_resolved_config(
         toml::Value::Table(out)
     };
     let user_models = table(&user, "models");
+    if let Some(default) = user.get("default_model") {
+        if !default.as_str().is_some_and(|key| user_models.contains_key(key)) {
+            return Err("default_model must name a profile defined in the user config".into());
+        }
+    }
     let sources = table(&user, "catalog_sources");
     for seed in sources.values() {
         if !seed.as_str().is_some_and(|key| user_models.contains_key(key)) {
@@ -1564,6 +1575,7 @@ pub fn load_resolved_config(
     // silently lost every `[limits]` setting (found while writing D-244, and the test
     // `the_two_loaders_agree_on_a_user_only_config` is what keeps the two rule sets equal).
     for key in [
+        "default_model",
         "default_task_capabilities",
         "retention",
         "hooks",
@@ -1843,6 +1855,7 @@ model = "project-loses"
             &user_config_path(),
             &format!(
                 r#"
+default_model = "m"
 skills_paths = ["{}"]
 instruction_files = ["{}"]
 
@@ -1875,6 +1888,7 @@ deadline_minutes = 5
         let product = load_user_config(&user_config_path()).unwrap();
         let merged = load_user_config_for(&project).unwrap().0;
         assert_eq!(product, merged, "one config, one catalog: the two loaders must not disagree");
+        assert_eq!(merged.default_model.as_deref(), Some("m"));
         assert!(merged.limits.max_total_tokens.is_some(), "the merge carries the user's work limits");
         let _ = std::fs::remove_dir_all(&root);
     }

@@ -125,6 +125,7 @@ accepted value. Unsupported `mcp_network` and check-level `network` settings are
 
 | Key | Type | Absent | Read by | Meaning |
 |---|---|---|---|---|
+| `default_model` | `Option<String>` | unset (the reader applies its own) | nothing: daemon_boot in engine/src/cli.rs reads the user's default for fresh sessions | User-owned profile key used for a new session when no model was requested. |
 | `models` | `HashMap<String, ModelProfile>` | empty | `engine/src/catalog.rs`, `engine/src/local_models.rs` … (7 files) | — |
 | `catalog_sources` | `HashMap<String, String>` | empty | `engine/src/catalog.rs` | User-owned discovery namespaces. Each names an explicit local Chat Completions profile whose configured API root also serves an OpenRouter-shaped models directory. |
 | `local_router_profiles` | `Vec<String>` | empty | `engine/src/local_models.rs` | User profile keys allowed to manage a loopback llama.cpp router. Grants no session tool. |

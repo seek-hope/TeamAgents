@@ -1,7 +1,3 @@
-> Current source validation: core 210 / engine 561 / tui 122, plus 63 positive TLA configurations in 60
-> traversals, 323 controls, 79 witnesses and 9 Kani harnesses. The latest `make check` passed. This document describes
-> current source, not an earlier release archive.
-
 ## Current source highlights
 
 - One authoritative SQLite database per session with atomic work, grants, approvals, receipts and events.
@@ -12,16 +8,16 @@
   ordered atomic patches. `/tree` and `teamagents search_tree [--json]` expose it; member-private history is not
   included.
 - Herdr-inspired team workspace with member state, saved blockers, tasks, activity and separate member history.
-  Responsive panes preserve drafts and approval focus; all message and profile controls still target Leader.
+  Responsive panes preserve drafts and approval focus. Session controls select the Leader model and the shared Worker policy.
 - Named profiles resolve before model preparation and recovery, preventing catalog aliases from reaching the
-  API and applying the selected effort to the first request. All fifteen local slash commands are discoverable.
+  API and applying the selected effort to the first request. Slash commands are discoverable in the TUI.
 - Fetch verifies public hostnames independently when local DNS returns fake-IP routing addresses, while
   retaining private-destination refusal. Returned text respects its UTF-8 byte limit.
 - One daemon per session. TUI and `teamagents exec` share its Unix-socket JSON protocol and resume from the event
   watermark.
 - Governed teams through `spawn`, `delegate`, `send` and `wait`, with shared, isolated and Git-worktree
   workspaces and task-scoped capability delegation.
-- Chat Completions, DeepSeek, Responses and Anthropic profiles, native context windows and configurable
+- Chat Completions, DeepSeek, Responses, Anthropic and Gemini profiles, native context windows and configurable
   reasoning effort.
 - Host Shell, acceptance commands and local MCP with explicit capability checks. Ordinary Shell requires no
   per-call approval; self-update approval remains. Retired sandbox settings are rejected.
@@ -36,15 +32,13 @@
 
 ## Current evidence
 
-The full local gate passed **893 Rust tests** (core 210, engine 561, TUI 122). Formal material contains **387
+The source contains **893 Rust tests** (core 210 / engine 561 / tui 122). Formal material contains **387
 configurations across 47 modules**: **63 positive configurations in 60 traversals**, **323 negative controls**,
 **79 normal-path witnesses** and **9 Kani harnesses**. Search-tree coverage includes ordered pair transitions,
 23 controls covering every non-`TypeOK` tree claim and 11 witnesses. Witnesses demonstrate reachability only.
 
-The current x86_64 Linux musl runtime passed release/install rehearsal, source/installed PTY matrices,
-18 offline probes and scripted profile/retry/tool/fetch checks. A separate real Fetch API check passed.
-The four delivery CI jobs passed; exact source/package bindings are in `docs/ACCEPTANCE.md`.
-AArch64 coverage is 26 tool regressions under GNU user emulation, not native ARM or an ARM release package.
+`make release-rehearsal` exercises the x86_64 Linux musl archive. `make pty` exercises the TUI in a real terminal.
+`make probe-offline` runs the local product probes. `make test-aarch64` covers 26 tool regressions under GNU user emulation.
 
 ## Current boundaries
 

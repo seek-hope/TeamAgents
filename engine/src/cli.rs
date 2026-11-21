@@ -1064,7 +1064,7 @@ fn daemon_boot(
         }),
         None => None,
     };
-    let model_key = match model.or(saved_key) {
+    let model_key = match model.or(saved_key).or_else(|| catalog.default_model.clone()) {
         Some(key) => key,
         None if catalog.models.contains_key("leader_main") => "leader_main".into(),
         None if catalog.models.len() == 1 => catalog.models.keys().next().unwrap().clone(),

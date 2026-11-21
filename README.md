@@ -48,7 +48,7 @@ Use `teamagents exec` for a headless turn:
 engine/target/debug/teamagents exec --json --timeout 180 "Inspect this repository and summarize the current state"
 ```
 
-The default model profile key is `leader_main`; `--model` selects another configured catalog entry.
+The starter config uses `leader_main`. Set `default_model` in the user config for new sessions, or select a profile with `--model`.
 See [installation and upgrades](docs/INSTALL.md) and [configuration](docs/CONFIG.md) for custom providers,
 permissions and storage locations.
 
@@ -141,13 +141,13 @@ See [the architecture guide](docs/ARCHITECTURE.md) for state machines and data r
 
 ## Current evidence
 
-The full local gate passed **893 Rust tests** (core 210, engine 561, TUI 122).
+The source contains **893 Rust tests** (core 210, engine 561, TUI 122).
 Formal material contains **387 configurations across 47 modules**:
 
 - **63 positive configurations in 60 traversals**;
-- **323 negative controls** refuted;
-- **79 normal-path witnesses** reached;
-- **9 Kani harnesses** passed.
+- **323 negative controls**;
+- **79 normal-path witnesses**;
+- **9 Kani harnesses**.
 
 Search-tree verification includes ordered pair transitions, 23 controls covering every non-`TypeOK` tree claim
 and 11 witnesses. Witnesses demonstrate reachability, not safety. PTY covers five terminal profiles and both
@@ -166,9 +166,7 @@ make pty
 
 ## Current limits
 
-The installed x86_64 Linux musl runtime passed source/installed PTY matrices, 18 offline probes and scripted
-profile/fetch checks. A separate real Fetch API check passed. These are not real-model task-quality trials.
-Exact runtime, package and CI bindings are in [ACCEPTANCE.md](docs/ACCEPTANCE.md).
+[ACCEPTANCE.md](docs/ACCEPTANCE.md) maps requirements to checks for the source, terminal and release package.
 
 Full Rust/SQLite refinement, whole-system composition, wide exhaustive completion and Policy B source-bound
 equivalence remain open. Current real-model quality, independent Reviewer evaluation, tree usefulness, external

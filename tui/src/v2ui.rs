@@ -335,7 +335,7 @@ fn render_profile(frame: &mut Frame, app: &V2App, area: Rect) {
         lines.extend(crate::markdown::plain(hint, inner.width as usize, secondary()));
     }
     lines.extend(menu.models.iter().enumerate().skip(start).take(count).map(|(i, model)| {
-        let label = model.label(&menu.all_models);
+        let label = model.label();
         Line::styled(
             fit(&format!("{} {}", if i == menu.model_ix { ">" } else { " " }, label), inner.width as usize),
             if i == menu.model_ix { selection() } else { secondary() },
@@ -746,11 +746,7 @@ fn render_composer(frame: &mut Frame, app: &V2App, area: Rect) {
     let reserved = attachment.as_ref().map_or(0, |text| unicode_width::UnicodeWidthStr::width(text.as_str()) + 2);
     if let Some(leader) = app.active_instance() {
         if !leader.model.is_empty() && bottom.width as usize > reserved + 10 {
-            let label = if app.leader_catalog_key.is_empty() {
-                leader.model.clone()
-            } else {
-                app.model_label(&app.leader_catalog_key)
-            };
+            let label = app.member_model_label(&leader.id, &leader.model);
             let profile = if leader.effort.is_empty() { label } else { format!("{label} · {}", leader.effort) };
             let profile = format!(" {} ", fit(&profile, (bottom.width as usize).saturating_sub(reserved + 2)));
             frame.render_widget(

@@ -22,6 +22,7 @@ fn checkpoint() -> Json {
                {"id": "i-leader", "lifecycle": "ACTIVE", "phase": "READY", "model": "deepseek-flash"},
                {"id": "i-worker", "lifecycle": "ACTIVE", "phase": "MODEL_PENDING", "model": "k3-256k"}
            ],
+           "models": [{"key":"leader_main","model":"deepseek-flash","provider":"deepseek"}],
            "work": {"status": "ACTIVE", "known_usage": {"prompt": 7, "completion": 3, "total": 10},
                     "unknown_usage": 0, "limits": {"max_total_tokens": 1000},
                     // 30m+59s out: the floor is 30 minutes for the next 59 seconds,

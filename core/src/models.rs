@@ -186,6 +186,9 @@ pub struct ToolBinding {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct UserConfig {
+    /// User-owned profile key used for a new session when no model was requested.
+    #[serde(default)]
+    pub default_model: Option<String>,
     #[serde(default)]
     pub models: HashMap<String, ModelProfile>,
     /// User-owned discovery namespaces. Each names an explicit local Chat Completions profile whose

@@ -3,7 +3,7 @@
 This is the candidate-work queue, not a record of past experiments. Implemented behavior is summarized in
 [CAPABILITIES.md](CAPABILITIES.md); source-bound acceptance is in [ACCEPTANCE.md](ACCEPTANCE.md).
 
-## Implemented and verified locally
+## Implemented capabilities
 
 - Durable work, scoped delegation, bounded recovery, required checks, known/unknown usage and optional frozen
   tariffs. Progress prose, passing artifacts and completed work remain distinct outcomes.
@@ -20,9 +20,8 @@ This is the candidate-work queue, not a record of past experiments. Implemented 
 - The product reads repository-local configuration under explicit user trust; hooks, checks, permissions,
   limits, retention and update policy remain under user control.
 - **893 Rust tests**, 63 positive TLA configurations in 60 traversals, 323 controls, 79 witnesses and 9 Kani
-  harnesses. Current-host evidence covers five PTY profiles/both graphics modes, 18 offline probes, x86_64 musl
-  installation and scripted profile/fetch checks; a separate live Fetch API check passed. AArch64 evidence is
-  the 26-tool GNU user-emulation subset. None establishes general real-model task quality or native ARM acceptance.
+  harnesses. The terminal matrix covers five PTY profiles and both graphics modes. The AArch64 target
+  covers 26 tool regressions under GNU user emulation.
 
 ## Open work
 

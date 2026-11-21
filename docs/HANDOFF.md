@@ -2,55 +2,14 @@
 
 ## Current baseline
 
-The project is a standalone Rust control plane, runtime and team TUI. Read [DESIGN.md](DESIGN.md) for the
-Q1–Q19/A01–A36 baseline, [DECISIONS.md](DECISIONS.md) for current contracts and [ACCEPTANCE.md](ACCEPTANCE.md)
-for exact source-bound evidence. Git retains implementation and experiment history; do not recreate a changelog here.
-
-The local installation includes session-scoped MCP restrictions, the operator shell and prompt rewind. Preview and apply a delivered Leader input with `/rewind`;
-reopen its unsent draft after restart. Abandoned epochs are retained. In a Git workspace, `/rewind files ENVELOPE` previews the dirty working bytes captured at delivery.
-`/rewind apply` restores the reviewed tracked files and opens the prompt. Missing historical snapshots
-fall back to receipt-only inspection. Interrupted file batches require inspection and a fresh preview.
-See [the user guide](USER-GUIDE.md) for operator commands and boundaries. The schema 13 writer holds explicitly queued Leader inputs until
-their work settles. The enrolled-work regression covers real admission after success, cancellation and a terminal
-check block; an active blocked scope is not terminal. The Worker supervisor regression compares explicit temporary
-and default persistent drivers across settlement and restart, including retained workspaces. Fresh admission
-is checked again for each held input, so checks and attachments do not enter an intervening work. A prepared
-Worker turn keeps its task ID; the real driver regression grants an older task during the newer request and
-checks both result envelopes. Manual pause during preparation keeps the same driver for explicit resume. See
-[the staged workflow requirements](DECISIONS.md#approved-workflow-requirements-implementation-staged) for the
-remaining scope. Retain a pre-upgrade session backup for schema rollback.
-
-The installed TUI now shows a first question and lets users choose a chat model by clicking Model, a `model(provider)` row and Save. Equal labels include the configuration key. The local x86_64 musl pair accepts raw operation IDs at completion, exposes the fetched page body to scripts and supports `/codegraph init|status|sync`. The installed CLI passed doctor and read a real index. The installed TUI passed the xterm-256color PTY smoke. For the build inputs, backup and paired live-model results, see [ACCEPTANCE.md](ACCEPTANCE.md).
-D-529 introduced session-level Leader and Worker model selection. The build also includes native Gemini API-key transport,
-versioned model directories, explicit endpoint switching, scoped CodeGraph discovery and user-confirmed
-local-router management. The provider,
-directory and local-router tests use loopback fixtures. The `codegraph_probe` engine example uses a real
-indexed workspace. Neither requires a personal model login. The directory timer is opt-in.
-
-D-528 makes the default test gates attribute processes and scratch directories to their own invocation. The final
-candidate passed TeamAgents' 855-test gate and the supervisor's 19 independent registry checks. The merged source
-also passed the 26-tool AArch64 GNU/QEMU target. Registry loss, malformed bindings and invalid markers fail
-visibly; peer registries are retained regardless of age. Registry files can accumulate across runs. Unknown
-ownership never authorizes a signal. See [ACCEPTANCE.md](ACCEPTANCE.md) for receipt paths and evidence boundaries.
-
-The follow-up TeamAgents work completed successfully; the original field-debug operation remains
-`OUTCOME_UNKNOWN` and was not rewritten or replayed. The installed CLI retains the accepted Unicode search fix.
-The earlier package/PTY evidence below remains bound to `d96d7c8a`. CI at `a4ce2a2e` passed all four jobs in
-[run 44000392754](https://github.com/seek-hope/TeamAgents/actions/runs/44000392754); that predates D-528.
-The older scheduled updater-readiness failure in run 43868995516 remains a separate diagnosis obligation.
-Current local formal replay retains its input-content binding in
-[verification/REPORT.md](../verification/REPORT.md).
+TeamAgents uses SQLite schema 13, socket protocol 2 and work policy 1. The user selects a Leader profile
+by catalogue key. Workers follow it or share a pinned profile. In the TUI, click Model, choose a
+`model(provider)` row and save. At startup an explicit `--model` takes priority over the saved selection,
+then the user configuration's `default_model`.
 
 - **893 Rust tests**: core 210, engine 561, TUI 122.
-- **63 positive TLA configurations in 60 traversals**, **323 controls**, **79 witnesses**, **9 Kani harnesses**.
-- Catalogue: **387 configurations across 47 modules**, including an incomplete wide configuration.
-- Current D-527 acceptance covers 23 isolated CLI invocations and seven PTY key/editor checks before and after
-  installation, plus the source PTY matrix and installed session-switching probe. No real model was called.
-- The package-baseline 18 offline probes, scripted profile/retry/tool/fetch and separate live Fetch API check
-  remain bound to that earlier package; the interface installation does not renew those results.
-- AArch64 coverage is the 26-tool GNU user-emulation subset, not native ARM/kernel/package acceptance.
-
-These checks do not establish real-model task quality, full real-service acceptance or native-runtime refinement.
+- For acceptance scenarios and regression coverage, see [ACCEPTANCE.md](ACCEPTANCE.md).
+- For formal verification scope and the current input fingerprint, see [verification/REPORT.md](../verification/REPORT.md).
 
 ## Start here
 
@@ -133,11 +92,6 @@ not rewritten as a pass.
 [PRODUCT-COMPARISON.md](PRODUCT-COMPARISON.md) is the candidate-work queue. Its priorities are matched held-out
 outcome/cost comparisons, reliable team completion, independent Reviewer evaluation, tree/navigation usefulness,
 provider/OAuth/integration coverage and current clean-host/platform acceptance.
-
-The original field-debug run retains one `OUTCOME_UNKNOWN` operation without quiescence evidence; the completion
-refusal is correct. D-528 fixes the verification tool's ownership error that could kill a concurrent session's
-runner, but does not establish that historical command's outcome. Do not infer success from missing processes or
-bypass completion guards. The scheduled CI updater-readiness failure also needs diagnosis.
 
 Specific runtime gaps include automatic request routing, model-account login, image generation/editing,
 typed classifiers, power-loss recovery of file batches, effectful script orchestration, provider-side fetch redirect/rebinding enforcement,

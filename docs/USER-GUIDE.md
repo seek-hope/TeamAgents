@@ -59,7 +59,7 @@ position. `input_queued` records delivery rather than model or task completion.
 
 ## 2. Configuration
 
-The default model profile is `leader_main`; edit `config.toml` rather than expecting `init` to merge new keys.
+The starter config uses `leader_main`. To choose a different default for new sessions, set `default_model = "deepseek-flash"` above the first table in your user config and define `[models.deepseek-flash]`. An explicit `--model` takes priority, followed by the saved session selection and then `default_model`.
 The default config path is `${XDG_CONFIG_HOME:-$HOME/.config}/teamagents/config.toml`.
 The product reads repository-local configuration under an explicit trust rule; it contributes nothing until you opt in. Its permissions,
 hooks, checks, limits, retention and update policy never silently override user configuration.
@@ -308,7 +308,7 @@ proven stopped.
 
 ## 7. Models and providers
 
-Click **Model** beside the message box, click a model, then click **Save**. You can also open the list with Ctrl+M or `/model`. Tab switches between Leader and Workers. Type or paste a model name, provider, or exact profile key. You can also enter words in any order, such as `astra byteseek`. The list shows `gpt-6.2-astra(byteseek)`. When two entries share that name and provider, each also shows its profile key in brackets. Press Ctrl+U to clear the search. For the Leader, ←/→ changes reasoning effort. For Workers, ← selects follow and
+Click **Model** beside the message box, click a model, then click **Save**. You can also open the list with Ctrl+M or `/model`. Tab switches between Leader and Workers. Type or paste a model name, provider, or exact profile key. You can also enter words in any order, such as `astra byteseek`. The list shows `gpt-6.2-astra(byteseek)`. Model labels show only the model name and provider. Press Ctrl+U to clear the search. For the Leader, ←/→ changes reasoning effort. For Workers, ← selects follow and
 → selects pin. Enter confirms; Esc cancels. Filtering does not contact a provider.
 
 ```bash

@@ -28,24 +28,22 @@ finite model into full acceptance. See [ACCEPTANCE.md](ACCEPTANCE.md) for scenar
 | Editing and attachments | Shared message/queue editing, `@PATH`, immutable snapshots and original-input revisions | Symlinks and out-of-workspace files are refused; no arbitrary path acceptance |
 | Markdown, code and media | Complete Markdown, bounded grammar highlighting, Mermaid/SVG/DOT/local images and source fallback | Remote resources and every diagram format are not promised |
 | Sessions and export | Registry, history/search/fork/archive/restore/delete, consistent streaming export and `session_export_tests.rs` | Fork needs a stopped source and fresh execution evidence; no message-level branch execution |
-| Installation and updates | Versioned install, update journal, health-check rollback, `tools/install_check.py` and `tools/release_rehearsal.py` | Current-host release/install passes; clean-host update/rollback, schema transitions and public-artifact acceptance remain open |
+| Installation and updates | Versioned install, update journal, health-check rollback, `tools/install_check.py` and `tools/release_rehearsal.py` | Clean-host update/rollback, schema transitions and public-artifact acceptance remain open |
 | Development tools | `tools/` contains current build, document, probe, formal and diagnostic utilities | `tools/tmp/` is ignored scratch, not committed evidence |
 
 ## Current evidence totals
 
-- Rust tests: **893** (core 210, engine 561, TUI 122); full local gate passed.
-- Positive TLA inputs: **65 configurations in 60 traversals**.
+- Rust tests: **893** (core 210, engine 561, TUI 122).
+- Positive TLA inputs: **63 configurations in 60 traversals**.
 - Negative controls: **323**, each required to refute its named claim.
 - Normal-path witnesses: **79**, which demonstrate reachability rather than safety.
-- Kani harnesses: **9** passed.
+- Kani harnesses: **9**.
 - Catalogue: **387 configurations across 47 modules**, including one separate wide configuration.
 
 Search-tree evidence includes ordered pair transitions, 23 controls covering every non-`TypeOK` tree claim and
 11 witnesses. `TypeOK` is tracked separately in [verification/COVERAGE.md](../verification/COVERAGE.md).
 
-Current-host x86_64 musl installation, source/installed PTY matrices, 18 offline probes and scripted
-profile/fetch checks pass, with a separate live Fetch API check. Exact source/package/CI bindings and their
-limits are in [ACCEPTANCE.md](ACCEPTANCE.md).
+Package and PTY checks have separate targets. See [ACCEPTANCE.md](ACCEPTANCE.md#workflow-checks).
 
 ## Current open obligations
 

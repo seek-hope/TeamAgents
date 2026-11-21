@@ -27,7 +27,7 @@ Defaults:
 - Versioned installs: `~/.local/lib/teamagents`
 - Launchers: `~/.local/bin/teamagents` and `~/.local/bin/teamagents-tui`
 
-The default model profile is `leader_main`:
+The starter profile is `leader_main`. Set `default_model` above the first table in the user config to choose another profile for new sessions.
 
 ```toml
 [models.leader_main]
@@ -103,8 +103,7 @@ default; when enabled, they still require a concrete user approval and cannot be
 reviewer. Publication is a separate operation.
 
 A local `make release-rehearsal` builds and checks an archive and performs an isolated install/init smoke.
-Current-host x86_64 Linux musl installation, PTY and scripted profile/fetch checks pass; a separate real
-Fetch API check passed. Exact source/package bindings are in [ACCEPTANCE.md](ACCEPTANCE.md). Clean-host
+For the package and terminal checks, see [ACCEPTANCE.md](ACCEPTANCE.md#workflow-checks). Clean-host
 two-version installation/update/rollback, schema transitions, physical hosts, native ARM and broader platform
 coverage require separate acceptance. These checks neither establish real-model quality nor publish a package.
 

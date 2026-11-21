@@ -84,20 +84,11 @@ pub struct ModelInfo {
 }
 
 impl ModelInfo {
-    fn short_label(&self) -> String {
+    pub(crate) fn label(&self) -> String {
         if self.provider.is_empty() {
             self.model.clone()
         } else {
             format!("{}({})", self.model, self.provider)
-        }
-    }
-
-    pub(crate) fn label(&self, catalog: &[ModelInfo]) -> String {
-        let label = self.short_label();
-        if catalog.iter().any(|m| m.model == self.model && m.provider == self.provider && m.key != self.key) {
-            format!("{label} [{key}]", key = self.key)
-        } else {
-            label
         }
     }
 }
@@ -186,7 +177,7 @@ fn filter_models(menu: &mut ProfileMenu, fallback: &[String]) {
         .all_models
         .iter()
         .filter(|model| {
-            let fields = format!("{} [{}]", model.short_label(), model.key).to_lowercase();
+            let fields = format!("{} [{}]", model.label(), model.key).to_lowercase();
             query.split_whitespace().all(|word| fields.contains(word))
         })
         .cloned()
@@ -562,7 +553,7 @@ impl V2App {
                         .map(|values| values.iter().filter_map(|e| e.as_str().map(str::to_string)).collect())
                         .unwrap_or_default();
                     Some(ModelInfo {
-                        model: row["model"].as_str().unwrap_or(&key).to_string(),
+                        model: row["model"].as_str().filter(|name| !name.is_empty()).unwrap_or("Unknown").to_string(),
                         provider: row["provider"].as_str().unwrap_or("").to_string(),
                         key,
                         efforts,
@@ -1054,7 +1045,18 @@ impl V2App {
 
     /// Resolve display text by the exact selection key, including for same-wire accounts.
     pub fn model_label(&self, key: &str) -> String {
-        self.models.iter().find(|m| m.key == key).map(|m| m.label(&self.models)).unwrap_or_else(|| key.to_string())
+        self.models.iter().find(|m| m.key == key).map(ModelInfo::label).unwrap_or_else(|| "Unknown".into())
+    }
+
+    pub(crate) fn member_model_label(&self, id: &str, model: &str) -> String {
+        if id == self.team.leader_id && !self.leader_catalog_key.is_empty() {
+            return self.model_label(&self.leader_catalog_key);
+        }
+        // Older snapshots can identify a member by wire name alone.
+        if self.models.iter().any(|m| m.model == model) && !self.models.iter().any(|m| m.key == model) {
+            return model.to_owned();
+        }
+        self.model_label(model)
     }
 
     pub fn paste_model_search(&mut self, text: &str) {
@@ -1330,7 +1332,7 @@ Commands:
 {}
 {}",
                 self.session_id,
-                self.active_instance().map(|i| i.model.as_str()).unwrap_or("unavailable"),
+                self.active_instance().map(|i| self.member_model_label(&i.id, &i.model)).unwrap_or_else(|| "unavailable".into()),
                 crate::completion::COMMANDS.iter().map(|(name, help)| format!("{name}: {help}")).collect::<Vec<_>>().join("\n"),
                 self.environment_details(),
                 self.diagnostic_details()

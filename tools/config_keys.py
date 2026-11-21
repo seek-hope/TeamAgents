@@ -71,6 +71,7 @@ REFUSED_AT_LOAD = {
 
 # field -> why it is allowed to have no read site
 KNOWN_UNSERVED = {
+    "default_model": "daemon_boot in engine/src/cli.rs reads the user's default for fresh sessions",
     "codex_profile": "D-75: refused at load — an external Codex profile is not part of this release",
     "archived_days": "applied by `sessions prune` (D-435), which reads it from the catalog in `main.rs` — the \
                       argv/pruning surface, which this audit counts as plumbing",

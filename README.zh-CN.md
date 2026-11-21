@@ -37,8 +37,8 @@ engine/target/debug/teamagents doctor
 engine/target/debug/teamagents
 ```
 
-`teamagents` 会启动或加入会话 daemon，并打开 TUI。`init` 不会覆盖已有配置。默认模型 profile 键为
-`leader_main`；使用 `--model` 选择其他配置。
+`teamagents` 会启动或加入会话 daemon，并打开 TUI。`init` 保留已有配置。初始配置使用 `leader_main`。
+可在用户配置中用 `default_model` 指定新会话的默认模型，也可以在启动时用 `--model` 选定模型。
 
 无界面运行一轮：
 
@@ -132,13 +132,13 @@ daemon + supervisor + 每个实例的 driver
 
 ## 当前证据
 
-最新完整本地门禁已通过 **893 项 Rust 测试**（core 210、engine 561、TUI 122）。
+源码中包含 **893 项 Rust 测试**（core 210、engine 561、TUI 122）。
 形式化材料包含 **47 个模块、387 个配置**：
 
 - **63 个正向配置，60 次遍历**；
-- **323 个负向控制**均被反驳；
-- **79 条正常路径 witness** 均已到达；
-- **9 个 Kani harness** 全部通过。
+- **323 个负向控制**；
+- **79 条正常路径 witness**；
+- **9 个 Kani harness**。
 
 探索树验证包含有序双操作 patch、23 个覆盖所有非 `TypeOK` 性质的控制，以及 11 条 witness。witness 证明
 可达性，而不是安全性。PTY 覆盖五种终端 profile 和两种强制图形模式。
@@ -156,9 +156,7 @@ make pty
 
 ## 当前限制
 
-当前安装的 x86_64 Linux musl 运行程序通过了源码版和安装版 PTY 矩阵、18 项离线探针，以及脚本化的模型配置与
-网页抓取流程。另行执行的真实 Fetch API 检查也已通过。这些结果不代表真实模型的任务质量。
-运行代码、安装包和 CI 的对应信息见[验收记录](docs/ACCEPTANCE.md)。
+源码、终端和发布包各自的检查入口见[验收矩阵](docs/ACCEPTANCE.md)。
 
 完整 Rust/SQLite 实现与模型的一致性证明、全系统组合验证、wide 配置的穷尽检查，以及 Policy B 的源代码绑定
 等价性仍未完成。真实模型质量、独立 Reviewer 评估、探索树实用性、外部 OAuth、公网主机和图形终端、

@@ -65,7 +65,7 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
 - `core/src/v2/control.rs::Control::submit` is the single team-transaction entry. Identity, operation IDs,
   permission revisions and event sequence numbers come from control state, not model/client claims.
 - Each session has one SQLite store with WAL and `synchronous=FULL`. Engine writes serialize through a bounded
-  single-writer worker; model/tool waits happen outside transactions. The schema is 11 with explicit migration.
+  single-writer worker; model/tool waits happen outside transactions. The store uses schema 13 with explicit migration.
 - Persisted phase and location drive execution. Known results are reused; unknown effects become
   `OUTCOME_UNKNOWN` and are never replayed on a guess.
 - Instance termination is user-only, distinct from interrupt, cancellation, pause, detachment and shutdown.
@@ -115,7 +115,7 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
   outcome/usage rather than silently dropping evidence. Outcome events trigger attribution even when a later
   input is active. Older-history cursors strictly decrease; read errors are infrastructure errors, not timeouts.
 
-## Approved workflow requirements (implementation staged)
+## Workflow contracts and scope
 
 - D-530: support rewind, not general message branching. Manual Leader compaction is a maintenance request,
   not a chat turn. Ordinary input steers current work; explicitly held Leader input enters only after the
@@ -166,6 +166,8 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
 
 ## Context, profiles and exploration tree
 
+- Startup selects an explicit `--model`, the saved Leader selection, or the user-owned `default_model`, in that order.
+  Without a selection it uses the `leader_main` starter key or the sole configured model. Multiple remaining choices require an explicit key.
 - D-529: the user selects an exact catalogue key for the Leader. All Workers follow that selection by
   default, or use one explicitly pinned key, selectable before any Worker exists. Pinning the Leader's
   current key is not following. Search filters catalogue metadata locally; only confirmation selects a key.
@@ -319,48 +321,10 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
   approval coverage. `TypeOK` is a type claim, not behavioral completeness.
 - `make test-aarch64` runs the 26-tool GNU user-emulation subset. Test targets audit leaks even after test
   failure, and either failure fails the target. Emulation is not native ARM/kernel/package acceptance.
-- A leak audit attributes before it signals (D-528). A `ta-*` / `teamagents-*` name is a convention, not
-  ownership: a concurrent session of the same user runs the same suites under the same `TMPDIR` with the same
-  binary. `make test` therefore exports `TEAMAGENTS_LEAK_GUARD_RUN=<uuid>`, and only a process whose own
-  `/proc/<pid>/environ` carries that marker is this run's leak; detached and reparented descendants inherit it
-  because the product's daemon and `jobs-runner` spawns do not clear the environment. A new process without the
-  marker is named in the report and left running, does not fail this run, and a clean verdict says "no leak from
-  this run" rather than calling the machine idle. A process whose environment cannot be read is `unattributed`
-  and equally left running. A scratch directory a live daemon or runner is serving has not been left behind and is
-  not counted as this run's leftover; removal never happens in an audit. Without a marker the rule keeps its
-  machine-wide meaning for processes and its previous strict meaning for directories, so an existing caller is never
-  silently left with directory detection disabled. A scratch directory is attributed by a *registry*, never by its
-  name: every guarded test constructor records the root it creates in `$TMPDIR/.ta-leak-owner-<marker>` (a plain
-  file in `TMPDIR`, never inside the root, because a root is functional fixture state), and only a root this run's
-  registry names is its leftover; one no registry names is reported and kept as unattributed. `snapshot` creates
-  and binds that registry for a marked gate, and writes or empties only the file under its own marker: another
-  gate's registry is never deleted or rewritten, because a name prefix plus an old mtime is not ownership evidence
-  and its gate may still be running. Registries are therefore not aged out; the residue is one short line per
-  scratch root per gate, kept as bounded residue rather than pruned heuristically. An audit uses the binding its
-  baseline recorded and nothing else: with a binding present, an unset marker is lost provenance, a different
-  marker is a mismatched audit of another gate's baseline, and a bound path that is not this gate's expected
-  registry (relative, traversal or another run's) is refused. Presence of the `registry` key is the contract: a key
-  that is present but unusable (`null`, `""`, `[]`, a non-string) is a malformed binding and fails, never silently
-  downgraded to the legacy rule — only an *absent* key is a legacy or hand-written snapshot, which is audited as
-  before. Every one of these cases fails visibly before any process or directory is signalled or removed. The
-  marker becomes part of the registry file name, so it must be one safe path component (letters, digits, `.`, `_`,
-  `-`; no separator, no `.`/`..`, no whitespace). Marker state is three-valued, and the three are not
-  interchangeable: absent or genuinely empty means no marker (the legacy machine-wide rule); present and well formed
-  is this gate's marker; present but unsafe is an **error**, never "no marker". `snapshot` raises it before creating
-  a baseline or a registry, so a misconfigured gate fails at the gate boundary instead of later as an unbound
-  baseline that falls back to the machine-wide rule, and `audit` reports it and fails before reading the baseline or
-  touching a process or directory; signalling code sees no marker in that state, and `registry_path` refuses it
-  outright, so no registry can be created inside or outside the registry directory. The record is emitted as
-  one append of one encoded line, so parallel test processes cannot interleave halves. Signals bind to a process,
-  not a number: selection captures each pid's start time together
-  with its arguments, a pidfd is opened, the saved identity, marker and served root are re-checked around that
-  open, and TERM and the escalated KILL go through that one handle. `stop_daemons`, `stop_runners`, `kill_daemons`
-  and `kill_runners` bind the same identities and a root-scoped finder, so the legacy entry points are not a way
-  around it. An unreadable start time is recorded as unknown and refused, never skipped; ESRCH is the only "gone",
-  and every other failure stays unresolved rather than becoming stop evidence. Coverage is checked, not assumed:
-  `tools/leak_guard.py --audit-ownership` fails on a guarded-prefix constructor that records nothing. Known limits:
-  a leaked child that clears or rewrites its environment is reported but not stopped; a peer on an older build is
-  spared yet unattributable; a test root named outside the guarded prefixes, and a plain file, were never covered by
-  the stray rule; and a registry entry left by a killed gate makes that root attributable to a run that is gone.
+- Leak audits bind a run marker to its scratch registry. A marked run attributes processes by the inherited
+  marker and directories by its own registry. A missing or malformed binding fails before cleanup. Peer
+  registries and unattributed resources are retained. With no marker, a machine-wide audit requires an
+  isolated environment. PID start identity and served roots are checked around pidfd acquisition before
+  signalling. Ownership coverage is checked with `python3 tools/leak_guard.py --audit-ownership`.
 - Full Rust/SQLite refinement, whole-system composition, wide exhaustive completion, Policy B source-bound
   bidirectional fair-trace equivalence and arbitrary-input/live-model quality claims remain unestablished.

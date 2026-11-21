@@ -349,7 +349,13 @@ pub fn render_sidebar(frame: &mut Frame, app: &V2App, area: Rect) {
         lines.push(Line::from(vec![
             Span::styled(format!("  {}", state(row)), state_style(state(row))),
             Span::styled(
-                format!(" · {}", fit(row["model"].as_str().unwrap_or(""), list.width.saturating_sub(14) as usize)),
+                format!(
+                    " · {}",
+                    fit(
+                        &app.member_model_label(id, row["model"].as_str().unwrap_or("")),
+                        list.width.saturating_sub(14) as usize
+                    )
+                ),
                 secondary(),
             ),
         ]));
@@ -425,7 +431,7 @@ fn detail_lines(app: &V2App) -> Vec<String> {
         format!("{} · {}", app.team.selected, state(row)),
         format!(
             "Model: {} · {}",
-            row["model"].as_str().unwrap_or("unreported"),
+            app.member_model_label(&app.team.selected, row["model"].as_str().unwrap_or("")),
             row["effort"].as_str().unwrap_or("default effort")
         ),
         String::new(),

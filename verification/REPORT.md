@@ -7,23 +7,12 @@ in [README.md](README.md); reproduction commands are in [DEVELOPMENT.md](../docs
 
 Material SHA-256: `99c41d68c1767bc3c274383e848ecc4afae59c119037a729a9d34aef821eb3ff`.
 
-After updating the completion tool's evidence description in `core/src/kernel/types.rs`, all nine Kani harnesses passed (`tools/tmp/local-replacement.McXlue/kani.log`). The TLA inputs retain their previous fingerprint. The receipt lookup, fetch formatting and CodeGraph workflow have executable coverage.
+The maintained targets cover all **63** configurations in **60** positive traversals, all **323** negative controls
+and **79** reachability witnesses. The verified material includes the two-key profile-switch model with an optional
+Worker. SQLite persistence, endpoint selection and HTTP bodies have separate executable checks.
 
-For D-530 only the Kani input `core/src/kernel/types.rs` changed in the formal material. All nine
-harnesses passed again (`tools/tmp/selected-workflows/kani.log`); they do not verify the new lifetime
-or input scheduling rules. The TLA inputs were unchanged and were not rerun for this change.
-
-D-529 replayed the changed `V2ProfileSwitch` module: the positive configuration exhausted 252 distinct
-states with no violation; each of its four controls violated its named invariant. The `profile_next_request`
-witness was reached. Receipts are under `tools/tmp/d529/`. The abstraction has two keys and one optional
-Worker; it does not model SQLite, endpoint/account routing, directory refresh or actual HTTP bodies.
-`make verify-kani` reported `Complete - 9 successfully verified harnesses, 0 failures, 9 total`.
-
-The preceding full positive replay covered all **63** configurations in **60** traversals; its receipt is
-`/tmp/teamagents-positive-vbxti4bm/results.json`. The previous full runs refuted all **323** negative controls and reached **79** witnesses. Only the changed formal inputs were replayed here, not every unchanged
-traversal. Earlier evidence is under `tools/tmp/delivery-20261120/formal/`. The fingerprint includes the
-verified model/configuration files, drivers, Makefile and Kani subjects; recompute it with
-`python3 tools/verification_catalogue.py --source-hash`. Finite replay does not prove Rust refinement.
+Kani result for the identified inputs: `Complete - 9 successfully verified harnesses, 0 failures, 9 total`.
+To compare the checkout with the verified material, run `python3 tools/verification_catalogue.py --source-hash`.
 
 The catalogue contains **387 configurations across 47 modules**, including one separate incomplete wide
 configuration. Positive inputs share a traversal only when their model, specification and domains match;

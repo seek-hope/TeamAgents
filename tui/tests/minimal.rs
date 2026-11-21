@@ -158,7 +158,7 @@ fn role_menu_filters_same_wire_keys_and_submits_only_on_confirmation() {
         3,
     );
     assert_eq!(app.model_label("b"), "wire(second-provider)");
-    assert_eq!(app.model_label("missing"), "missing");
+    assert_eq!(app.model_label("missing"), "Unknown");
     assert_eq!(app.team.selected, "owner");
     assert_eq!(app.team.rows[0]["id"], "owner");
     app.team.select("i-leader");
@@ -210,8 +210,8 @@ fn role_menu_filters_same_wire_keys_and_submits_only_on_confirmation() {
     );
 
     app.models[0].provider = app.models[1].provider.clone();
-    assert_eq!(app.model_label("a"), "wire(second-provider) [a]");
-    assert_eq!(app.model_label("b"), "wire(second-provider) [b]");
+    assert_eq!(app.model_label("a"), "wire(second-provider)");
+    assert_eq!(app.model_label("b"), "wire(second-provider)");
     app.handle_key(ctrl('m'));
     app.paste_model_search("wire(second-provider) [a]");
     let menu = app.profile.as_ref().unwrap();
@@ -507,6 +507,7 @@ fn responsive_status_and_hints_prioritize_current_actions() {
         let mut app = app();
         app.session_name = "project".into();
         app.apply_checkpoint(json!({"instances":[{"id":"i-leader","lifecycle":"ACTIVE","phase":"READY","model":"deepseek-flash","effort":"high"}],
+            "models":[{"key":"leader_main","model":"deepseek-flash","provider":"deepseek"}],"role_models":{"leader_id":"i-leader","leader":"leader_main"},
             "work":{"status":"ACTIVE","known_usage":{"total":42}}}), 2);
         let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
         terminal.draw(|frame| v2ui::render(frame, &mut app)).unwrap();
@@ -518,7 +519,11 @@ fn responsive_status_and_hints_prioritize_current_actions() {
         if width == 100 {
             assert!(row(0).contains("project"));
             let shown: String = terminal.backend().buffer().content.iter().map(|cell| cell.symbol()).collect();
-            assert!(shown.contains("deepseek-flash · high"), "model/effort belongs in the composer border: {shown}");
+            assert!(!shown.contains("leader_main"));
+            assert!(
+                shown.contains("deepseek-flash(deepseek) · high"),
+                "model/effort belongs in the composer border: {shown}"
+            );
         }
         assert!(row(23).contains("? shortcuts") && !row(23).contains("interrupt"));
         assert!(!row(23).contains("newline") && !row(23).contains("Ctrl+J"));

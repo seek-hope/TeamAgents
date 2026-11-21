@@ -17,8 +17,8 @@ points and open work. Recheck Git status before relying on its snapshot.
   current rule in `docs/DECISIONS.md`.
 - This is a standalone Rust project: implementation code is Rust (`core`, `engine`, `tui`). Python in
   `tui/scripts/`, `tools/` and test fake servers is test-only.
-- Keep only current implementation and current development/verification tools in the tree. Git history remains
-  the mechanism for examining earlier states.
+- Document the current implementation, runnable checks and their limits. Replace superseded text in place.
+  Use Git to inspect prior versions and keep machine-specific run logs outside tracked documentation.
 
 ## Language
 
@@ -45,13 +45,10 @@ make verify-model-counterexamples
 make verify-witnesses
 make verify-kani
 ```
-Current source inventory (2026-11-16): **893 Rust tests** (core 210 / engine 561 / tui 122), **63 positive TLA configurations in 60
+Current source inventory: **893 Rust tests** (core 210 / engine 561 / tui 122), **63 positive TLA configurations in 60
 traversals**, **323 controls**, **79 witnesses**, **9 Kani harnesses**, and **387 configurations across 47
-modules**. Current acceptance covers the full local gate, source/installed PTY matrices, 18 offline probes,
-x86_64 musl release/install and scripted profile/fetch checks, plus a separate live Fetch API check.
-The shared `make test-aarch64` target covers 26 tool tests under GNU user emulation, not native ARM acceptance.
-Exact source/CI/package bindings and remaining obligations are in `docs/ACCEPTANCE.md`; formal scope is in
-`verification/REPORT.md`. Inventory regeneration does not renew test, install or formal evidence.
+modules**. `make test-aarch64` covers 26 tool tests under GNU user emulation. See `docs/ACCEPTANCE.md`
+for scenario coverage and `verification/REPORT.md` for formal scope. Inventory regeneration does not renew test, install or formal evidence.
 
 Real-model evaluation must use the model's native context window and record it with its source. A synthetic small
 window is for scripted regression only.

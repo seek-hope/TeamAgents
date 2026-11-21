@@ -1,41 +1,8 @@
 #!/usr/bin/env python3
-"""The acceptance ledger's headline numbers, kept equal to the suites that ran (D-178).
+"""Check current documentation counts against Cargo's test lists.
 
-`docs/ACCEPTANCE.md` opens with "`make check` is green (core 100 / engine 220 / tui 33 test targets) and
-`make pty` passes" — the precondition every item below rests on, dated by the line above it. Both numbers
-rotted the same way D-176's probe counts did: they were true when written, nothing read them, and the suites
-grew (engine 220 → 239, tui 33 → 35) while the sentence kept claiming the old state.
-
-    python3 tools/test_counts.py              # check (inside `make test`, after the suites)
-    python3 tools/test_counts.py --write      # update the numbers in the ledger
-
-The counts are derived exactly, not by a text count of `#[test]`: the crates are asked for their test list
-(`cargo test -- --list`, which runs no test body and needs the build the gate already has), so a `#[test]` in
-prose or a `#[cfg]`-gated test cannot skew the number. The gate runs inside `make test` — the suites are built
-there anyway — and *not* in `make hygiene`, whose audits must work on a tree that has not been built.
-
-The *date* on that line is deliberately not the script's business: "checked on <date>" means the ledger was
-reviewed, which is a human claim, so `--write` touches the numbers only. A source-inventory line is also
-accepted: counting tests must not require claiming that the enclosing gate passed before it has finished.
-
-**D-221 added the other two places the same numbers are stated.** The ledger is the one held to the suites, but
-it is not the only document a reader trusts with them: `.github/release-notes.md` is the release body (the
-workflow publishes it with `--notes-file`), and `AGENTS.md` is the file a contributor takes as the baseline to
-judge a run against. Measured 2026-09-27: **both were stale, and each stale differently** — the release body
-said `core 91 / engine 136 / tui 29` and the instruction file `core 100 / engine 220 / tui 33`, against the
-ledger's `core 101 / engine 244 / tui 35`. One fact, three statements, one checked: the script now holds every
-document in `STATEMENTS` to the ledger's numbers, so `--write` keeps all three current together.
-
-**D-313 extended it to *every* occurrence of the triple.** D-311 found a row quoting D-113's counts as what a
-target prints today; the two `STATEMENTS` were held to the ledger, but a *row* was not. Every `core N / engine
-N / tui N` in the ledger and the statements is checked now, and one that differs is allowed only when its own
-line marks it as history in the past tense ("were"/"was"/"when"/"before"/"then"/"previously") — the
-repository's convention is to keep the old value as history rather than to delete it, which is what the row does.
-A *date* does not excuse a stale triple: a sentence can carry today's date and still present yesterday's count.
-
-Current totals and alternate punctuation are also checked through explicit HEADLINES patterns. Each known
-statement must occur exactly once; updates change only captured numbers, preserving dates, gate claims and
-historical reports. Explicit --ledger/--statement controls keep their existing limited document scope.
+Run without arguments to audit registered statements. --write updates the counts.
+Cargo lists tests for the current target without executing the test bodies.
 """
 import argparse
 import pathlib
@@ -46,22 +13,19 @@ import sys
 REPO = pathlib.Path(__file__).resolve().parents[1]
 LEDGER = REPO / "docs" / "ACCEPTANCE.md"
 CRATES = ("core", "engine", "tui")
-BASELINE = re.compile(r"(?:Current source inventory: |`make check` is green \()core (\d+) / engine (\d+) / tui (\d+) test targets")
+BASELINE = re.compile(r"Current source inventory: core (\d+) / engine (\d+) / tui (\d+) test targets")
 # The documents that state the same three numbers and are held to the ledger's: the published release body and
 # the repository's own instruction file. A document that drops the sentence fails too — deleting a statement is
 # how the check would otherwise go quiet — and `--write` updates all of them at once.
 STATEMENTS = (REPO / ".github" / "release-notes.md", REPO / "AGENTS.md")
 COUNTS = re.compile(r"core (\d+) / engine (\d+) / tui (\d+)")
-# A triple that is not the suites' current numbers is allowed only where its line says so: a date,
-# or a word that marks it as history (see the docstring's D-313 note).
-HISTORY = re.compile(r"\bwere\b|\bwas\b|\bwhen\b|\bbefore\b|\bthen\b|\bpreviously\b")
 TOTAL = r"(?P<total>\d+)"
 TRIPLE = r"core (?P<core>\d+)[^\d\n]+engine (?P<engine>\d+)[^\d\n]+tui (?P<tui>\d+)"
 HEADLINES = (
-    ("README.md", r"^The full local gate passed \*\*" + TOTAL + r" Rust tests\*\* \(" + TRIPLE + r"\)"),
+    ("README.md", r"^The source contains \*\*" + TOTAL + r" Rust tests\*\* \(" + TRIPLE + r"\)"),
     ("README.zh-CN.md", r"^\S+ \*\*" + TOTAL + r" [^*\n]*Rust[^*\n]*\*\*[^\d\n]*" + TRIPLE),
-    ("AGENTS.md", r"^Current source inventory \([^\n)]*\): \*\*" + TOTAL + r" Rust tests\*\* \(" + TRIPLE + r"\)"),
-    (".github/release-notes.md", r"^The full local gate passed \*\*" + TOTAL + r" Rust tests\*\* \(" + TRIPLE + r"\)"),
+    ("AGENTS.md", r"^Current source inventory: \*\*" + TOTAL + r" Rust tests\*\* \(" + TRIPLE + r"\)"),
+    (".github/release-notes.md", r"^The source contains \*\*" + TOTAL + r" Rust tests\*\* \(" + TRIPLE + r"\)"),
     ("docs/HANDOFF.md", r"^- \*\*" + TOTAL + r" Rust tests\*\*: " + TRIPLE),
     ("docs/CAPABILITIES.md", r"^- Rust tests: \*\*" + TOTAL + r"\*\* \(" + TRIPLE + r"\)"),
     ("docs/DESIGN.md", r"^The current source has " + TOTAL + r" Rust tests"),
@@ -72,36 +36,21 @@ HEADLINES = (
 )
 
 
-def marked_as_history(line, start):
-    """Whether the clause immediately before a triple marks it as a past measurement.
-
-    The marker has to sit in the same clause, so a line that carries both the current numbers and a historical
-    pair (D-311's row) cannot launder the current one: only the text between the last clause boundary and the
-    triple is searched.
-    """
-    window = line[:start]
-    for boundary in (". ", "; ", "| ", ": "):
-        if boundary in window:
-            window = window.rsplit(boundary, 1)[-1]
-    return bool(HISTORY.search(window))
-
-
 def stale_statements(path, wanted):
-    """Every stated triple in `path` that is neither current nor marked as history."""
+    """Report every stated triple that differs from the current source."""
     findings = []
     for number, line in enumerate(path.read_text().split("\n"), 1):
         for match in COUNTS.finditer(line):
             stated = f"core {match.group(1)} / engine {match.group(2)} / tui {match.group(3)}"
-            if stated != wanted and not marked_as_history(line, match.start()):
+            if stated != wanted:
                 name = path.relative_to(REPO) if path.is_relative_to(REPO) else path
                 findings.append(f"{name}:{number} states {stated}, the suites have "
-                                f"{wanted}, and the clause before it does not phrase it as history \"were … "
-                                f"when …\" (D-313): update it, or write the old value in the past tense")
+                                f"{wanted}")
     return findings
 
 
 def current_headlines(root, counts, write=False):
-    """Audit explicit current statements without rewriting historical receipts or surrounding prose."""
+    """Check registered headline counts and preserve surrounding prose when updating."""
     wanted = {**counts, "total": sum(counts.values())}
     findings, changed = [], []
     for relative, pattern in HEADLINES:
@@ -158,7 +107,7 @@ def main(argv):
     counts = counted()
     if match is None:
         print(
-            f"FAIL: {ledger.name} has no source inventory or green-gate line with core N / engine N / tui N test targets; "
+            f"FAIL: {ledger.name} has no source inventory line with core N / engine N / tui N test targets; "
             "baseline line; if the sentence changed on purpose, update this audit with it"
         )
         return 1
@@ -215,8 +164,7 @@ def main(argv):
     if findings:
         for finding in findings:
             print(f"FAIL: {finding}")
-        print("run `python3 tools/test_counts.py --write` (and move the ledger's checked-on date if the review "
-              "is re-dated)")
+        print("run `python3 tools/test_counts.py --write` to update the inventory")
         return 1
     print(f"the ledger's counts match the suites: core {counts['core']} / engine {counts['engine']} / "
           f"tui {counts['tui']}")
