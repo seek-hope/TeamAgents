@@ -8,9 +8,15 @@ impl Session {
     fn new() -> (Self, Control) {
         let path = std::env::temp_dir().join(format!("teamagents-input-{}.db", uuid::Uuid::new_v4()));
         let mut ctl = Control::open(&path, "s1", true).unwrap();
-        for id in ["i1", "i2"] {
-            apply(&mut ctl, id, "create_instance", json!({"id": id})).unwrap();
-        }
+        apply(
+            &mut ctl,
+            "leader",
+            "create_instance",
+            json!({"id":"i1", "is_leader":true,
+            "profile":{"model":"fixture/model","catalog_key":"fixture/model"}}),
+        )
+        .unwrap();
+        apply(&mut ctl, "worker", "create_instance", json!({"id":"i2"})).unwrap();
         apply(&mut ctl, "start", "begin_request", json!({"instance_id":"i1", "request_id":"r1", "revision":0}))
             .unwrap();
         (Self(path), ctl)

@@ -5,6 +5,10 @@ one (mode `0600`, no credentials, keeps an existing file), and `teamagents docto
 credentials, state, host execution, Skills, declared tools and accepted-but-unapplied keys. The user guide's
 §2 explains `[[checks]]` (§2.1), `[limits]` (§2.2) and `[hooks]` (§2.3).
 
+The table name in `[models.<key>]` identifies the endpoint, credential reference and generation settings.
+Select that exact key, not its `model` field: two accounts may serve the same wire model name. Shared Worker
+follow/pin is session state, not a config override. Directory refresh does not overwrite an explicit entry.
+
 Three rules decide whether a key is applied:
 
 * **Your own config is read, and the repository's is read under one gate.** A repository-local
@@ -78,7 +82,7 @@ accepted value. Unsupported `mcp_network` and check-level `network` settings are
 |---|---|---|---|---|
 | `provider` | `String` | empty | `engine/src/catalog.rs`, `engine/src/providers/mod.rs` … (8 files) | The vendor hint: `deepseek` selects that service's defaults (the reasoning echo, the deepseek protocol) while `protocol` is unset, and any other value is a label for a compatible service — the wire is decided by `protocol`/`base_url`, never by this name (D-40, D-229). |
 | `protocol` | `String` | "openai" | `engine/src/catalog.rs`, `engine/src/local_models.rs` … (5 files) | Wire protocol: openai (legacy), chat/completions, responses, anthropic, deepseek or gemini. |
-| `model` | `String` | empty | `core/src/kernel/instance.rs`, `core/src/kernel/mod.rs` … (21 files) | — |
+| `model` | `String` | empty | `core/src/kernel/instance.rs`, `core/src/kernel/mod.rs` … (22 files) | — |
 | `base_url` | `Option<String>` | unset (the reader applies its own) | `engine/src/catalog.rs`, `engine/src/local_models.rs` … (3 files) | — |
 | `api_key_env` | `Option<String>` | unset (the reader applies its own) | `engine/src/catalog.rs`, `engine/src/local_models.rs` … (6 files) | — |
 | `timeout` | `i64` | 120 | `core/src/v2/control.rs`, `engine/src/catalog.rs` … (15 files) | — |
@@ -122,7 +126,7 @@ accepted value. Unsupported `mcp_network` and check-level `network` settings are
 | Key | Type | Absent | Read by | Meaning |
 |---|---|---|---|---|
 | `models` | `HashMap<String, ModelProfile>` | empty | `engine/src/catalog.rs`, `engine/src/local_models.rs` … (7 files) | — |
-| `catalog_sources` | `HashMap<String, String>` | empty | `engine/src/catalog.rs`, `engine/src/v2/driver.rs` | User-owned discovery namespaces. Each names an explicit local Chat Completions profile whose configured API root also serves an OpenRouter-shaped models directory. |
+| `catalog_sources` | `HashMap<String, String>` | empty | `engine/src/catalog.rs` | User-owned discovery namespaces. Each names an explicit local Chat Completions profile whose configured API root also serves an OpenRouter-shaped models directory. |
 | `local_router_profiles` | `Vec<String>` | empty | `engine/src/local_models.rs` | User profile keys allowed to manage a loopback llama.cpp router. Grants no session tool. |
 | `tools` | `HashMap<String, ToolBinding>` | empty | `core/src/kernel/instance.rs`, `core/src/kernel/mod.rs` … (19 files) | — |
 | `skills_paths` | `Vec<String>` | empty | `engine/src/environment.rs`, `engine/src/tools.rs` | Directories the `skill` tool searches for `SKILL.md` entries. An entry must exist and be a directory; the default (`~/.agents/skills`) is used only when the key is unset (D-232). |

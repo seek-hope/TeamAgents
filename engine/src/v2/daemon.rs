@@ -285,8 +285,7 @@ async fn accept_loop(
 }
 
 async fn run_scheduler(supervisor: Arc<SupervisorHandle>, facts: Arc<SessionFacts>, shutdown: Arc<AtomicBool>) {
-    // The bootstrap's leader id is fixed (`cli::daemon_boot`); an automation always addresses the Leader.
-    const LEADER: &str = "i-leader";
+    let leader = &supervisor.leader_id;
     loop {
         tokio::time::sleep(crate::v2::automations::tick()).await;
         if shutdown.load(Ordering::SeqCst) {
@@ -318,7 +317,7 @@ async fn run_scheduler(supervisor: Arc<SupervisorHandle>, facts: Arc<SessionFact
                 }
             }
             let work_id = format!("work-auto-{}", automation.id);
-            let mut params = json!({"id": work_id, "instance_id": LEADER});
+            let mut params = json!({"id": work_id, "instance_id": leader});
             apply_session_work_limits(&mut params, &facts.work_limits);
             let command = Command {
                 command_id: format!("auto-work-{}-{}", automation.id, uuid::Uuid::new_v4()),
@@ -329,7 +328,7 @@ async fn run_scheduler(supervisor: Arc<SupervisorHandle>, facts: Arc<SessionFact
                 eprintln!("automations: could not open a work for {}: {error}", automation.id);
                 continue;
             }
-            if let Err(error) = supervisor.input(LEADER, &automation.prompt).await {
+            if let Err(error) = supervisor.input(leader, &automation.prompt).await {
                 eprintln!("automations: could not submit the prompt for {}: {error}", automation.id);
                 continue;
             }
@@ -503,8 +502,8 @@ fn read_only<T>(
 /// watermark) — instances with lifecycle/phase plus the single-work view.
 fn read_snapshot(conn: &rusqlite::Connection, mcp: &Json, sessions: &Json, models: &Json) -> Result<Json, String> {
     let work = super::diagnostics::read(conn, false)?;
-    // `model` rides along (D-69): a team can span providers (`spawn(model = …)`),
-    // and without it no client can say which member runs on what.
+    // `model` rides along (D-69/D-529): a team can span providers and the checkpoint must preserve the exact
+    // catalogue key that selected each member. The wire model remains in `profile_json` for transport and recovery.
     // `reason` rides along too (D-165): the last lifecycle transition's own words, which is what answers "why
     // is this instance not running?" — for a leader that parked, the runtime's sentence about the cause. It
     // lived only in the event log, so `instances` could show `PARKED` and the guide's promise that it "shows
@@ -563,8 +562,9 @@ fn read_snapshot(conn: &rusqlite::Connection, mcp: &Json, sessions: &Json, model
             let id = row.get::<_, String>(0)?;
             let reason = reasons.get(&id);
             let can_shell = shells.get(&id).copied().unwrap_or(false);
+            let model = profile["catalog_key"].as_str().map(Json::from).unwrap_or_else(|| profile["model"].clone());
             Ok(json!({"id": id, "lifecycle": row.get::<_, String>(1)?,
-                      "phase": row.get::<_, String>(2)?, "model": profile["model"], "reason": reason,
+                      "phase": row.get::<_, String>(2)?, "model": model, "reason": reason,
                       "effort": profile["options"]["reasoning_effort"],
                       "can_run_shell": can_shell, "diagnosis": work.activities.get(&id)}))
         })
@@ -613,7 +613,7 @@ fn read_snapshot(conn: &rusqlite::Connection, mcp: &Json, sessions: &Json, model
     });
     // D-479: bounded identity/state-only delivery view for reconnecting clients; no input bodies copied.
     let mut statement = conn.prepare(
-        "SELECT id, state FROM envelopes WHERE recipient = 'i-leader' AND sender = 'user' AND kind = 'user_input' ORDER BY sequence DESC LIMIT 100"
+        "SELECT id, state FROM envelopes WHERE recipient = (SELECT id FROM instances WHERE is_leader=1) AND sender = 'user' AND kind = 'user_input' ORDER BY sequence DESC LIMIT 100"
     ).map_err(|e| format!("input delivery: {e}"))?;
     let input_delivery = statement
         .query_map([], |row| {
@@ -628,6 +628,7 @@ fn read_snapshot(conn: &rusqlite::Connection, mcp: &Json, sessions: &Json, model
         .query_row("SELECT EXISTS(SELECT 1 FROM meta WHERE key='work_policy_v1')", [], |row| row.get(0))
         .map_err(|e| format!("snapshot work policy: {e}"))?;
     Ok(json!({"instances": instances, "tasks": work.tasks, "work": work_scope, "input_delivery": input_delivery,
+        "role_models": teamagents_core::v2::control::role_model_snapshot(conn)?,
         "work_policy_version": if work_enabled { json!(1) } else { Json::Null },
         // D-413: the configured MCP services and their credential state, so a client that cannot read this
         // machine's config (the TUI is one) can still tell a user what the session bound and what to do next.
@@ -913,7 +914,7 @@ fn read_method(
             Ok(json!({"surfaces": surfaces}))
         }
         "inputs" => {
-            let instance = params["instance_id"].as_str().unwrap_or("i-leader");
+            let instance = params["instance_id"].as_str();
             let after = params["after"].as_i64().unwrap_or(0);
             let limit = params["limit"].as_i64().unwrap_or(50);
             if after < 0 || !(1..=100).contains(&limit) {
@@ -926,7 +927,7 @@ fn read_method(
                     "SELECT e.id, e.sequence, e.epoch, length(CAST(e.payload_json AS BLOB)),
                         COALESCE((SELECT MAX(r.revision) FROM input_revisions r WHERE r.envelope_id = e.id), 0)
                  FROM envelopes e JOIN instances i ON i.id = e.recipient AND i.session_id = e.session_id
-                 WHERE e.recipient = ?1 AND e.epoch = i.context_epoch AND e.sender = 'user'
+                 WHERE e.recipient = COALESCE(?1,(SELECT id FROM instances WHERE is_leader=1)) AND e.epoch = i.context_epoch AND e.sender = 'user'
                    AND e.kind = 'user_input' AND e.state = 'ACCEPTED' AND e.sequence > ?2
                  ORDER BY e.sequence LIMIT ?3",
                 )

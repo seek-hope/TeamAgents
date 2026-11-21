@@ -50,9 +50,9 @@ pub enum InterventionCommand {
     /// operation on the session's working tree — not a session-state transition — so it runs here, in the
     /// client, and the daemon is only read (for the member's live phase).
     Merge { id: String },
-    /// D-470: user-only model/effort switch for one instance; the driver reloads the profile at the next
+    /// User-only Leader selection or shared Worker policy; drivers reload their profile at the next
     /// request, so an in-flight turn keeps the profile it started with.
-    SetProfile { id: String, model: Option<String>, effort: Option<String> },
+    SetProfile { role: String, model: Option<String>, effort: Option<String>, follow: bool },
 }
 
 pub struct InterventionOptions {
@@ -185,11 +185,11 @@ pub fn execute(options: &InterventionOptions) -> Result<Json, (i32, String)> {
             Ok(json!({"session_id": session["session_id"], "state_root": session["state_root"],
                 "instance_id": resolved, "envelope_id": envelope, "result": result}))
         }
-        InterventionCommand::SetProfile { id, model, effort } => {
-            let rows = instances(&mut client)?;
-            let row = resolve_prefix(&rows, "id", id, "instance", "teamagents instances")?;
-            let resolved = row["id"].as_str().unwrap_or_default();
-            let mut params = json!({"instance_id": resolved});
+        InterventionCommand::SetProfile { role, model, effort, follow } => {
+            let mut params = json!({"role": role});
+            if *follow {
+                params["follow"] = json!(true);
+            }
             if let Some(model) = model {
                 params["model"] = json!(model);
             }
@@ -197,10 +197,10 @@ pub fn execute(options: &InterventionOptions) -> Result<Json, (i32, String)> {
                 params["effort"] = json!(effort);
             }
             let result = client
-                .command(&format!("profile-{}", uuid::Uuid::new_v4()), "set_instance_profile", params)
+                .command(&format!("profile-{}", uuid::Uuid::new_v4()), "set_role_model", params)
                 .map_err(|e| (1, format!("instances model: {e}")))?;
             Ok(json!({"session_id": session["session_id"], "state_root": session["state_root"],
-                "instance_id": resolved, "result": result}))
+                "role": role, "result": result}))
         }
         InterventionCommand::CancelTask { id } => {
             let rows = tasks(&mut client)?;
@@ -465,12 +465,9 @@ fn print_report(options: &InterventionOptions, report: &Json) {
             },
             report["envelope_id"].as_str().unwrap_or("")
         ),
-        InterventionCommand::SetProfile { .. } => println!(
-            "{}: model {} effort {} (applies to the next turn; an in-flight turn keeps its profile)",
-            report["instance_id"].as_str().unwrap_or(""),
-            report["result"]["model"].as_str().unwrap_or("unchanged"),
-            report["result"]["effort"].as_str().unwrap_or("unchanged")
-        ),
+        InterventionCommand::SetProfile { .. } => {
+            println!("Leader: {}; Workers: {}", report["result"]["leader"], report["result"]["workers"])
+        }
         InterventionCommand::CancelTask { .. } => println!(
             "cancelled {} (was {}): a delegator waiting on it is released",
             report["task_id"].as_str().unwrap_or(""),

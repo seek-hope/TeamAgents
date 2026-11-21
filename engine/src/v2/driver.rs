@@ -345,9 +345,12 @@ pub struct DriverConfig<P> {
     pub approvals_reviewer: String,
     /// Optional model key for the reviewer; the member's model is the fallback.
     pub reviewer_model: Option<String>,
+    /// The exact persisted catalogue selection, when this instance has one.
+    pub catalog_key: Option<String>,
     pub profile: KernelProfile,
     pub provider: P,
     pub catalog: teamagents_core::models::UserConfig,
+    pub catalog_base: Option<teamagents_core::models::UserConfig>,
     pub bindings: Vec<String>,
     /// Transient transport retries inside one request (single retry owner, §7).
     pub max_retries: usize,
@@ -646,8 +649,7 @@ pub async fn start<P: Provider + 'static>(mut config: DriverConfig<P>) -> Result
         &config.workspace.to_string_lossy(),
         &config.work_limits,
         &leader_profile,
-        // This API accepts a wire-effective kernel profile, not a separate user-selected catalogue key.
-        (leader_profile.model != config.profile.model).then_some(config.profile.model.as_str()),
+        config.catalog_key.as_deref(),
         // This single-instance path uses the session root itself for retention.
         RetentionBoot {
             history_days: config.catalog.retention.history_days,
@@ -669,9 +671,7 @@ pub async fn start<P: Provider + 'static>(mut config: DriverConfig<P>) -> Result
 /// exactly what the runtime enforces.
 /// `leader_profile` is stored on the instance row (D-69): the leader's own driver
 /// takes its profile from the session configuration, but a *reader* — the TUI, a
-/// script, the daemon's snapshot — has only the database, and a team that spans
-/// providers (D-59's `spawn(model = …)`) is unreadable when the members' models are
-/// not written down. Children already store theirs at spawn time.
+/// script, the daemon's snapshot — has only the database. Worker creation records the shared key.
 pub(crate) async fn bootstrap(
     storage: &Storage,
     instance_id: &str,
@@ -688,7 +688,7 @@ pub(crate) async fn bootstrap(
             let mut work_limits = work_limits.clone();
             let profile = json!({"model": leader_profile.model, "catalog_key":catalog_key, "instructions": leader_profile.instructions,
                                  "options": leader_profile.options, "context_window": leader_profile.context_window,
-                                 "images": leader_profile.images});
+                                 "images": leader_profile.images, "tools": leader_profile.tools});
             let deadline_minutes = work_limits
                 .as_object_mut()
                 .and_then(|limits| limits.remove("deadline_minutes"))
@@ -860,7 +860,7 @@ pub(crate) fn spawn_driver<P: Provider + 'static>(
     )?);
     let driver = Driver {
         shell_state: config.state_root.join("shell"),
-        catalog_base: (!config.catalog.catalog_sources.is_empty()).then(|| config.catalog.clone()),
+        catalog_base: config.catalog_base.take(),
         config,
         storage: storage.clone(),
         shared: shared.clone(),
@@ -2507,7 +2507,7 @@ that delegated it learns the outcome only from a settlement.";
         }
         let (model, reviewer_provider) = match &self.config.reviewer_model {
             Some(key) => {
-                let (_, entry) = crate::providers::resolve_model(&self.config.catalog, key)
+                let (_, entry) = crate::providers::resolve_catalog_key(&self.config.catalog, key)
                     .ok_or_else(|| format!("reviewer model {key:?} is not in the catalog"))?;
                 let provider = crate::providers::build_for_model(&self.config.catalog, key)?;
                 (entry.model.clone(), Some(provider))
@@ -3401,6 +3401,16 @@ that delegated it learns the outcome only from a settlement.";
                 ("delegate_task", params)
             }
             teamagents_core::kernel::SPAWN_TOOL => {
+                if args.get("model").is_some() || args.get("profile").is_some() || args.get("catalog_key").is_some() {
+                    return self
+                        .complete_with_error(
+                            operation_id,
+                            intent,
+                            "collaboration",
+                            "spawn cannot select a model; the user selects one model for all Workers",
+                        )
+                        .await;
+                }
                 let instance_id = args["instance_id"].as_str().unwrap_or("").to_string();
                 // a bad workspace request is this tool call's failure, not the
                 // driver's: the model gets the error and carries on
@@ -3410,46 +3420,8 @@ that delegated it learns the outcome only from a settlement.";
                 };
                 prepared_path = Some(workspace_path.clone());
                 workspace_info = Some(info);
-                let mut profile = self.config.profile.clone();
-                let mut catalog_key = self.selected_key.clone();
-                profile.instructions = args["instructions"].as_str().unwrap_or("").to_string();
-                // A named model is resolved through the catalog *here*, so an
-                // unknown name is this tool call's error (the model can correct
-                // it) instead of a provider the supervisor cannot build (D-59).
-                if let Some(requested) = args["model"].as_str().map(str::trim).filter(|name| !name.is_empty()) {
-                    let Some((key, _)) = crate::providers::resolve_model(&self.config.catalog, requested) else {
-                        let mut keys: Vec<&str> = self.config.catalog.models.keys().map(String::as_str).collect();
-                        keys.sort();
-                        let error = format!("unknown model {requested:?} (catalog keys: {})", keys.join(", "));
-                        return self.complete_with_error(operation_id, intent, "collaboration", &error).await;
-                    };
-                    if self.catalog_base.as_ref().is_some_and(|base| !base.models.contains_key(key))
-                        && self.selected_key.as_ref() != Some(key)
-                    {
-                        return self.complete_with_error(operation_id,intent,"collaboration","discovery is not a grant: a child may inherit the selected model, but another discovered destination needs explicit user configuration").await;
-                    }
-                    catalog_key = Some(key.clone());
-                    let skeleton = KernelProfile {
-                        model: key.clone(),
-                        instructions: profile.instructions.clone(),
-                        tools: profile.tools.clone(),
-                        options: json!({}),
-                        context_window: None,
-                        images: false,           // the catalog entry resolves it (D-392)
-                        tool_output_chars: None, // the catalog resolves the cost limits too (D-426)
-                        context_keep_chars: None,
-                    };
-                    // the child gets the entry's wire-effective profile: its model
-                    // name, merged generation options and native window
-                    let resolved = crate::providers::resolve_profile(skeleton, &self.config.catalog);
-                    profile.model = resolved.model;
-                    profile.options = resolved.options;
-                    profile.context_window = resolved.context_window;
-                }
                 let mut params = json!({"instance_id": instance_id, "instructions": args["instructions"],
-                                        "profile": {"model": profile.model, "catalog_key":catalog_key,"instructions": profile.instructions,
-                                                    "tools": profile.tools, "options": profile.options,
-                                                    "context_window": profile.context_window},
+                                        "profile": {"instructions": args["instructions"], "tools": self.config.profile.tools},
                                         "workspace_ref": workspace_path}); // the spawner's active work charges the child's task
                 if let Some(task) = args.get("task") {
                     params["task"] = task.clone();

@@ -449,36 +449,25 @@ pub fn resolve_profile(profile: KernelProfile, catalog: &UserConfig) -> KernelPr
 /// ponytail: pi-ai style compat auto-detection is deliberately not ported —
 /// the catalog declares the protocol explicitly and only contract-verified
 /// wire behaviors ship. Effort values normalize in resolve_profile above.
-/// Resolve a catalog reference to its entry: the key, or the wire model name the
-/// entry declares. A spawned child stores the parent's *resolved* profile (the
-/// kernel needs the wire name in `model`), so the factory — the only place that
-/// knows the catalog — has to map that name back (D-59). Returns the key too, so
-/// callers can resolve the entry's options and window.
-pub fn resolve_model<'a>(catalog: &'a UserConfig, model: &str) -> Option<(&'a String, &'a ModelProfile)> {
-    if let Some(entry) = catalog.models.get_key_value(model) {
-        return Some(entry);
-    }
+/// Resolve a user-selected catalogue key. A wire model name is never accepted as a substitute for a key.
+pub fn resolve_catalog_key<'a>(catalog: &'a UserConfig, key: &str) -> Option<(&'a String, &'a ModelProfile)> {
+    catalog.models.get_key_value(key)
+}
+
+/// Resolve a legacy persisted wire model only when exactly one catalogue entry owns it.
+pub fn resolve_legacy_wire_model<'a>(catalog: &'a UserConfig, model: &str) -> Option<(&'a String, &'a ModelProfile)> {
     let mut matches = catalog.models.iter().filter(|(_, profile)| profile.model == model);
     let first = matches.next()?;
     matches.next().is_none().then_some(first)
 }
 
-/// Persisted selections with an explicit key must never fall back to a wire alias. Older rows may
-/// only identify a wire model: a name collision is not evidence for one particular account.
+/// Dispatch and input capture require exact provenance, including after legacy boot-time binding.
 pub fn stored_model<'a>(catalog: &'a UserConfig, profile: &Json) -> Option<(&'a String, &'a ModelProfile)> {
-    if let Some(key) = profile["catalog_key"].as_str() {
-        return catalog.models.get_key_value(key);
-    }
-    let name = profile["model"].as_str()?;
-    let mut matches = catalog.models.iter().filter(|(_, p)| p.model == name);
-    match matches.next() {
-        Some(pair) => matches.next().is_none().then_some(pair),
-        None => catalog.models.get_key_value(name),
-    }
+    resolve_catalog_key(catalog, profile["catalog_key"].as_str()?)
 }
 
 pub fn build_for_model(catalog: &UserConfig, model: &str) -> Result<AnyProvider, String> {
-    let (_, profile) = resolve_model(catalog, model).ok_or_else(|| {
+    let (_, profile) = resolve_catalog_key(catalog, model).ok_or_else(|| {
         let mut available: Vec<&str> = catalog.models.keys().map(String::as_str).collect();
         available.sort();
         format!("model {model:?} is not in the user catalog (keys: {})", available.join(", "))
@@ -586,17 +575,16 @@ pub(crate) fn stream_failure_msg(message: &str, emitted: bool) -> ProviderError 
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_model, stream_stall_bound, StreamTiming, StreamTimingReport};
+    use super::{
+        resolve_catalog_key, resolve_legacy_wire_model, stored_model, stream_stall_bound, StreamTiming,
+        StreamTimingReport,
+    };
     use std::time::Duration;
     use teamagents_core::models::{ModelProfile, UserConfig};
 
-    /// A spawned child stores the parent's *resolved* profile, so its `model`
-    /// field holds the wire model name, not the catalog key the daemon's factory
-    /// looks up. Resolving either way is what keeps such an instance bootable
-    /// (D-59); an unknown reference must stay unknown instead of matching by
-    /// accident.
+    /// Legacy migration may resolve a unique wire name, but dispatch never treats it as a key.
     #[test]
-    fn a_catalog_entry_resolves_by_key_or_by_model_name() {
+    fn exact_selection_is_distinct_from_legacy_wire_resolution() {
         let mut catalog = UserConfig::default();
         catalog.models.insert(
             "leader_main".into(),
@@ -605,15 +593,24 @@ mod tests {
             }))
             .unwrap(),
         );
-        assert_eq!(resolve_model(&catalog, "leader_main").map(|(key, _)| key.clone()), Some("leader_main".into()));
         assert_eq!(
-            resolve_model(&catalog, "deepseek-flash").map(|(key, _)| key.clone()),
+            resolve_catalog_key(&catalog, "leader_main").map(|(key, _)| key.clone()),
+            Some("leader_main".into())
+        );
+        assert_eq!(
+            resolve_legacy_wire_model(&catalog, "deepseek-flash").map(|(key, _)| key.clone()),
             Some("leader_main".into()),
             "the declared model name resolves too"
         );
         catalog.models.insert("other_account".into(), catalog.models["leader_main"].clone());
-        assert!(resolve_model(&catalog, "deepseek-flash").is_none(), "shared wire names cannot identify an endpoint");
-        assert!(resolve_model(&catalog, "gpt-9").is_none(), "an unknown reference stays unknown");
+        assert!(
+            resolve_legacy_wire_model(&catalog, "deepseek-flash").is_none(),
+            "shared wire names cannot identify an endpoint"
+        );
+        assert!(
+            stored_model(&catalog, &serde_json::json!({"model":"deepseek-flash","catalog_key":"missing"})).is_none()
+        );
+        assert!(stored_model(&catalog, &serde_json::json!({"model":"leader_main"})).is_none());
     }
 
     #[test]

@@ -284,7 +284,6 @@ impl Registry {
                     command_id: format!("fork-reset-{}", uuid::Uuid::new_v4()),
                     method: "fork_reset".into(),
                     params: json!({
-                        "keep_instance": "i-leader",
                         "source_root": source_dir.to_string_lossy(),
                         "target_root": dir.to_string_lossy(),
                     }),
@@ -958,7 +957,12 @@ mod tests {
         std::fs::create_dir_all(scratch.path()).unwrap();
         let mut control = Control::open(&scratch.path().join("session.sqlite"), "s-main", true).unwrap();
         for (id, method, params) in [
-            ("s1", "create_instance", serde_json::json!({"id": "i-leader"})),
+            (
+                "s1",
+                "create_instance",
+                serde_json::json!({"id": "i-leader", "is_leader": true,
+                    "profile": {"model": "fixture/model", "catalog_key": "fixture/model"}}),
+            ),
             (
                 "s2",
                 "submit_input",
@@ -984,7 +988,12 @@ mod tests {
         std::fs::create_dir_all(scratch.path()).unwrap();
         let mut control = Control::open(&scratch.path().join("session.sqlite"), "s-main", true).unwrap();
         for (id, method, params) in [
-            ("s1", "create_instance", serde_json::json!({"id": "i-leader"})),
+            (
+                "s1",
+                "create_instance",
+                serde_json::json!({"id": "i-leader", "is_leader": true,
+                    "profile": {"model": "fixture/model", "catalog_key": "fixture/model"}}),
+            ),
             (
                 "s2",
                 "submit_input",

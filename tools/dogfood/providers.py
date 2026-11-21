@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """A real-model check that a team can span two providers (A27).
 
-One session, two models: the Leader runs on DeepSeek Flash (native 1M window, D-36) and spawns one worker
-with `spawn(model = "worker_kimi")`, which is the Kimi entry from the user's own catalog shape (262,144
-tokens). The worker writes a file in the shared workspace; the Leader waits for the task and reports.
+One session, two models: the Leader runs on DeepSeek Flash (native 1M window, D-36). Before the Leader
+spawns a Worker, the user pins the Workers role to its configured key. The worker writes a file in the shared workspace; the Leader waits for the task and reports.
 
 The artifact decides: `answer.txt` must contain exactly what the task asked for. The probe also asserts the
 session really is heterogeneous — the two instances carry different resolved model names — and that the
@@ -89,8 +88,7 @@ context_window = 1000000
 
 PROMPT = """Work with a teammate on this task.
 
-1. Spawn one worker with `model` set to `{worker_key}` (that key is in the catalog) and instructions
-   "write the file the task asks for".
+1. Spawn one worker with instructions "write the file the task asks for".
 2. Delegate one task to that worker: write the file answer.txt in the shared workspace whose content is
    exactly the line `{expected_line}`.
 3. Wait for the task to settle, then report what the worker said and whether the file is there."""
@@ -99,7 +97,7 @@ PROMPT = """Work with a teammate on this task.
 def session_facts(state_root: pathlib.Path) -> dict:
     db = sqlite3.connect(f"file:{state_root}/session.sqlite?mode=ro", uri=True)
     instances = [
-        {"id": row[0], "lifecycle": row[1], "model": json.loads(row[2]).get("model", "")}
+        {"id": row[0], "lifecycle": row[1], "model": json.loads(row[2]).get("catalog_key", "")}
         for row in db.execute("SELECT id, lifecycle, profile_json FROM instances ORDER BY id")
     ]
     tasks = list(db.execute("SELECT id, assignee, status, requester FROM tasks ORDER BY rowid"))
@@ -179,12 +177,10 @@ def main() -> int:
     if os.environ.get("KIMI_API_KEY", "").strip():
         config_text = CONFIG
         worker_key = "worker_kimi"
-        expected_model = "k3-256k"
         expected_line = "kimi wrote this"
     elif os.environ.get("ORCA_API_KEY", "").strip():
         config_text = CONFIG_ORCA
         worker_key = "worker_claude"
-        expected_model = "anthropic/claude-sonnet-4.6"
         expected_line = "claude wrote this"
     else:
         raise SystemExit("KIMI_API_KEY or ORCA_API_KEY is not set in this environment")
@@ -205,11 +201,20 @@ def main() -> int:
     env = {**os.environ, "XDG_CONFIG_HOME": str(root / "config"), "XDG_STATE_HOME": str(root / "state")}
     failures: list[str] = []
 
+    daemon = subprocess.Popen([str(BIN), "daemon", "--state-root", str(state_root), "--cwd", str(workspace)],
+                              env=env, stdout=subprocess.DEVNULL)
+    deadline = time.monotonic() + 30
+    while not (state_root / "daemon.sock").is_socket():
+        if daemon.poll() is not None or time.monotonic() >= deadline:
+            raise SystemExit("fixture daemon did not start")
+        time.sleep(0.05)
+    subprocess.run([str(BIN), "instances", "model", "--state-root", str(state_root), "--role", "workers",
+                    "--model", worker_key], env=env, check=True, timeout=30)
     started = time.time()
     run = subprocess.run(
         [str(BIN), "exec", "--state-root", str(state_root), "--full-auto", "--json",
          "--timeout", str(args.timeout), "--cwd", str(workspace),
-         PROMPT.format(worker_key=worker_key, expected_line=expected_line)],
+         PROMPT.format(expected_line=expected_line)],
         capture_output=True, text=True, env=env,
     )
     elapsed = round(time.time() - started, 1)
@@ -228,13 +233,12 @@ def main() -> int:
     # 1. the team really spanned the two providers: each member's stored profile
     #    names its resolved model (D-69), so this is readable from the session itself
     models = {instance["id"]: instance["model"] for instance in facts["instances"]}
-    expected = {"i-leader": "deepseek-flash"}
     print(f"members and their models: {models}")
-    if models.get("i-leader") != "deepseek-flash":
+    if models.get("i-leader") != "leader_main":
         failures.append(f"the leader is not recorded on its configured model: {models}")
     workers = {model for instance, model in models.items() if instance != "i-leader"}
-    if workers != {expected_model}:
-        failures.append(f"the worker did not run the {expected_model} entry: {models}")
+    if workers != {worker_key}:
+        failures.append(f"the worker did not run the {worker_key} entry: {models}")
 
     # 2. the delegation exchanged a task assignment and a task start
     for kind in ("task_delegated", "task_started"):

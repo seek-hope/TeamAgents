@@ -246,39 +246,51 @@ fn render_content(frame: &mut Frame, app: &mut V2App) {
     }
 }
 
-/// D-473: a centered model/effort menu over the conversation; keys are routed by `V2App::profile_key`.
+/// Both roles use the same local catalogue; only confirmation submits a selection.
 fn render_profile(frame: &mut Frame, app: &V2App, area: Rect) {
     let Some(menu) = &app.profile else { return };
-    let popup = dialog_area(area, 72, (menu.models.len().min(7) + 7) as u16);
+    let title = match menu.role {
+        crate::v2app::ProfileRole::Leader => "Leader model & effort",
+        crate::v2app::ProfileRole::Workers => "Worker model policy",
+    };
+    let popup = dialog_area(area, 76, (menu.models.len().min(7) + 9) as u16);
     frame.render_widget(Clear, popup);
-    let block = panel("Model & effort").border_style(Style::default().fg(ACCENT));
+    let block = panel(title).border_style(Style::default().fg(ACCENT));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
     let effort = menu.efforts.get(menu.effort_ix).cloned().unwrap_or_else(|| "?".into());
-    let list_height = inner.height.saturating_sub(4).max(1) as usize;
+    let list_height = inner.height.saturating_sub(5).max(1) as usize;
     let (start, count) = window(menu.models.len(), menu.model_ix, list_height);
-    let mut lines: Vec<Line<'static>> = menu
-        .models
-        .iter()
-        .enumerate()
-        .skip(start)
-        .take(count)
-        .map(|(i, model)| {
-            let label =
-                if model.key == model.model { model.key.clone() } else { format!("{} · {}", model.key, model.model) };
-            Line::styled(
-                fit(&format!("{} {}", if i == menu.model_ix { ">" } else { " " }, label), inner.width as usize),
-                if i == menu.model_ix { selection() } else { secondary() },
-            )
-        })
-        .collect();
-    lines.push(Line::default());
-    lines.push(Line::from(vec![
-        Span::styled("Effort  ", secondary()),
-        Span::styled(fit(&format!("‹ {effort} ›"), inner.width.saturating_sub(8) as usize), selection()),
-    ]));
+    let mut lines: Vec<Line<'static>> = vec![Line::from(Span::styled(
+        fit(&format!("role: {:?}  filter: {}", menu.role, menu.search), inner.width as usize),
+        secondary(),
+    ))];
+    if menu.models.is_empty() {
+        lines.push(Line::styled("No matching catalogue keys", secondary()));
+    }
+    lines.extend(menu.models.iter().enumerate().skip(start).take(count).map(|(i, model)| {
+        let label =
+            if model.key == model.model { model.key.clone() } else { format!("{} · {}", model.key, model.model) };
+        Line::styled(
+            fit(&format!("{} {}", if i == menu.model_ix { ">" } else { " " }, label), inner.width as usize),
+            if i == menu.model_ix { selection() } else { secondary() },
+        )
+    }));
+    let status = if menu.role == crate::v2app::ProfileRole::Leader {
+        format!(
+            "Current: {} · Effort: ‹ {effort} ›",
+            if app.leader_catalog_key.is_empty() { "unknown" } else { &app.leader_catalog_key }
+        )
+    } else {
+        format!("Current: {} {} · Select: {:?}", app.worker_policy_mode, app.worker_catalog_key, menu.workers_mode)
+    };
+    lines.push(Line::styled(fit(&status, inner.width as usize), selection()));
     lines.extend(crate::markdown::plain(
-        "Applies at the next turn. Enter applies; Esc cancels.",
+        if menu.role == crate::v2app::ProfileRole::Workers {
+            "Tab Leader · ← follow · → pin · type to filter · Enter applies · Esc cancels"
+        } else {
+            "Tab Workers · ←/→ effort · type to filter · Enter applies · Esc cancels"
+        },
         inner.width as usize,
         secondary(),
     ));
@@ -475,12 +487,12 @@ fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
                 let origin = crate::graphics::Origin {
                     session: app.session_root.clone().into(),
                     workspace: workspace.as_deref().unwrap_or_default().into(),
-                    member: "i-leader".into(),
+                    member: app.team.leader_id.clone(),
                     position: usize::MAX - 1,
                 };
                 document.append(crate::transcript::assistant_document(
                     summary,
-                    "i-leader",
+                    "",
                     width,
                     Some(&mut app.graphics),
                     &origin,
@@ -499,12 +511,12 @@ fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
         let origin = crate::graphics::Origin {
             session: app.session_root.clone().into(),
             workspace: workspace.into(),
-            member: "i-leader".into(),
+            member: app.team.leader_id.clone(),
             position: usize::MAX,
         };
         document.append(crate::transcript::assistant_document(
             &preview,
-            "i-leader",
+            "",
             width,
             Some(&mut app.graphics),
             &origin,
@@ -626,7 +638,7 @@ fn render_composer(frame: &mut Frame, app: &V2App, area: Rect) {
         return;
     }
     let focused = app.focus == Focus::Composer && app.profile.is_none() && !app.help_open;
-    let title = if app.team.selected != "i-leader" {
+    let title = if app.team.selected != app.team.leader_id {
         format!("Message Leader · viewing {}", fit(&app.team.selected, 24))
     } else {
         "Message Leader".to_string()

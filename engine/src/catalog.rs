@@ -172,15 +172,22 @@ fn writer(dir: &Path) -> Result<Connection, String> {
 fn apply(cfg: &mut UserConfig, ns: &str, rows: Rows) {
     let seed = cfg.models[&cfg.catalog_sources[ns]].clone();
     for (wire, row) in rows {
-        cfg.models.entry(format!("{ns}::{wire}")).or_insert_with(|| ModelProfile {
-            model: wire,
-            images: row.images,
-            context_window: Some(row.window),
-            efforts: Vec::new(),
-            generation_options: HashMap::new(),
-            price: None,
-            ..seed.clone()
-        });
+        let key = format!("{ns}::{wire}");
+        if cfg.models.contains_key(&key) {
+            continue;
+        }
+        cfg.models.insert(
+            key,
+            ModelProfile {
+                model: wire,
+                images: row.images,
+                context_window: Some(row.window),
+                efforts: Vec::new(),
+                generation_options: HashMap::new(),
+                price: None,
+                ..seed.clone()
+            },
+        );
     }
 }
 pub(crate) fn overlay(cfg: &mut UserConfig) -> Result<(), String> {

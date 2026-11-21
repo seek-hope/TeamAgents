@@ -171,6 +171,7 @@ where
         approvals_reviewer: "user".into(),
         reviewer_model: None,
         catalog: UserConfig::default(),
+        catalog_base: None,
         bindings: vec![],
         max_retries: 2,
         storage_queue: 64,
@@ -523,6 +524,123 @@ async fn explicit_profile_switch_routes_a_shared_wire_name_to_the_selected_endpo
     h.shutdown().await.unwrap();
 }
 
+/// Same wire ID on two loopback accounts. The B fixture has a deliberately small native
+/// window to exercise compaction; its first normal turn also needs a transient retry.
+#[tokio::test]
+async fn shared_worker_routes_survive_pin_follow_leader_change_and_restart() {
+    use teamagents_engine::providers::AnyProvider;
+    let root = root("worker-routes");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let frame = sse_response(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"receipt\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+    );
+    let a = FakeServer::start(vec![frame.clone(), frame.clone()]).await;
+    let b = FakeServer::start(vec![
+        "HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".into(),
+        frame.clone(),
+        frame.clone(),
+        frame,
+    ])
+    .await;
+    let mut catalog = UserConfig::default();
+    for (key, base, window) in [("one", &a.base, 128000), ("two", &b.base, 512)] {
+        catalog.models.insert(key.into(),serde_json::from_value(json!({"provider":"fixture","protocol":"chat/completions","model":"same-wire","base_url":base,"context_window":window,"max_retries":1})).unwrap());
+    }
+    let cfg = || {
+        let mut cfg = config(&root, |_, _| AnyProvider::Unavailable { reason: "not bound".into() });
+        cfg.leader_profile.model = "one".into();
+        cfg.catalog = catalog.clone();
+        cfg
+    };
+    let h = start(cfg()).await.unwrap();
+    h.submit_user(cmd("worker", "spawn_instance", json!({"instance_id":"w"}))).await.unwrap();
+    let c = second_control(&root);
+    async fn turn(h: &SupervisorHandle, c: &teamagents_core::v2::Control, id: &str, prompt: &str, n: i64) {
+        h.input(id, prompt).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(12),async {
+            loop {
+                let count:i64=c.connection().query_row("SELECT COUNT(*) FROM model_requests WHERE instance_id=?1 AND kind='turn' AND status='COMPLETE'", [id], |r|r.get(0)).unwrap();
+                if count == n { break; }
+                tokio::time::sleep(Duration::from_millis(15)).await;
+            }
+        }).await.expect("normal turn did not complete");
+        wait_instance_phase(h, id, "READY", 5000).await;
+    }
+    turn(&h, &c, "w", "initial follow", 1).await;
+    h.submit_user(cmd("pin-same", "set_role_model", json!({"role":"workers","model":"one"}))).await.unwrap();
+    h.submit_user(cmd("leader-two", "set_role_model", json!({"role":"leader","model":"two"}))).await.unwrap();
+    turn(&h, &c, "w", "still pinned", 2).await;
+    assert!(b.bodies().is_empty());
+    h.submit_user(cmd("follow", "set_role_model", json!({"role":"workers","follow":true}))).await.unwrap();
+    h.shutdown().await.unwrap();
+    let h = start(cfg()).await.unwrap();
+    h.submit_user(cmd("another-worker", "spawn_instance", json!({"instance_id":"w2"}))).await.unwrap();
+    turn(&h, &c, "w2", "new worker", 1).await;
+    turn(&h, &c, "w", &"compact old turns ".repeat(400), 3).await;
+    let compressed: i64 = c
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM model_requests WHERE instance_id='w' AND kind='compression' AND status='COMPLETE'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(compressed, 1);
+    let bodies = b.bodies();
+    assert_eq!(bodies.len(), 4);
+    assert_eq!(bodies[0], bodies[1], "retry changed prepared body");
+    assert!(bodies[0].contains("new worker"));
+    assert!(bodies[2].contains("initial follow") && bodies[2].contains("still pinned"));
+    assert!(bodies[3].contains("compact old turns"));
+    assert_eq!(a.bodies().len(), 2);
+    assert!(a
+        .bodies()
+        .iter()
+        .chain(&bodies)
+        .all(|body| serde_json::from_str::<Json>(body).unwrap()["model"] == "same-wire"));
+    h.shutdown().await.unwrap();
+    a.task.await.unwrap();
+    b.task.await.unwrap();
+}
+
+#[tokio::test]
+async fn unique_legacy_leader_binds_once_and_ambiguous_names_never_bind() {
+    for ambiguous in [true, false] {
+        let root = root("legacy-selection");
+        std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+        let mut catalog = UserConfig::default();
+        let entry = serde_json::from_value::<ModelProfile>(json!({"provider":"fixture","model":"same-wire"})).unwrap();
+        catalog.models.insert("one".into(), entry.clone());
+        if ambiguous {
+            catalog.models.insert("two".into(), entry.clone());
+        }
+        let build = |catalog: UserConfig, key: &str| {
+            let mut cfg = config(&root, factory(HashMap::new()));
+            cfg.leader_profile.model = key.into();
+            cfg.catalog = catalog;
+            cfg
+        };
+        start(build(catalog.clone(), "one")).await.unwrap().shutdown().await.unwrap();
+        let c = second_control(&root);
+        c.connection()
+            .execute_batch(
+                "UPDATE instances SET profile_json=json_remove(profile_json,'$.catalog_key') WHERE is_leader=1",
+            )
+            .unwrap();
+        start(build(catalog.clone(), "one")).await.unwrap().shutdown().await.unwrap();
+        let roles = || teamagents_core::v2::control::role_model_snapshot(c.connection()).unwrap();
+        if ambiguous {
+            assert!(roles()["leader"].is_null());
+        } else {
+            assert_eq!(roles()["leader"], "one");
+            catalog.models.remove("one");
+            catalog.models.insert("two".into(), entry);
+            start(build(catalog, "two")).await.unwrap().shutdown().await.unwrap();
+            assert_eq!(roles()["leader"], "one");
+        }
+    }
+}
+
 #[tokio::test]
 async fn private_continuation_stays_with_its_endpoint_on_a_same_protocol_switch() {
     let root = root("private-route");
@@ -645,14 +763,17 @@ async fn heterogeneous_instances_run_different_protocols_in_one_session() {
     cfg.leader_profile.model = "lead-model".into();
     cfg.catalog = (*catalog).clone();
     let handle = start(cfg).await.expect("start");
+    handle
+        .submit_user(cmd("pin", "set_role_model", json!({"role":"workers","model":"worker-model"})))
+        .await
+        .expect("preselect Workers");
     let mut control = second_control(&root);
     control
         .submit(
             cmd(
                 "mk-worker",
                 "create_instance",
-                json!({"id": "i-worker", "workspace_ref": root.dir.join("ws").to_string_lossy(),
-                       "profile": {"model": "worker-model"}}),
+                json!({"id": "i-worker", "workspace_ref": root.dir.join("ws").to_string_lossy()}),
             ),
             teamagents_core::v2::Identity::User,
         )

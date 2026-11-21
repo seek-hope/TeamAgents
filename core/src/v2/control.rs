@@ -4,7 +4,12 @@
 //! identity, operation ids, permission revisions and sequence numbers are
 //! filled here — never taken from model or client fields.
 
+mod role_models;
 mod search_tree;
+
+pub fn role_model_snapshot(conn: &Connection) -> Result<Json, String> {
+    role_models::snapshot(conn)
+}
 mod work;
 
 /// Session-level exploration navigation, derived only from Leader-visible history.
@@ -315,6 +320,8 @@ fn dispatch(
         "require_checks" => require_checks(tx, session_id, params, identity),
         "send_message" => send_message(tx, session_id, params, identity),
         "drain_inbox" => drain_inbox(tx, session_id, params, identity),
+        "bind_legacy_leader" => role_models::bind_legacy_leader(tx, session_id, params, identity),
+        "set_role_model" => role_models::select(tx, session_id, params, identity),
         "set_instance_profile" => set_instance_profile(tx, session_id, params, identity),
         "delegate_task" => delegate_task(tx, session_id, params, identity),
         "start_task" => start_task(tx, session_id, params, identity),
@@ -991,12 +998,24 @@ fn reauthorize_operation(tx: &Connection, session_id: &str, params: &Json) -> Re
 
 fn create_instance(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
     let id = params["id"].as_str().ok_or("create_instance.id required")?;
-    let profile = params.get("profile").cloned().unwrap_or(json!({}));
+    let mut profile = params.get("profile").cloned().unwrap_or(json!({}));
+    if !profile.is_object() || params.get("model").is_some() || params.get("catalog_key").is_some() {
+        return Err("invalid instance profile or model override".into());
+    }
     let workspace = params["workspace_ref"].as_str().unwrap_or("");
     let is_leader = params["is_leader"].as_bool().unwrap_or(false) && matches!(identity, Identity::User);
     if is_leader {
-        tx.execute("UPDATE instances SET is_leader=0 WHERE session_id=?1", [session_id])
-            .map_err(|e| format!("create_instance {id}: replace Leader role: {e}"))?;
+        let exists: bool = tx
+            .query_row("SELECT EXISTS(SELECT 1 FROM instances WHERE is_leader=1)", [], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        if exists {
+            return Err("session already has a Leader".into());
+        }
+        if profile["catalog_key"].as_str().is_none_or(|key| key.trim().is_empty()) {
+            return Err("creating a Leader requires an exact catalogue key".into());
+        }
+    } else {
+        role_models::worker_profile(tx, &mut profile)?;
     }
     tx.execute(
         "INSERT INTO instances
@@ -1044,6 +1063,9 @@ fn spawn_instance(tx: &Connection, session_id: &str, params: &Json, identity: &I
         if instructions.is_empty() {
             return Err("spawn_instance.instructions must not be empty".into());
         }
+    }
+    if params.get("model").is_some() || params.get("catalog_key").is_some() {
+        return Err("spawn cannot override the shared Worker model".into());
     }
     let create = json!({"id": instance_id, "profile": params.get("profile").cloned().unwrap_or(json!({})),
                         "workspace_ref": params["workspace_ref"].as_str().unwrap_or("")});
@@ -1209,6 +1231,10 @@ fn envelope_text(kind: &str, sender: &str, correlation: Option<&str>, payload: &
 fn set_instance_profile(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
     require_user(identity)?;
     let instance_id = params["instance_id"].as_str().ok_or("set_instance_profile.instance_id required")?;
+    role_models::select_leader(tx, session_id, instance_id, params)
+}
+
+fn update_profile(tx: &Connection, session_id: &str, instance_id: &str, params: &Json) -> Result<Json, String> {
     let (session, _, lifecycle, phase, _) = load_instance(tx, instance_id)?;
     if session != session_id {
         return Err(format!("instance {instance_id} does not belong to this session"));
@@ -1216,7 +1242,14 @@ fn set_instance_profile(tx: &Connection, session_id: &str, params: &Json, identi
     if lifecycle == "TERMINATED" {
         return Err(format!("instance {instance_id} is terminated"));
     }
-    if matches!(phase.as_str(), "MODEL_PENDING" | "TOOLS_PENDING" | "COMPLETION_PENDING") {
+    let pending: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM model_requests WHERE instance_id=?1 AND status='PENDING')",
+            [instance_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if pending || !matches!(phase.as_str(), "READY" | "WAITING") {
         return Err(format!(
             "instance {instance_id} has a turn in flight; change the profile at a READY or WAITING boundary"
         ));
@@ -1226,7 +1259,7 @@ fn set_instance_profile(tx: &Connection, session_id: &str, params: &Json, identi
         .map_err(|e| format!("instance profile {instance_id}: {e}"))?;
     let mut profile: Json = serde_json::from_str(&text).map_err(|e| format!("instance profile {instance_id}: {e}"))?;
     if let Some(model) = params["model"].as_str().filter(|model| !model.trim().is_empty()) {
-        if profile["catalog_key"].as_str().or_else(|| profile["model"].as_str()) != Some(model) {
+        if profile["catalog_key"].as_str() != Some(model) {
             // Generation options belong to the old model. An explicit effort below selects an override for the new one.
             profile["options"] = json!({});
         }
@@ -2598,6 +2631,7 @@ fn context_head(tx: &Connection, instance: &str) -> Result<i64, String> {
 /// The revision check is the single-executor guarantee (§6.1).
 fn begin_request(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
     let instance_id = params["instance_id"].as_str().ok_or("begin_request.instance_id required")?;
+    role_models::check_request(tx, instance_id)?;
     let request_id = params["request_id"].as_str().ok_or("begin_request.request_id required")?;
     let request_ref = params["request_ref"].as_str().unwrap_or("");
     let expected_revision = params["revision"].as_i64().ok_or("begin_request.revision required")?;
@@ -2898,6 +2932,7 @@ fn record_attempt(tx: &Connection, session_id: &str, params: &Json) -> Result<Js
 fn begin_compression(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
     use super::models::REQUEST_KIND_COMPRESSION;
     let instance_id = params["instance_id"].as_str().ok_or("begin_compression.instance_id required")?;
+    role_models::check_request(tx, instance_id)?;
     let request_id = params["request_id"].as_str().ok_or("begin_compression.request_id required")?;
     let request_ref = params["request_ref"].as_str().unwrap_or("");
     let est = params["est_prompt_tokens"].as_i64().unwrap_or(0);
@@ -5751,7 +5786,11 @@ fn artifact_release_spent_owners(tx: &Connection, session_id: &str, params: &Jso
 /// fork's root because the engine copies the artifact directory beside the database.
 fn fork_reset(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
     require_user(identity)?;
-    let keep = params["keep_instance"].as_str().unwrap_or("i-leader");
+    let (leader, _) = role_models::leader(tx)?.ok_or("session has no Leader to fork")?;
+    let keep = leader.as_str();
+    if params.get("keep_instance").is_some_and(|id| id.as_str() != Some(keep)) {
+        return Err("a fork keeps the persisted Leader".into());
+    }
     let source_root = params["source_root"].as_str().unwrap_or("");
     let target_root = params["target_root"].as_str().unwrap_or("");
     let (session, _epoch, _lifecycle, _phase, _revision) = load_instance(tx, keep)?;
@@ -5986,11 +6025,21 @@ mod tests {
     }
 
     fn create_instance(ctl: &mut Control, id: &str) {
-        ctl.submit(
-            cmd(&format!("ci-{id}"), "create_instance", json!({"id": id, "workspace_ref": "/tmp/ws"})),
-            Identity::User,
-        )
-        .expect("create instance");
+        let has_leader: bool = ctl
+            .connection()
+            .query_row("SELECT EXISTS(SELECT 1 FROM instances WHERE is_leader=1)", [], |row| row.get(0))
+            .expect("check Leader");
+        let params = if has_leader {
+            json!({"id": id, "workspace_ref": "/tmp/ws"})
+        } else {
+            json!({
+                "id": id,
+                "workspace_ref": "/tmp/ws",
+                "is_leader": true,
+                "profile": {"model": "fixture/model", "catalog_key": "fixture/model"}
+            })
+        };
+        ctl.submit(cmd(&format!("ci-{id}"), "create_instance", params), Identity::User).expect("create instance");
     }
 
     fn context_count(ctl: &Control, instance: &str) -> i64 {
@@ -6110,19 +6159,58 @@ mod tests {
     #[test]
     fn command_replay_returns_stored_receipt_and_rejects_conflict() {
         let (mut ctl, path) = control("dedup");
-        let first =
-            ctl.submit(cmd("c1", "create_instance", json!({"id": "i1"})), Identity::User).expect("first submit");
+        let first = ctl
+            .submit(
+                cmd(
+                    "c1",
+                    "create_instance",
+                    json!({"id": "i1", "is_leader": true,
+                "profile": {"model": "fixture/model", "catalog_key": "fixture/model"}}),
+                ),
+                Identity::User,
+            )
+            .expect("first submit");
         // same id + same payload: stored receipt, no re-execution
-        let replayed = ctl.submit(cmd("c1", "create_instance", json!({"id": "i1"})), Identity::User).expect("replay");
+        let replayed = ctl
+            .submit(
+                cmd(
+                    "c1",
+                    "create_instance",
+                    json!({"id": "i1", "is_leader": true,
+            "profile": {"model": "fixture/model", "catalog_key": "fixture/model"}}),
+                ),
+                Identity::User,
+            )
+            .expect("replay");
         assert_eq!(first, replayed);
         let instances: i64 =
             ctl.connection().query_row("SELECT COUNT(*) FROM instances", [], |row| row.get(0)).unwrap();
         assert_eq!(instances, 1);
         // same id + different payload is a client bug and is rejected
-        let err = ctl.submit(cmd("c1", "create_instance", json!({"id": "i2"})), Identity::User).unwrap_err();
+        let err = ctl
+            .submit(
+                cmd(
+                    "c1",
+                    "create_instance",
+                    json!({"id": "i2", "is_leader": true,
+            "profile": {"model": "other/model", "catalog_key": "other/model"}}),
+                ),
+                Identity::User,
+            )
+            .unwrap_err();
         assert!(err.contains("different payload"), "{err}");
         // empty command ids are not dedup-able and rejected up front
-        let err = ctl.submit(cmd("", "create_instance", json!({"id": "i3"})), Identity::User).unwrap_err();
+        let err = ctl
+            .submit(
+                cmd(
+                    "",
+                    "create_instance",
+                    json!({"id": "i3", "is_leader": true,
+            "profile": {"model": "fixture/model", "catalog_key": "fixture/model"}}),
+                ),
+                Identity::User,
+            )
+            .unwrap_err();
         assert!(err.contains("empty"), "{err}");
         cleanup(&path);
     }
@@ -6144,7 +6232,8 @@ mod tests {
                     let mut ctl = Control::open(&path, "s1", false).expect("open the same session");
                     barrier.wait();
                     ctl.submit(
-                        cmd("race-1", "create_instance", json!({"id": "i1", "workspace_ref": "/tmp/ws"})),
+                        cmd("race-1", "create_instance", json!({"id": "i1", "is_leader": true,
+                            "profile": {"model": "fixture/model", "catalog_key": "fixture/model"}, "workspace_ref": "/tmp/ws"})),
                         Identity::User,
                     )
                 })
@@ -6311,7 +6400,11 @@ mod tests {
     #[test]
     fn a_user_can_switch_model_and_effort_at_a_boundary() {
         let (mut ctl, path) = control("set-profile");
-        create_instance(&mut ctl, "i1");
+        ctl.submit(
+            cmd("ci", "create_instance", json!({"id":"i1","is_leader":true,"profile":{"catalog_key":"fixture/model"}})),
+            Identity::User,
+        )
+        .unwrap();
         let changed = ctl
             .submit(
                 cmd(
@@ -6598,7 +6691,17 @@ mod tests {
     fn begin_request_rejects_instances_of_other_sessions() {
         let path = db_path("xsession");
         let mut owner = Control::open(&path, "s-owner", true).expect("owner control");
-        owner.submit(cmd("ci", "create_instance", json!({"id": "i1"})), Identity::User).expect("create");
+        owner
+            .submit(
+                cmd(
+                    "ci",
+                    "create_instance",
+                    json!({"id": "i1", "is_leader": true,
+            "profile":{"model":"fixture/model","catalog_key":"fixture/model"}}),
+                ),
+                Identity::User,
+            )
+            .expect("create");
         let mut other = Control::open(&path, "s-intruder", false).expect("second connection");
         let err = other
             .submit(
@@ -11016,12 +11119,17 @@ mod tests {
         let (mut ctl, path) = control("check-authority");
         // the owner has the shared workspace (which is what grants shell@workspace); the verifier does not
         ctl.submit(
-            cmd("mk-leader", "create_instance", json!({"id": "i-leader", "workspace_ref": "/tmp/ws"})),
+            cmd(
+                "mk-leader",
+                "create_instance",
+                json!({"id": "i-leader", "workspace_ref": "/tmp/ws",
+                "is_leader": true, "profile":{"model":"fixture/model","catalog_key":"fixture/model"}}),
+            ),
             Identity::User,
         )
         .expect("leader");
         ctl.submit(
-            cmd("mk-verifier", "create_instance", json!({"id": "i-verifier", "workspace_ref": ""})),
+            cmd("mk-verifier", "create_instance", json!({"id": "i-verifier", "workspace_ref": "", "profile":{}})),
             Identity::User,
         )
         .expect("verifier");

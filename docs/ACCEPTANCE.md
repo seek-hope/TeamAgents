@@ -6,7 +6,15 @@ This file records current behavior and reproducible evidence, not historical acc
 ✅ means the named local path has automated evidence. 🔶 means implementation exists but the stated external,
 empirical or full-system obligation remains open. No icon is a proof of every release condition.
 
-Current source inventory: core 198 / engine 549 / tui 121 test targets. Inventory alone is not acceptance.
+Current source inventory: core 201 / engine 551 / tui 122 test targets. Inventory alone is not acceptance.
+D-529 source tests cover role selection, atomic refusal during turn and compression requests, and schema 9→10
+migration (`core/tests/role_models.rs`). Two loopback endpoints with the same wire name verify follow, pin,
+restart, compression and retry bodies (`engine/tests/v2_supervisor.rs`). Menu filtering, confirmation and
+cancellation are covered by `tui/tests/minimal.rs`; the source PTY matrix exercises filter and confirmation
+with two entries sharing a wire name. In a separate isolated check, the schema-9 writer built from `4ca73a75`
+refused to open a migrated, checkpointed schema-10 store for writing; its database file was unchanged. See
+`tools/tmp/d529/upgraded-writer-refusal.log`. The local `make check` passed all 874 Rust tests and the\nrepository audits. These are not live-provider, installed-binary or rollback tests.
+
 Installed CLI and TUI source: `e1d49e2b90f3f23711b76ff818e8e25e5101d947`. Both binaries match the SHA-256
 receipt in the private `teamagents-install-e1d49e2b-eEBvF7` installation directory. The workflow changes
 in this working tree have not been installed. The earlier package baseline described below is
@@ -22,8 +30,9 @@ Package-baseline checks cover all 18
 offline probes, source/installed PTY matrices, x86_64 musl release/install, scripted profile/fetch behavior
 and a separate real Fetch API request. These bindings identify the tested source; subsequent edits do not
 inherit a new CI pass or installation result merely by preserving the counts.
-The current local formal replay passed **63 positive configurations in 60 traversals**, **323 controls**,
-**79 witnesses** and **9 Kani harnesses**. The per-traversal receipts, fresh Kani run and limits are in
+The previous full local replay covered **63 positive configurations in 60 traversals**, **323 controls** and
+**79 witnesses**. D-529 replayed the changed profile model, its four controls and its witness, plus all
+**9 Kani harnesses**. The per-traversal receipts and limits are in
 [the formal report](../verification/REPORT.md), separate from the installed-runtime CI above.
 The catalogue contains 387 configurations across 47 modules, including the
 separate wide configuration. PTY covers five terminal profiles and both forced graphics modes; this is not a
@@ -68,7 +77,7 @@ complete graphical-terminal or OS matrix.
 | Q15 | Authorized work resumes after restart; unknown effects are never blindly replayed | A08, A09, A11, A24: persisted-phase recovery, `OUTCOME_UNKNOWN`, durable operation and runner journals |
 | Q16 | Single-instance behavior must not regress and collaboration should show reproducible gain | A01: local scripted collaboration evidence exists; a general matched held-out outcome/cost comparison remains open |
 | Q17 | Estimate cost before committing a full multi-round budget | A18, `docs/PRODUCT-COMPARISON.md`: usage is recorded per request/work with known and unknown accounting; a current priced comparison is not claimed |
-| Q18 | Old config/session compatibility is not inherently required; migration and cleanup are deliberate | A34, A36: schema 9 migration and explicit cleanup are implemented; older writers cannot reopen the migrated store |
+| Q18 | Old config/session compatibility is not inherently required; migration and cleanup are deliberate | A34, A36: schema 10 migration and explicit cleanup are implemented; older writers cannot reopen the migrated store |
 | Q19 | Cleanup follows an explicit ownership decision while Git history remains | A36, `tools/README.md`: current tree contains only current source and tools; `tools/` holds executable development and verification utilities |
 
 ## Matrix A01–A36 (per-item evidence)
@@ -110,7 +119,7 @@ complete graphical-terminal or OS matrix.
 | A33 | Second daemon, coordinator exclusion and lock recovery | `second_daemon_is_refused_and_shutdown_releases_the_lock`, `V2Coordinator`, D-522 listener/uncertainty guards and explicit-stop refusal checks |
 | A34 | Foreign or wrong-version state-store refusal | `open_refuses_unstamped_foreign_and_wrong_version`, `open_migrates_v8_to_the_session_search_tree`, conflict rollback and `V2Store` |
 | A35 | Work deadline | `work_deadline_refuses_new_requests_and_dispatches`, deadline park and cancel/release behavior |
-| A36 | Store/session lifecycle, search/export and guarded cleanup | `engine/tests/session_browser.rs`, `engine/tests/session_workspace.rs`, `session_export_tests.rs`, session CLI, `tools/install_check.py`, current schema 9 and maintained development tools |
+| A36 | Store/session lifecycle, search/export and guarded cleanup | `engine/tests/session_browser.rs`, `engine/tests/session_workspace.rs`, `session_export_tests.rs`, session CLI, `tools/install_check.py`, current schema 10 and maintained development tools |
 
 ## Current runtime and installation evidence
 

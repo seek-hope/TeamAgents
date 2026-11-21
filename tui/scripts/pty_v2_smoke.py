@@ -49,6 +49,7 @@ class FakeDaemon:
             "message": {"content": "worker-private-pty-marker"}}]}
         self.member_failures = 0
         self.member_reads = 0
+        self.roles = {"leader_id": "i-leader", "leader": "lead", "workers": {"mode": "follow"}}
         self.instances = [dict(i) for i in INSTANCES]
         self.tasks = [dict(t) for t in TASKS]
         self.work_scopes = [dict(g) for g in WORK_SCOPES]
@@ -100,7 +101,16 @@ class FakeDaemon:
                 method = frame.get("method")
                 params = frame.get("params", {})
                 if method == "checkpoint":
-                    out = {"snapshot": {"instances": self.instances, "tasks": self.tasks, "work": WORK}, "watermark": self.sequence}
+                    out = {"snapshot": {"instances": self.instances, "tasks": self.tasks, "work": WORK,
+                                        "role_models": self.roles, "models": [
+                                            {"key": "lead", "model": "deepseek-flash", "provider": "fixture"},
+                                            {"key": "worker-key", "model": "deepseek-flash", "provider": "second"}]},
+                           "watermark": self.sequence}
+                elif method == "set_role_model" and frame.get("command_id"):
+                    if params != {"role": "workers", "model": "worker-key"}:
+                        raise ValueError(f"unexpected role selection: {params}")
+                    self.roles["workers"] = {"mode": "pinned", "key": params["model"]}
+                    out = self.roles
                 elif method == "history":
                     instance = params.get("instance_id", "")
                     if instance != "i-leader":
@@ -238,7 +248,19 @@ def main():
     scr.feed(read_all(fd, 0.4).decode("utf-8", "replace"))
     os.write(fd, b"/model\r")
     scr.feed(read_all(fd, 0.4).decode("utf-8", "replace"))
-    expect("Model & effort", "model overlay")
+    expect("Leader model & effort", "model overlay")
+    os.write(fd, b"\tworker-key\x1b[C")
+    scr.feed(read_all(fd, 0.4).decode("utf-8", "replace"))
+    expect("Worker model policy", "Workers role")
+    expect("worker-key", "filtered exact key")
+    if any(f.get("method") == "set_role_model" for f in daemon.frames):
+        failures.append("filtering submitted a selection")
+    os.write(fd, b"\r")
+    scr.feed(read_all(fd, 0.4).decode("utf-8", "replace"))
+    if daemon.roles["workers"] != {"mode": "pinned", "key": "worker-key"}:
+        failures.append("confirmation did not submit the Worker pin")
+    os.write(fd, b"/model\r")
+    scr.feed(read_all(fd, 0.4).decode("utf-8", "replace"))
     os.write(fd, b"\x1b[200~another hidden paste\x1b[201~")
     scr.feed(read_all(fd, 0.4).decode("utf-8", "replace"))
     os.write(fd, b"\x1b")

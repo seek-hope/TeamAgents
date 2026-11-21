@@ -3,26 +3,21 @@
 This report records accepted finite verification evidence and its limits. Property/configuration mappings are
 in [README.md](README.md); reproduction commands are in [DEVELOPMENT.md](../docs/DEVELOPMENT.md).
 
-## 0. Gate status (re-run 2026-11-20)
+## 0. Gate status (re-run 2026-11-21)
 
-Material SHA-256: `d3bcc0e51ebfc046f03be2350362460b19a750289ad24760ad8d4408ddcebd89`.
+Material SHA-256: `61e099c0d8c539c82aef2ada797bd35d850c7654f230a4eb3a027c0ecc9332f5`.
 
-The positive replay covered all **63** configurations in **60** traversals. The retained
-`/tmp/teamagents-positive-vbxti4bm/results.json` was checked against the current module/configuration
-hashes, the pinned TLC jar digest, generated configurations and logs: all 60 process exits were zero and
-all 60 logs passed the verdict check. This is traversal evidence, not a separately recovered Make exit code.
-The earlier, unchanged suites refuted all **323** negative controls and reached all **79** witnesses.
-The only changed formal input was a Rust serialization derive in the kernel types compiled by Kani.
-`make verify-kani` was rerun and reported
-`Complete - 9 successfully verified harnesses, 0 failures, 9 total`.
+D-529 replayed the changed `V2ProfileSwitch` module: the positive configuration exhausted 252 distinct
+states with no violation; each of its four controls violated its named invariant. The `profile_next_request`
+witness was reached. Receipts are under `tools/tmp/d529/`. The abstraction has two keys and one optional
+Worker; it does not model SQLite, endpoint/account routing, directory refresh or actual HTTP bodies.
+`make verify-kani` reported `Complete - 9 successfully verified harnesses, 0 failures, 9 total`.
 
-The fingerprint binds the current model/configuration files, verification drivers, Makefile and compiled Kani
-subjects. `tools/verification_catalogue.py --source-hash` recomputes it; changing the fingerprint alone does not
-renew acceptance. Earlier replay logs are under `tools/tmp/delivery-20261120/formal/`; the fresh Kani receipt
-is `tools/tmp/workflow-check/kani.log`. Neither the prior models nor the Kani harnesses prove the catalogue,
-provider routing, Gemini or CodeGraph changes.
-These finite models do not establish native-runtime refinement or cover all of the new first-tool admission
-and nested native-tool semantics.
+The preceding full positive replay covered all **63** configurations in **60** traversals; its receipt is
+`/tmp/teamagents-positive-vbxti4bm/results.json`. The previous full runs refuted all **323** negative controls and reached **79** witnesses. Only the changed formal inputs were replayed here, not every unchanged
+traversal. Earlier evidence is under `tools/tmp/delivery-20261120/formal/`. The fingerprint includes the
+verified model/configuration files, drivers, Makefile and Kani subjects; recompute it with
+`python3 tools/verification_catalogue.py --source-hash`. Finite replay does not prove Rust refinement.
 
 The catalogue contains **387 configurations across 47 modules**, including one separate incomplete wide
 configuration. Positive inputs share a traversal only when their model, specification and domains match;
@@ -78,7 +73,8 @@ arbitrary-input TLA enumeration.
 
 1. **Full refinement and composition.** No complete Rust/SQLite trace refinement, whole-system composition,
    arbitrary actor/command/bootstrap/schema/fork/retention/export composition or arbitrary-string capability
-   algebra is established.
+   algebra is established. In particular, `bind_legacy_leader` and the schema 9→10 migration have executable
+   regression tests, not a formal refinement proof.
 2. **Wide and canonical allocation.** The separate wide configuration is not claimed complete. Policy B
    canonical allocation is not adopted; a source-bound bidirectional fair-trace equivalence, including actual
    actions, enabledness, occurrence, fairness, properties/witnesses and exact source binding, is not complete.

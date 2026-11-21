@@ -90,6 +90,7 @@ impl MemberHistory {
 
 pub struct Team {
     pub view: View,
+    pub(crate) leader_id: String,
     pub selected: String,
     pub rows: Vec<Json>,
     pub tasks: Vec<Json>,
@@ -113,6 +114,7 @@ impl Default for Team {
     fn default() -> Self {
         Self {
             view: View::Conversation,
+            leader_id: "i-leader".into(),
             selected: "i-leader".into(),
             rows: vec![],
             tasks: vec![],
@@ -136,7 +138,15 @@ impl Default for Team {
 impl Team {
     pub fn checkpoint(&mut self, snapshot: &Json) {
         self.rows = snapshot["instances"].as_array().cloned().unwrap_or_default();
-        self.rows.sort_by_key(|row| (row["id"] != "i-leader", row["id"].as_str().unwrap_or("").to_string()));
+        // Old protocol-2 daemons omitted role_models. A present record with no Leader is not a fallback.
+        let leader = snapshot.get("role_models").map_or("i-leader", |r| r["leader_id"].as_str().unwrap_or(""));
+        if self.leader_id != leader {
+            self.leader_id = leader.into();
+            self.selected = leader.into();
+            self.member = None;
+            self.scroll = 0;
+        }
+        self.rows.sort_by_key(|row| (row["id"] != leader, row["id"].as_str().unwrap_or("").to_string()));
         self.tasks = snapshot["tasks"].as_array().cloned().unwrap_or_default();
         self.tasks_known = snapshot["tasks"].is_array();
         self.tasks_dirty = true;
@@ -144,7 +154,7 @@ impl Team {
             member.dirty = true;
         }
         if !self.rows.iter().any(|row| row["id"] == self.selected) {
-            self.select("i-leader");
+            self.select(leader);
         }
     }
 
@@ -152,7 +162,7 @@ impl Team {
         if id != self.selected {
             self.selected = id.to_string();
             self.scroll = 0;
-            self.member = (id != "i-leader").then(|| MemberHistory::new(id.to_string()));
+            self.member = (id != self.leader_id).then(|| MemberHistory::new(id.to_string()));
         }
     }
 
@@ -256,7 +266,7 @@ pub fn key(app: &mut V2App, key: KeyEvent) {
             app.focus = Focus::Panel;
         }
         KeyCode::Char('h') => {
-            if app.team.selected == "i-leader" {
+            if app.team.selected == app.team.leader_id {
                 app.team.show(View::Conversation);
                 app.focus = Focus::Composer;
             } else {
@@ -331,7 +341,7 @@ pub fn render_sidebar(frame: &mut Frame, app: &V2App, area: Rect) {
     for row in app.team.rows.iter().skip(start).take(count) {
         let id = row["id"].as_str().unwrap_or("?");
         let selected = id == app.team.selected;
-        let label = if id == "i-leader" { "Leader" } else { id };
+        let label = if id == app.team.leader_id { "Leader" } else { id };
         lines.push(Line::styled(
             fit(&format!("{} {label}", if selected { "›" } else { " " }), list.width as usize),
             if selected { selection() } else { Style::default().fg(FG) },
@@ -499,7 +509,7 @@ pub fn render_panel(frame: &mut Frame, app: &mut V2App, area: Rect, inspect: boo
     let block = panel(title).border_style(border(app.focus == Focus::Panel));
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    if inspect && app.team.history_open && app.team.selected != "i-leader" {
+    if inspect && app.team.history_open && app.team.selected != app.team.leader_id {
         render_history(frame, app, inner);
         return;
     }

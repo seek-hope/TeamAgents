@@ -14,7 +14,7 @@ flowchart TB
     daemon --> supervisor["Supervisor and instance drivers"]
     supervisor --> storage["Bounded storage worker"]
     storage --> control["Control::submit"]
-    control --> database[("SQLite: schema 9, WAL, FULL")]
+    control --> database[("SQLite: schema 10, WAL, FULL")]
     supervisor --> providers["Model providers"]
     supervisor --> tools["Files / web / Skills / MCP"]
     supervisor --> runners["Host Shell runners"]
@@ -161,7 +161,7 @@ drivers, fake providers, runner processes and random control walks. Kani covers 
 vocabulary proofs. PTY checks terminal behavior.
 
 Current totals are 63 positive configurations in 60 traversals, 323 controls, 79 witnesses and 9 Kani harnesses,
-plus 868 Rust tests. Search-tree coverage includes ordered pairs, 23 controls covering every non-`TypeOK` tree
+plus 874 Rust tests. Search-tree coverage includes ordered pairs, 23 controls covering every non-`TypeOK` tree
 claim and 11 witnesses. Witnesses demonstrate reachability only.
 
 These results do not establish full Rust/SQLite refinement, whole-system composition, wide exhaustive completion

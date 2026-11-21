@@ -90,6 +90,8 @@ pub struct Args {
     pub model: Option<String>,
     /// D-470: `instances model --effort E` — the reasoning-effort half of the profile switch.
     pub effort: Option<String>,
+    pub role: Option<String>,
+    pub follow: bool,
     /// D-470: `instances send --after-turn` — queue the input for after the current turn.
     pub after_turn: bool,
     pub timeout: Option<u64>,
@@ -189,6 +191,8 @@ fn parse_args_from(argv: Vec<String>) -> Args {
         session: None,
         model: None,
         effort: None,
+        role: None,
+        follow: false,
         after_turn: false,
         timeout: None,
         checks: Vec::new(),
@@ -346,6 +350,14 @@ fn parse_args_from(argv: Vec<String>) -> Args {
                     .unwrap_or_else(|| needs_a_value("--effort"));
                 args.effort = Some(v);
                 i += 2;
+            }
+            "--role" => {
+                args.role = Some(value_after(&argv, i, "--role"));
+                i += 2;
+            }
+            "--follow" => {
+                args.follow = true;
+                i += 1;
             }
             "--after-turn" => {
                 args.after_turn = true;
@@ -2416,16 +2428,19 @@ fn run_instances(args: &Args) -> i32 {
         // D-252: the worktree member's branch, brought into the session's own tree
         ("merge", Some(id)) => InterventionCommand::Merge { id },
         // D-470: user-only model/effort switch; the driver reloads the profile at the next request.
-        ("model", Some(id)) => {
-            InterventionCommand::SetProfile { id, model: args.model.clone(), effort: args.effort.clone() }
-        }
+        ("model", None) => InterventionCommand::SetProfile {
+            role: args.role.clone().unwrap_or_default(),
+            model: args.model.clone(),
+            effort: args.effort.clone(),
+            follow: args.follow,
+        },
         ("list", Some(_)) => {
             eprintln!(
-                "instances list takes no --id; use `instances pause|resume|interrupt|terminate|merge|model|send --id ID`"
+                "instances list takes no --id; use `instances pause|resume|interrupt|terminate|merge|send --id ID`"
             );
             return 2;
         }
-        (verb @ ("pause" | "resume" | "interrupt" | "terminate" | "merge" | "model" | "send"), None) => {
+        (verb @ ("pause" | "resume" | "interrupt" | "terminate" | "merge" | "send"), None) => {
             eprintln!("instances {verb} needs --id ID (see `teamagents instances` for the ids)");
             return 2;
         }
@@ -2684,7 +2699,7 @@ fn ensure_daemon(request: DaemonRequest<'_>) -> Result<(PathBuf, bool), String> 
         if std::os::unix::net::UnixStream::connect(&socket).is_ok() {
             if model.is_some() {
                 eprintln!(
-                    "note: --model does not change a running session; use instances model --id i-leader --model KEY."
+                    "note: --model does not change a running session; use instances model --role leader --model KEY."
                 );
             }
             if !overrides.is_empty() {

@@ -296,7 +296,7 @@ async fn autonomy_compaction_retains_user_references_and_decisions() {
     ]);
     let mut config = autonomous_config(&root, provider);
     // This provider is scripted; no real model window is changed or used.
-    config.profile.context_window = Some(8000);
+    config.catalog.models.get_mut("fixture/model").unwrap().context_window = Some(8_000);
     let handle = start(config).await.unwrap();
     handle.input(&bulk).await.unwrap();
     wait_event(&handle, "work_checkpoint", 5000).await;

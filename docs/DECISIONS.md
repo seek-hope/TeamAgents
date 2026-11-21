@@ -56,6 +56,7 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
 | Public fetch | Fake-IP hostnames require public-address verification; content caps count UTF-8 bytes | D-525 |
 | Workspace sessions | Ordinary startup restores the most recently opened session in the launch workspace, creating one if absent | D-526 |
 | Interface contracts | Validate scoped options before state access; share command metadata; preserve intentional key actions and resolved overrides | D-527 |
+| Session model roles | User selects one Leader model and one shared Worker policy | D-529 |
 | Leak-guard ownership | Only processes that inherited this run's marker are this run's leaks | D-528 |
 
 ## Authority and runtime
@@ -136,6 +137,17 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
 - Native Apple Silicon distribution is deferred. These requirements describe the target, not passing evidence.
 
 ## Context, profiles and exploration tree
+
+- D-529: the user selects an exact catalogue key for the Leader. All Workers follow that selection by
+  default, or use one explicitly pinned key, selectable before any Worker exists. Pinning the Leader's
+  current key is not following. Search filters catalogue metadata locally; only confirmation selects a key.
+  Neither a member ID nor a spawn argument can select a private Worker model. This does not change grants,
+  work ownership, instructions, or the separate Reviewer binding.
+- Role selection and Worker creation serialize in control. A switch affecting a busy instance fails as a
+  whole, leaving prepared requests and retries untouched. Terminated instances retain their last profile.
+  Migration does not infer intent from matching wire names or rewrite historical requests. Legacy live Workers
+  without a shared policy require explicit follow or pin before new Worker requests or spawns. An unknown
+  Leader route requires explicit Leader selection before it can serve as a follow target.
 
 - Real-model evaluation uses each profile's native context window with recorded provenance. Synthetic small
   windows are for scripted regressions only.
@@ -269,7 +281,7 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
   credentials, active jobs or external backups as repository housekeeping.
 - Source counts come from Cargo lists. Every registered current total/triple must match; missing/ambiguous
   statements fail. Numeric regeneration does not establish a passing gate, install or formal result.
-- Current source contains 868 Rust tests: core 198, engine 549 and TUI 121.
+- Current source contains 874 Rust tests: core 201, engine 551 and TUI 122.
 - Formal material has 387 configurations across 47 modules: 63 positive configurations in 60 traversals,
   323 controls and one separate wide configuration; 79 witnesses and 9 Kani harnesses. Shared traversals require
   identical model/specification/domain. Witnesses establish reachability, not safety. The report binds verified

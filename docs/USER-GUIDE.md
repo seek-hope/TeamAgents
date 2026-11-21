@@ -40,7 +40,7 @@ The machine-readable top-level report fields are:
 
 | Report | Fields |
 |---|---|
-| `exec` | `acceptance`, `acceptance_work`, `action`, `approval`, `approval_id`, `approvals`, `artifacts`, `branch`, `bytes`, `capability_requests`, `collected`, `count`, `decision`, `delegable`, `end`, `entries`, `envelope_id`, `failed`, `failure`, `freed_bytes`, `grant`, `grant_id`, `grants`, `input_queued`, `instance`, `instance_id`, `instance_lifecycle`, `instances`, `lifecycle`, `limit`, `merged`, `output`, `parent_grant_id`, `permissions`, `phase`, `project`, `reply`, `reply_source`, `request_id`, `resource_scope`, `result`, `revision`, `revoked`, `runners`, `schema_version`, `session_id`, `session_workspace`, `snapshot`, `state_root`, `subject`, `task`, `task_id`, `tasks`, `usage`, `verification`, `verification_path`, `watermark`, `work_status`, `workspace` |
+| `exec` | `acceptance`, `acceptance_work`, `action`, `approval`, `approval_id`, `approvals`, `artifacts`, `branch`, `bytes`, `capability_requests`, `collected`, `count`, `decision`, `delegable`, `end`, `entries`, `envelope_id`, `failed`, `failure`, `freed_bytes`, `grant`, `grant_id`, `grants`, `input_queued`, `instance`, `instance_id`, `instance_lifecycle`, `instances`, `lifecycle`, `limit`, `merged`, `output`, `parent_grant_id`, `permissions`, `phase`, `project`, `reply`, `reply_source`, `request_id`, `resource_scope`, `result`, `revision`, `revoked`, `role`, `runners`, `schema_version`, `session_id`, `session_workspace`, `snapshot`, `state_root`, `subject`, `task`, `task_id`, `tasks`, `usage`, `verification`, `verification_path`, `watermark`, `work_status`, `workspace` |
 
 | Code | Meaning |
 |---|---|
@@ -278,9 +278,20 @@ proven stopped.
 
 ## 7. Models and providers
 
-Ctrl+M or `/model` opens the Leader's model/reasoning-effort menu. A change applies at the next READY/WAITING
-boundary, not to the in-flight request. `teamagents instances model --id ID --model KEY --effort E` addresses
-other members. Profiles may use Chat Completions, DeepSeek, Responses or Anthropic and can coexist in one team.
+Ctrl+M or `/model` opens model selection. Tab switches between Leader and Workers. Type to filter by catalogue
+key, wire model or provider. For the Leader, ←/→ changes reasoning effort. For Workers, ← selects follow and
+→ selects pin. Enter confirms; Esc cancels. Filtering does not contact a provider.
+
+```bash
+teamagents instances model --role leader --model leader_main --effort high
+teamagents instances model --role workers --model worker_kimi
+teamagents instances model --role workers --follow
+```
+
+Workers follow by default. Pinning works before the first spawn and survives later Leader changes, even when
+you pin the Leader's current key. Selection applies to existing live and future Workers; if any affected member
+is busy, nothing changes. Terminated members and prepared requests keep their original profiles. On migration,
+sessions with live Workers need an explicit follow or pin. No model choice authorizes a tool or changes the Reviewer.
 
 Each profile uses its declared native context window. Compaction preserves the original request, user revisions,
 acceptance criteria, open questions and references. Old outputs remain in stored history even when hidden from

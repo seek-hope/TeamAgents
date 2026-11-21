@@ -180,7 +180,9 @@ pub async fn submit(storage: &Storage, root: &Path, catalog: &UserConfig, comman
         rusqlite::params![instance, c.session_id], |r| Ok((r.get(0)?, r.get(1)?)),
     ).map_err(|e| format!("attachment recipient: {e}"))).await??;
     let profile: Json = serde_json::from_str(&profile).map_err(|e| format!("attachment profile: {e}"))?;
-    let images = crate::providers::stored_model(catalog, &profile).is_some_and(|(_, p)| {
+    let mut effective = catalog.clone();
+    crate::catalog::overlay(&mut effective)?;
+    let images = crate::providers::stored_model(&effective, &profile).is_some_and(|(_, p)| {
         p.images
             && matches!(
                 p.protocol.as_str(),

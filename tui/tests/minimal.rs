@@ -136,14 +136,65 @@ fn ctrl_m_opens_the_model_menu_and_enter_changes_the_profile() {
     assert!(app.handle_key(key(KeyCode::Right)).is_none());
     let effect = app.handle_key(key(KeyCode::Enter));
     match effect {
-        Some(V2Effect::SetProfile { instance, model, effort }) => {
-            assert_eq!(instance, "i-leader");
+        Some(V2Effect::SetRoleProfile { role, model, effort, follow: false }) => {
+            assert_eq!(role, teamagents_tui::v2app::ProfileRole::Leader);
             assert_eq!(model.as_deref(), Some("leader_main"));
             assert_eq!(effort.as_deref(), Some("high"));
         }
         other => panic!("{other:?}"),
     }
     assert!(app.profile.is_none(), "Enter closes the menu");
+}
+
+#[test]
+fn role_menu_filters_same_wire_keys_and_submits_only_on_confirmation() {
+    use teamagents_tui::v2app::{ProfileRole, WorkersMode};
+    let mut app = app();
+    app.apply_checkpoint(
+        json!({"instances":[{"id":"i-leader","model":"wire"},{"id":"owner","model":"wire","effort":"low"}],
+      "role_models":{"leader_id":"owner","leader":"b","workers":{"mode":"pinned","key":"a"}},
+      "models":[{"key":"a","provider":"first-provider","model":"wire","efforts":["low"]},
+                {"key":"b","provider":"second-provider","model":"wire","efforts":["high"]}]}),
+        3,
+    );
+    assert_eq!(app.team.selected, "owner");
+    assert_eq!(app.team.rows[0]["id"], "owner");
+    app.team.select("i-leader");
+    assert_eq!(app.team.member.as_ref().unwrap().id, "i-leader");
+    app.handle_key(ctrl('m'));
+    assert_eq!(app.profile.as_ref().unwrap().model_ix, 1);
+    assert!(app.handle_key(key(KeyCode::Tab)).is_none());
+    let menu = app.profile.as_ref().unwrap();
+    assert_eq!((menu.role, menu.workers_mode, menu.model_ix), (ProfileRole::Workers, WorkersMode::Pinned, 0));
+    for c in "wirex".chars() {
+        assert!(app.handle_key(key(KeyCode::Char(c))).is_none());
+    }
+    assert!(app.profile.as_ref().unwrap().models.is_empty());
+    assert!(app.handle_key(key(KeyCode::Enter)).is_none());
+    assert!(app.handle_key(key(KeyCode::Backspace)).is_none());
+    assert_eq!(app.profile.as_ref().unwrap().models.len(), 2);
+    app.handle_key(key(KeyCode::Down));
+    assert_eq!(
+        app.handle_key(key(KeyCode::Enter)),
+        Some(V2Effect::SetRoleProfile {
+            role: ProfileRole::Workers,
+            model: Some("b".into()),
+            effort: None,
+            follow: false
+        })
+    );
+    app.handle_key(ctrl('m'));
+    app.handle_key(key(KeyCode::Tab));
+    app.handle_key(key(KeyCode::Left));
+    assert!(app.handle_key(key(KeyCode::Esc)).is_none());
+    app.handle_key(ctrl('m'));
+    app.handle_key(key(KeyCode::Tab));
+    assert_eq!(app.profile.as_ref().unwrap().workers_mode, WorkersMode::Pinned);
+    app.handle_key(key(KeyCode::Left));
+    assert_eq!(
+        app.handle_key(key(KeyCode::Enter)),
+        Some(V2Effect::SetRoleProfile { role: ProfileRole::Workers, model: None, effort: None, follow: true })
+    );
 }
 
 #[test]
@@ -171,7 +222,7 @@ fn a_missing_effort_falls_back_to_the_nearest_lower_level() {
     assert_eq!(menu.efforts, vec!["high".to_string(), "max".to_string()]);
     assert_eq!(menu.effort_ix, 0, "xhigh is absent, so high is the nearest lower level");
     match app.handle_key(key(KeyCode::Enter)) {
-        Some(V2Effect::SetProfile { effort, .. }) => assert_eq!(effort.as_deref(), Some("high")),
+        Some(V2Effect::SetRoleProfile { effort, .. }) => assert_eq!(effort.as_deref(), Some("high")),
         other => panic!("{other:?}"),
     }
 }
@@ -206,7 +257,7 @@ fn switching_models_rebuilds_efforts_and_applies_the_same_fallback() {
     assert_eq!(menu.efforts, vec!["high".to_string(), "max".to_string()]);
     assert_eq!(menu.effort_ix, 0);
     match app.handle_key(key(KeyCode::Enter)) {
-        Some(V2Effect::SetProfile { model, effort, .. }) => {
+        Some(V2Effect::SetRoleProfile { model, effort, .. }) => {
             assert_eq!(model.as_deref(), Some("narrow"));
             assert_eq!(effort.as_deref(), Some("high"));
         }

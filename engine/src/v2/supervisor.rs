@@ -36,6 +36,8 @@ pub struct SupervisorConfig<P, F> {
     /// Optional model key for the reviewer; the member's model is the fallback.
     pub reviewer_model: Option<String>,
     pub catalog: teamagents_core::models::UserConfig,
+    /// The un-overlaid user catalogue retained for refreshes.
+    pub catalog_base: Option<teamagents_core::models::UserConfig>,
     pub bindings: Vec<String>,
     /// Transient transport retries inside one request (single retry owner, §7).
     pub max_retries: usize,
@@ -58,6 +60,7 @@ struct InstanceDriver {
 pub struct SupervisorHandle {
     storage: Storage,
     session_id: String,
+    pub(crate) leader_id: String,
     shared: Arc<tokio::sync::Notify>,
     shutdown: Arc<std::sync::atomic::AtomicBool>,
     drivers: Arc<std::sync::Mutex<HashMap<String, InstanceDriver>>>,
@@ -128,9 +131,31 @@ impl SupervisorHandle {
             // Concurrent attachment submissions queue on the lock instead of failing busy:
             // each one snapshots its own files in turn (D-451 review fix).
             let _preparing = self.input_preparation.lock().await;
-            let mut effective = self.input_catalog.clone();
-            crate::catalog::overlay(&mut effective)?;
-            super::attachments::submit(&self.storage, &self.input_root, &effective, cmd).await?
+            super::attachments::submit(&self.storage, &self.input_root, &self.input_catalog, cmd).await?
+        } else if matches!(cmd.method.as_str(), "set_instance_profile" | "set_role_model") {
+            let mut catalog = self.input_catalog.clone();
+            self.storage
+                .call(move |control| {
+                    if let Some(receipt) = control.command_receipt(&cmd, &Identity::User)? {
+                        return Ok(receipt);
+                    }
+                    let follow = cmd.params["follow"] == true;
+                    let roles = if follow {
+                        teamagents_core::v2::control::role_model_snapshot(control.connection())?
+                    } else {
+                        Json::Null
+                    };
+                    if let Some(value) =
+                        cmd.params.get("model").or_else(|| roles.get("leader").filter(|v| !v.is_null()))
+                    {
+                        crate::catalog::overlay(&mut catalog)?;
+                        if !value.as_str().is_some_and(|k| catalog.models.contains_key(k)) {
+                            return Err("select an exact key from the model catalogue".into());
+                        }
+                    }
+                    control.submit(cmd, Identity::User)
+                })
+                .await??
         } else {
             self.submit(cmd, Identity::User).await?
         };
@@ -242,7 +267,7 @@ impl SupervisorHandle {
         self.drivers
             .lock()
             .unwrap()
-            .get("i-leader")
+            .get(&self.leader_id)
             .map(|driver| driver.shared.instruction_sources.lock().unwrap().clone())
             .unwrap_or(Json::Null)
     }
@@ -374,10 +399,29 @@ where
     let storage = Storage::open(&config.session_db, &config.session_id, true, config.storage_queue)?;
     super::attachments::recover(&storage).await?;
     let input_root = config.state_root.clone();
-    let input_catalog = config.catalog.clone();
-    let mut effective = input_catalog.clone();
+    let base_catalog = config.catalog_base.take().unwrap_or_else(|| config.catalog.clone());
+    let mut effective = base_catalog.clone();
     crate::catalog::overlay(&mut effective)?;
-    let leader_profile = crate::providers::resolve_profile(config.leader_profile.clone(), &effective);
+    let selection = storage.call(|c| teamagents_core::v2::control::role_model_snapshot(c.connection())).await??;
+    if let Some(id) = selection["leader_id"].as_str() {
+        config.leader_id = id.to_string();
+        if selection["leader"].is_null() {
+            let id = id.to_string();
+            let catalog = effective.clone();
+            let boot_key = config.leader_profile.model.clone();
+            storage.call(move |c| {
+                let wire: Option<String> = c.connection().query_row("SELECT CASE WHEN lifecycle!='TERMINATED' THEN json_extract(profile_json,'$.model') END FROM instances WHERE id=?1", [&id], |r| r.get(0)).map_err(|e| e.to_string())?;
+                if let Some(wire) = wire {
+                    if crate::providers::resolve_legacy_wire_model(&catalog, &wire).is_some_and(|(key,_)| key == &boot_key) {
+                        c.submit(command(format!("legacy-route-{}", uuid::Uuid::new_v4()), "bind_legacy_leader", json!({"catalog_key":boot_key,"wire_model":wire})), Identity::System)?;
+                    }
+                }
+                Ok::<_, String>(())
+            }).await??;
+        }
+    }
+    config.catalog = effective;
+    let leader_profile = crate::providers::resolve_profile(config.leader_profile.clone(), &config.catalog);
     bootstrap(
         &storage,
         &config.leader_id,
@@ -392,6 +436,7 @@ where
     )
     .await?;
     let session_id = config.session_id.clone();
+    let leader_id = config.leader_id.clone();
     let drivers: Arc<std::sync::Mutex<HashMap<String, InstanceDriver>>> =
         Arc::new(std::sync::Mutex::new(HashMap::new()));
     let wake = Arc::new(tokio::sync::Notify::new());
@@ -402,19 +447,21 @@ where
         wake: wake.clone(),
         shutdown: shutdown.clone(),
         config,
+        catalog_base: base_catalog.clone(),
         reported_refusals: HashMap::new(),
     };
     let task = tokio::spawn(supervisor.run());
     Ok(SupervisorHandle {
         storage,
         session_id,
+        leader_id,
         shared: wake,
         shutdown,
         drivers,
         task: std::sync::Mutex::new(Some(task)),
         _lock: lock,
         input_root,
-        input_catalog,
+        input_catalog: base_catalog,
         input_preparation: tokio::sync::Mutex::new(()),
     })
 }
@@ -425,6 +472,7 @@ struct Supervisor<P, F> {
     wake: Arc<tokio::sync::Notify>,
     shutdown: Arc<std::sync::atomic::AtomicBool>,
     config: SupervisorConfig<P, F>,
+    catalog_base: teamagents_core::models::UserConfig,
     /// The last workspace retirement refusal reported per instance: the retirement
     /// runs on every discovery pass, and an unmerged worktree is a *normal* state a
     /// user may leave for hours — reporting it ten times a second filled the daemon
@@ -512,12 +560,20 @@ where
                         if lifecycle != "ACTIVE" || drivers.contains_key(id) {
                             continue;
                         }
-                        let profile = if *id == self.config.leader_id {
+                        let stored: Json =
+                            serde_json::from_str(profile_json).map_err(|e| format!("invalid profile for {id}: {e}"))?;
+                        let mut profile = if *id == self.config.leader_id {
                             self.config.leader_profile.clone()
                         } else {
-                            let stored: Json = serde_json::from_str(profile_json).unwrap_or(json!({}));
                             stored_profile(&stored, &self.config.leader_profile)
                         };
+                        let exact = stored["catalog_key"].as_str();
+                        if let Some(key) = exact {
+                            profile.model = key.to_owned();
+                            profile.instructions = stored_profile(&stored, &profile).instructions;
+                        } else {
+                            profile.model.clear(); // An unresolved legacy row has no provider destination.
+                        }
                         let instance_root = self.config.state_root.join("instances").join(id);
                         let workspace = if workspace_ref.is_empty() {
                             self.config.workspace.clone()
@@ -535,11 +591,17 @@ where
                             permissions: self.config.permissions.clone(),
                             approvals_reviewer: self.config.approvals_reviewer.clone(),
                             reviewer_model: self.config.reviewer_model.clone(),
+                            catalog_key: exact.map(str::to_owned),
                             // the kernel gets the wire-effective profile while
                             // the factory still sees the catalog key (R17)
-                            profile: crate::providers::resolve_profile(profile.clone(), &self.config.catalog),
+                            profile: if exact.is_some() {
+                                crate::providers::resolve_profile(profile.clone(), &self.config.catalog)
+                            } else {
+                                profile.clone()
+                            },
                             provider: (self.config.provider_factory)(id, &profile),
                             catalog: self.config.catalog.clone(),
+                            catalog_base: Some(self.catalog_base.clone()),
                             bindings: self.config.bindings.clone(),
                             // D-247: the retry budget is the *instance's* own profile's `max_retries` (D-240
                             // measured the key accepted and never applied: one session constant served every
@@ -547,7 +609,7 @@ where
                             // resolve — a case the provider factory refuses at boot anyway — and the default
                             // `default_retries()` is the constant this session used to pass, so a config that
                             // omits the key behaves as before.
-                            max_retries: crate::providers::resolve_model(&self.config.catalog, &profile.model)
+                            max_retries: crate::providers::stored_model(&self.config.catalog, &stored)
                                 .map(|(_, entry)| entry.max_retries.max(0) as usize)
                                 .unwrap_or(self.config.max_retries),
                             storage_queue: self.config.storage_queue,

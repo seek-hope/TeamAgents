@@ -99,6 +99,7 @@ impl Root {
             permissions: "full_auto".into(),
             approvals_reviewer: "user".into(),
             reviewer_model: None,
+            catalog_key: Some("scripted".into()),
             profile: KernelProfile {
                 images: false,
                 tool_output_chars: None,
@@ -111,6 +112,7 @@ impl Root {
             },
             provider,
             catalog: UserConfig::default(),
+            catalog_base: None,
             bindings: vec![],
             max_retries: 2,
             storage_queue: 64,

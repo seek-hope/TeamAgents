@@ -74,7 +74,7 @@ async fn a_failed_submission_abandons_staged_artifacts_and_removes_blobs_immedia
                 Command {
                     command_id: "create".into(),
                     method: "create_instance".into(),
-                    params: json!({"id":"i-leader","workspace_ref":workspace,"profile":{"model":"text"}}),
+                    params: json!({"id":"i-leader","is_leader":true,"workspace_ref":workspace,"profile":{"model":"text","catalog_key":"text"}}),
                 },
                 Identity::User,
             )
@@ -135,7 +135,7 @@ async fn immutable_snapshot_retry_revision_gc_and_corruption() {
                 Command {
                     command_id: "create".into(),
                     method: "create_instance".into(),
-                    params: json!({"id":"i-leader","workspace_ref":workspace,"profile":{"model":"text"}}),
+                    params: json!({"id":"i-leader","is_leader":true,"workspace_ref":workspace,"profile":{"model":"text","catalog_key":"text"}}),
                 },
                 Identity::User,
             )

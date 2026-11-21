@@ -5,7 +5,7 @@ finite model into full acceptance. See [ACCEPTANCE.md](ACCEPTANCE.md) for scenar
 
 | Capability | Current implementation and evidence | Current limit |
 |---|---|---|
-| Durable state and migrations | `core/src/v2/store.rs`; schema 9, WAL, `synchronous=FULL`, format refusal, explicit migration and conflict tests | No binary-only database rollback or arbitrary foreign-state adoption |
+| Durable state and migrations | `core/src/v2/store.rs`; schema 10, WAL, `synchronous=FULL`, format refusal, explicit migration and conflict tests | No binary-only database rollback or arbitrary foreign-state adoption |
 | Single-writer control plane | `Control::submit`; stable command replay, identity/revision assignment and atomic business/event writes | Concurrent SQLite/OS behavior and full refinement are not proved |
 | Phase machine and recovery | `engine/src/v2/driver.rs`, supervisor and runner suites; known-result reuse and `OUTCOME_UNKNOWN` | Real crash timing and remote effects remain environmental |
 | Work scopes and admission | Budget/deadline/admission/acceptance, internal successor work, bounded continuation and `core/src/v2/control/work_tests.rs` | Heuristics do not prove task impossibility or general success |
@@ -33,7 +33,7 @@ finite model into full acceptance. See [ACCEPTANCE.md](ACCEPTANCE.md) for scenar
 
 ## Current evidence totals
 
-- Rust tests: **868** (core 198, engine 549, TUI 121); full local gate passed.
+- Rust tests: **874** (core 201, engine 551, TUI 122); full local gate passed.
 - Positive TLA inputs: **65 configurations in 60 traversals**.
 - Negative controls: **323**, each required to refute its named claim.
 - Normal-path witnesses: **79**, which demonstrate reachability rather than safety.

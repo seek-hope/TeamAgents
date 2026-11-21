@@ -367,7 +367,7 @@ pub fn open(path: &Path, create: bool) -> Result<Connection, String> {
             conn.execute_batch(SCHEMA).map_err(|e| format!("create schema: {e}"))?;
             ensure_columns(&conn)?;
             conn.execute(
-                "INSERT INTO meta (key, value) VALUES ('format_id', ?1), ('schema_version', ?2)",
+                "INSERT INTO meta (key, value) VALUES ('format_id', ?1), ('schema_version', ?2), ('worker_models', '{\"mode\":\"follow\"}')",
                 rusqlite::params![V2_FORMAT_ID, V2_SCHEMA_VERSION.to_string()],
             )
             .map_err(|e| format!("stamp meta: {e}"))?;
@@ -680,6 +680,15 @@ fn migrate(conn: &Connection, from: i64) -> Result<(), String> {
                 )
                 .map_err(|e| format!("migrate 8 -> 9 Leader selection: {e}"))?;
                 tx.execute_batch(SCHEMA).map_err(|e| format!("migrate 8 -> 9 search tree: {e}"))?;
+            }
+            9 => {
+                tx.execute_batch(
+                    r#"INSERT OR REPLACE INTO meta(key,value)
+                    SELECT 'worker_models', CASE WHEN EXISTS(
+                        SELECT 1 FROM instances WHERE is_leader=0 AND lifecycle!='TERMINATED'
+                    ) THEN '{"mode":"unresolved"}' ELSE '{"mode":"follow"}' END"#,
+                )
+                .map_err(|e| format!("migrate shared Worker policy: {e}"))?;
             }
             other => return Err(format!("no migration step from v2 schema version {other}")),
         }
@@ -1324,7 +1333,7 @@ mod tests {
         let conn = open(&p, false).expect("migrate v8 search tree");
         let version: String =
             conn.query_row("SELECT value FROM meta WHERE key='schema_version'", [], |row| row.get(0)).unwrap();
-        assert_eq!(version, "9");
+        assert_eq!(version, V2_SCHEMA_VERSION.to_string());
         assert_eq!(
             conn.query_row("SELECT COUNT(*) FROM instances WHERE id='i-leader'", [], |row| row.get::<_, i64>(0))
                 .unwrap(),

@@ -1042,7 +1042,7 @@ fn daemon_boot(
     if let Some(requested) = cwd.as_deref() {
         require_workspace_dir(Path::new(requested))?;
     }
-    let (saved_model, saved_workspace) = crate::v2::session_browser::resume_settings(&state_root)?;
+    let (saved_selection, saved_workspace) = crate::v2::session_browser::resume_settings(&state_root)?;
     let workspace = saved_workspace.unwrap_or_else(|| PathBuf::from(cwd.as_deref().unwrap_or(".")));
     let workspace = crate::v2::session_workspace::canonical_workspace(&workspace)?;
     // D-428: the command line's `-c` overrides enter the same load the daemon's config comes from
@@ -1052,11 +1052,19 @@ fn daemon_boot(
     crate::catalog::overlay(&mut effective)?;
     let mut available: Vec<String> = effective.models.keys().cloned().collect();
     available.sort();
-    let model = model.or_else(|| {
-        saved_model
-            .map(|name| crate::providers::resolve_model(&effective, &name).map(|(key, _)| key.clone()).unwrap_or(name))
-    });
-    let model_key = match model {
+    let saved_key = match saved_selection.filter(|_| model.is_none()) {
+        Some(selection) => Some(match selection {
+            crate::v2::session_browser::SavedSelection::CatalogKey(key) => {
+                key
+            }
+            crate::v2::session_browser::SavedSelection::LegacyWireModel(model) => {
+                crate::providers::resolve_legacy_wire_model(&effective, &model).map(|(key, _)| key.clone())
+                    .ok_or_else(|| format!("legacy Leader model {model:?} is missing or ambiguous; start with an exact --model KEY and select the Leader role"))?
+            }
+        }),
+        None => None,
+    };
+    let model_key = match model.or(saved_key) {
         Some(key) => key,
         None if catalog.models.contains_key("leader_main") => "leader_main".into(),
         None if catalog.models.len() == 1 => catalog.models.keys().next().unwrap().clone(),
@@ -1080,7 +1088,6 @@ fn daemon_boot(
             project_config_path(&workspace).display()
         ));
     }
-    // preflight: credentials/protocol resolve at boot, not mid-session (§7)
     crate::providers::build_for_model(&effective, &model_key)?;
     // Publish absolute identities even when the client supplied a relative state root.
     let state_root = state_root.canonicalize().map_err(|error| state_root_uncreatable(&state_root, &error))?;
@@ -1091,11 +1098,12 @@ fn daemon_boot(
     crate::update::write_boot_record(&state_root, &workspace, &model_key, full_auto, overrides, &permissions)
         .map_err(|error| crate::cli::state_root_uncreatable(&state_root, &std::io::Error::other(error)))?;
     let socket = state_root.join("daemon.sock");
-    let catalog_for_factory = effective;
+    let mut limits = crate::config::work_limits(&effective)?;
+    limits["autonomous_work"] = json!(true);
     // D-168: the members' tool surface follows the config — a web tool is offered only for the kind the catalog
     // declares a binding of (§5.2: binding is the authorization), which is what `doctor`'s row for a config
     // without one already claimed.
-    let member_tools = crate::reference::session_tool_schemas(&catalog);
+    let member_tools = crate::reference::session_tool_schemas(&effective);
     let config = crate::v2::daemon::DaemonConfig {
         supervisor: crate::v2::supervisor::SupervisorConfig {
             marker: std::marker::PhantomData,
@@ -1118,7 +1126,8 @@ fn daemon_boot(
             permissions,
             approvals_reviewer: review_permissions.approvals_reviewer,
             reviewer_model: review_permissions.reviewer_model,
-            catalog,
+            catalog: effective,
+            catalog_base: Some(catalog),
             bindings: default_bindings(),
             // the fallback for an instance whose profile the catalog cannot resolve; each instance's own
             // `[models.<key>] max_retries` is the budget it uses (D-247)
@@ -1126,25 +1135,12 @@ fn daemon_boot(
             storage_queue: 256,
             poll: Duration::from_millis(100),
             // the user's acceptance checks gate every work this session runs
-            work_limits: {
-                let mut limits = crate::config::work_limits(&catalog_for_factory)?;
-                limits["autonomous_work"] = json!(true);
-                limits
-            },
+            work_limits: limits,
             require_shell_approval: false,
-            provider_factory: move |id: &str, profile: &KernelProfile| {
-                // Never panic here: this runs inside the supervisor's discovery
-                // loop, where a panic stops every instance from being driven
-                // (D-59). An instance whose model cannot be built gets a provider
-                // that fails its own requests permanently, so it parks through
-                // the ordinary classified path and the session lives on.
-                match crate::providers::build_for_model(&catalog_for_factory, &profile.model) {
-                    Ok(provider) => provider,
-                    Err(reason) => {
-                        eprintln!("daemon: instance {id} cannot be driven: {reason}");
-                        crate::providers::AnyProvider::Unavailable { reason }
-                    }
-                }
+            // The driver binds the current exact entry before its first provider call. Avoid building
+            // an adapter from a stale copy of a directory captured when the daemon started.
+            provider_factory: |_id: &str, _profile: &KernelProfile| crate::providers::AnyProvider::Unavailable {
+                reason: "no exact profile is bound to this request".into(),
             },
         },
         socket: socket.clone(),

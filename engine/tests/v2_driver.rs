@@ -141,6 +141,15 @@ impl Root {
     }
 
     fn config_with<P: Provider + 'static>(&self, provider: P) -> DriverConfig<P> {
+        let mut catalog = UserConfig::default();
+        catalog.models.insert(
+            "fixture/model".into(),
+            serde_json::from_value(json!({
+                "provider": "fixture",
+                "model": "scripted", "context_window": 128_000
+            }))
+            .expect("fixture model profile"),
+        );
         DriverConfig {
             session_db: self.dir.join("session.sqlite"),
             session_id: "s-test".into(),
@@ -152,11 +161,12 @@ impl Root {
             permissions: "full_auto".into(),
             approvals_reviewer: "user".into(),
             reviewer_model: None,
+            catalog_key: Some("fixture/model".into()),
             profile: KernelProfile {
                 images: false,
                 tool_output_chars: None,
                 context_keep_chars: None,
-                model: "scripted".into(),
+                model: "fixture/model".into(),
                 instructions: "test agent".into(),
                 tools: vec![json!({"type": "function", "function": {
                     "name": "shell", "description": "run a shell command",
@@ -166,7 +176,8 @@ impl Root {
                 context_window: Some(128_000),
             },
             provider,
-            catalog: UserConfig::default(),
+            catalog,
+            catalog_base: None,
             bindings: vec![],
             max_retries: 2,
             storage_queue: 64,
@@ -371,10 +382,25 @@ async fn wait_task_settled(handle: &DriverHandle, task_id: &str, timeout_ms: u64
     panic!("task {task_id} not settled within {timeout_ms}ms");
 }
 
+fn make_leader(control: &mut teamagents_core::v2::Control, workspace: &str) {
+    control
+        .submit(
+            cmd(
+                "mk-i",
+                "create_instance",
+                json!({"id":"i-main", "workspace_ref":workspace, "is_leader":true,
+        "profile":{"model":"scripted","catalog_key":"fixture/model"}}),
+            ),
+            teamagents_core::v2::Identity::User,
+        )
+        .expect("Leader instance");
+}
+
 /// Create an instance with no work — the worker shape (§5.3): the driver
 /// bootstrap skips existing instances, so no work is attached and
 /// completions settle tasks instead of work_scopes.
 fn make_worker(control: &mut teamagents_core::v2::Control, root: &Root, instance: &str) {
+    make_leader(control, root.dir.join("ws").to_str().unwrap());
     control
         .submit(
             cmd(
@@ -639,6 +665,7 @@ fn named_profile_config(root: &Root, provider: RecordingProvider) -> DriverConfi
         }))
         .unwrap(),
     );
+    config.catalog_key = Some("leader_main".into());
     config.profile.model = "leader_main".into();
     // Match the supervisor: the driver starts with a wire-effective profile.
     config.profile = teamagents_engine::providers::resolve_profile(config.profile, &config.catalog);
@@ -1266,7 +1293,6 @@ async fn auto_review_context_uses_current_user_input_and_configured_policy() {
     let policy = root.dir.join("policy.md");
     std::fs::write(&policy, "CURRENT-POLICY: never access the network").unwrap();
     let mut control = second_control(&root);
-    make_worker(&mut control, &root, "i-main");
     make_worker(&mut control, &root, "i-peer");
     control
         .submit(
@@ -2145,16 +2171,7 @@ async fn a_work_with_required_checks_is_told_them_before_the_first_request() {
     std::fs::create_dir_all(root.dir.join("ws")).unwrap();
     // the work carries the user's checks: `create_work` with the same limits shape the daemon writes
     let mut control = second_control(&root);
-    control
-        .submit(
-            cmd(
-                "mk-i",
-                "create_instance",
-                json!({"id": "i-main", "workspace_ref": root.dir.join("ws").to_string_lossy()}),
-            ),
-            teamagents_core::v2::Identity::User,
-        )
-        .expect("instance");
+    make_leader(&mut control, root.dir.join("ws").to_str().unwrap());
     control
         .submit(
             cmd(
@@ -2196,16 +2213,7 @@ async fn a_work_close_to_its_deadline_is_told_once_to_wrap_up() {
     let root = root("deadline-warning");
     std::fs::create_dir_all(root.dir.join("ws")).unwrap();
     let mut control = second_control(&root);
-    control
-        .submit(
-            cmd(
-                "mk-i",
-                "create_instance",
-                json!({"id": "i-main", "workspace_ref": root.dir.join("ws").to_string_lossy()}),
-            ),
-            teamagents_core::v2::Identity::User,
-        )
-        .expect("instance");
+    make_leader(&mut control, root.dir.join("ws").to_str().unwrap());
     let soon = teamagents_core::models::now() + 30.0;
     control
         .submit(
@@ -2247,12 +2255,7 @@ async fn check_dispatch_refused_parks_without_burning_repair_rounds() {
     // an instance with no shell@workspace grant cannot run checks; that is
     // verification-infrastructure failure, not model-repairable work (§8)
     let mut control = second_control(&root);
-    control
-        .submit(
-            cmd("mk-i", "create_instance", json!({"id": "i-main", "workspace_ref": ""})),
-            teamagents_core::v2::Identity::User,
-        )
-        .expect("instance");
+    make_leader(&mut control, "");
     control
         .submit(
             cmd(
@@ -2296,7 +2299,7 @@ async fn long_context_compacts_before_the_turn_and_survives_a_restart() {
     ];
     let (provider, log) = recording(script);
     let mut config = root.config_with(provider);
-    config.profile.context_window = Some(8_000);
+    config.catalog.models.get_mut("fixture/model").unwrap().context_window = Some(8_000);
     let handle = start(config).await.expect("start");
     handle.input(&bulk).await.expect("input");
     // turn one runs uncompressed: no assistant response exists to summarize
@@ -2368,7 +2371,7 @@ async fn long_context_compacts_before_the_turn_and_survives_a_restart() {
     // restart over the same session: the compacted view is the persisted state
     let (restarted, restarted_log) = recording(vec![Step::Message(reply("third answer"))]);
     let mut config = root.config_with(restarted);
-    config.profile.context_window = Some(8_000);
+    config.catalog.models.get_mut("fixture/model").unwrap().context_window = Some(8_000);
     let handle = start(config).await.expect("restart");
     handle.input("after the restart").await.expect("input");
     // events survive the restart, so wait on the new driver's own request log
@@ -2400,7 +2403,7 @@ async fn leader_compaction_advances_the_session_search_tree() {
         Step::Message(reply("second answer")),
     ]);
     let mut config = root.config_with(provider);
-    config.profile.context_window = Some(8_000);
+    config.catalog.models.get_mut("fixture/model").unwrap().context_window = Some(8_000);
     let handle = start(config).await.expect("start");
     handle.input(&bulk).await.expect("input");
     wait_event_count(&handle, "response_imported", 1, 15_000).await;
@@ -2514,7 +2517,7 @@ async fn invalid_tree_patch_does_not_block_compaction_or_the_turn() {
         Step::Message(reply("second answer")),
     ]);
     let mut config = root.config_with(provider);
-    config.profile.context_window = Some(8_000);
+    config.catalog.models.get_mut("fixture/model").unwrap().context_window = Some(8_000);
     let handle = start(config).await.expect("start");
     handle.input(&bulk).await.expect("input");
     wait_event_count(&handle, "response_imported", 1, 15_000).await;
@@ -2585,7 +2588,7 @@ async fn failed_summaries_fall_back_uncompressed_and_break_after_three() {
     ];
     let (provider, log) = recording(script);
     let mut config = root.config_with(provider);
-    config.profile.context_window = Some(8_000);
+    config.catalog.models.get_mut("fixture/model").unwrap().context_window = Some(8_000);
     let handle = start(config).await.expect("start");
     handle.input(&bulk).await.expect("input");
     wait_event_count(&handle, "response_imported", 1, 15_000).await;
@@ -2913,16 +2916,7 @@ async fn empty_session_does_not_fire_deadline_warning_or_check_briefing_before_i
     let root = root("idle-notes");
     std::fs::create_dir_all(root.dir.join("ws")).unwrap();
     let mut control = second_control(&root);
-    control
-        .submit(
-            cmd(
-                "mk-i",
-                "create_instance",
-                json!({"id": "i-main", "workspace_ref": root.dir.join("ws").to_string_lossy()}),
-            ),
-            teamagents_core::v2::Identity::User,
-        )
-        .expect("instance");
+    make_leader(&mut control, root.dir.join("ws").to_str().unwrap());
     let soon = teamagents_core::models::now() + 30.0;
     control
         .submit(

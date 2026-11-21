@@ -197,10 +197,7 @@ async fn headless_usage_excludes_queued_turns_and_unrelated_members() {
     let handle = serve(cfg).await.unwrap();
     let socket = root.dir.join("state/daemon.sock");
     let mut client = Client::connect(&socket).await;
-    assert_eq!(
-        client.command("other", "create_instance", json!({"id":"i-other","profile":{"model":"scripted"}})).await["ok"],
-        true
-    );
+    assert_eq!(client.command("other", "create_instance", json!({"id":"i-other"})).await["ok"], true);
     assert_eq!(
         client.command("other-work", "create_work", json!({"id":"other-work","instance_id":"i-other"})).await["ok"],
         true

@@ -7,7 +7,9 @@ Q1–Q19/A01–A36 baseline, [DECISIONS.md](DECISIONS.md) for current contracts 
 for exact source-bound evidence. Git retains implementation and experiment history; do not recreate a changelog here.
 
 Installed CLI and TUI source: `e1d49e2b`. Both installed hashes match the private installation receipt.
-The uninstalled working tree adds native Gemini API-key transport, versioned model directories, explicit
+D-529 adds session-level Leader and Worker model selection; an upgraded schema 10 database needs its
+pre-upgrade backup for a rollback to an older writer. The uninstalled working tree includes native Gemini
+API-key transport, versioned model directories, explicit
 endpoint switching, scoped CodeGraph discovery and user-confirmed local-router management. The provider,
 directory and local-router tests use loopback fixtures. The `codegraph_probe` engine example uses a real
 indexed workspace. Neither requires a personal model login. The directory timer is opt-in.
@@ -26,7 +28,7 @@ The older scheduled updater-readiness failure in run 43868995516 remains a separ
 Current local formal replay retains its input-content binding in
 [verification/REPORT.md](../verification/REPORT.md).
 
-- **868 Rust tests**: core 198, engine 549, TUI 121.
+- **874 Rust tests**: core 201, engine 551, TUI 122.
 - **63 positive TLA configurations in 60 traversals**, **323 controls**, **79 witnesses**, **9 Kani harnesses**.
 - Catalogue: **387 configurations across 47 modules**, including an incomplete wide configuration.
 - Current D-527 acceptance covers 23 isolated CLI invocations and seven PTY key/editor checks before and after

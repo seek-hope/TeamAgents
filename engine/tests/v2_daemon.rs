@@ -171,7 +171,8 @@ fn config_recording(
             permissions: "full_auto".into(),
             approvals_reviewer: "user".into(),
             reviewer_model: None,
-            catalog,
+            catalog: catalog.clone(),
+            catalog_base: None,
             bindings,
             max_retries: 2,
             storage_queue: 64,
@@ -1306,19 +1307,14 @@ async fn explicit_input_recovers_an_idle_unsettled_worker_without_automatic_prom
     handle.shutdown().await.unwrap();
 }
 
-/// Every instance's row describes the model it runs on (D-69), and the snapshot
-/// reports it: a team can span providers (`spawn(model = …)`, D-59), and without this
-/// no client — the TUI included — could say which member runs on what. The stored
-/// name is the *resolved* one (a catalog key becomes the wire model), matching what a
-/// spawned child stores.
+/// Display the exact catalogue key, not the wire name that other accounts may also serve.
 #[tokio::test]
 async fn the_snapshot_reports_each_members_model() {
     std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
     let root = root("member-model");
     std::fs::create_dir_all(root.dir.join("ws")).unwrap();
     let mut cfg = config(&root, HashMap::new());
-    // the session boots on a catalog entry: the key is "leader_main", the wire model
-    // is "deepseek-flash", and the row must carry the latter
+    // The boot profile stores both the exact key and the wire name.
     cfg.supervisor.leader_profile = KernelProfile {
         images: false,
         tool_output_chars: None,
@@ -1343,14 +1339,16 @@ async fn the_snapshot_reports_each_members_model() {
     let instances = checkpoint["result"]["snapshot"]["instances"].as_array().cloned().unwrap_or_default();
     assert_eq!(instances.len(), 1, "{checkpoint}");
     assert_eq!(instances[0]["id"], json!("i-leader"));
-    assert_eq!(instances[0]["model"], json!("deepseek-flash"), "the resolved model, not the catalog key: {checkpoint}");
+    assert_eq!(instances[0]["model"], json!("leader_main"), "the exact catalog key: {checkpoint}");
     // and it is persisted, so any reader (not only a snapshot) sees it
     let stored: String = teamagents_core::v2::Control::open(&root.dir.join("session.sqlite"), "s-test", false)
         .expect("control")
         .connection()
         .query_row("SELECT profile_json FROM instances WHERE id = 'i-leader'", [], |row| row.get(0))
         .expect("profile row");
-    assert!(stored.contains("deepseek-flash"), "{stored}");
+    let profile: serde_json::Value = serde_json::from_str(&stored).unwrap();
+    assert_eq!(profile["catalog_key"], "leader_main");
+    assert_eq!(profile["model"], "deepseek-flash");
     handle.shutdown().await.expect("shutdown");
 }
 

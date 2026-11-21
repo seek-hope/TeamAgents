@@ -5,7 +5,7 @@ use teamagents_tui::v2app::{Focus, V2App, V2Effect};
 fn app() -> V2App {
     let mut app = V2App::new("interface");
     app.apply_checkpoint(
-        json!({"instances":[{"id":"i-leader","lifecycle":"ACTIVE","phase":"READY","model":"fixture"}]}),
+        json!({"instances":[{"id":"i-leader","lifecycle":"ACTIVE","phase":"READY","model":"fixture"}], "models":[{"key":"fixture","model":"fixture"}]}),
         0,
     );
     app
@@ -49,7 +49,7 @@ fn menu_shortcuts_and_confirmation_do_not_repeat_or_accept_extra_modifiers() {
     app.handle_key(open);
     assert!(app.profile.is_none(), "Ctrl+Enter toggles the same menu as Ctrl+M");
     app.handle_key(open);
-    assert!(matches!(app.handle_key(key(KeyCode::Enter)), Some(V2Effect::SetProfile { .. })));
+    assert!(matches!(app.handle_key(key(KeyCode::Enter)), Some(V2Effect::SetRoleProfile { .. })));
     app.handle_key(key(KeyCode::Char('?')));
     assert!(app.help_open);
     app.handle_key(KeyEvent::new_with_kind(KeyCode::Char('?'), KeyModifiers::NONE, KeyEventKind::Repeat));

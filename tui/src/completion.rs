@@ -20,7 +20,7 @@ macro_rules! commands {
 
 commands! {
     Help => ("/help", "Show controls"),
-    Model => ("/model", "Choose the Leader model and reasoning effort"),
+    Model => ("/model", "Choose the Leader model and effort or the shared Worker model"),
     Edit => ("/edit", "Edit optional TEXT in the external editor; Ctrl+E edits the current draft"),
     Sessions => ("/sessions", "Browse conversations"),
     Interrupt => ("/interrupt", "Interrupt the Leader model request"),

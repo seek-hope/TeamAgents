@@ -147,6 +147,7 @@ async fn main() -> Fallible<()> {
         approvals_reviewer: "user".into(),
         reviewer_model: None,
         catalog: catalog.clone(),
+        catalog_base: Some(catalog),
         bindings: vec!["files".into(), "shell".into(), "web".into(), "skills".into()],
         max_retries: 2,
         storage_queue: 256,
@@ -185,14 +186,14 @@ struct Run<'a> {
 
 async fn run_acceptance(handle: &SupervisorHandle, run: Run<'_>) -> Fallible<()> {
     let Run { evidence, state_root, workspace, worker_key, timeout_s, dry_run, require_file } = run;
-    // the worker joins the session with its own model key: one session, two
-    // protocols (R17/A27)
+    handle
+        .submit_user(cmd("accept-worker-policy", "set_role_model", json!({"role":"workers","model":worker_key})))
+        .await?;
     handle
         .submit_user(cmd(
             "accept-worker",
             "create_instance",
-            json!({"id": "i-worker", "workspace_ref": workspace.to_string_lossy(),
-                   "profile": {"model": worker_key}}),
+            json!({"id": "i-worker", "workspace_ref": workspace.to_string_lossy()}),
         ))
         .await?;
     // the user grants exactly the two directions of the message plane (§5.1)

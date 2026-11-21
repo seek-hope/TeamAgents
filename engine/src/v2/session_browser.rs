@@ -49,18 +49,33 @@ pub fn history(registry: &Registry, id: &str, before: Option<i64>, limit: u64) -
     Ok(json!({"id": id, "entries": entries, "next_before": next}))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SavedSelection {
+    CatalogKey(String),
+    LegacyWireModel(String),
+}
+
 /// Reopen using the stored Leader's workspace/model, without silently adopting the other session's settings.
-pub fn resume_settings(dir: &Path) -> Result<(Option<String>, Option<PathBuf>), String> {
+pub fn resume_settings(dir: &Path) -> Result<(Option<SavedSelection>, Option<PathBuf>), String> {
     let pending = || super::session_workspace::metadata(dir).map(|record| (None, record.map(|r| r.workspace)));
     if !dir.join("session.sqlite").exists() {
         return pending();
     }
     let conn = teamagents_core::v2::store::open_read_only(&dir.join("session.sqlite"))?;
     use rusqlite::OptionalExtension;
-    let row: Option<(String, String)> = conn
-        .query_row("SELECT workspace_ref, profile_json FROM instances WHERE id = 'i-leader'", [], |row| {
-            Ok((row.get(0)?, row.get(1)?))
+    // Pre-role schemas need their original workspace lookup before the writer can migrate them.
+    let has_role: bool = conn
+        .query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('instances') WHERE name='is_leader')", [], |r| {
+            r.get(0)
         })
+        .map_err(|e| e.to_string())?;
+    let query = if has_role {
+        "SELECT workspace_ref, profile_json FROM instances WHERE is_leader=1"
+    } else {
+        "SELECT workspace_ref, profile_json FROM instances WHERE id='i-leader'"
+    };
+    let row: Option<(String, String)> = conn
+        .query_row(query, [], |row| Ok((row.get(0)?, row.get(1)?)))
         .optional()
         .map_err(|e| format!("session settings: {e}"))?;
     let Some((workspace, profile)) = row else {
@@ -74,10 +89,11 @@ pub fn resume_settings(dir: &Path) -> Result<(Option<String>, Option<PathBuf>), 
         ));
     }
     let profile: Json = serde_json::from_str(&profile).map_err(|e| format!("session profile: {e}"))?;
-    Ok((
-        profile["catalog_key"].as_str().or_else(|| profile["model"].as_str()).map(str::to_string),
-        Some(PathBuf::from(workspace)),
-    ))
+    let selection = profile["catalog_key"]
+        .as_str()
+        .map(|key| SavedSelection::CatalogKey(key.to_string()))
+        .or_else(|| profile["model"].as_str().map(|model| SavedSelection::LegacyWireModel(model.to_string())));
+    Ok((selection, Some(PathBuf::from(workspace))))
 }
 
 /// Explicit deletion, unlike age-based pruning. The CLI owns the base registry lock throughout this call.

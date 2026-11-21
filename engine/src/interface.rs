@@ -39,7 +39,7 @@ commands! {
     ("approvals", "deny", "--cwd DIR --json --id ID", "--id", "Deny one operation."),
     ("instances", "list", "--cwd DIR --json", "", "List session instances."),
     ("instances", "send", "--cwd DIR --json --id ID --prompt TEXT --after-turn", "--id --prompt", "Send to a member; --after-turn defers delivery until its current turn ends."),
-    ("instances", "model", "--cwd DIR --json --id ID --model KEY --effort LEVEL", "--id", "Change model or effort at the next turn boundary."),
+    ("instances", "model", "--cwd DIR --json --role leader|workers --model KEY --effort LEVEL --follow", "--role", "Select a Leader model/effort or pin all Workers to a key or follow the Leader."),
     ("instances", "resume", "--cwd DIR --json --id ID", "--id", "Resume a parked instance."),
     ("instances", "pause", "--cwd DIR --json --id ID", "--id", "Pause an instance."),
     ("instances", "interrupt", "--cwd DIR --json --id ID", "--id", "Interrupt its running model turn."),
@@ -173,6 +173,13 @@ pub fn validate(args: &Args, flags: &[String], help: bool) -> Result<(), String>
                 "{} {} needs {flag}; use teamagents {} {} --help",
                 command.name, command.verb, command.name, command.verb
             ));
+        }
+    }
+    if (command.name, command.verb) == ("instances", "model") {
+        match args.role.as_deref() {
+            Some("leader") if !args.follow && (args.model.is_some() || args.effort.is_some()) => {},
+            Some("workers") if args.effort.is_none() && (args.model.is_some() != args.follow) => {},
+            _ => return Err("use --role leader with --model or --effort, or --role workers with exactly one of --model KEY and --follow".into()),
         }
     }
     if command.name == "mcp" {

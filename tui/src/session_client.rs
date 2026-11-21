@@ -247,7 +247,9 @@ fn execute(root: &str, action: &SessionAction, cancel: &AtomicBool) -> Result<Re
             app.session_root = root;
             app.apply_checkpoint(snapshot, watermark);
             app.session_name = if row.id == "default" { "default".into() } else { row.name.clone() };
-            app.apply_history(client.call("history", json!({"instance_id": "i-leader", "limit": 400}))?);
+            if let Some(leader) = app.active_instance() {
+                app.apply_history(client.call("history", json!({"instance_id": leader.id, "limit": 400}))?);
+            }
             app.apply_approvals(client.call("approvals", json!({}))?);
             Ok(Reply::Opened { client, app: Box::new(app) })
         }

@@ -81,6 +81,7 @@ async fn runner_spawn_failure_fails_the_op_and_the_driver_survives() {
         permissions: "full_auto".into(),
         approvals_reviewer: "user".into(),
         reviewer_model: None,
+        catalog_key: Some("scripted".into()),
         profile: KernelProfile {
             images: false,
             tool_output_chars: None,
@@ -96,6 +97,7 @@ async fn runner_spawn_failure_fails_the_op_and_the_driver_survives() {
         },
         provider,
         catalog: UserConfig::default(),
+        catalog_base: None,
         bindings: vec![],
         max_retries: 1,
         storage_queue: 64,

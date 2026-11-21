@@ -868,7 +868,7 @@ fn make_step(harness: &mut Harness, kind: usize) -> Option<Step> {
                 command: Command {
                     command_id: String::new(),
                     method: "create_instance".into(),
-                    params: json!({"id": id, "workspace_ref": "/tmp/ws", "is_leader": ids.is_empty()}),
+                    params: json!({"id": id, "workspace_ref": "/tmp/ws", "is_leader": ids.is_empty(), "profile": if ids.is_empty() {json!({"catalog_key":"fixture/model","model":"fixture/model"})} else {json!({})}}),
                 },
                 identity: Identity::User,
             })
@@ -1799,7 +1799,7 @@ fn enrolled_work_review_and_profile_invariants_hold_over_random_walks() {
                 Command {
                     command_id: id,
                     method: "create_instance".into(),
-                    params: json!({"id":"i1","is_leader":true,"profile":{"model":"m-init","context_window":100000}}),
+                    params: json!({"id":"i1","is_leader":true,"profile":{"model":"m-init","catalog_key":"m-init","context_window":100000}}),
                 },
                 Identity::User,
             )

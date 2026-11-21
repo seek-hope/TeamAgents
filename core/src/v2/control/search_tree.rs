@@ -742,7 +742,8 @@ mod tests {
                 crate::v2::Command {
                     command_id: "create-leader".into(),
                     method: "create_instance".into(),
-                    params: json!({"id":LEADER,"is_leader":true}),
+                    params: json!({"id":LEADER,"is_leader":true,
+                        "profile":{"model":"fixture/model","catalog_key":"fixture/model"}}),
                 },
                 Identity::User,
             )
@@ -838,8 +839,15 @@ mod tests {
         let submit = |control: &mut crate::v2::Control, id: &str, method: &str, params: Json, identity: Identity| {
             control.submit(crate::v2::Command { command_id: id.into(), method: method.into(), params }, identity)
         };
-        submit(&mut control, "create-leader", "create_instance", json!({"id":LEADER,"is_leader":true}), Identity::User)
-            .unwrap();
+        submit(
+            &mut control,
+            "create-leader",
+            "create_instance",
+            json!({"id":LEADER,"is_leader":true,
+            "profile":{"model":"fixture/model","catalog_key":"fixture/model"}}),
+            Identity::User,
+        )
+        .unwrap();
         submit(&mut control, "create-member", "create_instance", json!({"id":"i-member"}), Identity::User).unwrap();
         submit(
             &mut control,

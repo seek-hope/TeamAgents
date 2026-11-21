@@ -259,16 +259,17 @@ fn run_v2_effect(effect: V2Effect, client: &mut DaemonClient, app: &mut V2App, s
         }
         V2Effect::Queue(action) => {
             use teamagents_tui::queue::Action;
+            let Some(leader) = app.active_instance().map(|i| i.id.clone()) else { return };
             let result = match &action {
                 Action::List { after } => {
-                    client.call("inputs", json!({"instance_id":"i-leader", "after":after, "limit":20}))
+                    client.call("inputs", json!({"instance_id":leader, "after":after, "limit":20}))
                 }
                 Action::Revise { envelope, revision, text, command_id } => {
                     let method = if text.is_some() { "edit_input" } else { "cancel_input" };
                     client.command(
                         command_id,
                         method,
-                        json!({"instance_id":"i-leader", "envelope_id":envelope, "revision":revision, "text":text}),
+                        json!({"instance_id":leader, "envelope_id":envelope, "revision":revision, "text":text}),
                     )
                 }
             };
@@ -280,7 +281,7 @@ fn run_v2_effect(effect: V2Effect, client: &mut DaemonClient, app: &mut V2App, s
                             queue.apply(&reply);
                         } else {
                             queue.saved();
-                            match client.call("inputs", json!({"instance_id":"i-leader", "limit":20})) {
+                            match client.call("inputs", json!({"instance_id":leader, "limit":20})) {
                                 Ok(reply) => queue.apply(&reply),
                                 Err(error) => queue.fail(error),
                             }
@@ -356,29 +357,29 @@ fn run_v2_effect(effect: V2Effect, client: &mut DaemonClient, app: &mut V2App, s
             Ok(reply) => app.command_note(reply["text"].as_str().unwrap_or("Session search tree is unavailable")),
             Err(error) => app.command_failed(&error),
         },
-        V2Effect::SetProfile { instance, model, effort } => {
-            let mut params = json!({"instance_id": instance});
+        V2Effect::SetRoleProfile { role, model, effort, follow } => {
+            let mut params = json!({"role": match role {
+                teamagents_tui::v2app::ProfileRole::Leader => "leader",
+                teamagents_tui::v2app::ProfileRole::Workers => "workers",
+            }});
+            if follow {
+                params["follow"] = json!(true);
+            }
             if let Some(model) = model {
                 params["model"] = json!(model);
             }
             if let Some(effort) = effort {
                 params["effort"] = json!(effort);
             }
-            match client.command(&format!("profile-{}", uuid::Uuid::new_v4()), "set_instance_profile", params) {
+            match client.command(&format!("profile-{}", uuid::Uuid::new_v4()), "set_role_model", params) {
                 Ok(reply) => {
-                    app.command_note(format!(
-                        "Profile: model {} · effort {}. It applies at the next turn; an in-flight turn keeps \
-                         its profile.",
-                        reply["model"].as_str().unwrap_or("?"),
-                        reply["effort"].as_str().unwrap_or("?")
-                    ));
+                    app.command_note(format!("Role profile updated: {}", reply));
                     v2_sync_checkpoint(client, app);
                 }
                 Err(error) => app.command_note(format!("The profile change was refused: {error}")),
             }
         }
-        V2Effect::EditDraft { .. } => {}
-        V2Effect::Quit => {}
+        V2Effect::EditDraft { .. } | V2Effect::Quit => {}
     }
 }
 

@@ -124,6 +124,7 @@ fn config(root: &Path, provider: ScriptedProvider, policy: &str) -> DriverConfig
         permissions: "full_auto".into(),
         approvals_reviewer: "user".into(),
         reviewer_model: None,
+        catalog_key: Some("scripted".into()),
         profile: KernelProfile {
             images: false,
             tool_output_chars: None,
@@ -136,6 +137,7 @@ fn config(root: &Path, provider: ScriptedProvider, policy: &str) -> DriverConfig
         },
         provider,
         catalog,
+        catalog_base: None,
         bindings: vec![],
         max_retries: 1,
         storage_queue: 64,

@@ -60,8 +60,9 @@ the host. Retired sandbox keys are rejected rather than silently converted into 
 
 `init` does not merge new settings into an existing config; review and edit it explicitly.
 
-The current database is **schema 9**. Migration preserves existing work/history, derives the Leader role and adds
-the session exploration-tree projection. An unexpected pre-existing tree table is refused without modifying the
+The current database is **schema 10**. The 9→10 migration preserves instance profiles, work, history and prepared
+requests. A store with live Workers needs an explicit shared model decision; other stores start in follow mode.
+Earlier migrations derive the Leader role and add the session exploration-tree projection. An unexpected pre-existing tree table is refused without modifying the
 original store. Older writers cannot reopen the migrated database. A binary rollback alone is not a database
 rollback; retain a pre-upgrade backup if rollback matters.
 

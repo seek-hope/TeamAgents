@@ -2267,12 +2267,16 @@ fn an_unbootable_instance_parks_itself_and_the_session_survives() {
         serde_json::from_str::<serde_json::Value>(&line).expect("reply JSON")
     };
 
-    // an instance whose model is not in the catalog, given work to do
+    // Pin Workers to the configured exact key. Its endpoint is intentionally
+    // unavailable, so the Worker parks through the classified failure path.
+    let selected =
+        command("c-select-broken", "set_role_model", serde_json::json!({"role":"workers", "model":"leader_main"}));
+    assert_eq!(selected["ok"], true, "{selected}");
     let broken = command(
         "c-bad",
         "create_instance",
         serde_json::json!({"id": "i-broken", "workspace_ref": ws.to_string_lossy(),
-                           "profile": {"model": "gpt-9", "instructions": "never boots"}}),
+                           "profile": {"instructions": "never boots"}}),
     );
     assert_eq!(broken["ok"], true, "{broken}");
     command("c-work", "create_work", serde_json::json!({"id": "g-broken", "instance_id": "i-broken"}));
@@ -2316,7 +2320,7 @@ fn an_unbootable_instance_parks_itself_and_the_session_survives() {
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
     assert!(parked, "the unbootable instance parks itself through the classified path");
-    assert!(reason.contains("gpt-9"), "the reason names the model: {reason:?}");
+    assert!(!reason.is_empty(), "the classified failure records a reason: {reason:?}");
     daemon_guard.stop();
     std::fs::remove_dir_all(&root).expect("the state root goes away with its daemon");
 }
@@ -2464,7 +2468,7 @@ fn the_authority_surface_grants_and_revokes_through_the_daemon() {
         "a-spawn",
         "spawn_instance",
         serde_json::json!({"instance_id": "i-worker-1", "workspace_ref": ws.to_string_lossy(),
-                           "profile": {"model": "leader_main", "instructions": "helper"}}),
+                           "profile": {"instructions": "helper"}}),
     );
     assert_eq!(spawned["ok"], true, "{spawned}");
     let holds_shell = |rpc: &mut Rpc| {

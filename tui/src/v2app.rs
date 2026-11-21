@@ -83,14 +83,31 @@ pub struct ModelInfo {
     pub efforts: Vec<String>,
 }
 
-/// The Ctrl+M menu: the Leader's model and reasoning effort, applied at the next turn.
+/// Select a Leader model and effort or a shared Worker model policy.
 #[derive(Clone, Debug)]
 pub struct ProfileMenu {
+    pub role: ProfileRole,
     pub instance: String,
+    pub all_models: Vec<ModelInfo>,
     pub models: Vec<ModelInfo>,
+    pub search: String,
     pub efforts: Vec<String>,
     pub model_ix: usize,
     pub effort_ix: usize,
+    pub workers_mode: WorkersMode,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProfileRole {
+    Leader,
+    Workers,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorkersMode {
+    Unresolved,
+    Follow,
+    Pinned,
 }
 
 /// The built-in order used when a model declares no `efforts` list (D-476).
@@ -141,6 +158,26 @@ fn select_model(menu: &mut ProfileMenu, index: usize, fallback: &[String]) {
     menu.model_ix = index;
     menu.efforts = model_efforts(&menu.models[index], fallback);
     menu.effort_ix = effort_index(&menu.efforts, &current);
+}
+
+fn filter_models(menu: &mut ProfileMenu, fallback: &[String]) {
+    let selected = menu.models.get(menu.model_ix).map(|model| model.key.clone());
+    let query = menu.search.to_ascii_lowercase();
+    menu.models = menu
+        .all_models
+        .iter()
+        .filter(|model| {
+            query.is_empty()
+                || model.key.to_ascii_lowercase().contains(&query)
+                || model.model.to_ascii_lowercase().contains(&query)
+                || model.provider.to_ascii_lowercase().contains(&query)
+        })
+        .cloned()
+        .collect();
+    let index = selected.and_then(|key| menu.models.iter().position(|model| model.key == key)).unwrap_or(0);
+    if !menu.models.is_empty() {
+        select_model(menu, index, fallback);
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -196,11 +233,11 @@ pub enum V2Effect {
     Interrupt {
         instance: String,
     },
-    /// D-473: change the Leader's model/effort; the control plane applies it at the next READY/WAITING boundary.
-    SetProfile {
-        instance: String,
+    SetRoleProfile {
+        role: ProfileRole,
         model: Option<String>,
         effort: Option<String>,
+        follow: bool,
     },
     Quit,
 }
@@ -224,6 +261,9 @@ pub struct V2App {
     pub queue: Option<crate::queue::Queue>,
     /// D-473: the daemon's `[models]` catalog and the open profile menu.
     pub models: Vec<ModelInfo>,
+    pub leader_catalog_key: String,
+    pub worker_policy_mode: String,
+    pub worker_catalog_key: String,
     pub efforts: Vec<String>,
     pub profile: Option<ProfileMenu>,
     pub help_open: bool,
@@ -271,6 +311,9 @@ impl V2App {
             browser: None,
             queue: None,
             models: vec![],
+            leader_catalog_key: String::new(),
+            worker_policy_mode: "follow".into(),
+            worker_catalog_key: String::new(),
             efforts: default_efforts(),
             profile: None,
             help_open: false,
@@ -306,7 +349,7 @@ impl V2App {
     }
 
     pub fn active_instance(&self) -> Option<&InstanceInfo> {
-        self.instances.iter().find(|instance| instance.id == "i-leader")
+        self.instances.iter().find(|instance| instance.id == self.team.leader_id)
     }
 
     /// Replace the transient streaming previews from the daemon's `previews` read (§9). Empty text is not stored,
@@ -448,6 +491,10 @@ impl V2App {
                     .map(|text| text.trim().to_string()),
             })
         });
+        let role_models = &snapshot["role_models"];
+        self.leader_catalog_key = role_models["leader"].as_str().unwrap_or("").to_string();
+        self.worker_policy_mode = role_models["workers"]["mode"].as_str().unwrap_or("follow").to_string();
+        self.worker_catalog_key = role_models["workers"]["key"].as_str().unwrap_or("").to_string();
         if let Some(rows) = snapshot["models"].as_array() {
             self.models = rows
                 .iter()
@@ -504,7 +551,7 @@ impl V2App {
         }
         let rebuilt = crate::transcript::project_with_receipts(
             history["entries"].as_array().map(Vec::as_slice).unwrap_or(&[]),
-            "i-leader",
+            &self.team.leader_id,
             true,
             &mut receipts,
         );
@@ -929,27 +976,28 @@ impl V2App {
         Some(V2Effect::Sessions(crate::sessions::SessionAction::List))
     }
 
-    /// D-473: the Leader's model/effort menu. The catalog comes from the checkpoint; a daemon that does not
-    /// report one still offers the current model so the effort can be changed.
+    /// Edit the role selection locally; only a confirmed catalogue row becomes a command.
     fn open_profile(&mut self) -> Option<V2Effect> {
         let Some(leader) = self.active_instance().cloned() else {
             self.command_note("No Leader is connected, so there is no profile to change.");
             return None;
         };
-        let mut models = self.models.clone();
-        if models.is_empty() {
-            models.push(ModelInfo {
-                key: leader.model.clone(),
-                model: leader.model.clone(),
-                provider: String::new(),
-                efforts: vec![],
-            });
-        }
-        let model_ix =
-            models.iter().position(|model| model.key == leader.model || model.model == leader.model).unwrap_or(0);
-        let efforts = model_efforts(&models[model_ix], &self.efforts);
+        let models = self.models.clone();
+        let current = if self.leader_catalog_key.is_empty() { &leader.model } else { &self.leader_catalog_key };
+        let model_ix = models.iter().position(|model| &model.key == current).unwrap_or(0);
+        let efforts = models.get(model_ix).map(|m| model_efforts(m, &self.efforts)).unwrap_or_default();
         let effort_ix = effort_index(&efforts, &leader.effort);
-        self.profile = Some(ProfileMenu { instance: leader.id, models, efforts, model_ix, effort_ix });
+        self.profile = Some(ProfileMenu {
+            role: ProfileRole::Leader,
+            instance: leader.id,
+            all_models: models.clone(),
+            models,
+            search: String::new(),
+            efforts,
+            model_ix,
+            effort_ix,
+            workers_mode: WorkersMode::Pinned,
+        });
         None
     }
 
@@ -966,28 +1014,93 @@ impl V2App {
                 None
             }
             KeyCode::Up => {
+                if menu.models.is_empty() {
+                    return None;
+                }
                 let index = (menu.model_ix + menu.models.len() - 1) % menu.models.len();
                 select_model(menu, index, &fallback);
                 None
             }
             KeyCode::Down => {
+                if menu.models.is_empty() {
+                    return None;
+                }
                 let index = (menu.model_ix + 1) % menu.models.len();
                 select_model(menu, index, &fallback);
                 None
             }
-            KeyCode::Left => {
-                menu.effort_ix = (menu.effort_ix + menu.efforts.len() - 1) % menu.efforts.len();
+            KeyCode::Tab if key.kind == crossterm::event::KeyEventKind::Press => {
+                menu.search.clear();
+                menu.models.clone_from(&menu.all_models);
+                menu.role = match menu.role {
+                    ProfileRole::Leader => ProfileRole::Workers,
+                    ProfileRole::Workers => ProfileRole::Leader,
+                };
+                menu.workers_mode = match self.worker_policy_mode.as_str() {
+                    "follow" => WorkersMode::Follow,
+                    "pinned" => WorkersMode::Pinned,
+                    _ => WorkersMode::Unresolved,
+                };
+                let key = if menu.role == ProfileRole::Workers && menu.workers_mode == WorkersMode::Pinned {
+                    &self.worker_catalog_key
+                } else {
+                    &self.leader_catalog_key
+                };
+                if !menu.models.is_empty() {
+                    let index = menu.models.iter().position(|m| &m.key == key).unwrap_or(0);
+                    select_model(menu, index, &fallback);
+                }
+                if menu.role == ProfileRole::Leader {
+                    let effort =
+                        self.instances.iter().find(|i| i.id == menu.instance).map(|i| i.effort.as_str()).unwrap_or("");
+                    menu.effort_ix = effort_index(&menu.efforts, effort);
+                }
                 None
             }
-            KeyCode::Right => {
-                menu.effort_ix = (menu.effort_ix + 1) % menu.efforts.len();
+            KeyCode::Left | KeyCode::Right if menu.role == ProfileRole::Workers => {
+                menu.workers_mode = if key.code == KeyCode::Left { WorkersMode::Follow } else { WorkersMode::Pinned };
+                None
+            }
+            KeyCode::Left | KeyCode::Right if !menu.efforts.is_empty() => {
+                let len = menu.efforts.len();
+                menu.effort_ix = (menu.effort_ix + if key.code == KeyCode::Left { len - 1 } else { 1 }) % len;
+                None
+            }
+            KeyCode::Char(c) if !c.is_control() => {
+                menu.search.push(c);
+                filter_models(menu, &fallback);
+                None
+            }
+            KeyCode::Backspace => {
+                menu.search.pop();
+                filter_models(menu, &fallback);
                 None
             }
             KeyCode::Enter => {
-                let menu = self.profile.take()?;
                 let model = menu.models.get(menu.model_ix)?.key.clone();
-                let effort = menu.efforts.get(menu.effort_ix)?.clone();
-                Some(V2Effect::SetProfile { instance: menu.instance, model: Some(model), effort: Some(effort) })
+                let effect = match menu.role {
+                    ProfileRole::Leader => V2Effect::SetRoleProfile {
+                        role: menu.role,
+                        model: Some(model),
+                        effort: Some(menu.efforts.get(menu.effort_ix)?.clone()),
+                        follow: false,
+                    },
+                    ProfileRole::Workers => match menu.workers_mode {
+                        WorkersMode::Unresolved => return None,
+                        WorkersMode::Follow if self.leader_catalog_key.is_empty() => return None,
+                        WorkersMode::Follow => {
+                            V2Effect::SetRoleProfile { role: menu.role, model: None, effort: None, follow: true }
+                        }
+                        WorkersMode::Pinned => V2Effect::SetRoleProfile {
+                            role: menu.role,
+                            model: Some(model),
+                            effort: None,
+                            follow: false,
+                        },
+                    },
+                };
+                self.profile = None;
+                Some(effect)
             }
             _ => None,
         }
@@ -1098,7 +1211,7 @@ Cancelling a task does not stop its command. To stop executing work, use teamage
 Keep the same --state-root/--session; SSH remote processes may need separate cleanup.
 Ctrl+S or /sessions opens session history, switching and confirmed deletion; / searches stored messages.
 Ctrl+P or /queue shows pending Leader inputs; Enter edits, Delete asks to cancel, Esc returns to the draft.
-Ctrl+M or /model changes the Leader's model and reasoning effort at its next turn.
+Ctrl+M or /model selects the Leader model and effort or the shared Worker model policy.
 /attach PATH stages a workspace file; @PATH then Tab offers Grok-style file references. Enter accepts.
 /detach INDEX removes a staged attachment.
 Attachments: eight files, 1 MiB UTF-8 text or 5 MiB PNG/JPEG/GIF/WebP, 16 MiB total; symlinks are refused.
@@ -1404,7 +1517,7 @@ Commands:
         let wait = self
             .work_diagnostics
             .iter()
-            .find(|(id, d)| id == "i-leader" && d["code"] == "waiting")
+            .find(|(id, d)| id == &self.team.leader_id && d["code"] == "waiting")
             .map(|(_, d)| format!(" · {} · /help", d["summary"].as_str().unwrap_or("")))
             .unwrap_or_default();
         format!("{state}{usage}{deadline}{wait}")

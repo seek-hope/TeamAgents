@@ -45,7 +45,7 @@ make verify-model-counterexamples
 make verify-witnesses
 make verify-kani
 ```
-Current source inventory (2026-11-16): **868 Rust tests** (core 198 / engine 549 / tui 121), **63 positive TLA configurations in 60
+Current source inventory (2026-11-16): **874 Rust tests** (core 201 / engine 551 / tui 122), **63 positive TLA configurations in 60
 traversals**, **323 controls**, **79 witnesses**, **9 Kani harnesses**, and **387 configurations across 47
 modules**. Current acceptance covers the full local gate, source/installed PTY matrices, 18 offline probes,
 x86_64 musl release/install and scripted profile/fetch checks, plus a separate live Fetch API check.
@@ -60,7 +60,7 @@ window is for scripted regression only.
 
 - Single team-transaction entry: `core/src/v2/control.rs::Control::submit` (ingest, validate, reduce and persist
   in one SQLite transaction). Identity, operation ids and permission revisions come from the control plane.
-- Authoritative state: `core/src/v2/store.rs` with WAL and explicit `synchronous=FULL`; schema 9 and explicit
+- Authoritative state: `core/src/v2/store.rs` with WAL and explicit `synchronous=FULL`; schema 10 and explicit
   migration. In-process callers serialize through `engine/src/v2/storage.rs`.
 - Execution: `engine/src/v2/driver.rs` and `engine/src/v2/supervisor.rs`. Model and tool waits happen outside
   transactions. Shell commands run through `engine/src/jobs`.

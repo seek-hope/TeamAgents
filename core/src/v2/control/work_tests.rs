@@ -325,7 +325,8 @@ fn autonomy_fork_preserves_pending_cost_policy_and_user_stop() {
     let fork_path = db_path("work-fork-copy");
     store::fork_database(&path, &fork_path).unwrap();
     let mut copy = Control::open(&fork_path, "s1", false).unwrap();
-    copy.submit(cmd("fork", "fork_reset", json!({"keep_instance":"i1"})), Identity::User).unwrap();
+    assert!(copy.submit(cmd("wrong", "fork_reset", json!({"keep_instance":"i-leader"})), Identity::User).is_err());
+    assert_eq!(copy.submit(cmd("fork", "fork_reset", json!({})), Identity::User).unwrap()["kept_instance"], "i1");
     assert_eq!(load_instance(copy.connection(), "i1").unwrap().2, "PARKED");
     assert_eq!(work_state(copy.connection(), "i1").unwrap()["carried_usage"]["total"], 15);
     copy.submit(
@@ -501,7 +502,7 @@ fn autonomy_cancelled_execution_blocks_shared_takeover_until_observed_stopped() 
     assert_eq!(blocked["status"], "WORKSPACE_BUSY");
     assert_eq!(blocked["blocker"]["operation_id"], "d-old-worker:0");
     ctl.submit(
-        cmd("isolated", "create_instance", json!({"id":"i3","workspace_ref":"/tmp/independent-work"})),
+        cmd("isolated", "create_instance", json!({"id":"i3","workspace_ref":"/tmp/independent-work", "profile":{}})),
         Identity::User,
     )
     .unwrap();

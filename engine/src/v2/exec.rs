@@ -1405,16 +1405,12 @@ fn write_verification(state_root: &str, verification: &[Json]) -> Option<String>
     }
 }
 
-/// The session's leader instance and its lifecycle: the conventional id first,
-/// then any ACTIVE instance (a fresh session boots exactly one).
+/// Route headless input to the persisted role, including when its lifecycle would prevent execution.
 fn leader_instance(checkpoint: &Json) -> Option<(String, String)> {
-    // the daemon's checkpoint wraps the read snapshot: {"snapshot": {…}}
-    let instances = checkpoint["snapshot"]["instances"].as_array().or_else(|| checkpoint["instances"].as_array())?;
-    let entry = instances
-        .iter()
-        .find(|entry| entry["id"] == json!("i-leader"))
-        .or_else(|| instances.iter().find(|entry| entry["lifecycle"] == json!("ACTIVE")))?;
-    Some((entry["id"].as_str()?.to_string(), entry["lifecycle"].as_str().unwrap_or("UNKNOWN").to_string()))
+    let snapshot = checkpoint.get("snapshot").unwrap_or(checkpoint);
+    let id = snapshot["role_models"]["leader_id"].as_str()?;
+    let entry = snapshot["instances"].as_array()?.iter().find(|e| e["id"].as_str() == Some(id))?;
+    Some((id.to_string(), entry["lifecycle"].as_str()?.to_string()))
 }
 
 #[cfg(test)]
@@ -1552,18 +1548,11 @@ mod tests {
     }
 
     #[test]
-    fn the_leader_instance_prefers_the_conventional_id() {
-        let checkpoint = json!({"instances": [
-            {"id": "i-worker", "lifecycle": "ACTIVE"},
-            {"id": "i-leader", "lifecycle": "PARKED"},
-        ]});
-        // the conventional id wins, and its lifecycle travels with it so the
-        // caller can see that this leader would not run anything
-        assert_eq!(leader_instance(&checkpoint), Some(("i-leader".to_string(), "PARKED".to_string())));
-        let only = json!({"instances": [{"id": "i-other", "lifecycle": "ACTIVE"}]});
-        assert_eq!(leader_instance(&only), Some(("i-other".to_string(), "ACTIVE".to_string())));
-        let none = json!({"instances": [{"id": "i-x", "lifecycle": "TERMINATED"}]});
-        assert_eq!(leader_instance(&none), None);
+    fn headless_input_requires_the_persisted_leader_even_when_a_worker_is_active() {
+        let mut snapshot = json!({"role_models":{"leader_id":"owner"},"instances":[{"id":"i-leader","lifecycle":"ACTIVE"},{"id":"owner","lifecycle":"PARKED"}]});
+        assert_eq!(leader_instance(&snapshot), Some(("owner".into(), "PARKED".into())));
+        snapshot["role_models"] = Json::Null;
+        assert_eq!(leader_instance(&snapshot), None);
     }
 
     /// D-270: the advisory's predicate is the delegation's own — an ACTIVE work *attached* to the leader — and it
