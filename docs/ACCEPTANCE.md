@@ -15,9 +15,13 @@ with two entries sharing a wire name. In a separate isolated check, the schema-9
 refused to open a migrated, checkpointed schema-10 store for writing; its database file was unchanged. See
 `tools/tmp/d529/upgraded-writer-refusal.log`. The local `make check` passed all 874 Rust tests and the\nrepository audits. These are not live-provider, installed-binary or rollback tests.
 
-Installed CLI and TUI source: `e1d49e2b90f3f23711b76ff818e8e25e5101d947`. Both binaries match the SHA-256
-receipt in the private `teamagents-install-e1d49e2b-eEBvF7` installation directory. The workflow changes
-in this working tree have not been installed. The earlier package baseline described below is
+Installed CLI and TUI source: `82533938e376e78d7d20d7510a2d7fa217c55fda` (version 0.2.0, x86_64 Linux
+musl). Both binaries match the locally built archive. The private `teamagents-install-82533938-mmjVi3`
+directory under the local state home contains the package, the previous binary pair in `backup/`, and
+`installed.sha256`. The installed CLI passed isolated doctor and switched two same-wire entries from pin
+to follow in a disposable schema-10 session with zero model requests. The installed TUI passed the
+xterm-256color PTY smoke. This did not exercise live providers, migrate a user database, restart any
+existing daemon, publish a release, or repeat the full installed PTY matrix. The earlier package baseline is
 `d96d7c8acf54b951030140f076540cbb730f88ab`. Delivery CI at
 `6767b32c4a35fb71c476ca7fb81858d127ba4905` passed `test`, `test-aarch64`, `formal-tla` and `formal-kani`:
 [run 43812934865](https://github.com/seek-hope/TeamAgents/actions/runs/43812934865).
@@ -38,7 +42,7 @@ The catalogue contains 387 configurations across 47 modules, including the
 separate wide configuration. PTY covers five terminal profiles and both forced graphics modes; this is not a
 complete graphical-terminal or OS matrix.
 
-## Staged workflow evidence (not installed)
+## Source workflow checks (not installed or live-service tests)
 
 - Two loopback Gemini protocol tests cover signed tool continuation, images, usage and refusal of incomplete
   calls. Separate supervisor tests switch recipients sharing a wire model name and check that a same-protocol

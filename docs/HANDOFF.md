@@ -6,11 +6,12 @@ The project is a standalone Rust control plane, runtime and team TUI. Read [DESI
 Q1–Q19/A01–A36 baseline, [DECISIONS.md](DECISIONS.md) for current contracts and [ACCEPTANCE.md](ACCEPTANCE.md)
 for exact source-bound evidence. Git retains implementation and experiment history; do not recreate a changelog here.
 
-Installed CLI and TUI source: `e1d49e2b`. Both installed hashes match the private installation receipt.
-D-529 adds session-level Leader and Worker model selection; an upgraded schema 10 database needs its
-pre-upgrade backup for a rollback to an older writer. The uninstalled working tree includes native Gemini
-API-key transport, versioned model directories, explicit
-endpoint switching, scoped CodeGraph discovery and user-confirmed local-router management. The provider,
+Installed CLI and TUI source: `82533938`. Both installed files match the local musl package; the backup and
+checksums are recorded in [ACCEPTANCE.md](ACCEPTANCE.md). D-529 adds session-level Leader and Worker model
+selection. No user session was opened or restarted during installation. Back up an existing session before
+its first schema 10 writer if rollback is required. The build also includes native Gemini API-key transport,
+versioned model directories, explicit endpoint switching, scoped CodeGraph discovery and user-confirmed
+local-router management. The provider,
 directory and local-router tests use loopback fixtures. The `codegraph_probe` engine example uses a real
 indexed workspace. Neither requires a personal model login. The directory timer is opt-in.
 
