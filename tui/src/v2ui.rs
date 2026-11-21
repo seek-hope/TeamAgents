@@ -9,7 +9,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Scrollbar, 
 use ratatui::Frame;
 
 use crate::theme::*;
-use crate::v2app::{Focus, V2App};
+use crate::v2app::{Focus, ProfileMenu, V2App, V2Effect};
 use crate::viewport::{item_at, window};
 
 /// Shared quiet panel chrome; focus is identified by the border and selected row.
@@ -118,8 +118,37 @@ pub fn approval_at(geo: &V2Geometry, app: &V2App, row: u16, col: u16) -> Option<
     item_at(app.approvals.len(), app.approval_sel, area.height.saturating_sub(2) as usize, index)
 }
 
+fn model_button(composer: Rect) -> Rect {
+    if composer.width < 32 || composer.height < 3 {
+        return Rect::default();
+    }
+    Rect::new(composer.right() - 10, composer.y, 7, 1)
+}
+
+struct ModelDialog {
+    popup: Rect,
+    list: Rect,
+    save: Rect,
+    back: Rect,
+}
+
+impl ModelDialog {
+    fn new(area: Rect, menu: &ProfileMenu) -> Self {
+        let popup = dialog_area(area, 76, (menu.models.len().clamp(1, 8) + 8) as u16);
+        let inner = popup.inner(ratatui::layout::Margin::new(1, 1));
+        // On short screens keep the selected row visible before showing the settings hints.
+        let rows = inner.height.saturating_sub(5).max(1).min(inner.height.saturating_sub(2));
+        let list = Rect::new(inner.x, inner.y.saturating_add(1), inner.width, rows);
+        let buttons = Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, u16::from(inner.height >= 3));
+        let save = Rect::new(buttons.x, buttons.y, buttons.width.min(6), buttons.height);
+        let back =
+            Rect::new(buttons.x.saturating_add(8), buttons.y, buttons.width.saturating_sub(8).min(6), buttons.height);
+        Self { popup, list, save, back }
+    }
+}
+
 /// Pointer routing uses the rendered rectangles; selecting an approval never decides it.
-pub fn handle_mouse(app: &mut V2App, area: Rect, mouse: crossterm::event::MouseEvent) {
+pub fn handle_mouse(app: &mut V2App, area: Rect, mouse: crossterm::event::MouseEvent) -> Option<V2Effect> {
     use crossterm::event::{MouseButton, MouseEventKind};
     if app.help_open {
         match mouse.kind {
@@ -127,13 +156,46 @@ pub fn handle_mouse(app: &mut V2App, area: Rect, mouse: crossterm::event::MouseE
             MouseEventKind::ScrollDown => app.help_scroll = app.help_scroll.saturating_add(3),
             _ => {}
         }
-        return;
+        return None;
     }
-    if app.queue.is_some() || app.profile.is_some() {
-        return;
+    if app.queue.is_some() {
+        return None;
+    }
+    let point = ratatui::layout::Position::new(mouse.column, mouse.row);
+    let clicked = mouse.kind == MouseEventKind::Down(MouseButton::Left);
+    if let Some(menu) = &mut app.profile {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let dialog = ModelDialog::new(area, menu);
+        let key = if clicked && dialog.save.contains(point) {
+            KeyCode::Enter
+        } else if clicked && dialog.back.contains(point) {
+            KeyCode::Esc
+        } else if dialog.list.contains(point) {
+            match mouse.kind {
+                MouseEventKind::ScrollDown => KeyCode::Down,
+                MouseEventKind::ScrollUp => KeyCode::Up,
+                MouseEventKind::Down(MouseButton::Left) => {
+                    if let Some(index) = item_at(
+                        menu.models.len(),
+                        menu.model_ix,
+                        dialog.list.height as usize,
+                        (point.y - dialog.list.y) as usize,
+                    ) {
+                        crate::v2app::select_model(menu, index, &app.efforts);
+                    }
+                    return None;
+                }
+                _ => return None,
+            }
+        } else {
+            return None;
+        };
+        return app.handle_key(KeyEvent::new(key, KeyModifiers::NONE));
     }
     let geo = geometry(app, area);
-    let point = ratatui::layout::Position::new(mouse.column, mouse.row);
+    if clicked && model_button(geo.composer).contains(point) {
+        return app.open_profile();
+    }
     match mouse.kind {
         MouseEventKind::Down(MouseButton::Left) => {
             if let Some(index) = approval_at(&geo, app, mouse.row, mouse.column) {
@@ -189,6 +251,7 @@ pub fn handle_mouse(app: &mut V2App, area: Rect, mouse: crossterm::event::MouseE
         }
         _ => {}
     }
+    None
 }
 
 pub fn render(frame: &mut Frame, app: &mut V2App) {
@@ -250,51 +313,56 @@ fn render_content(frame: &mut Frame, app: &mut V2App) {
 fn render_profile(frame: &mut Frame, app: &V2App, area: Rect) {
     let Some(menu) = &app.profile else { return };
     let title = match menu.role {
-        crate::v2app::ProfileRole::Leader => "Leader model & effort",
-        crate::v2app::ProfileRole::Workers => "Worker model policy",
+        crate::v2app::ProfileRole::Leader => "Choose a chat model",
+        crate::v2app::ProfileRole::Workers => "Choose a model for Workers",
     };
-    let popup = dialog_area(area, 76, (menu.models.len().min(7) + 9) as u16);
+    let dialog = ModelDialog::new(area, menu);
+    let popup = dialog.popup;
     frame.render_widget(Clear, popup);
     let block = panel(title).border_style(Style::default().fg(ACCENT));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
     let effort = menu.efforts.get(menu.effort_ix).cloned().unwrap_or_else(|| "?".into());
-    let list_height = inner.height.saturating_sub(5).max(1) as usize;
-    let (start, count) = window(menu.models.len(), menu.model_ix, list_height);
-    let mut lines: Vec<Line<'static>> = vec![Line::from(Span::styled(
-        fit(&format!("role: {:?}  filter: {}", menu.role, menu.search), inner.width as usize),
-        secondary(),
-    ))];
+    let (start, count) = window(menu.models.len(), menu.model_ix, dialog.list.height as usize);
+    let search = if menu.search.is_empty() { "Type a name or provider to search" } else { &menu.search };
+    let mut lines = vec![Line::styled(fit(&format!("Search  {search}"), inner.width as usize), secondary())];
     if menu.models.is_empty() {
-        lines.push(Line::styled("No matching catalogue keys", secondary()));
+        let hint = if menu.all_models.is_empty() {
+            "No models available. Run teamagents doctor."
+        } else {
+            "No matches. Press Ctrl+U to try again."
+        };
+        lines.extend(crate::markdown::plain(hint, inner.width as usize, secondary()));
     }
     lines.extend(menu.models.iter().enumerate().skip(start).take(count).map(|(i, model)| {
-        let label =
-            if model.key == model.model { model.key.clone() } else { format!("{} · {}", model.key, model.model) };
+        let label = model.label(&menu.all_models);
         Line::styled(
             fit(&format!("{} {}", if i == menu.model_ix { ">" } else { " " }, label), inner.width as usize),
             if i == menu.model_ix { selection() } else { secondary() },
         )
     }));
-    let status = if menu.role == crate::v2app::ProfileRole::Leader {
-        format!(
-            "Current: {} · Effort: ‹ {effort} ›",
-            if app.leader_catalog_key.is_empty() { "unknown" } else { &app.leader_catalog_key }
-        )
+    let (current, option, other_role) = if menu.role == crate::v2app::ProfileRole::Leader {
+        (app.model_label(&app.leader_catalog_key), format!("←/→ Thinking effort  {effort}"), "Workers")
     } else {
-        format!("Current: {} {} · Select: {:?}", app.worker_policy_mode, app.worker_catalog_key, menu.workers_mode)
+        let current = match app.worker_policy_mode.as_str() {
+            "follow" => "Same as chat".into(),
+            "pinned" => app.model_label(&app.worker_catalog_key),
+            _ => "".into(),
+        };
+        let option = match menu.workers_mode {
+            crate::v2app::WorkersMode::Follow => "[← Same as chat]   → Use selected model",
+            crate::v2app::WorkersMode::Pinned => "← Same as chat   [→ Use selected model]",
+            crate::v2app::WorkersMode::Unresolved => "← Same as chat   → Use selected model",
+        };
+        (current, option.into(), "chat model")
     };
-    lines.push(Line::styled(fit(&status, inner.width as usize), selection()));
-    lines.extend(crate::markdown::plain(
-        if menu.role == crate::v2app::ProfileRole::Workers {
-            "Tab Leader · ← follow · → pin · type to filter · Enter applies · Esc cancels"
-        } else {
-            "Tab Workers · ←/→ effort · type to filter · Enter applies · Esc cancels"
-        },
-        inner.width as usize,
-        secondary(),
-    ));
+    let current = if current.is_empty() { "Unknown" } else { &current };
+    lines.push(Line::styled(fit(&format!("Currently using  {current}"), inner.width as usize), secondary()));
+    lines.push(Line::styled(fit(&option, inner.width as usize), secondary()));
+    lines.push(Line::styled(format!("Tab for {other_role}"), secondary()));
     frame.render_widget(Paragraph::new(lines), inner);
+    frame.render_widget(Paragraph::new("[Save]").style(selection()), dialog.save);
+    frame.render_widget(Paragraph::new("[Back]").style(secondary()), dialog.back);
 }
 
 fn compact_tokens(value: i64) -> String {
@@ -454,26 +522,11 @@ fn render_chat(frame: &mut Frame, app: &mut V2App, area: Rect) {
     let mut document = crate::graphics::Document::default();
     let lines = &mut document.lines;
     if base.lines.is_empty() && preview.is_none() {
-        lines.push(Line::from(""));
-        lines.push(Line::styled("TeamAgents", Style::default().fg(CODEX).add_modifier(Modifier::BOLD)));
-        lines.push(Line::from(""));
-        lines.extend(crate::markdown::plain(
-            "A persistent coding team in your terminal.",
-            width,
-            Style::default().fg(FG),
-        ));
-        lines.push(Line::from(""));
-        lines.extend(crate::markdown::plain(
-            "Ask the Leader to explore, fix or create something. Work continues when you detach.",
-            width,
-            secondary(),
-        ));
-        lines.push(Line::from(""));
-        lines.extend(crate::markdown::plain(
-            "?  Shortcuts     /  Commands     Ctrl+S  Conversations",
-            width,
-            secondary(),
-        ));
+        lines.push(Line::styled("What would you like to do?", Style::default().fg(CODEX).add_modifier(Modifier::BOLD)));
+        lines.extend(crate::markdown::plain("Type a question below and press Enter.", width, Style::default().fg(FG)));
+        lines.extend(crate::markdown::plain("Try: What does this project do?", width, secondary()));
+        lines.push(Line::default());
+        lines.extend(crate::markdown::plain("/model  Choose a model     ?  Shortcuts", width, secondary()));
         if let Some(workspace) = &workspace {
             lines.push(Line::default());
             lines.extend(crate::markdown::plain(&format!("Workspace  {workspace}"), width, secondary()));
@@ -646,11 +699,12 @@ fn render_composer(frame: &mut Frame, app: &V2App, area: Rect) {
     let block = panel(title).border_style(border(focused));
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    frame.render_widget(Paragraph::new("[Model]").style(Style::default().fg(ACCENT)), model_button(area));
     let prefix_width = if inner.width >= 4 { 2 } else { 0 };
     let (lines, row, col) = app.composer.visual_lines(inner.width.saturating_sub(prefix_width) as usize);
     let (start, count) = window(lines.len(), row, inner.height as usize);
     if app.composer.text().is_empty() {
-        let placeholder = if app.disconnected { "Reconnecting · draft preserved" } else { "Message the Leader…" };
+        let placeholder = if app.disconnected { "Reconnecting · draft preserved" } else { "Type a question…" };
         let mut spans = Vec::new();
         if prefix_width > 0 {
             spans.push(Span::styled("❯ ", Style::default().fg(USER)));
@@ -692,11 +746,12 @@ fn render_composer(frame: &mut Frame, app: &V2App, area: Rect) {
     let reserved = attachment.as_ref().map_or(0, |text| unicode_width::UnicodeWidthStr::width(text.as_str()) + 2);
     if let Some(leader) = app.active_instance() {
         if !leader.model.is_empty() && bottom.width as usize > reserved + 10 {
-            let profile = if leader.effort.is_empty() {
+            let label = if app.leader_catalog_key.is_empty() {
                 leader.model.clone()
             } else {
-                format!("{} · {}", leader.model, leader.effort)
+                app.model_label(&app.leader_catalog_key)
             };
+            let profile = if leader.effort.is_empty() { label } else { format!("{label} · {}", leader.effort) };
             let profile = format!(" {} ", fit(&profile, (bottom.width as usize).saturating_sub(reserved + 2)));
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(profile, secondary()))).alignment(Alignment::Right),

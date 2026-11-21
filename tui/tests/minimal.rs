@@ -157,19 +157,32 @@ fn role_menu_filters_same_wire_keys_and_submits_only_on_confirmation() {
                 {"key":"b","provider":"second-provider","model":"wire","efforts":["high"]}]}),
         3,
     );
+    assert_eq!(app.model_label("b"), "wire(second-provider)");
+    assert_eq!(app.model_label("missing"), "missing");
     assert_eq!(app.team.selected, "owner");
     assert_eq!(app.team.rows[0]["id"], "owner");
     app.team.select("i-leader");
     assert_eq!(app.team.member.as_ref().unwrap().id, "i-leader");
     app.handle_key(ctrl('m'));
     assert_eq!(app.profile.as_ref().unwrap().model_ix, 1);
+    let mut short = Terminal::new(TestBackend::new(44, 8)).unwrap();
+    short.draw(|f| v2ui::render(f, &mut app)).unwrap();
+    let shown: String = short.backend().buffer().content.iter().map(|cell| cell.symbol()).collect();
+    assert!(shown.contains("> wire(second-provider)"));
     assert!(app.handle_key(key(KeyCode::Tab)).is_none());
     let menu = app.profile.as_ref().unwrap();
     assert_eq!((menu.role, menu.workers_mode, menu.model_ix), (ProfileRole::Workers, WorkersMode::Pinned, 0));
+    app.paste_model_search("SECOND-PROVIDER wire");
+    assert_eq!(app.profile.as_ref().unwrap().models[0].key, "b");
+    assert!(app.handle_key(ctrl('u')).is_none());
     for c in "wirex".chars() {
         assert!(app.handle_key(key(KeyCode::Char(c))).is_none());
     }
     assert!(app.profile.as_ref().unwrap().models.is_empty());
+    let mut terminal = Terminal::new(TestBackend::new(48, 16)).unwrap();
+    terminal.draw(|frame| v2ui::render(frame, &mut app)).unwrap();
+    let screen: String = terminal.backend().buffer().content.iter().map(|c| c.symbol()).collect();
+    assert!(screen.contains("No matches. Press Ctrl+U to try again."));
     assert!(app.handle_key(key(KeyCode::Enter)).is_none());
     assert!(app.handle_key(key(KeyCode::Backspace)).is_none());
     assert_eq!(app.profile.as_ref().unwrap().models.len(), 2);
@@ -195,6 +208,15 @@ fn role_menu_filters_same_wire_keys_and_submits_only_on_confirmation() {
         app.handle_key(key(KeyCode::Enter)),
         Some(V2Effect::SetRoleProfile { role: ProfileRole::Workers, model: None, effort: None, follow: true })
     );
+
+    app.models[0].provider = app.models[1].provider.clone();
+    assert_eq!(app.model_label("a"), "wire(second-provider) [a]");
+    assert_eq!(app.model_label("b"), "wire(second-provider) [b]");
+    app.handle_key(ctrl('m'));
+    app.paste_model_search("wire(second-provider) [a]");
+    let menu = app.profile.as_ref().unwrap();
+    assert_eq!(menu.models.len(), 1);
+    assert_eq!(menu.models[0].key, "a");
 }
 
 #[test]
@@ -490,6 +512,9 @@ fn responsive_status_and_hints_prioritize_current_actions() {
         terminal.draw(|frame| v2ui::render(frame, &mut app)).unwrap();
         let row = |y| (0..width).map(|x| terminal.backend().buffer()[(x, y)].symbol()).collect::<String>();
         assert!(row(0).contains("Ready") && row(0).contains("42 tokens"));
+        let welcome: String = terminal.backend().buffer().content.iter().map(|c| c.symbol()).collect();
+        assert!(welcome.contains("What does this project do?"), "width {width}: {welcome}");
+        assert!(welcome.contains("/model  Choose a model"));
         if width == 100 {
             assert!(row(0).contains("project"));
             let shown: String = terminal.backend().buffer().content.iter().map(|cell| cell.symbol()).collect();

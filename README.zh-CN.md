@@ -24,7 +24,9 @@ TeamAgents 是一个 Rust 原生、本地优先的智能体运行时。Leader �
 
 ## 构建与启动
 
-按照 `rust-toolchain.toml` 安装固定 Rust 工具链，然后运行：
+本机已配置好 TeamAgents 时，在项目文件夹打开终端，运行 `teamagents`。输入「这个项目是做什么的？」并按回车。想换模型就点输入框上的 **Model**，输入 `astra byteseek`，点选 `gpt-6.2-astra(byteseek)`，再点 **Save** 保存。
+
+从源码构建时，先按照 `rust-toolchain.toml` 安装固定 Rust 工具链，然后运行：
 
 ```bash
 make check CARGO_FLAGS=--locked   # 首次运行可能下载依赖
@@ -36,7 +38,9 @@ engine/target/debug/teamagents
 ```
 
 `teamagents` 会启动或加入会话 daemon，并打开 TUI。`init` 不会覆盖已有配置。默认模型 profile 键为
-`leader_main`；使用 `--model` 选择其他 catalog 项。无界面运行一轮：
+`leader_main`；使用 `--model` 选择其他配置。
+
+无界面运行一轮：
 
 ```bash
 engine/target/debug/teamagents exec --json --timeout 180 "检查此仓库并概述当前状态"

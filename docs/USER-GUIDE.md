@@ -13,6 +13,8 @@ teamagents doctor environment        # read-only host tool discovery
 teamagents                           # open or join the TUI session
 ```
 
+For your first chat, type `What does this project do?` and press Enter. Read the answer and ask a follow-up. Type `/model` and press Enter whenever you want to choose another model.
+
 Use `teamagents --help` for the overview, `teamagents sessions --help` for a command family, and
 `teamagents sessions delete --help` for its exact options. Options from another subcommand are refused before
 state is accessed. In particular, `--dry-run` belongs to session pruning; session deletion has no preview mode.
@@ -306,8 +308,7 @@ proven stopped.
 
 ## 7. Models and providers
 
-Ctrl+M or `/model` opens model selection. Tab switches between Leader and Workers. Type to filter by catalogue
-key, wire model or provider. For the Leader, ←/→ changes reasoning effort. For Workers, ← selects follow and
+Click **Model** beside the message box, click a model, then click **Save**. You can also open the list with Ctrl+M or `/model`. Tab switches between Leader and Workers. Type or paste a model name, provider, or exact profile key. You can also enter words in any order, such as `astra byteseek`. The list shows `gpt-6.2-astra(byteseek)`. When two entries share that name and provider, each also shows its profile key in brackets. Press Ctrl+U to clear the search. For the Leader, ←/→ changes reasoning effort. For Workers, ← selects follow and
 → selects pin. Enter confirms; Esc cancels. Filtering does not contact a provider.
 
 ```bash

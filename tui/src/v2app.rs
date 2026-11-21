@@ -76,11 +76,30 @@ pub struct InstanceInfo {
 pub struct ModelInfo {
     /// The `[models.<key>]` name that `set_instance_profile` accepts.
     pub key: String,
-    /// The wire model the catalog entry resolves to, for display beside the key.
+    /// The wire model shown in the picker.
     pub model: String,
     pub provider: String,
     /// The ordered effort levels this model declares (D-476), or empty for the built-in list.
     pub efforts: Vec<String>,
+}
+
+impl ModelInfo {
+    fn short_label(&self) -> String {
+        if self.provider.is_empty() {
+            self.model.clone()
+        } else {
+            format!("{}({})", self.model, self.provider)
+        }
+    }
+
+    pub(crate) fn label(&self, catalog: &[ModelInfo]) -> String {
+        let label = self.short_label();
+        if catalog.iter().any(|m| m.model == self.model && m.provider == self.provider && m.key != self.key) {
+            format!("{label} [{key}]", key = self.key)
+        } else {
+            label
+        }
+    }
 }
 
 /// Select a Leader model and effort or a shared Worker model policy.
@@ -153,7 +172,7 @@ fn effort_index(efforts: &[String], current: &str) -> usize {
     lower.or(lowest).map(|(_, index)| index).unwrap_or(0)
 }
 
-fn select_model(menu: &mut ProfileMenu, index: usize, fallback: &[String]) {
+pub(crate) fn select_model(menu: &mut ProfileMenu, index: usize, fallback: &[String]) {
     let current = menu.efforts.get(menu.effort_ix).cloned().unwrap_or_default();
     menu.model_ix = index;
     menu.efforts = model_efforts(&menu.models[index], fallback);
@@ -162,15 +181,13 @@ fn select_model(menu: &mut ProfileMenu, index: usize, fallback: &[String]) {
 
 fn filter_models(menu: &mut ProfileMenu, fallback: &[String]) {
     let selected = menu.models.get(menu.model_ix).map(|model| model.key.clone());
-    let query = menu.search.to_ascii_lowercase();
+    let query = menu.search.to_lowercase();
     menu.models = menu
         .all_models
         .iter()
         .filter(|model| {
-            query.is_empty()
-                || model.key.to_ascii_lowercase().contains(&query)
-                || model.model.to_ascii_lowercase().contains(&query)
-                || model.provider.to_ascii_lowercase().contains(&query)
+            let fields = format!("{} [{}]", model.short_label(), model.key).to_lowercase();
+            query.split_whitespace().all(|word| fields.contains(word))
         })
         .cloned()
         .collect();
@@ -552,6 +569,7 @@ impl V2App {
                     })
                 })
                 .collect();
+            self.models.sort_by(|a, b| (&a.model, &a.provider, &a.key).cmp(&(&b.model, &b.provider, &b.key)));
         }
         self.watermark = self.watermark.max(watermark);
         // a fresh checkpoint supersedes earlier UI-level notes — runtime chatter, not a command's answer
@@ -1034,8 +1052,21 @@ impl V2App {
         Some(V2Effect::Sessions(crate::sessions::SessionAction::List))
     }
 
+    /// Resolve display text by the exact selection key, including for same-wire accounts.
+    pub fn model_label(&self, key: &str) -> String {
+        self.models.iter().find(|m| m.key == key).map(|m| m.label(&self.models)).unwrap_or_else(|| key.to_string())
+    }
+
+    pub fn paste_model_search(&mut self, text: &str) {
+        if let Some(menu) = &mut self.profile {
+            menu.search
+                .extend(text.chars().map(|c| if c.is_whitespace() { ' ' } else { c }).filter(|c| !c.is_control()));
+            filter_models(menu, &self.efforts);
+        }
+    }
+
     /// Edit the role selection locally; only a confirmed catalogue row becomes a command.
-    fn open_profile(&mut self) -> Option<V2Effect> {
+    pub(crate) fn open_profile(&mut self) -> Option<V2Effect> {
         let Some(leader) = self.active_instance().cloned() else {
             self.command_note("No Leader is connected, so there is no profile to change.");
             return None;
@@ -1060,8 +1091,15 @@ impl V2App {
     }
 
     fn profile_key(&mut self, key: crossterm::event::KeyEvent) -> Option<V2Effect> {
-        use crossterm::event::KeyCode;
-        if !key.modifiers.is_empty() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('u') {
+            let menu = self.profile.as_mut()?;
+            menu.search.clear();
+            filter_models(menu, &self.efforts);
+            return None;
+        }
+        if !(key.modifiers.is_empty() || (key.modifiers == KeyModifiers::SHIFT && matches!(key.code, KeyCode::Char(_))))
+        {
             return None;
         }
         let fallback = self.efforts.clone();
@@ -1689,7 +1727,7 @@ Commands:
             return "Esc close · Up/Down scroll · PgUp/PgDn page".into();
         }
         if self.profile.is_some() {
-            return "Enter apply · Esc cancel · Up/Down model · Left/Right effort".into();
+            return "↑/↓ choose · Enter save · Esc back · Ctrl+U clear search".into();
         }
         if self.focus == Focus::Team {
             return "Up/Down member · Enter inspect · h history · F6 focus · Esc compose".into();

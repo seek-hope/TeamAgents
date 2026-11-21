@@ -27,7 +27,9 @@ still apply. Unknown effects are recorded as `OUTCOME_UNKNOWN` and never replaye
 
 ## Build and start
 
-Install the pinned Rust toolchain from `rust-toolchain.toml`, then:
+If TeamAgents is already set up, open a terminal in your project folder and run `teamagents`. Type `What does this project do?` and press Enter. To change models, click **Model**, type `astra byteseek`, select `gpt-6.2-astra(byteseek)` and click **Save**.
+
+To build from source, install the pinned Rust toolchain from `rust-toolchain.toml`, then:
 
 ```bash
 make check CARGO_FLAGS=--locked   # first run may download dependencies

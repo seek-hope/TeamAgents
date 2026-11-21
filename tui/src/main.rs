@@ -439,10 +439,15 @@ fn run_v2_effect(effect: V2Effect, client: &mut DaemonClient, app: &mut V2App, s
             }
             match client.command(&format!("profile-{}", uuid::Uuid::new_v4()), "set_role_model", params) {
                 Ok(reply) => {
-                    app.command_note(format!("Role profile updated: {}", reply));
+                    let message = match role {
+                        teamagents_tui::v2app::ProfileRole::Leader => reply["leader"].as_str().map(|key| format!("Chat model set to {}.", app.model_label(key))),
+                        teamagents_tui::v2app::ProfileRole::Workers if reply["workers"]["mode"] == "follow" => Some("Workers will use the same model as your chat.".into()),
+                        teamagents_tui::v2app::ProfileRole::Workers => reply["workers"]["key"].as_str().map(|key| format!("Worker model set to {}.", app.model_label(key))),
+                    };
+                    app.command_note(message.unwrap_or_else(|| "Model settings saved.".into()));
                     v2_sync_checkpoint(client, app);
                 }
-                Err(error) => app.command_note(format!("The profile change was refused: {error}")),
+                Err(error) => app.command_note(format!("Could not change the model: {error}")),
             }
         }
         V2Effect::EditDraft { .. } | V2Effect::OperatorShell { .. } | V2Effect::CodeGraph { .. } | V2Effect::Quit => {}
@@ -542,8 +547,8 @@ fn run_v2(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, mut client
                         if let Some(action) = browser.mouse(size, m) {
                             sessions.start(action, &mut app);
                         }
-                    } else {
-                        v2ui::handle_mouse(&mut app, size, m);
+                    } else if let Some(effect) = v2ui::handle_mouse(&mut app, size, m) {
+                        run_v2_effect(effect, &mut client, &mut app, &mut sessions);
                     }
                     dirty = true;
                 }
@@ -551,7 +556,11 @@ fn run_v2(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, mut client
                     app.graphics.resize();
                     dirty = true;
                 }
-                Ok(Event::Paste(_)) if app.help_open || app.profile.is_some() => {}
+                Ok(Event::Paste(_)) if app.help_open => {}
+                Ok(Event::Paste(text)) if app.profile.is_some() => {
+                    app.paste_model_search(&text);
+                    dirty = true;
+                }
                 Ok(Event::Paste(text)) if app.queue.is_some() => {
                     if let Some(queue) = &mut app.queue {
                         queue.paste(&text);

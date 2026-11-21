@@ -250,7 +250,7 @@ def main():
     if "newline" in scr.lines()[-1] or "Ctrl+J" in scr.lines()[-1]:
         failures.append("Ready footer still advertises newline")
     expect("Ctrl+Q quit", "quit hint")
-    expect("deepseek-flash · high", "active profile")
+    expect("deepseek-flash(fixture) · high", "active profile")
     if "Ctrl+C interrupt" in "\n".join(scr.lines()):
         failures.append("Ready footer prioritizes an inactive interrupt")
 
@@ -266,16 +266,26 @@ def main():
         failures.append("help dispatched input")
     os.write(fd, b"\x1b")
     scr.feed(read_all(fd, 0.4).decode("utf-8", "replace"))
-    os.write(fd, b"/model\r")
+    def click(text):
+        for y, line in enumerate(scr.lines(), 1):
+            if text in line:
+                x = line.index(text) + 1
+                os.write(fd, f"\x1b[<0;{x};{y}M\x1b[<0;{x};{y}m".encode())
+                return
+        raise AssertionError(f"missing click target {text}")
+
+    click("[Model]")
     scr.feed(read_all(fd, 0.4).decode("utf-8", "replace"))
-    expect("Leader model & effort", "model overlay")
-    os.write(fd, b"\tworker-key\x1b[C")
+    expect("Choose a chat model", "model overlay")
+    expect("deepseek-flash(fixture)", "chat model label")
+    os.write(fd, b"\t\x1b[200~deepseek-flash(second)\x1b[201~\x1b[C")
     scr.feed(read_all(fd, 0.4).decode("utf-8", "replace"))
-    expect("Worker model policy", "Workers role")
-    expect("worker-key", "filtered exact key")
+    expect("Choose a model for Workers", "Workers role")
+    expect("> deepseek-flash(second)", "pasted model label selects the intended account")
     if any(f.get("method") == "set_role_model" for f in daemon.frames):
         failures.append("filtering submitted a selection")
-    os.write(fd, b"\r")
+    click("> deepseek-flash(second)")
+    click("[Save]")
     scr.feed(read_all(fd, 0.4).decode("utf-8", "replace"))
     if daemon.roles["workers"] != {"mode": "pinned", "key": "worker-key"}:
         failures.append("confirmation did not submit the Worker pin")
@@ -283,7 +293,7 @@ def main():
     scr.feed(read_all(fd, 0.4).decode("utf-8", "replace"))
     os.write(fd, b"\x1b[200~another hidden paste\x1b[201~")
     scr.feed(read_all(fd, 0.4).decode("utf-8", "replace"))
-    os.write(fd, b"\x1b")
+    click("[Back]")
     scr.feed(read_all(fd, 0.4).decode("utf-8", "replace"))
     if "hidden paste" in "\n".join(scr.lines()):
         failures.append("an overlay accepted paste into its hidden draft")
@@ -424,11 +434,14 @@ def main():
     scr.feed(read_all(fd, 0.5).decode("utf-8", "replace"))
     expect("t-smoke", "task observation")
     expect("RUNNING", "task outcome")
+    # Observe each input on screen before changing the terminal geometry or sending F6.
+    os.write(fd, b"\x1b")
+    deadline = time.monotonic() + 6
+    while time.monotonic() < deadline and "Enter send" not in scr.lines()[-1]:
+        scr.feed(read_all(fd, 0.1).decode("utf-8", "replace"))
+    expect("Enter send", "task panel returns to the composer")
     scr = Screen(80, 30)
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 80, 0, 0))
-    os.write(fd, b"\x1b")
-    # Wait for Esc to reach the composer before sending another escape-prefixed
-    # key: a fixed delay can coalesce Esc/F6 while the UI is still redrawing.
     deadline = time.monotonic() + 6
     while time.monotonic() < deadline and "Enter send" not in scr.lines()[-1]:
         scr.feed(read_all(fd, 0.1).decode("utf-8", "replace"))

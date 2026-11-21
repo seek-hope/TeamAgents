@@ -20,7 +20,7 @@ checks both result envelopes. Manual pause during preparation keeps the same dri
 [the staged workflow requirements](DECISIONS.md#approved-workflow-requirements-implementation-staged) for the
 remaining scope. Retain a pre-upgrade session backup for schema rollback.
 
-The local x86_64 musl pair now accepts raw operation IDs at completion, exposes the fetched page body to scripts and supports `/codegraph init|status|sync`. The installed CLI passed doctor and read a real index. The installed TUI passed the xterm-256color PTY smoke. For the build inputs, backup and paired live-model results, see [ACCEPTANCE.md](ACCEPTANCE.md).
+The installed TUI now shows a first question and lets users choose a chat model by clicking Model, a `model(provider)` row and Save. Equal labels include the configuration key. The local x86_64 musl pair accepts raw operation IDs at completion, exposes the fetched page body to scripts and supports `/codegraph init|status|sync`. The installed CLI passed doctor and read a real index. The installed TUI passed the xterm-256color PTY smoke. For the build inputs, backup and paired live-model results, see [ACCEPTANCE.md](ACCEPTANCE.md).
 D-529 introduced session-level Leader and Worker model selection. The build also includes native Gemini API-key transport,
 versioned model directories, explicit endpoint switching, scoped CodeGraph discovery and user-confirmed
 local-router management. The provider,
