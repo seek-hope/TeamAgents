@@ -6,8 +6,7 @@ The project is a standalone Rust control plane, runtime and team TUI. Read [DESI
 Q1–Q19/A01–A36 baseline, [DECISIONS.md](DECISIONS.md) for current contracts and [ACCEPTANCE.md](ACCEPTANCE.md)
 for exact source-bound evidence. Git retains implementation and experiment history; do not recreate a changelog here.
 
-Source-only D-530 work is not installed. The current source adds session-scoped MCP restrictions,
-operator shell and conversation-only rewind. Preview and apply a delivered Leader input with `/rewind`;
+The local D-530 installation includes session-scoped MCP restrictions, the operator shell and prompt rewind. Preview and apply a delivered Leader input with `/rewind`;
 reopen its unsent draft after restart. Abandoned epochs are retained. In a Git workspace, `/rewind files ENVELOPE` previews the dirty working bytes captured at delivery.
 `/rewind apply` restores the reviewed tracked files and opens the prompt. Missing historical snapshots
 fall back to receipt-only inspection. Interrupted file batches require inspection and a fresh preview.
@@ -19,12 +18,12 @@ is checked again for each held input, so checks and attachments do not enter an 
 Worker turn keeps its task ID; the real driver regression grants an older task during the newer request and
 checks both result envelopes. Manual pause during preparation keeps the same driver for explicit resume. See
 [the staged workflow requirements](DECISIONS.md#approved-workflow-requirements-implementation-staged) for the
-remaining scope. Back up a session before migrating; the installed D-529 writer cannot reopen it.
+remaining scope. Retain a pre-upgrade session backup for schema rollback.
 
-Installed CLI and TUI source: `82533938`. Both installed files match the local musl package; the backup and
-checksums are recorded in [ACCEPTANCE.md](ACCEPTANCE.md). D-529 adds session-level Leader and Worker model
-selection. No user session was opened or restarted during installation. Back up an existing session before
-its first schema 10 writer if rollback is required. The build also includes native Gemini API-key transport,
+The installed CLI and TUI were built from `13f4aa15`. Both match the x86_64 musl archive. The installed
+CLI opened a disposable schema 13 session and served a rewind-point read. The installed TUI passed the
+xterm-256color PTY smoke. The backup and checksum locations are recorded in [ACCEPTANCE.md](ACCEPTANCE.md).
+D-529 introduced session-level Leader and Worker model selection. The build also includes native Gemini API-key transport,
 versioned model directories, explicit endpoint switching, scoped CodeGraph discovery and user-confirmed
 local-router management. The provider,
 directory and local-router tests use loopback fixtures. The `codegraph_probe` engine example uses a real

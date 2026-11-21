@@ -16,7 +16,17 @@ refused to open a migrated, checkpointed schema-10 store for writing; its databa
 `tools/tmp/d529/upgraded-writer-refusal.log`. The local `make check` passed all 874 Rust tests and the
 repository audits. These are not live-provider, installed-binary or rollback tests.
 
-Installed CLI and TUI source: `82533938e376e78d7d20d7510a2d7fa217c55fda` (version 0.2.0, x86_64 Linux
+The locally installed CLI and TUI were built from `13f4aa15abbdfcfe142071ca4ccce195031db6b3` (0.2.0,
+Linux x86_64 musl). The pre-commit gate passed all 893 Rust tests. The release rehearsal built both
+executables and verified installation from the archive. The installed pair matched the package digests in
+`installed.sha256` under the private local state directory `teamagents-install-d530-3H8Dbo/`. Its
+`backup/` holds the previous executables, an integrity-checked SQLite online backup and session files.
+With isolated configuration and state, the installed CLI passed doctor and served `rewind_points` in a new
+schema 13 session over protocol 2 with zero model requests. The installed TUI passed the xterm-256color PTY
+smoke including preview and confirmation of a combined rewind. Receipts are in `daemon-smoke.json` and
+`installed-pty.log` alongside the checksums.
+
+The previous CLI and TUI were built from `82533938e376e78d7d20d7510a2d7fa217c55fda` (version 0.2.0, x86_64 Linux
 musl). Both binaries match the locally built archive. The private `teamagents-install-82533938-mmjVi3`
 directory under the local state home contains the package, the previous binary pair in `backup/`, and
 `installed.sha256`. The installed CLI passed isolated doctor and switched two same-wire entries from pin
