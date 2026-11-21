@@ -106,6 +106,7 @@ window is for scripted regression only.
 ## Code style
 
 - Lazy-first: standard library over existing dependencies over new ones; abstractions only for current need.
+- Let the model choose how to use its authorized tools. Batch reads to limit concurrency and shorten previews to fit the display while keeping fetched text available to scripts. Accept identifiers as the runtime emits them. Remove restrictions that add work without protecting a user decision, resource budget or correctness invariant.
 - Every non-trivial behavior gets a runnable acceptance test or self-check. Deleting code is preferred.
 - CI and local development share make targets. Clippy runs with `-D warnings` on all targets.
 - Engine integration tests isolate `XDG_CONFIG_HOME` and `XDG_STATE_HOME` in child processes. Environment changes

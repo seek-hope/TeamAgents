@@ -120,6 +120,13 @@ fn every_completion_command_has_a_local_dispatch_path() {
     assert!(
         matches!(state.handle_key(key(KeyCode::Enter)),Some(V2Effect::McpChange{action,service}) if action=="hide" && service=="my-key")
     );
+    state.apply_checkpoint(json!({"environment":{"workspace":"/tmp/fixture"},"instances":[{"id":"i-leader","lifecycle":"ACTIVE","phase":"READY"}]}), 1);
+    for action in ["init", "sync", "status"] {
+        state.composer.set_text(&format!("/codegraph {action}"));
+        assert!(
+            matches!(state.handle_key(key(KeyCode::Enter)), Some(V2Effect::CodeGraph {workspace,action:verb}) if workspace == "/tmp/fixture" && action == verb)
+        );
+    }
     for (name, _) in teamagents_tui::completion::COMMANDS {
         let mut app = app();
         app.composer.set_text(name);

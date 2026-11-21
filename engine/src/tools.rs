@@ -2512,7 +2512,7 @@ impl V2Toolkit {
                 None
             }));
             let native_exec = self.executor.clone();
-            let nested_control = control.clone();
+            let nested_control = TurnControl { script_output: true, ..control.clone() };
             let outcome = crate::codemode::run_with_native(
                 code,
                 crate::codemode::Codemode {
@@ -2616,6 +2616,8 @@ pub struct TurnControl {
     active: Arc<Mutex<()>>,
     /// D-470: the hosts this member's live `web` grants allow; empty means no allowlist.
     domains: Vec<String>,
+    // A script consumes structured data before formatting a transcript preview.
+    script_output: bool,
     // Populated only by a direct native edit after its checked write commits.
     native_edit: Option<Arc<Mutex<Option<Json>>>>,
 }

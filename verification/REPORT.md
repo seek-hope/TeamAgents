@@ -5,7 +5,9 @@ in [README.md](README.md); reproduction commands are in [DEVELOPMENT.md](../docs
 
 ## 0. Gate status (re-run 2026-11-21)
 
-Material SHA-256: `a0fa34e615e084e455e7b51fa995c3ec9f23620c94f1c1ddf5623c9c681d8001`.
+Material SHA-256: `99c41d68c1767bc3c274383e848ecc4afae59c119037a729a9d34aef821eb3ff`.
+
+After updating the completion tool's evidence description in `core/src/kernel/types.rs`, all nine Kani harnesses passed (`tools/tmp/local-replacement.McXlue/kani.log`). The TLA inputs retain their previous fingerprint. The receipt lookup, fetch formatting and CodeGraph workflow have executable coverage.
 
 For D-530 only the Kani input `core/src/kernel/types.rs` changed in the formal material. All nine
 harnesses passed again (`tools/tmp/selected-workflows/kani.log`); they do not verify the new lifetime

@@ -6,7 +6,7 @@ The project is a standalone Rust control plane, runtime and team TUI. Read [DESI
 Q1–Q19/A01–A36 baseline, [DECISIONS.md](DECISIONS.md) for current contracts and [ACCEPTANCE.md](ACCEPTANCE.md)
 for exact source-bound evidence. Git retains implementation and experiment history; do not recreate a changelog here.
 
-The local D-530 installation includes session-scoped MCP restrictions, the operator shell and prompt rewind. Preview and apply a delivered Leader input with `/rewind`;
+The local installation includes session-scoped MCP restrictions, the operator shell and prompt rewind. Preview and apply a delivered Leader input with `/rewind`;
 reopen its unsent draft after restart. Abandoned epochs are retained. In a Git workspace, `/rewind files ENVELOPE` previews the dirty working bytes captured at delivery.
 `/rewind apply` restores the reviewed tracked files and opens the prompt. Missing historical snapshots
 fall back to receipt-only inspection. Interrupted file batches require inspection and a fresh preview.
@@ -20,9 +20,7 @@ checks both result envelopes. Manual pause during preparation keeps the same dri
 [the staged workflow requirements](DECISIONS.md#approved-workflow-requirements-implementation-staged) for the
 remaining scope. Retain a pre-upgrade session backup for schema rollback.
 
-The installed CLI and TUI were built from `13f4aa15`. Both match the x86_64 musl archive. The installed
-CLI opened a disposable schema 13 session and served a rewind-point read. The installed TUI passed the
-xterm-256color PTY smoke. The backup and checksum locations are recorded in [ACCEPTANCE.md](ACCEPTANCE.md).
+The local x86_64 musl pair now accepts raw operation IDs at completion, exposes the fetched page body to scripts and supports `/codegraph init|status|sync`. The installed CLI passed doctor and read a real index. The installed TUI passed the xterm-256color PTY smoke. For the build inputs, backup and paired live-model results, see [ACCEPTANCE.md](ACCEPTANCE.md).
 D-529 introduced session-level Leader and Worker model selection. The build also includes native Gemini API-key transport,
 versioned model directories, explicit endpoint switching, scoped CodeGraph discovery and user-confirmed
 local-router management. The provider,

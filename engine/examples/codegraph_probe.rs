@@ -89,7 +89,7 @@ if (!namespace || !namespace.tools.some((tool) => tool.name === "codegraph_codeg
 const args = __CALL_ARGS__;
 const result = await tools.codegraph_codegraph_explore(args);
 if (result.project !== args.projectPath || result.freshness.status !== "not_verified") throw new Error("missing project or freshness evidence");
-if (!result.result.includes("Source Code")) throw new Error(result.result.slice(0, 1000));
+if (!result.result.includes("```") || !result.result.includes(args.query.split(" ")[0])) throw new Error(result.result.slice(0, 1000));
 text(result.result.slice(0, 4000));
 for (const [suffix, params] of Object.entries({status: {}, search: {query: args.query.split(" ")[0], limit: 3}, callers: {symbol: args.query.split(" ")[0]}, callees: {symbol: args.query.split(" ")[0]}, impact: {symbol: args.query.split(" ")[0], depth: 1}})) {
   const reply = await tools["codegraph_codegraph_" + suffix]({...params, projectPath: args.projectPath});

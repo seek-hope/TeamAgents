@@ -81,7 +81,7 @@ engine/target/debug/teamagents search_tree --json
 - `Ctrl+O` 展开或折叠工具预览。`Ctrl+G` 在预览和源码之间切换。
 
 斜杠命令包括 `/help`、`/sessions`、`/interrupt`、`/quit`、`/model`、`/attach`、`/detach`、
-`/queue`、`/tree`、`/edit`、`/shell`、`/mcp`、`/rewind`、`/compact`、`/later`、`/team`、`/chat`、`/tasks`、`/activity` 和 `/inspect`。补全只填入命令，仍需按 Enter 才会提交。
+`/queue`、`/tree`、`/edit`、`/shell`、`/codegraph`、`/mcp`、`/rewind`、`/compact`、`/later`、`/team`、`/chat`、`/tasks`、`/activity` 和 `/inspect`。补全只填入命令，仍需按 Enter 才会提交。
 输入 `@PATH` 后按 Tab 并选择候选，
 可以暂存文件引用；文件只会随你之后发送的消息一起提交。
 

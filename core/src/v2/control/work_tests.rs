@@ -882,7 +882,7 @@ fn autonomy_operational_completion_requires_scoped_recorded_evidence() {
     .unwrap();
     let observed = work_context(ctl.connection(), "i1").unwrap();
     assert_eq!(observed["observations"]["provenance"], "runtime");
-    for (tag, evidence) in [("missing", json!([])), ("invented", json!(["operation:does-not-exist"]))] {
+    for (tag, evidence) in [("missing", json!([])), ("invented", json!(["tool:call_0", "d-missing:0"]))] {
         work_turn(
             &mut ctl,
             tag,
@@ -924,7 +924,7 @@ fn autonomy_operational_completion_requires_scoped_recorded_evidence() {
         &mut ctl,
         "grounded",
         "i1",
-        json!({"completion":{"outcome":"success","summary":"Verified result","evidence":["tool:call_0 (shell) — SUCCEEDED, verified"]}}),
+        json!({"completion":{"outcome":"success","summary":"Verified result","evidence":["d-verified:0"]}}),
     );
     ctl.submit(cmd("close-grounded", "complete_work", json!({"instance_id":"i1","work_id":"g1"})), Identity::System)
         .unwrap();

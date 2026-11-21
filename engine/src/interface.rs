@@ -75,6 +75,9 @@ commands! {
     ("runners", "stop", "--cwd DIR --id JOB --service --yes --json", "", "Retire runners; --service --yes stops a group left by a settled command."),
     ("artifacts", "list", "--cwd DIR --json", "", "List stored artifacts and presence."),
     ("artifacts", "gc", "--cwd DIR --json", "", "Collect unreferenced artifacts."),
+    ("codegraph", "status", "--cwd DIR --json", "", "Inspect the index in this workspace."),
+    ("codegraph", "init", "--cwd DIR", "", "Initialize a local CodeGraph index for this workspace."),
+    ("codegraph", "sync", "--cwd DIR", "", "Update the existing index for this workspace."),
     ("local-models", "list", "--model KEY --json", "--model", "List model states from the local router bound to a user profile."),
     ("local-models", "load", "--model KEY --yes --json", "--model --yes", "Request loading the selected profile's model on its local router."),
     ("local-models", "unload", "--model KEY --yes --json", "--model --yes", "Request unloading the selected profile's model on its local router."),
@@ -98,7 +101,8 @@ commands! {
 fn locators(command: &Command) -> &'static str {
     match (command.name, command.verb) {
         ("mcp", "status" | "start" | "stop" | "reconnect" | "hide" | "expose") => "--state-root PATH --session ID",
-        ("version" | "catalog" | "local-models" | "mcp" | "jobs-runner", _) | ("doctor", "environment") => "",
+        ("version" | "catalog" | "codegraph" | "local-models" | "mcp" | "jobs-runner", _)
+        | ("doctor", "environment") => "",
         ("sessions", _) => "--state-root PATH",
         _ => "--state-root PATH --session ID",
     }
@@ -107,6 +111,7 @@ fn locators(command: &Command) -> &'static str {
 pub fn verb(args: &Args) -> &str {
     match args.command.as_deref().unwrap_or("") {
         "exec" | "jobs-runner" | "" => "",
+        "codegraph" => args.positional.as_deref().unwrap_or("status"),
         "daemon" => {
             if args.daemon_stop {
                 "stop"

@@ -96,7 +96,7 @@ the log is still a supported way to observe it (and the probes that do assert on
 | `wait_satisfied` | `&instance_id` | `wait_id` | `core/src/v2/control.rs:3867` | `tui/src/v2app.rs`, `tui/tests/minimal.rs`, `engine/tests/v2_driver.rs` |
 | `work_admission_refused` | `instance` | `reason` | `core/src/v2/control/work.rs:51` | observability only |
 | `work_attention` | `instance` | `reason`, `waits` | `core/src/v2/control/work.rs:886` | observability only |
-| `work_blocked` | `instance` / `work_id` | `detached`, `reason`, `status`, `work_id` | `core/src/v2/control.rs:5454`, `core/src/v2/control/work.rs:1114`, `core/src/v2/control/work.rs:465` | `tui/src/v2app.rs`, `tui/tests/minimal.rs`, `tui/tests/v2app_tests.rs`, `engine/src/v2/diagnostics.rs`, `engine/src/v2/exec.rs`, `engine/tests/cases/autonomy.rs`, `engine/tests/v2_driver.rs` |
+| `work_blocked` | `instance` / `work_id` | `detached`, `reason`, `status`, `work_id` | `core/src/v2/control.rs:5454`, `core/src/v2/control/work.rs:1121`, `core/src/v2/control/work.rs:465` | `tui/src/v2app.rs`, `tui/tests/minimal.rs`, `tui/tests/v2app_tests.rs`, `engine/src/v2/diagnostics.rs`, `engine/src/v2/exec.rs`, `engine/tests/cases/autonomy.rs`, `engine/tests/v2_driver.rs` |
 | `work_cancelled` | `work_id` | `released`, `work_id` | `core/src/v2/control.rs:5722` | `engine/src/v2/exec/accounting.rs`, `engine/src/v2/exec.rs` |
 | `work_checkpoint` | `instance` | `action`, `decision_id`, `work_id` | `core/src/v2/control/work.rs:631` | `engine/src/v2/exec.rs`, `engine/tests/cases/autonomy.rs`, `engine/tests/v2_daemon.rs`, `engine/tests/v2_driver.rs` |
 | `work_checks_briefed` | `work_id` | `checks` | `core/src/v2/control.rs:5534` | `engine/tests/v2_driver.rs` |

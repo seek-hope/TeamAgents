@@ -226,7 +226,7 @@ pub(crate) fn schema_with_native(tools: &BoundTools, native: &[Json]) -> Json {
     let description = format!(
         "Run JavaScript that calls the listed tools as `await tools.<name>(args)`.\n\
          - The code is evaluated in a fresh QuickJS sandbox as the body of an async function: top-level `await` and `return` work.\n\
-         - Use parallelReads([{{name, args}}, ...]) for up to eight independent bound file reads (read_file, ls, grep, glob). It returns ordered success or error results. Shell and writes are separate top-level operations.\n\
+         - Use parallelReads([{{name, args}}, ...]) for independent bound file reads, eight at a time (read_file, ls, grep, glob). It returns ordered success or error results. Shell and writes are separate top-level operations. A bound web_fetch returns all extracted text to the script by default. Filter it before emitting output.\n\
          - Tool names are normalized to JavaScript identifiers (`my-tool` is `tools.my_tool`); `ALL_TOOLS` lists every tool, `searchTools(query)` finds one by name or description, `describeTool(name)` returns its declaration and `describeNamespace(service)` lists one service's tools.\n\
          - A nested call that fails, is vetoed by the user's `pre_tool` hook, or gets invalid arguments rejects with an `Error` carrying the reason. Calls are real and have side effects; earlier calls are not undone when a later one fails.\n\
          - Only what the script emits with `text(...)`/`console.log(...)` and what it returns reaches you — nested tool output does NOT. Filter and aggregate in the script instead of returning raw payloads.\n\
@@ -307,7 +307,16 @@ globalThis.tools = new Proxy({{}}, {{
     }};
   }},
 }});
-globalThis.parallelReads = (calls) => {{ const r = JSON.parse(__reads(JSON.stringify(calls))); if (r.error) throw new Error(r.error); return r.results; }};
+globalThis.parallelReads = (calls) => {{
+  if (!Array.isArray(calls)) throw new Error("parallelReads expects an array");
+  const results = [];
+  for (let start = 0; start < calls.length; start += 8) {{
+    const batch = JSON.parse(__reads(JSON.stringify(calls.slice(start, start + 8))));
+    if (batch.error) throw new Error(batch.error);
+    results.push(...batch.results);
+  }}
+  return results;
+}};
 globalThis.__stringify = (value) => (typeof value === "string" ? value : JSON.stringify(value));
 globalThis.text = (value) => __text(globalThis.__stringify(value));
 globalThis.console = {{}};

@@ -90,7 +90,7 @@ Common TUI keys:
 - `Ctrl+O` expands or folds tool previews. `Ctrl+G` switches previews and source.
 
 Slash commands are `/help`, `/sessions`, `/interrupt`, `/quit`, `/model`, `/attach`, `/detach`, `/queue`, `/tree`,
-`/edit`, `/shell`, `/mcp`, `/rewind`, `/compact`, `/later`, `/team`, `/chat`, `/tasks`, `/activity` and `/inspect`. Completion fills a command but submits only after
+`/edit`, `/shell`, `/codegraph`, `/mcp`, `/rewind`, `/compact`, `/later`, `/team`, `/chat`, `/tasks`, `/activity` and `/inspect`. Completion fills a command but submits only after
 a separate Enter. For file references, type
 `@PATH` and Tab, then accept a candidate; files are sent only with your message.
 

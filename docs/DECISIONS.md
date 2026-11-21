@@ -85,6 +85,7 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
 
 ## Work, accounting and collaboration
 
+- Completion accepts a successful operation ID copied directly from the work observations as well as a prefixed receipt reference. Both resolve against the same instance, work and task.
 - Work scopes own budget, deadline, admission and acceptance. Work states/tasks own continuation, delegation
   and attribution; sessions own history and isolation. There is no separate goal entity.
 - Work continues across turns, compaction and restart. Progress prose, valid continuation checkpoints and

@@ -940,6 +940,13 @@ fn evidence_problem(tx: &Connection, k: &WorkKey, evidence: &Json) -> Result<Opt
     for reference in refs.iter().filter_map(Json::as_str) {
         let (kind, rest) = if let Some(rest) = reference.strip_prefix("operation:") {
             ("operation", rest)
+        } else if reference.starts_with("d-")
+            && reference
+                .split_whitespace()
+                .next()
+                .is_some_and(|id| id.rsplit_once(':').is_some_and(|(_, index)| index.parse::<usize>().is_ok()))
+        {
+            ("operation", reference)
         } else if let Some(rest) = reference.strip_prefix("tool:") {
             ("tool", rest)
         } else if let Some(rest) = reference.strip_prefix("task:") {

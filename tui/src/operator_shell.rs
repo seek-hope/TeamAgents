@@ -57,15 +57,30 @@ impl Drop for Foreground {
 }
 
 pub fn run(workspace: &Path, command: Option<&str>) -> io::Result<Output> {
-    if !workspace.is_absolute() {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "no absolute session workspace"));
-    }
-    let _foreground = Foreground::enter()?;
     let mut shell = if command.is_some() {
         Command::new("/bin/sh")
     } else {
         Command::new(std::env::var_os("SHELL").filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/sh".into()))
     };
+    if let Some(text) = command {
+        shell.arg("-c").arg(text);
+    } else {
+        shell.arg("-i");
+    }
+    run_foreground(workspace, shell, command.is_some())
+}
+
+pub fn codegraph(workspace: &Path, action: &str) -> io::Result<Output> {
+    let mut cli = Command::new(crate::session_client::executable().map_err(io::Error::other)?);
+    cli.args(["codegraph", action]);
+    run_foreground(workspace, cli, action != "init")
+}
+
+fn run_foreground(workspace: &Path, mut shell: Command, capture: bool) -> io::Result<Output> {
+    if !workspace.is_absolute() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "no absolute session workspace"));
+    }
+    let _foreground = Foreground::enter()?;
     shell.current_dir(workspace);
     // Only async-signal-safe operations between fork and exec.
     unsafe {
@@ -78,12 +93,12 @@ pub fn run(workspace: &Path, command: Option<&str>) -> io::Result<Output> {
             Ok(())
         });
     }
-    let Some(command) = command else {
-        return Ok(Output { status: shell.arg("-i").status()?, text: String::new(), limited: false });
-    };
+    if !capture {
+        return Ok(Output { status: shell.status()?, text: String::new(), limited: false });
+    }
     let (mut reader, writer) = UnixStream::pair()?;
     reader.set_read_timeout(Some(Duration::from_millis(60)))?;
-    let mut child = shell.arg("-c").arg(command).stdout(OwnedFd::from(writer)).spawn()?;
+    let mut child = shell.stdout(OwnedFd::from(writer)).spawn()?;
     drop(shell);
     let mut bytes = Vec::new();
     let mut limited = false;

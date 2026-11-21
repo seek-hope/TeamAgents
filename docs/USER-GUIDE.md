@@ -379,7 +379,9 @@ credential-lock waits. Codemode exposes normalized JavaScript identifiers while 
 This covers PKCE/public-client flows and local interoperability tests. External authenticated services,
 challenge-directed discovery and resumable SSE reconnects are not established by those tests.
 
-For CodeGraph 1.6.3, configure this in the **user** config. The dedicated binding speaks its native
+Use `teamagents codegraph init --cwd DIR` to build the project index and `teamagents codegraph sync --cwd DIR` after edits. Read its status with `teamagents codegraph status --cwd DIR --json`. In the TUI, use `/codegraph init`, `/codegraph sync` and `/codegraph status` in the attached workspace. On filesystems where CodeGraph disables watching, its initializer may offer to install project Git sync hooks.
+
+For the CodeGraph 1.6.x read binding, configure this in the **user** config. The dedicated binding speaks its native
 `2024-11-05` stdio revision without a bridge or a generic protocol downgrade:
 
 ```toml
@@ -390,6 +392,7 @@ args = ["serve", "--mcp"]
 codegraph_projects = []
 ```
 
+Set `env = { CODEGRAPH_NO_WATCH = "0" }` on this binding to let the CodeGraph server watch for edits. Omit it to sync manually.
 Omit `tool_names` for explore only. To select other read tools explicitly, set, for example,
 `tool_names = ["codegraph_explore", "codegraph_search", "codegraph_callers", "codegraph_callees", "codegraph_impact", "codegraph_status"]`.
 Use `teamagents mcp list` to check discovery. In codemode, `tools.graph_codegraph_explore({query: "symbol"})`
@@ -429,7 +432,10 @@ With both fetch bindings, the default tries Exa first. A transient transport fai
 allows one attempt through DeepSeek. An explicit provider never falls back. The result names the provider and
 reports any fallback reason. Each member caches up to 32 successful pages for ten minutes, with an 8 MiB total text budget and least-recently-used eviction. Cache hits still check the binding, credential and URL policy. For long pages,
 pass `full_path` and `next_byte_offset` to `read_file` as `path` and `byte_offset`; no second fetch is needed.
-The file holds the provider's extracted text, not necessarily the complete original page.
+In codemode, `tools.web_fetch({url})` returns the provider's full extracted `content` to the script. Pass
+`max_bytes` for a shorter preview. For example,
+`text((await tools.web_fetch({url})).content.split('\n').filter(line => line.includes('confidence interval')))`
+returns matching lines from anywhere in the response.
 
 If local DNS returns
 fake-IP routing addresses in `198.18.0.0/15`, fetch verifies the hostname through Cloudflare or Google HTTPS DNS.

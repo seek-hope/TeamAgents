@@ -158,7 +158,7 @@ impl SessionClient {
     }
 }
 
-fn executable() -> Result<PathBuf, String> {
+pub(crate) fn executable() -> Result<PathBuf, String> {
     if let Some(path) = std::env::var_os("TEAMAGENTS_SESSION_CLI") {
         return Ok(path.into());
     }

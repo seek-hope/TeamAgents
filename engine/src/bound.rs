@@ -126,6 +126,43 @@ impl CodeGraphRoots {
     }
 }
 
+/// Operator CLI command. Query bindings never initialize or maintain an index.
+pub fn codegraph_command(root: &Path, verb: &str, json: bool) -> Result<std::process::Command, String> {
+    let root = root.canonicalize().map_err(|e| format!("workspace {}: {e}", root.display()))?;
+    if !root.is_dir() {
+        return Err("workspace must be a directory".into());
+    }
+    let mut command = std::process::Command::new("codegraph");
+    command
+        .current_dir(&root)
+        .env("CODEGRAPH_DIR", ".codegraph")
+        .env("CODEGRAPH_TELEMETRY", "0")
+        .env("CODEGRAPH_NO_UPDATE_CHECK", "1");
+    match verb {
+        "init" => {
+            match root.join(".codegraph").symlink_metadata() {
+                Ok(_) => {
+                    CodeGraphRoots::index(&root)?;
+                    return Err("already indexed; use codegraph sync".into());
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.to_string()),
+            }
+            command.args(["init", "--local-only"]);
+        }
+        "sync" | "status" => {
+            CodeGraphRoots::index(&root)?;
+            command.arg(verb);
+            if json {
+                command.arg("--json");
+            }
+        }
+        _ => return Err("use codegraph init, status or sync".into()),
+    }
+    command.arg(root);
+    Ok(command)
+}
+
 #[derive(Default)]
 pub struct BoundTools {
     pub tools: Vec<BoundTool>,
@@ -446,6 +483,7 @@ fn load_service(
         ("stdio", Some(roots)) => McpClient::connect_codegraph(
             binding.command.as_deref().ok_or("CodeGraph needs a command")?,
             roots.start_root()?,
+            binding.env.get("CODEGRAPH_NO_WATCH").is_some_and(|v| v == "0"),
             binding.startup_timeout_s.unwrap_or(60),
             binding.tool_timeout_s.unwrap_or(120),
         )?,

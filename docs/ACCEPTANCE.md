@@ -16,7 +16,12 @@ refused to open a migrated, checkpointed schema-10 store for writing; its databa
 `tools/tmp/d529/upgraded-writer-refusal.log`. The local `make check` passed all 874 Rust tests and the
 repository audits. These are not live-provider, installed-binary or rollback tests.
 
-The locally installed CLI and TUI were built from `13f4aa15abbdfcfe142071ca4ccce195031db6b3` (0.2.0,
+The local x86_64 musl installation is recorded in the private state directory
+`teamagents-install-replacement-HVXqhz/`. It contains the build's source patch against `e5b04ca9`, executable digests, previous binaries and test receipts. The installed CLI passed doctor and read the real workspace index. The installed TUI passed the xterm-256color PTY smoke. The candidate passed 893 Rust tests, the repository audits, the source PTY matrix, 18 offline probes and nine Kani harnesses. The real CodeGraph 1.6.4 probe found the newly added function after sync.
+
+With `deepseek-flash` at the native 1,000,000-token window in the local Pi 1.6.0 model catalogue, a candidate repaired the inclusive-range fixture in five requests and passed 121 independent cases. The release executable recovered the last line of a synthetic 71,111-byte report through a loopback fetch service and calculated the 11-percentage-point difference. In a separate paired run on fresh copies of a multi-file interval task, TeamAgents and Pi each passed all 71 functional checks. TeamAgents kept the original test and used 14 requests in 63 seconds. Pi rewrote the same assertion using unittest and used seven requests in 29 seconds. Timing and token counts describe one run per harness. Receipts are in `paired.json`, `research.json` and `code-repair.json` in the installation directory.
+
+The D-530 CLI and TUI were built from `13f4aa15abbdfcfe142071ca4ccce195031db6b3` (0.2.0,
 Linux x86_64 musl). The pre-commit gate passed all 893 Rust tests. The release rehearsal built both
 executables and verified installation from the archive. The installed pair matched the package digests in
 `installed.sha256` under the private local state directory `teamagents-install-d530-3H8Dbo/`. Its

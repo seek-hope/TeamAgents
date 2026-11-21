@@ -26,7 +26,7 @@ usage: teamagents [--cwd DIR] [--session ID] [--model KEY] [-c key=value]...
   teamagents version         Print the version (--version, -V)
 
 Management: history, search_tree, instances, tasks, inputs, approvals,
-            authority, work_scopes, automations, artifacts, runners, surface, mcp, catalog, local-models
+            authority, work_scopes, automations, artifacts, runners, surface, mcp, catalog, local-models, codegraph
 
 Use teamagents COMMAND --help or teamagents COMMAND SUBCOMMAND --help
 for options and advanced controls. --help (-h) prints this overview.
@@ -376,13 +376,18 @@ fn parse_args_from(argv: Vec<String>) -> Args {
                 args.command = Some(argv[i].clone());
                 i += 1;
             }
+            "init" | "status" if args.command.as_deref() == Some("codegraph") && args.positional.is_none() => {
+                args.positional = Some(argv[i].clone());
+                i += 1;
+            }
             "history" if args.command.as_deref() == Some("sessions") && args.positional.is_none() => {
                 args.positional = Some("history".into());
                 i += 1;
             }
             "serve" | "init" | "doctor" | "validate" | "sessions" | "automations" | "version" | "exec"
             | "authority" | "approvals" | "instances" | "tasks" | "runners" | "artifacts" | "work_scopes"
-            | "surface" | "mcp" | "catalog" | "local-models" | "status" | "history" | "search_tree" | "inputs" => {
+            | "surface" | "mcp" | "catalog" | "codegraph" | "local-models" | "status" | "history" | "search_tree"
+            | "inputs" => {
                 if args.command.is_some() {
                     reject("two entry points were given: pick one (teamagents --help lists them)");
                 }
@@ -407,6 +412,7 @@ fn parse_args_from(argv: Vec<String>) -> Args {
                     Some(
                         "exec"
                             | "catalog"
+                            | "codegraph"
                             | "local-models"
                             | "doctor"
                             | "status"
@@ -2952,6 +2958,17 @@ fn main() {
                     1
                 }
             }
+        }
+        Some("codegraph") => {
+            let workspace = Path::new(args.cwd.as_deref().unwrap_or("."));
+            match teamagents_engine::bound::codegraph_command(workspace, interface::verb(&args), args.exec_json) {
+                Ok(mut command) => {
+                    use std::os::unix::process::CommandExt;
+                    eprintln!("codegraph: {}", command.exec());
+                }
+                Err(error) => eprintln!("codegraph: {error}"),
+            }
+            1
         }
         Some("local-models") => run_local_models(&args),
         Some("mcp") => run_mcp(&args),

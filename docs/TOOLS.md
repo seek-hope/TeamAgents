@@ -41,7 +41,7 @@ Finish the current work exactly once. Must be the only tool call in this respons
 |---|---|---|---|
 | `status` | `string` | yes | — |
 | `summary` | `string` | yes | What was done and the final answer. |
-| `evidence` | `array` | no | References proving the claims (include exact tool:CALL_ID, operation:OPERATION_ID or task:TASK_ID receipts for tool/delegated work, alongside files or commands). |
+| `evidence` | `array` | no | References proving the claims (copy a successful operation_id from current work observations, or cite tool:CALL_ID, operation:OPERATION_ID or task:TASK_ID). |
 | `unverified` | `array` | no | Claims that could not be verified. |
 
 ### `read_history`
@@ -276,7 +276,7 @@ Fetch readable page text through bound providers. auto prefers Exa and falls bac
 |---|---|---|---|
 | `url` | `string` | yes | — |
 | `provider` | `string` | no | — |
-| `max_bytes` | `integer` | no | Inline preview in UTF-8 bytes, capped at 32000. |
+| `max_bytes` | `integer` | no | UTF-8 preview bytes. Direct calls return up to 32000 bytes; codemode defaults to all extracted text. |
 
 ### `skill`
 

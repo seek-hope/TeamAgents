@@ -140,11 +140,12 @@ impl Fetcher {
             .map_or(Some("auto"), Json::as_str)
             .filter(|s| matches!(*s, "auto" | "exa" | "deepseek"))
             .ok_or("provider must be auto, exa or deepseek")?;
+        let content_limit = if control.script_output { BODY_LIMIT } else { PAGE_BYTES } as u64;
         let max = args
             .get("max_bytes")
-            .map_or(Some(PAGE_BYTES as u64), Json::as_u64)
+            .map_or(Some(content_limit), Json::as_u64)
             .ok_or("max_bytes must be a nonnegative integer")?
-            .min(PAGE_BYTES as u64) as usize;
+            .min(content_limit) as usize;
         let raw = args["url"].as_str().filter(|s| s.len() <= 8192).ok_or("expected a URL of at most 8192 bytes")?;
         let mut url = url::Url::parse(raw).map_err(|_| "unsupported URL")?;
         if !matches!(url.scheme(), "http" | "https") || !url.username().is_empty() || url.password().is_some() {
@@ -347,6 +348,13 @@ mod tests {
             offset = page["next_byte_offset"].clone();
         }
         assert_eq!(actual, content);
+        let script = TurnControl { script_output: true, ..control.clone() };
+        let full = exec("web_fetch", &json!({"url":URL}), &script).unwrap();
+        assert_eq!(full["content"], content);
+        assert_eq!(full["truncated"], false);
+        assert_eq!(full["from_cache"], true);
+        assert!(full.get("full_path").is_none());
+        assert_eq!(exec("web_fetch", &args, &script).unwrap()["next_byte_offset"], 2);
         assert!(executor(&endpoint, Some(root.join("peer")))("read_file", &json!({"path":path}), &control).is_err());
         assert_eq!(exec("web_fetch", &args, &control).unwrap()["from_cache"], true);
         assert!(exec("web_fetch", &args, &TurnControl::with_domains(vec!["other.example".into()]))

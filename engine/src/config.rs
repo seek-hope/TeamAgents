@@ -446,10 +446,10 @@ fn validate_tools(catalog: &UserConfig) -> Result<(), String> {
                 || binding.command.as_deref().and_then(|c| Path::new(c).file_name()).and_then(|s| s.to_str())
                     != Some("codegraph")
                 || binding.args != ["serve", "--mcp"]
-                || !binding.env.is_empty()
+                || binding.env.iter().any(|(k, v)| k != "CODEGRAPH_NO_WATCH" || !matches!(v.as_str(), "0" | "1"))
                 || projects.iter().any(|p| !Path::new(p).is_absolute())
             {
-                return Err(format!("tools.{name}.codegraph_projects requires codegraph serve --mcp over stdio, no custom env, and absolute project roots"));
+                return Err(format!("tools.{name}.codegraph_projects requires codegraph serve --mcp over stdio, only optional CODEGRAPH_NO_WATCH=0|1, and absolute project roots"));
             }
         }
         if !TOOL_KINDS.contains(&binding.kind.as_str()) {

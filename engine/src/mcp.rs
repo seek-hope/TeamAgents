@@ -157,6 +157,7 @@ impl McpClient {
     pub(crate) fn connect_codegraph(
         command: &str,
         root: &Path,
+        watch: bool,
         startup: u64,
         timeout: u64,
     ) -> Result<Arc<Self>, String> {
@@ -166,7 +167,7 @@ impl McpClient {
             &[
                 ("CODEGRAPH_MCP_TOOLS".into(), "explore,search,callers,callees,impact,status".into()),
                 ("CODEGRAPH_TELEMETRY".into(), "0".into()),
-                ("CODEGRAPH_NO_WATCH".into(), "1".into()),
+                ("CODEGRAPH_NO_WATCH".into(), if watch { "0" } else { "1" }.into()),
                 ("CODEGRAPH_NO_UPDATE_CHECK".into(), "1".into()),
                 ("CODEGRAPH_DIR".into(), ".codegraph".into()),
             ],

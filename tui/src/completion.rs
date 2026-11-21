@@ -6,7 +6,7 @@ macro_rules! commands {
     ($($variant:ident => ($name:literal, $help:literal)),+ $(,)?) => {
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         pub enum Command { $($variant),+ }
-        pub const COMMANDS: [(&str, &str); 20] = [$(($name, $help)),+];
+        pub const COMMANDS: [(&str, &str); 21] = [$(($name, $help)),+];
         impl Command {
             pub fn parse(text: &str) -> Option<(Self, Option<&str>)> {
                 let end = text.find(char::is_whitespace).unwrap_or(text.len());
@@ -24,6 +24,7 @@ commands! {
     Edit => ("/edit", "Edit optional TEXT in the external editor; Ctrl+E edits the current draft"),
     Sessions => ("/sessions", "Browse conversations"),
     Rewind => ("/rewind", "List Leader prompts; preview KEY, apply or reopen the last draft"),
+    CodeGraph => ("/codegraph", "Inspect, initialize or sync the attached workspace index"),
     Mcp => ("/mcp", "Inspect session MCP services, or start|stop|reconnect|hide|expose KEY"),
     Shell => ("/shell", "Open a local shell, or use /shell view|draft COMMAND for bounded stdout"),
     Interrupt => ("/interrupt", "Interrupt the Leader model request"),

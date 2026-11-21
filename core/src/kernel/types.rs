@@ -377,7 +377,7 @@ pub fn builtin_tool_schemas() -> Vec<Json> {
                     "properties": {
                         "status": {"type": "string", "enum": ["success", "blocked", "failed"]},
                         "summary": {"type": "string", "description": "What was done and the final answer."},
-                        "evidence": {"type": "array", "items": {"type": "string"}, "description": "References proving the claims (include exact tool:CALL_ID, operation:OPERATION_ID or task:TASK_ID receipts for tool/delegated work, alongside files or commands)."},
+                        "evidence": {"type": "array", "items": {"type": "string"}, "description": "References proving the claims (copy a successful operation_id from current work observations, or cite tool:CALL_ID, operation:OPERATION_ID or task:TASK_ID)."},
                         "unverified": {"type": "array", "items": {"type": "string"}, "description": "Claims that could not be verified."}
                     },
                     "required": ["status", "summary"]

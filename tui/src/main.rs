@@ -445,7 +445,7 @@ fn run_v2_effect(effect: V2Effect, client: &mut DaemonClient, app: &mut V2App, s
                 Err(error) => app.command_note(format!("The profile change was refused: {error}")),
             }
         }
-        V2Effect::EditDraft { .. } | V2Effect::OperatorShell { .. } | V2Effect::Quit => {}
+        V2Effect::EditDraft { .. } | V2Effect::OperatorShell { .. } | V2Effect::CodeGraph { .. } | V2Effect::Quit => {}
     }
 }
 
@@ -491,13 +491,21 @@ fn run_v2(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, mut client
                     if let Some(effect) = app.handle_key(key) {
                         match effect {
                             V2Effect::EditDraft { initial } => edit_in_editor(terminal, &mut app, &initial),
-                            V2Effect::OperatorShell { workspace, command, draft } => {
+                            local @ (V2Effect::OperatorShell { .. } | V2Effect::CodeGraph { .. }) => {
                                 let _ = images.clear(&mut std::io::stdout());
                                 restore_terminal();
-                                let result = teamagents_tui::operator_shell::run(
-                                    std::path::Path::new(&workspace),
-                                    command.as_deref(),
-                                );
+                                use teamagents_tui::operator_shell;
+                                let (label, draft, result) = match local {
+                                    V2Effect::OperatorShell { workspace, command, draft } => (
+                                        "Local shell",
+                                        draft,
+                                        operator_shell::run(workspace.as_ref(), command.as_deref()),
+                                    ),
+                                    V2Effect::CodeGraph { workspace, action } => {
+                                        ("CodeGraph", false, operator_shell::codegraph(workspace.as_ref(), action))
+                                    }
+                                    _ => unreachable!(),
+                                };
                                 enter_terminal();
                                 let _ = terminal.clear();
                                 match result {
@@ -512,12 +520,12 @@ fn run_v2(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, mut client
                                             ));
                                         } else {
                                             app.command_note(format!(
-                                                "Local shell {}{limit}; not sent.\n{}",
+                                                "{label} {}{limit}; not sent.\n{}",
                                                 out.status, out.text
                                             ));
                                         }
                                     }
-                                    Err(error) => app.command_failed(&format!("local shell: {error}; nothing sent")),
+                                    Err(error) => app.command_failed(&format!("{label}: {error}; nothing sent")),
                                 }
                             }
                             other => run_v2_effect(other, &mut client, &mut app, &mut sessions),

@@ -58,6 +58,8 @@ fn unrelated_options_fail_before_configuration_or_state_access() {
         &["mcp", "remove", "--name", "fixture", "--oauth"],
         &["mcp", "login", "--name", "fixture", "--paste", "--timeout", "1"],
         &["inputs", "paths", "--recipient", "i-other"],
+        &["codegraph", "init", "--session", "other"],
+        &["codegraph", "sync", "--json"],
         &["tasks", "--state-root", "missing", "--cwd", "."],
     ];
     for args in cases {
@@ -95,6 +97,7 @@ fn scoped_help_is_local_complete_and_hides_empty_choices() {
         vec!["sessions", "delete", "--help"],
         vec!["authority", "grant", "-h"],
         vec!["mcp", "add", "--help"],
+        vec!["codegraph", "init", "--help"],
     ] {
         let output = root.run(&args);
         assert!(output.status.success(), "{args:?}: {}", String::from_utf8_lossy(&output.stderr));

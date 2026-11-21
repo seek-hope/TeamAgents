@@ -246,6 +246,10 @@ pub enum V2Effect {
     EditDraft {
         initial: String,
     },
+    CodeGraph {
+        workspace: String,
+        action: &'static str,
+    },
     OperatorShell {
         workspace: String,
         command: Option<String>,
@@ -1224,6 +1228,7 @@ impl V2App {
                 | Command::Compact
                 | Command::Later
                 | Command::Shell
+                | Command::CodeGraph
                 | Command::Mcp
                 | Command::Rewind
         ) && argument.is_some_and(|text| !text.trim().is_empty())
@@ -1322,6 +1327,19 @@ Commands:
                     if !key.is_empty() && matches!(action,"start"|"stop"|"hide"|"expose"|"reconnect"){return Some(V2Effect::McpChange{action:action.into(),service:key.into()})}
                 }
                 self.command_note("Use /mcp status, or /mcp start|stop|hide|expose|reconnect KEY.");
+            }
+            Command::CodeGraph => {
+                let action = match argument.map(str::trim).unwrap_or("") {
+                    "" | "status" => "status",
+                    "sync" => "sync",
+                    "init" => "init",
+                    _ => { self.command_note("Use /codegraph status, init or sync."); return None; }
+                };
+                let Some(workspace) = self.workspace().filter(|w| std::path::Path::new(w).is_absolute() && !self.disconnected) else {
+                    self.command_note("Reconnect to select the workspace for CodeGraph.");
+                    return None;
+                };
+                return Some(V2Effect::CodeGraph { workspace: workspace.to_owned(), action });
             }
             Command::Shell => {
                 let Some(workspace) = self.workspace().filter(|w| std::path::Path::new(w).is_absolute() && !self.disconnected) else {
