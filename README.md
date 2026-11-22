@@ -141,7 +141,7 @@ See [the architecture guide](docs/ARCHITECTURE.md) for state machines and data r
 
 ## Current evidence
 
-The source contains **907 Rust tests** (core 210, engine 561, TUI 136).
+The source contains **910 Rust tests** (core 212, engine 562, TUI 136).
 Formal material contains **387 configurations across 47 modules**:
 
 - **63 positive configurations in 60 traversals**;

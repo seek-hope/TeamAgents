@@ -26,6 +26,10 @@ pub const CANCEL_TOOL: &str = "cancel_task";
 /// D-393: the independent-verification tool. An instance runs *another* work's user-pre-authorized checks and the
 /// round is recorded under its own instance, which is what a work requiring independent verification settles on.
 pub const VERIFY_TOOL: &str = "verify_work";
+/// Leader-only Worker approval tool (D-537): inspects and decides pending
+/// Worker operation approvals and capability requests within the Leader's
+/// own granted authority (never self-approval, never self-update).
+pub const APPROVAL_TOOL: &str = "decide_approval";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryKind {
@@ -477,6 +481,23 @@ pub fn collaboration_tool_schemas(actions: &[&str]) -> Vec<Json> {
                     }
                 }
             }),
+            APPROVAL_TOOL => json!({
+                "type": "function",
+                "function": {
+                    "name": APPROVAL_TOOL,
+                    "description": "Inspect or decide a Worker's pending operation approval or capability request within your own granted authority. Use action 'list' to view pending Worker requests, or 'approve'/'deny' with approval_id (for an operation approval) or request_id (for a capability request). You cannot approve your own operations, self-update requests, or capabilities outside your own live grants; those still require the user.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "action": {"type": "string", "enum": ["list", "approve", "deny"], "description": "Whether to list pending Worker requests or approve/deny one request."},
+                            "approval_id": {"type": "string", "description": "Pending Worker operation approval id (ap-...) to approve or deny."},
+                            "request_id": {"type": "string", "description": "Pending Worker capability request id (cr-...) to approve or deny."},
+                            "reason": {"type": "string", "description": "Optional reason when denying an operation approval."}
+                        },
+                        "required": ["action"]
+                    }
+                }
+            }),
             DELEGATE_TOOL => json!({
                 "type": "function",
                 "function": {
@@ -489,7 +510,7 @@ pub fn collaboration_tool_schemas(actions: &[&str]) -> Vec<Json> {
                             "task_id": {"type": "string", "description": "Optional explicit task id; one is generated when omitted."},
                             "description": {"type": "string"},
                             "acceptance_refs": {"type": "array", "items": {"type": "string"}, "description": "References the result must satisfy."},
-                            "capabilities": {"type": "array", "items": {"type": "string"}, "description": "Generic capabilities this task needs, e.g. shell@workspace. A standing grant on the assignee suffices. A live delegable parent can issue a task-scoped grant; otherwise the task waits for the user's approval and is not dispatched."}
+                            "capabilities": {"type": "array", "items": {"type": "string"}, "description": "Generic capabilities this task needs, e.g. shell@workspace. A standing grant on the assignee suffices. A live delegable parent grant issues a task-scoped grant immediately; otherwise the task waits in WAITING_CAPABILITY for approval by the Leader (within its own authority) or the user."}
                         },
                         "required": ["assignee", "description"]
                     }
@@ -507,7 +528,7 @@ pub fn collaboration_tool_schemas(actions: &[&str]) -> Vec<Json> {
                             "instructions": {"type": "string", "description": "System instructions for the new instance."},
                             "lifetime": {"type":"string","enum":["persistent","temporary"],"description":"Persistent (default) stays available for reuse. Temporary releases its driver after its final settled assignment when safe; workspace and receipts remain."},
                             "task": {"type": "string", "description": "Initial task description; registered with its narrow return path when present."},
-                            "capabilities": {"type": "array", "items": {"type": "string"}, "description": "Generic capabilities the initial task needs, e.g. shell@workspace. Requires task. A standing grant on the assignee suffices. A live delegable parent can issue a task-scoped grant; otherwise the instance waits in WAITING_CAPABILITY for the user's approval and the task is not dispatched."},
+                            "capabilities": {"type": "array", "items": {"type": "string"}, "description": "Generic capabilities the initial task needs, e.g. shell@workspace. Requires task. A standing grant on the assignee suffices. A live delegable parent grant issues a task-scoped grant immediately; otherwise the instance waits in WAITING_CAPABILITY for approval by the Leader (within its own authority) or the user."},
                             "workspace": {"type": "string", "enum": ["shared", "isolated", "git_worktree"],
                                 "description": "Where the instance works. shared (default) uses the project directory; isolated gets a private directory under the session state root; git_worktree gets its own branch and worktree, and falls back to shared (saying why) when the project is not a clean git repository."}
                         },

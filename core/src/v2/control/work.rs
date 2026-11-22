@@ -386,6 +386,10 @@ pub(super) fn observation(
         if matches_work {
             reset(tx, &k, "A task outcome or attention event arrived")?;
         }
+    } else if matches!(kind, "approval_requested" | "capability_requested") {
+        if view(tx, instance)?["state"] != "NEEDS_INPUT" {
+            reset(tx, &k, "A Worker approval or capability request arrived")?;
+        }
     } else if kind == "message" && !k.3.is_empty() && sender != instance {
         let requester: String = tx
             .query_row("SELECT requester FROM tasks WHERE id=?1", [&k.3], |r| r.get(0))

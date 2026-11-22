@@ -333,7 +333,7 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
   credentials, active jobs or external backups as repository housekeeping.
 - Source counts come from Cargo lists. Every registered current total/triple must match; missing/ambiguous
   statements fail. Numeric regeneration does not establish a passing gate, install or formal result.
-- Current source contains 907 Rust tests: core 210, engine 561 and TUI 136.
+- Current source contains 910 Rust tests: core 212, engine 562 and TUI 136.
 - Formal material has 387 configurations across 47 modules: 63 positive configurations in 60 traversals,
   323 controls and one separate wide configuration; 79 witnesses and 9 Kani harnesses. Shared traversals require
   identical model/specification/domain. Witnesses establish reachability, not safety. The report binds verified
@@ -366,3 +366,14 @@ and formal limits are in [verification/REPORT.md](../verification/REPORT.md).
 - D-536: a driver that ends in error while its row still says ACTIVE is parked with that error, exactly as a driver
   that cannot boot is. Dropping the finished task's `Result` and respawning on the next pass was a silent hot loop
   that reopened storage every poll. Storage backpressure is retryable in the driver rather than fatal.
+- D-537: Worker capability requests (`WAITING_CAPABILITY`) and Worker operation approvals (`WAITING_APPROVAL`)
+  route to the session Leader instead of blocking solely on the user (`core/src/v2/control.rs`,
+  `engine/src/v2/driver.rs`). Session bootstrap issues `boot-grant-delegable-*` grants (`manage`, `delegate`,
+  `message`, `web` at `session` scope and `shell@workspace` when workspace-backed) so in-scope `spawn`/`delegate`
+  calls attenuate task-scoped child grants directly. Pending Worker capability requests and non-self-update
+  operation approvals queue an envelope to the active Leader and supersede a `WAITING` Leader wait (`work_attention`)
+  so the Leader can inspect and decide them via the Leader-only `decide_approval` tool (`list`/`approve`/`deny`).
+  Strict bounds apply: a Leader may only approve within its own live covering grants (`issue_task_grant` with
+  parent cascade revocation for capabilities; `capability_gap` for operations), may never approve or deny its own
+  requests/operations or `request_self_update`, and Workers may never decide approvals. User overrides via `Ctrl+A`
+  or the CLI remain unconditionally available.

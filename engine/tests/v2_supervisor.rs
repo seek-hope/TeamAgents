@@ -22,6 +22,8 @@ enum Step {
     /// Stream text deltas (a transient preview) and then hold the request open for `u64` ms before replying,
     /// so a test can observe the preview while the turn runs (D-366).
     Deltas(Vec<String>, u64, Json),
+    /// Inspect the prepared request (including tool receipts) to construct the next reply.
+    Dynamic(Box<dyn FnOnce(&ModelRequest) -> Json + Send>),
 }
 
 type Seen = Arc<Mutex<HashMap<String, Vec<Vec<String>>>>>;
@@ -62,6 +64,7 @@ impl Provider for ScriptedProvider {
                 }
                 (message, ms)
             }
+            Step::Dynamic(build) => (build(request), 0),
         };
         if delay > 0 {
             // A held request honours the turn's cancel token (D-363): the interrupt test needs the turn to end
@@ -82,9 +85,9 @@ impl Provider for ScriptedProvider {
                 elapsed_ms: 1,
                 timing: teamagents_engine::providers::StreamTimingReport::default(),
             }),
-            Step::Slow(..) => unreachable!("the delay was already applied"),
-            Step::Held(..) => unreachable!("the held reply was already released"),
-            Step::Deltas(..) => unreachable!("the deltas were already emitted and the delay applied"),
+            Step::Slow(..) | Step::Held(..) | Step::Deltas(..) | Step::Dynamic(..) => {
+                unreachable!("the step was already resolved")
+            }
         }
     }
 }
@@ -1839,4 +1842,105 @@ async fn a_task_driven_worker_turn_sees_a_live_user_grant() {
          (all: {after:?})"
     );
     handle.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn leader_approves_worker_shell_and_delegates_capabilities_end_to_end() {
+    std::env::set_var("TEAMAGENTS_RUNNER_BIN", env!("CARGO_BIN_EXE_teamagents"));
+    let leader = vec![
+        Step::Message(json!({"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "spawn",
+             "arguments": json!({"instance_id": "i-worker", "instructions": "run shell proof", "workspace": "isolated"}).to_string()}},
+            {"id": "c2", "type": "function", "function": {"name": "delegate",
+             "arguments": json!({"assignee": "i-worker", "task_id": "t-shell", "description": "write worker_proof.txt",
+                                 "capabilities": ["shell@workspace"]}).to_string()}}
+        ]})),
+        Step::Message(wait_call("c3", json!({"mode": "ANY", "conditions": [{"kind": "task", "task_id": "t-shell"}]}))),
+        Step::Message(json!({"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c4", "type": "function", "function": {"name": "decide_approval",
+             "arguments": json!({"action": "list"}).to_string()}}
+        ]})),
+        Step::Dynamic(Box::new(|request: &ModelRequest| {
+            let approval_id = request
+                .messages
+                .iter()
+                .rev()
+                .filter(|msg| msg["role"] == "tool")
+                .filter_map(|msg| msg["content"].as_str())
+                .filter_map(|content| serde_json::from_str::<Json>(content).ok())
+                .find_map(|body| {
+                    body["approvals"]
+                        .as_array()
+                        .and_then(|rows| rows.first().and_then(|row| row["approval_id"].as_str()).map(str::to_string))
+                })
+                .expect("decide_approval list returned pending worker approval");
+            assert!(approval_id.starts_with("ap-"), "{approval_id}");
+            json!({"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c5", "type": "function", "function": {"name": "decide_approval",
+                 "arguments": json!({"action": "approve", "approval_id": approval_id}).to_string()}}
+            ]})
+        })),
+        Step::Message(wait_call("c6", json!({"mode": "ANY", "conditions": [{"kind": "task", "task_id": "t-shell"}]}))),
+        Step::Message(finish_call("approved worker shell and completed")),
+    ];
+    let worker = vec![
+        Step::Message(json!({"role": "assistant", "content": "", "tool_calls": [
+            {"id": "w1", "type": "function", "function": {"name": "shell",
+             "arguments": json!({"command": "echo approved-by-leader > worker_proof.txt"}).to_string()}}
+        ]})),
+        Step::Message(finish_call("shell ran after leader approval")),
+    ];
+    let seen: Seen = Arc::new(Mutex::new(HashMap::new()));
+    let root = root("leader-approves-worker");
+    std::fs::create_dir_all(root.dir.join("ws")).unwrap();
+    let mut cfg = config(
+        &root,
+        factory_with_log(
+            HashMap::from([("i-leader".to_string(), leader), ("i-worker".to_string(), worker)]),
+            seen.clone(),
+        ),
+    );
+    cfg.require_shell_approval = true;
+    let handle = start(cfg).await.expect("start");
+    handle.input("i-leader", "have worker run the shell command").await.expect("input");
+    let closed = wait_event(&handle, "work_completed", 25_000).await;
+    let proof = root.dir.join("state/instances/i-worker/work/worker_proof.txt");
+    let proof_text = std::fs::read_to_string(&proof);
+    let control = second_control(&root);
+    let task_status: String =
+        control.connection().query_row("SELECT status FROM tasks WHERE id = 't-shell'", [], |r| r.get(0)).unwrap();
+    let op_row: (String, Option<String>) = control
+        .connection()
+        .query_row(
+            "SELECT o.status, o.receipt_json FROM operations o
+             JOIN decisions d ON d.decision_id = o.decision_id
+             JOIN model_requests r ON r.request_id = d.request_id
+             WHERE r.instance_id = 'i-worker' AND json_extract(o.intent_json, '$.name') = 'shell'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    let granted_by_leader: i64 = control
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE kind = 'approval_granted' AND json_extract(payload_json, '$.approver') = 'i-leader'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    drop(control);
+    handle.shutdown().await.expect("shutdown");
+
+    assert_eq!(closed["payload"]["status"], json!("SUCCEEDED"), "{closed}");
+    assert_eq!(task_status, "SUCCEEDED");
+    assert_eq!(op_row.0, "SUCCEEDED", "worker shell op receipt: {:?}", op_row.1);
+    let text = proof_text.unwrap_or_else(|e| panic!("worker proof exists ({e}); shell op: {op_row:?}"));
+    assert_eq!(text.trim(), "approved-by-leader");
+    assert_eq!(granted_by_leader, 1);
+
+    let log = seen.lock().unwrap();
+    let leader_tools = log.get("i-leader").and_then(|reqs| reqs.first()).cloned().unwrap_or_default();
+    let worker_tools = log.get("i-worker").and_then(|reqs| reqs.first()).cloned().unwrap_or_default();
+    assert!(leader_tools.contains(&"decide_approval".to_string()), "{leader_tools:?}");
+    assert!(!worker_tools.contains(&"decide_approval".to_string()), "{worker_tools:?}");
 }

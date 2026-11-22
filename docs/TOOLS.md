@@ -95,6 +95,19 @@ Verify another instance's claim: run the target work's user-pre-authorized accep
 |---|---|---|---|
 | `work_id` | `string` | yes | The work whose checks you are running. |
 
+### `decide_approval`
+
+*Offered by `kernel::collaboration_tool_schemas(actions)` (per grant).*
+
+Inspect or decide a Worker's pending operation approval or capability request within your own granted authority. Use action 'list' to view pending Worker requests, or 'approve'/'deny' with approval_id (for an operation approval) or request_id (for a capability request). You cannot approve your own operations, self-update requests, or capabilities outside your own live grants; those still require the user.
+
+| Parameter | Type | Required | Meaning |
+|---|---|---|---|
+| `action` | `string` | yes | Whether to list pending Worker requests or approve/deny one request. |
+| `approval_id` | `string` | no | Pending Worker operation approval id (ap-...) to approve or deny. |
+| `request_id` | `string` | no | Pending Worker capability request id (cr-...) to approve or deny. |
+| `reason` | `string` | no | Optional reason when denying an operation approval. |
+
 ### `delegate`
 
 *Offered by `kernel::collaboration_tool_schemas(actions)` (per grant).*
@@ -107,7 +120,7 @@ Delegate a task to another instance with a narrow return path: the assignee can 
 | `task_id` | `string` | no | Optional explicit task id; one is generated when omitted. |
 | `description` | `string` | yes | — |
 | `acceptance_refs` | `array` | no | References the result must satisfy. |
-| `capabilities` | `array` | no | Generic capabilities this task needs, e.g. shell@workspace. A standing grant on the assignee suffices. A live delegable parent can issue a task-scoped grant; otherwise the task waits for the user's approval and is not dispatched. |
+| `capabilities` | `array` | no | Generic capabilities this task needs, e.g. shell@workspace. A standing grant on the assignee suffices. A live delegable parent grant issues a task-scoped grant immediately; otherwise the task waits in WAITING_CAPABILITY for approval by the Leader (within its own authority) or the user. |
 
 ### `spawn`
 
@@ -121,7 +134,7 @@ Create a new instance and atomically register its initial task with the return p
 | `instructions` | `string` | yes | System instructions for the new instance. |
 | `lifetime` | `string` | no | Persistent (default) stays available for reuse. Temporary releases its driver after its final settled assignment when safe; workspace and receipts remain. |
 | `task` | `string` | no | Initial task description; registered with its narrow return path when present. |
-| `capabilities` | `array` | no | Generic capabilities the initial task needs, e.g. shell@workspace. Requires task. A standing grant on the assignee suffices. A live delegable parent can issue a task-scoped grant; otherwise the instance waits in WAITING_CAPABILITY for the user's approval and the task is not dispatched. |
+| `capabilities` | `array` | no | Generic capabilities the initial task needs, e.g. shell@workspace. Requires task. A standing grant on the assignee suffices. A live delegable parent grant issues a task-scoped grant immediately; otherwise the instance waits in WAITING_CAPABILITY for approval by the Leader (within its own authority) or the user. |
 | `workspace` | `string` | no | Where the instance works. shared (default) uses the project directory; isolated gets a private directory under the session state root; git_worktree gets its own branch and worktree, and falls back to shared (saying why) when the project is not a clean git repository. |
 
 ### `cancel_task`

@@ -277,7 +277,12 @@ or select `persistent` to keep a reusable Worker. Cancellation or a blocked task
 
 ## 4. Approvals and lifecycle
 
-Ctrl+A focuses pending approvals. `a` approves once, `d` denies, and `Esc` returns to the draft. Approval arrival
+Ctrl+A focuses pending approvals. `a` approves once, `d` denies, and `Esc` returns to the draft. By default
+(`D-537`), Worker capability grants within the Leader's scope are attenuated directly at delegation, and pending
+Worker operation approvals or capability requests wake the Leader to decide within its own live grants via
+`decide_approval`; the user retains override authority in the TUI (`Ctrl+A`) and CLI (`teamagents approvals` /
+`teamagents authority`), and Leader self-approvals, out-of-scope capabilities and `request_self_update` still require
+the user. Approval arrival
 does not steal typing focus. Selection follows the approval ID across refreshes; if that approval disappears,
 focus returns to the draft. Decision keys require a plain press. Repeat events cannot confirm approvals, apply
 profiles or switch modes. Ctrl+M and Ctrl+Enter both toggle the model menu; plain Enter applies the selection.

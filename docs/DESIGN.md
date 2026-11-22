@@ -109,8 +109,10 @@ nor blanket file permissions. Binding an MCP service or web tool does not bypass
 
 Absence of a grant authorizes nothing: `web` fails closed, so a member with no `web` grant is refused by both
 web tools, and `web@domain:<host>` both admits those hosts and filters search hits to them. The Leader of a
-session the user opened receives `web@session` from the same bootstrap that gives it `manage`, `delegate` and
-`message`; a spawned Worker receives none of it and must have its scope narrowed through its task.
+session the user opened receives delegable `web@session` and `shell@workspace` alongside delegable `manage`,
+`delegate` and `message` from bootstrap (`D-537`); a spawned Worker starts without them and receives narrowed,
+non-delegable, task-scoped grants (directly on delegation when within Leader's delegable grants, or upon Leader/user
+capability approval).
 
 ### 5.2 The model-visible surface
 
@@ -150,7 +152,10 @@ not automatically inherited by tool processes.
 ### 6.1 Pre-execution protocol
 
 Dispatch is the authorization linearization point: operation identity, argument hash, grant revision and any
-approval are rechecked before an effect starts. A stale schema never authorizes an operation.
+approval are rechecked before an effect starts. A stale schema never authorizes an operation. Pending Worker
+operation approvals (excluding `request_self_update`) and Worker capability requests wake and notify the active
+session Leader, which may approve or deny them within its own live grants via `decide_approval` (`D-537`); Leader
+self-approvals, out-of-scope requests and self-updates remain user-only, and the user retains override authority.
 Ordinary tool intents with malformed supplied argument encodings or non-object arguments are refused before
 approval and execution. The raw call remains in history; a failed, not-started receipt allows correction.
 A field named `_invalid_arguments` in valid JSON is ordinary data, not proof of a parse failure.
@@ -261,7 +266,7 @@ JSON export are read-only projections, not second business stores.
 `tools/` contains executable development and verification utilities, generated-document checkers and current
 product probes. `tools/tmp/` is ignored scratch for new local runs, not source or committed evidence.
 
-The current source has 907 Rust tests. Formal material has 387 configurations across 47 modules: 63 positive
+The current source has 910 Rust tests. Formal material has 387 configurations across 47 modules: 63 positive
 configurations, 323 controls and one separate wide configuration, evaluated in 60 positive traversals. There
 are 79 normal-path witnesses and 9 Kani harnesses. Witnesses demonstrate reachability only.
 

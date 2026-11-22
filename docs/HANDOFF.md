@@ -7,7 +7,7 @@ by catalogue key. Workers follow it or share a pinned profile. In the TUI, click
 `model(provider)` row and save. At startup an explicit `--model` takes priority over the saved selection,
 then the user configuration's `default_model`.
 
-- **907 Rust tests**: core 210, engine 561, TUI 136.
+- **910 Rust tests**: core 212, engine 562, TUI 136.
 - For acceptance scenarios and regression coverage, see [ACCEPTANCE.md](ACCEPTANCE.md).
 - For formal verification scope and the current input fingerprint, see [verification/REPORT.md](../verification/REPORT.md).
 

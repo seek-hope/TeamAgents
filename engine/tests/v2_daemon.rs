@@ -639,7 +639,7 @@ async fn the_surface_record_follows_the_grants_and_is_written_once_per_request()
     let first = records(&mut client).await;
     let first_leader = first.iter().find(|row| row["instance_id"] == json!("i-leader")).cloned().unwrap_or_default();
     let offered = names(&first_leader);
-    for gated in ["wait", "send", "delegate", "spawn", "cancel_task"] {
+    for gated in ["wait", "send", "delegate", "spawn", "cancel_task", "decide_approval"] {
         assert!(offered.iter().any(|name| name == gated), "{gated} was not offered: {offered:?}");
     }
     assert!(!offered.iter().any(|name| name == "shell"), "no shell grant exists yet: {offered:?}");

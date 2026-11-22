@@ -3,7 +3,7 @@
 Baseline: [DESIGN.md](DESIGN.md) §1/§12 and the current decisions in [DECISIONS.md](DECISIONS.md).
 The tables below map each requirement to implementation checks and their limits. Run the checks against the source or package under evaluation.
 
-Current source inventory: core 210 / engine 561 / tui 136 test targets.
+Current source inventory: core 212 / engine 562 / tui 136 test targets.
 
 ## Requirements (Q1–Q19) and their evidence
 

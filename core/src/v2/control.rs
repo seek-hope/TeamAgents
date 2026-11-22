@@ -659,6 +659,80 @@ fn active_delegable_grant(
     Ok(best)
 }
 
+fn is_session_leader(tx: &Connection, session_id: &str, instance_id: &str) -> Result<bool, String> {
+    tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM instances
+         WHERE id = ?1 AND session_id = ?2 AND is_leader = 1 AND lifecycle != 'TERMINATED')",
+        rusqlite::params![instance_id, session_id],
+        |row| row.get(0),
+    )
+    .map_err(|e| format!("leader lookup: {e}"))
+}
+
+fn session_leader_id(tx: &Connection, session_id: &str) -> Result<Option<(String, i64)>, String> {
+    tx.query_row(
+        "SELECT id, context_epoch FROM instances
+         WHERE session_id = ?1 AND is_leader = 1 AND lifecycle != 'TERMINATED'
+         ORDER BY rowid LIMIT 1",
+        [session_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .optional()
+    .map_err(|e| format!("session leader lookup: {e}"))
+}
+
+fn leader_covering_grant(
+    tx: &Connection,
+    leader_id: &str,
+    action: &str,
+    scope: &str,
+) -> Result<Option<(String, String)>, String> {
+    if matches!(action, "message" | "delegate") {
+        if let Some(grant) = active_grant(tx, leader_id, "manage", scope)? {
+            return Ok(Some(grant));
+        }
+    }
+    active_grant(tx, leader_id, action, scope)
+}
+
+fn wake_leader_for_approval(
+    tx: &Connection,
+    session_id: &str,
+    leader_id: &str,
+    leader_epoch: i64,
+    note: &str,
+) -> Result<(), String> {
+    let (_, _, lifecycle, phase, _) = load_instance(tx, leader_id)?;
+    if lifecycle != "ACTIVE" || phase != "WAITING" {
+        return Ok(());
+    }
+    let waits: Vec<String> = {
+        let mut stmt = tx
+            .prepare("SELECT id FROM waits WHERE instance_id = ?1 AND epoch = ?2 AND status = 'PENDING'")
+            .map_err(|e| format!("leader approval waits: {e}"))?;
+        let rows = stmt
+            .query_map(rusqlite::params![leader_id, leader_epoch], |row| row.get::<_, String>(0))
+            .map_err(|e| format!("leader approval waits query: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("leader approval waits collect: {e}"))?
+    };
+    if waits.is_empty() {
+        return Ok(());
+    }
+    for wait_id in &waits {
+        tx.execute("UPDATE waits SET status = 'CANCELLED' WHERE id = ?1 AND status = 'PENDING'", [wait_id])
+            .map_err(|e| format!("cancel wait {wait_id}: {e}"))?;
+    }
+    answer_closed_waits(tx, leader_id, leader_epoch, &waits, note)?;
+    tx.execute(
+        "UPDATE instances SET phase = 'READY', revision = revision + 1 WHERE id = ?1 AND phase = 'WAITING'",
+        [leader_id],
+    )
+    .map_err(|e| format!("wake leader phase: {e}"))?;
+    work::wake(tx, leader_id, leader_epoch, note)?;
+    event(tx, session_id, "work_attention", leader_id, &json!({"waits": waits, "reason": "approval_requested"}))?;
+    Ok(())
+}
+
 impl Control {
     /// Whether `subject` holds a live grant of `action` covering `resource` —
     /// exactly the question the dispatch re-check asks (A03/A04). The
@@ -721,6 +795,20 @@ fn capability_gap(
         }
         Some(crate::kernel::SPAWN_TOOL) if !authorized(tx, instance, "manage", "session")? => {
             Some(format!("instance {instance} holds no manage grant over the session"))
+        }
+        Some(crate::kernel::APPROVAL_TOOL) => {
+            let leader: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM instances WHERE id = ?1 AND is_leader = 1 AND lifecycle != 'TERMINATED')",
+                    [instance],
+                    |row| row.get(0),
+                )
+                .map_err(|e| format!("approval leader check: {e}"))?;
+            if leader && authorized(tx, instance, "manage", "session")? {
+                None
+            } else {
+                Some(format!("instance {instance} is not authorized to decide Worker approvals"))
+            }
         }
         _ => None,
     };
@@ -812,19 +900,21 @@ struct CapabilityGrantSpec<'a> {
     scope: &'a str,
     task_id: &'a str,
     parent_id: Option<&'a str>,
+    require_delegable: bool,
 }
 
-/// Issue one attenuated, task-scoped child grant from a live delegable parent
-/// (D-455). A spawned child grant is never delegable; a user approval may use
-/// the user identity and issue the same task-scoped shape directly.
+/// Issue one attenuated, task-scoped child grant (D-455 / D-537). A spawned
+/// child grant is never delegable; automatic delegation requires a live
+/// delegable parent, whereas explicit Leader or user capability approval
+/// still enforces strict parent coverage and cascade revocation.
 fn issue_task_grant(tx: &Connection, session_id: &str, spec: CapabilityGrantSpec<'_>) -> Result<String, String> {
-    let CapabilityGrantSpec { issuer, subject, action, scope, task_id, parent_id } = spec;
+    let CapabilityGrantSpec { issuer, subject, action, scope, task_id, parent_id, require_delegable } = spec;
     if !crate::v2::capability::authorizes_something(action, scope) {
         return Err(format!("no check asks about {action}@{scope}"));
     }
     if issuer != "user" {
         let parent =
-            parent_id.ok_or_else(|| format!("instance {issuer} needs a delegable parent for {action}@{scope}"))?;
+            parent_id.ok_or_else(|| format!("instance {issuer} needs a covering parent for {action}@{scope}"))?;
         let row: Option<(String, String, i64)> = tx
             .query_row(
                 "SELECT action, resource_scope, delegable FROM grants WHERE id = ?1 AND revoked_at IS NULL",
@@ -837,9 +927,13 @@ fn issue_task_grant(tx: &Connection, session_id: &str, spec: CapabilityGrantSpec
             return Err(format!("capability parent {parent} is missing or revoked"));
         };
         let action_ok = p_action == action || (p_action == "manage" && matches!(action, "message" | "delegate"));
-        if p_delegable != 1 || !action_ok || !crate::v2::capability::scope_covers(&p_scope, scope) {
+        if (require_delegable && p_delegable != 1)
+            || !action_ok
+            || !crate::v2::capability::scope_covers(&p_scope, scope)
+        {
             return Err(format!(
-                "capability parent {parent} is not a live delegable covering grant for {action}@{scope}"
+                "capability parent {parent} is not a live {}covering grant for {action}@{scope}",
+                if require_delegable { "delegable " } else { "" }
             ));
         }
     }
@@ -1189,6 +1283,8 @@ fn create_instance(tx: &Connection, session_id: &str, params: &Json, identity: &
     }
     let workspace = params["workspace_ref"].as_str().unwrap_or("");
     let is_leader = params["is_leader"].as_bool().unwrap_or(false) && matches!(identity, Identity::User);
+    let delegable_workspace =
+        params["delegable_workspace"].as_bool().unwrap_or(false) && matches!(identity, Identity::User);
     let lifetime = params
         .get("lifetime")
         .map_or(Some("persistent"), Json::as_str)
@@ -1224,9 +1320,9 @@ fn create_instance(tx: &Connection, session_id: &str, params: &Json, identity: &
         // scope. Spawned instances get theirs through issue_grant (spawn).
         let grant_id = format!("g-{}", uuid::Uuid::new_v4());
         tx.execute(
-            "INSERT INTO grants (id, session_id, issuer, subject, action, resource_scope, parent_grant_id, revision, revoked_at)
-             VALUES (?1, ?2, 'user', ?3, 'shell', 'workspace', NULL, 0, NULL)",
-            rusqlite::params![grant_id, session_id, id],
+            "INSERT INTO grants (id, session_id, issuer, subject, action, resource_scope, parent_grant_id, delegable, revision, revoked_at)
+             VALUES (?1, ?2, 'user', ?3, 'shell', 'workspace', NULL, ?4, 0, NULL)",
+            rusqlite::params![grant_id, session_id, id, delegable_workspace as i64],
         )
         .map_err(|e| format!("workspace grant: {e}"))?;
         bump_grant_revision(tx)?;
@@ -1420,6 +1516,8 @@ fn envelope_text(kind: &str, sender: &str, correlation: Option<&str>, payload: &
         ("task_assigned", Some(task)) => format!("[task {task} assigned by {sender}] {text}"),
         ("task_result", Some(task)) => format!("[task {task} result from {sender}] {text}"),
         ("task_cancelled", Some(task)) => format!("[task {task} cancelled by {sender}] {text}"),
+        ("approval_requested", Some(approval_id)) => format!("[approval {approval_id} requested by {sender}] {text}"),
+        ("capability_requested", Some(request_id)) => format!("[capability {request_id} requested by {sender}] {text}"),
         (other, _) => format!("[{other} from {sender}] {text}"),
     }
 }
@@ -1540,6 +1638,7 @@ fn drain_inbox(tx: &Connection, session_id: &str, params: &Json, identity: &Iden
     };
     let mut applied = 0i64;
     let mut sealed = 0i64;
+    let mut saw_approval_envelope = false;
     // named, so a client waiting on one of them learns *its* outcome: an input the
     // drain seals was never delivered, and saying so beats letting the caller wait
     // out its own deadline (D-72)
@@ -1577,6 +1676,9 @@ fn drain_inbox(tx: &Connection, session_id: &str, params: &Json, identity: &Iden
             work::admit_input(tx, session_id, instance_id, &id)?;
             supersede_input_waits(tx, instance_id)?;
         } else {
+            if matches!(kind.as_str(), "approval_requested" | "capability_requested") {
+                saw_approval_envelope = true;
+            }
             work::observation(tx, instance_id, &kind, &sender, correlation.as_deref())?;
         }
         applied += 1;
@@ -1601,6 +1703,15 @@ fn drain_inbox(tx: &Connection, session_id: &str, params: &Json, identity: &Iden
     // applied envelopes are wait facts: satisfying a pending wait closes it
     // and wakes the instance in this same transaction (§5.3, A23)
     let woken = wake_satisfied(tx, session_id)?;
+    if saw_approval_envelope && is_session_leader(tx, session_id, instance_id)? {
+        wake_leader_for_approval(
+            tx,
+            session_id,
+            instance_id,
+            epoch,
+            "Wait superseded by a Worker approval or capability request; review it with decide_approval.",
+        )?;
+    }
     let revision: i64 = tx
         .query_row("SELECT revision FROM instances WHERE id = ?1", [instance_id], |row| row.get(0))
         .map_err(|e| format!("instance revision read: {e}"))?;
@@ -1679,12 +1790,48 @@ fn create_capability_request(
         &json!({"request_id": id, "requester": requester, "subject": subject, "action": action,
                 "resource_scope": scope, "task_id": task_id, "parent_grant_id": parent}),
     )?;
+    if let Some((leader_id, leader_epoch)) = session_leader_id(tx, session_id)? {
+        if subject != leader_id
+            && requester != leader_id
+            && leader_covering_grant(tx, &leader_id, action, scope)?.is_some()
+        {
+            queue_envelope(
+                tx,
+                session_id,
+                &Outbox {
+                    sender: subject,
+                    recipient: &leader_id,
+                    epoch: leader_epoch,
+                    kind: "capability_requested",
+                    correlation_id: Some(&id),
+                    payload: &json!({
+                        "request_id": id,
+                        "subject": subject,
+                        "action": action,
+                        "resource_scope": scope,
+                        "task_id": task_id,
+                        "text": format!(
+                            "Worker {subject} requests capability {action}@{scope} for task {task_id} (request {id}). Review with decide_approval."
+                        ),
+                    }),
+                },
+            )?;
+            wake_leader_for_approval(
+                tx,
+                session_id,
+                &leader_id,
+                leader_epoch,
+                "Wait superseded by a Worker capability request; review it with decide_approval.",
+            )?;
+        }
+    }
     Ok(id)
 }
 
 /// Resolve a task's capabilities atomically. A live delegable parent is used to
 /// issue an attenuated child; a user-created task may issue directly; anything
-/// else becomes a user approval request and holds the task.
+/// else becomes a capability approval request (handled by the Leader within its
+/// own authority or by the user) and holds the task.
 fn resolve_requested_capabilities(
     tx: &Connection,
     session_id: &str,
@@ -1720,7 +1867,15 @@ fn resolve_requested_capabilities(
             granted.push(issue_task_grant(
                 tx,
                 session_id,
-                CapabilityGrantSpec { issuer: "user", subject, action, scope, task_id, parent_id: None },
+                CapabilityGrantSpec {
+                    issuer: "user",
+                    subject,
+                    action,
+                    scope,
+                    task_id,
+                    parent_id: None,
+                    require_delegable: false,
+                },
             )?);
             continue;
         }
@@ -1728,7 +1883,15 @@ fn resolve_requested_capabilities(
             granted.push(issue_task_grant(
                 tx,
                 session_id,
-                CapabilityGrantSpec { issuer: requester, subject, action, scope, task_id, parent_id: Some(&parent_id) },
+                CapabilityGrantSpec {
+                    issuer: requester,
+                    subject,
+                    action,
+                    scope,
+                    task_id,
+                    parent_id: Some(&parent_id),
+                    require_delegable: true,
+                },
             )?);
         } else {
             let parent = active_grant(tx, requester, action, scope)?.map(|(id, _)| id);
@@ -2007,8 +2170,10 @@ fn read_capability_requests(tx: &Connection, session_id: &str) -> Result<Json, S
 }
 
 fn approve_capability(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
-    if !matches!(identity, Identity::User) {
-        return Err("only the user may approve a capability request".into());
+    match identity {
+        Identity::User => {}
+        Identity::Instance(actor) if is_session_leader(tx, session_id, actor)? => {}
+        _ => return Err("only the user or the session leader may approve a capability request".into()),
     }
     let id = params["request_id"].as_str().ok_or("approve_capability.request_id required")?;
     type CapabilityRequestRow = (String, String, String, String, String, Option<String>, String);
@@ -2027,16 +2192,32 @@ fn approve_capability(tx: &Connection, session_id: &str, params: &Json, identity
     if status != "PENDING" {
         return Err(format!("capability request {id} is {status}, not pending"));
     }
+    let (issuer, leader_parent): (&str, Option<String>) = match identity {
+        Identity::User => ("user", None),
+        Identity::Instance(actor) => {
+            if subject == *actor {
+                return Err("the leader cannot approve its own capability request; user approval required".into());
+            }
+            let Some((parent_id, _)) = leader_covering_grant(tx, actor, &action, &scope)? else {
+                return Err(format!(
+                    "leader {actor} holds no live grant covering {action}@{scope}; user approval required"
+                ));
+            };
+            (actor.as_str(), Some(parent_id))
+        }
+        Identity::System => unreachable!(),
+    };
     let grant_id = issue_task_grant(
         tx,
         session_id,
         CapabilityGrantSpec {
-            issuer: "user",
+            issuer,
             subject: &subject,
             action: &action,
             scope: &scope,
             task_id: &task_id,
-            parent_id: parent.as_deref(),
+            parent_id: leader_parent.as_deref().or(parent.as_deref()),
+            require_delegable: false,
         },
     )?;
     let now = crate::models::now();
@@ -2050,7 +2231,8 @@ fn approve_capability(tx: &Connection, session_id: &str, params: &Json, identity
         session_id,
         "capability_approved",
         &subject,
-        &json!({"request_id": id, "grant_id": grant_id, "task_id": task_id, "subject": subject}),
+        &json!({"request_id": id, "grant_id": grant_id, "task_id": task_id, "subject": subject,
+                "approver": identity.actor()}),
     )?;
     let dispatched = dispatch_held_task(tx, session_id, &task_id)?.is_some();
     let _ = wake_satisfied(tx, session_id)?;
@@ -2059,17 +2241,28 @@ fn approve_capability(tx: &Connection, session_id: &str, params: &Json, identity
 }
 
 fn deny_capability(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
-    if !matches!(identity, Identity::User) {
-        return Err("only the user may deny a capability request".into());
+    match identity {
+        Identity::User => {}
+        Identity::Instance(actor) if is_session_leader(tx, session_id, actor)? => {}
+        _ => return Err("only the user or the session leader may deny a capability request".into()),
     }
     let id = params["request_id"].as_str().ok_or("deny_capability.request_id required")?;
-    let (task_id, status): (String, String) = tx
+    let row: Option<(String, String, String)> = tx
         .query_row(
-            "SELECT task_id, status FROM capability_requests WHERE id = ?1 AND session_id = ?2",
+            "SELECT subject, task_id, status FROM capability_requests WHERE id = ?1 AND session_id = ?2",
             rusqlite::params![id, session_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
+        .optional()
         .map_err(|e| format!("capability request {id}: {e}"))?;
+    let Some((subject, task_id, status)) = row else {
+        return Err(format!("capability request {id} does not exist"));
+    };
+    if let Identity::Instance(actor) = identity {
+        if subject == *actor {
+            return Err("the leader cannot deny its own capability request; user decision required".into());
+        }
+    }
     if status != "PENDING" {
         return Err(format!("capability request {id} is {status}, not pending"));
     }
@@ -2106,7 +2299,7 @@ fn deny_capability(tx: &Connection, session_id: &str, params: &Json, identity: &
         session_id,
         "capability_denied",
         &task_id,
-        &json!({"request_id": id, "task_id": task_id, "status": "CANCELLED"}),
+        &json!({"request_id": id, "task_id": task_id, "status": "CANCELLED", "decided_by": identity.actor()}),
     )?;
     let _ = wake_satisfied(tx, session_id)?;
     Ok(json!({"request_id": id, "status": "DENIED", "task_id": task_id, "task_status": "CANCELLED"}))
@@ -4216,6 +4409,28 @@ fn import_response(tx: &Connection, session_id: &str, params: &Json, identity: &
         work::response(tx, session_id, &request_instance, decision_id, params)?;
     }
     work::wake_attention(tx, session_id, &request_instance)?;
+    if wait_registered.as_ref().is_some_and(|(_, satisfied)| !satisfied)
+        && is_session_leader(tx, session_id, &request_instance)?
+    {
+        let pending_approval_env: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM envelopes
+                 WHERE recipient = ?1 AND epoch = ?2 AND state = 'ACCEPTED'
+                   AND kind IN ('approval_requested', 'capability_requested'))",
+                rusqlite::params![request_instance, epoch],
+                |row| row.get(0),
+            )
+            .map_err(|e| format!("pending approval envelope: {e}"))?;
+        if pending_approval_env {
+            wake_leader_for_approval(
+                tx,
+                session_id,
+                &request_instance,
+                epoch,
+                "Wait superseded by a Worker approval or capability request; review it with decide_approval.",
+            )?;
+        }
+    }
     let phase = load_instance(tx, &request_instance)?.3;
     let _ = identity;
     publish_list(tx, session_id, params)?;
@@ -4573,6 +4788,42 @@ fn dispatch_operation(tx: &Connection, session_id: &str, params: &Json) -> Resul
                     )
                     .map_err(|e| format!("approval insert: {e}"))?;
                     event(tx, session_id, "approval_requested", operation_id, &json!({"approval_id": id}))?;
+                    if intent["name"].as_str() != Some("request_self_update") {
+                        if let Some((leader_id, leader_epoch)) = session_leader_id(tx, session_id)? {
+                            if leader_id != instance {
+                                let tool = intent["name"].as_str().unwrap_or("unknown");
+                                queue_envelope(
+                                    tx,
+                                    session_id,
+                                    &Outbox {
+                                        sender: &instance,
+                                        recipient: &leader_id,
+                                        epoch: leader_epoch,
+                                        kind: "approval_requested",
+                                        correlation_id: Some(&id),
+                                        payload: &json!({
+                                            "approval_id": id,
+                                            "operation_id": operation_id,
+                                            "instance_id": instance,
+                                            "tool": intent["name"],
+                                            "args": intent["args"],
+                                            "text": format!(
+                                                "Worker {instance} requests approval {id} for tool {tool} (operation {operation_id}): {}. Review with decide_approval.",
+                                                intent["args"]
+                                            ),
+                                        }),
+                                    },
+                                )?;
+                                wake_leader_for_approval(
+                                    tx,
+                                    session_id,
+                                    &leader_id,
+                                    leader_epoch,
+                                    "Wait superseded by a Worker approval request; review it with decide_approval.",
+                                )?;
+                            }
+                        }
+                    }
                     id
                 }
             };
@@ -4636,11 +4887,55 @@ fn require_user(identity: &Identity) -> Result<(), String> {
     Ok(())
 }
 
-/// User approval: flips a PENDING approval; dispatch re-checks hash/revision.
+fn load_pending_approval_target(
+    tx: &Connection,
+    session_id: &str,
+    approval_id: &str,
+) -> Result<(String, String, Json), String> {
+    let row: Option<(String, String, String)> = tx
+        .query_row(
+            "SELECT o.operation_id, r.instance_id, o.intent_json
+             FROM approvals a
+             JOIN operations o ON o.operation_id = a.operation_id
+             JOIN decisions d ON d.decision_id = o.decision_id
+             JOIN model_requests r ON r.request_id = d.request_id
+             WHERE a.id = ?1 AND a.session_id = ?2 AND a.status = 'PENDING'",
+            rusqlite::params![approval_id, session_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .map_err(|e| format!("approval {approval_id}: {e}"))?;
+    let Some((operation_id, op_instance, intent_json)) = row else {
+        return Err(format!("approval {approval_id} is not pending"));
+    };
+    let intent: Json = serde_json::from_str(&intent_json).map_err(|e| format!("approval {approval_id} intent: {e}"))?;
+    Ok((operation_id, op_instance, intent))
+}
+
+/// User or session-Leader approval: flips a PENDING approval; dispatch re-checks hash/revision.
 fn approve(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
-    require_user(identity)?;
+    let leader_actor: Option<&str> = match identity {
+        Identity::User => None,
+        Identity::Instance(actor) if is_session_leader(tx, session_id, actor)? => Some(actor.as_str()),
+        _ => return Err("this command requires the trusted user or session leader identity".into()),
+    };
     let approval_id = params["approval_id"].as_str().ok_or("approve.approval_id required")?;
     let expires_at = params["expires_at"].as_f64();
+    let operation_id: Option<String> = if let Some(actor) = leader_actor {
+        let (operation_id, op_instance, intent) = load_pending_approval_target(tx, session_id, approval_id)?;
+        if op_instance == actor {
+            return Err("the leader cannot approve its own operation; user approval required".into());
+        }
+        if intent["name"].as_str() == Some("request_self_update") {
+            return Err("self-update approval is user-only".into());
+        }
+        if let Some(gap) = capability_gap(tx, actor, &intent, None)? {
+            return Err(format!("leader cannot approve operation outside its own grants: {gap}"));
+        }
+        Some(operation_id)
+    } else {
+        None
+    };
     let changed = tx
         .execute(
             "UPDATE approvals SET status = 'APPROVED', expires_at = ?2 WHERE id = ?1 AND status = 'PENDING'",
@@ -4650,16 +4945,49 @@ fn approve(tx: &Connection, session_id: &str, params: &Json, identity: &Identity
     if changed != 1 {
         return Err(format!("approval {approval_id} is not pending"));
     }
-    event(tx, session_id, "approval_granted", approval_id, &json!({"approval_id": approval_id}))?;
-    Ok(json!({"approval_id": approval_id, "status": "APPROVED"}))
+    event(
+        tx,
+        session_id,
+        "approval_granted",
+        approval_id,
+        &json!({"approval_id": approval_id, "approver": identity.actor()}),
+    )?;
+    let mut out = json!({"approval_id": approval_id, "status": "APPROVED"});
+    if let Some(operation_id) = operation_id {
+        out["operation_id"] = json!(operation_id);
+    }
+    Ok(out)
 }
 
-/// User denial: the operation is cancelled before any dispatch (no side
-/// effect happened) and the decision is woken for consumption.
+/// User or session-Leader denial: the operation is cancelled before any dispatch
+/// (no side effect happened) and the decision is woken for consumption.
 fn deny(tx: &Connection, session_id: &str, params: &Json, identity: &Identity) -> Result<Json, String> {
-    require_user(identity)?;
+    let leader_actor: Option<&str> = match identity {
+        Identity::User => None,
+        Identity::Instance(actor) if is_session_leader(tx, session_id, actor)? => Some(actor.as_str()),
+        _ => return Err("this command requires the trusted user or session leader identity".into()),
+    };
     let approval_id = params["approval_id"].as_str().ok_or("deny.approval_id required")?;
-    deny_approval(tx, session_id, approval_id, "denied by user", None)
+    let note = params.get("reason").and_then(Json::as_str).map(str::trim).filter(|s| !s.is_empty());
+    let reason = if let Some(actor) = leader_actor {
+        let (_operation_id, op_instance, intent) = load_pending_approval_target(tx, session_id, approval_id)?;
+        if op_instance == actor {
+            return Err("the leader cannot deny its own operation; user decision required".into());
+        }
+        if intent["name"].as_str() == Some("request_self_update") {
+            return Err("self-update approval is user-only".into());
+        }
+        match note {
+            Some(text) => format!("denied by leader: {text}"),
+            None => "denied by leader".to_string(),
+        }
+    } else {
+        match note {
+            Some(text) => format!("denied by user: {text}"),
+            None => "denied by user".to_string(),
+        }
+    };
+    deny_approval(tx, session_id, approval_id, &reason, None)
 }
 
 fn deny_approval(
@@ -4924,7 +5252,13 @@ fn review_decision(tx: &Connection, session_id: &str, params: &Json, identity: &
     if changed != 1 {
         return Err(format!("approval {approval_id} is not pending"));
     }
-    event(tx, session_id, "approval_granted", approval_id, &json!({"approval_id": approval_id}))?;
+    event(
+        tx,
+        session_id,
+        "approval_granted",
+        approval_id,
+        &json!({"approval_id": approval_id, "approver": "auto_review"}),
+    )?;
     event(
         tx,
         session_id,
@@ -10065,6 +10399,17 @@ mod tests {
             !ctl.holds_covering_grant("w4", "shell", "workspace").unwrap(),
             "a revoked parent cannot satisfy the dispatch question"
         );
+        // Revoke Leader's remaining standing shell grant too so Leader lacks a covering grant for sp-2.
+        let rem_shell: String = ctl
+            .connection()
+            .query_row(
+                "SELECT id FROM grants WHERE subject = 'leader' AND action = 'shell' AND revoked_at IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        ctl.submit(cmd("rv-nondeleg", "revoke_grant", json!({"grant_id": rem_shell})), Identity::User)
+            .expect("revoke remaining shell");
         // Without a delegable parent, a request is held and the task is not dispatched.
         let held = ctl
             .submit(
@@ -10098,7 +10443,14 @@ mod tests {
                 Identity::Instance("leader".into()),
             )
             .unwrap_err();
-        assert!(err.contains("only the user"), "{err}");
+        assert!(err.contains("user approval required"), "{err}");
+        let worker_err = ctl
+            .submit(
+                cmd("ap-worker", "approve_capability", json!({"request_id": request})),
+                Identity::Instance("w1".into()),
+            )
+            .unwrap_err();
+        assert!(worker_err.contains("only the user or the session leader"), "{worker_err}");
         let approved = ctl
             .submit(cmd("ap-1", "approve_capability", json!({"request_id": request})), Identity::User)
             .expect("approve");
@@ -10159,6 +10511,379 @@ mod tests {
             )
             .unwrap();
         assert_eq!(live, 0);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn leader_approves_and_denies_worker_capability_within_own_grants() {
+        let (mut ctl, path) = control("leader-cap");
+        create_instance(&mut ctl, "leader");
+        ctl.submit(cmd("g1", "create_work", json!({"id": "g1"})), Identity::User).expect("work");
+        for (cid, action, scope) in
+            [("mg", "manage", "session"), ("dg", "delegate", "session"), ("sh", "shell", "workspace")]
+        {
+            ctl.submit(
+                cmd(cid, "issue_grant", json!({"subject": "leader", "action": action, "resource_scope": scope})),
+                Identity::User,
+            )
+            .expect(cid);
+        }
+        // Leader's shell@workspace grant is NOT delegable, so spawning w1 with shell@workspace parks in WAITING_CAPABILITY.
+        let held = ctl
+            .submit(
+                cmd(
+                    "sp-1",
+                    "spawn_instance",
+                    json!({"instance_id": "w1", "instructions": "work", "task": "run", "task_id": "t-w1",
+                           "work_id": "g1", "capabilities": ["shell@workspace"]}),
+                ),
+                Identity::Instance("leader".into()),
+            )
+            .expect("held spawn");
+        assert_eq!(held["task"]["status"], json!("WAITING_CAPABILITY"));
+        let req1 = held["task"]["capability_requests"][0].as_str().unwrap().to_string();
+        // A Worker cannot approve or deny capability requests.
+        let worker_ap = ctl
+            .submit(cmd("ap-w", "approve_capability", json!({"request_id": req1})), Identity::Instance("w1".into()))
+            .unwrap_err();
+        assert!(worker_ap.contains("only the user or the session leader"), "{worker_ap}");
+        let worker_dn = ctl
+            .submit(cmd("dn-w", "deny_capability", json!({"request_id": req1})), Identity::Instance("w1".into()))
+            .unwrap_err();
+        assert!(worker_dn.contains("only the user or the session leader"), "{worker_dn}");
+        // Leader approves within its own shell@workspace grant -> attenuated task-scoped child, parent cascades.
+        let approved = ctl
+            .submit(
+                cmd("ap-l1", "approve_capability", json!({"request_id": req1})),
+                Identity::Instance("leader".into()),
+            )
+            .expect("leader approve capability");
+        assert_eq!(approved["status"], json!("APPROVED"));
+        assert_eq!(approved["dispatched"], json!(true));
+        assert_eq!(phase_of(&ctl, "w1"), "READY");
+        let leader_shell: String = ctl
+            .connection()
+            .query_row(
+                "SELECT id FROM grants WHERE subject = 'leader' AND action = 'shell' AND revoked_at IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let child: (String, Option<String>, Option<String>, i64) = ctl
+            .connection()
+            .query_row(
+                "SELECT issuer, parent_grant_id, task_id, delegable FROM grants WHERE subject = 'w1' AND action = 'shell' AND revoked_at IS NULL",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(child.0, "leader");
+        assert_eq!(child.1.as_deref(), Some(leader_shell.as_str()));
+        assert_eq!(child.2.as_deref(), Some("t-w1"));
+        assert_eq!(child.3, 0);
+        // Revoking Leader's parent grant cascades to the Worker's child grant.
+        ctl.submit(cmd("rv-lsh", "revoke_grant", json!({"grant_id": leader_shell})), Identity::User).expect("revoke");
+        assert!(!ctl.holds_covering_grant("w1", "shell", "workspace").unwrap());
+
+        // Out-of-scope capability (web) cannot be approved by Leader; User can still approve, or Leader can deny.
+        let out_scope = ctl
+            .submit(
+                cmd(
+                    "sp-2",
+                    "spawn_instance",
+                    json!({"instance_id": "w2", "instructions": "work", "task": "browse", "task_id": "t-w2",
+                           "work_id": "g1", "capabilities": ["web@domain:example.com"]}),
+                ),
+                Identity::Instance("leader".into()),
+            )
+            .expect("web held");
+        let req2 = out_scope["task"]["capability_requests"][0].as_str().unwrap().to_string();
+        let oos_err = ctl
+            .submit(
+                cmd("ap-oos", "approve_capability", json!({"request_id": req2})),
+                Identity::Instance("leader".into()),
+            )
+            .unwrap_err();
+        assert!(oos_err.contains("holds no live grant covering"), "{oos_err}");
+        let denied = ctl
+            .submit(cmd("dn-l2", "deny_capability", json!({"request_id": req2})), Identity::Instance("leader".into()))
+            .expect("leader deny capability");
+        assert_eq!(denied["task_status"], json!("CANCELLED"));
+
+        // Non-leader requester requesting a capability within Leader's grants wakes a WAITING Leader.
+        ctl.submit(
+            cmd("sh-2", "issue_grant", json!({"subject": "leader", "action": "shell", "resource_scope": "workspace"})),
+            Identity::User,
+        )
+        .unwrap();
+        ctl.submit(
+            cmd(
+                "dlg-w1",
+                "issue_grant",
+                json!({"subject": "w1", "action": "delegate", "resource_scope": "instance:w2"}),
+            ),
+            Identity::User,
+        )
+        .unwrap();
+        let wait_id = open_wait(
+            &mut ctl,
+            "l-cap-wait",
+            "leader",
+            0,
+            json!({"mode": "ANY", "conditions": [{"kind": "message", "from": "w1"}]}),
+        );
+        let wake_held = ctl
+            .submit(
+                cmd(
+                    "dl-w1",
+                    "delegate_task",
+                    json!({"assignee": "w2", "task_id": "t-wake", "description": "need shell", "work_id": "g1", "capabilities": ["shell@workspace"]}),
+                ),
+                Identity::Instance("w1".into()),
+            )
+            .expect("w1 delegate");
+        let req3 = wake_held["capability_requests"][0].as_str().unwrap().to_string();
+        assert_eq!(wait_state(&ctl, &wait_id), "CANCELLED");
+        assert_eq!(phase_of(&ctl, "leader"), "READY");
+        let env_count: i64 = ctl
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM envelopes WHERE recipient = 'leader' AND kind = 'capability_requested' AND correlation_id = ?1",
+                [&req3],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(env_count, 1);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn leader_approves_and_denies_worker_operations_with_strict_guards() {
+        let (mut ctl, path) = control("leader-op-approval");
+        create_instance(&mut ctl, "leader");
+        ctl.submit(cmd("g1", "create_work", json!({"id": "g1"})), Identity::User).expect("work");
+        for (cid, subject, action, scope) in [
+            ("l-mg", "leader", "manage", "session"),
+            ("l-sh", "leader", "shell", "workspace"),
+            ("w-sh", "w1", "shell", "workspace"),
+        ] {
+            ctl.submit(
+                cmd(cid, "issue_grant", json!({"subject": subject, "action": action, "resource_scope": scope})),
+                Identity::User,
+            )
+            .expect(cid);
+        }
+        // Spawn w1 at current grant setup.
+        ctl.submit(
+            cmd("sp-w1", "spawn_instance", json!({"instance_id": "w1", "instructions": "work"})),
+            Identity::Instance("leader".into()),
+        )
+        .expect("spawn w1");
+        // Leader waits for work; Worker triggers APPROVAL_REQUIRED -> wakes Leader + queues envelope.
+        let wait_id = open_wait(
+            &mut ctl,
+            "l-wait",
+            "leader",
+            0,
+            json!({"mode": "ANY", "conditions": [{"kind": "message", "from": "w1"}]}),
+        );
+        open_decision(&mut ctl, "w-op1", "w1", 0, 2);
+        let asked1 = ctl
+            .submit(
+                cmd("dp-w1", "dispatch_operation", json!({"operation_id": "d-w-op1:0", "approval_required": true})),
+                Identity::System,
+            )
+            .expect("ask w1");
+        assert_eq!(asked1["status"], json!("APPROVAL_REQUIRED"));
+        let ap1 = asked1["approval_id"].as_str().unwrap().to_string();
+        assert_eq!(wait_state(&ctl, &wait_id), "CANCELLED");
+        assert_eq!(phase_of(&ctl, "leader"), "READY");
+        let env_count: i64 = ctl
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM envelopes WHERE recipient = 'leader' AND kind = 'approval_requested' AND correlation_id = ?1",
+                [&ap1],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(env_count, 1);
+
+        // Worker cannot approve or deny operations.
+        let w_ap = ctl
+            .submit(cmd("w-ap", "approve", json!({"approval_id": ap1})), Identity::Instance("w1".into()))
+            .unwrap_err();
+        assert!(w_ap.contains("trusted user or session leader"), "{w_ap}");
+        let w_dn =
+            ctl.submit(cmd("w-dn", "deny", json!({"approval_id": ap1})), Identity::Instance("w1".into())).unwrap_err();
+        assert!(w_dn.contains("trusted user or session leader"), "{w_dn}");
+
+        // Leader approves Worker operation within Leader's own grants, and Worker dispatches it.
+        let ok = ctl
+            .submit(cmd("l-ap1", "approve", json!({"approval_id": ap1})), Identity::Instance("leader".into()))
+            .expect("leader approve");
+        assert_eq!(ok["status"], json!("APPROVED"));
+        let dispatched = ctl
+            .submit(
+                cmd("dp-w1-go", "dispatch_operation", json!({"operation_id": "d-w-op1:0", "approval_required": true})),
+                Identity::System,
+            )
+            .expect("dispatch approved");
+        assert_eq!(dispatched["status"], json!("DISPATCH_COMMITTED"));
+        ctl.submit(
+            cmd(
+                "cmp-w1-go",
+                "complete_operation",
+                json!({"operation_id": "d-w-op1:0", "status": "SUCCEEDED",
+                       "receipt": {"operation_id": "d-w-op1:0", "ok": true, "content": "done"}}),
+            ),
+            Identity::System,
+        )
+        .expect("complete approved");
+
+        // Leader denies Worker's second operation with a custom reason.
+        let asked2 = ctl
+            .submit(
+                cmd("dp-w2", "dispatch_operation", json!({"operation_id": "d-w-op1:1", "approval_required": true})),
+                Identity::System,
+            )
+            .expect("ask w2");
+        let ap2 = asked2["approval_id"].as_str().unwrap().to_string();
+        let denied = ctl
+            .submit(
+                cmd("l-dn2", "deny", json!({"approval_id": ap2, "reason": "destructive command"})),
+                Identity::Instance("leader".into()),
+            )
+            .expect("leader deny");
+        assert_eq!(denied["decision_open"], json!(false));
+        let receipt_msg: String = ctl
+            .connection()
+            .query_row(
+                "SELECT message_json FROM context_entries WHERE instance_id = 'w1' AND kind = 'tool_result' ORDER BY idx DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(receipt_msg.contains("denied by leader: destructive command"), "{receipt_msg}");
+
+        // Guard 1: Leader cannot approve or deny its OWN operation; User can.
+        let l_rev: i64 =
+            ctl.connection().query_row("SELECT revision FROM instances WHERE id = 'leader'", [], |r| r.get(0)).unwrap();
+        open_decision(&mut ctl, "l-self", "leader", l_rev, 1);
+        let asked_self = ctl
+            .submit(
+                cmd("dp-lself", "dispatch_operation", json!({"operation_id": "d-l-self:0", "approval_required": true})),
+                Identity::System,
+            )
+            .expect("ask self");
+        let ap_self = asked_self["approval_id"].as_str().unwrap().to_string();
+        let self_ap_err = ctl
+            .submit(cmd("l-self-ap", "approve", json!({"approval_id": ap_self})), Identity::Instance("leader".into()))
+            .unwrap_err();
+        assert!(self_ap_err.contains("cannot approve its own operation"), "{self_ap_err}");
+        let self_dn_err = ctl
+            .submit(cmd("l-self-dn", "deny", json!({"approval_id": ap_self})), Identity::Instance("leader".into()))
+            .unwrap_err();
+        assert!(self_dn_err.contains("cannot deny its own operation"), "{self_dn_err}");
+        ctl.submit(cmd("u-self-ap", "approve", json!({"approval_id": ap_self})), Identity::User)
+            .expect("user approves leader op");
+        ctl.submit(
+            cmd("cc-lself", "cancel_operation", json!({"operation_id": "d-l-self:0", "reason": "done"})),
+            Identity::User,
+        )
+        .expect("close leader self op");
+
+        // Guard 2: request_self_update is always user-only, even for another instance.
+        let w_rev: i64 =
+            ctl.connection().query_row("SELECT revision FROM instances WHERE id = 'w1'", [], |r| r.get(0)).unwrap();
+        let req_upd = begin_and_complete(&mut ctl, "w-upd", "w1", w_rev);
+        ctl.submit(
+            cmd(
+                "imp-w-upd",
+                "import_response",
+                json!({"request_id": req_upd, "decision_id": "d-w-upd",
+                       "entry": {"role": "assistant", "content": "update"},
+                       "intents": [{"index": 0, "call_id": "cu", "name": "request_self_update", "args": {"target": "latest"}}]}),
+            ),
+            Identity::System,
+        )
+        .expect("import self update");
+        let asked_upd = ctl
+            .submit(
+                cmd("dp-w-upd", "dispatch_operation", json!({"operation_id": "d-w-upd:0", "approval_required": true})),
+                Identity::System,
+            )
+            .expect("ask self update");
+        let ap_upd = asked_upd["approval_id"].as_str().unwrap().to_string();
+        let upd_err = ctl
+            .submit(cmd("l-upd-ap", "approve", json!({"approval_id": ap_upd})), Identity::Instance("leader".into()))
+            .unwrap_err();
+        assert!(upd_err.contains("user-only"), "{upd_err}");
+        let upd_dn_err = ctl
+            .submit(cmd("l-upd-dn", "deny", json!({"approval_id": ap_upd})), Identity::Instance("leader".into()))
+            .unwrap_err();
+        assert!(upd_dn_err.contains("user-only"), "{upd_dn_err}");
+        ctl.submit(cmd("u-upd-ap", "approve", json!({"approval_id": ap_upd})), Identity::User)
+            .expect("user approves self update");
+        ctl.submit(
+            cmd("cc-upd", "cancel_operation", json!({"operation_id": "d-w-upd:0", "reason": "done"})),
+            Identity::User,
+        )
+        .expect("close update op");
+
+        // Guard 3: Attenuation — once Leader's own shell@workspace grant is revoked, Leader cannot approve Worker shell.
+        let w_rev: i64 =
+            ctl.connection().query_row("SELECT revision FROM instances WHERE id = 'w1'", [], |r| r.get(0)).unwrap();
+        open_decision(&mut ctl, "w-att", "w1", w_rev, 1);
+        let asked_att = ctl
+            .submit(
+                cmd("dp-w-att", "dispatch_operation", json!({"operation_id": "d-w-att:0", "approval_required": true})),
+                Identity::System,
+            )
+            .expect("ask att");
+        let ap_att = asked_att["approval_id"].as_str().unwrap().to_string();
+        let leader_shells: Vec<String> = ctl
+            .connection()
+            .prepare("SELECT id FROM grants WHERE subject = 'leader' AND action = 'shell' AND revoked_at IS NULL")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        for (idx, grant_id) in leader_shells.into_iter().enumerate() {
+            ctl.submit(cmd(&format!("rv-l-att-{idx}"), "revoke_grant", json!({"grant_id": grant_id})), Identity::User)
+                .unwrap();
+        }
+        assert!(!ctl.holds_covering_grant("leader", "shell", "workspace").unwrap());
+        let att_err = ctl
+            .submit(cmd("l-att-ap", "approve", json!({"approval_id": ap_att})), Identity::Instance("leader".into()))
+            .unwrap_err();
+        assert!(att_err.contains("outside its own grants"), "{att_err}");
+
+        // Guard 4 (Race): If an ACCEPTED approval_requested envelope is already queued when Leader imports a wait, wait is immediately superseded.
+        ctl.submit(
+            cmd("d-race-w", "cancel_operation", json!({"operation_id": "d-w-att:0", "reason": "close att"})),
+            Identity::User,
+        )
+        .unwrap();
+        let l_rev: i64 =
+            ctl.connection().query_row("SELECT revision FROM instances WHERE id = 'leader'", [], |r| r.get(0)).unwrap();
+        let req_race = begin_and_complete(&mut ctl, "l-race", "leader", l_rev);
+        ctl.submit(
+            cmd(
+                "imp-l-race",
+                "import_response",
+                json!({"request_id": req_race, "decision_id": "d-l-race",
+                       "entry": {"role": "assistant", "content": "", "tool_calls": [
+                           {"id": "cw-race", "type": "function", "function": {"name": "wait", "arguments": "{\"mode\":\"ANY\",\"conditions\":[{\"kind\":\"message\",\"from\":\"w1\"}]}"}}
+                       ]},
+                       "intents": [],
+                       "wait": {"call_id": "cw-race", "mode": "ANY", "conditions": [{"kind": "message", "from": "w1"}]}}),
+            ),
+            Identity::System,
+        )
+        .expect("import race wait");
+        assert_eq!(phase_of(&ctl, "leader"), "READY", "queued approval_requested supersedes Leader wait immediately");
+        assert_eq!(wait_state(&ctl, "w-d-l-race"), "CANCELLED");
         cleanup(&path);
     }
 

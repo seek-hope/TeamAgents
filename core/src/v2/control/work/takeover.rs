@@ -21,6 +21,7 @@ fn read_only(name: &str) -> bool {
         crate::kernel::DELEGATE_TOOL,
         crate::kernel::CANCEL_TOOL,
         crate::kernel::VERIFY_TOOL,
+        crate::kernel::APPROVAL_TOOL,
     ]
     .contains(&name)
 }

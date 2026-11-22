@@ -712,7 +712,8 @@ pub(crate) async fn bootstrap(
                         command(
                             "boot-instance",
                             "create_instance",
-                            json!({"id": instance, "workspace_ref": workspace, "profile": profile, "is_leader": true}),
+                            json!({"id": instance, "workspace_ref": workspace, "profile": profile,
+                                   "is_leader": true, "delegable_workspace": true}),
                         ),
                         Identity::User,
                     )?;
@@ -738,30 +739,45 @@ pub(crate) async fn bootstrap(
                     )?;
                 }
                 // The session bootstrap speaks for the user: the Leader manages
-                // the team by default (Q5, D-42), so it holds the authority the
-                // collaboration tools are derived from. Until this existed a real
-                // session granted the leader only shell@workspace, so the model
-                // was never offered spawn/delegate/send (the tool surface follows
-                // the grants, §5.2) and an attempt would have been refused — the
-                // evaluation harness issued these grants by hand, which is why the
-                // fixtures passed while the product could not build a team. Fixed
-                // command ids keep a restart (or an older session) idempotent.
-                //
-                // `web` belongs in this list for the same reason and one more: it now fails closed
-                // (D-470), so without this row the user's own Leader would be refused both web tools
-                // even though the user configured the binding — the product default is unrestricted
-                // web for the session the user opened. A spawned Worker is created through
-                // `spawn_instance`, never through this bootstrap, so a child still starts with no web
-                // access and must narrow to `domain:<host>` through its task's capability request.
+                // the team by default (Q5, D-42, D-537), so it holds delegable
+                // session authority and can attenuate Worker grants directly on
+                // delegation. Fixed command ids keep restarts idempotent.
                 for action in ["manage", "delegate", "message", "web"] {
                     control.submit(
                         command(
-                            format!("boot-grant-{action}"),
+                            format!("boot-grant-delegable-{action}"),
                             "issue_grant",
-                            json!({"subject": instance, "action": action, "resource_scope": "session"}),
+                            json!({"subject": instance, "action": action, "resource_scope": "session",
+                                   "delegable": true}),
                         ),
                         Identity::User,
                     )?;
+                }
+                if !workspace.is_empty() && exists {
+                    let has_nondelegable_shell: bool = control
+                        .connection()
+                        .query_row(
+                            "SELECT EXISTS(SELECT 1 FROM grants
+                             WHERE subject = ?1 AND action = 'shell' AND resource_scope = 'workspace'
+                               AND delegable = 0 AND revoked_at IS NULL)
+                             AND NOT EXISTS(SELECT 1 FROM grants
+                             WHERE subject = ?1 AND action = 'shell' AND resource_scope = 'workspace'
+                               AND delegable = 1 AND revoked_at IS NULL)",
+                            [&instance],
+                            |row| row.get(0),
+                        )
+                        .unwrap_or(false);
+                    if has_nondelegable_shell {
+                        control.submit(
+                            command(
+                                "boot-grant-delegable-shell",
+                                "issue_grant",
+                                json!({"subject": instance, "action": "shell", "resource_scope": "workspace",
+                                       "delegable": true}),
+                            ),
+                            Identity::User,
+                        )?;
+                    }
                 }
                 // D-245: `[retention] history_days` is applied once per session boot — DESIGN §4.4 says collection
                 // is "scheduled separately", and D-191 gave artifact collection the same cadence. The command
@@ -1627,6 +1643,7 @@ impl<P: Provider> Driver<P> {
         work: &Json,
     ) -> Result<(KernelInstance, Vec<String>, bool), String> {
         let instance = self.config.instance_id.clone();
+        let is_leader = self.config.instance_id == self.config.leader_id;
         let surface_of = instance.clone();
         let actions = self
             .storage
@@ -1657,6 +1674,9 @@ impl<P: Provider> Driver<P> {
                 }
                 if holds("manage")? {
                     actions.push(teamagents_core::kernel::SPAWN_TOOL);
+                    if is_leader {
+                        actions.push(teamagents_core::kernel::APPROVAL_TOOL);
+                    }
                 }
                 // the workspace shell needs the same covering grant the dispatch
                 // re-check demands; the surface asks the identical question
@@ -1709,8 +1729,17 @@ impl<P: Provider> Driver<P> {
         let mut names: Vec<String> =
             profile.tools.iter().filter_map(|tool| tool["function"]["name"].as_str().map(str::to_string)).collect();
         names.sort();
-        let gated =
-            |name: &str| matches!(name, "shell" | "send" | "delegate" | "spawn" | teamagents_core::kernel::CANCEL_TOOL);
+        let gated = |name: &str| {
+            matches!(
+                name,
+                "shell"
+                    | "send"
+                    | "delegate"
+                    | "spawn"
+                    | teamagents_core::kernel::CANCEL_TOOL
+                    | teamagents_core::kernel::APPROVAL_TOOL
+            )
+        };
         let allowed: std::collections::BTreeSet<&str> = actions
             .iter()
             .copied()
@@ -2911,7 +2940,8 @@ that delegated it learns the outcome only from a settlement.";
                 | teamagents_core::kernel::DELEGATE_TOOL
                 | teamagents_core::kernel::SPAWN_TOOL
                 | teamagents_core::kernel::VERIFY_TOOL
-                | teamagents_core::kernel::CANCEL_TOOL => self.execute_collaboration(&operation_id, &intent).await?,
+                | teamagents_core::kernel::CANCEL_TOOL
+                | teamagents_core::kernel::APPROVAL_TOOL => self.execute_collaboration(&operation_id, &intent).await?,
                 _ if recovered
                     && (intent["remote_dispatch"] == true
                         || self.toolkit.is_mcp_tool(name)
@@ -3505,6 +3535,125 @@ that delegated it learns the outcome only from a settlement.";
                 }
                 ("spawn_instance", params)
             }
+            teamagents_core::kernel::APPROVAL_TOOL => match args["action"].as_str().unwrap_or("") {
+                "list" => {
+                    let leader_id = self.config.leader_id.clone();
+                    let snapshot = self
+                        .storage
+                        .call(move |control| {
+                            let conn = control.connection();
+                            let mut app_stmt = conn
+                                .prepare(
+                                    "SELECT a.id, o.operation_id, r.instance_id, o.intent_json
+                                     FROM approvals a
+                                     JOIN operations o ON o.operation_id = a.operation_id
+                                     JOIN decisions d ON d.decision_id = o.decision_id
+                                     JOIN model_requests r ON r.request_id = d.request_id
+                                     WHERE a.status = 'PENDING' AND r.instance_id != ?1
+                                     ORDER BY a.rowid",
+                                )
+                                .map_err(|e| format!("approvals list prepare: {e}"))?;
+                            let approvals = app_stmt
+                                .query_map([&leader_id], |row| {
+                                    Ok((
+                                        row.get::<_, String>(0)?,
+                                        row.get::<_, String>(1)?,
+                                        row.get::<_, String>(2)?,
+                                        row.get::<_, String>(3)?,
+                                    ))
+                                })
+                                .map_err(|e| format!("approvals list query: {e}"))?
+                                .collect::<Result<Vec<_>, _>>()
+                                .map_err(|e| format!("approvals list collect: {e}"))?
+                                .into_iter()
+                                .filter_map(|(approval_id, op_id, instance_id, intent_json)| {
+                                    let intent: Json = serde_json::from_str(&intent_json).ok()?;
+                                    let tool = intent["name"].as_str()?;
+                                    if tool == "request_self_update" {
+                                        return None;
+                                    }
+                                    Some(json!({
+                                        "approval_id": approval_id,
+                                        "operation_id": op_id,
+                                        "instance_id": instance_id,
+                                        "tool": tool,
+                                        "args": intent["args"],
+                                    }))
+                                })
+                                .collect::<Vec<_>>();
+                            let mut cap_stmt = conn
+                                .prepare(
+                                    "SELECT id, requester, subject, action, resource_scope, task_id
+                                     FROM capability_requests
+                                     WHERE status = 'PENDING' AND subject != ?1
+                                     ORDER BY created_at, id",
+                                )
+                                .map_err(|e| format!("capability list prepare: {e}"))?;
+                            let requests = cap_stmt
+                                .query_map([&leader_id], |row| {
+                                    Ok(json!({
+                                        "request_id": row.get::<_, String>(0)?,
+                                        "requester": row.get::<_, String>(1)?,
+                                        "subject": row.get::<_, String>(2)?,
+                                        "action": row.get::<_, String>(3)?,
+                                        "resource_scope": row.get::<_, String>(4)?,
+                                        "task_id": row.get::<_, String>(5)?,
+                                    }))
+                                })
+                                .map_err(|e| format!("capability list query: {e}"))?
+                                .collect::<Result<Vec<_>, _>>()
+                                .map_err(|e| format!("capability list collect: {e}"))?;
+                            Ok::<Json, String>(json!({"approvals": approvals, "capability_requests": requests}))
+                        })
+                        .await??;
+                    let receipt = self.receipt_skeleton(operation_id, intent, true, snapshot.to_string());
+                    let receipt = teamagents_core::kernel::ToolReceipt { ok: true, ..receipt };
+                    return self
+                        .complete_op(
+                            operation_id,
+                            "SUCCEEDED",
+                            &serde_json::to_value(receipt).unwrap_or(Json::Null),
+                            vec![],
+                        )
+                        .await;
+                }
+                action_kind @ ("approve" | "deny") => {
+                    let approval_id = args["approval_id"].as_str().map(str::trim).filter(|s| !s.is_empty());
+                    let request_id = args["request_id"].as_str().map(str::trim).filter(|s| !s.is_empty());
+                    match (action_kind, approval_id, request_id) {
+                        ("approve", Some(id), None) => ("approve", json!({"approval_id": id})),
+                        ("deny", Some(id), None) => {
+                            let mut params = json!({"approval_id": id});
+                            if let Some(reason) = args.get("reason") {
+                                params["reason"] = reason.clone();
+                            }
+                            ("deny", params)
+                        }
+                        ("approve", None, Some(id)) => ("approve_capability", json!({"request_id": id})),
+                        ("deny", None, Some(id)) => ("deny_capability", json!({"request_id": id})),
+                        _ => {
+                            return self
+                                .complete_with_error(
+                                    operation_id,
+                                    intent,
+                                    "collaboration",
+                                    "decide_approval approve/deny requires exactly one of approval_id or request_id",
+                                )
+                                .await;
+                        }
+                    }
+                }
+                _ => {
+                    return self
+                        .complete_with_error(
+                            operation_id,
+                            intent,
+                            "collaboration",
+                            "decide_approval.action must be list, approve, or deny",
+                        )
+                        .await;
+                }
+            },
             other => return Err(format!("execute_collaboration: unknown tool {other}")),
         };
         if matches!(method, "delegate_task" | "spawn_instance") {

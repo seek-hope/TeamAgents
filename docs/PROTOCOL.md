@@ -152,7 +152,7 @@ policy on its own. See the handler and control wrapper for scope, revision, gran
 
 | Method | Parameters the handler reads | Identity passed | Handled at |
 |---|---|---|---|
-| `create_instance` | `catalog_key`, `id`, `is_leader`, `lifetime`, `model`, `profile`, `workspace_ref` | yes | `core/src/v2/control.rs:480` |
+| `create_instance` | `catalog_key`, `delegable_workspace`, `id`, `is_leader`, `lifetime`, `model`, `profile`, `workspace_ref` | yes | `core/src/v2/control.rs:480` |
 | `spawn_instance` | `acceptance_refs`, `capabilities`, `catalog_key`, `instance_id`, `instructions`, `lifetime`, `model`, `profile`, `task`, `task_id`, `work_id`, `workspace_ref` | yes | `core/src/v2/control.rs:481` |
 | `issue_grant` | `action`, `delegable`, `parent_grant_id`, `resource_scope`, `subject`, `task_id` | yes | `core/src/v2/control.rs:482` |
 | `revoke_grant` | `grant_id` | yes | `core/src/v2/control.rs:483` |
@@ -197,7 +197,7 @@ policy on its own. See the handler and control wrapper for scope, revision, gran
 | `complete_operation` | `operation_id`, `receipt`, `status` | no | `core/src/v2/control.rs:522` |
 | `cancel_operation` | `operation_id`, `reason` | no | `core/src/v2/control.rs:523` |
 | `approve` | `approval_id`, `expires_at` | yes | `core/src/v2/control.rs:524` |
-| `deny` | `approval_id` | yes | `core/src/v2/control.rs:525` |
+| `deny` | `approval_id`, `reason` | yes | `core/src/v2/control.rs:525` |
 | `begin_review` | `est_prompt_tokens`, `operation_id`, `request_id` | yes | `core/src/v2/control.rs:526` |
 | `record_review_attempt` | `request_id`, `status`, `unknown_usage`, `usage` | yes | `core/src/v2/control.rs:527` |
 | `review_decision` | `approval_id`, `operation_id`, `outcome`, `rationale`, `review_request_id`, `reviewer_model`, `risk_level`, `user_authorization` | yes | `core/src/v2/control.rs:528` |
